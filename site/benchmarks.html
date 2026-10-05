@@ -715,7 +715,7 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a reload and a later load are expected, in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#expected-not-measured">the benchmarks doc</a>. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a reload and a later load are expected, in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#expected-not-measured" target="_blank" rel="noopener" aria-label="The benchmarks doc's expected figures (opens in a new tab)">the benchmarks doc</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
             no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
