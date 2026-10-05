@@ -242,7 +242,7 @@ describe('takeLease', () => {
     expect(got).not.toBe('moved');
     expect(w.registryCalls.get).toBe(1);
     expect(w.clock.sleeps).toHaveLength(1);
-    expect(w.clock.sleeps[0]).toBeLessThanOrEqual(50);
+    expect(w.clock.sleeps[0]).toBeLessThanOrEqual(25);
     expect(await leasesOf(w)).toHaveLength(1);
   });
 

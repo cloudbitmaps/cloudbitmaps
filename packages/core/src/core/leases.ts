@@ -38,16 +38,20 @@ export const MAX_LEASES_PER_SEGMENT = 64;
 /** The most entries a stored row may hold: four times what a writer writes, so a release can raise the cap. */
 export const MAX_STORED_LEASES = 256;
 
-/** Read-modify-write attempts of one take or release before it reports contention. */
-export const LEASE_CAS_ATTEMPTS = 8;
+/**
+ * Read-modify-write attempts of one take or release before it reports contention. Takers of one row serialise: each
+ * round exactly one write lands, so the slowest of `k` simultaneous takers needs `k` attempts. The bound is the cap
+ * plus a few, so that the most a segment can hold, all arriving at once, can all land.
+ */
+export const LEASE_CAS_ATTEMPTS = MAX_LEASES_PER_SEGMENT + 8;
 
 /** Fresh writes sent after one that got no answer and left the row as it was. */
 const UNANSWERED_RESENDS = 3;
 /** The upper bound of the first of those waits, in ms; each next one doubles it. */
 const UNANSWERED_BASE_MS = 500;
 /** The upper bound of the first wait after a lost race, in ms; each next doubles it, to the cap. */
-const CONFLICT_BASE_MS = 50;
-const CONFLICT_CAP_MS = 800;
+const CONFLICT_BASE_MS = 25;
+const CONFLICT_CAP_MS = 400;
 
 /**
  * Whether an entry holds its generation against a collector reading `now`: it has not ended (`until` plus the margin
