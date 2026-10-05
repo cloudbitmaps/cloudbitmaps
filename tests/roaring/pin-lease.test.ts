@@ -528,6 +528,14 @@ describe('a stream built while the lease is live and pulled after it ended never
     await expect(collect(snap.everyNth(1))).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 
+  it('everyNth: a handle past its lease and its expiresAt throws, and does not read empty', async () => {
+    const h = await setup();
+    const seg = h.reader.segment(REF.segment, { namespace: 'ns', expiresAt: T0 + 2_000 });
+    const snap = await seg.pin({ leaseUntil: T0 + 1_000 });
+    h.advance(3_000);
+    await expect(collect(snap.everyNth(1))).rejects.toBeInstanceOf(LeaseExpiredError);
+  });
+
   it('everyNth: a lease that ends mid-stream throws at the next chunk', async () => {
     const h = await seeded(spread(4));
     const snap = await lease(h, HOUR);
