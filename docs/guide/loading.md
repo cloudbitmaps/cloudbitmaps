@@ -181,10 +181,8 @@ await store.load({ segment: 'audience:imported' }, { serialized: bytes });
   `ValidationError`, because each byte would be loaded as an id. Pass bytes as `{ serialized }`, and ids as a
   `Uint32Array` or an array of numbers. Every other typed array is ids. The refusal is made when the load runs: a byte
   array is an iterable of numbers, so the compiler accepts one as ids.
-- **Parts of one segment, built separately.** Combine them in memory with `RoaringBitmap32.orMany(parts)` and load
-  the result once. When the parts cover disjoint ranges of the id space (by the high 16 bits, say) the union copies
-  containers rather than merging them. Parts built in different processes have to reach one process first, as
-  `serialize('portable')` bytes, to be combined there: a load writes one generation from one process.
+- **Parts of one segment, built separately.** Join them in one process and load the union once: a load writes one
+  generation from one process. [The recipe](#parts-of-one-segment-built-separately) is below.
 
 <!-- load-input:start -->
 **How fast a bitmap loads.** `pnpm bench:load-input` measures a load from ids against one from a bitmap, on five sets
@@ -194,6 +192,59 @@ one that does not is expected to cost about the same. Its figures have not been 
 change is that a 12M-member load from a bitmap calls none of the per-id routes: no iteration, no build from values,
 no id split (`tests/roaring/load-no-per-id.test.ts`).
 <!-- load-input:end -->
+
+### Parts of one segment, built separately
+
+A refresh split by id range across several processes builds one part of the segment in each. A load writes one
+generation from one process, so the parts reach one process, which joins them and loads the union once.
+
+```ts
+import roaring from 'roaring';
+import { CloudRoaring, ValidationError, deserializePortable } from '@cloudbitmaps/roaring';
+const { RoaringBitmap32 } = roaring;
+
+// In each worker: its range's part, as portable Roaring bytes. Send these to the joining process.
+export function partBytes(part: InstanceType<typeof RoaringBitmap32>): Uint8Array {
+  return part.serialize('portable');
+}
+
+// In the joining process: decode every part, join them, refuse an overlap, and load once.
+export async function loadParts(
+  store: CloudRoaring,
+  ref: { segment: string; namespace?: string },
+  shipped: Uint8Array[],
+) {
+  const parts = shipped.map((bytes) => deserializePortable(bytes)); // ValidationError if malformed
+  const union = RoaringBitmap32.orMany(parts);
+  const total = parts.reduce((sum, part) => sum + part.size, 0);
+  if (union.size !== total) {
+    throw new ValidationError(`the parts overlap: ${total} ids in them, ${union.size} in their union`);
+  }
+  return store.load(ref, { bitmap: union });
+}
+```
+
+- **Decode with `deserializePortable`, not `RoaringBitmap32.deserialize`.** Parts that cross between processes are
+  untrusted input, as stored bytes are. `RoaringBitmap32.deserialize` hands the bytes to the native decoder, which
+  bounds its reads and checks nothing else: bytes of the wrong shape decode into a bitmap whose sizes and answers are
+  wrong, and some shapes crash the process. `deserializePortable(bytes)` makes the check a `{ serialized }` load makes
+  first (the size cap, the structural check, exactly one bitmap) and only then decodes, and throws `ValidationError`
+  for bytes that fail it. It takes a `Uint8Array`, which a Node `Buffer` is. A single part that needs no joining goes
+  straight to `store.load(ref, { serialized: bytes })`.
+- **Overlap is refused by the size check.** `orMany` merges parts that share ids without a word, so a range that two
+  workers both built would load as if nothing were wrong. The members of disjoint parts add up to the members of their
+  union, and they add up to fewer when any id is in two parts, so the recipe compares the two and refuses.
+- **A range boundary may fall inside a chunk.** A chunk is the 65,536 ids that share their high 16 bits. When a
+  boundary splits one, both parts hold a piece of it and the union merges them, so the generation is the same bytes a
+  load of the whole set writes. Cutting on whole chunks keeps each part's chunks its own, and a union of parts like
+  that copies containers rather than merging them.
+- **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes, so one part
+  or eight make the same requests. A segment's first load is 2 PUT + 3 GET, pointer included, for a single-part
+  object. A multipart load, one whose union is large enough to be uploaded in parts, makes 5 PUT-class + 3 GET. Both
+  are [measured](../benchmarks.md#the-in-region-run--run-2026-10-05-50b5d), on a 1.05 MB and a 12.6 MB segment. A
+  reload and a load from the third on are [expected, not measured](../benchmarks.md#expected-not-measured).
+- **When this is not enough.** A segment too large for one process to hold, as its union and its serialization
+  together, is not served by this recipe.
 
 ## Metadata: what a generation was computed from
 

@@ -33,6 +33,18 @@ so, and so do the module headers in the code.
   `keptGens` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
   patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
 
+### Added
+
+- **`deserializePortable(bytes)`, and the loading guide's recipe for the parts of one segment built in separate processes.**
+  `deserializePortable` decodes portable Roaring bytes you hold into a `RoaringBitmap32` through the check a
+  `{ serialized }` load makes first (the size cap, the structural check, exactly one bitmap), and throws
+  `ValidationError` for bytes that fail it, before the native decoder runs. `@cloudbitmaps/core` exports
+  `decodeSerialized(bytes, codec, what?)`, the one check both go through. The recipe has each process serialize its part,
+  and one process decode each with `deserializePortable`, join them with `RoaringBitmap32.orMany`, refuse parts that
+  overlap by comparing the union's size with the sum of the parts', and load the union once, in the requests of one
+  load. A property test runs the recipe from the guide: the generation is byte for byte the one a load of the whole set
+  writes, wherever the ranges are cut.
+
 ### Changed
 
 - **`store.load()` collects by name at any `keep` up to 64.** The segment's row records the generations a load keeps
