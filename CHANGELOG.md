@@ -35,12 +35,12 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **`pin({ leaseUntil })`: a bounded lease on a pin.** A leased pin keeps its generation out of a load's collection until
+- **`pin({ leaseUntil })` and `pinAt(at, { leaseUntil })`: a bounded lease on a pin.** A leased pin keeps its generation out of a load's collection until
   `leaseUntil`, an epoch-millisecond instant at most 14 days out (`MAX_LEASE_MS`), whatever `keep` says and whichever
   process loads the segment: the lease is a `leases` field of the segment's registry row (schema 3, beside `keptGens`),
   which every collection reads from the row it already holds. `snap.lease` is `{ holder, until }`, and `snap.release()` ends
   it early and is idempotent. A read of the handle after the lease, or after a release, throws the new `LeaseExpiredError`
-  at every read site, never empty: `has`, `count`, `stat`, `iterate`, `batches()`, `costReport`, and a leased handle used
+  at every read site, never empty: `has`, `count`, `stat`, `iterate`, `batches()`, `everyNth`, `costReport`, and a leased handle used
   as an operand or an `exclude` of a combine or as the target of an `*Into`. A stream checks the lease each time it reads
   a chunk. A segment holds at most 64 live leases (`MAX_LEASES_PER_SEGMENT`); the next throws `LeaseLimitError` with
   nothing written. A collector holds a lease for `LEASE_SKEW_MS` (60 seconds) after it ends, which covers clocks that differ
@@ -81,7 +81,8 @@ so, and so do the module headers in the code.
   in its `pinnedAt`, as a pinned handle like the one `pin()` returns, for a second task of one job. Identify a pin by its `generation` and `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's. The fingerprint is required, since a
   generation number is taken again after a purge and re-create, so a bare number, or a key `pinAt` does not know, throws `ValidationError`. A generation that is
   collected, purged, on a crypto-shredded segment, above the row's pointer, or another object than the fingerprint names throws `NotFoundError`, and the call never reads empty. It costs
-  one registry read and one tail read, and it holds nothing: how long a generation can be reopened is how long `keep` retains it.
+  one registry read and one tail read, and it holds nothing unless leased: how long a generation can be reopened is how long `keep` retains it, or how long
+  `pinAt(at, { leaseUntil })` holds it.
   Exported as the `PinAt` type, with a method on `CrbmStorageChunkSource` that does the open.
 
 - **`deserializePortable(bytes)`, and the loading guide's recipe for the parts of one segment built in separate processes.**

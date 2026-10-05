@@ -219,8 +219,14 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
 - **It costs one row read and one tail read** (the tail read alone without a registry), and the object it opens is the
   one its first read finds open. After that the handle reads exactly as a `pin()` handle does, including what it does
   once the generation is swept (see above).
-- **It keeps nothing alive.** `pinAt` does not stop a collection, so how long a generation can be reopened is how long
-  `keep` retains it. With `keep` at 2 or more it stays reopenable while fewer than `keep` generation numbers have been
+- **It keeps nothing alive unless you lease it.** `pinAt` does not stop a collection, so how long a generation can be
+  reopened is how long `keep` retains it, or how long a lease holds it: `pinAt(at, { leaseUntil })` takes a
+  [lease](#hold-a-generation-for-a-job-a-lease) as `pin({ leaseUntil })` does, with the lease in the second argument
+  (`at` still refuses any key but `generation` and `fingerprint`, and the options refuse any key but `leaseUntil`). The lease
+  is written before the object is verified, and released if the verify fails. For a generation below the pointer one
+  window remains: a collector that read the row before the lease landed can delete the generation inside its own round
+  trip, and the handle then fails with `NotFoundError` like any swept pin. The handle is checked at every read site as a
+  leased `pin()` is. Without a lease, with `keep` at 2 or more it stays reopenable while fewer than `keep` generation numbers have been
   taken above it by later loads: each load that lands, and each that is superseded or crashes before publishing. A load
   a guard refuses takes no number. Collection runs with the `keep` of whichever writer loads, so set the same `keep` on every
   writer of the segment. Each retained generation is a whole copy in storage. See
@@ -245,7 +251,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
 
 - **A read after the lease throws, and never reads empty.** Once the clock reaches `leaseUntil`, or after
   `release()`, every read of the handle throws `LeaseExpiredError`: `has`, `count`, `stat`, `iterate`, `batches()`,
-  `costReport`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
+  `costReport`, `everyNth`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
   `*Into`. An opt-out list held through a lease that has ended is an error, never an empty list that suppresses nobody. It
   throws whether or not the object is still in the bucket, and a small generation's cached reader is not consulted.
   `pin()` of a leased handle past its lease throws too; before it, `pin()` takes the generation current now, with no lease
@@ -463,6 +469,9 @@ ends.push(4_294_967_295); // the last, partial window yields nothing: close it y
   the read can take: the cut first chunk, if any, plus one chunk per boundary the counts allow, capped by the chunks in
   range. That can exceed the chunks actually read. A pinned read after the generation was collected throws
   `NotFoundError`, as every pinned read does.
+- **On a leased handle it throws past the lease.** `everyNth` throws `LeaseExpiredError` once the lease has ended, before
+  its first pull (so a stream built live and pulled late throws even when no rank falls in its range) and at each chunk
+  it reads, as `iterate` does; see [leases](#hold-a-generation-for-a-job-a-lease).
 - **Pinned handles only.** The ranks come from the index and the ids from the chunks, and the two must be one generation.
   A live handle can re-resolve between them and name the wrong id, so it throws `UnsupportedError` when first read. Pin it.
 - **The ranks are only as good as the index, as with [`count()`](#what-count-trusts).** A chunk that is read must decode to
