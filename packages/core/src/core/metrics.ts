@@ -105,7 +105,9 @@ export type MetricEvent =
        * `'socket-pool-below-window'`: the S3 client's pool is smaller than `threshold` sockets, twice `concurrency`.
        * `concurrency` is the default window of a combine (32), since a combine's own `concurrency` is chosen per call
        * and the backend cannot see it: a store that always passes a lower one can ignore the event. `maxSockets` is
-       * the smaller of the pools the client's handler has made. `driver` and `bucket` say which backend the pool
+       * the `maxSockets` of the agent for the scheme of the client's endpoint, or, when the client does not expose an
+       * endpoint, the larger of the agents its handler has made (the event fires only when all are below `threshold`).
+       * `driver` and `bucket` say which backend the pool
        * belongs to; they never carry a credential, an endpoint or a key.
        *
        * A sink that switches on `kind` with an exhaustive `never` check stops compiling at this variant: add a case

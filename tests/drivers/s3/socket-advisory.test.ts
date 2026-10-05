@@ -196,6 +196,108 @@ describe('socket pool advisory', () => {
     client.destroy();
   });
 
+  describe('a scheme the client does not expose (an endpoint set by the environment)', () => {
+    async function viaEnvironment(
+      url: string,
+      handler: Record<string, unknown>,
+    ): Promise<MetricEvent[]> {
+      vi.stubEnv('AWS_ENDPOINT_URL', url);
+      try {
+        const client = new S3Client({
+          region: 'us-east-1',
+          credentials: CREDENTIALS,
+          forcePathStyle: true,
+          maxAttempts: 1,
+          ...handler,
+        });
+        const store = new S3Storage({ bucket: 'b', client });
+        const { sink, events } = recorder();
+        store.attachMetrics(sink);
+        await read(store);
+        client.destroy();
+        return events;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+
+    it('a large agent beside a default one of 50 is not a small pool: no event', async () => {
+      const url = await endpoint();
+      const events = await viaEnvironment(url, {
+        requestHandler: { httpAgent: new Agent({ maxSockets: 256 }) },
+      });
+      expect(events).toEqual([]);
+    });
+
+    it('both agents at 50 give one event', async () => {
+      const url = await endpoint();
+      const events = await viaEnvironment(url, {});
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ kind: 'advisory', maxSockets: 50 });
+    });
+  });
+
+  describe('one backend, several stores', () => {
+    it('each sink gets its own event once, a later one too, and none twice', async () => {
+      const url = await endpoint();
+      const client = sdkClient(url);
+      const store = new S3Storage({ bucket: 'b', client });
+      const first = recorder();
+      const second = recorder();
+      store.attachMetrics(first.sink);
+      store.attachMetrics(second.sink);
+      store.attachMetrics(second.sink);
+      await read(store);
+      await read(store);
+      expect(first.events).toHaveLength(1);
+      expect(second.events).toHaveLength(1);
+      const late = recorder();
+      store.attachMetrics(late.sink);
+      await new Promise((resolve) => setImmediate(resolve));
+      store.attachMetrics(late.sink);
+      await read(store);
+      expect(late.events).toHaveLength(1);
+      expect(first.events).toHaveLength(1);
+      expect(requests).toBe(3);
+      client.destroy();
+    });
+
+    it('the pool is read once however many sinks are attached', async () => {
+      let reads = 0;
+      const client = {
+        config: {
+          requestHandler: {
+            httpHandlerConfigs: () => {
+              reads += 1;
+              return { httpsAgent: { maxSockets: 50 } };
+            },
+          },
+        },
+      } as unknown as S3Client;
+      const advisory = new SocketAdvisory(client, 'b');
+      const sinks = [recorder(), recorder(), recorder()];
+      for (const { sink } of sinks) advisory.attach(sink);
+      await advisory.afterRequest();
+      const late = recorder();
+      advisory.attach(late.sink);
+      await advisory.afterRequest();
+      await Promise.resolve();
+      expect(reads).toBe(1);
+      for (const { events } of [...sinks, late]) expect(events).toHaveLength(1);
+    });
+  });
+
+  it('an attachMetrics that throws propagates from the store constructor', () => {
+    const backend = Object.assign(new MemoryStorage(), {
+      attachMetrics: () => {
+        throw new Error('backend bug');
+      },
+    });
+    expect(() => new CloudRoaring({ storage: backend, metrics: recorder().sink })).toThrow(
+      'backend bug',
+    );
+  });
+
   it('a custom handler: no event and no throw', async () => {
     const handler = {
       handle: () =>
@@ -340,6 +442,7 @@ describe('socket pool advisory', () => {
     const { sink, events } = recorder();
     const store = new CloudRoaring({ storage: backend, metrics: sink });
     await backend.storage.getRange(KEY, 0, 4);
+    await new Promise((resolve) => setImmediate(resolve));
     expect(events.filter((e) => e.kind === 'advisory')).toHaveLength(1);
     expect(store).toBeDefined();
     client.destroy();

@@ -34,7 +34,7 @@ handful you care about:
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
-| `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read, when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
+| `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read finishes (even one that fails), when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
 
 A quick look in dev is one line:
 

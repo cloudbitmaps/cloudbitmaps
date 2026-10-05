@@ -8,7 +8,7 @@
  * no error. The window it compares against is the default, because a combine's `concurrency` is chosen per call.
  */
 import type { S3Client } from '@aws-sdk/client-s3';
-import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
+import type { IMetricsSink, MetricEvent } from '@cloudbitmaps/core/driver-kit';
 
 /** The default window of a combine, which the engine owns; a test holds the two equal. */
 export const SOCKET_ADVISORY_CONCURRENCY = 32;
@@ -26,36 +26,51 @@ export interface PooledHandler {
 }
 
 export class SocketAdvisory {
-  /** True from `attach` until the one check has run: the only thing a request pays for after the first. */
+  /** True from the first `attach` until the one check has started: the only thing a request pays for after the first. */
   private pending = false;
-  private sink: IMetricsSink | undefined;
+  /** Every sink ever attached, so a sink is never given the event twice. */
+  private readonly sinks = new Set<IMetricsSink>();
+  /** The check's result, once it has started; a sink attached after that is given the result as it settles. */
+  private outcome: Promise<MetricEvent | undefined> | undefined;
 
   constructor(
     private readonly client: S3Client,
     private readonly bucket: string,
   ) {}
 
-  /** Start watching: the next request to finish is the one that reads the pool. */
+  /**
+   * Hand a sink to the advisory. Each sink gets the event at most once: a sink attached before the check runs gets it
+   * when the first read finishes, one attached later gets it as soon as the (single) check's result is known, and
+   * one attached again is ignored.
+   */
   attach(sink: IMetricsSink): void {
-    this.sink = sink;
-    this.pending = true;
+    if (this.sinks.has(sink)) return;
+    this.sinks.add(sink);
+    if (this.outcome === undefined) this.pending = true;
+    else void this.outcome.then((event) => event && emit(sink, event));
   }
 
   /**
-   * Called as a request finishes. The first call reads the pool, never throws and never rejects; every later one costs
-   * one boolean. Returns the pending check (for a test to await), or `undefined` once it has run.
+   * Called as a request finishes. The first call after a sink is attached reads the pool, never throws and never
+   * rejects; every later one costs one boolean. Returns the pending check (for a test to await), or `undefined` once
+   * it has run.
    */
   afterRequest(): Promise<void> | undefined {
     if (!this.pending) return undefined;
     this.pending = false;
-    return this.check();
+    const first = [...this.sinks];
+    const outcome = this.read();
+    this.outcome = outcome;
+    return outcome.then((event) => {
+      if (event) for (const sink of first) emit(sink, event);
+    });
   }
 
-  private async check(): Promise<void> {
+  private async read(): Promise<MetricEvent | undefined> {
     try {
       const maxSockets = await this.pool();
-      if (maxSockets === undefined || maxSockets >= THRESHOLD) return;
-      this.sink?.onEvent({
+      if (maxSockets === undefined || maxSockets >= THRESHOLD) return undefined;
+      return {
         kind: 'advisory',
         code: 'socket-pool-below-window',
         driver: 's3',
@@ -63,24 +78,44 @@ export class SocketAdvisory {
         maxSockets,
         threshold: THRESHOLD,
         concurrency: SOCKET_ADVISORY_CONCURRENCY,
-      });
+      };
     } catch {
-      // A handler of another shape, or a sink that threw: the advisory is best-effort and never fails a read.
+      // A handler of another shape: the advisory is best-effort and never fails a read.
+      return undefined;
     }
   }
 
   /**
-   * The `maxSockets` of the agent for the scheme the client talks, or `undefined` when it cannot be read. The scheme is
-   * the client's endpoint when it has one, else https (the SDK's own endpoints). The other agent is not the pool the
-   * reads use, and one the SDK made with its default would otherwise read as a small pool.
+   * The pool the reads use, or `undefined` when it cannot be read. With an endpoint on the client, that is the
+   * `maxSockets` of the agent for its scheme. Without one (the SDK's own endpoints, or an endpoint set by the
+   * environment, which the client does not expose) the scheme is not known, so every agent the handler has made is
+   * read and the pool counts as small only if all of them are: the larger one is returned. That never warns on a pool
+   * the reads do not use, at the cost of a missed warning when only the unused agent is small.
    */
   private async pool(): Promise<number | undefined> {
     const handler = this.client.config.requestHandler as unknown as PooledHandler | undefined;
     if (typeof handler?.httpHandlerConfigs !== 'function') return undefined;
     const endpoint = await this.client.config.endpoint?.();
     const agents = handler.httpHandlerConfigs();
-    const agent = endpoint?.protocol === 'http:' ? agents?.httpAgent : agents?.httpsAgent;
-    const n = agent?.maxSockets;
-    return typeof n === 'number' && !Number.isNaN(n) ? n : undefined;
+    const candidates =
+      endpoint === undefined
+        ? [agents?.httpsAgent, agents?.httpAgent]
+        : [endpoint.protocol === 'http:' ? agents?.httpAgent : agents?.httpsAgent];
+    let largest: number | undefined;
+    for (const agent of candidates) {
+      const n = agent?.maxSockets;
+      if (typeof n !== 'number' || Number.isNaN(n)) continue;
+      if (largest === undefined || n > largest) largest = n;
+    }
+    return largest;
+  }
+}
+
+/** Give one sink the event; a sink that throws never reaches the read. */
+function emit(sink: IMetricsSink, event: MetricEvent): void {
+  try {
+    sink.onEvent(event);
+  } catch {
+    // Best-effort, like every metrics sink.
   }
 }

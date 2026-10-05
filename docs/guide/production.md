@@ -322,7 +322,7 @@ always pass a lower one, the event is a false alarm for you and you can ignore i
 own request handler, so it sees the SDK's default handler and the agents you give it (`maxSockets` on its `httpAgent` or
 `httpsAgent`, for the scheme your endpoint uses). It **cannot read** a request handler you wrote yourself, an HTTP/2
 handler, the Fetch handler, or an agent that does not expose `maxSockets`, and for those it sends nothing and raises no
-error, so no event does not mean the pool is large enough. A pool you raise after the first read is not seen. The client
+error, so no event does not mean the pool is large enough. A pool you raise after the first read is not seen. When your client has an `endpoint`, it reads the agent for that scheme. When it has none, or its endpoint comes from the environment (`AWS_ENDPOINT_URL`), which the client does not expose, the scheme is not known, so it reads every agent the handler has made and sends the event only if all of them are below 64: it never warns on a pool your reads do not use, and it can miss a small pool when the other agent is large. A backend given to several stores sends each store's sink its own event, once; a store built after the check has run gets it as soon as the check's result is known. The client
 the store builds, at its 128 sockets, sends none unless you set `maxSockets` below 64.
 
 `eraseSubject` has up to `concurrency × 8` requests open (64 by default, since it erases 8 segments at once, each
