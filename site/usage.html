@@ -229,7 +229,7 @@ npm audit signatures</code></pre>
                     <span class="m">published</span>. Grouped by chunk first, so it bills
                     <strong>per object, not per id</strong>.
                     On S3, a segment's first load makes 2 PUT-class and 3 GET requests, measured; it lists the
-                    segment only every 16th generation, and S3 bills a listing at the PUT rate.
+                    segment only every 16th generation (at any <span class="m">keep</span> up to 64), and S3 bills a listing at the PUT rate.
                   </td>
                   <td class="num">2 PUT + 3 GET</td>
                 </tr>
@@ -653,8 +653,8 @@ bill.redisCrossover.readsPerSec;  <span class="c">// against a Redis sized to th
                 A load collects what it supersedes, keeping the newest superseded generation by default as a
                 grace window, so a read still fetching from it saves a round trip. An
                 <span class="m">*Into</span> write collects nothing unless given
-                <span class="m">keep</span>, and the next load of its destination deletes the one generation its own publish
-                pushes out of the window, the rest at the destination's next sixteenth generation. Storage is the only cost
+                <span class="m">keep</span>, and the next load of its destination lists once, collects everything below its pointer
+                beyond its <span class="m">keep</span>, and records the window it kept. Storage is the only cost
                 of that window. It is not a snapshot facility: no setting here holds a long job on one
                 generation — <span class="m">seg.pin()</span> does.
               </span>

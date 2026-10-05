@@ -22,6 +22,7 @@ import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
 import { estimateCost } from '@cloudbitmaps/core';
 import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
+import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
 import { chunkReads } from '../helpers/chunk-reads';
@@ -1533,6 +1534,95 @@ describe('the estimator counts the requests the engine makes', () => {
     expect(third).toMatchObject({ lists: 0, deletes: 1 });
     expect(first?.bill).toEqual({ put: 2, get: 3 });
     expect(second?.bill).toEqual({ put: 2, get: 2 });
+  });
+
+  /**
+   * The requests a load makes at a `keep` of 1 are the requests it makes at any `keep` a row records (up to 64): the
+   * row names the generations the window pushed out, so no listing is needed to find them. A `keep` above 64 records
+   * no list, and every load lists, as it did before a row recorded one.
+   */
+  it.each([1, 2, 12, 64])(
+    'prices a load at keep %i as it prices one at keep 1: by name, listing on every 16th generation',
+    async (keep) => {
+      const { calls, pointer, driver, open, reset } = countingStore();
+      const store = open();
+      const billed = async (generation: number) => {
+        reset();
+        const result = await store.load(
+          { segment: 's' },
+          Array.from({ length: generation + 1 }, (_, i) => i),
+          { keep },
+        );
+        expect(result).toMatchObject({ generation, published: true });
+        return {
+          bill: {
+            put: (calls.putImmutable ?? 0) + (calls.list ?? 0) + pointer.writes,
+            get: pointer.reads + (calls.getTail ?? 0) + (calls.getRange ?? 0),
+          },
+          pointerReads: pointer.reads,
+          checks: driver.checks,
+          lists: calls.list ?? 0,
+          deletes: calls.delete ?? 0,
+        };
+      };
+      const all: Awaited<ReturnType<typeof billed>>[] = [];
+      for (let g = 0; g < keep + 2 + 32; g++) all.push(await billed(g));
+      // Every load whose window already holds `keep` generations deletes one name. Take 32 consecutive of them: two
+      // cadences, so two listing loads.
+      const steady = all.slice(keep + 1);
+      expect(steady).toHaveLength(33);
+      for (const [i, l] of steady.entries()) {
+        const generation = keep + 1 + i;
+        if (generation % LIST_COLLECTION_CADENCE === 0) {
+          expect(l, `generation ${generation}`).toMatchObject({
+            lists: 1,
+            pointerReads: 4,
+            checks: 1,
+            deletes: 1,
+          });
+          expect(l.bill).toEqual({ put: 3, get: 5 });
+        } else {
+          expect(l, `generation ${generation}`).toMatchObject({
+            lists: 0,
+            pointerReads: 2,
+            checks: 2,
+            deletes: 1,
+          });
+          expect(l.bill).toEqual({ put: 2, get: 4 });
+        }
+      }
+      // The model's count over sixteen consecutive loads is the engine's, at this keep.
+      const sixteen = steady.slice(0, 16);
+      const workload = { loadsPerMonth: 16, requestsPerLoad: 1 };
+      expect(decode(price(workload).loads)).toEqual({
+        put: sixteen.reduce((n, l) => n + l.bill.put, 0),
+        get: sixteen.reduce((n, l) => n + l.bill.get, 0),
+      });
+    },
+  );
+
+  it('a keep above 64 records no list, and lists on every load once its window is passed', async () => {
+    const { calls, pointer, open, reset } = countingStore();
+    const store = open();
+    const keep = 65;
+    const lists: number[] = [];
+    for (let g = 0; g < keep + 4; g++) {
+      reset();
+      await store.load(
+        { segment: 's' },
+        Array.from({ length: g + 1 }, (_, i) => i),
+        { keep },
+      );
+      if ((calls.list ?? 0) > 0) lists.push(g);
+      if (g > keep) {
+        // The pointer, the listing, the object: 3 PUT-class; and its reads. Nothing is recorded to seed.
+        expect(calls.list).toBe(1);
+        expect(pointer.writes).toBe(1);
+      }
+    }
+    // Nothing is outside the window until generation 66; the first listing on a 16th generation comes at 64 (nothing
+    // to collect, so no request), so every load past the window lists.
+    expect(lists).toEqual([keep + 1, keep + 2, keep + 3]);
   });
 
   it('prices the refresh at one pointer read per hot segment per genTtlMs, and nothing else', async () => {
