@@ -1,6 +1,11 @@
 import fc from 'fast-check';
 import { loadSegment, type LoadOptions } from '@/core/load';
-import { LIST_COLLECTION_CADENCE, deleteEvicted, gcOrphanGenerations } from '@/core/generation-gc';
+import {
+  LIST_COLLECTION_CADENCE,
+  collectAfterLoad,
+  deleteEvicted,
+  gcOrphanGenerations,
+} from '@/core/generation-gc';
 import { TransientError } from '@/core/errors';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { dropSegment } from '@/core/erasure';
@@ -611,6 +616,86 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
       expect(w.storageCalls).toEqual({});
       expect(w.registryCalls).toEqual({});
     });
+  });
+});
+
+/**
+ * A load whose publish has landed took effect, so its collection does not fail because another writer moved the row
+ * after it: it spares what the row names now, and stops where it cannot prove a delete, and never throws a lost race.
+ */
+describe('a load whose publish landed does not fail on a race its collection meets', () => {
+  /** Sixteen loads at keep 1: generation 16 is the next, a periodic one, and 15 is current. */
+  async function atFifteen(): Promise<World> {
+    const w = world();
+    await loadMany(w, 16);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    return w;
+  }
+  const ids = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+
+  it('the pass for generation 16, run after another load published 17, deletes nothing that load keeps', async () => {
+    const w = world();
+    await loadMany(w, 18);
+    expect(await generations(w.memory)).toEqual([16, 17]);
+    expect((await w.registry.get(SEG))!.keptGens).toEqual([16]);
+    // What loader A holds when loader B published 17 between A's publish of 16 and A's pass.
+    await expect(
+      collectAfterLoad(SEG, w.deps, {
+        generation: 16,
+        keep: 1,
+        byName: true,
+        kept: { list: [15], evict: [], token: undefined },
+      }),
+    ).resolves.toEqual([]);
+    expect(await generations(w.memory)).toEqual([16, 17]);
+  });
+
+  it.each([false, true])(
+    'another load publishing between a periodic publish and its pass: the first load returns, and the second keeps its window (collectByListing %s)',
+    async (collectByListing) => {
+      const w = await atFifteen();
+      const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+        const b = await loadSegment(SEG, ids(18), w.deps); // B publishes 17 over A's 16
+        expect(b).toMatchObject({ generation: 17, published: true });
+      });
+      const a = await loadSegment(SEG, ids(17), { ...w.deps, registry, collectByListing });
+      expect(a).toMatchObject({ generation: 16, published: true });
+      expect((await w.registry.get(SEG))!.currentGen).toBe(17);
+      expect(await generations(w.memory)).toEqual([16, 17]);
+    },
+  );
+
+  it('a writer that records no list publishing in that gap: the pass keeps the newest keep below the pointer', async () => {
+    const w = await atFifteen();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 17 }, [1, 2], {
+        registry: w.registry,
+      });
+      expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect(await generations(w.memory)).toEqual([16, 17]);
+  });
+
+  it('a rollback in that gap stops the pass, and the load still returns', async () => {
+    const w = await atFifteen();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    expect(await generations(w.memory)).toContain(15);
+  });
+
+  it('a purge in that gap does not fail the load either', async () => {
+    const w = await atFifteen();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await w.registry.delete(SEG);
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
   });
 });
 

@@ -164,28 +164,35 @@ interface ListingResult {
   readonly deleted: number[];
   /** The generations below the pointer the pass kept, ascending. Empty on a tombstone or with no pointer. */
   readonly kept: number[];
+  /** Whether the pass ran to its end. A `quiet` pass that met a writer that moved the row stops early, and is not. */
+  readonly complete: boolean;
 }
 
 /**
  * {@link gcOrphanGenerations}, and what it left. With `protect` it deletes by the row's record instead of by a window:
  * every generation below the pointer that is not in `protect`, so an object no publish named (an orphan of a crashed
- * or refused load, extras a fault left) goes whatever slot it would have taken in a window. The row's own list must
- * still be usable, and still not name the generation, when each delete is proved, or the pass refuses.
+ * or refused load, extras a fault left) goes whatever slot it would have taken in a window. The row as the pass reads it
+ * after the listing joins `protect`, so a publish that landed meanwhile keeps its own window; with no usable list there
+ * the pass keeps the newest `keep` below the pointer instead. Each delete is proved against the row's list once more.
+ *
+ * A `quiet` pass is a load's, after its publish landed: a row another writer moved means the pass stops and reports what
+ * it did, where any other pass throws {@link WriteConflictError}, because a load that took effect must not fail on a
+ * race it won.
  */
 async function listingPass(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep?: number; protect?: readonly number[] },
+  options: { keep?: number; protect?: readonly number[]; quiet?: boolean },
 ): Promise<ListingResult> {
   const keep = options.keep ?? 1;
-  const protect = options.protect === undefined ? undefined : new Set(options.protect);
+  const quiet = options.quiet === true;
   // Refused, not clamped: `NaN` slices nothing off the end and would collect the whole grace window, and a
   // negative count that clamps to 0 collects it too, for a caller who wrote a typo.
   if (!Number.isInteger(keep) || keep < 0) {
     throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
   }
   const record = await deps.registry.get(ref);
-  if (record === null) return { deleted: [], kept: [] }; // no authoritative pointer → don't delete anything
+  if (record === null) return { deleted: [], kept: [], complete: true }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
   // A set, not an array: a listing that spans a purge-and-recreate can yield the same generation number
   // twice (the objects are re-created under the numbers just swept), and the grace window below keeps the
@@ -201,14 +208,17 @@ async function listingPass(
   // purged-and-being-recreated, and the top of this function already declines to act without an authoritative
   // pointer.
   const after = await deps.registry.get(ref);
-  if (after === null)
+  if (after === null) {
+    if (quiet) return { deleted: [], kept: [], complete: false };
     throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
+  }
 
   // On a tombstone, require the *same* row. A token is not reused (ABA-safe, 2^-128 per pair of incarnations), so an unchanged one proves the
   // segment was not purged and re-created underneath this pass — which matters here because this branch deletes
   // every object it enumerated, `currentGen` included, so a re-created segment would lose the generation its
   // new pointer names.
   if (record.status === 'destroyed' && after.token !== record.token) {
+    if (quiet) return { deleted: [], kept: [], complete: false };
     throw new WriteConflictError(
       `segment ${ref.segment} changed incarnation while its generations were being listed`,
     );
@@ -225,6 +235,15 @@ async function listingPass(
   const cutoff =
     current === null || after.currentGen === null ? null : Math.min(current, after.currentGen);
 
+  // What a protecting pass spares: what the publish named, and what the row names now, which a publish that landed since
+  // has added to. With no usable list on the row now (a rollback dropped it, or a writer that records none moved the
+  // pointer) there is nothing to protect by, and the pass keeps the newest `keep` below the pointer as a window does.
+  const named = record.status === 'destroyed' ? undefined : usableKeptGens(after);
+  const protect =
+    options.protect === undefined || named === undefined
+      ? undefined
+      : new Set([...options.protect, ...named]);
+
   /**
    * Re-prove that everything still queued for deletion is still collectable. Two different questions, because
    * the two branches delete under different licences:
@@ -236,9 +255,10 @@ async function listingPass(
    *    collection working on a busy segment. A purge-and-recreate or a `rollbackSegment` can move it down, which
    *    is why the pointer is re-proved before every delete (below).
    */
-  const stillCollectable = async (generation: number): Promise<void> => {
+  const stillCollectable = async (generation: number): Promise<boolean> => {
     const still = await deps.registry.get(ref);
     if (still === null) {
+      if (quiet) return false;
       throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
     }
     const ok =
@@ -247,16 +267,18 @@ async function listingPass(
         : cutoff === null || (still.currentGen !== null && still.currentGen >= cutoff);
     // A protecting pass deletes what the row does not name, so the row must still name something it can be held to:
     // a rollback drops the list, and a publish since may have added a name this pass did not know.
-    const named = protect === undefined ? undefined : usableKeptGens(still);
+    const now = protect === undefined ? undefined : usableKeptGens(still);
     const unnamed =
       protect === undefined ||
       record.status === 'destroyed' ||
-      (named !== undefined && !named.includes(generation));
+      (now !== undefined && !now.includes(generation));
     if (!ok || !unnamed) {
+      if (quiet) return false;
       throw new WriteConflictError(
         `segment ${ref.segment} changed incarnation while its generations were being collected`,
       );
     }
+    return true;
   };
 
   const below =
@@ -288,14 +310,17 @@ async function listingPass(
   //
   // Cost is one registry read per object actually deleted, on a path that is already one round trip per object
   // and is never on the read path.
+  const done: number[] = [];
   for (const generation of toDelete) {
-    await stillCollectable(generation);
+    if (!(await stillCollectable(generation))) return { deleted: done, kept: [], complete: false };
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+    done.push(generation);
   }
   const deleted = new Set(toDelete);
   return {
     deleted: toDelete,
     kept: below.filter((g) => !deleted.has(g)).reverse(),
+    complete: true,
   };
 }
 
@@ -370,7 +395,7 @@ export async function collectAfterLoad(
     }
     return deleteEvicted(ref, deps, { generation, evict: kept!.evict });
   }
-  return (await listingPass(ref, deps, { keep, protect: list })).deleted;
+  return (await listingPass(ref, deps, { keep, protect: list, quiet: true })).deleted;
 }
 
 /**
@@ -383,9 +408,14 @@ async function reconcile(
   options: { keep: number; kept: PublishedKept | undefined },
 ): Promise<number[]> {
   const { keep, kept } = options;
-  const { deleted, kept: present } = await listingPass(ref, deps, { keep });
+  const { deleted, kept: present, complete } = await listingPass(ref, deps, { keep, quiet: true });
   const token = kept?.token;
-  if (token !== undefined && keep <= MAX_KEPT_GENERATIONS && !sameList(kept?.list, present)) {
+  if (
+    complete &&
+    token !== undefined &&
+    keep <= MAX_KEPT_GENERATIONS &&
+    !sameList(kept?.list, present)
+  ) {
     try {
       await deps.registry.compareAndSwap(ref, token, { keptGens: present });
     } catch (err) {

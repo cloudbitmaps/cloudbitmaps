@@ -126,16 +126,56 @@ function failingFirstDelete(storage: IStorageDriver): IStorageDriver {
   }) as IStorageDriver;
 }
 
-describe('the kept generations, two loaders among every other writer (property)', () => {
-  it('never deletes the current or a named generation, and leaves no orphan past a periodic pass', async () => {
+/** Steps that only climb: loads, publishes landing mid-pass, a crashed load, a stray, a retention write. */
+const CLIMB: fc.Arbitrary<Step> = fc.oneof(
+  {
+    weight: 12,
+    arbitrary: fc.record({ kind: fc.constant('load' as const), who, extra: fc.nat(3) }),
+  },
+  {
+    weight: 5,
+    arbitrary: fc.record({ kind: fc.constant('race' as const), who, extra: fc.nat(3) }),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      kind: fc.constant('crash' as const),
+      above: fc.integer({ min: 1, max: 3 }),
+    }),
+  },
+  { weight: 2, arbitrary: fc.record({ kind: fc.constant('stray' as const), pick: fc.nat(40) }) },
+  { weight: 1, arbitrary: fc.constant({ kind: 'retention' as const }) },
+);
+const SMALL_KEEPS = fc.constantFrom(1, 2, 5, 12);
+
+describe.each([
+  {
+    name: 'two loaders among every other writer',
+    keepsArb: KEEPS,
+    stepArb: STEP,
+    lengths: { minLength: 20, maxLength: 120 },
+    runs: 200,
+    floor: { published: 1500, byName: 300, periodic: 20 },
+  },
+  {
+    // Long enough to pass generation 16 and 32 many times, with a non-empty list at every periodic pass.
+    name: 'long runs past every periodic generation, at keep 1 and above',
+    keepsArb: SMALL_KEEPS,
+    stepArb: CLIMB,
+    lengths: { minLength: 40, maxLength: 110 },
+    runs: 100,
+    floor: { published: 3000, byName: 1500, periodic: 150 },
+  },
+])('the kept generations, $name (property)', ({ keepsArb, stepArb, lengths, runs, floor }) => {
+  it('never deletes the current or a named generation, leaves no orphan past a periodic pass, and no landed load throws', async () => {
     let published = 0;
     let periodic = 0;
     let byName = 0;
     await fc.assert(
       fc.asyncProperty(
-        KEEPS,
-        KEEPS,
-        fc.array(STEP, { minLength: 20, maxLength: 120 }),
+        keepsArb,
+        keepsArb,
+        fc.array(stepArb, lengths),
         async (keepA, keepB, steps) => {
           const storage = new MemoryStorageDriver();
           const registry = new MemoryRegistryDriver();
@@ -159,7 +199,10 @@ describe('the kept generations, two loaders among every other writer (property)'
             let result;
             try {
               result = await loadSegment(SEG, ids, { ...deps, ...options }, { keep });
-            } catch {
+            } catch (err) {
+              // Only a load handed a failing delete may throw: a load whose publish landed does not fail on a race
+              // it won, whether the other writer was a loader, a rollback or one that records no list.
+              if (options.storage === undefined) throw err;
               return false; // an injected fault: the invariants below still hold, the periodic bound does not
             }
             if (!result.published) return true;
@@ -301,11 +344,11 @@ describe('the kept generations, two loaders among every other writer (property)'
           }
         },
       ),
-      { numRuns: 200 },
+      { numRuns: runs },
     );
     // Not vacuous: publishes were checked against the list, and periodic passes were reached.
-    expect(published).toBeGreaterThan(1500);
-    expect(byName).toBeGreaterThan(300);
-    expect(periodic).toBeGreaterThan(20);
+    expect(published).toBeGreaterThan(floor.published);
+    expect(byName).toBeGreaterThan(floor.byName);
+    expect(periodic).toBeGreaterThan(floor.periodic);
   });
 });
