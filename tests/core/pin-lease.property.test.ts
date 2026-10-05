@@ -6,7 +6,6 @@ import {
   LEASE_SKEW_MS,
   MAX_LEASES_PER_SEGMENT,
   MAX_LEASE_MS,
-  isLive,
   releaseLease,
   takeLease,
 } from '@/core/leases';
@@ -101,7 +100,8 @@ describe('leases among loads, erasures, rollbacks and drops (property)', () => {
           const model = new Map<string, Held>();
           let holders = 0;
 
-          const live = (): Held[] => [...model.values()].filter((e) => isLive(e, t));
+          // The model's own reading of when a lease ends, not the library's: the collector holds it for the margin after `until`.
+          const live = (): Held[] => [...model.values()].filter((e) => t < e.until + LEASE_SKEW_MS);
           const idsFor = async (extra: number): Promise<number[]> => {
             const have = (await registry.get(SEG))?.currentGen ?? -1;
             return Array.from({ length: Math.max(have, 0) + 2 + extra }, (_, i) => i);
