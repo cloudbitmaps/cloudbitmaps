@@ -9,7 +9,8 @@
  * and this script disagree — so after a change to any of those, the page is regenerated, not edited. The library's
  * defaults are read out of its source rather than restated, as `bench/lib/calibration-figures.cjs` does.
  *
- * Nothing here is a latency. The loaded read path has not been timed inside a region, so the page publishes none.
+ * Nothing here models a latency. The one timed shape is quoted from the latest in-region run's evidence, where the
+ * page says what a cold intersect waits on.
  *
  * Run: `pnpm bench:sizing` (builds first) to rewrite the regions; `pnpm bench:sizing:check` to verify them.
  * `require()` loads @cloudbitmaps/core, which ships ESM only, through Node's `require(esm)`, as bench/run.cjs does:
@@ -108,6 +109,7 @@ const COALESCE_GAP_BYTES =
 /** The largest a coalesced range may be (unless it is one chunk): the decode cap, 1 MiB. */
 const COALESCED_READ_BYTES = 1024 * 1024;
 const { windowRounds, windowPeak } = require('./lib/calibrate-stages.cjs');
+const calibrationFigures = require('./lib/calibration-figures.cjs');
 /**
  * The requests the engine makes of the object store for a cold intersect, by deployment, overlap and layout, counted by
  * running it (`bench/range-counts.cjs`): a combine reads each operand's needed chunks as coalesced ranges, so what an
@@ -1250,7 +1252,20 @@ function render() {
   const chain = 2 + windowRounds(BASE_RANGES, INTERSECT_CONCURRENCY, COMBINE_RANGE_START);
   const peakInFlight =
     OPERANDS * windowPeak(BASE_RANGES, INTERSECT_CONCURRENCY, COMBINE_RANGE_START);
-  const measured = 'This has not been measured in region.';
+  // The latest in-region run's measurement of the same chain, read from its evidence: the rounds the median cold
+  // intersect waited through, how many requests it held in flight, and the sockets its client had.
+  const latestRun = JSON.parse(
+    fs.readFileSync(path.join(ROOT, calibrationFigures.evidenceFiles(ROOT).at(-1)), 'utf8'),
+  );
+  const measuredChain = latestRun.phases.intersect;
+  const measuredRounds = Number(measuredChain.medianRounds.toFixed(1));
+  const against = measuredRounds > chain ? 'above' : measuredRounds < chain ? 'below' : 'equal to';
+  const measured =
+    `The in-region run of ${latestRun.runId.slice(0, 10)} measured ${measuredRounds.toFixed(1)} request times for this shape, ` +
+    `${measuredChain.p50ms.toFixed(2)} ms at the median, ${against} the derived ${int(chain)}, with a mean of ` +
+    `${measuredChain.medianMeanInFlight.toFixed(1)} requests in flight and a peak of ` +
+    `${int(measuredChain.medianPeakInFlight)}, against its client's ${int(latestRun.measured.maxSockets)} sockets. ` +
+    'It did not vary the socket count, so it does not say why the rounds differ from the derived chain.';
   const depth =
     `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests, derived from the engine's constants, ` +
     `**${int(chain)} deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a ` +

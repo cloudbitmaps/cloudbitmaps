@@ -3,8 +3,8 @@
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. [The short
 answer](#the-short-answer) is first. Every cost here comes from the library's own `estimateCost()`. The prices are AWS's
 `us-east-1` list prices, on demand unless a sentence says otherwise, and the three deployments are illustrative
-workloads, not anyone's measured system. There is no latency figure, because none has been measured inside a region
-yet.
+workloads, not anyone's measured system. The one latency figure is the [in-region run's](../benchmarks.md#real-cloud-calibration--aws), quoted where it
+applies.
 
 A **segment** is a named set of ids, stored in chunks of up to 65,536 ids each. A **cold intersect** is an
 intersection that starts from an empty cache, so it fetches every chunk it needs; a **point read** is one `has()`;
@@ -160,10 +160,10 @@ A dashboard running 200 cold intersects a second over 5 GB costs **$1,262** a mo
 **Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **3 deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a stream that opens 4 ranges wide and widens to 32, so up to 2 requests are in flight. At an even latency that is 3 request times end to end. A slow request holds up those queued behind it. This has not been measured in region. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks waits on a chain of requests, derived from the engine's constants, **3 deep**: both operands' pointers, then both indexes, then each operand's range of shared chunks, a stream that opens 4 ranges wide and widens to 32, so up to 2 requests are in flight. At an even latency that is 3 request times end to end. A slow request holds up those queued behind it. The in-region run of 2026-10-04 measured 3.6 request times for this shape, 95.03 ms at the median, above the derived 3, with a mean of 1.7 requests in flight and a peak of 2, against its client's 128 sockets. It did not vary the socket count, so it does not say why the rounds differ from the derived chain. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
-The in-region run timed one shape of cold intersect, its sweep over the overlap, an `andNot` and the point reads; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures, and sets the wider window against the model that predicted it. The other shapes are not timed.
+The in-region run timed one shape of cold intersect, its sweep over the overlap, an `andNot` and the point reads; the [benchmarks page](../benchmarks.md#real-cloud-calibration--aws) has the figures. The other shapes are not timed.
 
 **S3's request rate.**
 

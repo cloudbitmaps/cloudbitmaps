@@ -11,6 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **The published in-region figures are now measured on `0.15.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-04 measured what the benchmarks page had only counted from the engine: a cold intersect of two segments
+  sharing 100 chunks that lie together took 95.03 ms at the median and made 6 GETs, and an `andNot` against ten
+  excludes took 269.74 ms and made 33, the counts the engine predicts. The run's requests cost $0.0025670. Its rounds
+  sit above the engine's rounds model, which assumes no socket limit; it did not vary its client's 128 sockets, and no
+  stage held more than 11 requests in flight, so it does not say why. The README, the benchmarks page, the roadmap, the
+  sizing guide and the site quote it; `iterate`'s 3 GETs stay expected, since the run did not time it.
+
 ## [0.15.0] — 2026-10-04
 
 ### Added
