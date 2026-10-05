@@ -141,8 +141,8 @@ interface StreamedChunks {
   readonly gen: string | number | undefined;
   /**
    * The engine's invalidation count when the read began to resolve its generation. A stream that opens after it has
-   * moved is marked `invalidated`: it may read newer bytes than the generation it planned under, which must not be
-   * cached under that generation's key.
+   * moved is marked `invalidated`, on a source with no `currentVersion`: it may read newer bytes than the generation it
+   * planned under, which must not be cached under that generation's key.
    */
   readonly epoch: number;
   /** The keys the read will take, ascending. */
@@ -995,7 +995,10 @@ export class SegmentEngine {
       }),
     );
     streamed.opened = true;
-    streamed.invalidated = this.invalidations !== streamed.epoch;
+    // Only a source with no `currentVersion` caches a chunk under the planned key, so only there can an invalidation
+    // since the read began put newer bytes under an older key; elsewhere a chunk is cached under the version it read.
+    streamed.invalidated =
+      this.storage.currentVersion === undefined && this.invalidations !== streamed.epoch;
     this.openStreams.add(streamed);
   }
 

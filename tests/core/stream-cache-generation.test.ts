@@ -77,4 +77,17 @@ describe('a streaming source that names generations and not versions', () => {
     expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([2, 3]));
     expect(cache.size).toBe(0);
   });
+
+  it('an iterate over a range invalidated while its generation resolves caches nothing it reads', async () => {
+    let fired = false;
+    const { cache, engine } = setup((e) => {
+      if (fired) return;
+      fired = true;
+      e.invalidate(ref('a'));
+    });
+    expect(await collect(engine.iterate(ref('a'), { through: joinId(3, 5) }))).toEqual(
+      ids([1, 2, 3]),
+    );
+    expect(cache.size).toBe(0);
+  });
 });

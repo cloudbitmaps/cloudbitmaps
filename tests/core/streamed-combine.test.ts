@@ -217,6 +217,21 @@ describe('the decoded-chunk cache', () => {
     expect(opened(storage)).toEqual(['a:3']);
   });
 
+  it('a source that names versions still caches what a read streams when another segment is invalidated meanwhile', async () => {
+    const { storage, engine, cache } = setup({ a: ids([1, 2, 3]), b: ids([1]) });
+    const currentVersion = storage.currentVersion.bind(storage);
+    let fired = false;
+    storage.currentVersion = () => {
+      if (!fired) {
+        fired = true;
+        engine.invalidate(ref('b')); // lands while the read resolves its version
+      }
+      return currentVersion();
+    };
+    expect(await collect(engine.iterate(ref('a')))).toEqual(ids([1, 2, 3]));
+    expect(cache!.size).toBe(3);
+  });
+
   it('a chunk that was cached when the stream opened and is gone when asked for is read on its own', async () => {
     const { storage, engine, cache } = setup({ a: ids([1, 2, 3, 4, 5]) });
     await collect(engine.union([ref('a')]));
