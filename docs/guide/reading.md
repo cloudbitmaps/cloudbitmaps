@@ -352,14 +352,15 @@ ends.push(4_294_967_295); // the last, partial window yields nothing: close it y
 
 - **It reads the chunks that hold a boundary and no others.** The object's index records each chunk's id count, which
   places every boundary without reading a payload. A chunk is read and decoded once however many boundaries fall in it,
-  so a read makes at most one chunk read per boundary, and never more chunk reads than the object has chunks; the one
-  exception is a range's cut first chunk, below. When the chunks in range hold fewer than `n` ids, nothing is fetched.
+  so a read makes at most one chunk read per boundary, and never more chunk reads than the object has chunks; the only
+  exceptions are a range's cut first chunk and cut last chunk, below. When the chunks in range hold fewer than `n` ids, nothing is fetched.
   Chunks that sit near each other are still one range request, so on a sparse object it saves the decoding of the
   chunks that hold no boundary, not requests: the requests are those of the walk over the same chunks.
 - **A range counts from `after`.** The first boundary is the `n`th id after `after`. When `after` falls inside a chunk,
   that chunk is read too, to count the ids at or below it, even if fewer than `n` ids turn out to remain above `after`.
   Nothing extra is read when `after + 1` is a multiple of 65,536, that is, when `after` is the last id a chunk can hold.
-  No chunk past `through` is read, and no boundary past `through` is yielded. `after >= through` reads nothing.
+  No chunk past `through` is read, and no boundary past `through` is yielded; when `through` falls inside a chunk, that
+  last chunk may be read and yield nothing, because the index counts its ids above `through` too. `after >= through` reads nothing.
 - **Reads and window are `iterate`'s; the budget is charged first.** The chunks come through the same stream of coalesced
   ranges and the same read-ahead window. The per-op budget is charged before any fetch, with an upper bound on the chunks
   the read can take: the cut first chunk, if any, plus one chunk per boundary the counts allow, capped by the chunks in

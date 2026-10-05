@@ -280,6 +280,21 @@ describe('everyNth reads at most one chunk per boundary', () => {
     expect(reads.total()).toBe(0); // refused before the cut chunk is fetched
   });
 
+  it('charges the cut chunk on top of the boundaries the counts allow', async () => {
+    // Two chunks of ten ids; after 3 leaves 6 + 10 ids, so n = 15 has one boundary, in chunk 1: two chunk reads
+    // for floor(upper / n) = 1 boundary.
+    const ids = [0, 1].flatMap((c) => Array.from({ length: 10 }, (_, i) => c * CHUNK + i));
+    const w = await loadedStore({ s: ids });
+    const at = { after: 3 };
+    const loose = new CloudRoaring({ storage: w.backend, budget: { maxRequests: 2 } });
+    expect(await read(await loose.segment('s').pin(), 15, at)).toEqual(walked(ids, 15, at));
+    const tight = new CloudRoaring({ storage: w.backend, budget: { maxRequests: 1 } });
+    const tightSeg = await tight.segment('s').pin();
+    reads.reset();
+    await expect(read(tightSeg, 15, at)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(reads.total()).toBe(0);
+  });
+
   it('a range that cuts its first chunk reads nothing when the chunks in range hold fewer than n ids', async () => {
     const ids = Array.from({ length: 3 * CHUNK }, (_, i) => i); // dense, three chunks
     const { seg } = await pinned(ids);

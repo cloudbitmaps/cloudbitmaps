@@ -588,15 +588,16 @@ export class SegmentEngine {
    *
    * The counts place ids, and are trusted as `count()` trusts them: a chunk that is read must decode to the size its
    * index says, or the read throws {@link IntegrityError} (invariant 5), but a chunk that is not read is not checked, so
-   * an index that lies consistently about one (the sum still matches the footer's total, which opening the object
-   * checks before any boundary is placed) shifts the ranks after it. The index and the chunks must come from one
+   * an index that lies consistently about one (on an unencrypted object, the sum still matches the footer's total,
+   * which opening the object checks before any boundary is placed) shifts the ranks after it. An encrypted object's
+   * index is authenticated and bound to the object, so a wrong count there needs the key. The index and the chunks must come from one
    * generation (invariant 3): the caller reads through a source that holds one, a pinned one, and a source with no
    * per-chunk counts is refused.
    *
    * Nothing is fetched when the chunks in range hold fewer than `n` ids. The budget is charged before the first fetch
    * with an upper bound, the cut chunk plus one chunk per boundary the counts allow (capped by the chunks in range),
    * which can exceed the chunks actually read. A range that cuts its first chunk reads it even when the ids above
-   * `after` turn out to be fewer than `n`.
+   * `after` turn out to be fewer than `n`, and one that cuts its last chunk may read it and yield nothing.
    */
   async *everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number> {
     if (!Number.isSafeInteger(n) || n < 1) {
