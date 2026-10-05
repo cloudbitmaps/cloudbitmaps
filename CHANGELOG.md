@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **The loading guide's recipe for the parts of one segment, built in separate processes.** Each process serializes its
+  part as portable Roaring bytes, and one process checks each with the library's own check, joins them with
+  `RoaringBitmap32.orMany`, refuses parts that overlap by comparing the union's size with the sum of the parts', and
+  loads the union once, in the requests of one load. The recipe is run from the guide by a property test: the
+  generation is byte for byte the one a load of the whole set writes, wherever the ranges are cut. No API changed.
+
 ### Changed
 
 - **A segment's first `store.load()` is now measured on S3, on `0.16.0`.** A run from AWS CloudShell in `us-east-1` on

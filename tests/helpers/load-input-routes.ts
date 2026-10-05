@@ -146,4 +146,7 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'which would make its control count nothing',
   'tests/roaring/load-bitmap.property.test.ts':
     'compares the id load of each set with its bitmap loads; routing would compare the bitmap path with itself',
+  'tests/roaring/load-parts.property.test.ts':
+    'compares the id load of each set with the loads of its parts as bitmaps, and counts their requests against a ' +
+    'single id load; routing would compare the bitmap path with itself',
 };
