@@ -71,12 +71,12 @@ publishes all three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
-   [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md), from AWS CloudShell in `us-east-1`, on the published `0.16.0`.
+   [`2026-10-06-9d36b`](calibration/2026-10-06-9d36b.md), from AWS CloudShell in `us-east-1`, on the published `0.17.0`.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
-   **Paid** by the same in-region run, [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md).
+   **Paid** by the same in-region run, [`2026-10-06-9d36b`](calibration/2026-10-06-9d36b.md).
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by the same in-region run,
-   [`2026-10-05-50b5d`](calibration/2026-10-05-50b5d.md). Every run, with its report, is listed in
+   [`2026-10-06-9d36b`](calibration/2026-10-06-9d36b.md). Every run, with its report, is listed in
    [`calibration/`](calibration/README.md). A request count, and so the bill for
    requests, does not depend on where the client is, with one exception: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
@@ -112,7 +112,7 @@ in `lib/calibrate-stages.cjs`, stepped at an even latency from the engine's two 
 the window. A peak of 64 is the full window, 32 range requests held ahead of each operand; rounds above the model with a
 mean in flight well under that is a slow request holding the window. In flight counts requests the library issued, including any waiting for a free socket, so a mean or a peak above the
 client's sockets (`maxSockets`, which the record carries: what the run's client held, read back from its agents, 128 by default, as the library's built client has) means requests queued, a wait the rounds model, which assumes no limit, does not count.
-The run of 2026-10-05 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
+The run of 2026-10-06 held at most 11 requests in flight against 128 sockets, and its rounds sit above the model.
 
 `andNot` reads every chunk of the segment it filters, as ranges, since any of them can survive, and each exclude only where it
 overlaps, so what it costs scales with the include operand and not with the size of the exclude list.
@@ -385,6 +385,8 @@ Its scope is the three measurements above, on one workload shape. Still owed, an
   include operand. It measures two operands, and one include operand against ten excluded.
 - **Lambda.** CloudShell is a long-lived shell inside the region; a function's cold start and initialisation are
   a separate figure, which needs a run from inside a function.
+- **A steady load at another `keep`.** The steady-load stage runs at `keep: 12`, with a first load, 12 reloads, 4 loads that
+  delete by name and one that lists; the requests at a `keep` of 1 or 64, of a multipart or an encrypted segment, are not measured.
 
 ### What the rehearsal cannot cover
 
