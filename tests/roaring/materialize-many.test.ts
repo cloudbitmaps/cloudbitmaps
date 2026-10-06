@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BudgetExceededError,
   LeaseExpiredError,
+  NotFoundError,
   StaleOperandError,
   ValidationError,
   WriteConflictError,
@@ -362,5 +363,70 @@ describe('store.materializeMany', () => {
       }),
     ).rejects.toBeInstanceOf(BudgetExceededError);
     expect(w.calls.ranges).toBe(0);
+  });
+
+  it('bypasses the chunk cache: it neither fills it nor is served from it', async () => {
+    const events: Array<{ kind: string; hit?: boolean }> = [];
+    const w = await batchWorld(DATA, { metrics: { onEvent: (e) => events.push(e as never) } });
+    const s = (n: string) => w.store.segment(n);
+    expect(await s('a').has(5)).toBe(true);
+    events.length = 0;
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b') },
+      outputs: [{ dest: s('d'), expr: { or: ['a', 'b'] } }],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+    expect(events.filter((e) => e.kind === 'cache')).toEqual([]);
+    // the chunk a reader warmed is still there, and no chunk of b was cached on its behalf
+    w.calls.ranges = 0;
+    expect(await s('a').has(5)).toBe(true);
+    expect(events.filter((e) => e.kind === 'cache')).toEqual([{ kind: 'cache', hit: true }]);
+    expect(w.calls.ranges).toBe(0);
+    expect(await s('b').has(31_000)).toBe(true);
+    expect(w.calls.ranges).toBeGreaterThan(0);
+  });
+
+  it('an id erased before a chunk was read fails the outputs reading the deleted object, loudly', async () => {
+    const w = await batchWorld({ a: [1, 2, 3, 70_000], b: [1, 2, 3] });
+    const s = (n: string) => w.store.segment(n);
+    let hit = false;
+    w.hooks.beforeRange = async () => {
+      if (hit) return;
+      hit = true;
+      await w.other.eraseSubject(2, { allNamespaces: true });
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b') },
+      outputs: [
+        { dest: s('d-a'), expr: 'a' },
+        { dest: s('d-b'), expr: 'b' },
+      ],
+      keep: 1,
+    });
+    const failures = run.outputs.filter((o) => !o.published);
+    expect(failures.length).toBeGreaterThan(0);
+    for (const f of failures) expect((f as { error: Error }).error).toBeInstanceOf(NotFoundError);
+    // what was already in flight when the erasure ran can still be served: one range of each operand, no more
+    expect(run.outputs[0]).toMatchObject({ published: false });
+    expect(await w.backend.registry.get({ segment: 'd-a' })).toBeNull();
+  });
+
+  it('an id erased after the chunks were read can sit in an output the erasure could not reach', async () => {
+    const w = await batchWorld({ a: [1, 2, 3, 70_000], b: [1, 2, 3] });
+    const s = (n: string) => w.store.segment(n);
+    let hit = false;
+    w.hooks.beforeCas = async () => {
+      if (hit) return;
+      hit = true;
+      await w.other.eraseSubject(2, { allNamespaces: true });
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b') },
+      outputs: [{ dest: s('d-carries'), expr: 'a' }],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+    expect(await w.ids('d-carries')).toContain(2);
   });
 });

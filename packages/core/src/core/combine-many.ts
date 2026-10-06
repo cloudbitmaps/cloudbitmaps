@@ -1089,7 +1089,15 @@ class Run<R> {
           admitted = this.ledger.tryCharge(transient);
         }
         if (!admitted) {
-          this.fail(o, budgetError(this.req.maxBufferedBytes, `publishing output ${o.index}`));
+          if (o.solo) {
+            this.fail(o, budgetError(this.req.maxBufferedBytes, `publishing output ${o.index}`));
+          } else {
+            // The buffers filled the budget, so the object it would write has no room beside them: it runs again alone.
+            this.dropBuffer(o);
+            o.status = 'deferred';
+            o.group = null;
+            o.startedAt = null;
+          }
           wake();
           continue;
         }
