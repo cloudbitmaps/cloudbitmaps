@@ -75,6 +75,24 @@ export class LeaseExpiredError extends CloudRoaringError {
 export class LeaseLimitError extends CloudRoaringError {}
 
 /**
+ * An operand a call relied on changed while the call ran, so what the call built from it is not published. Carries the
+ * operand's name in the call and why it is stale (`'moved'`: it was pinned at a generation and its pointer has since
+ * moved), under the stable `code` `'stale-operand'`. Deterministic: run the call again against the current operand.
+ */
+export class StaleOperandError extends CloudRoaringError {
+  readonly code = 'stale-operand' as const;
+  /** The operand's name in the call that found it stale. */
+  readonly operand: string;
+  /** Why it is stale. */
+  readonly reason: 'moved';
+  constructor(message: string, operand: string, reason: 'moved') {
+    super(message);
+    this.operand = operand;
+    this.reason = reason;
+  }
+}
+
+/**
  * This build/configuration cannot perform the requested operation, though nothing is malformed. Two uses:
  * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version) —
  * distinct from `IntegrityError` (corruption); and (2)
@@ -161,6 +179,11 @@ export function isTransientError(err: unknown): err is TransientError {
 /** A read came after its pin's lease ended. */
 export function isLeaseExpiredError(err: unknown): err is LeaseExpiredError {
   return isCloudRoaringError(err) && err.name === 'LeaseExpiredError';
+}
+
+/** An operand a call relied on changed while it ran. */
+export function isStaleOperandError(err: unknown): err is StaleOperandError {
+  return isCloudRoaringError(err) && err.name === 'StaleOperandError';
 }
 
 /** A segment has no room for another live lease. */
