@@ -216,7 +216,7 @@ describe('runExport pins each segment', () => {
     await store.exportSegments(sink); // cold: the store learns each segment
     for (const k of Object.keys(counts)) delete counts[k];
     await store.exportSegments(sink);
-    expect(counts).toEqual({ capabilities: 1, list: 1, get: 3 });
+    expect(counts).toEqual({ list: 1, get: 3 });
   });
 
   it('refuses a reader that cannot pin before it opens any file', async () => {
