@@ -851,19 +851,28 @@ describe('a run with a steady-load stage', () => {
     };
     const files = lib.evidenceFiles(ROOT);
     expect(files.length).toBeGreaterThan(0);
+    let without = 0;
+    let withStage = 0;
     for (const rel of files) {
       const run = JSON.parse(readFileSync(join(ROOT, rel), 'utf8')) as Run;
       expect(() => stageFigures.derive(run, SOURCES), rel).not.toThrow();
       const steady = stageFigures.derive(run, SOURCES).steadyLoad;
-      if (run.phases.steadyLoad === undefined) expect(steady, rel).toBeNull();
-      else
+      if (run.phases.steadyLoad === undefined) {
+        without += 1;
+        expect(steady, rel).toBeNull();
+      } else {
+        withStage += 1;
         expect(Object.keys(steady?.byKind ?? {}), rel).toEqual([
           'first',
           'reload',
           'byName',
           'listing',
         ]);
+      }
     }
+    // Both kinds of run are committed, so neither branch is vacuous; later runs all have the stage.
+    expect(without).toBeGreaterThan(0);
+    expect(withStage).toBeGreaterThan(0);
   });
 
   // An engine that lists on every load, or keeps its window by listing, makes a by-name load a listing's requests.
