@@ -135,6 +135,72 @@ describe('runExport pins each segment', () => {
     expect(counts).toEqual({ capabilities: 1, list: 1, get: 3, getTail: 3 });
   });
 
+  // The window of ranges a read has in flight is 32, each at most 1 MiB, so an object has to be over 32 MiB for a
+  // range to be requested after a publish that lands during an earlier one. Nothing shrinks the window or the range,
+  // so this segment is 4,400 chunks of 4,096 ids (about 35 MiB), and the run takes several seconds.
+  it('writes one generation when a publish lands in the middle of a segment larger than the read window', async () => {
+    const BIG_CHUNKS = 4_400;
+    const big = (): Uint32Array => {
+      const ids = new Uint32Array(BIG_CHUNKS * 4_096);
+      for (let c = 0; c < BIG_CHUNKS; c++) {
+        for (let i = 0; i < 4_096; i++) ids[c * 4_096 + i] = c * 65_536 + i * 8;
+      }
+      return ids;
+    };
+    // The generation published meanwhile: one id, of another residue, in each chunk.
+    const later = (): Uint32Array =>
+      Uint32Array.from({ length: BIG_CHUNKS }, (_, c) => c * 65_536 + 3);
+    const backend = new MemoryStorage();
+    const writer = new CloudRoaring({ storage: backend });
+    await writer.load(REF, big(), { keep: 5 });
+    let ranges = 0;
+    let published: Promise<void> | undefined;
+    const storage = new Proxy(backend.storage, {
+      get(target, prop, receiver) {
+        const value: unknown = Reflect.get(target, prop, receiver);
+        if (prop !== 'getRange' || typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          ranges += 1;
+          if (ranges === 2) {
+            published = writer.load(REF, later(), { keep: 5 }).then(() => pause(10));
+            await published;
+          }
+          return (value as (...a: unknown[]) => Promise<Uint8Array>).apply(target, args);
+        };
+      },
+    });
+    const reader = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry: backend.registry }),
+      retry: false,
+      cache: { genTtlMs: 1 },
+    });
+    const files = new Map<string, number[]>();
+    const residues = new Set<number>();
+    let count = 0;
+    const manifest = await reader.exportSegments(
+      {
+        open: (ref) => ({
+          write(bytes) {
+            for (const line of Buffer.from(bytes).toString('utf8').split('\n')) {
+              if (line === '') continue;
+              residues.add(Number(line) % 8);
+              count += 1;
+            }
+          },
+          close() {
+            files.set(ref.segment, []);
+          },
+        }),
+      },
+      { format: 'ndjson', ndjsonBatchBytes: 1 << 20 },
+    );
+
+    expect(published).toBeDefined();
+    expect(manifest.failed).toEqual([]);
+    expect([...residues]).toEqual([0]);
+    expect(count).toBe(BIG_CHUNKS * 4_096);
+  }, 120_000);
+
   it('costs one registry read per segment on a warm store, which the live read skipped', async () => {
     const real = new MemoryStorage();
     const writer = new CloudRoaring({ storage: real });
