@@ -160,4 +160,8 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/roaring/load-parts.property.test.ts':
     'compares the id load of each set with the loads of its parts as bitmaps, and counts their requests against a ' +
     'single id load; routing would compare the bitmap path with itself',
+  'tests/export/export-pinned.test.ts':
+    'its loads seed the generations an export reads and the loads that publish or collect meanwhile; the behaviour under ' +
+    "test is the export's pin, so a second run under the serialized input would repeat it and exercise no part of the " +
+    'load path',
 };
