@@ -76,7 +76,7 @@ const {
   leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
-const { coldIntersectIds, coldAndNotIds } = require('./lib/range-counts.cjs');
+const { coldIntersectIds, coldAndNotIds, collectsByName } = require('./lib/range-counts.cjs');
 const {
   DISCARDS_PER_RUN,
   DISCARDS_PER_STAGE,
@@ -96,6 +96,10 @@ const {
   projectStages,
   expectedReads,
   firstLoadRequests,
+  STEADY_KEEP,
+  STEADY_LOADS,
+  STEADY_LOAD_REQUESTS,
+  steadyKind,
 } = require('./lib/calibrate-stages.cjs');
 const {
   interruptGate,
@@ -266,6 +270,8 @@ function planWorkload({ layout, spread, sweep, ranges }) {
       sharedChunks,
       ranges: ranges.andNot,
     },
+    // One segment loaded repeatedly at a `keep` that makes the loads collect by name (the stage says why).
+    steadyLoad: { loads: STEADY_LOADS, keep: STEADY_KEEP },
     retryBound: RETRY_BOUND,
     // The samples a run may discard after a transient fault, and run again (`calibrate-samples.cjs`).
     discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
@@ -389,6 +395,7 @@ async function main() {
         pointSegments: POINT_SEGMENTS,
         andNotCalls: ANDNOT_CALLS,
         andNotExcludes: ANDNOT_EXCLUDES,
+        steadyLoads: STEADY_LOADS,
       });
     }
   } catch (err) {
@@ -496,6 +503,14 @@ async function main() {
     packageVersion = measuredVersion(ROOT);
     sdk = measuredSdk(ROOT);
     pricing = AWS_US_EAST_1_ONDEMAND;
+    // The steady-load stage is held to what the engine does at `keep` 12 from 0.17.0 on, which collects by name. An
+    // engine that does not would fail the run's evidence after it had spent the bill, so ask it first, in memory.
+    if (MODE !== 'project' && !(await collectsByName(await import('@cloudbitmaps/roaring')))) {
+      refuse(
+        `the installed @cloudbitmaps/roaring does not collect by name at keep ${STEADY_KEEP}, which the steadyLoad ` +
+          'stage measures; 0.17.0 is the first release that does. Nothing was created. Install it, or run from the 0.17.0 release.',
+      );
+    }
     layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
     // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
     if (SPREAD_SEGMENTS > 0) {
@@ -551,6 +566,7 @@ async function main() {
       warm: `${READS} repeats of the calibration pairs from memory, asserted at 0 GET`,
       pointReads: `count() cold and warm on ${POINT_SEGMENTS} segments, then has() on every shared chunk: open segment, warm, first read`,
       andNot: `${ANDNOT_CALLS} calls, one segment against ${ANDNOT_EXCLUDES}`,
+      steadyLoad: `${STEADY_LOADS} loads of one segment at keep ${STEADY_KEEP}: warm-up, by name, one listing`,
     };
     for (const name of STAGES) {
       const b = stageBounds[name];
@@ -952,6 +968,8 @@ async function main() {
     wholeN: tally.reads.whole.n,
     wholeBytes: tally.reads.whole.bytes,
     requestMs: tally.requestMs,
+    free: tally.free,
+    commands: { ...tally.byCommand },
   });
   // What was sent between two snapshots, in the shape the meter's own tally has, so a stage's file can be read the
   // way the run's totals are.
@@ -1144,12 +1162,17 @@ async function main() {
     const loader = new CloudRoaring({ storage, ...TIMED_STORE });
     // The projection bounds a segment's FIRST load, so no segment is loaded twice (`firstLoads` says why).
     const claimFirstLoad = firstLoads();
-    const load = async (segment, ids, count, into) => {
-      claimFirstLoad(segment);
+    // `reload` is the steady stage's later loads of one segment, which its first load has claimed; `keep` is its window.
+    const load = async (segment, ids, count, into, { keep, reload = false } = {}) => {
+      if (!reload) claimFirstLoad(segment);
       const before = snap();
       const t0 = process.hrtime.bigint();
       // The whole write path, as a user runs it: the next generation number, the object, the publish, the collection.
-      const { size, published, reason } = await loader.load({ segment }, ids);
+      const { size, published, reason } = await loader.load(
+        { segment },
+        ids,
+        keep === undefined ? {} : { keep },
+      );
       if (!published) throw new Error(`load of ${segment} was refused: ${reason}`);
       const ms = msSince(t0);
       const after = snap();
@@ -1169,6 +1192,13 @@ async function main() {
         put: sent.put,
         get: sent.get,
         parts: sent.parts,
+        free: after.free - before.free,
+        commands: Object.fromEntries(
+          Object.entries(after.commands)
+            .map(([name, n]) => [name, n - (before.commands[name] ?? 0)])
+            .filter(([, n]) => n > 0),
+        ),
+        downloadBytes: after.down - before.down,
         idsPerSec: count / (ms / 1000),
         bytesPerSec: uploaded / (ms / 1000),
       });
@@ -1755,6 +1785,61 @@ async function main() {
           medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
           medianRounds: median(reads.map((r) => r.rounds)),
           timedStore: TIMED_STORE,
+        };
+      },
+    });
+    // ---- a steady load: one segment, loaded again and again at a keep that makes the loads collect by name --------------
+    // The calibration loads above are each a segment's first. A refresh load of a segment that already has a window
+    // makes other requests: none to collect while the window fills, a delete by name once it is full, and a listing on
+    // every sixteenth generation. Each load's own requests are recorded by class and held to its kind's count.
+    await stage('steadyLoad', {
+      run: async () => {
+        const loads = [];
+        for (let g = 0; g < STEADY_LOADS; g += 1) {
+          const ids = Array.from({ length: 1_000 }, (_, j) => g * 1_000 + j);
+          await load('steady-0', ids, ids.length, loads, { keep: STEADY_KEEP, reload: g > 0 });
+        }
+        const perLoadRecords = loads.map((l, g) => {
+          const kind = steadyKind(g, STEADY_KEEP);
+          const want = STEADY_LOAD_REQUESTS[kind];
+          if (l.put !== want.put || l.get !== want.get || l.free !== want.free) {
+            (results.expectedMissed ??= []).push(
+              `steadyLoad: generation ${g} (${kind}) made ${l.put} PUT-class, ${l.get} GET-class and ${l.free} deletes, ` +
+                `expected ${want.put}, ${want.get} and ${want.free}`,
+            );
+            console.error(
+              `calibrate: EXPECTED COUNT MISSED — steadyLoad generation ${g} (${kind}): ${l.put} PUT-class, ${l.get} GET-class, ${l.free} deletes`,
+            );
+          }
+          return {
+            generation: g,
+            kind,
+            ms: l.ms,
+            objectBytes: l.objectBytes,
+            uploadBytes: l.uploadBytes,
+            downloadBytes: l.downloadBytes,
+            put: l.put,
+            get: l.get,
+            free: l.free,
+            commands: l.commands,
+          };
+        });
+        const byKind = {};
+        for (const r of perLoadRecords) (byKind[r.kind] ??= []).push(r.ms);
+        log(
+          `steadyLoad: ${loads.length} loads at keep ${STEADY_KEEP}, median ` +
+            Object.entries(byKind)
+              .map(([k, xs]) => `${k} ${median(xs).toFixed(1)} ms`)
+              .join(', '),
+        );
+        return {
+          via: 'store.load()',
+          keep: STEADY_KEEP,
+          loads: STEADY_LOADS,
+          perLoad: perLoadRecords,
+          medianMsByKind: Object.fromEntries(
+            Object.entries(byKind).map(([k, xs]) => [k, median(xs)]),
+          ),
         };
       },
     });

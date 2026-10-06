@@ -636,6 +636,7 @@ function checkWorkload({
   pointSegments = 0,
   andNotCalls = 0,
   andNotExcludes = 0,
+  steadyLoads = 0,
 }) {
   const pairs = (n, reading, name, env) => {
     if (reading > 0 && n < 2) {
@@ -664,7 +665,10 @@ function checkWorkload({
     segments +
     largeSegments +
     spreadSegments +
-    (sweepEntries > 0 ? sweepSegments * sweepEntries : 0);
+    (sweepEntries > 0 ? sweepSegments * sweepEntries : 0) +
+    // The steady segment can leave a generation, a pointer version and a delete marker for each of its loads, each
+    // segment two versions.
+    Math.ceil((3 * steadyLoads) / 2);
   if (loaded > MAX_SEGMENTS) {
     throw new Error(
       `${loaded} segments would leave more object versions than teardown's first listing reaches; ` +

@@ -1308,7 +1308,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         const first = best({ [README]: into(readme) });
         const later = best({ [README]: into(last) });
         expect(Math.max(first, later)).toBeLessThan(5 * Math.max(Math.min(first, later), 20));
-      });
+        // Six checks of a 100 KB page take about 1.5 s alone and more than the default 5 s under a full parallel
+        // suite; the ratio above is the assertion, so the time allowed to reach it is generous.
+      }, 60_000);
     });
 
     it.each([['## '], ['## #'], ['## ##'], ['## <!-- -->'], ['## <b></b>'], ['## \u200B']])(

@@ -311,15 +311,16 @@ throughput on S3. These are not published yet:
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 - **The `*Into` verbs** — materialising a combine's result back into a segment, against a real object store.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.
+- **A steady `store.load()` on S3.** A load at `keep: 12` that deletes by name is counted at 7 requests, and the harness measures it from the next run; the in-region run above did not time it.
 - **GCS and Azure Blob in-region runs** — the run measured S3 only.
 
 **The harness is built, and has run for real from inside the region.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
-(`pnpm calibrate:aws`) measures, in one run against a real bucket, in seven stages: load throughput through
+(`pnpm calibrate:aws`) measures, in one run against a real bucket, in eight stages: load throughput through
 `store.load()`, single-part and multipart, each load's own requests recorded; cold `A ∩ B` latency for two 500,000-id
 operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the at-scale section reports, at a quarter
 of its density — and again with the same overlap spread uniformly over each segment's chunks; a sweep over how many
 chunks the operands share; the same intersects answered again from memory, held to no requests at all; `count()` and
-`has()` as a first read, `has()` on a segment already open, and both again warm; and `andNot` of one segment against ten. Every request the single-bucket topology
+`has()` as a first read, `has()` on a segment already open, and both again warm; `andNot` of one segment against ten; and a steady `store.load()`, one segment loaded repeatedly at `keep: 12`, each load held to the requests of its kind. Every request the single-bucket topology
 bills, pointer reads and conditional PUTs included, is counted attempt by attempt and by stage. Each intersect must
 return exactly the planned ids or no latency is reported, and each cold one turns off its store's timed pointer
 refresh, so its request count does not move with the network. A sample that meets a transient fault is not retried

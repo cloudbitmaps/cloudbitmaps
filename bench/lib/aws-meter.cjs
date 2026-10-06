@@ -137,7 +137,8 @@ function meter(client, tally = newTally()) {
       }
       count(retries(result?.output?.$metadata));
       const len = Number(result?.output?.ContentLength);
-      if (Number.isFinite(len)) {
+      // A HEAD answers with the object's size in `ContentLength` and sends no body: nothing came down.
+      if (Number.isFinite(len) && name !== 'HeadObjectCommand') {
         tally.bytesDown += len;
         if (name === 'GetObjectCommand') {
           const shape = tally.reads[rangeShape(args?.input?.Range)];

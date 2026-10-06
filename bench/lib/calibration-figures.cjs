@@ -78,7 +78,14 @@ function windowOfRun(packageVersion, src) {
   }
   return { limit: src.intersectConcurrency, start: src.combineWindowStart };
 }
-const { STAGES, sampleBounds } = require('./calibrate-stages.cjs');
+const {
+  STAGES,
+  sampleBounds,
+  STEADY_KEEP,
+  STEADY_LOADS,
+  STEADY_LOAD_REQUESTS,
+  steadyKind,
+} = require('./calibrate-stages.cjs');
 const {
   keptRequests,
   discardedRequests,
@@ -164,6 +171,11 @@ function readSources(root) {
     'DEFAULT_INTERSECT_CONCURRENCY',
   );
   const windowStart = need(/const COMBINE_WINDOW_START = (\d+);/, engine, 'COMBINE_WINDOW_START');
+  const cadence = need(
+    /export const LIST_COLLECTION_CADENCE = (\d+);/,
+    read('packages/core/src/core/generation-gc.ts'),
+    'LIST_COLLECTION_CADENCE',
+  );
   return {
     pricing: {
       name: profile[1],
@@ -179,6 +191,7 @@ function readSources(root) {
     genTtlMs: Number(ttl[1]),
     intersectConcurrency: Number(fanOut[1]),
     combineWindowStart: Number(windowStart[1]),
+    listCadence: Number(cadence[1]),
   };
 }
 
@@ -221,6 +234,26 @@ const pct = (fraction, dp) => `${fixed(100 * fraction, dp)}%`;
  * Everything a run lets a page state, from one evidence file. Throws when the file is not evidence of a complete,
  * self-consistent real run — see the header.
  */
+/**
+ * The stages a run is held to. Every stage in the table, except the steady load: it is measured on the releases that
+ * collect by name at every `keep` (0.17.0 on), so a run of an earlier release is not held to it, and a run that
+ * recorded it is held to it whatever its release.
+ */
+const STEADY_SINCE = [0, 17, 0];
+function stagesOf(run) {
+  // A version that is not a release reads as the current engine, as it does for the window, so it is held to the stage.
+  const release = releaseOf(run.measured?.packageVersion);
+  const since =
+    release === null ||
+    release[0] > STEADY_SINCE[0] ||
+    (release[0] === STEADY_SINCE[0] &&
+      (release[1] > STEADY_SINCE[1] ||
+        (release[1] === STEADY_SINCE[1] && release[2] >= STEADY_SINCE[2])));
+  return STAGES.filter(
+    (name) => name !== 'steadyLoad' || since || run.phases?.steadyLoad !== undefined,
+  );
+}
+
 function derive(run, src) {
   const problems = [];
   const check = (ok, what) => {
@@ -250,7 +283,7 @@ function derive(run, src) {
     `its load stage timed ${via}, which this derivation does not price`,
   );
   if (storeLoadRun) {
-    for (const name of STAGES) {
+    for (const name of stagesOf(run)) {
       check(
         typeof run.phases[name]?.requests?.get === 'number',
         `it records no requests for its ${name} stage`,
@@ -367,9 +400,16 @@ function derive(run, src) {
       ]
     : [];
   const sumOf = (xs, key) => xs.reduce((acc, x) => acc + x[key], 0);
+  // The steady stage's loads of one segment, each with the requests it made; none in a run that did not run it.
+  const steadyRecords =
+    storeLoadRun && Array.isArray(run.phases.steadyLoad?.perLoad)
+      ? run.phases.steadyLoad.perLoad
+      : [];
   if (storeLoadRun) {
     check(
-      Math.abs(ops.bytesUp - sumOf(loadRecords, 'uploadBytes')) === 0,
+      Math.abs(
+        ops.bytesUp - sumOf(loadRecords, 'uploadBytes') - sumOf(steadyRecords, 'uploadBytes'),
+      ) === 0,
       `the ${ops.bytesUp} bytes it sent up are not its ${loadRecords.length} loads' recorded uploads`,
     );
   } else {
@@ -406,7 +446,7 @@ function derive(run, src) {
     );
     // Every stage's requests, with its setup's, and what is left is the bucket's: the probe, the round-trip samples,
     // its creation and teardown's listings. Nothing a stage did is missing, and nothing else is in the bill.
-    const used = STAGES.reduce(
+    const used = stagesOf(run).reduce(
       (acc, name) => {
         const r = run.phases[name].requests;
         const setup = run.phases[name].setup?.requests ?? { put: 0, get: 0 };
@@ -425,14 +465,15 @@ function derive(run, src) {
     check(
       n('PutObjectCommand') ===
         2 * loadRecords.filter((l) => l.kind === 'single').length +
-          loadRecords.filter((l) => l.kind === 'multipart').length &&
-        n('ListObjectsV2Command') === 0 &&
+          loadRecords.filter((l) => l.kind === 'multipart').length +
+          2 * steadyRecords.length &&
+        n('ListObjectsV2Command') === steadyRecords.filter((l) => l.kind === 'listing').length &&
         n('CreateMultipartUploadCommand') ===
           loadRecords.filter((l) => l.kind === 'multipart').length &&
         n('CompleteMultipartUploadCommand') ===
           loadRecords.filter((l) => l.kind === 'multipart').length &&
         n('UploadPartCommand') === sumOf(loadRecords, 'parts'),
-      'its PUT-class commands are not what its loads make: the object or its parts and the pointer, and no listing',
+      'its PUT-class commands are not what its loads make: the object or its parts and the pointer, and a listing only in a steady load that lists',
     );
     check(
       run.phases.warm.warmGets === 0 && run.phases.warm.exact === true,
@@ -448,9 +489,39 @@ function derive(run, src) {
     );
     const missed = run.expectedMissed ?? [];
     check(missed.length === 0, `it missed an expected count: ${missed.join('; ')}`);
+    // The steady stage: the harness's own window and number of loads, each load the kind its generation makes, and the
+    // requests that kind makes. An engine that lists on every load, or deletes nothing by name, fails here.
+    const steady = run.phases.steadyLoad;
+    if (steady !== undefined) {
+      check(
+        steady.keep === STEADY_KEEP &&
+          steady.loads === STEADY_LOADS &&
+          steadyRecords.length === STEADY_LOADS,
+        `its steady stage ran ${steadyRecords.length} loads at keep ${steady.keep}, not the harness's ${STEADY_LOADS} at ${STEADY_KEEP}`,
+      );
+      steadyRecords.forEach((l, g) => {
+        const kind = steadyKind(g, STEADY_KEEP);
+        const want = STEADY_LOAD_REQUESTS[kind];
+        check(
+          l.generation === g &&
+            l.kind === kind &&
+            l.put === want.put &&
+            l.get === want.get &&
+            l.free === want.free,
+          `its steady load ${g} (${l.kind}) made ${l.put} PUT-class, ${l.get} GET-class and ${l.free} deletes, not the ` +
+            `${want.put}, ${want.get} and ${want.free} of a ${kind} load`,
+        );
+      });
+      check(
+        sumOf(steadyRecords, 'put') === steady.requests?.put &&
+          sumOf(steadyRecords, 'get') === steady.requests?.get,
+        "its steady loads' own requests do not add up to its steady stage's",
+      );
+      check(discardedIn('steadyLoad').length === 0, 'its steady stage discarded a load');
+    }
     // Every stage's record exists here: the first refusal above stops a file that lacks one. A stage is held to what
     // its kept samples made, and its discarded ones only to having been reads that stopped short.
-    for (const name of STAGES) {
+    for (const name of stagesOf(run)) {
       const { expectedGets } = run.phases[name];
       const kept = keptRequests(run.phases[name]);
       const discarded = discardedIn(name);
@@ -481,7 +552,7 @@ function derive(run, src) {
     // would have let finish. They are held to the plan the run projected from too, and its allowance to them.
     const counted = run.discards;
     const plan = run.workload?.plan;
-    const discardCount = STAGES.reduce((n, name) => n + discardedIn(name).length, 0);
+    const discardCount = stagesOf(run).reduce((n, name) => n + discardedIn(name).length, 0);
     check(
       (counted?.count ?? 0) === discardCount,
       `its stages record ${discardCount} discarded samples, not the ${counted?.count ?? 0} it counted`,
@@ -492,7 +563,7 @@ function derive(run, src) {
     );
     check(
       discardCount <= DISCARDS_PER_RUN &&
-        STAGES.every((name) => discardedIn(name).length <= DISCARDS_PER_STAGE),
+        stagesOf(run).every((name) => discardedIn(name).length <= DISCARDS_PER_STAGE),
       `it discarded more samples than the harness allows (${DISCARDS_PER_RUN} a run, ${DISCARDS_PER_STAGE} a stage)`,
     );
     if (counted !== undefined) {
@@ -654,6 +725,42 @@ function derive(run, src) {
   const storeLoadUSD = Object.fromEntries(
     Object.entries(storeLoadRequests).map(([k, r]) => [k, cost(r.get, r.put)]),
   );
+  // The steady loads' median requests by kind, each priced from what it made, and the average over a listing cadence.
+  // Null for a run without the stage.
+  const steadyLoad = (() => {
+    if (steadyRecords.length === 0) return null;
+    const med = (xs) => {
+      const sorted = [...xs].sort((a, b) => a - b);
+      return sorted[Math.floor(sorted.length / 2)];
+    };
+    const byKind = {};
+    for (const kind of Object.keys(STEADY_LOAD_REQUESTS)) {
+      const of = steadyRecords.filter((l) => l.kind === kind);
+      if (of.length === 0) continue;
+      const put = med(of.map((l) => l.put));
+      const get = med(of.map((l) => l.get));
+      const usd = cost(get, put);
+      byKind[kind] = {
+        runs: of.length,
+        put,
+        get,
+        free: med(of.map((l) => l.free)),
+        usd,
+        perMillion: 1e6 * usd,
+        medianMs: med(of.map((l) => l.ms)),
+      };
+    }
+    const c = src.listCadence;
+    return {
+      keep: run.phases.steadyLoad.keep,
+      loads: steadyRecords.length,
+      byKind,
+      averageUSD:
+        byKind.byName !== undefined && byKind.listing !== undefined
+          ? ((c - 1) * byKind.byName.usd + byKind.listing.usd) / c
+          : null,
+    };
+  })();
   const monthUSD = (bytes) => (bytes / GIB) * src.pricing.storagePerGiBMonth;
   const redis = src.pricing.redisMonthlyUSD;
   // One pointer read per segment per refresh window, while the segment is being read — a standing cost of the
@@ -708,7 +815,7 @@ function derive(run, src) {
     // samples made, which its expected count is held to, and `discarded` how many samples it discarded.
     stageLedger: storeLoadRun
       ? Object.fromEntries(
-          STAGES.map((name) => {
+          stagesOf(run).map((name) => {
             const r = run.phases[name].requests;
             const setup = run.phases[name].setup?.requests ?? { put: 0, get: 0 };
             return [
@@ -730,7 +837,10 @@ function derive(run, src) {
       : null,
     // The samples the run discarded after a transient fault and ran again, stated beside the figures: how many, in
     // which stages, and what they requested. Its latency and its counts are the kept samples'.
-    discards: discardsOf(run, storeLoadRun ? STAGES.map((name) => [name, discardedIn(name)]) : []),
+    discards: discardsOf(
+      run,
+      storeLoadRun ? stagesOf(run).map((name) => [name, discardedIn(name)]) : [],
+    ),
     getsPerLoad,
     getsPerMultipart,
     putsPerSingle,
@@ -738,6 +848,7 @@ function derive(run, src) {
     partsPerMultipart,
     loads,
     storeLoad: storeLoadRequests,
+    steadyLoad,
     byCommand: { ...cmd },
     ledger: {
       chunkReads: rd.range.n,
@@ -1886,6 +1997,7 @@ module.exports = {
   readSources,
   evidenceFiles,
   derive,
+  stagesOf,
   unaccounted,
   accounted,
   statesFigure,

@@ -56,6 +56,45 @@ async function countedBackend() {
   return { loader, cold, calls };
 }
 
+/**
+ * Whether an engine collects by name at `keep`: loads 17 generations of one segment over the in-memory backend, counting
+ * the storage driver's listings and deletes, and checks that the first load past the window deletes one generation
+ * without listing, and that a generation divisible by 16 lists. `engine` is the library's module (`CloudRoaring`,
+ * `MemoryStorage`), so a test can hand it a stand-in. The calibration harness asks before it creates anything.
+ */
+async function collectsByName(engine, keep = 12) {
+  const { CloudRoaring, MemoryStorage } = engine;
+  const backend = new MemoryStorage();
+  const calls = { list: 0, delete: 0 };
+  const wrap = (name, onCall) => {
+    const original = backend.storage[name].bind(backend.storage);
+    backend.storage[name] = (...args) => {
+      onCall();
+      return original(...args);
+    };
+  };
+  wrap('list', () => {
+    calls.list += 1;
+  });
+  wrap('delete', () => {
+    calls.delete += 1;
+  });
+  const loader = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
+  const seen = [];
+  for (let g = 0; g <= Math.max(keep + 1, 16); g += 1) {
+    calls.list = calls.delete = 0;
+    await loader.load({ segment: 'probe' }, [g + 1], { keep });
+    seen.push({ list: calls.list, delete: calls.delete });
+  }
+  const first = seen[keep + 1];
+  return (
+    first.list === 0 &&
+    first.delete === 1 &&
+    seen.slice(0, keep + 1).every((c) => c.list === 0 && c.delete === 0) &&
+    seen[16].list === 1
+  );
+}
+
 /** The requests of one cold read: `read(store)` returns the stream to drain. */
 async function coldRead(loads, read) {
   const { loader, cold, calls } = await countedBackend();
@@ -167,6 +206,7 @@ module.exports = {
   coldIntersectIds,
   coldAndNotIds,
   coldIterate,
+  collectsByName,
   sharedLayout,
   run,
 };

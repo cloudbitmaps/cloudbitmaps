@@ -166,9 +166,9 @@ describe('a run that timed store.load()', () => {
   // run it is evidence: each stage held to what it kept, the bill to every request, and its discards stated.
   it("is evidence from a rehearsal that discarded three samples, and its figures are the fault-free run's", () => {
     expect(withFaults.injectedFaults).toEqual([
-      { getObject: 1_200, as: 'reset' },
-      { getObject: 60_000, as: 'reset' },
-      { getObject: 75_000, as: 'reset' },
+      { getObject: 56, as: 'reset' },
+      { getObject: 1_740, as: 'reset' },
+      { getObject: 4_769, as: 'reset' },
     ]);
     expect(withFaults.discards).toEqual({ count: 3, perRun: 3, perStage: 2 });
     const clean = figures.derive(asRealRun(), SOURCES);
@@ -207,12 +207,12 @@ describe('a run that timed store.load()', () => {
     // reads and the check of its generation number. A multipart object is a create, its parts and a complete in
     // place of the one PUT.
     expect(f.putsPerSingle).toBe(2);
-    expect(f.getsPerLoad).toBe(4);
+    expect(f.getsPerLoad).toBe(3);
     expect(f.partsPerMultipart).toBe(2);
     expect(f.putsPerMultipart).toBe(5);
-    expect(f.getsPerMultipart).toBe(4);
-    expect(f.usd.singleLoad).toBeCloseTo(2 * 5e-6 + 4 * GET_USD, 12);
-    expect(f.usd.multipartLoad).toBeCloseTo(5 * 5e-6 + 4 * GET_USD, 12);
+    expect(f.getsPerMultipart).toBe(3);
+    expect(f.usd.singleLoad).toBeCloseTo(2 * 5e-6 + 3 * GET_USD, 12);
+    expect(f.usd.multipartLoad).toBeCloseTo(5 * 5e-6 + 3 * GET_USD, 12);
     expect(f.loads).toBe(fixture.phases.load.perLoad.length);
   });
 
@@ -265,8 +265,8 @@ describe('a run that timed store.load()', () => {
     const loadRows = f.rows.filter((r) => /store\.load|single-part|multipart/.test(String(r.says)));
     expect(loadRows.length).toBe(2);
     expect(loadRows.every((r) => r.label === 'derived')).toBe(true);
-    expect(f.shapes).toContainEqual([2, 4]);
-    expect(f.shapes).toContainEqual([5, 4]);
+    expect(f.shapes).toContainEqual([2, 3]);
+    expect(f.shapes).toContainEqual([5, 3]);
     expect(f.stageLedger.warm?.get).toBe(f.stageLedger.warm?.expectedGets);
   });
 
@@ -324,7 +324,7 @@ describe('a run that timed store.load()', () => {
           r.cost.ops.byCommand.ListObjectsV2Command =
             (r.cost.ops.byCommand.ListObjectsV2Command ?? 0) + 1;
         }),
-      ).toMatch(/the object or its parts and the pointer, and no listing/);
+      ).toMatch(/the object or its parts and the pointer, and a listing only in a steady load/);
     });
 
     it('with requests no stage accounts for, or fewer than it billed', () => {
@@ -377,7 +377,7 @@ describe('a run that timed store.load()', () => {
         refused((r) => {
           r.phases.andNot.expectedGets += 1;
         }),
-      ).toMatch(/its andNot stage made 30,210 GET-class requests, not the 30,211 it expected/);
+      ).toMatch(/its andNot stage made 330 GET-class requests, not the 331 it expected/);
     });
 
     it('with a stage that records no expected count', () => {
@@ -404,7 +404,7 @@ describe('a run that timed store.load()', () => {
         /stages' requests and the bucket's own do not add up/,
         /teardown left 1 resource behind/,
         /it missed an expected count/,
-        /its andNot stage made 30,210 GET-class requests, not the 30,211 it expected/,
+        /its andNot stage made 330 GET-class requests, not the 331 it expected/,
         /it ran from us-west-2, not the bucket's us-east-1/,
       ]) {
         expect(message).toMatch(says);
@@ -575,7 +575,7 @@ describe('a run that discarded a sample after a transient fault', () => {
     expect(refused(withDiscards(asRealRun(), [['intersect', IN_INTERSECT()]]))).toBe('');
     expect(
       refused(withDiscards(asRealRun(), [['intersect', IN_INTERSECT()]], { record: false })),
-    ).toMatch(/its intersect stage made 8,280 GET-class requests, not the 8,160 it expected/);
+    ).toMatch(/its intersect stage made 360 GET-class requests, not the 240 it expected/);
   });
 
   it('is refused past its bounds: a fourth discard in a run, a third in a stage', () => {
@@ -728,8 +728,8 @@ describe('a run of the engine that reads chunks as ranges', () => {
     it.rangesPerOperand = rangesPerOperand;
     return run;
   };
-  const chunks = (fixture.phases.intersect as unknown as { chunksFetchedPerOperand: number })
-    .chunksFetchedPerOperand;
+  const chunks = (fixture.phases.intersect as unknown as { rangesPerOperand: number })
+    .rangesPerOperand;
 
   it('is accepted when its range requests are what the ledger counted, however many chunks they held', () => {
     expect(() => figures.derive(asRanged(chunks), SOURCES)).not.toThrow();
@@ -743,9 +743,172 @@ describe('a run of the engine that reads chunks as ranges', () => {
 
   it('keeps holding a file from the engine before to one request for every chunk', () => {
     const before = asRealRun();
-    (
-      before.phases.intersect as unknown as { chunksFetchedPerOperand: number }
-    ).chunksFetchedPerOperand = chunks - 1;
+    const it = before.phases.intersect as unknown as Record<string, unknown>;
+    delete it.rangesPerOperand;
+    it.chunksFetchedPerOperand = 100; // one request for each of the layout's shared chunks
     expect(refused(before)).toMatch(/chunk reads .* are not/);
+  });
+});
+
+// The steady-load stage: one segment loaded again and again at a keep that makes its loads collect by name. A run's
+// figures state each kind's requests, and a run whose loads made other requests than their kind's is refused: an engine
+// that lists on every load is such a run.
+describe('a run with a steady-load stage', () => {
+  type SteadyLoad = {
+    kind: string;
+    generation: number;
+    put: number;
+    get: number;
+    free: number;
+    uploadBytes: number;
+  };
+  type Steady = { keep: number; loads: number; perLoad: SteadyLoad[]; requests: Requests };
+  type Measured = { measured: { packageVersion: string } };
+  const versioned = (r: Run, packageVersion: string): void => {
+    const m = r as unknown as Measured;
+    m.measured = { ...m.measured, packageVersion };
+  };
+  const steadyOf = (run: Run): Steady => run.phases.steadyLoad as unknown as Steady;
+  const stable = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
+    STEADY_LOAD_REQUESTS: Record<string, { put: number; get: number; free: number }>;
+  };
+  const refused = (mutate: (r: Run) => void): string => {
+    const run = asRealRun();
+    mutate(run);
+    try {
+      figures.derive(run, SOURCES);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return '';
+  };
+  const stageFigures = figures as unknown as {
+    derive: (
+      r: Run,
+      s: unknown,
+    ) => {
+      steadyLoad: {
+        keep: number;
+        loads: number;
+        byKind: Record<string, { put: number; get: number; free: number; perMillion: number }>;
+        averageUSD: number | null;
+      } | null;
+    };
+    stagesOf: (r: Run) => string[];
+  };
+
+  it('is the fixture the harness wrote, with 18 loads in the kinds its generations make', () => {
+    const s = steadyOf(fixture);
+    expect(s.perLoad.map((l) => l.kind)).toEqual([
+      'first',
+      ...Array(12).fill('reload'),
+      'byName',
+      'byName',
+      'byName',
+      'listing',
+      'byName',
+    ]);
+    expect(s.keep).toBe(12);
+  });
+
+  it('states each kind of load from the requests it made, priced, and the average over the listing cadence', () => {
+    const f = stageFigures.derive(asRealRun(), SOURCES).steadyLoad;
+    expect(f?.loads).toBe(18);
+    expect(f?.byKind.byName).toMatchObject({ put: 2, get: 4, free: 1 });
+    expect(f?.byKind.listing).toMatchObject({ put: 3, get: 5, free: 1 });
+    expect(f?.byKind.reload).toMatchObject({ put: 2, get: 2, free: 0 });
+    expect(f?.byKind.first).toMatchObject({ put: 2, get: 3, free: 0 });
+    expect(f?.byKind.byName?.perMillion).toBeCloseTo(1e6 * (2 * 5e-6 + 4 * GET_USD), 6);
+    // One listing in sixteen loads, the rest by name.
+    expect(f?.averageUSD).toBeCloseTo(
+      (15 * (2 * 5e-6 + 4 * GET_USD) + (3 * 5e-6 + 5 * GET_USD)) / 16,
+      12,
+    );
+  });
+
+  it('is held to the stage on a release that collects by name, and every committed run still derives without it', () => {
+    const named = asRealRun();
+    delete (named.phases as Record<string, unknown>).steadyLoad;
+    // Of an earlier release, it is not asked for; of 0.17.0 on, it is.
+    versioned(named, '0.16.0');
+    expect(stageFigures.stagesOf(named)).not.toContain('steadyLoad');
+    versioned(named, '0.17.0');
+    expect(stageFigures.stagesOf(named)).toContain('steadyLoad');
+    // A version that is not a release, or none, is the current engine, as it is for the window: held to the stage too.
+    versioned(named, 'main');
+    expect(stageFigures.stagesOf(named)).toContain('steadyLoad');
+    delete (named as unknown as { measured: { packageVersion?: string } }).measured.packageVersion;
+    expect(stageFigures.stagesOf(named)).toContain('steadyLoad');
+    expect(
+      refused((r) => {
+        delete (r.phases as Record<string, unknown>).steadyLoad;
+        versioned(r, '0.17.0');
+      }),
+    ).toMatch(/it records no requests for its steadyLoad stage/);
+    // The committed evidence predates the stage: derived as before, with no steady figure.
+    const lib = figures as unknown as {
+      evidenceFiles: (root: string) => string[];
+    };
+    const files = lib.evidenceFiles(ROOT);
+    expect(files.length).toBeGreaterThan(0);
+    for (const rel of files) {
+      const run = JSON.parse(readFileSync(join(ROOT, rel), 'utf8')) as Run;
+      expect(run.phases.steadyLoad, rel).toBeUndefined();
+      expect(() => stageFigures.derive(run, SOURCES), rel).not.toThrow();
+      expect(stageFigures.derive(run, SOURCES).steadyLoad, rel).toBeNull();
+    }
+  });
+
+  // An engine that lists on every load, or keeps its window by listing, makes a by-name load a listing's requests.
+  it('refuses a run whose loads made other requests than their kind: an engine that lists every load', () => {
+    const message = refused((r) => {
+      const s = steadyOf(r);
+      for (const l of s.perLoad.filter((x) => x.kind === 'byName')) {
+        l.put += 1; // the listing
+        l.get += 1; // the pointer read around it
+        s.requests.put += 1;
+        s.requests.get += 1;
+      }
+    });
+    expect(message).toMatch(
+      /its steady load 13 \(byName\) made 3 PUT-class, 5 GET-class and 1 deletes, not the 2, 4 and 1 of a byName load/,
+    );
+  });
+
+  it('refuses a steady stage of other loads or another window than the harness runs, one that discarded, and records that do not add up', () => {
+    expect(
+      refused((r) => {
+        steadyOf(r).keep = 1;
+      }),
+    ).toMatch(/its steady stage ran 18 loads at keep 1, not the harness's 18 at 12/);
+    expect(
+      refused((r) => {
+        steadyOf(r).perLoad.pop();
+      }),
+    ).toMatch(/its steady stage ran 17 loads/);
+    expect(
+      refused((r) => {
+        steadyOf(r).requests.get += 1;
+      }),
+    ).toMatch(/steady loads' own requests do not add up to its steady stage's/);
+    expect(
+      refused((r) => {
+        const l = steadyOf(r).perLoad[5];
+        if (l !== undefined) l.kind = 'byName';
+      }),
+    ).toMatch(/its steady load 5 \(byName\)/);
+  });
+
+  it('holds a steady listing to the PUT-class ledger: a listing the meter did not count is refused', () => {
+    expect(
+      refused((r) => {
+        r.cost.ops.byCommand.ListObjectsV2Command = 0;
+        r.cost.ops.byCommand.PutObjectCommand = (r.cost.ops.byCommand.PutObjectCommand ?? 0) + 1;
+      }),
+    ).toMatch(/its PUT-class commands are not what its loads make/);
+  });
+
+  it('names a steady load that did not stay in the table, in the table the harness holds', () => {
+    expect(stable.STEADY_LOAD_REQUESTS.byName).toEqual({ put: 2, get: 4, free: 1 });
   });
 });
