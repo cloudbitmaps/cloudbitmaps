@@ -36,6 +36,12 @@ take a run's numbers from one derivation, and hold them to it with one matcher.
 | [`2026-10-05-50b5d.md`](2026-10-05-50b5d.md) · [`2026-10-05-50b5d.json`](2026-10-05-50b5d.json) | 2026-10-05 (UTC), `us-east-1`, from AWS CloudShell in `us-east-1`, against the published `0.16.0` packages | The same seven stages on the engine whose registry write takes the row it already holds: a segment's first `store.load()` in 2 PUT + 3 GET (for a multipart load, 5 PUT-class + 3 GET), measured, with a cold intersect still in 6 GETs and an `andNot` in 33, and the bill. Every stage exact, every request count as expected, $0.0025506 in all. Its rounds sit above the rounds model's; the run did not vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. |
 | [`2026-10-06-9d36b.md`](2026-10-06-9d36b.md) · [`2026-10-06-9d36b.json`](2026-10-06-9d36b.json) | 2026-10-06 (UTC), `us-east-1`, from AWS CloudShell in `us-east-1`, against the published `0.17.0` packages | The same seven stages and a steady-load stage: one segment loaded 18 times at `keep: 12`, each load's requests measured by kind (first 2 PUT + 3 GET, reload 2 + 2, a load that deletes by name 2 + 4 and a delete, a load that lists 3 + 5 and a delete), with a cold intersect still in 6 GETs and an `andNot` in 33, and the bill. Every stage exact, every request count as expected, $0.0027548 in all. Its rounds sit above the rounds model's; the run did not vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. Its latencies are this session's, and are not comparable with another session's. |
 
+## The large suite's runs
+
+| directory | what it holds |
+|---|---|
+| [`large/`](large/) | The evidence of the large suite (`--suite large`), which measures combines on operands of about a million to ten million ids. It has [its own README](large/README.md). The figures and report gates above list this directory without descending into it, so nothing in `large/` is a run of theirs. |
+
 ## Adding a run
 
 1. **Run it**, with `pnpm calibrate:aws --run` or, for latency that means anything, from AWS CloudShell with

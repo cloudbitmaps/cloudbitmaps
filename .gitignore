@@ -56,6 +56,9 @@ crash-*
 # CloudShell script use the same names — so the rule, the harness and the script cannot drift apart.
 bench/calibrate-aws-rehearsal.json
 bench/calibration/*.partial.json
+# The large suite (`--suite large`) writes the same three kinds of file, its evidence under `bench/calibration/large/`.
+bench/calibrate-aws-rehearsal-large.json
+bench/calibration/large/*.partial.json
 
 # Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
 # silently: a committed set would keep showing pages long after they changed.
