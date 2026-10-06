@@ -15,6 +15,9 @@
  *   node bench/calibrate-aws.cjs --rehearse                  the workload against MinIO, free — no money guards
  *   node bench/calibrate-aws.cjs --run                       the real thing (region + ceiling + confirmation)
  *   node bench/calibrate-aws.cjs [--rehearse] --cleanup <id> remove a run's resources after a hard kill
+ *   node bench/calibrate-aws.cjs --suite large [--rehearse | --run]   the large suite (operands of 10^6 to 10^7 ids)
+ *                                                            in place of the default one; CR_CALIBRATE_SUITE=large
+ *                                                            names it from the environment
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
@@ -56,7 +59,7 @@ const {
   layoutIds,
   maskAccount,
   redact,
-  resultsFile,
+  resultsFile: suiteResultsFile,
   stampOf,
   checkRunId,
   checkRunRegion,
@@ -76,6 +79,26 @@ const {
   leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
+const {
+  LARGE_STAGES,
+  LARGE_SIZES,
+  planLargeLayout,
+  projectLarge,
+  expectedLarge,
+  resolveLargeKnobs,
+  suiteFrom,
+  recordCountMisses,
+  constantsIn,
+  checkEngineConstants,
+  refuseDefaultKnobs,
+  checkLargeWorkload,
+  checkResources,
+  resolveFloors,
+  rangeCap,
+} = require('./lib/calibrate-large-stages.cjs');
+const { countSize } = require('./lib/large-counts.cjs');
+const { runLargeSuite, projectionLines } = require('./lib/calibrate-large.cjs');
+const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
 const { coldIntersectIds, coldAndNotIds, collectsByName } = require('./lib/range-counts.cjs');
 const {
   DISCARDS_PER_RUN,
@@ -89,7 +112,7 @@ const {
   injectFaults,
 } = require('./lib/calibrate-samples.cjs');
 const {
-  STAGES,
+  STAGES: DEFAULT_STAGES,
   parseSweep,
   coldIntersectGets,
   modelRounds,
@@ -142,6 +165,25 @@ const MODE = argv.includes('--cleanup')
     : REHEARSE
       ? 'rehearse'
       : 'project';
+
+/** Where this suite's results go: `resultsFile` of the guards, for the suite the run is. */
+const resultsFile = (rehearse, runId, options = {}) =>
+  suiteResultsFile(rehearse, runId, { ...options, suite: SUITE });
+
+/**
+ * Which suite this run is: the default one, or the large one (`--suite large`, or `CR_CALIBRATE_SUITE=large`). It
+ * decides the stages, the projection, the expected counts and where the evidence is written.
+ */
+let SUITE = 'default';
+/** Where the suite was named: `--suite`, `CR_CALIBRATE_SUITE`, or nowhere, for the default one. */
+let SUITE_SOURCE = 'default';
+try {
+  ({ suite: SUITE, source: SUITE_SOURCE } = suiteFrom(argv, process.env));
+} catch (err) {
+  refuse(err.message);
+}
+/** The stages this suite runs: the projection, the run's end-of-run check and the harness's own refusal read this list. */
+const STAGES = SUITE === 'large' ? LARGE_STAGES : DEFAULT_STAGES;
 
 // ---- the workload ----------------------------------------------------------------------------------------------
 // Every size is overridable so a run can be made smaller; an explicit 0 really means 0.
@@ -380,9 +422,14 @@ async function main() {
   // Everything that can be refused from the inputs alone is refused first, before the library is even imported, so a
   // refusal holds on a checkout that has not been built and costs nothing to test.
   let sweep = [];
+  let largeKnobs = null;
   try {
     // A cleanup loads nothing, so no workload setting can refuse it.
-    if (MODE !== 'cleanup') {
+    if (MODE !== 'cleanup' && SUITE === 'large') {
+      refuseDefaultKnobs(process.env);
+      largeKnobs = resolveLargeKnobs(process.env);
+      checkLargeWorkload({ sizes: LARGE_SIZES.length, intos: largeKnobs.intos });
+    } else if (MODE !== 'cleanup') {
       sweep = parseSweep(process.env.CR_CALIBRATE_SWEEP);
       checkWorkload({
         segments: SEGMENTS,
@@ -400,6 +447,12 @@ async function main() {
     }
   } catch (err) {
     refuse(err.message);
+  }
+
+  // Which suite runs, and where it was named, before anything else is said: a suite named by the environment alone is
+  // easy to forget.
+  if (MODE !== 'cleanup' && SUITE_SOURCE !== 'default') {
+    log(`suite: ${SUITE} (named by ${SUITE_SOURCE})`);
   }
 
   // The workload client's socket limit is refused here if it is not a legal one; `limitWorkloadSockets` applies it.
@@ -484,6 +537,29 @@ async function main() {
     }
   }
 
+  // The large suite holds ten-million-id operands in flight, so a rehearsal and a run state what the machine has,
+  // once, and refuse to start below the floor it names, before the library is imported or anything is created. These
+  // come after the refusals made from the inputs alone, which hold on a checkout that has not been built.
+  let resourcesSeen = null;
+  if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {
+    const now = resourcesNow();
+    log(`resources: ${now.line}`);
+    resourcesSeen = now.have;
+    try {
+      checkResources(now.have, resolveFloors(process.env));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
+    }
+    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the installed packages
+    // are asked, and a run against others is refused.
+    try {
+      const sources = installedSources(ROOT);
+      checkEngineConstants(constantsIn(sources.core, sources.s3));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
+    }
+  }
+
   // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
   let pricing;
   let packageVersion;
@@ -491,6 +567,7 @@ async function main() {
   let layout;
   let spread = null;
   let sweepLayouts = [];
+  let largeSizes = null;
   let plan;
   let ops;
   let stageBounds;
@@ -505,49 +582,105 @@ async function main() {
     pricing = AWS_US_EAST_1_ONDEMAND;
     // The steady-load stage is held to what the engine does at `keep` 12 from 0.17.0 on, which collects by name. An
     // engine that does not would fail the run's evidence after it had spent the bill, so ask it first, in memory.
-    if (MODE !== 'project' && !(await collectsByName(await import('@cloudbitmaps/roaring')))) {
+    if (
+      SUITE === 'default' &&
+      MODE !== 'project' &&
+      !(await collectsByName(await import('@cloudbitmaps/roaring')))
+    ) {
       refuse(
         `the installed @cloudbitmaps/roaring does not collect by name at keep ${STEADY_KEEP}, which the steadyLoad ` +
           'stage measures; 0.17.0 is the first release that does. Nothing was created. Install it, or run from the 0.17.0 release.',
       );
     }
-    layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
-    // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
-    if (SPREAD_SEGMENTS > 0) {
-      spread = planSpread({
-        segments: SPREAD_SEGMENTS,
-        sharedChunks: layout.sharedChunks,
-        privateChunks: layout.privateChunks,
-        idsPerChunk: Math.max(1, Math.round(IDS / layout.chunksPerSegment)),
-        stride: DEFAULT_LAYOUT.stride,
-        seed: SPREAD_SEED,
-      });
+    if (SUITE === 'large') {
+      // The layouts, and what the engine does on them, counted in memory before anything is created: the bound needs the
+      // objects' sizes and a run is held to the counts.
+      largeSizes = [];
+      for (const n of LARGE_SIZES) {
+        const L = planLargeLayout(n);
+        const counts = await countSize({ layout: L, layoutIds, intos: largeKnobs.intos });
+        largeSizes.push({
+          n,
+          layout: L,
+          counts,
+          chunksPerSegment: L.chunksPerSegment,
+          sharedChunks: L.sharedChunks,
+          operandBytes: counts.operandBytes,
+        });
+      }
+      plan = {
+        suite: 'large',
+        reads: largeKnobs.reads,
+        intos: largeKnobs.intos,
+        sizes: largeSizes,
+        retryBound: RETRY_BOUND,
+        discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
+        fixedGets: 1 + RTT_SAMPLES,
+        fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
+      };
+      const bound = projectLarge(plan);
+      ops = bound.total;
+      stageBounds = bound.stages;
+      discardBound = bound.discards;
+      costliestSample = bound.costliestSample;
+      priced = priceTally({ put: ops.put, get: ops.get }, pricing);
+    } else {
+      layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
+      // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
+      if (SPREAD_SEGMENTS > 0) {
+        spread = planSpread({
+          segments: SPREAD_SEGMENTS,
+          sharedChunks: layout.sharedChunks,
+          privateChunks: layout.privateChunks,
+          idsPerChunk: Math.max(1, Math.round(IDS / layout.chunksPerSegment)),
+          stride: DEFAULT_LAYOUT.stride,
+          seed: SPREAD_SEED,
+        });
+      }
+      sweepLayouts = sweep.map((e) =>
+        planSweepLayout({
+          segments: SWEEP_SEGMENTS,
+          sharedChunks: e.k,
+          privateIds: layout.priv,
+          stride: DEFAULT_LAYOUT.stride,
+        }),
+      );
+      // The projection is an upper bound that asks for no count, so it reads the engine for none; a run's exact expectations do.
+      const ranges =
+        MODE === 'project'
+          ? { intersect: 0, spread: 0, sweep: sweepLayouts.map(() => 0), andNot: 0 }
+          : await rehearseRanges({ layout, spread, sweepLayouts });
+      plan = planWorkload({ layout, spread, sweep, ranges });
+      ({
+        ops,
+        stages: stageBounds,
+        discards: discardBound,
+        costliestSample,
+        priced,
+      } = projection(pricing, plan));
     }
-    sweepLayouts = sweep.map((e) =>
-      planSweepLayout({
-        segments: SWEEP_SEGMENTS,
-        sharedChunks: e.k,
-        privateIds: layout.priv,
-        stride: DEFAULT_LAYOUT.stride,
-      }),
-    );
-    // The projection is an upper bound that asks for no count, so it reads the engine for none; a run's exact expectations do.
-    const ranges =
-      MODE === 'project'
-        ? { intersect: 0, spread: 0, sweep: sweepLayouts.map(() => 0), andNot: 0 }
-        : await rehearseRanges({ layout, spread, sweepLayouts });
-    plan = planWorkload({ layout, spread, sweep, ranges });
-    ({
-      ops,
-      stages: stageBounds,
-      discards: discardBound,
-      costliestSample,
-      priced,
-    } = projection(pricing, plan));
   }
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
+    if (SUITE === 'large') {
+      for (const line of projectionLines({
+        plan,
+        bounds: stageBounds,
+        expected: expectedLarge(plan),
+        discardBound,
+        costliestSample,
+        ops,
+        price: (t) => priceTally(t, pricing).totalUSD,
+      })) {
+        console.log(line);
+      }
+      console.log(
+        '\n  --rehearse   the workload against MinIO, free — the money guards do not run',
+      );
+      console.log('  --run        the real thing (needs region + ceiling + confirmation)');
+      return 0;
+    }
     console.log(
       `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)` +
         ` + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks`,
@@ -848,18 +981,37 @@ async function main() {
       sdk,
     },
     pricing: pricing.name,
-    workload: {
-      segments: SEGMENTS,
-      idsPerSegment: IDS,
-      chunksPerSegment: layout.chunksPerSegment,
-      sharedChunks: layout.sharedChunks,
-      largeSegments: LARGE,
-      largeChunks: LARGE_CHUNKS,
-      largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
-      coldIntersects: READS,
-      // Everything every stage loads and reads, as the projection was computed from it.
-      plan,
-    },
+    // The large suite says which suite it is; the default suite's evidence has no such field.
+    ...(SUITE === 'large' ? { suite: SUITE, resources: resourcesSeen } : {}),
+    workload:
+      SUITE === 'large'
+        ? {
+            // What each size is, and the requests the engine made of it in memory, which the run is held to.
+            reads: plan.reads,
+            intos: plan.intos,
+            sizes: largeSizes.map((s) => ({
+              idsPerSegment: s.n,
+              stride: s.layout.stride,
+              chunksPerSegment: s.chunksPerSegment,
+              sharedChunks: s.sharedChunks,
+              operandBytes: s.operandBytes,
+              rangeCap: rangeCap(Math.max(...s.operandBytes)),
+              counts: s.counts,
+            })),
+            expected: expectedLarge(plan),
+          }
+        : {
+            segments: SEGMENTS,
+            idsPerSegment: IDS,
+            chunksPerSegment: layout.chunksPerSegment,
+            sharedChunks: layout.sharedChunks,
+            largeSegments: LARGE,
+            largeChunks: LARGE_CHUNKS,
+            largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
+            coldIntersects: READS,
+            // Everything every stage loads and reads, as the projection was computed from it.
+            plan,
+          },
     projected: ops,
     projectedStages: stageBounds,
     // What the samples a run may discard can cost, beside the stages' bounds: each at the costliest sample's bound.
@@ -1116,8 +1268,12 @@ async function main() {
     // make and what the projection allows. `setup` is what a stage loads for itself, kept apart from what it times.
     // `discarded` is every sample it discarded after a transient fault: those requests are in `requests`, since they
     // were billed, and out of what the stage is held to, which is what its kept samples made (`keptRequests`).
-    const expectedByStage = expectedReads(plan);
+    const expectedByStage = SUITE === 'large' ? {} : expectedReads(plan);
+    // The large suite's exact requests, PUT-class as well as GET-class: each of its stages is held to both.
+    const expectedLargeByStage = SUITE === 'large' ? expectedLarge(plan) : {};
     const stage = async (name, { setup, run }) => {
+      // The large suite runs its own stages (`runLargeSuite`); the default suite's are laid out below it, and are not run.
+      if (SUITE === 'large' && DEFAULT_STAGES.includes(name)) return undefined;
       if (!STAGES.includes(name)) throw new Error(`${name} is not a stage the projection covers`);
       const s0 = snap();
       const prepared = setup === undefined ? undefined : await setup();
@@ -1132,8 +1288,19 @@ async function main() {
       }
       results.phases[name] = record;
       const kept = keptRequests(record);
-      const expected = name === 'load' ? phase.expected?.get : expectedByStage[name];
-      if (expected !== undefined) {
+      const expected =
+        SUITE === 'large'
+          ? expectedLargeByStage[name]?.get
+          : name === 'load'
+            ? phase.expected?.get
+            : expectedByStage[name];
+      const expectedPut = expectedLargeByStage[name]?.put;
+      if (expectedPut !== undefined) record.expectedPuts = expectedPut;
+      if (SUITE === 'large') {
+        // The large suite's stages are held to both classes by one function, so a mismatch in either is found the same way.
+        if (expected !== undefined) record.expectedGets = expected;
+        recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);
+      } else if (expected !== undefined) {
         record.expectedGets = expected;
         if (kept.get !== expected) {
           (results.expectedMissed ??= []).push(
@@ -1147,7 +1314,9 @@ async function main() {
       }
       log(
         `${name}: ${record.requests.put} PUT-class + ${record.requests.get} GET-class` +
-          (expected === undefined ? '' : ` (expected ${expected} GET-class)`) +
+          (expected === undefined
+            ? ''
+            : ` (expected ${expectedPut === undefined ? '' : `${expectedPut} PUT-class and `}${expected} GET-class)`) +
           (discarded.length === 0
             ? ''
             : `, of which ${discarded.length} discarded sample${discarded.length === 1 ? '' : 's'} made ` +
@@ -1226,6 +1395,30 @@ async function main() {
             medianUploadBytes: median(xs.map((l) => l.uploadBytes)),
           };
 
+    if (SUITE === 'large') {
+      await runLargeSuite({
+        stage,
+        sample,
+        load,
+        perLoad,
+        summarise,
+        snap,
+        startDepth,
+        depthOf,
+        checkCeiling,
+        msSince,
+        median,
+        spreadOf,
+        timedStore,
+        log,
+        plan,
+        recordMissed: (message) => {
+          (results.expectedMissed ??= []).push(message);
+          console.error(`calibrate: EXPECTED COUNT MISSED — ${message}`);
+        },
+      });
+    }
+
     await stage('load', {
       run: async () => {
         const loads = [];
@@ -1263,7 +1456,7 @@ async function main() {
         };
       },
     });
-    const objectBytes = results.phases.load.singlePart.medianObjectBytes ?? Number.NaN;
+    const objectBytes = results.phases.load?.singlePart?.medianObjectBytes ?? Number.NaN;
 
     // ---- cold intersects: every one fetches from the object store -------------------------------------------------
     // A FRESH store per intersect, so no cache can answer it. With one store reused, most intersects after the

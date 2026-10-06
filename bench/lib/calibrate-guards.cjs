@@ -564,6 +564,17 @@ function checkCleanupId(runId) {
 }
 
 /**
+ * Where a suite's evidence lives. The default suite's is {@link EVIDENCE_DIR}; the large suite's is a directory of its
+ * own beneath it, which the figures gates read nothing from: they list `EVIDENCE_DIR` without descending, so a large
+ * run can never become the default suite's latest report.
+ */
+function suiteEvidenceDir(suite) {
+  if (suite === 'default') return EVIDENCE_DIR;
+  if (suite === 'large') return `${EVIDENCE_DIR}/large`;
+  throw new Error(`"${String(suite)}" is not a suite: the suites are default and large`);
+}
+
+/**
  * Where a run's results are written, relative to the repository root.
  *
  * A real run that finished writes its evidence under {@link EVIDENCE_DIR}. One that did not — interrupted, failed
@@ -572,15 +583,20 @@ function checkCleanupId(runId) {
  * own, which git also ignores: it writes the same shape as a real run, and under the real run's name it would sit
  * one `git add` away from being committed as the evidence behind a published figure.
  */
-function resultsFile(rehearse, runId, { partial = false, stamp } = {}) {
-  if (rehearse) return 'bench/calibrate-aws-rehearsal.json';
+function resultsFile(rehearse, runId, { partial = false, stamp, suite = 'default' } = {}) {
+  const dir = suiteEvidenceDir(suite);
+  if (rehearse) {
+    return suite === 'default'
+      ? 'bench/calibrate-aws-rehearsal.json'
+      : `bench/calibrate-aws-rehearsal-${suite}.json`;
+  }
   const id = checkRunId(runId);
   if (stamp !== undefined) {
     // Where a run goes whose own name was taken while it ran: named for its start, which only it can have.
     if (!/^\d{8}T\d{9}Z$/.test(stamp)) throw new Error(`"${stamp}" is not a run's start stamp`);
-    return `${EVIDENCE_DIR}/${id}.${stamp}.partial.json`;
+    return `${dir}/${id}.${stamp}.partial.json`;
   }
-  return `${EVIDENCE_DIR}/${id}${partial ? '.partial' : ''}.json`;
+  return `${dir}/${id}${partial ? '.partial' : ''}.json`;
 }
 
 /** A run's start as a file-name stamp: `2026-09-23T05:01:02.345Z` is `20260923T050102345Z`. */
@@ -749,6 +765,7 @@ module.exports = {
   maskAccount,
   redact,
   resultsFile,
+  suiteEvidenceDir,
   stampOf,
   checkRunId,
   checkCleanupId,

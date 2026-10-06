@@ -115,6 +115,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/drivers/_shared/registry-fleet.test.ts':
     "tests the registry drivers' tokens and stamps; its three loads only seed rows for those checks, so a second " +
     'run under the serialized input would repeat 72 registry tests and exercise no part of the load path',
+  'tests/bench/calibrate-large.test.ts':
+    'its loads seed the in-memory backend whose requests it counts for the large suite, from layouts of up to 20 million ids; ' +
+    'a second run under the serialized input would repeat those counts and exercise no part of the load path',
   'tests/bench/calibration-figures-store-load.test.ts':
     'names store.load() only in the prose and strings it checks, and loads nothing, so there is nothing to route',
   'tests/docs/calibration-reports.test.ts':

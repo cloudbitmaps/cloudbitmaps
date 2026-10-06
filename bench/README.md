@@ -35,8 +35,8 @@ For what each published number means, how it was measured, and what it does *not
 | `encoding.cjs` | Encoded size of the same ids under roaring against a fixed array, a fixed bitset and a fixed run-length encoding — the evidence behind the site's claim that roaring's advantage is choosing a representation *per chunk*. | `pnpm bench:encoding` | `encoding-results.json` | no |
 | `event-loop.cjs` | `store.load()` of 1M ids spread across the id space onto in-memory storage, through the built package, 20 trials each in a fresh process: the load's wall time and the longest single event-loop stall, with the store's yielding clock and with a clock that yields nothing. Records the CPU, Node version, commit and the load average before and after, so a busy machine is visible in the evidence. Wall-clock and machine-dependent: recorded, not asserted. | `pnpm bench:event-loop` (builds first; wants an idle machine); `EVENT_LOOP_INJECT=1` to persist; `pnpm bench:event-loop:check` to verify | `event-loop-results.json` | yes — `pnpm bench:event-loop:check` fails if the guide's event-loop section, or the two source comments quoting the same run, differ from the results file. It never re-measures, because CI hardware is not the hardware that measured |
 | `load-input.cjs` | `store.load()` of the same set from ids (a plain array, and through an async generator), from `{ bitmap }` and from `{ serialized }`, onto in-memory storage, through the built package, 5 trials each in a fresh process: five sets, among them a 12M-member sparse set in 65,536 chunks and one container layout at 10 % and at 90 % density, which a path with per-id work pays nine times for and a path without it does not. Records the wall time, the longest event-loop stall, and that every input wrote the same bytes. Wall-clock and machine-dependent: recorded, not asserted; that no per-id code runs is asserted on every pull request by `tests/roaring/load-no-per-id.test.ts`, which counts calls. | `pnpm bench:load-input` (builds first; wants an idle machine); `LOAD_INPUT_INJECT=1` to persist; `pnpm bench:load-input:check` to verify | `load-input-results.json`, not yet recorded | yes — `pnpm bench:load-input:check` fails if the loading guide's "How fast a bitmap loads" figures differ from the results file, or quote any figure while there is none. It never re-measures |
-| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per finished real run, `calibration/<runId>.json`; a real run that does not finish writes `calibration/<runId>.partial.json`, and a rehearsal `calibrate-aws-rehearsal.json`, both of which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts`, and how it discards a sample that meets a transient fault, via `tests/bench/calibrate-samples.test.ts` |
-| `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/<runId>.json` in CloudShell, which belongs in `calibration/`, or `~/<runId>.partial.json` for a run that did not finish | no |
+| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per finished real run, `calibration/<runId>.json`; a real run that does not finish writes `calibration/<runId>.partial.json`, and a rehearsal `calibrate-aws-rehearsal.json`, both of which git ignores. `--suite large` writes the same three kinds of file for the [large suite](#the-large-suite), its evidence under `calibration/large/` and its rehearsal to `calibrate-aws-rehearsal-large.json` | its guards, via `tests/bench/calibrate-guards.test.ts`, and how it discards a sample that meets a transient fault, via `tests/bench/calibrate-samples.test.ts` |
+| `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/<runId>.json` in CloudShell, which belongs in `calibration/`, or `~/<runId>.partial.json` for a run that did not finish; the large suite's land in `~/bench/calibration/large/` and belong in `calibration/large/` | no |
 | `check-elasticache-prices.cjs` | Holds the estimator's on-demand catalogue, and the reserved prices `sizing.cjs` prices Redis with, to a downloaded AWS price list, node by node and on each node's full key. | `node bench/check-elasticache-prices.cjs <offer.json>`, by hand whenever the cited price list version moves | nothing: it exits non-zero, naming every node that disagrees | no: it needs the price list, a 2 MB download from AWS. CI tests its reader, `tests/bench/elasticache-prices.test.ts` |
 
 ## The results files, and what reads them
@@ -57,7 +57,7 @@ figure is published from it with no check behind it, the row says that too.
 | `event-loop-results.json` | `event-loop.cjs` | `event-loop.cjs --check`, against the guide's "What blocks the event loop, and where to run it" section and the figures quoted in `packages/core/src/core/cooperative.ts` and `packages/roaring/src/system-clock.ts` |
 | `encoding-results.json` | `encoding.cjs` | `scripts/site-figures.cjs`, against the sizes `site/flavors/roaring.html` quotes |
 | `rss-gate-results.json` | `scripts/rss-gate.sh` | `scripts/site-figures.cjs` — the hard RSS ceiling on the benchmarks page |
-| `calibration/` | `calibrate-aws.cjs`: one evidence file per real run, beside that run's report. The directory has [its own README](calibration/README.md), which lists every run | `tests/docs/calibration-reports.test.ts`, against each run's report and the benchmarks page's section on the latest run; `scripts/site-figures.cjs`, against the site's single-bucket figures |
+| `calibration/` | `calibrate-aws.cjs`: one evidence file per real run, beside that run's report. The directory has [its own README](calibration/README.md), which lists every run; the large suite's runs live in `calibration/large/`, which has [one of its own](calibration/large/README.md) and which these gates do not read | `tests/docs/calibration-reports.test.ts`, against each run's report and the benchmarks page's section on the latest run; `scripts/site-figures.cjs`, against the site's single-bucket figures |
 
 A rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores — it has the same shape as a real
 run's file, so under an evidence name it would be one `git add` from being committed as the evidence.
@@ -365,7 +365,8 @@ library that does not, before it creates anything.
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, and runs the harness against those — so the figures describe what a
 consumer installs, not a build of this checkout. A finished run's results land in `~/<runId>.json`, and an
-interrupted one's in `~/<runId>.partial.json`, which is not evidence. A name already taken in `~` is left alone,
+interrupted one's in `~/<runId>.partial.json`, which is not evidence; the large suite's land under
+`~/bench/calibration/large/` instead. A name already taken in `~` is left alone,
 and this run's copy goes beside it with a timestamp, still a `.partial.json` if it was one. The script runs the
 harness as a job of its own and passes on every signal that would stop it: a Ctrl-C, a closed CloudShell tab or a
 `kill` reaches the harness exactly once, and the results are copied out only after it has stopped, with SIGPIPE
@@ -373,16 +374,101 @@ from a reader that has gone, such as a `tee`, ignored while they are. Were the h
 SIGTERM or a hang-up would stop the script at once, delete the scratch directory under the harness mid-teardown and
 copy nothing, and a SIGTERM to the script alone would never reach the harness at all. A job of its own may write to
 the terminal only while `tostop` is off, as it is by default, so a terminal with it set is refused before anything is installed. Commit a finished run's file as
-`bench/calibration/<runId>.json`, with its report — [`calibration/`](calibration/README.md) says how. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script; its
+`bench/calibration/<runId>.json` (a large-suite run's as `bench/calibration/large/<runId>.json`), with its report — [`calibration/`](calibration/README.md) says how. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script; its
 results land in `~/calibrate-aws-rehearsal.json`.
+
+### The large suite
+
+`--suite large` (or `CR_CALIBRATE_SUITE=large`; `CR_CALIBRATE_SUITE` is `default` or `large`, and a run that names two
+different suites is refused) measures combines on operands of about a million, five million and ten million ids, which
+the default suite's layout cannot hold. It is a suite of its own: its own table of stages, its own bound, its own exact
+expected counts and its own evidence directory, so the default suite's stages, projection, evidence and report gates are
+the same whether or not this suite has ever run. The default suite's workload settings (`CR_CALIBRATE_SEGMENTS`,
+`CR_CALIBRATE_READS` and the rest) are refused under it by name, since a run that ignored one would measure something
+other than the setting says.
+
+**The shapes.** Two operand segments a size, each of about 1,500 chunks, 20 % of their ids shared, laid out by
+`planLayout` at the stride that gives that many chunks: `floor(1500 x 65536 / n)`, which is 98, 19 and 9.
+
+| ids an operand | chunks | shared chunks | an operand's object | parts at 8 MiB |
+|---|---|---|---|---|
+| 1,000,000 | 1,497 | 300 | 2.04 MB, array containers | one PUT |
+| 5,000,000 | 1,450 | 290 | 10.04 MB, array containers | 2 |
+| 10,000,000 | 1,374 | 275 | 11.29 MB, bitset containers | 2 |
+
+The object sizes are what the engine writes for those ids (counted in memory before anything is created), and the parts
+follow from them. No container is a run, so a run-heavy operand is not measured.
+
+**The stages**, in run order, each size in turn. `R` is `CR_CALIBRATE_LARGE_READS` (default 40, the published run's
+count) and `I` is `CR_CALIBRATE_LARGE_INTOS` (default 5).
+
+| stage | what it does | requests it is expected to make |
+|---|---|---|
+| `largeLoad` | the 6 operand segments through `store.load()` | a first load each, as the default suite's `load` stage: a multipart object swaps its PUT for a create, its parts and a complete |
+| `largeIntersect` | `R` uncached intersects of the two operands, each on a fresh store | a pointer and a tail an operand and the ranges of the shared chunks: 6, 8 and 10 GET |
+| `largeUnion` | `R` uncached unions | the ranges of every chunk of both operands: 8, 24 and 26 GET |
+| `largeAndNot` | `R` uncached `andNot`s, one segment against one | the include's every chunk and the exclude's shared ones: 7, 16 and 18 GET |
+| `largeInto` | `I` calls each of `intersectInto`, `unionInto` and `andNotInto`, on a fresh store, onto a destination segment of its own per verb | the read's GETs and the destination's load: the first call a first load, the repeats loads of a segment that has a generation, which make one request fewer. The output's parts follow its size: a union of 3.67, 18.07 and 20.32 MB is one PUT, then 3 parts; an `andNot` of 1.63, 8.03 and 9.03 MB is one PUT, one PUT, then 2 parts |
+
+Each read is drained a chunk at a time (`batches()`), with every id counted and summed: it must be exactly the ids the
+layout says. The default suite's reads are drained one id at a time (`for await`), so **the large suite's latencies are
+not comparable with the default suite's**: they time a different way of consuming a stream, as well as other operands.
+An `*Into` call must publish exactly the cardinality the layout says.
+
+**Counted, not restated.** The expected counts are what the real engine makes of these layouts, counted over the
+in-memory backend before anything is created (`lib/large-counts.cjs`), as the default suite counts its ranges. Each stage
+is held to its exact count in both classes, PUT-class and GET-class, and a stage that differs is recorded under
+`expectedMissed`. A rehearsal against MinIO runs the same loads and reads through the S3 driver, so a wrong table fails
+it. At the default plan the stages are expected to make 169 PUT-class and 5,652 GET-class requests: $0.0031 at
+`us-east-1` on-demand prices, with the bucket's own requests left out (**derived** from the counts; nothing of this suite
+has run on a cloud).
+
+**The bound.** The ceiling is checked against the most the suite can request, which for a cold read is the pointer, the
+tail and one more request an operand, and the range requests of the chunks it needs. A range is bounded by bytes, not
+by chunks: two neighbouring range requests either have more than the gap between them, or would together span more than
+the read cap, and a chunk is far smaller than the difference, so a read of an object of `B` bytes makes at most
+`ceil(B / 256 KiB) + 1` range requests, 9, 40 and 45 for the three operands. Bounding by chunks would put the same plan
+at more than twenty times the byte bound, and over the ceiling. The two constants are literal copies in
+`lib/calibrate-large-stages.cjs` (neither is exported from a package, and none becomes one), each held by a test to its
+source, and by the harness, before it creates anything, to the installed packages' own text (a CloudShell run measures the
+published packages, which another release's constants could differ in, and is refused if they do); a property test holds the engine to the cap over random selective layouts and over layouts built to approach it,
+and fails against a cap of half its size. A load's bound is the default suite's, with the parts its object can take. At
+the default plan the bound is 663 PUT-class and 28,919 GET-class requests with every discard the run allows, which a
+sample discarded part-way through an `*Into`'s upload is held to as well as one discarded in a read, $0.0149, and
+the ceiling stays five cents. The per-sample ceiling check and the end-of-run `PROJECTION EXCEEDED` check work as they
+do for the default suite.
+
+**Rehearse it, then run it.** `node bench/calibrate-aws.cjs --suite large` prints the projection: the layouts, each
+stage's bound and exact expected requests, and the bound priced. `node bench/calibrate-aws.cjs --rehearse --suite large`
+runs the suite against MinIO (about a minute), writes `calibrate-aws-rehearsal-large.json`, and holds every stage to its
+counts. A real run is the same command with `--run` and the guards above, or `CR_CALIBRATE_SUITE=large bash
+bench/calibrate-cloudshell.sh` from CloudShell, which validates the suite name before it installs anything and copies
+the evidence out of `bench/calibration/large/` to the same path under `~`, so that it is committed beside the large
+suite's runs and never the default suite's. `CR_CALIBRATE_LARGE_READS` and `CR_CALIBRATE_LARGE_INTOS` size the plan.
+
+**What the machine needs.** A rehearsal or a run prints the memory available and the disk free in the home directory
+once, as `free -m` and `df -h ~` do, and refuses to start, before it imports the library or creates anything, below 768
+MiB of memory or 256 MiB of disk. The harness holds no operand on disk: ids stream from a generator into the load. On a
+platform with no figure for the memory available (macOS), the machine's total stands in and the line says so.
+`CR_CALIBRATE_LARGE_MIN_MEMORY_MB` and `CR_CALIBRATE_LARGE_MIN_DISK_MB` raise a floor, never lower one.
+
+**Evidence** goes under `calibration/large/`, one file a finished run, partials and rehearsals ignored by git as the
+default suite's are. `evidenceFiles` and the report gates list `calibration/` without descending into it, so a large run
+is never the default suite's latest evidence, and `tests/bench/calibrate-large.test.ts` holds that, and the large
+evidence's own gate, which passes with no run committed and is proven on a rehearsal's file.
+
+**What it will not show.** One storage class in one region (`us-east-1`), one client, cold reads on fresh stores, and the
+harness's own socket limit; array-only and bitset-only containers; one task at a time, and `keep` left at its default for
+the destinations. Latencies from different CloudShell sessions are not comparable.
 
 ### What it does not measure
 
 Its scope is the three measurements above, on one workload shape. Still owed, and **not** in this harness yet:
 
-- **The `*Into` verbs**, which publish their result as a new generation of a destination segment.
-- **Other shapes of combine** — an intersect of more than two operands, a union, or an `andNot` with a different
-  include operand. It measures two operands, and one include operand against ten excluded.
+- **The `*Into` verbs and a union at the default suite's size.** The [large suite](#the-large-suite) measures them, on
+  operands of a million to ten million ids; the default suite's operands hold 500,000.
+- **Other shapes of combine** — an intersect of more than two operands, or an `andNot` with a different include
+  operand. This suite measures two operands, and one include operand against ten excluded.
 - **Lambda.** CloudShell is a long-lived shell inside the region; a function's cold start and initialisation are
   a separate figure, which needs a run from inside a function.
 - **A steady load at another `keep`.** The steady-load stage runs at `keep: 12`, with a first load, 12 reloads, 4 loads that
@@ -403,6 +489,10 @@ real run — which is why the probe refuses anything that is not a clean 404.
 |---|---|
 | `lib/aws-meter.cjs` | Counts every request the AWS SDK sends, as middleware — every attempt, retries included, read from the attempt count the SDK's retry loop records, and including requests the library never reports, like a multipart upload's parts. Classifies by **billing class**, not HTTP verb (a `LIST` bills like a `PUT`, twelve and a half times a `GET`), and splits `GetObject` by the shape of its `Range` header so chunk reads and the tail read can be told apart. An unrecognised command is counted as a paid read, never as free. A `HeadObject` names its object's size and sends no body, so it adds no bytes read. |
 | `lib/calibrate-guards.cjs` | The guards above, plus the planned id layouts (`planLayout`, `planSweepLayout`, `layoutIds`), the account mask and the redaction of error text (`maskAccount`, `redact`), what LEFTOVERS says last (`leftoversHint`), which file each kind of run writes and what makes a usable run id (`resultsFile`, `stampOf`, `EVIDENCE_DIR`, `checkRunId`, `checkCleanupId`), the workload's bounds and the one priced region (`checkWorkload`, `MAX_SEGMENTS`, `checkRunRegion`), how the timed and the warm stores are built (`TIMED_STORE`, `warmStore`, `STORE_PREFIX`), how many attempts each of the two S3 clients makes (`clientConfigs`), and what teardown counts as done, what it refuses and how long it waits (`bucketIsGone`, `uploadIsGone`, `TEARDOWN_PASSES`, `foreignKeys`, `MAX_LISTING_PAGES`, `ADMIN_TIMEOUTS`). Pure functions, so each can be tested against the bug it exists for. |
+| `lib/calibrate-large-stages.cjs` | The large suite's table of stages (`LARGE_STAGES`), its shapes (`planLargeLayout`, `largeStride`), the most each stage can request, with each range bounded by the object's bytes (`projectLarge`, `rangeCap`) and the exact requests the engine is expected to make (`expectedLarge`), the literal copies of the engine's coalescing constants and the driver's part size, which a test holds to their source and the harness holds to the installed packages' own (`constantsIn`, `checkEngineConstants`), which suite a run is and where it was named (`resolveSuite`, `suiteFrom`), the knobs (`resolveLargeKnobs`, `refuseDefaultKnobs`) and the floors the machine must meet (`checkResources`, `resolveFloors`). Pure, so each can be tested against the bug it exists for. |
+| `lib/calibrate-large.cjs` | The large suite's stages: the loads, the uncached intersects, unions and `andNot`s and the `*Into` calls, run through the harness's own meter, discard ledger, load helper and ceiling check, each read held to exactly the ids the layout says. Also its projection-only report (`projectionLines`). |
+| `lib/calibrate-large-resources.cjs` | What the machine has for the large suite, and the installed engine's text to check its constants against (`installedSources`): the memory available (`/proc/meminfo`'s `MemAvailable`, the machine's total where there is no such figure) and the disk free in the home directory, and the one line a run prints about them. |
+| `lib/large-counts.cjs` | Counts the large suite's requests by running the real engine over the in-memory backend: the operands' object sizes, each cold read's pointers, tails and ranges, and each `*Into` call repeated onto one destination, with its parts and PUT-class requests. The engine's module is passed in, so a test counts the source. |
 | `lib/calibrate-process.cjs` | How a run stops and what it leaves behind: the gate that stops the workload's client and waits for what it sent before teardown (`interruptGate`, `stopThenTearDown`), what a failure records, its name, its code and its message, and what a signal exits with (`faultOf`, `failureOf`, `describeFault`, `exitCodeAfterSignal`), the SDK's own classes of retryable fault (`sdkFaultClasses`), the terminal's streams opened at startup and silenced on a hang-up (`holdTerminal`, `silenceTerminal`), results written without ever replacing a file (`writeResultsFile`), and the harness commit, marked when dirty (`harnessRef`). Kept apart from the pure guards so each can be driven in a test. |
 | `lib/calibrate-samples.cjs` | The timed samples that survive a transient fault: what counts as one (`transientFault`), the ledger every timed sample runs through, which discards a failed one whole, records it beside its stage and runs it again, at most three a run and two a stage (`discardLedger`, `DISCARDS_PER_RUN`, `DISCARDS_PER_STAGE`), the wait for a failed sample's requests to answer (`quiesce`), a stage's requests with and without its discards (`keptRequests`, `discardedRequests`), and a rehearsal's injected faults (`parseFaultGets`, `injectFaults`). |
 | `lib/calibrate-spread.cjs` | The spread layout: the calibration overlap with its shared chunks at keys spread uniformly over each segment, from a fixed seed, so the bytes between two shared chunks are chunks an intersect never wants. A pure function (`planSpread`, `spreadIds`) whose placement is reproducible and whose overlap, as a count and a sum, is known exactly. |

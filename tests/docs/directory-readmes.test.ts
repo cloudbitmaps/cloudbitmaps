@@ -125,6 +125,7 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 const DIRECTORIES = [
   { dir: 'bench', minimum: 12, lib: true },
   { dir: 'bench/calibration', minimum: 2, lib: false },
+  { dir: 'bench/calibration/large', minimum: 0, lib: false },
   { dir: 'scripts', minimum: 20, lib: true },
 ];
 

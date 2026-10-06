@@ -13,6 +13,20 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on
+  operands of about a million, five million and ten million ids, which the default suite's layout refuses: two operand
+  segments a size, about 1,500 chunks each with 20 % shared. Its stages load the six operands through `store.load()`,
+  then run uncached intersects, unions and `andNot`s and repeated `intersectInto`, `unionInto` and `andNotInto` calls
+  onto a destination of their own, 40 reads and 5 `*Into` calls a size by default (`CR_CALIBRATE_LARGE_READS`,
+  `CR_CALIBRATE_LARGE_INTOS`). Each stage is held to the exact PUT-class and GET-class requests the real engine makes of
+  these layouts, counted in memory before anything is created: at the default plan 169 PUT-class and 5,652 GET-class,
+  about $0.0031. The pre-flight bound bounds each range request by the object's bytes, not by its chunks, at most
+  `ceil(bytes / 256 KiB) + 1` ranges an object, which a property test holds the engine to; the bound is 663 PUT-class
+  and 28,919 GET-class, $0.0149, under the five-cent ceiling, which is unchanged. The suite has its own evidence
+  directory, `bench/calibration/large/`, which the default suite's figures and report gates do not read, and it
+  refuses to start on a machine with under 768 MiB of memory or 256 MiB of disk free, after printing what the machine
+  has. The default suite's stages, projection, expected counts and evidence are unchanged. Nothing is measured on a
+  cloud yet: the suite has been rehearsed against MinIO only. No library code, package or version changes.
 - **The calibration harness measures a steady `store.load()`.** A new last stage, `steadyLoad`, loads one small segment
   18 times at `keep: 12` and records each load's requests by class (PUT, GET, HEAD, LIST, DELETE), its bytes and its
   time. Each load is held to the requests of its kind on S3's request shape: the first load, the loads up to generation
