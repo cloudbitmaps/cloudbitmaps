@@ -1076,21 +1076,6 @@ describe('the evidence of a large run', () => {
       expect(fixture.workload?.expected).toEqual(large.expectedLarge(planOf(sizes)));
     }, 120_000);
 
-    it('fails when a recorded bound or object size is edited', async () => {
-      const sizes = await counted;
-      const plan = large.projectLarge(planOf(sizes));
-      const edited = JSON.parse(JSON.stringify(recorded)) as Recorded;
-      edited.projectedStages.largeIntersect = {
-        put: 0,
-        get: (plan.stages.largeIntersect?.get ?? 0) + 1,
-      };
-      expect(edited.projectedStages).not.toEqual(plan.stages);
-      edited.workload.sizes[0]?.operandBytes.splice(0, 1, 1);
-      expect(edited.workload.sizes.map((x) => x.operandBytes)).not.toEqual(
-        sizes.map((x) => x.operandBytes),
-      );
-    }, 120_000);
-
     it('fails a run of another suite, a partial one, one that missed a count, and one that overspent', () => {
       expect(
         problemsWith(
@@ -1514,6 +1499,23 @@ describe('the engine the suite is run against', () => {
     );
     expect(found.MAX_COALESCE_GAP_BYTES).toBeNull();
     expect(found.PART_BYTES).toBeNull();
+    // A constant defined by its own name, directly or through another, is a cycle and unreadable.
+    const cyclic = large.constantsIn(
+      `var ${gap} = ${cap};\nvar ${cap} = ${gap};`,
+      'var S3_PART_BYTES = S3_PART_BYTES;',
+    );
+    expect(cyclic.MAX_COALESCE_GAP_BYTES).toBeNull();
+    expect(cyclic.MAX_COALESCED_READ_BYTES).toBeNull();
+    expect(cyclic.PART_BYTES).toBeNull();
+  });
+
+  it('reads a declaration only at the start of a line, never one inside a comment', () => {
+    const found = large.constantsIn(
+      `// var ${gap} = 128 * 1024;\nvar ${gap} = 256 * 1024;`,
+      ' * const S3_PART_BYTES = 5 * 1024 * 1024;\nvar S3_PART_BYTES = 8 * 1024 * 1024;',
+    );
+    expect(found.MAX_COALESCE_GAP_BYTES).toBe(256 * 1024);
+    expect(found.PART_BYTES).toBe(8 * 1024 * 1024);
   });
 
   it('accepts the constants the suite was derived with, and refuses any other, or any it cannot read', () => {

@@ -404,14 +404,22 @@ function recordCountMisses(results, name, kept, expected, report) {
  * the TypeScript they are built from). A constant not found, or not a plain arithmetic expression, is `null`.
  */
 function constantsIn(coreText, s3Text) {
+  // A declaration at the start of a line, so a commented-out one is never read.
   const find = (text, name) => {
-    const m = new RegExp(`(?:var|const|let) ${name}\\d*(?:: number)? = ([^;]+);`).exec(text);
+    const m = new RegExp(
+      `^\\s*(?:export )?(?:var|const|let) ${name}\\d*(?:: number)? = ([^;]+);`,
+      'm',
+    ).exec(text);
     return m === null ? null : m[1].trim();
   };
-  const evaluate = (expr, text) => {
+  const evaluate = (expr, text, seen = new Set()) => {
     if (expr === null) return null;
-    // A name stands for another constant of the same file: the read cap is the decode cap.
-    const named = /^[A-Za-z_]\w*$/.test(expr) ? evaluate(find(text, expr), text) : expr;
+    // A name stands for another constant of the same file: the read cap is the decode cap. A name met twice is a
+    // cycle, and reads as unreadable.
+    if (/^[A-Za-z_]\w*$/.test(expr) && seen.has(expr)) return null;
+    const named = /^[A-Za-z_]\w*$/.test(expr)
+      ? evaluate(find(text, expr), text, new Set([...seen, expr]))
+      : expr;
     if (typeof named === 'number') return named;
     if (named === null || !/^[\d\s*+()<]+$/.test(named)) return null;
     const n = Function(`"use strict"; return (${named});`)();
