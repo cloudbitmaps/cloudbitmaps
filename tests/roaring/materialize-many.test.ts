@@ -429,4 +429,26 @@ describe('store.materializeMany', () => {
     published(run.outputs[0]);
     expect(await w.ids('d-carries')).toContain(2);
   });
+
+  it("an erasure that rewrites a destination while the call runs makes that output's publish lose", async () => {
+    const w = await batchWorld({ a: [1, 2, 3, 70_000] });
+    await w.load('d', [2, 5]);
+    const s = (n: string) => w.store.segment(n);
+    let hit = false;
+    w.hooks.beforeCas = async (seg) => {
+      if (hit || seg !== 'd') return;
+      hit = true;
+      await w.other.eraseSubject(2, { allNamespaces: true });
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a') },
+      outputs: [{ dest: s('d'), expr: 'a' }],
+      keep: 1,
+    });
+    expect(run.outputs[0]).toMatchObject({
+      published: false,
+      error: expect.any(WriteConflictError),
+    });
+    expect(await w.ids('d')).toEqual([5]);
+  });
 });

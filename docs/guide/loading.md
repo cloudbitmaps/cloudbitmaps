@@ -604,6 +604,124 @@ segment with a registry row but no ids is still accepted, because somebody creat
 refused. `store.exists()` answers `false` for the first two, since a read of them finds nothing. Pass
 `allowAbsentOperands: true` to combine against a name that may not exist yet; it then reads as empty.
 
+## Many outputs from one pass: `materializeMany`
+
+A refresh that writes hundreds of segments, each a different `and` / `or` / `andNot` over the same stored operands,
+costs a lot as `*Into` calls: each one reads its operands again, and a nested expression needs a scratch segment per
+inner group, a published generation each. `store.materializeMany` computes all the outputs together. It reads each
+operand's chunks once for every output that uses them, evaluates every output chunk by chunk, and publishes each as the
+`*Into` it replaces would, to a `dest` of its own.
+
+```ts
+const run = await store.materializeMany({
+  operands: {
+    us: store.segment('us'),
+    engaged: store.segment('engaged'),
+    optOut: store.segment('global-opt-out', { namespace: 'suppression' }),
+  },
+  outputs: [
+    { dest: store.segment('send-1'), expr: { and: ['us', 'engaged'] }, exclude: ['optOut'] },
+    { dest: store.segment('send-2'), expr: { andNot: ['us', 'engaged'] }, exclude: ['optOut'] },
+    { dest: store.segment('send-3'), expr: { and: [{ or: ['us', 'engaged'] }, 'engaged'] } },
+  ],
+  keep: 3, // required
+});
+run.outputs[0]; // a MaterializeResult, or { published: false, error }
+run.stats; // groups, requests, the budget used, memory, and each operand's generations
+```
+
+**The expression.** A string names an operand; a node holds exactly one of `and`, `or` or `andNot` over a non-empty
+list of expressions, and `andNot` subtracts every entry after the first from the first, so it takes at least two. Trees
+nest to 64 operators and 4,096 nodes, and are plain JSON. `exclude` is a list of expressions subtracted from the
+output. A `dest` cannot also be an operand, and no two outputs share a `dest`: one call is one pass over operands that
+do not change under it, so chaining is two calls.
+
+**What a result means.** `run.outputs[i]` is index-aligned with `outputs` and is exactly what output `i`'s `*Into`
+would have returned: a `MaterializeResult`, published or refused with its `reason`. For what the `*Into` would have
+thrown, or what stopped it, it is `{ published: false, error }`: a lost race (`WriteConflictError`), a publish whose
+outcome is unknown (`TransientError`), a damaged operand (`IntegrityError`), a lapsed lease (`LeaseExpiredError`), a
+pinned exclude that moved (`StaleOperandError`), the memory budget (`BudgetExceededError`). One output's refusal or error
+never stops another. The call throws only for bad input (`ValidationError` naming the output index and the path in the
+expression, before any request), an operand that names no segment unless `allowAbsentOperands`, and a `budget` its own
+plan exceeds, the last two before any chunk is read. Each output's generation is byte for byte what the same ids would
+load, since every chunk goes through the codec's canonical encoding before it is written.
+
+**`keep` is required.** An `*Into` keeps every generation unless told otherwise, and a thousand outputs would leave a
+thousand uncollected destinations on every refresh. The call's `keep` applies to every output, and an output's own
+`keep` overrides it. `guard`, `allowEmpty`, `metadata` and `audit` are per output, with the meaning they have on an `*Into`.
+
+**One generation per operand.** By default (`pin: true`) the call pins each stored operand that is not already pinned,
+so it reads the generation the operand had when the call started, however long the call runs. That is one generation
+per operand, not one instant across operands: two pins are two registry reads, and the registry has no multi-row
+snapshot. On a cold store a pin makes the row and tail reads the pass would have made to open the operand; on a warm one it costs
+one row read and one tail read per operand more. An operand you pass already pinned is used as it is. A generation collected during the call fails the
+outputs that read it with `NotFoundError`, where a live read would have served a mix, so size `keep` on the operands'
+loaders past the call, or lease the pins. `pin: false` reads each operand live, as a combine does, and can describe two
+generations of one operand, which also breaks the call's pruning.
+
+**A pinned exclude is re-checked.** A suppression list that moved during a long call is the dangerous staleness. So
+immediately before the publishes the call re-reads the current generation of every pinned operand that appears in an
+output's `exclude`. If one moved since it was pinned, every output that excludes it gets `{ published: false, error:
+StaleOperandError }` and is not published, and the others publish. `StaleOperandError` carries `code: 'stale-operand'`,
+the operand's name in the call (`operand`) and why (`reason: 'moved'`). It costs one registry read per exclude operand
+per group; an exclude that cannot be re-read is not assumed unchanged, and its outputs are not published.
+`stats.operands[name]` gives each operand's `pinnedGeneration`, `startGeneration` and, for a re-read exclude,
+`endGeneration`; `stats.outputs[i]` gives the operands an output read, the group that computed it and when it ran.
+
+**Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass
+holds **resident**, which is not what it serializes to: a native bitmap costs a fixed amount over its serialized bytes
+(about 440 bytes for a sparse chunk, measured on the shipped codec), so the ledger counts each buffered output chunk, each
+operand stream's ranges and each chunk being evaluated at its resident cost. When the outputs do not fit, they run in
+groups, filled in call order; each group reads its operands once, and a group's buffers are released only as its publishes
+settle, so the next group starts with room. Order related outputs next to each other and fewer operands are read again.
+The ledger is also enforced while the pass runs, so an index that understates a chunk's size cannot grow a group past the
+budget: the largest buffer is dropped and that output runs again alone. An output that cannot fit alone has
+`BudgetExceededError` as its result, naming the budget it needs. The budget is the pass's own count: process memory is more
+(the allocator's slack, the plan's key lists, and the encoded objects being written), about 1.3 times the ledger's high
+water in the measurement below. The pass reads at most 64 range requests at once across all operands, inside the S3
+client's 128 sockets, so many operands do not queue behind the pool with their read timeouts running; `concurrency`
+(default 1) is the range requests held ahead per operand within that window, and `publishConcurrency` (default 8) the
+outputs published at once.
+
+**Reads are chunk-skipping, and bypass the chunk cache.** Each output reads an operand only at the chunks that can change
+its result: an `and` at the keys all its operands hold, an `or` at any, an `andNot` at its left side's keys, and a
+subtrahend only where the left side can overlap it, so a long opt-out list costs reads in proportion to the audience.
+`stats.chunks.pruned` counts the chunks skipped. The pass reads through the storage source and never writes the decoded
+chunk cache, so a batch neither evicts another reader's hot chunks nor is served from them. Every chunk is decoded
+through the checks on untrusted bytes. A key an operand's index lists whose bytes are missing is an error for the outputs
+that read that operand, never an empty chunk: an exclude would otherwise subtract nothing.
+
+**Leases and deadlines.** An expired or released handle anywhere in the call, an operand or a `dest`, is refused before
+any request, as the `*Into` verbs refuse one. A leased operand's lease, and an operand's `expiresAt`, are checked before
+each chunk key is read: a lapse fails only the outputs that read that operand (`LeaseExpiredError` for a lease,
+`ValidationError` for a deadline) and never reads empty. Each `dest`'s lease and deadline are checked again just before
+its publish.
+
+**Requests of a refresh-shaped call.** Counted in memory, by recording every call to the storage and registry drivers, not
+measured on S3: 100 stored operands of 200,000 ids each, 1,000 outputs that are trees of one or two levels of `and` /
+`or` / `andNot`, each with the same opt-out list excluded, every `dest` already holding a generation, `keep: 12`.
+
+| | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments | time |
+|---|---|---|---|---|---|---|---|
+| 1,000 `*Into` calls, nested groups through scratch segments | 149,207 | 2,810 | 4,123 | **156,140** | **3,486** | 855 | 53.0 s |
+| one `materializeMany`, default 256 MiB (6 groups) | 595 | 1,100 | 1,330 | **3,025** | **1,776** | 0 | 13.2 s |
+
+GET-class is range reads, tail reads and registry row reads; PUT-class is object writes and registry writes. The
+publishes, one object and one pointer write per output, are the floor of any design and most of the batch's PUT-class.
+The `*Into` row reads with the default chunk cache, which holds 1,024 chunks, fewer than one operand has; a cache sized
+to the whole working set would cut its range reads and cost the memory to hold it. The call's `stats.requests` reports
+the range reads, chunk reads, registry re-reads and publishes it made, and `stats.budget` the chunk reads it planned and
+used. The tail and row reads of opening an operand are the store's own and are not in `stats`. The default `budget` is
+what the plan needs with headroom, so it trips only when a re-run goes past it; pass `budget` to cap a call, or `false`
+to lift it.
+
+**Erasure.** A batch widens the window of an in-flight read to the length of the call:
+see [a batch of materializations](erasure.md#a-batch-of-materializations).
+
+**Two limits of the form.** Like an `*Into`, a range (`after`, `through`) replaces each destination whole, so several
+tasks each running a range of one expression into one `dest` supersede each other. And an output cannot name another
+output of the call.
+
 ## How it stays correct
 
 This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.

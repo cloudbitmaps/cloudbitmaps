@@ -13,6 +13,32 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`store.materializeMany` writes many `*Into` outputs from one chunk-ordered pass.** Each output is an expression
+  (`and`, `or`, `andNot`, nested to 64 operators) over named stored operands, with an `exclude` list, published as a new
+  generation of its own `dest` exactly as an `*Into` publishes. Every operand chunk is read once for all the outputs of a
+  group that use it, an operand is read only at the chunks an output can hold (an exclude only where the left side can
+  overlap it), and a nested expression needs no scratch segment. `run.outputs[i]` is what the output's `*Into` would have
+  returned, or `{ published: false, error }` for what it would have thrown, so one output's refusal, lost race or damaged
+  operand never stops another; the call throws `ValidationError` for bad input before any request. `keep` is required
+  and an output's own overrides it. Every stored operand is pinned for the call by default, one generation per operand and
+  not one instant across operands (`pin: false` reads live). Immediately before the publishes the call re-reads each
+  pinned operand an output excludes, and an output whose excluded operand moved is not published: it carries the new
+  `StaleOperandError` (`code: 'stale-operand'`, `operand`, `reason: 'moved'`). `maxBufferedBytes` (default 256 MiB)
+  bounds resident bytes, not serialized size (a native bitmap costs about 440 bytes over its serialized bytes), and the
+  outputs run in groups when they do not fit, enforced while the pass runs so an index that understates a chunk cannot
+  grow a group past it. Range requests are held to one window of 64 across all operands. A leased operand's lease and an
+  operand's deadline are checked before each chunk key, and each `dest`'s again at its publish. Every chunk is decoded
+  through the checks on untrusted bytes, and a listed key whose bytes are missing is an error for the outputs reading
+  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call,
+  **counted in memory** by recording every storage and registry driver call, **not measured on S3**: 100 stored operands
+  of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation,
+  `keep: 12`. 1,000 `*Into` calls with scratch segments made 156,140 GET-class (149,207 range reads) and 3,486
+  PUT-class requests with 855 scratch segments; one `materializeMany` made 3,025 GET-class (595 range reads) and 1,776
+  PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
+  `MaterializeManyOutcome`, `MaterializeManyRun`, `MaterializeManyStats`, `MaterializeManyOperandStats`,
+  `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
+  `@cloudbitmaps/roaring`, and `compileCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
+  Nothing existing changes. [Guide](docs/guide/loading.md#many-outputs-from-one-pass-materializemany).
 - **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on
   operands of about a million, five million and ten million ids, which the default suite's layout refuses: two operand
   segments a size, about 1,500 chunks each with 20 % shared. Its stages load the six operands through `store.load()`,

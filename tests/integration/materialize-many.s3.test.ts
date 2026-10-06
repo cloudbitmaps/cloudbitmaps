@@ -121,10 +121,11 @@ describe('materializeMany against S3 (MinIO)', () => {
     });
     // the same ids loaded are the same object
     await store.load({ segment: 'big-ref' }, { bitmap: union });
+    const driver = storage.storage;
     const bytes = async (segment: string): Promise<string> =>
-      Buffer.from(
-        (await storage.storage.getTail({ segment, generation: 0 }, 1 << 30)).bytes,
-      ).toString('hex');
+      Buffer.from((await driver.getTail({ segment, generation: 0 }, 1 << 30)).bytes).toString(
+        'hex',
+      );
     expect(await bytes('big')).toBe(await bytes('big-ref'));
     expect(await s('big').count()).toBe(union.size);
     expect(run.stats.groups).toBe(1);
