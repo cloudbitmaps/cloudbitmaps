@@ -15,6 +15,9 @@
  *   node bench/calibrate-aws.cjs --rehearse                  the workload against MinIO, free — no money guards
  *   node bench/calibrate-aws.cjs --run                       the real thing (region + ceiling + confirmation)
  *   node bench/calibrate-aws.cjs [--rehearse] --cleanup <id> remove a run's resources after a hard kill
+ *   node bench/calibrate-aws.cjs --suite large [--rehearse | --run]   the large suite (operands of 10^6 to 10^7 ids)
+ *                                                            in place of the default one; CR_CALIBRATE_SUITE=large
+ *                                                            names it from the environment
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
@@ -83,7 +86,10 @@ const {
   projectLarge,
   expectedLarge,
   resolveLargeKnobs,
-  resolveSuite,
+  suiteFrom,
+  recordCountMisses,
+  constantsIn,
+  checkEngineConstants,
   refuseDefaultKnobs,
   checkLargeWorkload,
   checkResources,
@@ -92,7 +98,7 @@ const {
 } = require('./lib/calibrate-large-stages.cjs');
 const { countSize } = require('./lib/large-counts.cjs');
 const { runLargeSuite, projectionLines } = require('./lib/calibrate-large.cjs');
-const { resourcesNow } = require('./lib/calibrate-large-resources.cjs');
+const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
 const { coldIntersectIds, coldAndNotIds, collectsByName } = require('./lib/range-counts.cjs');
 const {
   DISCARDS_PER_RUN,
@@ -169,8 +175,10 @@ const resultsFile = (rehearse, runId, options = {}) =>
  * decides the stages, the projection, the expected counts and where the evidence is written.
  */
 let SUITE = 'default';
+/** Where the suite was named: `--suite`, `CR_CALIBRATE_SUITE`, or nowhere, for the default one. */
+let SUITE_SOURCE = 'default';
 try {
-  SUITE = resolveSuite(argv, process.env);
+  ({ suite: SUITE, source: SUITE_SOURCE } = suiteFrom(argv, process.env));
 } catch (err) {
   refuse(err.message);
 }
@@ -441,6 +449,12 @@ async function main() {
     refuse(err.message);
   }
 
+  // Which suite runs, and where it was named, before anything else is said: a suite named by the environment alone is
+  // easy to forget.
+  if (MODE !== 'cleanup' && SUITE_SOURCE !== 'default') {
+    log(`suite: ${SUITE} (named by ${SUITE_SOURCE})`);
+  }
+
   // The large suite holds ten-million-id operands in flight, so a rehearsal and a run state what the machine has,
   // once, and refuse to start below the floor it names, before the library is imported or anything is created.
   let resourcesSeen = null;
@@ -450,6 +464,14 @@ async function main() {
     resourcesSeen = now.have;
     try {
       checkResources(now.have, resolveFloors(process.env));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
+    }
+    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the installed packages
+    // are asked, and a run against others is refused.
+    try {
+      const sources = installedSources(ROOT);
+      checkEngineConstants(constantsIn(sources.core, sources.s3));
     } catch (err) {
       refuse(`${redact(err.message)}. Nothing was created.`);
     }
@@ -1272,19 +1294,12 @@ async function main() {
             ? phase.expected?.get
             : expectedByStage[name];
       const expectedPut = expectedLargeByStage[name]?.put;
-      if (expectedPut !== undefined) {
-        record.expectedPuts = expectedPut;
-        if (kept.put !== expectedPut) {
-          (results.expectedMissed ??= []).push(
-            `${name}: ${kept.put} PUT-class kept, expected ${expectedPut}`,
-          );
-          console.error(
-            `calibrate: EXPECTED COUNT MISSED — ${name}'s kept samples made ${kept.put} PUT-class requests, ` +
-              `the engine is expected to make ${expectedPut}`,
-          );
-        }
-      }
-      if (expected !== undefined) {
+      if (expectedPut !== undefined) record.expectedPuts = expectedPut;
+      if (SUITE === 'large') {
+        // The large suite's stages are held to both classes by one function, so a mismatch in either is found the same way.
+        if (expected !== undefined) record.expectedGets = expected;
+        recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);
+      } else if (expected !== undefined) {
         record.expectedGets = expected;
         if (kept.get !== expected) {
           (results.expectedMissed ??= []).push(

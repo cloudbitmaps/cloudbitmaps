@@ -6,6 +6,7 @@
  */
 const fs = require('node:fs');
 const os = require('node:os');
+const path = require('node:path');
 
 const MIB = 1024 * 1024;
 
@@ -57,4 +58,26 @@ function resourcesNow() {
   };
 }
 
-module.exports = { availableMemoryMB, freeDiskMB, resourcesNow };
+/**
+ * The text of the entry files of the installed `@cloudbitmaps/core` and `@cloudbitmaps/s3`: from a checkout's built
+ * packages, or from the `node_modules` of the scratch directory the CloudShell script installs the published ones in.
+ * A package that is in neither place reads as an empty text, which names nothing.
+ */
+function installedSources(root, read = (f) => fs.readFileSync(f, 'utf8')) {
+  const first = (names) => {
+    for (const rel of names) {
+      try {
+        return read(path.join(root, rel));
+      } catch {
+        // Not there: the other place.
+      }
+    }
+    return '';
+  };
+  return {
+    core: first(['packages/core/dist/index.js', 'node_modules/@cloudbitmaps/core/dist/index.js']),
+    s3: first(['packages/s3/dist/index.js', 'node_modules/@cloudbitmaps/s3/dist/index.js']),
+  };
+}
+
+module.exports = { installedSources, availableMemoryMB, freeDiskMB, resourcesNow };

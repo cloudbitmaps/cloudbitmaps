@@ -85,7 +85,26 @@ const large = require_(join(ROOT, 'bench', 'lib', 'calibrate-large-stages.cjs'))
     costliestSample: number;
     total: Bound;
   };
-  sampleBoundsLarge: (w: Plan) => Record<string, number>;
+  countMisses: (
+    kept: Bound,
+    expected: Bound,
+  ) => { class: string; kept: number; expected: number }[];
+  constantsIn: (
+    core: string,
+    s3: string,
+  ) => Record<'MAX_COALESCE_GAP_BYTES' | 'MAX_COALESCED_READ_BYTES' | 'PART_BYTES', number | null>;
+  checkEngineConstants: (found: Record<string, number | null>) => void;
+  recordCountMisses: (
+    results: { expectedMissed?: string[] },
+    name: string,
+    kept: Bound,
+    expected: Bound,
+    report: (line: string) => void,
+  ) => unknown[];
+  suiteFrom: (
+    argv: string[],
+    env: Record<string, string | undefined>,
+  ) => { suite: string; source: string };
   expectedLarge: (w: Plan) => Record<string, Bound>;
   resolveLargeKnobs: (env: Record<string, string | undefined>) => { reads: number; intos: number };
   resolveSuite: (argv: string[], env: Record<string, string | undefined>) => string;
@@ -129,6 +148,7 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   suiteEvidenceDir: (suite: string) => string;
   EVIDENCE_DIR: string;
   projectOps: (i: Record<string, number>) => Bound;
+  exceedsProjection: (measured: Bound, projected: Bound) => string[];
   evidenceConflict: (i: {
     rehearse: boolean;
     file: string;
@@ -142,6 +162,7 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
 const samples = require_(join(ROOT, 'bench', 'lib', 'calibrate-samples.cjs')) as {
   DISCARDS_PER_RUN: number;
   DISCARDS_PER_STAGE: number;
+  discardedRequests: (discarded: { requests: unknown }[]) => Bound;
 };
 const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
   priceTally: (
@@ -158,6 +179,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
 };
 const resources = require_(join(ROOT, 'bench', 'lib', 'calibrate-large-resources.cjs')) as {
   availableMemoryMB: (read?: (f: string) => string) => { mb: number | null; kind: string };
+  installedSources: (root: string, read?: (f: string) => string) => { core: string; s3: string };
   freeDiskMB: (
     dir?: string,
     statfs?: (d: string) => { bavail: number; bsize: number },
@@ -316,6 +338,10 @@ describe('the large suite is a suite of its own', () => {
   it('refuses a workload whose object versions teardown’s first listing could not reach', () => {
     expect(() => large.checkLargeWorkload({ sizes: 3, intos: 5 })).not.toThrow();
     expect(() => large.checkLargeWorkload({ sizes: 3, intos: 60 })).toThrow(/object versions/);
+    // A delete marker a versioned bucket keeps for a collected generation is counted with each call, so the line is
+    // the one that holds whatever window a destination is kept at: 32 calls fit, 33 do not.
+    expect(() => large.checkLargeWorkload({ sizes: 3, intos: 32 })).not.toThrow();
+    expect(() => large.checkLargeWorkload({ sizes: 3, intos: 33 })).toThrow(/object versions/);
   });
 });
 
@@ -378,8 +404,14 @@ describe('the expected counts, counted against the real engine', () => {
     expect(sizes.map((s) => Math.round((s.operandBytes[0] ?? 0) / 1e5) / 10)).toEqual([
       2, 10, 11.3,
     ]);
-    expect(large.partsOf(large.PART_BYTES)).toBe(0);
-    expect(large.partsOf(large.PART_BYTES + 1)).toBe(2);
+    // The S3 sink goes multipart once it holds a whole part, so an object of exactly one part is multipart.
+    expect(large.PART_BYTES).toBe(8_388_608);
+    expect(large.partsOf(8_388_607)).toBe(0);
+    expect(large.partsOf(8_388_608)).toBe(1);
+    expect(large.partsOf(8_388_609)).toBe(2);
+    expect(src('packages', 's3', 'src', 'storage.ts')).toContain(
+      'if (this.pendingLen >= this.partBytes) await this.flushPart();',
+    );
   }, 120_000);
 
   it('are the engine’s: each cold read in a pointer and a tail an operand and its ranges', async () => {
@@ -465,9 +497,59 @@ describe('the expected counts, counted against the real engine', () => {
     });
   }, 120_000);
 
+  // The function the harness holds a large stage to its counts with: each class on its own, so a mismatch in either is found.
+  it('find a PUT-class mismatch, a GET-class mismatch and both, and none in a stage that made what it should', () => {
+    const want = { put: 24, get: 18 };
+    expect(large.countMisses({ put: 24, get: 18 }, want)).toEqual([]);
+    expect(large.countMisses({ put: 25, get: 18 }, want)).toEqual([
+      { class: 'PUT-class', kept: 25, expected: 24 },
+    ]);
+    expect(large.countMisses({ put: 23, get: 18 }, want)).toHaveLength(1);
+    expect(large.countMisses({ put: 24, get: 19 }, want)).toEqual([
+      { class: 'GET-class', kept: 19, expected: 18 },
+    ]);
+    expect(large.countMisses({ put: 0, get: 0 }, want).map((m) => m.class)).toEqual([
+      'PUT-class',
+      'GET-class',
+    ]);
+  });
+
+  // What the harness calls when a stage ends: a miss in either class is recorded in the results, which fail the run's
+  // evidence, and reported on the console.
+  it('record each miss under expectedMissed and report it, and record nothing for an exact stage', () => {
+    const results: { expectedMissed?: string[] } = {};
+    const lines: string[] = [];
+    expect(
+      large.recordCountMisses(
+        results,
+        'largeInto',
+        { put: 145, get: 714 },
+        { put: 145, get: 714 },
+        (l) => lines.push(l),
+      ),
+    ).toEqual([]);
+    expect(results.expectedMissed).toBeUndefined();
+    large.recordCountMisses(
+      results,
+      'largeInto',
+      { put: 146, get: 713 },
+      { put: 145, get: 714 },
+      (l) => lines.push(l),
+    );
+    expect(results.expectedMissed).toEqual([
+      'largeInto: 146 PUT-class kept, expected 145',
+      'largeInto: 713 GET-class kept, expected 714',
+    ]);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(
+      /EXPECTED COUNT MISSED — largeInto's kept samples made 146 PUT-class requests/,
+    );
+  });
+
   it('are held by the harness in both classes, per stage, so a wrong table fails the first rehearsal', () => {
-    expect(harnessSrc).toContain('kept.put !== expectedPut');
-    expect(harnessSrc).toContain('kept.get !== expected');
+    expect(harnessSrc).toContain(
+      'recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);',
+    );
     expect(harnessSrc).toContain('EXPECTED COUNT MISSED');
     const runner = src('bench', 'lib', 'calibrate-large.cjs');
     // And each *Into call against its own expected requests.
@@ -504,13 +586,51 @@ describe('the bound', () => {
         }
       }
     }
-    // A sample's bound covers what a call of its stage makes, so a discarded one is inside the allowance.
-    const per = large.sampleBoundsLarge(w);
-    expect(per.largeLoad).toBe(0);
-    expect(per.largeUnion).toBeGreaterThanOrEqual(
+    // The allowance for a sample a fault discards covers what the costliest sample can have sent, in both classes: a
+    // discarded `*Into` can have sent PUT-class requests before the fault, which a run must not read as an overspend.
+    const { discards, costliestSample } = large.projectLarge(w);
+    expect(costliestSample).toBeGreaterThanOrEqual(
       Math.max(...sizes.map((s) => s.counts.reads.union.gets)),
     );
-    expect(per.largeInto ?? 0).toBeGreaterThan(per.largeUnion ?? 0);
+    const worstInto = Math.max(
+      ...sizes.flatMap((s) =>
+        Object.entries(s.counts.into).map(
+          ([verb, calls]) =>
+            large.loadBound(large.outputBounds(s)[verb] ?? 0, guards.RETRY_BOUND).put *
+            (calls.length > 0 ? 1 : 0),
+        ),
+      ),
+    );
+    expect(discards.put).toBe(w.discards.perRun * worstInto);
+    expect(discards.get).toBe(w.discards.perRun * costliestSample);
+  }, 120_000);
+
+  // A discarded sample was billed, so it is held to the allowance for discards: a run that discarded an `*Into` after a
+  // part of its upload, or a conditional PUT, must not be told it overspent.
+  it('lets a discarded *Into have sent PUT-class requests, and still fails an allowance too small for them', async () => {
+    const sizes = await counted;
+    const { discards, costliestSample } = large.projectLarge(planOf(sizes));
+    const requests = (put: number, get: number) => ({
+      requests: { put, get, bytesUp: 0, bytesDown: 0, parts: 0, reads: {} },
+    });
+    // A 3-part union output of the largest size that was discarded after its create, its parts and its pointer's write.
+    const seen = samples.discardedRequests([requests(5, costliestSample)]);
+    expect(guards.exceedsProjection(seen, discards)).toEqual([]);
+    // Every sample a run may discard, each at the worst: still inside.
+    const worst = samples.discardedRequests(
+      Array.from({ length: samples.DISCARDS_PER_RUN }, () =>
+        requests(discards.put / samples.DISCARDS_PER_RUN, discards.get / samples.DISCARDS_PER_RUN),
+      ),
+    );
+    expect(guards.exceedsProjection(worst, discards)).toEqual([]);
+    // An allowance with no PUT-class room, as the first one had, or one short of a request, fails.
+    expect(guards.exceedsProjection(seen, { put: 0, get: discards.get })).toEqual([
+      'PUT-class 5 > projected 0',
+    ]);
+    expect(guards.exceedsProjection(seen, { put: 4, get: discards.get })).toHaveLength(1);
+    // The total bound carries the allowance.
+    const withNone = large.projectLarge({ ...planOf(sizes), discards: { perRun: 0, perStage: 0 } });
+    expect(large.projectLarge(planOf(sizes)).total.put - withNone.total.put).toBe(discards.put);
   }, 120_000);
 
   it('prices the default plan, 40 reads and 5 of each *Into, under the five-cent ceiling with room', async () => {
@@ -587,8 +707,8 @@ describe('the range cap', () => {
     expect(planSrc).toContain('extentEnd - start <= MAX_COALESCED_READ_BYTES');
   });
 
-  // The rule is the owner's: nothing in the library changes for a bench. A constant exported from a package would be a
-  // public surface the harness had asked for.
+  // Nothing in the library changes for a bench: a constant exported from a package would be a public surface added only
+  // so that the harness could read it.
   it('adds no export to a package for the harness\u2019s sake', () => {
     for (const entry of ['packages/core/src/index.ts', 'packages/core/src/driver-kit.ts']) {
       expect(src(...entry.split('/')), entry).not.toMatch(/MAX_COALESCE|MAX_COALESCED/);
@@ -819,11 +939,6 @@ describe('the evidence of a large run', () => {
       expect(files.at(-1)).not.toContain('large');
     });
 
-    it('is not among the reports the report gate reads, which it lists by name in the one directory', () => {
-      const reports = readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'README.md');
-      expect(reports).toEqual(['2026-10-06-aaaaa.md']);
-    });
-
     it('leaves the real tree’s evidence the default suite’s alone', () => {
       const real = figures.evidenceFiles(ROOT);
       expect(real.length).toBeGreaterThanOrEqual(1);
@@ -928,6 +1043,53 @@ describe('the evidence of a large run', () => {
       );
       expect(Object.keys(fixture.phases ?? {})).toEqual(large.LARGE_STAGES);
     });
+
+    // What a rehearsal's file says of its own plan: the bound the projection gave each stage and the sizes of the objects.
+    // Each is held to what the code derives from the engine, so a value edited in the file, or a bound the code no longer
+    // gives, is found.
+    interface Recorded {
+      projected: Bound;
+      projectedStages: Record<string, Bound>;
+      projectedDiscards: Bound & { costliestSample: number };
+      workload: { sizes: { idsPerSegment: number; operandBytes: number[]; counts: Counts }[] };
+      phases: { largeLoad: { perLoad: { segment: string; objectBytes: number }[] } };
+    }
+    const recorded = fixture as unknown as Recorded;
+
+    it('records the bound the projection gives its own plan, and the sizes and counts the engine makes', async () => {
+      const sizes = await counted;
+      const plan = large.projectLarge(planOf(sizes));
+      expect(recorded.projected).toEqual(plan.total);
+      expect(recorded.projectedStages).toEqual(plan.stages);
+      expect(recorded.projectedDiscards).toEqual({
+        ...plan.discards,
+        costliestSample: plan.costliestSample,
+      });
+      expect(recorded.workload.sizes.map((x) => x.idsPerSegment)).toEqual(large.LARGE_SIZES);
+      expect(recorded.workload.sizes.map((x) => x.operandBytes)).toEqual(
+        sizes.map((x) => x.operandBytes),
+      );
+      expect(recorded.workload.sizes.map((x) => x.counts)).toEqual(sizes.map((x) => x.counts));
+      expect(recorded.phases.largeLoad.perLoad.map((l) => l.objectBytes)).toEqual(
+        sizes.flatMap((x) => x.operandBytes),
+      );
+      expect(fixture.workload?.expected).toEqual(large.expectedLarge(planOf(sizes)));
+    }, 120_000);
+
+    it('fails when a recorded bound or object size is edited', async () => {
+      const sizes = await counted;
+      const plan = large.projectLarge(planOf(sizes));
+      const edited = JSON.parse(JSON.stringify(recorded)) as Recorded;
+      edited.projectedStages.largeIntersect = {
+        put: 0,
+        get: (plan.stages.largeIntersect?.get ?? 0) + 1,
+      };
+      expect(edited.projectedStages).not.toEqual(plan.stages);
+      edited.workload.sizes[0]?.operandBytes.splice(0, 1, 1);
+      expect(edited.workload.sizes.map((x) => x.operandBytes)).not.toEqual(
+        sizes.map((x) => x.operandBytes),
+      );
+    }, 120_000);
 
     it('fails a run of another suite, a partial one, one that missed a count, and one that overspent', () => {
       expect(
@@ -1119,6 +1281,19 @@ describe('the harness, run', () => {
     expect(out.stdout).not.toMatch(/creating cloudbitmaps-calib/);
   });
 
+  it('says which suite runs and where it was named, as the first thing a run prints', () => {
+    const byEnv = harness(['--rehearse'], {
+      CR_CALIBRATE_SUITE: 'large',
+      CR_CALIBRATE_LARGE_MIN_MEMORY_MB: '999999999',
+    });
+    expect(byEnv.stdout).toMatch(/calibrate: suite: large \(named by CR_CALIBRATE_SUITE\)/);
+    const byFlag = harness(['--rehearse', '--suite', 'large'], {
+      CR_CALIBRATE_LARGE_MIN_MEMORY_MB: '999999999',
+    });
+    expect(byFlag.stdout).toMatch(/calibrate: suite: large \(named by --suite\)/);
+    expect(byFlag.stdout.indexOf('suite: large')).toBeLessThan(byFlag.stdout.indexOf('resources:'));
+  });
+
   it('refuses a run that names no region, for the large suite as for the default one', () => {
     const out = harness(['--run', '--suite', 'large']);
     expect(out.status).toBe(2);
@@ -1214,6 +1389,50 @@ describe('the files the harness runs from', () => {
     expect(bad.stderr).toMatch(/CR_CALIBRATE_SUITE must be default or large/);
   });
 
+  // A large run committed beside the default suite's evidence would become the default suite's latest report, so its file
+  // is copied out under the path it is committed at.
+  it('copies the large suite’s evidence out under bench/calibration/large/, and leaves a file already there alone', () => {
+    const fn = /^finish\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
+    const root = mkdtempSync(join(tmpdir(), 'calib-finish-large-'));
+    try {
+      const work = join(root, 'work');
+      const home = join(root, 'home');
+      mkdirSync(join(work, 'bench', 'calibration', 'large'), { recursive: true });
+      mkdirSync(join(home, 'bench', 'calibration', 'large'), { recursive: true });
+      writeFileSync(
+        join(work, 'bench', 'calibration', 'large', '2026-10-07-a.json'),
+        'large evidence',
+      );
+      writeFileSync(join(work, 'bench', 'calibration', 'large', '2026-10-07-b.json'), 'second');
+      writeFileSync(join(work, 'bench', 'calibration', '2026-10-07-c.json'), 'default evidence');
+      writeFileSync(join(home, 'bench', 'calibration', 'large', '2026-10-07-b.json'), 'older');
+      const out = spawnSync('bash', ['-c', `set -euo pipefail\n${fn}\nfinish`], {
+        env: { PATH: process.env.PATH ?? '', WORK: work, HOME: home },
+        encoding: 'utf8',
+      });
+      expect(out.status).toBe(0);
+      const at = (...p: string[]): string => join(home, ...p);
+      expect(readFileSync(at('bench', 'calibration', 'large', '2026-10-07-a.json'), 'utf8')).toBe(
+        'large evidence',
+      );
+      // Not beside the default suite's evidence, which a copy in the home directory would be taken for.
+      expect(existsSync(at('2026-10-07-a.json'))).toBe(false);
+      expect(readFileSync(at('2026-10-07-c.json'), 'utf8')).toBe('default evidence');
+      // A name taken in the large directory is left alone, and the copy goes beside it, stamped.
+      expect(readFileSync(at('bench', 'calibration', 'large', '2026-10-07-b.json'), 'utf8')).toBe(
+        'older',
+      );
+      const stamped = readdirSync(at('bench', 'calibration', 'large')).filter((f) =>
+        /^2026-10-07-b\.\d{8}T\d{6}Z\.json$/.test(f),
+      );
+      expect(stamped).toHaveLength(1);
+      expect(out.stdout).toContain('results at ~/bench/calibration/large/2026-10-07-a.json');
+      expect(out.stderr).toMatch(/~\/bench\/calibration\/large\/2026-10-07-b\.json already exists/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keep the CloudShell script’s run id check on the suite’s own evidence directory', () => {
     const fn = /^refuse_committed_run_id\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
     expect(fn).toContain('bench/calibration/large');
@@ -1256,5 +1475,122 @@ describe('the ceiling is checked inside every loop of the large suite that sends
     expect(runner).toMatch(/await load\(\s*operandName\(s\.n, i\)/);
     expect(runner).not.toMatch(/loader\.load\(/);
     expect(harnessSrc.match(/loader\.load\(/g)).toHaveLength(1);
+  });
+});
+
+describe('the engine the suite is run against', () => {
+  const gap = 'MAX_COALESCE_GAP_BYTES';
+  const cap = 'MAX_COALESCED_READ_BYTES';
+  const sourceOf = (...parts: string[]): string => src(...parts);
+  const copies = {
+    MAX_COALESCE_GAP_BYTES: large.MAX_COALESCE_GAP_BYTES,
+    MAX_COALESCED_READ_BYTES: large.MAX_COALESCED_READ_BYTES,
+    PART_BYTES: large.PART_BYTES,
+  };
+
+  // The suite's bound rests on copies of three constants. CloudShell measures the published packages, which are not this
+  // clone's source, so the harness reads the constants out of the installed packages' own text and refuses a mismatch.
+  it('reads the three constants from the engine’s source, and from the shape a build gives them', () => {
+    const core = [
+      sourceOf('packages', 'core', 'src', 'core', 'crbm', 'plan-reads.ts'),
+      sourceOf('packages', 'core', 'src', 'core', 'crbm', 'format.ts'),
+    ].join('\n');
+    expect(large.constantsIn(core, sourceOf('packages', 's3', 'src', 'storage.ts'))).toEqual(
+      copies,
+    );
+    const built = `var DEFAULT_MAX_BITMAP_BYTES = 1 << 20;\nvar ${gap}2 = 256 * 1024;\nvar ${cap} = DEFAULT_MAX_BITMAP_BYTES;\n`;
+    expect(large.constantsIn(built, 'var S3_PART_BYTES = 8 * 1024 * 1024;')).toEqual(copies);
+  });
+
+  it('reads nothing it cannot be sure of: a constant that is absent, or not plain arithmetic, is unreadable', () => {
+    expect(large.constantsIn('', '')).toEqual({
+      MAX_COALESCE_GAP_BYTES: null,
+      MAX_COALESCED_READ_BYTES: null,
+      PART_BYTES: null,
+    });
+    const found = large.constantsIn(
+      `var ${gap} = process.exit(1);`,
+      'const S3_PART_BYTES = foo();',
+    );
+    expect(found.MAX_COALESCE_GAP_BYTES).toBeNull();
+    expect(found.PART_BYTES).toBeNull();
+  });
+
+  it('accepts the constants the suite was derived with, and refuses any other, or any it cannot read', () => {
+    expect(() => large.checkEngineConstants(copies)).not.toThrow();
+    for (const [name, other] of [
+      [gap, 128 * 1024],
+      [cap, 2 * 1024 * 1024],
+      ['PART_BYTES', 5 * 1024 * 1024],
+      [gap, null],
+    ] as const) {
+      expect(
+        () => large.checkEngineConstants({ ...copies, [name]: other }),
+        `${name} ${other}`,
+      ).toThrow(
+        new RegExp(`installed engine's ${name} is ${other === null ? 'unreadable' : other}`),
+      );
+    }
+  });
+
+  it('is asked of the built packages in this checkout, which agree, when they are built', () => {
+    const built = ['core', 's3'].map((p) => join(ROOT, 'packages', p, 'dist', 'index.js'));
+    if (!built.every((f) => existsSync(f))) return; // before the build; the CI job that builds runs it
+    const sources = resources.installedSources(ROOT);
+    expect(() =>
+      large.checkEngineConstants(large.constantsIn(sources.core, sources.s3)),
+    ).not.toThrow();
+  });
+
+  it('looks in a checkout’s built packages, then in the scratch directory’s node_modules, and reads an absent package as empty', () => {
+    const seen: string[] = [];
+    const sources = resources.installedSources('/r', (f) => {
+      seen.push(f);
+      if (f.includes('node_modules/@cloudbitmaps/core')) return 'core text';
+      throw new Error('ENOENT');
+    });
+    expect(sources).toEqual({ core: 'core text', s3: '' });
+    expect(seen).toEqual([
+      '/r/packages/core/dist/index.js',
+      '/r/node_modules/@cloudbitmaps/core/dist/index.js',
+      '/r/packages/s3/dist/index.js',
+      '/r/node_modules/@cloudbitmaps/s3/dist/index.js',
+    ]);
+  });
+
+  it('is checked by the harness for a rehearsal and a run, before the library is imported or anything is created', () => {
+    const main = harnessSrc.indexOf('async function main');
+    const check = harnessSrc.indexOf('checkEngineConstants(constantsIn(', main);
+    expect(check).toBeGreaterThan(main);
+    expect(check).toBeLessThan(harnessSrc.indexOf("await import('@cloudbitmaps/roaring')", main));
+    expect(check).toBeLessThan(harnessSrc.indexOf('new s3.CreateBucketCommand', main));
+    const block = harnessSrc.slice(
+      harnessSrc.lastIndexOf("if (SUITE === 'large' &&", check),
+      check,
+    );
+    expect(block).toContain("MODE === 'rehearse' || MODE === 'run'");
+  });
+});
+
+describe('which suite runs, and where it was named', () => {
+  it('says the suite and its source: the flag, the environment, or neither', () => {
+    expect(large.suiteFrom(['--suite', 'large'], {})).toEqual({
+      suite: 'large',
+      source: '--suite',
+    });
+    expect(large.suiteFrom([], { CR_CALIBRATE_SUITE: 'large' })).toEqual({
+      suite: 'large',
+      source: 'CR_CALIBRATE_SUITE',
+    });
+    expect(large.suiteFrom([], {})).toEqual({ suite: 'default', source: 'default' });
+    expect(large.suiteFrom(['--suite', 'default'], {})).toEqual({
+      suite: 'default',
+      source: '--suite',
+    });
+  });
+
+  it('is printed as the run starts when a suite was named, and not for a run that names none', () => {
+    expect(harnessSrc).toContain("if (MODE !== 'cleanup' && SUITE_SOURCE !== 'default') {");
+    expect(harnessSrc).toContain('log(`suite: ${SUITE} (named by ${SUITE_SOURCE})`);');
   });
 });

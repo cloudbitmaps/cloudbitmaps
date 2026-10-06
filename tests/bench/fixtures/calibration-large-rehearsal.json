@@ -1,13 +1,13 @@
 {
   "note": "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
-  "runId": "2026-10-06-c4952",
-  "startedAt": "2026-10-06T18:32:26.395Z",
+  "runId": "2026-10-06-8cab2",
+  "startedAt": "2026-10-06T19:18:49.752Z",
   "mode": "rehearse",
   "target": "minio (rehearsal — NOT a real cloud measurement)",
   "region": "n/a (local container)",
   "measured": {
     "packageVersion": "0.17.0",
-    "harness": "b64f0c1-dirty",
+    "harness": "af64a3e-dirty",
     "node": "v24.18.1",
     "sdk": {
       "clientS3": "3.1132.0",
@@ -21,7 +21,7 @@
   "resources": {
     "memoryMB": 18432,
     "memoryKind": "total",
-    "diskMB": 23910,
+    "diskMB": 19868,
     "totalMemoryMB": 18432,
     "cpus": 11
   },
@@ -567,7 +567,7 @@
     }
   },
   "projected": {
-    "put": 621,
+    "put": 663,
     "get": 28919
   },
   "projectedStages": {
@@ -593,7 +593,7 @@
     }
   },
   "projectedDiscards": {
-    "put": 0,
+    "put": 42,
     "get": 333,
     "costliestSample": 111
   },
@@ -603,15 +603,15 @@
       "via": "store.load()",
       "singlePart": {
         "runs": 2,
-        "medianIdsPerSec": 6903852.333723358,
-        "medianBytesPerSec": 14079136.525799384,
+        "medianIdsPerSec": 12183866.732865676,
+        "medianBytesPerSec": 24846766.55406743,
         "medianObjectBytes": 2039033,
         "medianUploadBytes": 2039317
       },
       "multipart": {
         "runs": 4,
-        "medianIdsPerSec": 15768440.451962924,
-        "medianBytesPerSec": 18016936.056792315,
+        "medianIdsPerSec": 17784931.272356216,
+        "medianBytesPerSec": 28691077.78809363,
         "medianObjectBytes": 11291644,
         "medianUploadBytes": 11291930
       },
@@ -709,9 +709,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 33.374167,
-          "p95ms": 89.715875,
-          "p99ms": 97.14675,
+          "p50ms": 27.772375,
+          "p95ms": 67.974125,
+          "p99ms": 70.400209,
           "medianGets": 6,
           "expectedGets": 6,
           "offExpected": 0,
@@ -720,8 +720,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 2,
-          "medianMeanInFlight": 1.308448453,
-          "medianRounds": 4.606162885
+          "medianMeanInFlight": 1.105854921,
+          "medianRounds": 5.530745306
         },
         {
           "n": 40,
@@ -730,9 +730,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 38.624167,
-          "p95ms": 76.550625,
-          "p99ms": 80.680167,
+          "p50ms": 44.521708,
+          "p95ms": 92.21975,
+          "p99ms": 158.958542,
           "medianGets": 8,
           "expectedGets": 8,
           "offExpected": 0,
@@ -741,8 +741,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 4,
-          "medianMeanInFlight": 1.086392582,
-          "medianRounds": 7.45117838
+          "medianMeanInFlight": 1.136046292,
+          "medianRounds": 7.164561308
         },
         {
           "n": 40,
@@ -751,9 +751,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 42.388833,
-          "p95ms": 86.344584,
-          "p99ms": 101.042542,
+          "p50ms": 51.801667,
+          "p95ms": 84.544375,
+          "p99ms": 101.675875,
           "medianGets": 10,
           "expectedGets": 10,
           "offExpected": 0,
@@ -762,8 +762,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 6,
-          "medianMeanInFlight": 1.501651564,
-          "medianRounds": 6.777454127
+          "medianMeanInFlight": 1.388093283,
+          "medianRounds": 7.2154032
         }
       ],
       "requests": {
@@ -800,9 +800,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 61.574708,
-          "p95ms": 71.673875,
-          "p99ms": 99.213042,
+          "p50ms": 64.869584,
+          "p95ms": 83.851125,
+          "p99ms": 87.963542,
           "medianGets": 8,
           "expectedGets": 8,
           "offExpected": 0,
@@ -811,8 +811,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 4,
-          "medianMeanInFlight": 0.705904246,
-          "medianRounds": 11.585001776
+          "medianMeanInFlight": 0.717889569,
+          "medianRounds": 11.14750162
         },
         {
           "n": 40,
@@ -821,9 +821,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 162.405833,
-          "p95ms": 190.870583,
-          "p99ms": 190.951833,
+          "p50ms": 158.724209,
+          "p95ms": 184.451083,
+          "p99ms": 205.533459,
           "medianGets": 24,
           "expectedGets": 24,
           "offExpected": 0,
@@ -832,8 +832,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 8,
-          "medianMeanInFlight": 2.08924216,
-          "medianRounds": 11.523766009
+          "medianMeanInFlight": 1.985437759,
+          "medianRounds": 12.19262339
         },
         {
           "n": 40,
@@ -842,9 +842,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 214.242416,
-          "p95ms": 282.199625,
-          "p99ms": 301.259375,
+          "p50ms": 183.970291,
+          "p95ms": 201.593459,
+          "p99ms": 205.982167,
           "medianGets": 26,
           "expectedGets": 26,
           "offExpected": 0,
@@ -853,8 +853,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 9,
-          "medianMeanInFlight": 2.50373492,
-          "medianRounds": 10.464260772
+          "medianMeanInFlight": 2.368484371,
+          "medianRounds": 11.268047854
         }
       ],
       "requests": {
@@ -891,9 +891,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 38.629917,
-          "p95ms": 78.245834,
-          "p99ms": 88.991792,
+          "p50ms": 35.299083,
+          "p95ms": 50.8985,
+          "p99ms": 54.106791,
           "medianGets": 7,
           "expectedGets": 7,
           "offExpected": 0,
@@ -902,8 +902,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 3,
-          "medianMeanInFlight": 0.771022512,
-          "medianRounds": 9.155991203
+          "medianMeanInFlight": 0.754506955,
+          "medianRounds": 9.337611236
         },
         {
           "n": 40,
@@ -912,9 +912,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 83.979167,
-          "p95ms": 121.563125,
-          "p99ms": 123.984833,
+          "p50ms": 83.474416,
+          "p95ms": 93.24725,
+          "p99ms": 93.8145,
           "medianGets": 16,
           "expectedGets": 16,
           "offExpected": 0,
@@ -923,8 +923,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 6,
-          "medianMeanInFlight": 1.740436256,
-          "medianRounds": 9.391805672
+          "medianMeanInFlight": 1.682579716,
+          "medianRounds": 9.612984163
         },
         {
           "n": 40,
@@ -933,9 +933,9 @@
           "runs": 40,
           "cold": true,
           "exact": true,
-          "p50ms": 101.1305,
-          "p95ms": 130.560917,
-          "p99ms": 132.130917,
+          "p50ms": 100.070917,
+          "p95ms": 112.49775,
+          "p99ms": 113.005125,
           "medianGets": 18,
           "expectedGets": 18,
           "offExpected": 0,
@@ -944,8 +944,8 @@
           "tailReadsPerCall": 2,
           "pointerReadsPerCall": 2,
           "medianPeakInFlight": 7,
-          "medianMeanInFlight": 1.835044915,
-          "medianRounds": 9.882099699
+          "medianMeanInFlight": 2.008161325,
+          "medianRounds": 8.967682301
         }
       ],
       "requests": {
@@ -981,17 +981,17 @@
             "intersectInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 35.382042,
-              "p95ms": 40.985625,
-              "p99ms": 40.985625,
+              "p50ms": 29.796708,
+              "p95ms": 35.17975,
+              "p99ms": 35.17975,
               "medianPeakInFlight": 3,
-              "medianMeanInFlight": 0.950466414,
-              "medianRounds": 8.711570378,
+              "medianMeanInFlight": 0.942210244,
+              "medianRounds": 8.64030605,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 40.985625,
+                  "ms": 35.17975,
                   "generation": 0,
                   "objectBytes": 407910,
                   "parts": 0,
@@ -1003,7 +1003,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 33.620333,
+                  "ms": 29.796708,
                   "generation": 1,
                   "objectBytes": 407910,
                   "parts": 0,
@@ -1015,7 +1015,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 35.382042,
+                  "ms": 28.241875,
                   "generation": 2,
                   "objectBytes": 407910,
                   "parts": 0,
@@ -1027,7 +1027,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 32.802334,
+                  "ms": 29.470792,
                   "generation": 3,
                   "objectBytes": 407910,
                   "parts": 0,
@@ -1039,7 +1039,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 37.316917,
+                  "ms": 31.140917,
                   "generation": 4,
                   "objectBytes": 407910,
                   "parts": 0,
@@ -1053,17 +1053,17 @@
             "unionInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 132.827792,
-              "p95ms": 163.760166,
-              "p99ms": 163.760166,
+              "p50ms": 108.525291,
+              "p95ms": 120.696375,
+              "p99ms": 120.696375,
               "medianPeakInFlight": 4,
-              "medianMeanInFlight": 0.811201642,
-              "medianRounds": 13.432463586,
+              "medianMeanInFlight": 0.656595504,
+              "medianRounds": 15.230076881,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 141.035375,
+                  "ms": 108.525291,
                   "generation": 0,
                   "objectBytes": 3670154,
                   "parts": 0,
@@ -1075,7 +1075,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 163.760166,
+                  "ms": 100.337583,
                   "generation": 1,
                   "objectBytes": 3670154,
                   "parts": 0,
@@ -1087,7 +1087,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 105.1925,
+                  "ms": 96.211,
                   "generation": 2,
                   "objectBytes": 3670154,
                   "parts": 0,
@@ -1099,7 +1099,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 132.827792,
+                  "ms": 117.514708,
                   "generation": 3,
                   "objectBytes": 3670154,
                   "parts": 0,
@@ -1111,7 +1111,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 119.965,
+                  "ms": 120.696375,
                   "generation": 4,
                   "objectBytes": 3670154,
                   "parts": 0,
@@ -1125,17 +1125,17 @@
             "andNotInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 69.3215,
-              "p95ms": 70.072125,
-              "p99ms": 70.072125,
+              "p50ms": 61.933,
+              "p95ms": 116.550416,
+              "p99ms": 116.550416,
               "medianPeakInFlight": 3,
-              "medianMeanInFlight": 0.834962933,
-              "medianRounds": 10.958090358,
+              "medianMeanInFlight": 0.782007584,
+              "medianRounds": 11.508839788,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 69.3215,
+                  "ms": 116.550416,
                   "generation": 0,
                   "objectBytes": 1631235,
                   "parts": 0,
@@ -1147,7 +1147,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 70.043042,
+                  "ms": 62.03675,
                   "generation": 1,
                   "objectBytes": 1631235,
                   "parts": 0,
@@ -1159,7 +1159,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 67.123125,
+                  "ms": 56.832375,
                   "generation": 2,
                   "objectBytes": 1631235,
                   "parts": 0,
@@ -1171,7 +1171,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 62.720792,
+                  "ms": 61.933,
                   "generation": 3,
                   "objectBytes": 1631235,
                   "parts": 0,
@@ -1183,7 +1183,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 70.072125,
+                  "ms": 56.731333,
                   "generation": 4,
                   "objectBytes": 1631235,
                   "parts": 0,
@@ -1202,17 +1202,17 @@
             "intersectInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 73.377667,
-              "p95ms": 160.681375,
-              "p99ms": 160.681375,
+              "p50ms": 59.896583,
+              "p95ms": 131.50375,
+              "p99ms": 131.50375,
               "medianPeakInFlight": 4,
-              "medianMeanInFlight": 1.026143329,
-              "medianRounds": 10.719750053,
+              "medianMeanInFlight": 0.939188012,
+              "medianRounds": 10.647495362,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 64.688167,
+                  "ms": 59.896583,
                   "generation": 0,
                   "objectBytes": 2007652,
                   "parts": 0,
@@ -1224,7 +1224,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 73.377667,
+                  "ms": 59.379708,
                   "generation": 1,
                   "objectBytes": 2007652,
                   "parts": 0,
@@ -1236,7 +1236,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 68.71775,
+                  "ms": 131.50375,
                   "generation": 2,
                   "objectBytes": 2007652,
                   "parts": 0,
@@ -1248,7 +1248,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 160.681375,
+                  "ms": 64.48725,
                   "generation": 3,
                   "objectBytes": 2007652,
                   "parts": 0,
@@ -1260,7 +1260,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 94.198417,
+                  "ms": 57.39,
                   "generation": 4,
                   "objectBytes": 2007652,
                   "parts": 0,
@@ -1274,17 +1274,17 @@
             "unionInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 419.375125,
-              "p95ms": 454.362208,
-              "p99ms": 454.362208,
+              "p50ms": 324.702333,
+              "p95ms": 351.86425,
+              "p99ms": 351.86425,
               "medianPeakInFlight": 8,
-              "medianMeanInFlight": 1.40414335,
-              "medianRounds": 18.815489499,
+              "medianMeanInFlight": 1.320704548,
+              "medianRounds": 19.68646208,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 410.083625,
+                  "ms": 324.702333,
                   "generation": 0,
                   "objectBytes": 18067972,
                   "parts": 3,
@@ -1296,7 +1296,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 454.362208,
+                  "ms": 327.145541,
                   "generation": 1,
                   "objectBytes": 18067972,
                   "parts": 3,
@@ -1308,7 +1308,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 435.410667,
+                  "ms": 312.953292,
                   "generation": 2,
                   "objectBytes": 18067972,
                   "parts": 3,
@@ -1320,7 +1320,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 418.968709,
+                  "ms": 351.86425,
                   "generation": 3,
                   "objectBytes": 18067972,
                   "parts": 3,
@@ -1332,7 +1332,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 419.375125,
+                  "ms": 309.903958,
                   "generation": 4,
                   "objectBytes": 18067972,
                   "parts": 3,
@@ -1346,17 +1346,17 @@
             "andNotInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 197.743542,
-              "p95ms": 212.180291,
-              "p99ms": 212.180291,
+              "p50ms": 183.413875,
+              "p95ms": 203.55375,
+              "p99ms": 203.55375,
               "medianPeakInFlight": 6,
-              "medianMeanInFlight": 1.232416261,
-              "medianRounds": 14.605454805,
+              "medianMeanInFlight": 1.268631605,
+              "medianRounds": 14.188516132,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 182.104792,
+                  "ms": 167.514666,
                   "generation": 0,
                   "objectBytes": 8030273,
                   "parts": 0,
@@ -1368,7 +1368,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 197.743542,
+                  "ms": 200.643,
                   "generation": 1,
                   "objectBytes": 8030273,
                   "parts": 0,
@@ -1380,7 +1380,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 197.52275,
+                  "ms": 179.273708,
                   "generation": 2,
                   "objectBytes": 8030273,
                   "parts": 0,
@@ -1392,7 +1392,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 212.151375,
+                  "ms": 183.413875,
                   "generation": 3,
                   "objectBytes": 8030273,
                   "parts": 0,
@@ -1404,7 +1404,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 212.180291,
+                  "ms": 203.55375,
                   "generation": 4,
                   "objectBytes": 8030273,
                   "parts": 0,
@@ -1423,17 +1423,17 @@
             "intersectInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 88.765292,
-              "p95ms": 94.299208,
-              "p99ms": 94.299208,
+              "p50ms": 77.669917,
+              "p95ms": 88.543083,
+              "p99ms": 88.543083,
               "medianPeakInFlight": 6,
-              "medianMeanInFlight": 1.295058073,
-              "medianRounds": 9.538430724,
+              "medianMeanInFlight": 1.248559851,
+              "medianRounds": 9.611073102,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 91.777833,
+                  "ms": 84.908875,
                   "generation": 0,
                   "objectBytes": 2260062,
                   "parts": 0,
@@ -1445,7 +1445,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 94.299208,
+                  "ms": 77.669917,
                   "generation": 1,
                   "objectBytes": 2260062,
                   "parts": 0,
@@ -1457,7 +1457,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 88.765292,
+                  "ms": 67.329083,
                   "generation": 2,
                   "objectBytes": 2260062,
                   "parts": 0,
@@ -1469,7 +1469,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 86.291667,
+                  "ms": 72.530875,
                   "generation": 3,
                   "objectBytes": 2260062,
                   "parts": 0,
@@ -1481,7 +1481,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 83.25025,
+                  "ms": 88.543083,
                   "generation": 4,
                   "objectBytes": 2260062,
                   "parts": 0,
@@ -1495,17 +1495,17 @@
             "unionInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 419.448,
-              "p95ms": 459.668583,
-              "p99ms": 459.668583,
+              "p50ms": 403.280541,
+              "p95ms": 433.365709,
+              "p99ms": 433.365709,
               "medianPeakInFlight": 9,
-              "medianMeanInFlight": 1.537892254,
-              "medianRounds": 18.206737133,
+              "medianMeanInFlight": 1.383325907,
+              "medianRounds": 20.241072524,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 410.192916,
+                  "ms": 433.365709,
                   "generation": 0,
                   "objectBytes": 20323226,
                   "parts": 3,
@@ -1517,7 +1517,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 419.448,
+                  "ms": 334.921042,
                   "generation": 1,
                   "objectBytes": 20323226,
                   "parts": 3,
@@ -1529,7 +1529,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 454.068292,
+                  "ms": 355.752209,
                   "generation": 2,
                   "objectBytes": 20323226,
                   "parts": 3,
@@ -1541,7 +1541,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 398.439292,
+                  "ms": 403.280541,
                   "generation": 3,
                   "objectBytes": 20323226,
                   "parts": 3,
@@ -1553,7 +1553,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 459.668583,
+                  "ms": 427.317833,
                   "generation": 4,
                   "objectBytes": 20323226,
                   "parts": 3,
@@ -1567,17 +1567,17 @@
             "andNotInto": {
               "runs": 5,
               "n": 5,
-              "p50ms": 214.503916,
-              "p95ms": 224.38075,
-              "p99ms": 224.38075,
+              "p50ms": 222.231458,
+              "p95ms": 255.702583,
+              "p99ms": 255.702583,
               "medianPeakInFlight": 7,
-              "medianMeanInFlight": 1.36559848,
-              "medianRounds": 14.645593332,
+              "medianMeanInFlight": 1.379901892,
+              "medianRounds": 14.806907069,
               "perCall": [
                 {
                   "call": 0,
                   "kind": "first",
-                  "ms": 215.581209,
+                  "ms": 231.735708,
                   "generation": 0,
                   "objectBytes": 9031695,
                   "parts": 2,
@@ -1589,7 +1589,7 @@
                 {
                   "call": 1,
                   "kind": "repeat",
-                  "ms": 214.503916,
+                  "ms": 209.701833,
                   "generation": 1,
                   "objectBytes": 9031695,
                   "parts": 2,
@@ -1601,7 +1601,7 @@
                 {
                   "call": 2,
                   "kind": "repeat",
-                  "ms": 224.38075,
+                  "ms": 222.231458,
                   "generation": 2,
                   "objectBytes": 9031695,
                   "parts": 2,
@@ -1613,7 +1613,7 @@
                 {
                   "call": 3,
                   "kind": "repeat",
-                  "ms": 205.270375,
+                  "ms": 181.018042,
                   "generation": 3,
                   "objectBytes": 9031695,
                   "parts": 2,
@@ -1625,7 +1625,7 @@
                 {
                   "call": 4,
                   "kind": "repeat",
-                  "ms": 191.869542,
+                  "ms": 255.702583,
                   "generation": 4,
                   "objectBytes": 9031695,
                   "parts": 2,
@@ -1666,8 +1666,8 @@
     }
   },
   "network": {
-    "rttFloorMs": 1.467959,
-    "rttMedianMs": 3.01425,
+    "rttFloorMs": 1.1865,
+    "rttMedianMs": 1.823709,
     "client": "local container",
     "inRegionThresholdMs": 30,
     "clientRegion": null
@@ -1698,7 +1698,7 @@
       },
       "inFlight": 0,
       "peakInFlight": 7,
-      "requestMs": 72216.482486,
+      "requestMs": 64140.918255,
       "reads": {
         "whole": {
           "n": 846,
@@ -1720,5 +1720,5 @@
     "perRun": 3,
     "perStage": 2
   },
-  "elapsedMs": 43583
+  "elapsedMs": 40383
 }

@@ -82,7 +82,7 @@ function largeExpectedContent(layout) {
  * Both are literal copies: the harness runs where the library's source is not, and neither is exported from a package.
  * `tests/bench/calibrate-large.test.ts` reads each out of the source and fails if a copy has drifted.
  */
-/** The S3 driver's part size: an object of at most this many bytes is one PUT, a larger one is a multipart upload. */
+/** The S3 driver's part size: an object under this many bytes is one PUT, one of this many or more a multipart upload. */
 const PART_BYTES = 8 * 1024 * 1024;
 /** The most unneeded bytes the engine reads between two needed chunks of one range request. */
 const MAX_COALESCE_GAP_BYTES = 256 * 1024;
@@ -95,7 +95,7 @@ const MAX_COALESCED_READ_BYTES = 1024 * 1024;
 const MAX_CHUNK_BYTES = 8 * 1024 + 64;
 
 /** How many parts a multipart upload of `bytes` bytes makes; 0 for an object that is one PUT. */
-const partsOf = (bytes) => (bytes > PART_BYTES ? Math.ceil(bytes / PART_BYTES) : 0);
+const partsOf = (bytes) => (bytes >= PART_BYTES ? Math.ceil(bytes / PART_BYTES) : 0);
 
 /**
  * The most range requests one read of an object of `bytes` bytes makes, however its needed chunks are laid out.
@@ -183,6 +183,9 @@ function projectLarge(w) {
   const none = { put: 0, get: 0 };
   const stages = Object.fromEntries(LARGE_STAGES.map((name) => [name, { ...none }]));
   let costliest = 0;
+  // The PUT-class requests the costliest `*Into` sample can have sent when a fault discards it part-way: the load of its
+  // output, a create, its parts and a complete, or the pointer's write.
+  let costliestPut = 0;
   for (const size of w.sizes) {
     for (const bytes of size.operandBytes) {
       stages.largeLoad = add(stages.largeLoad, loadBound(bytes, w.retryBound));
@@ -208,6 +211,7 @@ function projectLarge(w) {
           get: w.intos * call.get,
         });
         costliest = Math.max(costliest, call.get);
+        costliestPut = Math.max(costliestPut, call.put);
       }
     }
   }
@@ -215,7 +219,7 @@ function projectLarge(w) {
   if (!Number.isInteger(perRun) || perRun < 0) {
     throw new Error(`discards.perRun must be a non-negative integer, got ${perRun}`);
   }
-  const discards = { put: 0, get: perRun * costliest };
+  const discards = { put: perRun * costliestPut, get: perRun * costliest };
   const put = Object.values(stages).reduce((n, s) => n + s.put, 0) + w.fixedPuts + discards.put;
   const getSum = Object.values(stages).reduce((n, s) => n + s.get, 0) + w.fixedGets + discards.get;
   // Reads are projected at least as high as writes, as the default suite does: every write path reads before it writes.
@@ -225,29 +229,6 @@ function projectLarge(w) {
     costliestSample: costliest,
     total: { put, get: Math.max(getSum, put) },
   };
-}
-
-/**
- * The most one sample of each stage can request, as `sampleBounds` does for the default suite: what a sample discarded
- * after a transient fault can have cost. Loads are not samples.
- */
-function sampleBoundsLarge(w) {
-  const out = Object.fromEntries(LARGE_STAGES.map((name) => [name, 0]));
-  for (const size of w.sizes) {
-    const reads = readBounds(size);
-    if (w.reads > 0) {
-      out.largeIntersect = Math.max(out.largeIntersect, reads.intersect);
-      out.largeUnion = Math.max(out.largeUnion, reads.union);
-      out.largeAndNot = Math.max(out.largeAndNot, reads.andNot);
-    }
-    if (w.intos > 0) {
-      const o = outputBounds(size);
-      for (const [verb, read] of Object.entries(INTO_READS)) {
-        out.largeInto = Math.max(out.largeInto, loadBound(o[verb], w.retryBound).get + reads[read]);
-      }
-    }
-  }
-  return out;
 }
 
 /**
@@ -302,6 +283,11 @@ function resolveLargeKnobs(env) {
  * asked for would write evidence under the wrong name.
  */
 function resolveSuite(argv, env) {
+  return suiteFrom(argv, env).suite;
+}
+
+/** Which suite a run is and where it was named: `{ suite, source }`, the source `--suite`, `CR_CALIBRATE_SUITE` or `default`. */
+function suiteFrom(argv, env) {
   const SUITES = ['default', 'large'];
   const at = argv.indexOf('--suite');
   let fromArg;
@@ -324,7 +310,9 @@ function resolveSuite(argv, env) {
   if (fromArg !== undefined && fromEnv !== undefined && fromArg !== fromEnv) {
     throw new Error(`--suite ${fromArg} and CR_CALIBRATE_SUITE=${fromEnv} name different suites`);
   }
-  return fromArg ?? fromEnv ?? 'default';
+  if (fromArg !== undefined) return { suite: fromArg, source: '--suite' };
+  if (fromEnv !== undefined) return { suite: fromEnv, source: 'CR_CALIBRATE_SUITE' };
+  return { suite: 'default', source: 'default' };
 }
 
 /**
@@ -362,13 +350,105 @@ function refuseDefaultKnobs(env) {
  * Refuse a workload that teardown could not remove: every object version the suite leaves must fit the first listing
  * teardown reads (a page of 1,000). Each operand leaves a generation and its pointer's version, and each `*Into`
  * destination leaves a generation and a pointer version for every call, since the destination keeps every generation.
+ * A third version a call is counted for a delete marker, which a versioned bucket keeps for an object a collection
+ * removes, so the count holds whatever window a destination is kept at.
  */
 function checkLargeWorkload({ sizes, intos }) {
-  const versions = sizes * 2 * 2 + sizes * 3 * intos * 2;
+  const versions = sizes * 2 * 2 + sizes * 3 * intos * 3;
   if (versions > 900) {
     throw new Error(
       `the large suite would leave about ${versions} object versions, more than teardown's first listing of 1,000 ` +
         'reaches; lower CR_CALIBRATE_LARGE_INTOS',
+    );
+  }
+}
+
+/**
+ * The count a stage's kept requests are held to, in both classes: `kept` and `expected` are `{ put, get }`. Returns one
+ * entry for each class that differs, `{ class, kept, expected }`, and none for a stage that made exactly the requests the
+ * engine is expected to.
+ */
+function countMisses(kept, expected) {
+  const out = [];
+  for (const [name, key] of [
+    ['PUT-class', 'put'],
+    ['GET-class', 'get'],
+  ]) {
+    if (kept[key] !== expected[key])
+      out.push({ class: name, kept: kept[key], expected: expected[key] });
+  }
+  return out;
+}
+
+/**
+ * Hold a large stage to its counts and say so: each class that differs is recorded in `results.expectedMissed` and
+ * reported through `report`. Returns the misses, so a caller can count them.
+ */
+function recordCountMisses(results, name, kept, expected, report) {
+  const misses = countMisses(kept, expected);
+  for (const m of misses) {
+    (results.expectedMissed ??= []).push(
+      `${name}: ${m.kept} ${m.class} kept, expected ${m.expected}`,
+    );
+    report(
+      `calibrate: EXPECTED COUNT MISSED — ${name}'s kept samples made ${m.kept} ${m.class} requests, ` +
+        `the engine is expected to make ${m.expected}`,
+    );
+  }
+  return misses;
+}
+
+/**
+ * What an installed engine's source says of the constants the suite keeps copies of: the coalescing gap, the read cap
+ * and the S3 part size, read out of the text of `@cloudbitmaps/core`'s and `@cloudbitmaps/s3`'s own entry files (or of
+ * the TypeScript they are built from). A constant not found, or not a plain arithmetic expression, is `null`.
+ */
+function constantsIn(coreText, s3Text) {
+  const find = (text, name) => {
+    const m = new RegExp(`(?:var|const|let) ${name}\\d*(?:: number)? = ([^;]+);`).exec(text);
+    return m === null ? null : m[1].trim();
+  };
+  const evaluate = (expr, text) => {
+    if (expr === null) return null;
+    // A name stands for another constant of the same file: the read cap is the decode cap.
+    const named = /^[A-Za-z_]\w*$/.test(expr) ? evaluate(find(text, expr), text) : expr;
+    if (typeof named === 'number') return named;
+    if (named === null || !/^[\d\s*+()<]+$/.test(named)) return null;
+    const n = Function(`"use strict"; return (${named});`)();
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    MAX_COALESCE_GAP_BYTES: evaluate(find(coreText, 'MAX_COALESCE_GAP_BYTES'), coreText),
+    MAX_COALESCED_READ_BYTES: evaluate(find(coreText, 'MAX_COALESCED_READ_BYTES'), coreText),
+    PART_BYTES: evaluate(find(s3Text, 'S3_PART_BYTES'), s3Text),
+  };
+}
+
+/**
+ * Refuse to run the large suite against an engine whose constants are not the ones this suite's bound was derived with.
+ * A run from CloudShell measures the published packages, which may be another release than this clone's source, and
+ * a different gap, read cap or part size would make the pre-flight bound wrong; one that cannot be read is refused too.
+ */
+function checkEngineConstants(found) {
+  const copies = {
+    MAX_COALESCE_GAP_BYTES,
+    MAX_COALESCED_READ_BYTES,
+    PART_BYTES,
+  };
+  const wrong = Object.entries(copies).filter(([name, value]) => found[name] !== value);
+  if (wrong.length > 0) {
+    throw new Error(
+      `the installed engine's ${wrong
+        .map(
+          ([name]) =>
+            `${name} is ${found[name] === null || found[name] === undefined ? 'unreadable' : found[name]}`,
+        )
+        .join(', ')}, where the large suite's bound was derived with ${wrong
+        .map(([, value]) => value)
+        .join(
+          ', ',
+        )}; a release with other constants would bound a read wrongly. Measure a release whose constants ` +
+        'these are, or run the default suite',
     );
   }
 }
@@ -451,13 +531,17 @@ module.exports = {
   outputBounds,
   loadBound,
   projectLarge,
-  sampleBoundsLarge,
   expectedLarge,
   resolveLargeKnobs,
   resolveSuite,
+  suiteFrom,
   DEFAULT_SUITE_KNOBS,
   refuseDefaultKnobs,
   checkLargeWorkload,
+  countMisses,
+  recordCountMisses,
+  constantsIn,
+  checkEngineConstants,
   LARGE_MIN_MEMORY_MB,
   LARGE_MIN_DISK_MB,
   checkResources,

@@ -186,31 +186,38 @@ finish() {
   # A real run writes its evidence as bench/calibration/<runId>.json, or <runId>.partial.json if it did not finish (the
   # large suite's under bench/calibration/large/);
   # a rehearsal writes a file of its own, so it can never be mistaken for a real run's evidence. Commit a finished
-  # run's file at that same path. Nothing here may abort the trap or overwrite a file already in $HOME. A name that
+  # run's file at that same path: the large suite's are copied out under the same path in $HOME, since a large run
+  # committed beside the default suite's would become the default suite's latest report. Nothing here may abort the
+  # trap or overwrite a file already in $HOME. A name that
   # is taken gets this run's copy beside it, stamped, since CloudShell keeps $HOME between sessions and not the
   # scratch directory; a copy that still fails leaves the scratch directory in place and says where.
   set +e
   # A reader that has gone, such as a `tee` a Ctrl-C stopped, must fail an echo here rather than kill the copy.
   trap '' PIPE
   local kept=0
+  local tilde='~'
   for f in "$WORK"/bench/calibration/*.json "$WORK"/bench/calibration/large/*.json \
     "$WORK/bench/calibrate-aws-rehearsal.json" "$WORK/bench/calibrate-aws-rehearsal-large.json"; do
     [ -f "$f" ] || continue
-    local name dest
+    local name dest out
     name="$(basename "$f")"
-    dest="$HOME/$name"
+    out="$HOME"
+    case "$f" in
+      "$WORK"/bench/calibration/large/*) out="$HOME/bench/calibration/large" ;;
+    esac
+    dest="$out/$name"
     if [ -e "$dest" ]; then
       # The stamp goes before `.partial.json`, so a copy of a partial file is still one git ignores.
       local stamp
       stamp="$(date -u +%Y%m%dT%H%M%SZ)"
       case "$name" in
-        *.partial.json) dest="$HOME/${name%.partial.json}.$stamp.partial.json" ;;
-        *) dest="$HOME/${name%.json}.$stamp.json" ;;
+        *.partial.json) dest="$out/${name%.partial.json}.$stamp.partial.json" ;;
+        *) dest="$out/${name%.json}.$stamp.json" ;;
       esac
-      echo "cloudshell: ~/$name already exists and was left alone" >&2
+      echo "cloudshell: ${out/#$HOME/$tilde}/$name already exists and was left alone" >&2
     fi
-    if [ ! -e "$dest" ] && cp "$f" "$dest"; then
-      echo "cloudshell: results at ~/$(basename "$dest") (Actions → Download file, or cat it)"
+    if [ ! -e "$dest" ] && mkdir -p "$out" && cp "$f" "$dest"; then
+      echo "cloudshell: results at ${dest/#$HOME/$tilde} (Actions → Download file, or cat it)"
     else
       echo "cloudshell: could not copy the results — they are at $f" >&2
       kept=1
