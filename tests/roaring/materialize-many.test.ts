@@ -53,7 +53,7 @@ describe('store.materializeMany', () => {
       expect(await w.ids(d)).toEqual(await w.ids(x));
     }
     expect(run.stats.groups).toBe(1);
-    expect(run.stats.operands.a).toMatchObject({
+    expect(run.stats.operands.a!).toMatchObject({
       pinned: true,
       pinnedGeneration: 0,
       startGeneration: 0,
@@ -112,7 +112,7 @@ describe('store.materializeMany', () => {
     const want = bitmapOf(DATA.a);
     want.orInPlace(bitmapOf(DATA.b));
     expect(await w.ids('d')).toEqual(want.toArray());
-    expect(run.stats.operands.a).toMatchObject({ pinnedGeneration: 0, startGeneration: 0 });
+    expect(run.stats.operands.a!).toMatchObject({ pinnedGeneration: 0, startGeneration: 0 });
   });
 
   it('refuses exactly the outputs that exclude a pinned operand that moved', async () => {
@@ -157,7 +157,7 @@ describe('store.materializeMany', () => {
       pin: false,
     });
     published(run.outputs[0]);
-    expect(run.stats.operands.a.pinned).toBe(false);
+    expect(run.stats.operands.a!.pinned).toBe(false);
   });
 
   it('a lease released mid-pass fails only the outputs that read the operand', async () => {
