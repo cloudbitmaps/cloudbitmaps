@@ -21,7 +21,7 @@
  *   node scripts/api-surface.cjs --against <ref>    fail if an entry in the snapshot committed at <ref> is removed or
  *                                                   changed in the committed snapshot, unless a row of
  *                                                   api-surface/allowed.json that the base does not already have lists it
- *                                                   with a reason. Additions always pass. Compares committed files, so it
+ *                                                   with a reason. Additions pass, except a required member added to an interface the ref already has. Compares committed files, so it
  *                                                   needs neither a build nor the TypeScript package.
  *   --root <dir>                                    run on another checkout (the tests' fixtures)
  *
@@ -91,7 +91,7 @@ function packageNameOf(file) {
 }
 
 /** The surface of `entries` (`{ specifier, dts }`) as a sorted `{ key: text }` object. `root` bounds the workspace. */
-function buildSurface(entries, root) {
+function buildSnapshot(entries, root) {
   const ts = require('typescript');
   for (const e of entries) {
     if (!existsSync(e.dts)) {
@@ -111,6 +111,7 @@ function buildSurface(entries, root) {
   const checker = program.getTypeChecker();
   const printer = ts.createPrinter({ removeComments: true });
   const out = new Map();
+  const required = new Map(); // member key -> its parent's key, for a member an implementer must provide
   const referenced = new Map(); // symbol -> true once queued
   const queue = [];
 
@@ -176,7 +177,15 @@ function buildSurface(entries, root) {
     return m.name ? m.name.getText(sf) : null;
   }
 
-  function members(key, nodes) {
+  /** Whether `m` is a member an implementer or constructor of its interface must provide: any signature but an optional one. */
+  const isRequired = (m) =>
+    ts.isCallSignatureDeclaration(m) ||
+    ts.isConstructSignatureDeclaration(m) ||
+    ts.isIndexSignatureDeclaration(m) ||
+    ((ts.isPropertySignature(m) || ts.isMethodSignature(m)) && !m.questionToken);
+
+  /** `forImplementers`: the nodes belong to an interface or an object type, whose required members bind implementers. */
+  function members(key, nodes, forImplementers) {
     const groups = new Map();
     for (const m of nodes) {
       if (ts.isSemicolonClassElement(m) || (ts.isClassElement(m) && isPrivate(m))) continue;
@@ -185,7 +194,11 @@ function buildSurface(entries, root) {
       groups.set(name, [...(groups.get(name) ?? []), m]);
     }
     for (const [name, group] of groups) {
-      group.forEach((m, i) => add(numbered(`${key}.${name}`, i), print(m)));
+      group.forEach((m, i) => {
+        const memberKeyed = numbered(`${key}.${name}`, i);
+        add(memberKeyed, print(m));
+        if (forImplementers && isRequired(m)) required.set(memberKeyed, key);
+      });
     }
   }
 
@@ -201,8 +214,14 @@ function buildSurface(entries, root) {
       if (ts.isClassDeclaration(d)) merged.class.push(d);
       else if (ts.isInterfaceDeclaration(d)) merged.interface.push(d);
       else if (ts.isEnumDeclaration(d)) merged.enum.push(d);
-      else if (ts.isTypeAliasDeclaration(d)) add(key, stripModifiers(print(d)));
-      else if (ts.isVariableDeclaration(d)) {
+      else if (ts.isTypeAliasDeclaration(d)) {
+        if (ts.isTypeLiteralNode(d.type)) {
+          // An object type is its header and its members, like an interface, so a member can be told from the type.
+          const head = d.getSourceFile().text.slice(d.getStart(), d.type.getStart());
+          add(key, `${stripModifiers(collapse(stripComments(head)))}{ ... }`);
+          members(key, [...d.type.members], true);
+        } else add(key, stripModifiers(print(d)));
+      } else if (ts.isVariableDeclaration(d)) {
         const kind = d.parent.flags & ts.NodeFlags.Const ? 'const' : 'let';
         const type = d.type
           ? print(d.type)
@@ -231,6 +250,7 @@ function buildSurface(entries, root) {
       members(
         key,
         nodes.flatMap((d) => [...d.members]),
+        nodes.every((d) => ts.isInterfaceDeclaration(d)),
       );
     }
     for (const d of decls) collectRefs(d);
@@ -256,17 +276,22 @@ function buildSurface(entries, root) {
     );
     used.add(key);
   }
-  return Object.fromEntries([...out].sort(([a], [b]) => byKey(a, b)));
+  const sorted = (map) => Object.fromEntries([...map].sort(([a], [b]) => byKey(a, b)));
+  return { entries: sorted(out), required: sorted(required) };
 }
 
-const serialize = (surface) => JSON.stringify({ version: 1, entries: surface }, null, 2) + '\n';
+/** The surface of `entries` as a sorted `{ key: text }` object. */
+const buildSurface = (entries, root) => buildSnapshot(entries, root).entries;
+
+const serialize = ({ entries, required }) =>
+  JSON.stringify({ version: 1, entries, required }, null, 2) + '\n';
 
 function parseSnapshot(text, where) {
   const parsed = JSON.parse(text);
   if (parsed.version !== 1 || typeof parsed.entries !== 'object' || parsed.entries === null) {
     throw new Error(`${where}: not an api-surface snapshot (version 1)`);
   }
-  return parsed.entries;
+  return { entries: parsed.entries, required: parsed.required ?? {} };
 }
 
 /** What differs between two surfaces: keys only in `was` (removed), only in `now` (added), and with other text. */
@@ -313,11 +338,12 @@ function newRows(rows, baseRows) {
 
 /**
  * The entries of `was` that `now` removes or changes without a usable row of `allowed` excusing them, and the problems
- * with the rows. Additions are never a problem.
+ * with the rows. An addition is a problem only when it is a required member of an interface the base already has
+ * (`required` maps such a member's key to its parent's).
  */
-function breakingChanges(was, now, allowed) {
+function breakingChanges(was, now, allowed, required = {}) {
   const rowProblems = allowlistProblems(allowed);
-  const { removed, changed } = diffSurfaces(was, now);
+  const { removed, changed, added } = diffSurfaces(was, now);
   const usable = Array.isArray(allowed)
     ? allowed.filter(
         (r) =>
@@ -331,6 +357,13 @@ function breakingChanges(was, now, allowed) {
   const lines = [
     ...removed.map((k) => ({ k, text: `removed: ${k}\n    was: ${was[k]}` })),
     ...changed.map((k) => ({ k, text: `changed: ${k}\n    was: ${was[k]}\n    now: ${now[k]}` })),
+    // A member an implementer must provide, added to an interface the base already has, breaks every implementer.
+    ...added
+      .filter((k) => k in required && required[k] in was)
+      .map((k) => ({
+        k,
+        text: `added: ${k}\n    a required member added to an existing interface (${required[k]})\n    now: ${now[k]}`,
+      })),
   ]
     .filter(({ k }) => !usable.some((r) => excuses(r, k)))
     .map(({ text }) => text);
@@ -355,16 +388,23 @@ function main(argv, defaultRoot) {
   const read = (rel) => readFileSync(join(root, rel), 'utf8');
   const mode = args[0];
   if (mode === '--write') {
-    const surface = buildSurface(entryPoints(root), root);
-    writeFileSync(join(root, SNAPSHOT_PATH), serialize(surface));
-    console.log(`api-surface: wrote ${Object.keys(surface).length} entries to ${SNAPSHOT_PATH}`);
+    const snapshot = buildSnapshot(entryPoints(root), root);
+    writeFileSync(join(root, SNAPSHOT_PATH), serialize(snapshot));
+    console.log(
+      `api-surface: wrote ${Object.keys(snapshot.entries).length} entries to ${SNAPSHOT_PATH}`,
+    );
     return 0;
   }
   if (mode === '--check') {
-    const now = buildSurface(entryPoints(root), root);
-    const was = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
+    const builtSnapshot = buildSnapshot(entryPoints(root), root);
+    const now = builtSnapshot.entries;
+    const committed = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
+    const was = committed.entries;
     const { removed, added, changed } = diffSurfaces(was, now);
-    if (removed.length + added.length + changed.length === 0) {
+    if (
+      removed.length + added.length + changed.length === 0 &&
+      JSON.stringify(committed.required) === JSON.stringify(builtSnapshot.required)
+    ) {
       console.log(
         `api-surface: the built surface is the committed snapshot (${Object.keys(now).length} entries)`,
       );
@@ -401,13 +441,15 @@ function main(argv, defaultRoot) {
       return 0;
     }
     const baseAllowed = atRef(ALLOWED_PATH);
-    const was = parseSnapshot(wasText, `${ref}:${SNAPSHOT_PATH}`);
-    const now = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
+    const was = parseSnapshot(wasText, `${ref}:${SNAPSHOT_PATH}`).entries;
+    const current = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
+    const now = current.entries;
     const rows = JSON.parse(read(ALLOWED_PATH));
     const { problems } = breakingChanges(
       was,
       now,
       newRows(rows, baseAllowed === null ? [] : JSON.parse(baseAllowed)),
+      current.required,
     );
     const rowProblems = allowlistProblems(rows).filter((p) => !problems.includes(p));
     problems.push(...rowProblems);
@@ -431,6 +473,7 @@ function main(argv, defaultRoot) {
 module.exports = {
   entryPoints,
   buildSurface,
+  buildSnapshot,
   diffSurfaces,
   breakingChanges,
   allowlistProblems,

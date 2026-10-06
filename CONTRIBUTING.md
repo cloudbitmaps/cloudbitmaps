@@ -46,8 +46,12 @@ Every change must pass these locally, and CI runs each of them on every pull req
   On a pull request the `api-surface-base` workflow also runs `node scripts/api-surface.cjs --against origin/<base>`,
   with no build: an entry the base branch lists that is **removed or changed** (a parameter rename included) fails unless
   `api-surface/allowed.json` names it with a reason in a row this change adds; a row the base already has excuses
-  nothing. That is a public-contract change: it needs the maintainer's agreement before you build it. Additions
-  always pass, and an empty allowlist is the normal state. What it does not see: a change in behaviour behind an
+  nothing. That is a public-contract change: it needs the maintainer's agreement before you build it. A new export, a new
+  class member, an optional member of an interface or object type, and any member of a type that is itself new are
+  additions and pass. A **required** member (a property or method without `?`, or an index, call or construct signature)
+  added to an interface or object type the base already has is a change, because it breaks everyone who implements or
+  builds that type: it fails with "a required member added to an existing interface" unless a row excuses it. An empty
+  allowlist is the normal state. What it does not see: a change in behaviour behind an
   unchanged signature (that is for tests); an overload appended after the last one (it reads as an addition); a type
   from outside the workspace, beyond its name in the signature; and, after a TypeScript upgrade that changes how
   declarations print, it needs one `--write`.

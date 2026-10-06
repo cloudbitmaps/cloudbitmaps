@@ -52,6 +52,7 @@ export declare class Thing /* header comment */ extends Base {
   get size(): number;
 }
 declare class Base {}
+export type Opts = { a: string };
 `;
 const EXTRA = `export declare function extra(x: boolean): void;\n`;
 
@@ -232,6 +233,91 @@ describe('--against', () => {
     const r = run(['--against', 'HEAD'], { NODE_OPTIONS: `--require=${block}` });
     expect(r.status).toBe(0);
     expect(run(['--check'], { NODE_OPTIONS: `--require=${block}` }).status).not.toBe(0);
+  });
+});
+
+describe('a member added to an existing type', () => {
+  const REQUIRED_MSG = 'a required member added to an existing interface';
+  /** Adds `extra` members to `Shape` (an interface the base has), writes the snapshot and compares with HEAD. */
+  const addToShape = (extra: string): Run => {
+    withMain((s) => s.replace('  b: number;\n}', `  b: number;\n  ${extra}\n}`));
+    expect(run(['--write']).status).toBe(0);
+    return run(['--against', 'HEAD']);
+  };
+
+  it.each([
+    ['a required property', 'c: string;', '@fx/a Shape.c'],
+    ['a required method', 'run(x: number): void;', '@fx/a Shape.run'],
+    ['an index signature', '[k: string]: unknown;', '@fx/a Shape.[index:string]'],
+    ['a call signature', '(n: number): string;', '@fx/a Shape.[call]'],
+    ['a construct signature', 'new (n: number): Shape;', '@fx/a Shape.[new]'],
+  ])('fails %s', (_what, member, key) => {
+    const r = addToShape(member);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain(REQUIRED_MSG);
+    expect(r.err).toContain(`added: ${key}`);
+  });
+
+  it.each([
+    ['an optional property', 'c?: string;'],
+    ['an optional method', 'run?(x: number): void;'],
+  ])('passes %s', (_what, member) => {
+    const r = addToShape(member);
+    expect(r.status).toBe(0);
+  });
+
+  it('fails a required member of an existing object type alias, and passes an optional one', () => {
+    withMain((s) => s.replace('{ a: string }', '{ a: string; b: number }'));
+    run(['--write']);
+    const bad = run(['--against', 'HEAD']);
+    expect(bad.status).toBe(1);
+    expect(bad.err).toContain('added: @fx/a Opts.b');
+    withMain((s) => s.replace('{ a: string }', '{ a: string; b?: number }'));
+    run(['--write']);
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+  });
+
+  it('passes a required member of an interface that is itself new, a new class method and a new export', () => {
+    withMain(
+      (s) =>
+        `${s.replace('  get size(): number;', '  get size(): number;\n  extra(): void;')}export interface Fresh { r: string; m(): void }\nexport declare function more(): void;\n`,
+    );
+    run(['--write']);
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(0);
+    expect(snapshot()['@fx/a Thing.extra']).toBe('extra(): void;');
+    expect(snapshot()['@fx/a Fresh.r']).toBe('r: string;');
+  });
+
+  it('fails a required member of an existing referenced interface', () => {
+    put(
+      'packages/a/dist/index.d.ts',
+      'export interface Pub { h: Deps }\ninterface Deps { a?: number }\nexport {};\n',
+    );
+    run(['--write']);
+    commit();
+    put(
+      'packages/a/dist/index.d.ts',
+      'export interface Pub { h: Deps }\ninterface Deps { a?: number; need: string }\nexport {};\n',
+    );
+    run(['--write']);
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('added: @fx/a (referenced) Deps.need');
+    expect(r.err).toContain(REQUIRED_MSG);
+  });
+
+  it('is excused by a row with a reason added in this change, and not by one the base has', () => {
+    expect(addToShape('c: string;').status).toBe(1);
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a Shape.c', reason: 'agreed' }]));
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+    commit();
+    withMain((s) => s.replace('  b: number;\n}', '  b: number;\n  c: string;\n  d: string;\n}'));
+    run(['--write']);
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a Shape.c', reason: 'agreed' }]));
+    const r = run(['--against', 'HEAD']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('added: @fx/a Shape.d');
   });
 });
 
