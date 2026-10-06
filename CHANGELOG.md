@@ -26,17 +26,17 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **A steady `store.load()` at `keep: 12` is now measured on S3, and so is a reload.** A run from AWS CloudShell in
-  `us-east-1` on 2026-10-06 (run `2026-10-06-9d36b`) loaded one segment 18 times: the first load made 2 PUT + 3 GET
-  ($11.20 per million at the default prices), each of 12 reloads 2 PUT + 2 GET ($10.80), each of 4 loads that delete by
-  name 2 PUT-class + 4 GET-class and a delete, 7 requests ($11.60), and the load at generation 16, which lists, 3
-  PUT-class + 5 GET-class and a delete ($17.00). Averaged over a cycle of 16 loads, 15 that delete by name and one that
-  lists, that is $11.94 per million, derived from the two measured kinds. The same run measured a cold intersect of two
-  segments sharing 100 chunks that lie together at 99.80 ms at the median in 6 GETs, an `andNot` against ten excludes at
-  351.64 ms in 33, and a single-part load at 2.59 million ids a second; its requests cost $0.0027548. Its request counts
-  are those of the stages the earlier run timed. Latencies of runs from different CloudShell sessions are not
-  comparable, so none is set against another's. The requests at a `keep` other than 12 stay counted, not measured. Both
-  READMEs, the benchmarks page, the roadmap, the guides and the site quote it, and the calibration gate holds the steady
-  figures to the run's evidence.
+  `us-east-1` on 2026-10-06 (run `2026-10-06-9d36b`) loaded one segment 18 times. The first load made 2 PUT + 3 GET,
+  $11.20 per million at the default prices. Each of 12 reloads made 2 PUT + 2 GET, $0.0000108. A load that
+  deletes by name costs $11.60 per million: 2 PUT-class + 4 GET-class and a delete, 7 requests, in each of 4 loads. The load at generation
+  16, which lists, made 3 PUT-class + 5 GET-class and a delete, $0.0000170. Averaged over a cycle of 16 loads, a
+  million single-part loads cost $11.94, derived from the two measured kinds. The same run measured a cold intersect
+  of two segments sharing 100 chunks that lie together at 99.80 ms at the median in 6 GETs, an `andNot` against ten
+  excludes at 351.64 ms in 33, and a single-part load at 2.59 million ids a second; its requests cost $0.0027548. Its
+  request counts are those of the stages the earlier run timed. Latencies of runs from different CloudShell sessions
+  are not comparable, so none is set against another's. The requests at a `keep` other than 12 stay counted, not
+  measured. Both READMEs, the benchmarks page, the roadmap, the guides and the site quote it, and the calibration gate
+  holds the steady figures to the run's evidence.
 
 ## [0.17.0] — 2026-10-05
 
