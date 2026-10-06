@@ -21,6 +21,8 @@ const surfaceTool = require_(join(ROOT, 'scripts', 'api-surface.cjs')) as {
     allowed: unknown,
   ) => { problems: string[] };
   allowlistProblems: (rows: unknown) => string[];
+  newRows: (rows: unknown, base: unknown) => unknown;
+  entryPoints: (root: string) => { specifier: string; dts: string }[];
 };
 
 // Made when the file loads, because `describe` bodies run before any `beforeAll`.
@@ -79,7 +81,7 @@ describe('buildSurface', () => {
     expect(surface['fx Box.value #2']).toBe('set value(v: T);');
     expect(surface['fx Box.put #2']).toBe('put(x: T, y: number): Promise<void>;');
     expect(surface['fx Box.[index:string]']).toBe('[key: string]: unknown;');
-    expect(surface['fx Box.secret']).toBe('private secret;');
+    expect(surface['fx Box.secret']).toBeUndefined(); // private: not public API
   });
 
   it('lists interface members, call and construct signatures', () => {
@@ -173,7 +175,9 @@ describe('diffSurfaces and breakingChanges', () => {
     expect(problems.some((p) => p.includes('removed: p A'))).toBe(false);
 
     const wild = surfaceTool.breakingChanges(was, {}, [
-      { entry: 'p *', reason: 'package dropped' },
+      { entry: 'p A*', reason: 'dropped' },
+      { entry: 'p B*', reason: 'dropped' },
+      { entry: 'p C*', reason: 'dropped' },
     ]);
     expect(wild.problems).toEqual([]);
     const narrow = surfaceTool.breakingChanges(was, {}, [{ entry: 'p C*', reason: 'dropped' }]);
@@ -184,6 +188,27 @@ describe('diffSurfaces and breakingChanges', () => {
     expect(surfaceTool.allowlistProblems({})).toHaveLength(1);
     expect(surfaceTool.allowlistProblems([{ reason: 'x' }])).toHaveLength(1);
     expect(surfaceTool.allowlistProblems([])).toEqual([]);
+  });
+
+  it('refuses a prefix that does not name a package and a symbol', () => {
+    for (const entry of ['*', 'p *', '@cloudbitmaps/core*']) {
+      expect(surfaceTool.allowlistProblems([{ entry, reason: 'r' }]).join()).toContain('too wide');
+      // and a wide row excuses nothing
+      const { problems } = surfaceTool.breakingChanges({ 'p A': 'a' }, {}, [
+        { entry, reason: 'r' },
+      ]);
+      expect(problems.some((p) => p.startsWith('removed: p A'))).toBe(true);
+    }
+    expect(surfaceTool.allowlistProblems([{ entry: 'p A*', reason: 'r' }])).toEqual([]);
+  });
+
+  it('newRows drops the rows the base already has, by entry', () => {
+    const rows = [
+      { entry: 'p A', reason: 'old' },
+      { entry: 'p B', reason: 'new' },
+    ];
+    expect(surfaceTool.newRows(rows, [{ entry: 'p A', reason: 'reworded' }])).toEqual([rows[1]]);
+    expect(surfaceTool.newRows(rows, [])).toEqual(rows);
   });
 });
 
