@@ -107,9 +107,13 @@ And a store loads one straight back, with no per-id work:
 - **For a current dump, use a freshly built store.** A long-lived store may be up to `cache.genTtlMs` behind a publish
   (see [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)); the command builds a fresh
   store per run.
-- **For a consistent dump, pause your loads.** Each segment is read live, so a publish while a long segment exports can
-  leave its file holding chunks of two generations. Pause your loads or export from a quiet window, for one segment or
-  across segments.
+- **Each segment is exported as one instant.** The export pins a segment when it begins it: the generation is resolved
+  once, and only that generation's object is read for the whole segment, so a load that publishes meanwhile cannot put
+  chunks of two generations in one file. That is one registry read per segment, beside the tail read the export already
+  makes, so it adds no request. A pin holds nothing: if a collection or an erasure removes the pinned generation while
+  the segment is still being read, that segment fails with the error a pinned read gets, is recorded in `failed[]` and
+  its partial output is discarded, and it never reads the newer generation. Different segments are different instants:
+  a dump of several segments is not a snapshot of the store. Pause your loads, or export from a quiet window, for that.
 
 This is also a building block for a data-portability response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's
 [Your data stays yours](../../README.md#your-data-stays-yours).
