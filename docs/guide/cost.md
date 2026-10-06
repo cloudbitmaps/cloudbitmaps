@@ -135,8 +135,9 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   of the window, a request S3 does not bill, and lists the segment only on every 16th generation, which adds a
   PUT-class request and two pointer reads there and makes no check that the current object is there, a sixteenth of each
   a load on average. That is a segment with a full window behind it, whose row carries a summary and a list of kept
-  generations, at any `keep` from 1 to 64, and about $11.94 per million single-part loads at the default prices,
-  measured on S3 at `keep: 12` ([the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made the requests above for each kind of load) and counted, not measured, at any other `keep` above 1; a segment's first two loads collect
+  generations, at any `keep` from 1 to 64, and about $11.94 per million single-part loads at the default prices
+  (derived from the measured kinds: 15 loads that delete by name and one that lists; the run listed once). The requests are measured on S3 at `keep: 12`
+  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made the requests above for each kind of load) and counted, not measured, at any other `keep` above 1; a segment's first two loads collect
   nothing and make fewer requests, and the first load of a row written before rows carried a summary reads the
   current generation's index, a tail read, in place of the check that its object is there. A publish
   that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
