@@ -66,6 +66,7 @@ interface SteadyRow {
   requests: string;
   one: string;
   perMillion: string;
+  medianMs: string;
 }
 interface Figures {
   runId: string;
@@ -274,15 +275,23 @@ function checkSteadyTable(text: string, want: SteadyRow[]): string[] {
   const problems: string[] = [];
   const seen: string[] = [];
   for (const row of rows) {
-    const [name = '', loads, requests, one, perMillion] = row.map((c) => c.replace(/\*\*/g, ''));
+    const [name = '', loads, requests, one, perMillion, medianMs] = row.map((c) =>
+      c.replace(/\*\*/g, ''),
+    );
     const w = want.find((r) => r.says.test(name));
     if (w === undefined) {
       problems.push(`the "${name}" row is no kind of steady load the run made`);
       continue;
     }
     seen.push(w.kind);
-    const got = { loads, requests, one, perMillion };
-    const need = { loads: w.loads, requests: w.requests, one: w.one, perMillion: w.perMillion };
+    const got = { loads, requests, one, perMillion, medianMs };
+    const need = {
+      loads: w.loads,
+      requests: w.requests,
+      one: w.one,
+      perMillion: w.perMillion,
+      medianMs: w.medianMs,
+    };
     if (JSON.stringify(got) !== JSON.stringify(need)) {
       problems.push(`the "${name}" row says ${JSON.stringify(got)}, not ${JSON.stringify(need)}`);
     }
@@ -753,6 +762,7 @@ describe('calibration reports are held to their evidence', () => {
         requests: '2 PUT + 3 GET',
         one: '$0.0000112',
         perMillion: '$11.20',
+        medianMs: '81.73 ms',
       },
       {
         kind: 'byName',
@@ -761,18 +771,24 @@ describe('calibration reports are held to their evidence', () => {
         requests: '2 PUT + 4 GET + 1 delete',
         one: '$0.0000116',
         perMillion: '$11.60',
+        medianMs: '176.94 ms',
       },
     ];
-    const table = (first: string, byName: string): string =>
+    const table = (first: string, byName: string, byNameMs = '176.94 ms'): string =>
       [
-        '| kind of load | loads | requests | each | per million |',
-        '|---|---|---|---|---|',
-        `| first | 1 | 2 PUT + 3 GET | $0.0000112 | ${first} |`,
-        `| by name | 4 | 2 PUT + 4 GET + 1 delete | $0.0000116 | ${byName} |`,
+        '| kind of load | loads | requests | each | per million | median time |',
+        '|---|---|---|---|---|---|',
+        `| first | 1 | 2 PUT + 3 GET | $0.0000112 | ${first} | 81.73 ms |`,
+        `| by name | 4 | 2 PUT + 4 GET + 1 delete | $0.0000116 | ${byName} | ${byNameMs} |`,
       ].join('\n');
 
     it('accepts the rows of the run', () => {
       expect(checkSteadyTable(table('**$11.20**', '$11.60'), want)).toEqual([]);
+    });
+
+    it("refuses another kind's median time under a row", () => {
+      expect(checkSteadyTable(table('$11.20', '$11.60', '220.58 ms'), want)).toHaveLength(1);
+      expect(checkSteadyTable(table('$11.20', '$11.60', '81.73 ms'), want)).toHaveLength(1);
     });
 
     it("refuses a price under another kind's name, and a table that is not there", () => {

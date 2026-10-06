@@ -1072,6 +1072,7 @@ function steadyRowsOf(f) {
     requests: `${put(r.put)} + ${r.get} GET${r.free > 0 ? ` + ${r.free} delete` : ''}`,
     one: usd(r.usd, 7),
     perMillion: usd(r.perMillion, 2),
+    medianMs: `${fixed(r.medianMs, 2)} ms`,
   }));
 }
 
