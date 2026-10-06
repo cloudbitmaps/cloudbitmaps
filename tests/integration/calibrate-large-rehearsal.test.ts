@@ -39,6 +39,9 @@ type Results = {
 const large = require_(join(ROOT, 'bench', 'lib', 'calibrate-large-stages.cjs')) as {
   LARGE_STAGES: string[];
 };
+const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
+  STAGES: readonly string[];
+};
 
 const OFFLINE_HOME = mkdtempSync(join(tmpdir(), 'calib-large-rehearsal-'));
 afterAll(() => rmSync(OFFLINE_HOME, { recursive: true, force: true }));
@@ -128,4 +131,46 @@ describe('the large suite, rehearsed against MinIO', () => {
       expect(kept(stage), name).toEqual({ put: stage.expectedPuts, get: stage.expectedGets });
     }
   }, 300_000);
+});
+
+// A projection prices the plan and creates nothing, but it imports the built library to count the large suite's
+// requests and to read the pricing profile, so it is held here, where the packages are built, not with the unit tests'
+// refusals, which hold on a checkout that has not been built.
+function project(args: string[]) {
+  return spawnSync(process.execPath, [HARNESS, ...args], {
+    cwd: ROOT,
+    env: {
+      PATH: process.env.PATH ?? '',
+      HOME: OFFLINE_HOME,
+      AWS_CONFIG_FILE: join(OFFLINE_HOME, 'no-config'),
+      AWS_SHARED_CREDENTIALS_FILE: join(OFFLINE_HOME, 'no-credentials'),
+      AWS_EC2_METADATA_DISABLED: 'true',
+    },
+    encoding: 'utf8',
+    timeout: 90_000,
+  });
+}
+
+describe('the large suite, projected', () => {
+  it('projects the large suite without touching anything: its bound under the ceiling, each stage listed', () => {
+    const out = project(['--suite', 'large']);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toMatch(/PROJECTION ONLY — nothing created, no credentials read/);
+    for (const name of large.LARGE_STAGES) expect(out.stdout, name).toContain(name);
+    for (const name of stages.STAGES)
+      expect(out.stdout, name).not.toMatch(new RegExp(`^  ${name}\\b`, 'm'));
+    const dollars = /projected \$\s+(\d+\.\d+)/.exec(out.stdout);
+    expect(Number(dollars?.[1])).toBeGreaterThan(0);
+    expect(Number(dollars?.[1])).toBeLessThan(0.05);
+    expect(out.stdout).toMatch(/size\s+1000000 ids/);
+    expect(out.stdout).toMatch(/at most \d+ range requests an operand/);
+  }, 90_000);
+
+  it('leaves the default suite’s projection as it is: its stages, none of the large suite’s', () => {
+    const out = project([]);
+    expect(out.status).toBe(0);
+    for (const name of stages.STAGES) expect(out.stdout, name).toContain(name);
+    for (const name of large.LARGE_STAGES) expect(out.stdout, name).not.toContain(name);
+    expect(out.stdout).toMatch(/projected\s+\d+ PUT-class, \d+ GET-class/);
+  });
 });

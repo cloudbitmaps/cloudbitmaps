@@ -455,28 +455,6 @@ async function main() {
     log(`suite: ${SUITE} (named by ${SUITE_SOURCE})`);
   }
 
-  // The large suite holds ten-million-id operands in flight, so a rehearsal and a run state what the machine has,
-  // once, and refuse to start below the floor it names, before the library is imported or anything is created.
-  let resourcesSeen = null;
-  if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {
-    const now = resourcesNow();
-    log(`resources: ${now.line}`);
-    resourcesSeen = now.have;
-    try {
-      checkResources(now.have, resolveFloors(process.env));
-    } catch (err) {
-      refuse(`${redact(err.message)}. Nothing was created.`);
-    }
-    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the installed packages
-    // are asked, and a run against others is refused.
-    try {
-      const sources = installedSources(ROOT);
-      checkEngineConstants(constantsIn(sources.core, sources.s3));
-    } catch (err) {
-      refuse(`${redact(err.message)}. Nothing was created.`);
-    }
-  }
-
   // The workload client's socket limit is refused here if it is not a legal one; `limitWorkloadSockets` applies it.
   try {
     if (MODE !== 'cleanup') resolveSocketLimit(process.env.CR_CALIBRATE_MAX_SOCKETS);
@@ -556,6 +534,29 @@ async function main() {
     }
     if (process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE) {
       refuse(`set CR_CALIBRATE_CONFIRM=${CONFIRM_PHRASE} to authorise a run that spends money`);
+    }
+  }
+
+  // The large suite holds ten-million-id operands in flight, so a rehearsal and a run state what the machine has,
+  // once, and refuse to start below the floor it names, before the library is imported or anything is created. These
+  // come after the refusals made from the inputs alone, which hold on a checkout that has not been built.
+  let resourcesSeen = null;
+  if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {
+    const now = resourcesNow();
+    log(`resources: ${now.line}`);
+    resourcesSeen = now.have;
+    try {
+      checkResources(now.have, resolveFloors(process.env));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
+    }
+    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the installed packages
+    // are asked, and a run against others is refused.
+    try {
+      const sources = installedSources(ROOT);
+      checkEngineConstants(constantsIn(sources.core, sources.s3));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
     }
   }
 

@@ -1305,28 +1305,6 @@ describe('the harness, run', () => {
       rmSync(file, { force: true });
     }
   });
-
-  it('projects the large suite without touching anything: its bound under the ceiling, each stage listed', () => {
-    const out = harness(['--suite', 'large']);
-    expect(out.status).toBe(0);
-    expect(out.stdout).toMatch(/PROJECTION ONLY — nothing created, no credentials read/);
-    for (const name of large.LARGE_STAGES) expect(out.stdout, name).toContain(name);
-    for (const name of stages.STAGES)
-      expect(out.stdout, name).not.toMatch(new RegExp(`^  ${name}\\b`, 'm'));
-    const dollars = /projected \$\s+(\d+\.\d+)/.exec(out.stdout);
-    expect(Number(dollars?.[1])).toBeGreaterThan(0);
-    expect(Number(dollars?.[1])).toBeLessThan(0.05);
-    expect(out.stdout).toMatch(/size\s+1000000 ids/);
-    expect(out.stdout).toMatch(/at most \d+ range requests an operand/);
-  }, 90_000);
-
-  it('leaves the default suite’s projection as it is: its stages, none of the large suite’s', () => {
-    const out = harness([]);
-    expect(out.status).toBe(0);
-    for (const name of stages.STAGES) expect(out.stdout, name).toContain(name);
-    for (const name of large.LARGE_STAGES) expect(out.stdout, name).not.toContain(name);
-    expect(out.stdout).toMatch(/projected\s+\d+ PUT-class, \d+ GET-class/);
-  });
 });
 
 describe('the files the harness runs from', () => {
