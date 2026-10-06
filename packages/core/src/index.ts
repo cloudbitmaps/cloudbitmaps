@@ -27,6 +27,7 @@ export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';
 export { groundedReport } from './core/cost';
 export { runExport } from './export';
+export type { SegmentReader } from './export';
 // `splitId` only: the flavor uses it to fail fast on a non-u32 id. `joinId` is the inverse and has no
 // caller outside core, so it stays internal rather than shipping as half-documented public API.
 export { splitId } from './core/bit-route';

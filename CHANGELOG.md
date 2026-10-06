@@ -35,6 +35,12 @@ so, and so do the module headers in the code.
   `keptGens` or a `leases` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
   patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
 
+- **`runExport`'s `reader` must offer `pin()`.** A caller that passes its own reader to `runExport` (from
+  `@cloudbitmaps/core`) needs `segment(name, { namespace? })` to return a handle with `pin(): Promise<{ iterate():
+  AsyncIterable<number> }>`, the `SegmentReader` type, now exported. A reader without it no longer type-checks, and at
+  runtime `runExport` throws a `ValidationError` naming the missing method before it opens any file. `store.exportSegments`
+  and the `export-segments` command pass a store, which has `pin()`, and are unaffected.
+
 ### Added
 
 - **`pin({ leaseUntil })` and `pinAt(at, { leaseUntil })`: a bounded lease on a pin.** A leased pin keeps its generation out of a load's collection until
@@ -100,6 +106,16 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Each segment's export (`store.exportSegments`, `runExport`) is one instant.** The export pins a segment when it
+  begins it, reading its generation from the registry then and only that generation's object for the whole segment, so
+  a load that publishes while a long segment is being exported can no longer leave chunks of two generations in one
+  exported file, and a warm store exports the generation current when each segment's export begins. A cold store makes
+  one registry read and one tail read per segment, as before; a warm store makes one registry read per segment, which
+  the live read skipped. The pin holds nothing, so if a collection or an erasure removes the pinned generation before
+  the segment has been read, that segment fails with the error a pinned read gets, is recorded in the manifest's
+  `failed[]` with its partial output discarded, and never reads the newer generation. Different segments are still
+  different instants, so a dump of many is not a snapshot of the store.
+
 - **Behaviour change: an expired exclusion now throws; it used to exclude nothing.** `a.andNot([stale])`,
   `a.intersect([b], { exclude: [stale] })` and `a.union([b], { exclude: [stale] })`, with a range, `.batches()` or on
   pinned handles, reject with `ValidationError` (`andNot: refusing to read while these exclusions have expired — <name>`)
@@ -136,6 +152,14 @@ so, and so do the module headers in the code.
   the run measured neither. Its rounds sit above the engine's rounds model, which assumes no socket limit; it did not
   vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. Both READMEs,
   the benchmarks page, the roadmap, the guides and the site quote it.
+
+### Fixed
+
+- **An empty object on S3 is read as an empty object, not as a range error.** A tail read of a zero-byte generation, an
+  empty replacement for one, made S3 answer `InvalidRange` (416), which the driver raised as a `ValidationError` about a
+  range. The driver now confirms the size with a `HEAD` and returns an empty tail of size 0, as the GCS driver does, so
+  opening that object fails as any object too short to be a generation does, with an `IntegrityError`. A 416 on an
+  object that has bytes stays a `ValidationError`.
 
 ## [0.16.0] — 2026-10-04
 

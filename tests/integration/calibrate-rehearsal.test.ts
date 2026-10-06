@@ -49,7 +49,8 @@ type Stage = {
   discarded: Discard[];
   expectedGets?: number;
   p99ms?: number;
-  has?: { firstRead: { p99ms: number } };
+  p50ms?: number;
+  has?: { firstRead: { p50ms: number; p99ms: number } };
 };
 type Results = {
   runId: string;
@@ -98,11 +99,12 @@ const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) 
 /**
  * The workload: four calibration segments of 125,000 ids, which spread over 500 chunks with 25 shared, so each object
  * is still larger than the 256 KiB tail read, as the full workload's are; one multipart segment; four cold intersects;
- * point reads on two segments; two `andNot` calls, each against one other segment; no spread stage and no sweep. An
+ * point reads on two segments; five `andNot` calls, each against one other segment (enough for the median to be an
+ * ordinary sample of the stage, which the latency test reads the slowest against); no spread stage and no sweep. An
  * `andNot` call reads every chunk of its include operand, so it is the slowest sample here, and the smallest segment
  * that keeps the tail read whole is what keeps it short.
  */
-const W = { segments: 4, ids: 125_000, large: 1, reads: 4, point: 2, andNot: 2, excludes: 1 };
+const W = { segments: 4, ids: 125_000, large: 1, reads: 4, point: 2, andNot: 5, excludes: 1 };
 const WORKLOAD = {
   CR_CALIBRATE_SEGMENTS: String(W.segments),
   CR_CALIBRATE_IDS: String(W.ids),
@@ -311,18 +313,25 @@ describe('a calibration rehearsal that meets transient faults', () => {
   });
 
   // A kept sample's clock starts in the attempt that finished. A clock started before it would time the failed attempt
-  // and the wait for its requests, which is at least QUIET_MS, into the sample run again: so that sample, and so the
-  // stage's slowest, would take longer than both together. A sample of this workload takes far less than the wait.
+  // and the wait for its requests (at least QUIET_MS) into the sample run again, so that sample, and the stage's
+  // slowest, would exceed a typical sample by at least both together. The line is drawn from this run's own figures,
+  // not from a fixed time: a busy machine slows the stage's median and the failed attempt alike, so the slowest's
+  // excess over the median is what a clock error adds, the failed attempt's time and the wait. The wait is counted as
+  // 0.9 of QUIET_MS, since the quiet is measured from the failed sample's last request and the sample run again may be
+  // a few tens of milliseconds quicker than the median.
   it("leaves the failed attempt and the wait for its requests out of the kept sample's latency", () => {
     const { phases } = run.results;
-    const slowest: Array<[string, number | undefined]> = [
-      ['intersect', phases.intersect?.p99ms],
-      ['pointReads', phases.pointReads?.has?.firstRead.p99ms],
-      ['andNot', phases.andNot?.p99ms],
+    const firstRead = phases.pointReads?.has?.firstRead;
+    const stagesRead: Array<[string, number | undefined, number | undefined]> = [
+      ['intersect', phases.intersect?.p50ms, phases.intersect?.p99ms],
+      ['pointReads', firstRead?.p50ms, firstRead?.p99ms],
+      ['andNot', phases.andNot?.p50ms, phases.andNot?.p99ms],
     ];
-    for (const [name, ms] of slowest) {
+    for (const [name, typical, slowest] of stagesRead) {
+      expect(typical, name).toBeGreaterThan(0);
+      expect(slowest, name).toBeGreaterThan(0);
       const failed = phases[name]?.discarded[0]?.failedAfterMs ?? 0;
-      expect(ms, name).toBeLessThan(failed + samples.QUIET_MS);
+      expect((slowest ?? 0) - (typical ?? 0), name).toBeLessThan(failed + 0.9 * samples.QUIET_MS);
     }
   });
 
