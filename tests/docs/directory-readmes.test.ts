@@ -127,6 +127,7 @@ const DIRECTORIES = [
   { dir: 'bench/calibration', minimum: 2, lib: false },
   { dir: 'bench/calibration/large', minimum: 0, lib: false },
   { dir: 'scripts', minimum: 20, lib: true },
+  { dir: 'api-surface', minimum: 2, lib: false },
 ];
 
 /**
