@@ -403,7 +403,7 @@ count) and `I` is `CR_CALIBRATE_LARGE_INTOS` (default 5).
 
 | stage | what it does | requests it is expected to make |
 |---|---|---|
-| `largeLoad` | the 6 operand segments through `store.load()` | a first load each: 2 PUT-class + 3 GET for an object of one PUT, 5 PUT-class + 3 GET for a two-part object |
+| `largeLoad` | the 6 operand segments through `store.load()` | a first load each, as the default suite's `load` stage: a multipart object swaps its PUT for a create, its parts and a complete |
 | `largeIntersect` | `R` uncached intersects of the two operands, each on a fresh store | a pointer and a tail an operand and the ranges of the shared chunks: 6, 8 and 10 GET |
 | `largeUnion` | `R` uncached unions | the ranges of every chunk of both operands: 8, 24 and 26 GET |
 | `largeAndNot` | `R` uncached `andNot`s, one segment against one | the include's every chunk and the exclude's shared ones: 7, 16 and 18 GET |
