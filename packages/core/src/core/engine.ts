@@ -12,6 +12,12 @@ import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-rout
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
+import {
+  assertChunkCardinalityInRange,
+  assertChunkKeyInRange,
+  checkedChunkKeys,
+  decodeChunkBytes,
+} from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
@@ -406,7 +412,7 @@ export class SegmentEngine {
     if (cardinalities) {
       let total = 0;
       for (const [k, n] of cardinalities) {
-        this.assertChunkKeyInRange(k);
+        assertChunkKeyInRange(k);
         total += n;
       }
       return total;
@@ -617,11 +623,9 @@ export class SegmentEngine {
       { loKey, loRem, hiKey, hiRem },
     );
     for (const k of keys) {
-      this.assertChunkKeyInRange(k);
+      assertChunkKeyInRange(k);
       const c = counts.get(k)!;
-      if (!Number.isInteger(c) || c < 1 || c > CHUNK_COUNT) {
-        throw new IntegrityError(`chunk cardinality from a tier is out of range: ${c}`);
-      }
+      assertChunkCardinalityInRange(c);
     }
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
 
@@ -1213,7 +1217,7 @@ export class SegmentEngine {
     }
     return streamed.stream!.take(chunkKey).then((read) => {
       if (read.bytes === null) return null;
-      const bitmap = this.decodeChunk(read.bytes, chunkKey);
+      const bitmap = decodeChunkBytes(this.codec, read.bytes, chunkKey, this.maxBitmapBytes);
       // Cached under the version the bytes came from, not the one the read planned under: a source that re-resolved
       // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
       // segment was invalidated while the read ran.
@@ -1244,56 +1248,9 @@ export class SegmentEngine {
     return version === undefined ? chunkRefKey(ref) : chunkGenKey(ref, version);
   }
 
-  /** The segment's chunk keys, ascending — a shape read off the index, no payload. Keys are untrusted (invariant 5). */
+  /** The segment's chunk keys, ascending, checked as untrusted tier data. */
   private async chunkKeys(seg: SegmentRef): Promise<number[]> {
-    const keys = [...(await this.storage.listChunkKeys(seg))];
-    for (const k of keys) this.assertChunkKeyInRange(k);
-    keys.sort((a, b) => a - b);
-    // A key listed twice would be read and yielded twice; the `.crbm` reader refuses one, a custom source may not.
-    for (let i = 1; i < keys.length; i++) {
-      if (keys[i] === keys[i - 1]) {
-        throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);
-      }
-    }
-    return keys;
-  }
-
-  /**
-   * Tier-derived keys are untrusted (invariant 5) — fail fast on a corrupt/out-of-range key rather than
-   * letting it flow into the id-routing step and produce a bogus id.
-   */
-  private assertChunkKeyInRange(k: number): void {
-    if (!Number.isInteger(k) || k < 0 || k >= CHUNK_COUNT) {
-      throw new IntegrityError(`chunk key from a tier is out of range: ${k}`);
-    }
-  }
-
-  /**
-   * The other half of invariant 5: a chunk payload holds **remainders** — 16-bit offsets within one chunk — so
-   * every value must be `<= 0xffff`.
-   *
-   * Nothing upstream establishes that. The byte cap bounds *size*, and CRC/AEAD prove the bytes are the bytes
-   * that were written — which anyone able to write the bucket satisfies trivially. A value `>= 65536` would then
-   * reach the id-routing step, which masks it (`remainder & 0xffff`) and emits a **fabricated id belonging to a different
-   * chunk's id space**: indistinguishable from real data, inflating `count()` and creating spurious `intersect`
-   * matches.
-   *
-   * Costs one `maximum()` per chunk, not per id — `maximum` is optional on the codec seam precisely so a codec
-   * that cannot answer in O(1) opts out instead of making the read path walk every value.
-   *
-   * One value stands for all of them only because the decode is structurally checked. Roaring answers `maximum()`
-   * from its last container, so a payload listing its containers out of order would report the wrong one's
-   * largest value and pass here while holding values above 65,535. The codec's `safeDeserialize` refuses that
-   * payload, and every other shape that would make this answer wrong, before it reaches this check.
-   */
-  private assertChunkPayloadInRange(bitmap: CodecBitmap, chunkKey: number): void {
-    const max = bitmap.maximum?.();
-    if (max !== undefined && max > MAX_REMAINDER) {
-      throw new IntegrityError(
-        `chunk ${chunkKey} payload holds value ${max}, outside the 16-bit remainder range ` +
-          `[0, ${MAX_REMAINDER}] — the stored object is corrupt or was not written by this codec`,
-      );
-    }
+    return checkedChunkKeys(await this.storage.listChunkKeys(seg));
   }
 
   /**
@@ -1431,16 +1388,6 @@ export class SegmentEngine {
   }
 
   /**
-   * A chunk's stored bytes decoded under the size cap (invariant 5) and range-checked: the one place a chunk becomes a
-   * bitmap, whether its bytes came from a request of its own or from a stream of coalesced ranges.
-   */
-  private decodeChunk(bytes: Uint8Array, chunkKey: number): CodecBitmap {
-    const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
-    this.assertChunkPayloadInRange(bitmap, chunkKey);
-    return bitmap;
-  }
-
-  /**
    * One chunk, decoded, range-checked and cached. A source with `getChunks` is read through it, as a one-key stream, so
    * a `storage.get` is reported only for a request that was sent (a chunk the source holds in memory sends none);
    * the chunk is cached under the version it came from, as a stream's chunk is. A source without it is read by
@@ -1496,7 +1443,7 @@ export class SegmentEngine {
       }
     }
     if (!bytes) return null;
-    const bitmap = this.decodeChunk(bytes, ref.chunkKey);
+    const bitmap = decodeChunkBytes(this.codec, bytes, ref.chunkKey, this.maxBitmapBytes);
     // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
     if (key !== '' && this.openReads.get(cacheKey)?.token === token) this.cache?.set(key, bitmap);
     return bitmap;
