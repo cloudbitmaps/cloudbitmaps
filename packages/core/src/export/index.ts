@@ -26,6 +26,7 @@
  * masquerades as complete. Therefore "a manifest exists" means *the run finished*, not that every segment
  * succeeded — check `failed` (the CLI also exits non-zero when it's non-empty).
  */
+import { ValidationError } from '../core/errors';
 import { isReservedRow } from '../core/registry-scan';
 import type { CodecInterface } from '../core/codec';
 import { requireCodec } from '../core/codec';
@@ -104,7 +105,8 @@ export interface ExportManifest {
 }
 
 /**
- * The minimal read surface the export needs from a store — a `CloudRoaring` satisfies this structurally. A segment's
+ * The minimal read surface the export needs from a store — a `CloudRoaring` satisfies this structurally: `segment(name,
+ * { namespace? })` returns a handle whose `pin()` resolves to something that iterates the ids. A segment's
  * `pin()` resolves its generation once and reads only that generation's object, so one segment's export is one instant.
  */
 export interface SegmentReader {
@@ -129,15 +131,18 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  * `close()` fault is likewise recorded (never triggering `abort()` — they're mutually exclusive).
  *
  * Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
- * disappeared — export to a fresh directory for a clean dump. For a *current* image, run against a
- * freshly-constructed store: a store's storage source re-resolves each segment's generation on a short TTL, or, with
- * no registry, with `cache.genTtlMs: 0`, or built without a clock, only when an eviction, a sweep or an invalidation
- * makes it, so a long-lived store may export a view one load behind, or more. Each segment is pinned for its export:
- * its generation is resolved once, when its export begins, and only that generation's object is read for the whole
- * segment, so a publish during a long segment's export cannot put two generations in one file. That costs one registry
- * read per segment beside the tail read the export already makes, and a pin holds nothing: if a collection or an
- * erasure removes the pinned generation mid-export, that segment's export fails, recorded in `failed`, and never
- * reads the newer generation. Different segments are different instants.
+ * disappeared — export to a fresh directory for a clean dump.
+ *
+ * Each segment is pinned for its export: its generation is read from the registry when its export begins, on a warm
+ * store as on a cold one, and only that generation's object is read for the whole segment, so a publish during a long
+ * segment's export cannot put two generations in one file. A cold store makes one registry read and one tail read
+ * per segment; a warm store makes one registry read per segment. A pin holds nothing: if a collection or an erasure
+ * removes the pinned generation mid-export, that segment's export fails, recorded in `failed`, and never reads the
+ * newer generation. Different segments are different instants.
+ *
+ * `reader` is any object with `segment(name, { namespace? })` returning a handle with `pin()`, which resolves to
+ * `{ iterate(): AsyncIterable<number> }` (see {@link SegmentReader}). A reader without that shape throws a
+ * `ValidationError` before any file is opened.
  */
 export async function runExport(
   reader: SegmentReader,
@@ -152,6 +157,15 @@ export async function runExport(
   const segments: ExportedSegment[] = [];
   const failed: ExportFailure[] = [];
   let totalIds = 0;
+  if (typeof (reader as { segment?: unknown } | undefined)?.segment !== 'function') {
+    throw new ValidationError(
+      "runExport: the reader must have a segment(name, { namespace? }) method returning a handle with pin(), as a store's does",
+    );
+  }
+  // The first segment's handle is checked once, before any file is opened: a reader that cannot pin fails the run, not
+  // every segment into `failed`.
+  let probed = false;
+  let unusable: Error | undefined;
 
   const exportRef = async (ref: SegmentRef): Promise<void> => {
     let writer: ExportWriter | undefined;
@@ -159,7 +173,18 @@ export async function runExport(
     let bytes = 0;
     try {
       validateSegmentRef(ref); // defense-in-depth: registry rows are untrusted bytes here
-      const ids = (await reader.segment(ref.segment, { namespace: ref.namespace }).pin()).iterate();
+      const handle = reader.segment(ref.segment, { namespace: ref.namespace });
+      if (!probed) {
+        probed = true;
+        if (typeof handle?.pin !== 'function') {
+          unusable = new ValidationError(
+            "runExport: the reader's segment(name, { namespace? }) must return a handle with a pin() method; " +
+              'a segment is exported at one pinned generation',
+          );
+          throw unusable;
+        }
+      }
+      const ids = (await handle.pin()).iterate();
       writer = await sink.open(ref, ext);
       if (format === 'roaring') {
         const bm = requireCodec(options.codec, "runExport({ format: 'roaring' })").empty();
@@ -189,6 +214,7 @@ export async function runExport(
         }
       }
     } catch (err) {
+      if (err === unusable) throw err;
       // Read/write fault: discard the partial (best-effort, so a failing cleanup can't mask the real fault),
       // record it, and move on — one bad segment never blocks the rest.
       if (writer !== undefined) {

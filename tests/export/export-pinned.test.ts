@@ -1,4 +1,5 @@
-import { NotFoundError } from '@/core/errors';
+import { NotFoundError, ValidationError } from '@/core/errors';
+import { runExport } from '@/export';
 import { brandAsBackend } from '@/core/ports';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { ExportSink, ExportWriter, SegmentRef } from '@/index';
@@ -132,5 +133,46 @@ describe('runExport pins each segment', () => {
     const manifest = await store.exportSegments({ open: () => ({ write() {}, close() {} }) });
     expect(manifest.totalSegments).toBe(3);
     expect(counts).toEqual({ capabilities: 1, list: 1, get: 3, getTail: 3 });
+  });
+
+  it('costs one registry read per segment on a warm store, which the live read skipped', async () => {
+    const real = new MemoryStorage();
+    const writer = new CloudRoaring({ storage: real });
+    for (const name of ['a', 'b', 'c']) await writer.load({ segment: name }, [1, 2, 3]);
+    const counts: Record<string, number> = {};
+    const store = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: counting(real.storage, counts),
+        registry: counting(real.registry, counts),
+      }),
+    });
+    const sink: ExportSink = { open: () => ({ write() {}, close() {} }) };
+    await store.exportSegments(sink); // cold: the store learns each segment
+    for (const k of Object.keys(counts)) delete counts[k];
+    await store.exportSegments(sink);
+    expect(counts).toEqual({ capabilities: 1, list: 1, get: 3 });
+  });
+
+  it('refuses a reader that cannot pin before it opens any file', async () => {
+    const backend = new MemoryStorage();
+    await new CloudRoaring({ storage: backend }).load(REF, [1, 2, 3]);
+    let opened = 0;
+    const sink: ExportSink = {
+      open: () => {
+        opened += 1;
+        return { write() {}, close() {} };
+      },
+    };
+    const iterateOnly = { segment: () => ({ iterate: async function* () {} }) };
+    await expect(runExport(iterateOnly as never, backend.registry, sink)).rejects.toThrow(
+      /pin\(\)/,
+    );
+    await expect(runExport(iterateOnly as never, backend.registry, sink)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(runExport({} as never, backend.registry, sink)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(opened).toBe(0);
   });
 });

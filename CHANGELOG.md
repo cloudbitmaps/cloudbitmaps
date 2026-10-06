@@ -33,6 +33,12 @@ so, and so do the module headers in the code.
   `keptGens` or a `leases` on one is an `IntegrityError`. A registry of your own must store and return the field, and drop it on a
   patch that moves `currentGen` without naming it; the conformance suite holds a driver to both.
 
+- **`runExport`'s `reader` must offer `pin()`.** A caller that passes its own reader to `runExport` (from
+  `@cloudbitmaps/core`) needs `segment(name, { namespace? })` to return a handle with `pin(): Promise<{ iterate():
+  AsyncIterable<number> }>`, the `SegmentReader` type, now exported. A reader without it no longer type-checks, and at
+  runtime `runExport` throws a `ValidationError` naming the missing method before it opens any file. `store.exportSegments`
+  and the `export-segments` command pass a store, which has `pin()`, and are unaffected.
+
 ### Added
 
 - **`pin({ leaseUntil })` and `pinAt(at, { leaseUntil })`: a bounded lease on a pin.** A leased pin keeps its generation out of a load's collection until
@@ -98,13 +104,15 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **Each segment's `exportSegments` is one instant.** The export pins a segment when it begins it, resolving its
-  generation once and reading only that generation's object for the whole segment, so a load that publishes while a long
-  segment is being exported can no longer leave chunks of two generations in one exported file. It costs no request
-  beyond what the export made: one registry read and one tail read per segment. The pin holds nothing, so if a
-  collection or an erasure removes the pinned generation before the segment has been read, that segment fails with the
-  error a pinned read gets, is recorded in the manifest's `failed[]` with its partial output discarded, and never reads
-  the newer generation. Different segments are still different instants, so a dump of many is not a snapshot of the store.
+- **Each segment's export (`store.exportSegments`, `runExport`) is one instant.** The export pins a segment when it
+  begins it, reading its generation from the registry then and only that generation's object for the whole segment, so
+  a load that publishes while a long segment is being exported can no longer leave chunks of two generations in one
+  exported file, and a warm store exports the generation current when each segment's export begins. A cold store makes
+  one registry read and one tail read per segment, as before; a warm store makes one registry read per segment, which
+  the live read skipped. The pin holds nothing, so if a collection or an erasure removes the pinned generation before
+  the segment has been read, that segment fails with the error a pinned read gets, is recorded in the manifest's
+  `failed[]` with its partial output discarded, and never reads the newer generation. Different segments are still
+  different instants, so a dump of many is not a snapshot of the store.
 
 - **Behaviour change: an expired exclusion now throws; it used to exclude nothing.** `a.andNot([stale])`,
   `a.intersect([b], { exclude: [stale] })` and `a.union([b], { exclude: [stale] })`, with a range, `.batches()` or on
