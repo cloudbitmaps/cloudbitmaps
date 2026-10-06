@@ -665,8 +665,8 @@
               Once a store has read a segment's pointer and index, a membership check the LRU cannot answer
               costs one ranged GET against your bucket — there is no middle tier to answer it more cheaply. The
               first read of a segment also reads its pointer and its index, and while its reader stays cached the
-              pointer is read again at most once per <span class="m">cache.genTtlMs</span>, 2 s by default. Object-store latency, in other words: a first read on an open segment took 27.15 ms at the
-              median in the in-region run of 2026-10-05, and what is not yet measured is
+              pointer is read again at most once per <span class="m">cache.genTtlMs</span>, 2 s by default. Object-store latency, in other words: a first read on an open segment took 26.10 ms at the
+              median in the in-region run of 2026-10-06, and what is not yet measured is
               <a href="benchmarks.html#owed">listed as owed</a>.
             </span>
           </li>

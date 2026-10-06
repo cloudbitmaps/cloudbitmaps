@@ -754,6 +754,7 @@ function derive(run, src) {
     return {
       keep: run.phases.steadyLoad.keep,
       loads: steadyRecords.length,
+      cadence: c,
       byKind,
       averageUSD:
         byKind.byName !== undefined && byKind.listing !== undefined
@@ -951,6 +952,7 @@ function derive(run, src) {
   };
   f.anchors = anchorsOf(f);
   f.rows = rowsOf(f);
+  f.steadyRows = steadyRowsOf(f);
   f.shapes = shapesOf(f);
   f.values = valuesOf(f, { withLatency: true });
   // What a page other than the report may state: a remote run's timings measured its client, and the report is
@@ -1007,8 +1009,13 @@ function anchorsOf(f) {
           ['per million single-part store.load() calls', usd(1e6 * f.usd.singleLoad, 2)],
           ['per million multipart store.load() calls', usd(1e6 * f.usd.multipartLoad, 2)],
         ]),
+    ...steadyAnchorsOf(f),
     ['the run', usd(f.usd.run, 7)],
-    ['round-trip floor', `${int(f.network.rttFloorMs)} ms`],
+    [
+      'round-trip floor',
+      // Whole milliseconds, unless rounding moves the figure by more than the reverse check allows (4.5 ms is not 5).
+      `${Math.abs(Math.round(f.network.rttFloorMs) - f.network.rttFloorMs) / f.network.rttFloorMs > 0.05 ? fixed(f.network.rttFloorMs, 2) : int(f.network.rttFloorMs)} ms`,
+    ],
     ['tail read', `${f.bytes.tailBytesPerRead / 1024} KiB`],
     [
       'cold intersects the Redis line buys a month',
@@ -1025,6 +1032,48 @@ function anchorsOf(f) {
           ],
         ]),
   ];
+}
+
+/**
+ * The steady loads' price per million, by kind and on average over a listing cadence, for a run that measured them:
+ * a report and the benchmarks page must state each. None for a run without the stage.
+ */
+function steadyAnchorsOf(f) {
+  const sd = f.steadyLoad;
+  if (sd === null) return [];
+  const k = sd.byKind;
+  return [
+    ['per million steady reloads', usd(k.reload.perMillion, 2)],
+    ['per million steady loads that delete by name', usd(k.byName.perMillion, 2)],
+    ['per million steady loads that list', usd(k.listing.perMillion, 2)],
+    ['per million steady loads on average', usd(1e6 * sd.averageUSD, 2)],
+  ];
+}
+
+/**
+ * The cells a table of a run's steady loads must hold, one row to a kind of load: how many of the kind the run made,
+ * the requests of one, its price and its price per million. The row's own words must begin with the kind's, so a
+ * price cannot be read under another kind. Empty for a run without the stage.
+ */
+function steadyRowsOf(f) {
+  const sd = f.steadyLoad;
+  if (sd === null) return [];
+  const put = (n) => (n === 2 ? `${n} PUT` : `${n} PUT-class`);
+  const words = {
+    first: /^first\b/i,
+    reload: /^reload/i,
+    byName: /^by name/i,
+    listing: /^listing/i,
+  };
+  return Object.entries(sd.byKind).map(([kind, r]) => ({
+    kind,
+    says: words[kind],
+    loads: String(r.runs),
+    requests: `${put(r.put)} + ${r.get} GET${r.free > 0 ? ` + ${r.free} delete` : ''}`,
+    one: usd(r.usd, 7),
+    perMillion: usd(r.perMillion, 2),
+    medianMs: `${fixed(r.medianMs, 2)} ms`,
+  }));
 }
 
 /**
@@ -1099,6 +1148,10 @@ function shapesOf(f) {
     [f.putsPerSingle, f.getsPerLoad],
     [f.putsPerMultipart, f.getsPerMultipart],
     ...Object.values(f.storeLoad).map((r) => [r.put, r.get]),
+    // The steady stage's own total, which a report may state beside its loads.
+    ...(f.steadyLoad === null
+      ? []
+      : [[f.stageLedger.steadyLoad.put, f.stageLedger.steadyLoad.get]]),
   ];
 }
 
@@ -1224,6 +1277,13 @@ function valuesOf(f, { withLatency }) {
     ms.push(u.singleSeconds * 1000, u.multipartSeconds * 1000, u.sequentialFloorMs);
   }
   const sl = f.storeLoad;
+  // Every steady figure below exists only for a run that ran the stage: an older run's report may not state a
+  // listing load's counts or prices. Known limit: a steady figure is accepted wherever the text states it, with no
+  // clause binding it to its kind (the table of steady loads and the anchors do bind each kind's row), as every
+  // other context-free figure here is.
+  const sd = f.steadyLoad;
+  const steadyKinds = sd === null ? [] : Object.values(sd.byKind);
+  if (withLatency) ms.push(...steadyKinds.map((r) => r.medianMs));
   const get = [
     // Per operand: one pointer read, one tail read, the shared chunks. Per intersect: their sums, with one or both
     // indexes too large for the tail read; the median as measured, and each pointer read once, expected.
@@ -1243,6 +1303,7 @@ function valuesOf(f, { withLatency }) {
     sl.first.get,
     sl.reload.get,
     sl.collecting.get,
+    ...steadyKinds.map((r) => r.get),
     f.ledger.get,
     f.byCommand.GetObjectCommand,
     f.projected.get,
@@ -1258,6 +1319,7 @@ function valuesOf(f, { withLatency }) {
     f.putsPerSingle,
     f.putsPerMultipart,
     sl.first.put,
+    ...steadyKinds.map((r) => r.put),
     f.ledger.put,
     f.projected.put,
   ];
@@ -1294,7 +1356,7 @@ function valuesOf(f, { withLatency }) {
       // store.load() is counted by a test, not measured: stated near "measured", it is wrong. For a run that timed it,
       // the first load is what the run measured, so only a reload and a collecting load are the test's.
       ...Object.entries(f.usd.storeLoad)
-        .filter(([kind]) => f.loadVia === null || kind !== 'first')
+        .filter(([kind]) => f.loadVia === null || (kind !== 'first' && sd === null))
         .flatMap(([, v]) => [v, 1e6 * v])
         .map((v) =>
           // Nor is it the write and the publish, which the same pages price at about a tenth less on average.
@@ -1302,6 +1364,12 @@ function valuesOf(f, { withLatency }) {
             { group: ['write', 'storeLoad'], allow: ['storeLoad'], require: false },
           ]),
         ),
+      // A steady load's price is measured requests at list price: never "expected". The average over a cadence is
+      // arithmetic over two measured kinds, and is no more expected than they are.
+      ...steadyKinds.flatMap((r) => [r.usd, r.perMillion]).map(measuredValue),
+      ...(sd === null || sd.averageUSD === null
+        ? []
+        : [sd.averageUSD, 1e6 * sd.averageUSD].map(measuredValue)),
     ],
     pct: [
       1,
@@ -1376,6 +1444,8 @@ function valuesOf(f, { withLatency }) {
         f.putsPerSingle + f.getsPerLoad,
         f.putsPerMultipart + f.getsPerMultipart,
         ...Object.values(sl).map((r) => r.put + r.get),
+        // A steady load's requests, a delete among them.
+        ...steadyKinds.map((r) => r.put + r.get + r.free),
         // The median's depth, with its pointer re-read, is not the depth with each pointer read once.
         bind(f.requestsDeep, ['once'], [], false),
         // The depth without the pointer re-read: the median intersect, which re-read it, was a request deeper.
@@ -1404,7 +1474,14 @@ function valuesOf(f, { withLatency }) {
         ARRAY_CONTAINER_MAX,
         CHUNK_SPAN,
       ],
-      loads: [f.loads, f.workload.segments, f.workload.largeSegments],
+      loads: [
+        f.loads,
+        f.workload.segments,
+        f.workload.largeSegments,
+        ...(sd === null
+          ? []
+          : [sd.loads, sd.cadence - 1, sd.cadence, ...steadyKinds.map((r) => r.runs)]),
+      ],
       // The run's count, the parity figures, and how many cold intersects a dollar buys: whole ones, measured, and
       // at each overlap in the table as a rate.
       intersects: [
@@ -2011,6 +2088,7 @@ module.exports = {
   mergeValues,
   unbound,
   STORE_LOAD_REQUESTS,
+  steadyRowsOf,
   windowOfRun,
   format: { int, fixed, usd, pct },
 };

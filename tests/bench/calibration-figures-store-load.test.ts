@@ -845,18 +845,34 @@ describe('a run with a steady-load stage', () => {
         versioned(r, '0.17.0');
       }),
     ).toMatch(/it records no requests for its steadyLoad stage/);
-    // The committed evidence predates the stage: derived as before, with no steady figure.
+    // A committed run before the stage derives with no steady figure, and one that ran it with a figure for each kind.
     const lib = figures as unknown as {
       evidenceFiles: (root: string) => string[];
     };
     const files = lib.evidenceFiles(ROOT);
     expect(files.length).toBeGreaterThan(0);
+    let without = 0;
+    let withStage = 0;
     for (const rel of files) {
       const run = JSON.parse(readFileSync(join(ROOT, rel), 'utf8')) as Run;
-      expect(run.phases.steadyLoad, rel).toBeUndefined();
       expect(() => stageFigures.derive(run, SOURCES), rel).not.toThrow();
-      expect(stageFigures.derive(run, SOURCES).steadyLoad, rel).toBeNull();
+      const steady = stageFigures.derive(run, SOURCES).steadyLoad;
+      if (run.phases.steadyLoad === undefined) {
+        without += 1;
+        expect(steady, rel).toBeNull();
+      } else {
+        withStage += 1;
+        expect(Object.keys(steady?.byKind ?? {}), rel).toEqual([
+          'first',
+          'reload',
+          'byName',
+          'listing',
+        ]);
+      }
     }
+    // Both kinds of run are committed, so neither branch is vacuous; later runs all have the stage.
+    expect(without).toBeGreaterThan(0);
+    expect(withStage).toBeGreaterThan(0);
   });
 
   // An engine that lists on every load, or keeps its window by listing, makes a by-name load a listing's requests.

@@ -241,8 +241,8 @@ export async function loadParts(
 - **It costs the requests of one load.** The parts never touch storage: they are bytes in your processes, so one part
   or eight make the same requests. A segment's first load is 2 PUT + 3 GET, pointer included, for a single-part
   object. A multipart load, one whose union is large enough to be uploaded in parts, makes 5 PUT-class + 3 GET. Both
-  are [measured](../benchmarks.md#the-in-region-run--run-2026-10-05-50b5d), on a 1.05 MB and a 12.6 MB segment. A
-  reload and a load from the third on are [expected, not measured](../benchmarks.md#expected-not-measured).
+  are [measured](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b), on a 1.05 MB and a 12.6 MB segment. A
+  reload and a steady load at `keep: 12` are [measured](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) too.
 - **When this is not enough.** A segment too large for one process to hold, as its union and its serialization
   together, is not served by this recipe.
 
