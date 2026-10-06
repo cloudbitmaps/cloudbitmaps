@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it } from 'vitest';
  * A branch keeps every entry `[Unreleased]` has on `origin/main`. A bad merge-conflict resolution that takes only the
  * branch's side of `CHANGELOG.md` deletes another change's entries, and nothing else notices: the merge goes through
  * and the entries are gone. So the entries `[Unreleased]` had at the merge base with `origin/main` must all be in
- * `[Unreleased]` on the checked-out head, or in a released section of it, which is where a release cut moves the whole
+ * `[Unreleased]` on the checked-out head, or in a released section of it that the base did not have that title in, which is where a release cut moves the whole
  * of `[Unreleased]`. An entry deleted outright fails, and names the entry.
  *
  * An entry is known by its bold title, the text between the first `**` pair at its start, or by its first line when it
@@ -106,8 +106,9 @@ const tally = (titles: readonly string[]): Map<string, number> => {
 };
 
 /**
- * The entries `base`'s `[Unreleased]` has that `head` has neither in its `[Unreleased]` nor in a released section, as a
- * message each, naming the entry. `allowed` are the drops made on purpose.
+ * The entries `base`'s `[Unreleased]` has that `head` has neither in its `[Unreleased]` nor in a released section a cut
+ * newly made, as a message each, naming the entry. `allowed` are the drops made on purpose; each must have a reason and
+ * must name an entry `base`'s `[Unreleased]` has, so a spent row is a failure and the list prunes itself.
  */
 export function unreleasedDrift(
   base: string,
@@ -117,8 +118,26 @@ export function unreleasedDrift(
   const was = tally(entryTitles(changelogSections(base).unreleased));
   const now = changelogSections(head);
   const kept = tally(entryTitles(now.unreleased));
-  const released = new Set(entryTitles(now.released));
+  // Only a title a cut newly put in a released section is a moved entry: one that was in a released section already is
+  // another entry's, and does not account for this one.
+  const releasedBefore = tally(entryTitles(changelogSections(base).released));
+  const releasedNow = tally(entryTitles(now.released));
+  const released = new Set(
+    [...releasedNow].filter(([t, n]) => n > (releasedBefore.get(t) ?? 0)).map(([t]) => t),
+  );
   const problems: string[] = [];
+  for (const a of allowed) {
+    if (a.reason.trim() === '') {
+      problems.push(
+        `DROPPED_ON_PURPOSE names "${a.title}" with no reason: say why the entry is meant to go.`,
+      );
+    }
+    if (!was.has(a.title)) {
+      problems.push(
+        `DROPPED_ON_PURPOSE names "${a.title}", which is not in [Unreleased] on ${BASE}: remove the stale row.`,
+      );
+    }
+  }
   for (const [title, n] of was) {
     if (released.has(title) || allowed.some((a) => a.title === title)) continue;
     const have = kept.get(title) ?? 0;
@@ -265,6 +284,31 @@ describe('the entries of [Unreleased] on main are kept', () => {
       const twice = HEAD_TEXT(`${ENTRY_B}\n${ENTRY_B}\n`);
       expect(unreleasedDrift(twice, HEAD_TEXT(`${ENTRY_B}\n`))).toHaveLength(1);
       expect(unreleasedDrift(twice, twice)).toEqual([]);
+    });
+
+    it('does not take an older released entry of the same title for the entry that was dropped', () => {
+      const withOld = (text: string): string =>
+        `${text}\n## [2.0.0] — 2030-01-01\n\n- **A second change.** An older release's entry of that title.\n`;
+      const base = withOld(BASE_TEXT);
+      const dropped = withOld(BASE_TEXT.replace(`${ENTRY_B}\n`, ''));
+      const problems = unreleasedDrift(base, dropped);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('"A second change."');
+      // and a cut of that title in this change is still a move
+      const cut = withOld(
+        HEAD_TEXT('', `## [3.0.0] — 2030-02-01\n\n${ENTRY_A}\n${ENTRY_B}\n${PLAIN}\n`),
+      );
+      expect(unreleasedDrift(base, cut)).toEqual([]);
+    });
+
+    it('fails a drop named without a reason, or for an entry main does not have', () => {
+      const dropped = BASE_TEXT.replace(`${ENTRY_B}\n`, '');
+      const blank = [{ title: 'A second change.', reason: '  ' }];
+      expect(unreleasedDrift(BASE_TEXT, dropped, blank).join('\n')).toContain('with no reason');
+      const stale = [{ title: 'A change main never had.', reason: 'reverted before release' }];
+      const problems = unreleasedDrift(BASE_TEXT, BASE_TEXT, stale);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('stale row');
     });
 
     it('passes a drop named on purpose, and only that one', () => {
