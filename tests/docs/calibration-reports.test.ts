@@ -731,6 +731,19 @@ describe('calibration reports are held to their evidence', () => {
   });
 
   // Which anchors a section must state follows from what the run timed.
+  describe('a run without the steady stage', () => {
+    it("is not allowed a listing load's request count, which only a run that listed made", () => {
+      const rel = EVIDENCE.find((e) => e.includes('2026-10-05-50b5d'));
+      if (rel === undefined) throw new Error('no evidence for 2026-10-05-50b5d');
+      const f = deriveAs(JSON.parse(read(rel)));
+      const report = read(join(DIR, '2026-10-05-50b5d.md'));
+      expect(figures.unaccounted(report, f.values)).toEqual([]);
+      expect(
+        figures.unaccounted(`${report}\nS3 made 3 PUT-class requests per run segment.`, f.values),
+      ).toHaveLength(1);
+    });
+  });
+
   describe('the table of steady loads', () => {
     const want: SteadyRow[] = [
       {

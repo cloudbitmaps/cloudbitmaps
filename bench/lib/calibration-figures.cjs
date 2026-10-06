@@ -1276,6 +1276,10 @@ function valuesOf(f, { withLatency }) {
     ms.push(u.singleSeconds * 1000, u.multipartSeconds * 1000, u.sequentialFloorMs);
   }
   const sl = f.storeLoad;
+  // Every steady figure below exists only for a run that ran the stage: an older run's report may not state a
+  // listing load's counts or prices. Known limit: a steady figure is accepted wherever the text states it, with no
+  // clause binding it to its kind (the table of steady loads and the anchors do bind each kind's row), as every
+  // other context-free figure here is.
   const sd = f.steadyLoad;
   const steadyKinds = sd === null ? [] : Object.values(sd.byKind);
   if (withLatency) ms.push(...steadyKinds.map((r) => r.medianMs));
@@ -1298,7 +1302,6 @@ function valuesOf(f, { withLatency }) {
     sl.first.get,
     sl.reload.get,
     sl.collecting.get,
-    sl.listing.get,
     ...steadyKinds.map((r) => r.get),
     f.ledger.get,
     f.byCommand.GetObjectCommand,
@@ -1315,7 +1318,6 @@ function valuesOf(f, { withLatency }) {
     f.putsPerSingle,
     f.putsPerMultipart,
     sl.first.put,
-    sl.listing.put,
     ...steadyKinds.map((r) => r.put),
     f.ledger.put,
     f.projected.put,
