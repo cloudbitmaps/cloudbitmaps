@@ -239,13 +239,29 @@ export class S3StorageDriver implements IStorageDriver {
       // No tail bytes wanted — just resolve the size via a HEAD.
       return { bytes: new Uint8Array(0), size: (await this.headSize(key, objectKey)) ?? 0 };
     }
-    const { bytes, contentRange } = await this.read('GetObject', key, async (options) => {
-      const res = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey, Range: `bytes=-${maxBytes}` }),
-        options,
-      );
-      return { bytes: await collect(res.Body), contentRange: res.ContentRange };
+    const read = await this.read('GetObject', key, async (options) => {
+      try {
+        const res = await this.client.send(
+          new GetObjectCommand({
+            Bucket: this.bucket,
+            Key: objectKey,
+            Range: `bytes=-${maxBytes}`,
+          }),
+          options,
+        );
+        return { bytes: await collect(res.Body), contentRange: res.ContentRange };
+      } catch (err) {
+        // A zero-byte object has no suffix to satisfy, so S3 refuses the range with a 416. The HEAD below settles
+        // whether that is an empty object or a real range fault.
+        if (isInvalidRange(err)) return { refused: err };
+        throw err;
+      }
     });
+    if ('refused' in read) {
+      if ((await this.headSize(key, objectKey)) !== 0) throw this.mapReadError(read.refused, key);
+      return { bytes: new Uint8Array(0), size: 0 };
+    }
+    const { bytes, contentRange } = read;
     let size = totalFromContentRange(contentRange);
     if (size === undefined) {
       // A spec-compliant backend omits Content-Range only on a 200 (whole object), where bytes.length

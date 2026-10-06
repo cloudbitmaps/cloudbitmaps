@@ -720,8 +720,10 @@ function derive(run, src) {
   const expectedIntersectUSD = cost(expectedGets);
   const singleLoadUSD = cost(getsPerLoad, putsPerSingle);
   const multipartLoadUSD = cost(getsPerMultipart, putsPerMultipart);
+  // The engine's own table, unless the caller read the run against another, as a report written under an earlier one is.
+  const storeLoadRequests = src.storeLoadRequests ?? STORE_LOAD_REQUESTS;
   const storeLoadUSD = Object.fromEntries(
-    Object.entries(STORE_LOAD_REQUESTS).map(([k, r]) => [k, cost(r.get, r.put)]),
+    Object.entries(storeLoadRequests).map(([k, r]) => [k, cost(r.get, r.put)]),
   );
   // The steady loads' median requests by kind, each priced from what it made, and the average over a listing cadence.
   // Null for a run without the stage.
@@ -845,7 +847,7 @@ function derive(run, src) {
     putsPerMultipart,
     partsPerMultipart,
     loads,
-    storeLoad: STORE_LOAD_REQUESTS,
+    storeLoad: storeLoadRequests,
     steadyLoad,
     byCommand: { ...cmd },
     ledger: {

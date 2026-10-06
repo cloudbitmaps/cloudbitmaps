@@ -65,9 +65,7 @@ function freshStore(
   storage: IStorageDriver,
   keystore?: IKeystore,
 ): CloudRoaring {
-  // `cache.genTtlMs: 0` turns off the timed refresh, so a run reads the generations this store first resolved:
-  // nothing in these tests evicts, sweeps or invalidates a segment mid-run. That is the fixture's property, not
-  // the export's — `runExport` reads each segment live, so a real store gets no such hold from this setting.
+  // `cache.genTtlMs: 0` turns off the timed refresh, so a run reads the generations this store first resolved.
   return new CloudRoaring({
     storage: brandAsBackend({ storage, registry }),
     retry: false,
