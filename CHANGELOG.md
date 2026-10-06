@@ -135,6 +135,14 @@ so, and so do the module headers in the code.
   vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. Both READMEs,
   the benchmarks page, the roadmap, the guides and the site quote it.
 
+### Fixed
+
+- **An empty object on S3 is read as an empty object, not as a range error.** A tail read of a zero-byte generation, an
+  empty replacement for one, made S3 answer `InvalidRange` (416), which the driver raised as a `ValidationError` about a
+  range. The driver now confirms the size with a `HEAD` and returns an empty tail of size 0, as the GCS driver does, so
+  opening that object fails as any object too short to be a generation does, with an `IntegrityError`. A 416 on an
+  object that has bytes stays a `ValidationError`.
+
 ## [0.16.0] — 2026-10-04
 
 ### Added

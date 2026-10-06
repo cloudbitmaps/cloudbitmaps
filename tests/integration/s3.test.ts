@@ -174,6 +174,14 @@ describe('S3StorageDriver specifics (MinIO)', () => {
     expect(whole.bytes.length).toBe(size);
   });
 
+  it('getTail of an empty object is an empty tail of size 0', async () => {
+    const driver = freshDriver();
+    // This MinIO does not answer the range with a 416 as S3 does (the unit tests cover that answer), so this holds the
+    // empty tail on a real backend, not the 416 branch.
+    await driver.putImmutable(gen(1), async () => {});
+    expect(await driver.getTail(gen(1), 16)).toEqual({ bytes: new Uint8Array(0), size: 0 });
+  });
+
   it('delete is idempotent and actually removes the object', async () => {
     const driver = freshDriver();
     await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1) }]);
