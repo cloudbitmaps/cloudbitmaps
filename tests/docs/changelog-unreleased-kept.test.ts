@@ -276,7 +276,7 @@ describe('the entries of [Unreleased] on main are kept', () => {
     });
 
     it('does not read a released section as [Unreleased], nor a base with no entries as dropping any', () => {
-      const releasedOnly = HEAD_TEXT('', `## [0.1.0] — 2030-01-01\n\n${ENTRY_B}\n`);
+      const releasedOnly = HEAD_TEXT('', `## [2.0.0] — 2030-01-01\n\n${ENTRY_B}\n`);
       expect(unreleasedDrift(releasedOnly, HEAD_TEXT(''))).toEqual([]);
     });
   });
