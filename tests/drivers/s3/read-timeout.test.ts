@@ -11,6 +11,7 @@ import { CloudRoaring } from '@/index';
 import { S3Storage } from '@/s3/backend';
 import { S3RegistryDriver } from '@/s3/registry';
 import { S3StorageDriver } from '@/s3/storage';
+import { timedRead } from '@/s3/read-timeout';
 import { IntegrityError, TransientError, ValidationError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
@@ -365,8 +366,9 @@ async function settle<T>(promise: Promise<T>): Promise<Outcome<T>> {
 }
 
 /**
- * Assert a read ended in a `TransientError` that names its request and says it timed out, near `timeoutMs`: not before
- * it, and within a second after it, which a loaded machine meets and a timer set at a multiple of the value does not.
+ * Assert a read ended in a `TransientError` that names its request and says it timed out, and not before `timeoutMs`.
+ * How close to `timeoutMs` it ends is held by the fake-clock tests of `timedRead` below, to the millisecond: a wall-clock
+ * ceiling here would be decided by how busy the machine is, and a read that never ends is the `HUNG` guard in `settle`.
  */
 function expectTimedOut<T>(
   outcome: Outcome<T>,
@@ -381,7 +383,6 @@ function expectTimedOut<T>(
   // A little early is the timer's clock, not the read: Node starts a timer from the event loop's cached time, which
   // a busy loop leaves a few ms behind.
   expect(ms).toBeGreaterThanOrEqual(timeoutMs - 25);
-  expect(ms).toBeLessThan(timeoutMs + 1_000);
 }
 
 /** Wait (bounded) until every stalled response's connection has closed: a timed-out read let go of its socket. */
@@ -392,6 +393,55 @@ async function expectReleased(stub: StubS3): Promise<void> {
   }
   expect(stub.stalled.size).toBe(0);
 }
+
+describe('S3: timedRead on a fake clock', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('ends a read that is still running at the timeout, to the millisecond, and aborts its request', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const outcome = timedRead('GetObject', TIMEOUT, (options) => {
+      signal = options?.abortSignal;
+      return new Promise<never>(() => {});
+    }).then(
+      () => 'settled',
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 1);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(TransientError);
+    expect((error as Error).message).toBe(`S3 GetObject timed out after ${TIMEOUT} ms`);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('keeps the timeout error when the abort makes the read itself reject', async () => {
+    vi.useFakeTimers();
+    const outcome = timedRead(
+      'HeadObject',
+      TIMEOUT,
+      (options) =>
+        new Promise<never>((_, reject) => {
+          options?.abortSignal.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    ).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect((await outcome) as Error).toMatchObject({
+      message: `S3 HeadObject timed out after ${TIMEOUT} ms`,
+    });
+  });
+
+  it('leaves no timer behind once the read settles, and sets none when the timeout is off', async () => {
+    vi.useFakeTimers();
+    expect(await timedRead('GetObject', TIMEOUT, () => Promise.resolve('done'))).toBe('done');
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await timedRead('GetObject', 0, () => Promise.resolve('untimed'))).toBe('untimed');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   let stub: StubS3;

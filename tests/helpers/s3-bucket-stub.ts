@@ -273,6 +273,8 @@ export class StubS3Bucket {
           };
         }
         const size = current.body.length;
+        // S3 has no byte to range over in an empty object, so it refuses any range with a 416.
+        if (size === 0) return s3Error(416, 'InvalidRange');
         const [start, end] =
           suffix !== null
             ? [Math.max(0, size - Number(suffix[1])), size - 1]

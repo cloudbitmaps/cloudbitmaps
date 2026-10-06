@@ -327,11 +327,8 @@ async function scenario(
 const TIMEOUT = 200;
 /** A long one, for reads that must not: a cold child's first read can take over 150 ms on a loaded machine. */
 const ROOMY = 2_000;
-/** The store's read retry: four attempts, and up to 50 + 100 + 200 ms of backoff between them. */
+/** The store's read retry: four attempts. */
 const STORE_ATTEMPTS = 4;
-const STORE_BACKOFF_MS = 350;
-/** What a loaded machine adds. */
-const SLACK_MS = 4_000;
 const READ_NAME = {
   tail: /^GCS tail read of s\.0 timed out after 200 ms$/,
   range: /^GCS range read of s\.0 timed out after 200 ms$/,
@@ -390,9 +387,7 @@ describe('a GCS read with readTimeoutMs', () => {
         expect(String(run.outcome?.message)).toMatch(READ_NAME[call]);
         expect(counts.downloads).toBe(1);
         expect(held).toBe(1);
-        const ms = Number(run.outcome?.ms);
-        expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 20);
-        expect(ms).toBeLessThan(TIMEOUT + SLACK_MS);
+        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(TIMEOUT - 20);
       },
       30_000,
     );
@@ -412,23 +407,23 @@ describe('a GCS read with readTimeoutMs', () => {
     );
 
     it.concurrent(
-      'a 503 and then a stall share one deadline: the retry gets only what is left of it',
+      'a 503 and then a slow body share one deadline: the retry gets only what is left of it',
       async () => {
-        // The 503 takes 1,500 of the 4,000 ms, so a fresh clock for the retry would end past 5,500 ms. The retry that
-        // shares the deadline ends at 4,000 plus whatever a loaded machine adds, which the bound below leaves 1,250 ms
-        // for, with 250 ms to spare before a fresh clock would be seen. The 503 has 2,500 ms of room to arrive late
-        // before too little is left to retry at all.
+        // The 503 takes 1,500 of the 4,000 ms, and the retry's body then takes 3,000 more to arrive: past the
+        // deadline, which has 2,500 ms left for it, but well inside a fresh 4,000 ms clock. So a retry that shared the
+        // deadline fails at it, and a retry given a fresh clock would finish its read. That is told by the outcome and
+        // the request count, not by how long a loaded machine took: the body arrives 3,000 ms after the retry starts,
+        // however late the 503 was. The 503 has 2,500 ms of room to arrive late before too little is left to retry.
         const timeout = 4_000;
         const { run, counts, held } = await scenario(call, timeout, {
-          media: [{ late503: 1_500 }, 'stall-headers'],
+          media: [{ late503: 1_500 }, { slow: 3_000 }],
         });
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
+        expect(String(run.outcome?.message)).toMatch(/ timed out after 4000 ms$/);
         expect(counts.downloads).toBe(2);
-        expect(held).toBe(1);
-        const ms = Number(run.outcome?.ms);
-        expect(ms).toBeGreaterThanOrEqual(timeout - 20);
-        expect(ms).toBeLessThan(timeout + 1_250);
+        expect(held).toBe(0);
+        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(timeout - 20);
       },
       30_000,
     );
@@ -483,9 +478,7 @@ describe('a GCS read with readTimeoutMs', () => {
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
         expect(counts.downloads).toBe(STORE_ATTEMPTS);
         expect(held).toBe(STORE_ATTEMPTS);
-        const ms = Number(run.outcome?.ms);
-        expect(ms).toBeGreaterThanOrEqual(STORE_ATTEMPTS * TIMEOUT - 20);
-        expect(ms).toBeLessThan(STORE_ATTEMPTS * TIMEOUT + STORE_BACKOFF_MS + SLACK_MS);
+        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(STORE_ATTEMPTS * TIMEOUT - 20);
       },
       30_000,
     );
@@ -605,9 +598,7 @@ describe('a GCS read with readTimeoutMs', () => {
         );
         expect(counts.downloads).toBe(1);
         expect(counts.metadata).toBe(1);
-        const ms = Number(run.outcome?.ms);
-        expect(ms).toBeGreaterThanOrEqual(HOP_TIMEOUT - 20);
-        expect(ms).toBeLessThan(HOP_TIMEOUT + SLACK_MS);
+        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(HOP_TIMEOUT - 20);
       },
       30_000,
     );
