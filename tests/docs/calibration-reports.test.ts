@@ -131,7 +131,9 @@ const { int, usd } = figures.format;
  * report. Only the latest report follows the live model, which {@link figures.readSources} and the engine's own table
  * give; every other report names its model below, and a new run makes the one before it name its own.
  *
- * To pin the report that stops being the latest, copy the live model into a constant here, as the failure says.
+ * To pin the report that stops being the latest, record the model it was written against, as the failure says. Every
+ * field is kept, though only some are printed in a report's text: `derive` reads each as an input (the pointer refresh
+ * reads the generation TTL and the month, the rounds model the window), so a figure it derives follows the record.
  */
 const REGISTRY_WRITE_ON_HELD_ROW_MODEL: Model = {
   pricing: {
@@ -374,7 +376,7 @@ describe('calibration reports are held to their evidence', () => {
     const unpinned = ids.filter((id) => id !== latest && RECORDED_MODELS[id] === undefined);
     expect(
       unpinned,
-      `these reports stop being the latest and follow no model: record the model they were checked against in RECORDED_MODELS in this file. The live model is\n${live}`,
+      `these reports stop being the latest and follow no model: record in RECORDED_MODELS in this file the model each was written against. That is the live model below, unless this change also changed the engine or the pricing, in which case it is the live model as the merge base has it.\n${live}`,
     ).toEqual([]);
     expect(Object.keys(RECORDED_MODELS).filter((id) => !ids.includes(id) || id === latest)).toEqual(
       [],

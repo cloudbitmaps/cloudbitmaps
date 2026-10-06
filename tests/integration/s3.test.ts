@@ -176,8 +176,8 @@ describe('S3StorageDriver specifics (MinIO)', () => {
 
   it('getTail of an empty object is an empty tail of size 0', async () => {
     const driver = freshDriver();
-    // This MinIO does not answer the range with a 416 as S3 does (the unit tests cover that answer), so this holds the
-    // empty tail on a real backend, not the 416 branch.
+    // MinIO answers a suffix range of an empty object with a 206 and `Content-Range: bytes 0--1/0`, where S3 answers 416
+    // (it answers `bytes=0-15` with 416 too). So this holds the empty tail on a real backend; the unit tests hold the 416.
     await driver.putImmutable(gen(1), async () => {});
     expect(await driver.getTail(gen(1), 16)).toEqual({ bytes: new Uint8Array(0), size: 0 });
   });
