@@ -33,7 +33,8 @@ interface Dropped {
 
 /**
  * Entries a branch may drop from `[Unreleased]`, each with the reason. Nothing else may be: to drop an entry, add it
- * here in the change that does it.
+ * here in the change that does it. A row excuses only a drop the branch makes; once that change has merged the row
+ * excuses nothing and is ignored, so `main` stays green, and it can be removed in a later change.
  */
 export const DROPPED_ON_PURPOSE: readonly Dropped[] = [];
 
@@ -107,8 +108,9 @@ const tally = (titles: readonly string[]): Map<string, number> => {
 
 /**
  * The entries `base`'s `[Unreleased]` has that `head` has neither in its `[Unreleased]` nor in a released section a cut
- * newly made, as a message each, naming the entry. `allowed` are the drops made on purpose; each must have a reason and
- * must name an entry `base`'s `[Unreleased]` has, so a spent row is a failure and the list prunes itself.
+ * newly made, as a message each, naming the entry. `allowed` are the drops made on purpose; each must have a reason. A row
+ * whose title `base`'s `[Unreleased]` does not have excuses nothing: after its change merges, `base` is that change's
+ * result, and failing the row there would turn `main` red.
  */
 export function unreleasedDrift(
   base: string,
@@ -130,11 +132,6 @@ export function unreleasedDrift(
     if (a.reason.trim() === '') {
       problems.push(
         `DROPPED_ON_PURPOSE names "${a.title}" with no reason: say why the entry is meant to go.`,
-      );
-    }
-    if (!was.has(a.title)) {
-      problems.push(
-        `DROPPED_ON_PURPOSE names "${a.title}", which is not in [Unreleased] on ${BASE}: remove the stale row.`,
       );
     }
   }
@@ -301,14 +298,22 @@ describe('the entries of [Unreleased] on main are kept', () => {
       expect(unreleasedDrift(base, cut)).toEqual([]);
     });
 
-    it('fails a drop named without a reason, or for an entry main does not have', () => {
+    it('fails a drop named without a reason', () => {
       const dropped = BASE_TEXT.replace(`${ENTRY_B}\n`, '');
       const blank = [{ title: 'A second change.', reason: '  ' }];
       expect(unreleasedDrift(BASE_TEXT, dropped, blank).join('\n')).toContain('with no reason');
-      const stale = [{ title: 'A change main never had.', reason: 'reverted before release' }];
-      const problems = unreleasedDrift(BASE_TEXT, BASE_TEXT, stale);
+    });
+
+    it('keeps main green once a drop made on purpose has merged: the spent row excuses nothing', () => {
+      // On main after the merge, the base is the head and the dropped entry is in neither.
+      const merged = BASE_TEXT.replace(`${ENTRY_B}\n`, '');
+      const spent = [{ title: 'A second change.', reason: 'reverted before release' }];
+      expect(unreleasedDrift(merged, merged, spent)).toEqual([]);
+      // and on a later branch off that main, the row still excuses no other drop
+      const later = merged.replace(`${ENTRY_A}\n`, '');
+      const problems = unreleasedDrift(merged, later, spent);
       expect(problems).toHaveLength(1);
-      expect(problems[0]).toContain('stale row');
+      expect(problems[0]).toContain('A first change.');
     });
 
     it('passes a drop named on purpose, and only that one', () => {
