@@ -202,12 +202,14 @@ describe('diffSurfaces and breakingChanges', () => {
     expect(surfaceTool.allowlistProblems([{ entry: 'p A*', reason: 'r' }])).toEqual([]);
   });
 
-  it('newRows drops the rows the base already has, by entry', () => {
+  it('newRows drops the rows the base already has, by entry and reason', () => {
     const rows = [
       { entry: 'p A', reason: 'old' },
       { entry: 'p B', reason: 'new' },
     ];
-    expect(surfaceTool.newRows(rows, [{ entry: 'p A', reason: 'reworded' }])).toEqual([rows[1]]);
+    expect(surfaceTool.newRows(rows, [{ entry: 'p A', reason: 'old' }])).toEqual([rows[1]]);
+    // The same entry with another reason is a later change agreed afresh, so it is new.
+    expect(surfaceTool.newRows(rows, [{ entry: 'p A', reason: 'reworded' }])).toEqual(rows);
     expect(surfaceTool.newRows(rows, [])).toEqual(rows);
   });
 });

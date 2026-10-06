@@ -302,8 +302,12 @@ function diffSurfaces(was, now) {
   return { removed, added, changed };
 }
 
-/** A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and the start of a symbol. */
-const wildcardIsNarrow = (entry) => !entry.endsWith('*') || /^\S+ \S/.test(entry.slice(0, -1));
+/**
+ * A row's `entry` names a key, or a prefix ending in `*` that holds at least a package and the start of a symbol's name
+ * (after the `(referenced)` marker, for a referenced type).
+ */
+const wildcardIsNarrow = (entry) =>
+  !entry.endsWith('*') || /^\S+ (?:\(referenced\) )?[A-Za-z_$]/.test(entry.slice(0, -1));
 
 /** Problems with the allowlist itself: a row needs an entry and a reason, and a prefix cannot be wide. */
 function allowlistProblems(rows) {
@@ -332,8 +336,11 @@ const excuses = (row, key) =>
 
 /** The rows of `rows` whose entry the base's rows do not already have: a row left over from an earlier change excuses nothing. */
 function newRows(rows, baseRows) {
-  const had = new Set((Array.isArray(baseRows) ? baseRows : []).map((r) => r?.entry));
-  return Array.isArray(rows) ? rows.filter((r) => !had.has(r?.entry)) : rows;
+  // A row is the base's when the base has the same entry with the same reason: a later change to the same entry is
+  // agreed afresh, with a reason of its own.
+  const rowKey = (r) => JSON.stringify([r?.entry, r?.reason]);
+  const had = new Set((Array.isArray(baseRows) ? baseRows : []).map(rowKey));
+  return Array.isArray(rows) ? rows.filter((r) => !had.has(rowKey(r))) : rows;
 }
 
 /**
@@ -401,9 +408,10 @@ function main(argv, defaultRoot) {
     const committed = parseSnapshot(read(SNAPSHOT_PATH), SNAPSHOT_PATH);
     const was = committed.entries;
     const { removed, added, changed } = diffSurfaces(was, now);
+    const marks = diffSurfaces(committed.required, builtSnapshot.required);
     if (
       removed.length + added.length + changed.length === 0 &&
-      JSON.stringify(committed.required) === JSON.stringify(builtSnapshot.required)
+      marks.removed.length + marks.added.length + marks.changed.length === 0
     ) {
       console.log(
         `api-surface: the built surface is the committed snapshot (${Object.keys(now).length} entries)`,
@@ -415,6 +423,9 @@ function main(argv, defaultRoot) {
     for (const k of removed) console.error(`  removed: ${k}\n    was: ${was[k]}`);
     for (const k of changed)
       console.error(`  changed: ${k}\n    was: ${was[k]}\n    now: ${now[k]}`);
+    for (const k of marks.added) console.error(`  required, not recorded: ${k}`);
+    for (const k of marks.removed) console.error(`  recorded as required, and is not: ${k}`);
+    for (const k of marks.changed) console.error(`  required, recorded under another parent: ${k}`);
     console.error(
       'If the change is intended, run `pnpm api:surface` (it builds first) and commit the snapshot.',
     );

@@ -134,6 +134,26 @@ describe('--write and --check', () => {
     expect(r.err).toContain('@fx/a exports "."');
   });
 
+  it('fails when the committed record of required members is not what the declarations say, and names the member', () => {
+    const file = join(repo, 'api-surface/surface.json');
+    const committed = readFileSync(file, 'utf8');
+    const parsed = JSON.parse(committed) as { required: Record<string, string> };
+    expect(parsed.required['@fx/a Shape.a']).toBe('@fx/a Shape');
+    delete parsed.required['@fx/a Shape.a'];
+    writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n');
+    let r = run(['--check']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('required, not recorded: @fx/a Shape.a');
+    parsed.required['@fx/a Shape.a'] = '@fx/a Shape';
+    parsed.required['@fx/a keep'] = '@fx/a Shape';
+    writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n');
+    r = run(['--check']);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('recorded as required, and is not: @fx/a keep');
+    writeFileSync(file, committed);
+    expect(run(['--check']).status).toBe(0);
+  });
+
   it('fails on a declaration file that is not built', () => {
     rmSync(join(repo, 'packages/a/dist/extra.d.ts'));
     const r = run(['--check']);
@@ -196,12 +216,35 @@ describe('--against', () => {
     expect(r.err).toContain('a row the base already has excuses nothing');
   });
 
+  it('honours a row for the same entry with a reason of its own, as a later change agreed afresh', () => {
+    put(
+      'api-surface/allowed.json',
+      JSON.stringify([{ entry: '@fx/a drop', reason: 'earlier change' }]),
+    );
+    commit();
+    breakIt();
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a drop', reason: 'replaced' }]));
+    expect(run(['--against', 'HEAD']).status).toBe(0);
+  });
+
   it('refuses a row that is too wide', () => {
     breakIt();
     put('api-surface/allowed.json', JSON.stringify([{ entry: '*', reason: 'everything' }]));
     const r = run(['--against', 'HEAD']);
     expect(r.status).toBe(1);
     expect(r.err).toContain('too wide');
+  });
+
+  it('refuses a prefix that stops before a name, and takes one that starts a name', () => {
+    breakIt();
+    for (const entry of ['@fx/a (*', '@fx/a (referenced) *']) {
+      put('api-surface/allowed.json', JSON.stringify([{ entry, reason: 'wide' }]));
+      const r = run(['--against', 'HEAD']);
+      expect(r.status, entry).toBe(1);
+      expect(r.err, entry).toContain('too wide');
+    }
+    put('api-surface/allowed.json', JSON.stringify([{ entry: '@fx/a d*', reason: 'narrow' }]));
+    expect(run(['--against', 'HEAD']).status).toBe(0);
   });
 
   it('passes with a note when the ref has no snapshot, and fails on a ref that is not a commit', () => {
