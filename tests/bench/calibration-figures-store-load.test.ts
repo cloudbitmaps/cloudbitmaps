@@ -845,7 +845,7 @@ describe('a run with a steady-load stage', () => {
         versioned(r, '0.17.0');
       }),
     ).toMatch(/it records no requests for its steadyLoad stage/);
-    // The committed evidence predates the stage: derived as before, with no steady figure.
+    // A committed run before the stage derives with no steady figure, and one that ran it with a figure for each kind.
     const lib = figures as unknown as {
       evidenceFiles: (root: string) => string[];
     };
@@ -853,9 +853,16 @@ describe('a run with a steady-load stage', () => {
     expect(files.length).toBeGreaterThan(0);
     for (const rel of files) {
       const run = JSON.parse(readFileSync(join(ROOT, rel), 'utf8')) as Run;
-      expect(run.phases.steadyLoad, rel).toBeUndefined();
       expect(() => stageFigures.derive(run, SOURCES), rel).not.toThrow();
-      expect(stageFigures.derive(run, SOURCES).steadyLoad, rel).toBeNull();
+      const steady = stageFigures.derive(run, SOURCES).steadyLoad;
+      if (run.phases.steadyLoad === undefined) expect(steady, rel).toBeNull();
+      else
+        expect(Object.keys(steady?.byKind ?? {}), rel).toEqual([
+          'first',
+          'reload',
+          'byName',
+          'listing',
+        ]);
     }
   });
 

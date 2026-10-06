@@ -59,6 +59,14 @@ interface Row {
   label: string;
   says: RegExp;
 }
+interface SteadyRow {
+  kind: string;
+  says: RegExp;
+  loads: string;
+  requests: string;
+  one: string;
+  perMillion: string;
+}
 interface Figures {
   runId: string;
   remote: boolean;
@@ -70,6 +78,8 @@ interface Figures {
   kRows: Array<{ k: number; gets: number; usd: number }>;
   anchors: Array<[string, string]>;
   rows: Row[];
+  steadyRows: SteadyRow[];
+  steadyLoad: { loads: number } | null;
   values: Values;
   pageValues: Values;
 }
@@ -162,6 +172,7 @@ const RECORDED_MODELS: Readonly<Record<string, Model>> = {
   '2026-10-03-e13c7': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-04-73668': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-04-f3599': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-05-50b5d': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
 };
 const LATEST = EVIDENCE.at(-1);
 /** The model a run is read against: the live one for the latest, the recorded one for every run before it. */
@@ -221,7 +232,7 @@ function evidenceRemovals(cwd: string = ROOT): string[] {
  * The anchors a benchmarks-page section must state. A run that timed `store.load()` has the loads' own prices to
  * state; one that timed the write and publish has those, and the first `store.load()` the tests count.
  */
-function requiredAnchors(loadVia: string | null): string[] {
+function requiredAnchors(loadVia: string | null, steady = false): string[] {
   return [
     'run id',
     'exact cold intersects',
@@ -238,8 +249,48 @@ function requiredAnchors(loadVia: string | null): string[] {
           "per million of a segment's first store.load()",
         ]
       : ['per million single-part store.load() calls', 'per million multipart store.load() calls']),
+    ...(steady
+      ? [
+          'per million steady reloads',
+          'per million steady loads that delete by name',
+          'per million steady loads that list',
+          'per million steady loads on average',
+        ]
+      : []),
     'the run',
   ];
+}
+
+/**
+ * Holds the table of a run's steady loads, found by its header, to the figures: one row to a kind of load, each
+ * with the loads, requests, price and price per million its kind has, so a price under another kind's name fails.
+ */
+function checkSteadyTable(text: string, want: SteadyRow[]): string[] {
+  const rows = tableAfter(
+    text,
+    /^\|\s*kind of load\s*\|\s*loads\s*\|\s*requests\s*\|\s*(?:each|one)\s*\|\s*per million\s*\|/i,
+  );
+  if (rows.length === 0) return ['no table of steady loads'];
+  const problems: string[] = [];
+  const seen: string[] = [];
+  for (const row of rows) {
+    const [name = '', loads, requests, one, perMillion] = row.map((c) => c.replace(/\*\*/g, ''));
+    const w = want.find((r) => r.says.test(name));
+    if (w === undefined) {
+      problems.push(`the "${name}" row is no kind of steady load the run made`);
+      continue;
+    }
+    seen.push(w.kind);
+    const got = { loads, requests, one, perMillion };
+    const need = { loads: w.loads, requests: w.requests, one: w.one, perMillion: w.perMillion };
+    if (JSON.stringify(got) !== JSON.stringify(need)) {
+      problems.push(`the "${name}" row says ${JSON.stringify(got)}, not ${JSON.stringify(need)}`);
+    }
+  }
+  const missing = want.map((w) => w.kind).filter((k) => !seen.includes(k));
+  if (missing.length > 0) problems.push(`no row for ${missing.join(', ')}`);
+  if (new Set(seen).size !== seen.length) problems.push('a kind of load has two rows');
+  return problems;
 }
 
 /** The rows of the markdown table whose header line matches `header`, as trimmed cells. */
@@ -680,6 +731,43 @@ describe('calibration reports are held to their evidence', () => {
   });
 
   // Which anchors a section must state follows from what the run timed.
+  describe('the table of steady loads', () => {
+    const want: SteadyRow[] = [
+      {
+        kind: 'first',
+        says: /^first/i,
+        loads: '1',
+        requests: '2 PUT + 3 GET',
+        one: '$0.0000112',
+        perMillion: '$11.20',
+      },
+      {
+        kind: 'byName',
+        says: /^by name/i,
+        loads: '4',
+        requests: '2 PUT + 4 GET + 1 delete',
+        one: '$0.0000116',
+        perMillion: '$11.60',
+      },
+    ];
+    const table = (first: string, byName: string): string =>
+      [
+        '| kind of load | loads | requests | each | per million |',
+        '|---|---|---|---|---|',
+        `| first | 1 | 2 PUT + 3 GET | $0.0000112 | ${first} |`,
+        `| by name | 4 | 2 PUT + 4 GET + 1 delete | $0.0000116 | ${byName} |`,
+      ].join('\n');
+
+    it('accepts the rows of the run', () => {
+      expect(checkSteadyTable(table('**$11.20**', '$11.60'), want)).toEqual([]);
+    });
+
+    it("refuses a price under another kind's name, and a table that is not there", () => {
+      expect(checkSteadyTable(table('$11.20', '$11.20'), want)).toHaveLength(1);
+      expect(checkSteadyTable('no table here', want)).toEqual(['no table of steady loads']);
+    });
+  });
+
   describe('the anchors a benchmarks section must state', () => {
     const names = (via: string | null): string[] =>
       requiredAnchors(via).filter((n) => /single-part|multipart|first store\.load/.test(n));
@@ -1172,6 +1260,12 @@ describe('calibration reports are held to their evidence', () => {
         expect([...seen].sort()).toEqual(expected);
       });
 
+      it("its table of steady loads holds each kind's loads, requests and price", () => {
+        expect(f).toBeDefined();
+        if (f === undefined || f.steadyLoad === null) return;
+        expect(checkSteadyTable(report, f.steadyRows)).toEqual([]);
+      });
+
       it('its table of cost by overlap follows from the request shape the run measured', () => {
         expect(f).toBeDefined();
         if (f === undefined) return;
@@ -1211,7 +1305,7 @@ describe('calibration reports are held to their evidence', () => {
     const ALIASES = ['September run', 'September 2026', 'single-bucket run', 'single-bucket bill'];
     const claims = f === undefined ? null : figures.claimsAbout(doc, f.runId, ALIASES);
     const section = claims?.section ?? null;
-    const REQUIRED = requiredAnchors(f?.loadVia ?? null);
+    const REQUIRED = requiredAnchors(f?.loadVia ?? null, (f?.steadyLoad ?? null) !== null);
 
     it('has a section on the latest run, which links its report', () => {
       expect(section, `docs/benchmarks.md has no heading naming run ${f?.runId}`).not.toBeNull();
@@ -1232,6 +1326,12 @@ describe('calibration reports are held to their evidence', () => {
       expect(figures.unaccounted(`${section}\n\n${claims?.elsewhere ?? ''}`, f.pageValues)).toEqual(
         [],
       );
+    });
+
+    it("states each kind of steady load's requests and price as the run measured them", () => {
+      expect(f).toBeDefined();
+      if (f === undefined || section === null || f.steadyLoad === null) return;
+      expect(checkSteadyTable(section, f.steadyRows)).toEqual([]);
     });
 
     it('bills each operation as the derivation does', () => {
