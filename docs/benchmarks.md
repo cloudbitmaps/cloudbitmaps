@@ -307,7 +307,7 @@ inside the region and not from a laptop.
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
   the at-scale table is _measured memory + wall-clock_ (a real run, the fleet on local disk and the large
   intersect in memory, machine-dependent, never CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
-  a real account, on 2026-10-05, from inside the region). Only the third is cloud-calibrated, and even then the dollars are
+  a real account, on 2026-10-06, from inside the region). Only the third is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
   default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
