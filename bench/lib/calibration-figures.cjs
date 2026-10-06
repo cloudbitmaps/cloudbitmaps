@@ -649,8 +649,10 @@ function derive(run, src) {
   const expectedIntersectUSD = cost(expectedGets);
   const singleLoadUSD = cost(getsPerLoad, putsPerSingle);
   const multipartLoadUSD = cost(getsPerMultipart, putsPerMultipart);
+  // The engine's own table, unless the caller read the run against another, as a report written under an earlier one is.
+  const storeLoadRequests = src.storeLoadRequests ?? STORE_LOAD_REQUESTS;
   const storeLoadUSD = Object.fromEntries(
-    Object.entries(STORE_LOAD_REQUESTS).map(([k, r]) => [k, cost(r.get, r.put)]),
+    Object.entries(storeLoadRequests).map(([k, r]) => [k, cost(r.get, r.put)]),
   );
   const monthUSD = (bytes) => (bytes / GIB) * src.pricing.storagePerGiBMonth;
   const redis = src.pricing.redisMonthlyUSD;
@@ -735,7 +737,7 @@ function derive(run, src) {
     putsPerMultipart,
     partsPerMultipart,
     loads,
-    storeLoad: STORE_LOAD_REQUESTS,
+    storeLoad: storeLoadRequests,
     byCommand: { ...cmd },
     ledger: {
       chunkReads: rd.range.n,

@@ -35,6 +35,10 @@ import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/fo
  *   TABLES    the bill, the request ledger and the table of cost by overlap match the derivation row by row,
  *             labels and billing classes included, so the right numbers on the wrong rows fail too.
  *
+ * The expected rows (what a `store.load()` bills by kind, the pointer refresh, the Redis line) belong to the model that
+ * stood when a report was written. The latest report is held to the live model; each earlier one to the model recorded
+ * for it in `RECORDED_MODELS`, so a change to the engine edits no dated record.
+ *
  * And the evidence itself must be a complete, self-consistent real run before anything is derived from it: the
  * derivation refuses a file whose parts do not reconcile, and a refusal fails here rather than quietly deriving
  * figures from a run that did not happen the way its file says. It must also be the harness's own output, touched
@@ -69,22 +73,30 @@ interface Figures {
   values: Values;
   pageValues: Values;
 }
-const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
-  readSources: (root: string) => {
-    pricing: {
-      name: string;
-      getPerMillion: number;
-      putPerMillion: number;
-      storagePerGiBMonth: number;
-      redisMonthlyUSD: number;
-    };
-    secondsPerMonth: number;
-    tailBytes: number;
-    footerBytes: number;
-    preambleBytes: number;
-    genTtlMs: number;
-    intersectConcurrency: number;
+interface Model {
+  pricing: {
+    name: string;
+    getPerMillion: number;
+    putPerMillion: number;
+    storagePerGiBMonth: number;
+    redisMonthlyUSD: number;
   };
+  secondsPerMonth: number;
+  tailBytes: number;
+  footerBytes: number;
+  preambleBytes: number;
+  genTtlMs: number;
+  intersectConcurrency: number;
+  combineWindowStart: number;
+  /** What a `store.load()` bills by kind, which a report states as expected: the engine's table, or an earlier one. */
+  storeLoadRequests?: Record<
+    'first' | 'reload' | 'collecting' | 'listing',
+    { put: number; get: number }
+  >;
+}
+const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
+  readSources: (root: string) => Model;
+  STORE_LOAD_REQUESTS: NonNullable<Model['storeLoadRequests']>;
   evidenceFiles: (root: string) => string[];
   derive: (run: unknown, sources: unknown) => Figures;
   unaccounted: (text: string, values: Values) => string[];
@@ -111,6 +123,53 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 const SOURCES = figures.readSources(ROOT);
 const EVIDENCE = figures.evidenceFiles(ROOT);
 const { int, usd } = figures.format;
+
+/**
+ * The model each report was written against. A report is a dated record: its expected rows (what a `store.load()`
+ * bills, the pointer refresh, the Redis line) are the figures of the model that stood when it was written, so they are
+ * checked against that model as recorded here, not against today's engine, and an engine change does not edit a past
+ * report. Only the latest report follows the live model, which {@link figures.readSources} and the engine's own table
+ * give; every other report names its model below, and a new run makes the one before it name its own.
+ *
+ * To pin the report that stops being the latest, copy the live model into a constant here, as the failure says.
+ */
+const REGISTRY_WRITE_ON_HELD_ROW_MODEL: Model = {
+  pricing: {
+    name: 'aws-us-east-1-ondemand',
+    getPerMillion: 0.4,
+    putPerMillion: 5,
+    storagePerGiBMonth: 0.023,
+    redisMonthlyUSD: 346,
+  },
+  secondsPerMonth: 2_628_000,
+  tailBytes: 262_144,
+  footerBytes: 104,
+  preambleBytes: 8,
+  genTtlMs: 2_000,
+  intersectConcurrency: 32,
+  combineWindowStart: 8,
+  storeLoadRequests: {
+    first: { put: 2, get: 3 },
+    reload: { put: 2, get: 2 },
+    collecting: { put: 2, get: 4 },
+    listing: { put: 3, get: 5 },
+  },
+};
+const RECORDED_MODELS: Readonly<Record<string, Model>> = {
+  '2026-09-23-94416': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-03-e13c7': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-04-73668': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-04-f3599': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+};
+const LATEST = EVIDENCE.at(-1);
+/** The model a run is read against: the live one for the latest, the recorded one for every run before it. */
+const modelOf = (runId: string): Model => {
+  const recorded = RECORDED_MODELS[runId];
+  if (recorded !== undefined) return recorded;
+  return { ...SOURCES, storeLoadRequests: figures.STORE_LOAD_REQUESTS };
+};
+const deriveAs = (run: object): Figures =>
+  figures.derive(run, modelOf((run as { runId?: string }).runId ?? ''));
 const git = (...args: string[]): string =>
   execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 
@@ -301,6 +360,27 @@ describe('calibration reports are held to their evidence', () => {
     expect(SOURCES.intersectConcurrency).toBeGreaterThan(0);
   });
 
+  // Only the latest report follows the live model. Every run before it is read against the model recorded for it, so a
+  // change to the engine's figures edits no past report; and a run left without a record would silently follow the live
+  // model, so the record is required, and none is kept for the latest or for a run with no evidence.
+  it('reads each run but the latest against the model recorded for it, and the latest against the live one', () => {
+    const ids = EVIDENCE.map((f) => basename(f, '.json'));
+    const latest = LATEST === undefined ? undefined : basename(LATEST, '.json');
+    const live = JSON.stringify(
+      { ...SOURCES, storeLoadRequests: figures.STORE_LOAD_REQUESTS },
+      null,
+      2,
+    );
+    const unpinned = ids.filter((id) => id !== latest && RECORDED_MODELS[id] === undefined);
+    expect(
+      unpinned,
+      `these reports stop being the latest and follow no model: record the model they were checked against in RECORDED_MODELS in this file. The live model is\n${live}`,
+    ).toEqual([]);
+    expect(Object.keys(RECORDED_MODELS).filter((id) => !ids.includes(id) || id === latest)).toEqual(
+      [],
+    );
+  });
+
   it('finds the committed runs, and every report has its evidence', () => {
     expect(EVIDENCE.length).toBeGreaterThanOrEqual(1);
     const reports = readdirSync(join(ROOT, DIR)).filter(
@@ -454,7 +534,7 @@ describe('calibration reports are held to their evidence', () => {
   describe('the stage figures of the in-region run', () => {
     const evidence = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
     const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
-    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const f = run === undefined ? undefined : deriveAs(run);
     const check = (sentence: string): string[] =>
       f === undefined ? ['no evidence'] : figures.unaccounted(sentence, f.values);
 
@@ -490,7 +570,7 @@ describe('calibration reports are held to their evidence', () => {
   describe('a run that coalesced its reads', () => {
     const evidence = EVIDENCE.find((e) => e.includes('2026-10-04-f3599'));
     const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
-    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const f = run === undefined ? undefined : deriveAs(run);
 
     it('fetched every shared chunk in the range reads it made', () => {
       expect(f).toBeDefined();
@@ -604,7 +684,7 @@ describe('calibration reports are held to their evidence', () => {
     const anchorsOf = (path: string): string[] => {
       const ev = EVIDENCE.find((e) => e.includes(path));
       if (ev === undefined) throw new Error(`no evidence for ${path}`);
-      return figures.derive(JSON.parse(read(ev)), SOURCES).anchors.map(([n]) => n);
+      return deriveAs(JSON.parse(read(ev))).anchors.map(([n]) => n);
     };
 
     it('are, for a run that timed store.load(), its own load prices, and all of them exist', () => {
@@ -626,7 +706,7 @@ describe('calibration reports are held to their evidence', () => {
     it('fail a section that leaves out a load anchor', () => {
       const ev = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
       if (ev === undefined) throw new Error('no evidence');
-      const f = figures.derive(JSON.parse(read(ev)), SOURCES);
+      const f = deriveAs(JSON.parse(read(ev)));
       const section = 'run 2026-10-03-e13c7 $11.60 per million single-part';
       const missing = f.anchors
         .filter(([n]) => requiredAnchors(f.loadVia).includes(n))
@@ -749,7 +829,7 @@ describe('calibration reports are held to their evidence', () => {
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(evidence).toBeDefined();
       if (evidence === undefined) return;
-      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const f = deriveAs(JSON.parse(read(evidence)));
       const plant = (sentence: string): string[] =>
         figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
       expect(plant('')).toEqual([]);
@@ -783,7 +863,7 @@ describe('calibration reports are held to their evidence', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       if (evidence === undefined) throw new Error('no evidence for 2026-09-23-94416');
-      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const f = deriveAs(JSON.parse(read(evidence)));
       const plant = (sentence: string): string[] =>
         figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
       expect(
@@ -805,7 +885,7 @@ describe('calibration reports are held to their evidence', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       if (evidence === undefined) throw new Error('no evidence for 2026-09-23-94416');
-      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const f = deriveAs(JSON.parse(read(evidence)));
       const plant = (sentence: string): string[] =>
         figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
       for (const [wrong, right] of [
@@ -941,8 +1021,8 @@ describe('calibration reports are held to their evidence', () => {
         (later.phases.load.singlePart.medianObjectBytes ?? 1);
       later.workload.largeIdsPerSegment = 1_536 * 8_192;
       later.startedAt = '2026-09-23T03:00:00.000Z';
-      const before = figures.derive(run, SOURCES);
-      const after = figures.derive(later, SOURCES);
+      const before = deriveAs(run);
+      const after = deriveAs(later);
       expect(after.anchors).toEqual(before.anchors);
       expect(after.rows).toEqual(before.rows);
     });
@@ -957,12 +1037,10 @@ describe('calibration reports are held to their evidence', () => {
       expect(file).toBeDefined();
       if (file === undefined) return;
       const run = JSON.parse(read(file)) as { phases: { load: Record<string, unknown> } };
-      expect(() => figures.derive(run, SOURCES)).not.toThrow();
+      expect(() => deriveAs(run)).not.toThrow();
       const later = structuredClone(run);
       later.phases.load.via = 'store.load()';
-      expect(() => figures.derive(later, SOURCES)).toThrow(
-        /records no requests for its load stage/,
-      );
+      expect(() => deriveAs(later)).toThrow(/records no requests for its load stage/);
     });
   });
 
@@ -985,7 +1063,7 @@ describe('calibration reports are held to their evidence', () => {
       let f: Figures | undefined;
       let refused: unknown;
       try {
-        f = figures.derive(run, SOURCES);
+        f = deriveAs(run);
       } catch (err) {
         refused = err;
       }
@@ -1124,7 +1202,7 @@ describe('calibration reports are held to their evidence', () => {
   describe('the benchmarks page', () => {
     const latest = EVIDENCE.at(-1);
     const run = latest === undefined ? undefined : JSON.parse(read(latest));
-    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const f = run === undefined ? undefined : deriveAs(run);
     const doc = read(join('docs', 'benchmarks.md'));
     // What the page calls the run besides its id. A paragraph that names it either way is a claim about it; one
     // inside another run's section is not.
