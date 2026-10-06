@@ -38,9 +38,18 @@ Every change must pass these locally, and CI runs each of them on every pull req
   registered `Symbol.for`s, since with one shared copy of core a plain `Symbol` passes too; that is
   [`tests/core/error-predicates.test.ts`](tests/core/error-predicates.test.ts)'s to prove.
 
+- `pnpm api:surface:check` (after `pnpm build`) guards **signatures**, which the API reference's name check does not.
+  `scripts/api-surface.cjs` reads the declarations the build emitted for every public entry point and compares one line
+  per exported symbol and per member (overloads each) with the snapshot committed in [`api-surface/`](api-surface/README.md).
+  A change you meant to make regenerates it with `pnpm api:surface`, and the snapshot diff in your pull request is what a
+  reviewer reads. On a pull request CI also runs `node scripts/api-surface.cjs --against origin/<base>`: an entry the base
+  branch lists that is **removed or changed** fails unless `api-surface/allowed.json` names it with a reason. That is a
+  public-contract change: it needs the maintainer's agreement before you build it, and the row records why. Additions
+  always pass, and an empty allowlist is the normal state.
+
 CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
-`bench:range-counts:check`, `bench:expected-figures:check`, `bench:check`), scans the tracked tree and the packed tarballs for leaks, and checks the fuzz lockfile; separate
+`bench:range-counts:check`, `bench:expected-figures:check`, `bench:check`, `api:surface:check`), scans the tracked tree and the packed tarballs for leaks, and checks the fuzz lockfile; separate
 jobs run the dependency audit, the smoke test on the declared Node floor, the Lambda deployability smoke, the hard
 RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 says why each one is there.

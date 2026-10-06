@@ -70,6 +70,21 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      # Every public type signature, read from the declarations the build just emitted, against the committed snapshot
+      # in api-surface/. `tests/docs/api-reference-sync.test.ts` guards the names an entry point exports; this guards
+      # what each name accepts and returns, so a changed parameter type or a removed overload cannot merge unseen.
+      # After an intended change, regenerate with `pnpm api:surface`.
+      - run: pnpm api:surface:check
+      # On a pull request, nothing the base branch's snapshot lists may be removed or changed unless api-surface/allowed.json
+      # names it with a reason. The checkout has the whole history (`fetch-depth: 0`), and the base branch is fetched
+      # by name so the ref exists whatever the checkout did.
+      - name: Public signatures against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          node scripts/api-surface.cjs --against "origin/${BASE_REF}"
+        env:
+          BASE_REF: ${{ github.base_ref }}
       # bench/sizing.cjs writes the generated regions of the sizing guide, the cost guide, the
       # explainer and the README's Why section, and the explainer's charts in both themes. This fails if any is not
       # what the built estimator gives, on a SIZING marker it would not check, and on a figure typed outside a region

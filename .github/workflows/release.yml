@@ -131,6 +131,8 @@ jobs:
       # commit and trusting a days-old audit would leave exactly that hole.
       - run: node scripts/audit.cjs
       - run: pnpm build
+      # The published declarations are the committed snapshot of every public signature.
+      - run: pnpm api:surface:check
       - run: node scripts/smoke.cjs
 
       # A `vX.Y.Z` push must match EVERY publishable package's version exactly (guards a mistagged release).
