@@ -17,7 +17,8 @@
  * re-run). A segment that couldn't be read is isolated into the manifest's `failed[]` and the CLI exits non-zero
  * — always check it, because "manifest present" is *the run finished*, not "every segment succeeded". Re-running
  * overwrites the segments it re-exports but does **not** prune files for segments that have since disappeared —
- * **export to a fresh directory** for a clean dump. Artifacts are owner-only (decrypted **cleartext** — protect it).
+ * **export to a fresh directory** for a clean dump. It writes only into directories it made (or an earlier run's,
+ * owner-only): a symlink, a directory of another user, or one open to group or others in its place is refused. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
  * short script that builds the backend for the storage you have and calls `store.exportSegments(sink,
@@ -36,11 +37,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
-import { CloudRoaring, LocalFsStorage } from '../index';
+import { CloudRoaring, LocalFsStorage, ValidationError } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {
@@ -69,6 +70,32 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
 }
 
 /**
+ * Make `dir` (a namespace directory under `out`) if it is not there, and refuse to write into one the exporter could
+ * not have made: a symlink, anything that is not a directory, one owned by another user, or one that group or others
+ * can reach (the exporter makes `0o700`). A directory an earlier run of it left passes. Without this a directory
+ * planted in a shared output location would receive the dump, or a symlink in it would send the dump elsewhere.
+ */
+async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
+  await mkdir(out, { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(dir, { mode: 0o700 });
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  }
+  const found = await lstat(dir);
+  const refuse = (why: string): never => {
+    throw new ValidationError(`the export directory is not one this tool made: ${why}`);
+  };
+  if (found.isSymbolicLink()) refuse('a namespace directory is a symbolic link');
+  if (!found.isDirectory()) refuse('a namespace path is not a directory');
+  if (process.getuid !== undefined) {
+    if (found.uid !== process.getuid()) refuse('a namespace directory belongs to another user');
+    if ((found.mode & 0o077) !== 0) refuse('a namespace directory is open to group or others');
+  }
+}
+
+/**
  * A filesystem {@link ExportSink}. Writes each segment to a **unique** `<segment><ext>.<uuid>.part` temp
  * (`O_EXCL` create, mode `0o600`) and atomically renames it into `<out>/<namespace>/<segment><ext>` on `close()`,
  * so a half-written file never masquerades as complete and concurrent exports to the same dir can't clobber one
@@ -88,7 +115,7 @@ export function fsSink(out: string): ExportSink {
       // while a caller's namespace is encoded, so a segment in a namespace actually named `_default`
       // does not land in the same directory as the un-namespaced ones.
       const dir = join(out, namespacePathPart(ref.namespace));
-      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await ensureOwnDirectory(out, dir);
       const finalPath = join(dir, `${encodeNameForPath(ref.segment)}${ext}`);
       const tmpPath = `${finalPath}.${randomUUID()}.part`;
       const handle = await open(tmpPath, 'wx', 0o600); // wx = create-exclusive; unique name ⇒ no collision

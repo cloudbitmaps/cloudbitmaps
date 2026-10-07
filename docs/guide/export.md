@@ -104,6 +104,10 @@ And a store loads one straight back, with no per-id work:
   finished, not that every segment succeeded. Always check `failed`.
 - **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
   disappeared.** Export to a fresh directory for a clean dump.
+- **It writes only into directories it made.** A namespace directory it finds already there passes when an earlier run
+  left it (yours, and owner-only). A symlink, a path that is not a directory, a directory of another user, or one open to
+  group or others is refused with a `ValidationError`, so a directory planted in a shared output location cannot
+  receive the dump or send it elsewhere.
 - **Each segment is exported as one instant.** The export pins a segment when it begins it: the generation is read from
   the registry then, on a warm store as on a cold one, and only that generation's object is read for the whole segment,
   so a load that publishes meanwhile cannot put chunks of two generations in one file. A cold store makes one registry
