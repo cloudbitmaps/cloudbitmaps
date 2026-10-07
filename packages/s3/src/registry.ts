@@ -52,6 +52,7 @@ import {
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
 import { sendOnce } from './send-once';
+import { destroyBody, readBounded } from './bounded-body';
 import { isAwsS3Host, probeClient } from './client-probe';
 import type { ClientFacts } from './client-probe';
 
@@ -180,9 +181,11 @@ export class S3RegistryStore implements ObjectRegistryStore {
         if (res.Body === undefined) {
           throw new IntegrityError(`registry object has an empty body: ${key}`);
         }
-        const bytes = await (
-          res.Body as { transformToByteArray(): Promise<Uint8Array> }
-        ).transformToByteArray();
+        const bytes = await readBounded(
+          res.Body,
+          MAX_ROW_BYTES,
+          () => new IntegrityError(`registry object exceeds cap ${MAX_ROW_BYTES}B`),
+        );
         return { bytes, version: res.ETag ?? '' };
       } catch (err) {
         // A row refused before its body is read would otherwise hold its connection open until the server gives up
@@ -262,11 +265,6 @@ export class S3RegistryStore implements ObjectRegistryStore {
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);
   }
-}
-
-/** Destroy a response body left unread, which releases its connection; a body with no `destroy` is left alone. */
-function destroyBody(body: unknown): void {
-  (body as { destroy?: () => void } | undefined)?.destroy?.();
 }
 
 /** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */

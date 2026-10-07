@@ -167,7 +167,13 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     try {
       return await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
         const res = await this.blob(objectName).download(offset, length, { abortSignal });
-        const bytes = await collect(res.readableStreamBody, abortSignal);
+        const bytes = await collect(
+          res.readableStreamBody,
+          abortSignal,
+          length,
+          () => this.badRead(key, 'range', `the response is longer than the ${length}B requested`),
+          res.contentLength,
+        );
         // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result. (Azurite
         // returns a clamped-short body here rather than a 416; a start fully past EOF does 416 → mapReadError.)
         if (bytes.length !== length) {
@@ -201,7 +207,13 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       const take = Math.min(maxBytes, size);
       const bytes = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
         const res = await this.blob(objectName).download(size - take, take, { abortSignal });
-        return collect(res.readableStreamBody, abortSignal);
+        return collect(
+          res.readableStreamBody,
+          abortSignal,
+          take,
+          () => this.badRead(key, 'tail', `the response is longer than the ${take}B requested`),
+          res.contentLength,
+        );
       });
       return { bytes, size };
     } catch (err) {
@@ -234,6 +246,12 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   /** Map Azure read errors to the driver vocabulary; pass everything else through {@link mapError}. */
+  private badRead(key: GenKey, what: 'range' | 'tail', why: string): ValidationError {
+    return new ValidationError(
+      `Azure ${what} read of ${key.segment}.${key.generation} refused: ${why}`,
+    );
+  }
+
   private mapReadError(err: unknown, key: GenKey): unknown {
     if (isValidationError(err)) return err;
     if (isNotFound(err))
@@ -372,28 +390,45 @@ class AzureBlockBlobSink implements BlobSink {
   }
 }
 
+/** Destroy a response body left unread, which releases its connection. */
+function destroyBody(body: NodeJS.ReadableStream): void {
+  (body as { destroy?: () => void }).destroy?.();
+}
+
 /**
- * Collect an Azure download's Node readable body into a `Uint8Array`. Called in the turn the download returns: the
+ * Collect an Azure download's Node readable body into a `Uint8Array`, at most `maxBytes` of it: the count is kept as
+ * the body arrives, and the read stops with `oversize()` at the first byte past it, or at once when the response
+ * advertises more. Called in the turn the download returns: the
  * loop listens for the body's errors from its first step, before the read's timer can abort it.
  */
 async function collect(
   body: NodeJS.ReadableStream | undefined,
   abortSignal: AbortSignal,
+  maxBytes: number,
+  oversize: () => Error,
+  advertised?: number,
 ): Promise<Uint8Array> {
   if (body === undefined) {
     throw new NotFoundError('Azure download returned no body');
   }
+  if (advertised !== undefined && advertised > maxBytes) {
+    destroyBody(body);
+    throw oversize();
+  }
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let done = false;
   try {
     for await (const chunk of body) {
       const u8 =
         typeof chunk === 'string'
           ? new TextEncoder().encode(chunk)
           : new Uint8Array(chunk as Buffer);
-      chunks.push(u8);
       total += u8.length;
+      if (total > maxBytes) throw oversize();
+      chunks.push(u8);
     }
+    done = true;
   } catch (err) {
     // The SDK fails a body whose connection dropped part-way with an `AbortError`. This read's own signal aborts only
     // on its timer, whose error the read has already thrown, so an `AbortError` with the signal unaborted is the
@@ -405,6 +440,9 @@ async function collect(
       );
     }
     throw err;
+  } finally {
+    // A read stopped before its end leaves the body open: destroying it closes the connection.
+    if (!done) destroyBody(body);
   }
   return concatBytes(chunks, total);
 }
