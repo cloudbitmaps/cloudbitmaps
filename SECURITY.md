@@ -59,6 +59,11 @@ not hold what its header says with `IntegrityError`, before anything is publishe
 are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
 written.
 
+**A caller must not modify an input buffer while a load or `store.memory` call reads it.** The checks above hold for
+a buffer that stays as it was handed in. A buffer another thread, an unfinished `fs.read` or an asynchronous addon call
+is still writing can differ between the structural check and the decode, and the load's re-check of each container
+catches a difference only after the native code has read it. Hand in a buffer that nothing else writes, or a copy of it.
+
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are
 tested (`tests/crypto-vectors.test.ts`, `tests/key-rotation.test.ts`, `tests/drivers/crypto.test.ts`, `tests/core/encryption-lifecycle.test.ts`).
@@ -114,6 +119,15 @@ itself resolves, which is the surface to reason about here, not our pinned one. 
 category: it reaches this repo only through `roaring`'s `node-gyp`, an optional install-time path, and never
 through a package a consumer installs.
 
+**A consumer's `npm audit` lists two moderate findings through `@cloudbitmaps/gcs`**: `uuid` below 11.1.1
+([GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq)) and `gaxios`, which depends on it, by the
+path `@cloudbitmaps/gcs` → `@google-cloud/storage` → `gaxios` → `uuid@9`. The advisory is a missing bounds check in
+`uuid`'s `v3`, `v5` and `v6` when the caller passes a buffer to fill. `gaxios` calls `uuid.v4()` with no buffer
+argument, to make a multipart boundary, so the flaw is not reachable here. The finding clears when the upstream SDK moves
+to a `gaxios` that no longer depends on that `uuid`; a consumer that gates on `npm audit` can add
+`"overrides": { "uuid": "^11.1.1" }` to its own manifest in the meantime. No other `@cloudbitmaps` package, and no
+other SDK it installs, shows a finding.
+
 ### Triaged (accepted) advisories
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
@@ -133,6 +147,9 @@ must be removed and the advisory addressed, not ignored.
 CloudBitmaps is published through a hardened pipeline so that a consumer can verify **exactly what source
 produced the package they installed**. The controls:
 
+- **Static analysis.** The [CodeQL workflow](.github/workflows/codeql.yml) analyses the JavaScript and TypeScript
+  source on every pull request, on every push to `main` and weekly, and reports findings as code-scanning alerts. Its
+  action versions are pinned to commits like every other workflow's.
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
   `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
   manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*

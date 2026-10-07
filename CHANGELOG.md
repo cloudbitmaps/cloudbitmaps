@@ -11,6 +11,44 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Security
+
+- **`export-segments` refuses a symlinked or foreign namespace directory in its output.** It writes only into
+  directories it made, or ones an earlier run of it left (yours and owner-only). A symlink, a path that is not a
+  directory, a directory of another user, or one open to group or others in a namespace directory's place is refused
+  with a `ValidationError`.
+- **`InProcessKeystore` checks `activeKeyId` and `recoveryKeyId` against the keys it was given.** A name every object
+  inherits, such as `constructor`, was counted as a key and failed later in `createDek()` with a `TypeError`; it is now
+  refused at construction with a `ValidationError`.
+- **The Azure and GCS storage drivers use the same `prefix` check as the registries and S3.** Built directly, they
+  accepted a prefix with a backslash, a DEL character or a percent-encoded `..`; each is now a `ValidationError`.
+- **`LocalFsStorage` tells names apart by case on a case-insensitive filesystem.** On macOS and Windows defaults a
+  namespace or segment that differed only by case opened the same file: it read as present, and a load wrote the next
+  generation of the other name's segment. The driver now compares the name on disk exactly, so a name in another case
+  reads as absent, and a write that would land on an existing case variant fails with a `ValidationError`. The on-disk
+  layout is unchanged, and a case-sensitive filesystem pays nothing.
+- **`LocalFsStorage` refuses a name too long for its file names with a `ValidationError`, before anything is written.**
+  A segment name of about 208 characters or more passed the 256-character cap but made a temp file name past the 255
+  bytes filesystems allow, and failed with a raw `ENAMETOOLONG` whose message carried the absolute storage root.
+- **A registry row's `currentGen` must be a safe integer, and a load refuses a number past it.** A row holding a
+  generation above `2^53 - 1` was accepted, and a load then published an object the reader could not open. The write and
+  read checks now use `Number.isSafeInteger`, and `load` and the erasure rewrite refuse, with an `IntegrityError` and
+  before writing, to number a generation past the largest safe integer.
+- **GCS errors carry no request credential.** The SDK keeps the request it sent, `Authorization` header included, on the
+  errors it raises, and the driver passed them on as the error or its `cause`. The driver removes the `Authorization`,
+  cookie and API-key headers, and the same lines of any raw request text, from an error before it throws it; the
+  status, code and message stay. The S3 and Azure drivers' errors were checked the same way: their enumerable surface
+  holds no credential.
+- **The S3 and Azure drivers bound every response body they read.** A range read, a tail read and a registry row are read
+  as a stream and counted, and the read fails with a typed error at the first byte past what was asked for (and at once
+  when the response advertises more), instead of buffering a body from an endpoint that ignores `Range` or sends no
+  length. The body is destroyed on the way out.
+- **Error messages no longer carry an id.** A refused id (`has`, `load`, `store.memory`, `eraseSubject`,
+  `subjectReport`), an `iterate` bound (`after`, `through`), a feed or held chunk key and a bare value passed as a load
+  input were echoed in the `ValidationError` message, and applications log messages. The messages now say what is wrong
+  without the value: `an id must be an integer from 0 to 4294967295`, `after must be an integer from 0 to 4294967295`.
+  Code that matched the old text `id must be an integer in 0..4294967295; got <value>` must match the new one.
+
 ## [0.18.1] — 2026-10-07
 
 ### Fixed
