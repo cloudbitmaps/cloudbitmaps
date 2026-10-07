@@ -30,7 +30,7 @@ function heldOperand(
   return {
     name,
     ref: { segment: name },
-    held: { chunks, erased: () => false, mayBeEmpty: false, ...extra },
+    held: { chunks, moved: () => false, mayBeEmpty: false, ...extra },
   };
 }
 
@@ -130,7 +130,16 @@ describe('a held operand in the pass', () => {
       [{ expr: { and: ['b', 'c'] } as never }],
       { maxBufferedBytes: chunks.residentBytes * 4 },
     );
-    expect(twice.run.stats.memory.highWaterBytes).toBeLessThan(chunks.residentBytes * 2);
+    const other = await held(ids(0, 20 * 65_536, 1_000));
+    const distinct = await runWith(
+      {},
+      [heldOperand('b', chunks), heldOperand('c', other)],
+      [{ expr: { and: ['b', 'c'] } as never }],
+      { maxBufferedBytes: chunks.residentBytes * 4 },
+    );
+    expect(distinct.run.stats.memory.highWaterBytes - twice.run.stats.memory.highWaterBytes).toBe(
+      other.residentBytes,
+    );
   });
 
   it('refuses an empty held operand when compiling, and accepts one that may be empty', async () => {
@@ -158,7 +167,7 @@ describe('a held operand in the pass', () => {
     const chunks = await held([1, 2, 3]);
     const run = await runWith(
       { a: [1, 2, 3, 70_000] },
-      [heldOperand('v', chunks, { erased: () => true })],
+      [heldOperand('v', chunks, { moved: () => true })],
       [{ expr: { and: ['a', 'v'] } as never }, { expr: 'a' as never }],
     );
     const stale = (run.run.outputs[0] as { ok: false; error: StaleOperandError }).error;
@@ -174,7 +183,7 @@ describe('a held operand in the pass', () => {
     let erased = false;
     const run = await runWith(
       { a: [1, 2, 3, 70_000] },
-      [heldOperand('v', chunks, { erased: () => (reads++, erased) })],
+      [heldOperand('v', chunks, { moved: () => (reads++, erased) })],
       [
         {
           expr: { and: ['a', 'v'] } as never,
@@ -206,7 +215,7 @@ describe('an erasure that lands while the pass reads', () => {
     // the first check is the start of the call, the second the first key the pass reads, then the erasure lands
     const run = await runWith(
       { a: ids(0, 6 * 65_536, 5) },
-      [heldOperand('v', chunks, { erased: () => ++checks > 2 })],
+      [heldOperand('v', chunks, { moved: () => ++checks > 2 })],
       [{ expr: { and: ['a', 'v'] } as never }],
     );
     const failed = (run.run.outputs[0] as { ok: false; error: StaleOperandError }).error;

@@ -5,7 +5,12 @@
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { compileCombineMany, rebindCombineMany, runCombineMany } from '@/core/combine-many';
+import {
+  combineWork,
+  compileCombineMany,
+  rebindCombineMany,
+  runCombineMany,
+} from '@/core/combine-many';
 import type { CombineExpr, CombineManyOperand } from '@/core/combine-many';
 import {
   BudgetExceededError,
@@ -168,13 +173,13 @@ describe('request counts', () => {
   it('re-reads an operand once per group, never more than the groups that use it', async () => {
     const sets = { a: ids([1, 2, 3]), b: ids([1, 2, 3]) };
     const specs = Array.from({ length: 40 }, () => ({ expr: { and: ['a', 'b'] } }));
-    const { run: r, setup } = await runBatch(sets, specs, { maxBufferedBytes: 140_000 });
+    const { run: r, setup } = await runBatch(sets, specs, { maxBufferedBytes: 420_000 });
     expect(r.stats.groups).toBeGreaterThan(1);
     for (const name of ['a', 'b']) {
       expect(setup.source.opened.filter((s) => s.segment === name)).toHaveLength(r.stats.groups);
     }
     r.outputs.forEach((o) => expect(ok(o).ids).toEqual(ids([1, 2, 3])));
-    expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(140_000);
+    expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(420_000);
   });
 
   it('starts the next group only after the previous group settled its publishes', async () => {
@@ -199,7 +204,7 @@ describe('request counts', () => {
       };
     });
     const r = await runCombineMany(
-      compileCombineMany(request(setup, outputs, { maxBufferedBytes: 140_000 })),
+      compileCombineMany(request(setup, outputs, { maxBufferedBytes: 420_000 })),
       { source: setup.source, codec: roaringCodec, clock },
     );
     expect(r.stats.groups).toBeGreaterThan(1);
@@ -867,27 +872,40 @@ describe('the plan is charged to the budget', () => {
 });
 
 describe('pricing a group does not grow with the group', () => {
-  it('plans ten thousand tiny outputs in about the time of a quarter as many, four times over', async () => {
-    const plan = async (n: number): Promise<number> => {
-      const setup = seed({ a: ids([1]), b: ids([1]) });
-      const outputs = Array.from({ length: n }, (_, i) =>
-        collecting({ expr: i % 2 === 0 ? { and: ['a', 'b'] } : { or: ['a', 'b'] } }),
-      ).map((o) => ({ ...o, publish: async () => ({ ids: [], keys: [] }) }));
-      const started = performance.now();
-      await runCombineMany(
-        compileCombineMany(
-          request(setup, outputs, { maxBufferedBytes: 1 << 30, publishConcurrency: 8 }),
-        ),
-        { source: setup.source, codec: roaringCodec, clock },
-      );
-      return performance.now() - started;
-    };
-    await plan(500); // warm up
-    const small = Math.max(await plan(2_500), 5);
-    const large = await plan(10_000);
-    // linear is 4x; quadratic is 16x
-    expect(large / small).toBeLessThan(9);
+  const tiny = async (n: number, budget = 1 << 30) => {
+    const setup = seed({ a: ids([1]), b: ids([1]) });
+    const outputs = Array.from({ length: n }, (_, i) =>
+      collecting({ expr: i % 2 === 0 ? { and: ['a', 'b'] } : { or: ['a', 'b'] } }),
+    ).map((o) => ({ ...o, publish: async () => ({ ids: [], keys: [] }) }));
+    for (const k of Object.keys(combineWork) as Array<keyof typeof combineWork>) combineWork[k] = 0;
+    const r = await runCombineMany(
+      compileCombineMany(request(setup, outputs, { maxBufferedBytes: budget })),
+      { source: setup.source, codec: roaringCodec, clock },
+    );
+    return { r, work: { ...combineWork } };
+  };
+
+  it('prices each output once to add it and twice to place it, by its own operands, whatever the group size', async () => {
+    for (const n of [200, 10_000]) {
+      const { r, work } = await tiny(n);
+      expect(r.stats.groups).toBe(1);
+      expect(work.adds).toBe(n);
+      // once alone, once against the group
+      expect(work.withs).toBeLessThanOrEqual(2 * n);
+      // two operands an output, walked by each of those
+      expect(work.operandSteps).toBeLessThanOrEqual(2 * (work.adds + work.withs));
+    }
   }, 60_000);
+
+  it('builds the plan of a group once when it is kept, and again only when it is not', async () => {
+    const small = await tiny(500);
+    expect(small.work.planBuilds).toBe(small.r.stats.groups);
+    // Every plan a group kept is released by the end: what is left is the call-wide plan, the same however it is grouped.
+    const split = await tiny(500, 3_600_000);
+    expect(split.r.stats.groups).toBeGreaterThan(1);
+    expect(split.work.planBuilds).toBe(split.r.stats.groups);
+    expect(split.r.stats.memory.planBytes).toBe(small.r.stats.memory.planBytes);
+  });
 });
 
 describe('the identity of a pinned operand', () => {

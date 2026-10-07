@@ -40,8 +40,8 @@ export interface CombineManyFeed {
     | (() => Readonly<Record<string, number>> | Promise<Readonly<Record<string, number>>>);
   /** Fed names allowed to hold no id anywhere in the feed. */
   readonly mayBeEmpty?: readonly string[];
-  /** The store's erasure counter: `at` when the call began, `now()` read at every record and before each fed publish. */
-  readonly epoch?: { readonly at: number; readonly now: () => number };
+  /** Whether an erasure ran in the store since the call began, or is running: read at every record and before each fed publish. */
+  readonly epoch?: { readonly moved: () => boolean };
 }
 
 /** A feed that passed {@link checkFeed}: read once, so what was checked is what runs. */
@@ -118,16 +118,11 @@ export function checkFeed(feed: unknown, stored: ReadonlySet<string>): CheckedFe
   }
   let checkedEpoch: CombineManyFeed['epoch'];
   if (epoch !== undefined) {
-    const e = epoch as { at?: unknown; now?: unknown };
-    if (
-      typeof e !== 'object' ||
-      e === null ||
-      typeof e.at !== 'number' ||
-      typeof e.now !== 'function'
-    ) {
-      throw new ValidationError('feed.epoch must be { at, now }');
+    const e = epoch as { moved?: unknown };
+    if (typeof e !== 'object' || e === null || typeof e.moved !== 'function') {
+      throw new ValidationError('feed.epoch must be { moved }');
     }
-    checkedEpoch = { at: e.at, now: e.now as () => number };
+    checkedEpoch = { moved: e.moved as () => boolean };
   }
   return {
     names: [...declared],
@@ -148,6 +143,8 @@ const byteOffsetOf = typedGetter('byteOffset');
 const byteLengthOf = typedGetter('byteLength');
 const detachedOf = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached')?.get as
   ((this: unknown) => unknown) | undefined;
+/** `%TypedArray%.prototype.values`: it throws for a view that is out of bounds or detached, and changes nothing. */
+const valuesOf = (TYPED as { values: (this: unknown) => unknown }).values;
 
 /**
  * The view a real `Uint32Array` holds, as a plain `Uint32Array` over the same bytes, or `undefined` for anything else.
@@ -155,7 +152,9 @@ const detachedOf = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detac
  * of that kind (a subclass or another realm's included) and throws for a spoof, a proxy or any other object. The view's
  * extent is then read through the intrinsic getters, so a subclass that overrides `length` or the iterator is never asked.
  */
-export function plainUint32(value: unknown): Uint32Array | 'detached' | undefined {
+export function plainUint32(
+  value: unknown,
+): Uint32Array | 'detached' | 'out of bounds' | undefined {
   let tag: unknown;
   try {
     tag = brandOf.call(value);
@@ -172,9 +171,25 @@ export function plainUint32(value: unknown): Uint32Array | 'detached' | undefine
     } catch {
       // A SharedArrayBuffer is never detached.
     }
+    try {
+      // A view on a resizable buffer that shrank past it also reports no bytes: its own iterator refuses it.
+      valuesOf.call(value);
+    } catch {
+      return 'out of bounds';
+    }
     return new Uint32Array(0);
   }
   return new Uint32Array(buffer, byteOffsetOf.call(value) as number, length >>> 2);
+}
+
+/**
+ * Whether `value` is a plain object: its prototype is `null`, or a root of a prototype chain that has `Object.prototype`'s
+ * own methods (so another realm's plain object passes). An inherited name or a `Map`'s entries are never read as operands.
+ */
+function isPlainObject(value: object): boolean {
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto === null) return true;
+  return Object.getPrototypeOf(proto) === null && Object.hasOwn(proto as object, 'hasOwnProperty');
 }
 
 /** What a group of one key holds: each operand's bitmap, by operand index, and what it is charged. */
@@ -343,7 +358,7 @@ export class FeedCursor {
   /** The next record, checked and converted (`ops` is `null` when its key is outside the range); `undefined` at the end. */
   private async pull(): Promise<{ key: number; ops: Map<number, Held> | null } | undefined> {
     const epoch = this.deps.feed.epoch;
-    if (epoch !== undefined && epoch.now() !== epoch.at) throw new FeedStale();
+    if (epoch?.moved() === true) throw new FeedStale();
     this.iterator ??= this.deps.feed.records[Symbol.asyncIterator]();
     const step = await this.iterator.next();
     if (this.closed) throw new FeedClosed();
@@ -407,8 +422,12 @@ export class FeedCursor {
       this.touched.length = 0;
       this.prevKey = key;
     }
-    if (typeof operands !== 'object' || operands === null || Array.isArray(operands)) {
-      this.refuse(key, undefined, 'operands must be an object of fed operand name to Uint32Array');
+    if (typeof operands !== 'object' || operands === null || !isPlainObject(operands)) {
+      this.refuse(
+        key,
+        undefined,
+        'operands must be a plain object of fed operand name to Uint32Array (not a Map, an array or a class instance)',
+      );
     }
     const keep = this.deps.inWindow(key);
     const ops = keep ? new Map<number, Held>() : null;
@@ -430,6 +449,13 @@ export class FeedCursor {
           );
         }
         if (view === 'detached') this.refuse(key, name, "the array's buffer is detached");
+        if (view === 'out of bounds') {
+          this.refuse(
+            key,
+            name,
+            'the array is out of bounds of its resizable buffer, which shrank under it',
+          );
+        }
         if (view.length === 0) continue;
         if (this.seen[at] === 1) {
           this.refuse(key, name, 'named twice at one key: an operand appears at most once per key');

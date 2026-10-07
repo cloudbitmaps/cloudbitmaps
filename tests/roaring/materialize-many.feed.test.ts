@@ -267,6 +267,33 @@ describe('an erasure in the store while a fed call runs', () => {
     expect(await w.store.exists({ segment: 'f-2' })).toBe(false);
   });
 
+  it('refuses a call that starts while an erasure is running, and serves one that starts after it', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const call = (prefix: string) =>
+      w.store.materializeMany({
+        operands: { optout: s('optout') },
+        feed: feedFor(FED),
+        maxBufferedBytes: 64 * 1024 * 1024,
+        outputs: [
+          { dest: s(`${prefix}-fed`), expr: 'a' },
+          { dest: s(`${prefix}-stored`), expr: 'optout' },
+        ],
+        keep: 1,
+      });
+    // An erasure that runs for the whole call: the counter is odd when the call records it and does not move until it ends.
+    const probe = w.store as unknown as { erasureEpoch: number };
+    probe.erasureEpoch++;
+    const during = await call('during');
+    erased(during.outputs[0]);
+    published(during.outputs[1]);
+    expect(await w.store.exists({ segment: 'during-fed' })).toBe(false);
+    probe.erasureEpoch++;
+    const after = await call('after');
+    published(after.outputs[0]);
+    published(after.outputs[1]);
+  });
+
   it('is not moved by an erasure in another store, which no counter can see', async () => {
     const w = await worldWithOptout();
     const s = (n: string) => w.store.segment(n);

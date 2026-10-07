@@ -134,6 +134,11 @@ export async function prepareHeld(
   if (real === 'detached') {
     throw new ValidationError("a memory operand's ids are a Uint32Array over a detached buffer");
   }
+  if (real === 'out of bounds') {
+    throw new ValidationError(
+      "a memory operand's ids are a resizable-buffer Uint32Array whose view is out of bounds",
+    );
+  }
   // A real Uint32Array holds only values in range, so the codec reads it whole; anything else goes id by id.
   const prepared =
     real !== undefined

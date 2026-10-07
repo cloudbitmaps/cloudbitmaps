@@ -440,6 +440,49 @@ describe('an erasure in the store', () => {
     expect(w.calls.ranges).toBe(0);
   });
 
+  it('refuses a handle made while an erasure is still running, and accepts one made after it ends', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    const probe = w.store as unknown as { erasureEpoch: number };
+    // Hold the erasure at its first registry read so that it is still running while the handle is made and the call runs.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let armed = true;
+    w.hooks.beforeRowRead = async () => {
+      if (!armed) return;
+      armed = false;
+      await gate;
+    };
+    const erasure = erase(w);
+    for (let i = 0; i < 1_000 && probe.erasureEpoch % 2 === 0; i++) await Promise.resolve();
+    expect(probe.erasureEpoch % 2).toBe(1);
+    const during = await w.store.memory([1, 2, 3]);
+    const run = await w.store.materializeMany({
+      operands: { during },
+      outputs: [{ dest: s('o-during'), expr: 'during' }],
+      keep: 1,
+    });
+    expect(stale(run.outputs[0]).operand).toBe('during');
+    expect(await w.store.exists({ segment: 'o-during' })).toBe(false);
+    release();
+    await erasure;
+    // the handle made while it ran stays refused once it ended, and one made after works
+    const again = await w.store.materializeMany({
+      operands: { during },
+      outputs: [{ dest: s('o-again'), expr: 'during' }],
+      keep: 1,
+    });
+    stale(again.outputs[0]);
+    const after = await w.store.memory([4, 5]);
+    const ok = await w.store.materializeMany({
+      operands: { after },
+      outputs: [{ dest: s('o-after'), expr: 'after' }],
+      keep: 1,
+    });
+    published(ok.outputs[0]);
+    expect(await w.ids('o-after')).toEqual([4, 5]);
+  });
+
   it('an erasure that starts while a handle is being made makes it stale', async () => {
     const w = await batchWorld(DATA);
     async function* slow(): AsyncGenerator<number> {

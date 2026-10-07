@@ -1259,8 +1259,8 @@ export class CloudRoaring {
    * memory is the caller's, and during a call it counts against `maxBufferedBytes`. There is no size option: the load's
    * own cap applies to a serialized input.
    *
-   * **Erasure.** Only `eraseSubject` moves the store's counter (at its start and at its end). One that starts in this store after
-   * the handle began to be made makes a call that reads the handle fail the outputs that read it with
+   * **Erasure.** Only `eraseSubject` moves the store's counter (at its start and at its end). One that started in this store
+   * since the handle began to be made, or is still running, makes a call that reads the handle fail the outputs that read it with
    * {@link StaleOperandError} (`reason: 'erased'`), before any request and again just before each publish. An erasure in
    * another store or another process is not seen, nor are `dropSegment`, `eraseNamespace`, `destroySegment` and the free
    * function `eraseIdFromSegment`, which do not move it: the handle is the caller's copy, so build it from the source of truth at
@@ -1516,7 +1516,7 @@ export class CloudRoaring {
             ref: { segment: name },
             held: {
               chunks: view.chunks,
-              erased: () => this.epochNow() !== view.epochAt,
+              moved: () => this.epochMoved(view.epochAt),
               mayBeEmpty: heldMayBeEmpty.has(name),
             },
           };
@@ -1649,6 +1649,14 @@ export class CloudRoaring {
     return this.erasureEpoch;
   }
 
+  /**
+   * Whether an erasure has run in this store since `at` was read, or was running when it was: the counter is odd while an
+   * `eraseSubject` runs, so a value read then is already stale. The one check every call that reads caller memory uses.
+   */
+  private epochMoved(at: number): boolean {
+    return at % 2 === 1 || this.epochNow() !== at;
+  }
+
   /** A call's feed with the store's erasure counter: read once here, checked by the combine before any record is read. */
   private feedOf(feed: unknown, mayBeEmpty: unknown, epochAt: number): CombineManyFeed {
     if (typeof feed !== 'object' || feed === null || Array.isArray(feed)) {
@@ -1662,7 +1670,7 @@ export class CloudRoaring {
       records: f.records as AsyncIterable<CombineManyFeedRecord>,
       counts: f.counts as CombineManyFeed['counts'],
       ...(mayBeEmpty === undefined ? {} : { mayBeEmpty: mayBeEmpty as string[] }),
-      epoch: { at: epochAt, now: () => this.epochNow() },
+      epoch: { moved: () => this.epochMoved(epochAt) },
     };
   }
 
@@ -1851,7 +1859,8 @@ export class CloudRoaring {
       budget?: BudgetOption;
     } = {},
   ): Promise<EraseSubjectResult> {
-    // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start.
+    // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
+    // for its options still moves the counter: conservative, so an erasure is never missed.
     this.erasureEpoch++;
     try {
       return await this.eraseSubjectRun(id, options);
