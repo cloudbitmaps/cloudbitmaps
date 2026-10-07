@@ -52,6 +52,7 @@ describe('an error message never carries an id', () => {
       messages.push(
         await messageOf(() =>
           w.store.materializeMany({
+            keep: 1,
             operands: { a: seg },
             outputs: [{ dest: w.store.segment('out'), expr: { and: ['a', 'f'] } }],
             feed: { names: ['f'], records: feedOf(records), counts: { f: 1 } },
