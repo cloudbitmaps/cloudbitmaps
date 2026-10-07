@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-10-07
+
 ### Fixed
 
 - **`store.materializeMany` accepts an empty `mayBeEmpty` on any call.** A call with no feed and no held operand refused
