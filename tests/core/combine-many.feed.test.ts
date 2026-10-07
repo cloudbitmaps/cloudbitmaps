@@ -708,7 +708,7 @@ describe('an erasure in the store while a fed call runs', () => {
   const stored = { s: at(4, [1]) };
   const specs = [{ expr: 'a' }, { expr: { or: ['a', 'b'] } }, { expr: 's' }, { expr: 'b' }];
 
-  const epoch = (state: { n: number }) => ({ at: 0, now: () => state.n });
+  const epoch = (state: { n: number }) => ({ moved: () => state.n !== 0 });
 
   it('refuses every fed output before any publishes when it lands between two records', async () => {
     const state = { n: 0 };
@@ -742,7 +742,7 @@ describe('an erasure in the store while a fed call runs', () => {
     const { run, pulled } = await runFed(specs, {
       stored,
       fed: sets,
-      feed: { epoch: { at: 0, now: () => 1 } },
+      feed: { epoch: { moved: () => true } },
     });
     expect(pulled.taken).toBe(0);
     expect((error(run.outputs[0]!) as unknown as { reason: string }).reason).toBe('erased');

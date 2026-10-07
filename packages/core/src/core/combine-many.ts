@@ -893,7 +893,7 @@ class Run<R> {
   /** Whether the store's erasure counter has moved since the call began: always `false` without a feed. */
   private erased(): boolean {
     const epoch = this.checkedFeed?.epoch;
-    return epoch !== undefined && epoch.now() !== epoch.at;
+    return epoch?.moved() === true;
   }
 
   /** What an output that read fed operands gets when an erasure ran in the store since the call began. */

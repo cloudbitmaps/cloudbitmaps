@@ -1550,6 +1550,14 @@ export class CloudRoaring {
     return this.erasureEpoch;
   }
 
+  /**
+   * Whether an erasure has run in this store since `at` was read, or was running when it was: the counter is odd while an
+   * `eraseSubject` runs, so a value read then is already stale. The one check every call that reads caller memory uses.
+   */
+  private epochMoved(at: number): boolean {
+    return at % 2 === 1 || this.epochNow() !== at;
+  }
+
   /** A call's feed with the store's erasure counter: read once here, checked by the combine before any record is read. */
   private feedOf(feed: unknown, mayBeEmpty: unknown, epochAt: number): CombineManyFeed {
     if (typeof feed !== 'object' || feed === null || Array.isArray(feed)) {
@@ -1563,7 +1571,7 @@ export class CloudRoaring {
       records: f.records as AsyncIterable<CombineManyFeedRecord>,
       counts: f.counts as CombineManyFeed['counts'],
       ...(mayBeEmpty === undefined ? {} : { mayBeEmpty: mayBeEmpty as string[] }),
-      epoch: { at: epochAt, now: () => this.epochNow() },
+      epoch: { moved: () => this.epochMoved(epochAt) },
     };
   }
 

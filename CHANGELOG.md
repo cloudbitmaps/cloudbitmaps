@@ -61,7 +61,7 @@ so, and so do the module headers in the code.
   water of 62 MB over five keys, process growth of 216 MB at its peak, 9 ns an id for check, conversion and evaluation together
   (measured on a loaded machine). A call with a feed records the store's erasure counter, which `eraseSubject` moves at its start and
   its end, and is refused with `StaleOperandError` (`reason: 'erased'`, new) at its next record and before each fed publish once it
-  moved; a call with no feed never reads it. New types `MaterializeManyFeed` and `MaterializeManyFeedRecord`, and `CombineManyFeed`
+  moved, and at its first record when an erasure was already running as it began; a call with no feed never reads it. New types `MaterializeManyFeed` and `MaterializeManyFeedRecord`, and `CombineManyFeed`
   and `CombineManyFeedRecord` from `@cloudbitmaps/core`. Nothing existing changes except that `eraseSubject` moves the counter.
   [Guide](docs/guide/loading.md#operands-that-arrive-as-records-a-feed).
 - **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on

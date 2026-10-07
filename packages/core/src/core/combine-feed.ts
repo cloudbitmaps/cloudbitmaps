@@ -40,8 +40,8 @@ export interface CombineManyFeed {
     | (() => Readonly<Record<string, number>> | Promise<Readonly<Record<string, number>>>);
   /** Fed names allowed to hold no id anywhere in the feed. */
   readonly mayBeEmpty?: readonly string[];
-  /** The store's erasure counter: `at` when the call began, `now()` read at every record and before each fed publish. */
-  readonly epoch?: { readonly at: number; readonly now: () => number };
+  /** Whether an erasure ran in the store since the call began, or is running: read at every record and before each fed publish. */
+  readonly epoch?: { readonly moved: () => boolean };
 }
 
 /** A feed that passed {@link checkFeed}: read once, so what was checked is what runs. */
@@ -118,16 +118,11 @@ export function checkFeed(feed: unknown, stored: ReadonlySet<string>): CheckedFe
   }
   let checkedEpoch: CombineManyFeed['epoch'];
   if (epoch !== undefined) {
-    const e = epoch as { at?: unknown; now?: unknown };
-    if (
-      typeof e !== 'object' ||
-      e === null ||
-      typeof e.at !== 'number' ||
-      typeof e.now !== 'function'
-    ) {
-      throw new ValidationError('feed.epoch must be { at, now }');
+    const e = epoch as { moved?: unknown };
+    if (typeof e !== 'object' || e === null || typeof e.moved !== 'function') {
+      throw new ValidationError('feed.epoch must be { moved }');
     }
-    checkedEpoch = { at: e.at, now: e.now as () => number };
+    checkedEpoch = { moved: e.moved as () => boolean };
   }
   return {
     names: [...declared],
@@ -361,7 +356,7 @@ export class FeedCursor {
   /** The next record, checked and converted (`ops` is `null` when its key is outside the range); `undefined` at the end. */
   private async pull(): Promise<{ key: number; ops: Map<number, Held> | null } | undefined> {
     const epoch = this.deps.feed.epoch;
-    if (epoch !== undefined && epoch.now() !== epoch.at) throw new FeedStale();
+    if (epoch?.moved() === true) throw new FeedStale();
     this.iterator ??= this.deps.feed.records[Symbol.asyncIterator]();
     const step = await this.iterator.next();
     if (this.closed) throw new FeedClosed();
