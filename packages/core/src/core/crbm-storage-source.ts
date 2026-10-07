@@ -2782,7 +2782,7 @@ function* rangeCheckedAtWrite(
     const max = chunk.bitmap.maximum?.();
     if (max !== undefined && max > MAX_REMAINDER) {
       throw new ValidationError(
-        `chunk ${chunk.chunkKey} holds ${max}, outside the 16-bit range [0, ${MAX_REMAINDER}]`,
+        `a chunk holds a value outside the 16-bit range [0, ${MAX_REMAINDER}]`,
       );
     }
     yield chunk;
@@ -2799,20 +2799,16 @@ async function collectChunks(
   let last = -1;
   for await (const chunk of input.chunks) {
     if (typeof chunk !== 'object' || chunk === null) {
-      throw new ValidationError(
-        `a chunk must be an object with a chunkKey and a bitmap; got ${String(chunk)}`,
-      );
+      throw new ValidationError('a chunk must be an object with a chunkKey and a bitmap');
     }
     // Each field is read once, so the bitmap checked is the bitmap written. Only the codec's own bitmaps are written as
     // they are: one of any other shape could hold bytes or a count the codec never checked, and would be published.
     const { chunkKey, bitmap } = chunk;
     if (codec.owns?.(bitmap) !== true) {
-      throw new ValidationError(
-        `chunk ${String(chunkKey)}: its bitmap is not one this load's codec made`,
-      );
+      throw new ValidationError(`a chunk's bitmap is not one this load's codec made`);
     }
     if (!Number.isInteger(chunkKey) || chunkKey < 0 || chunkKey > MAX_REMAINDER) {
-      throw new ValidationError(`a chunk's key must be an integer in [0, 65535]; got ${chunkKey}`);
+      throw new ValidationError("a chunk's key must be an integer in [0, 65535]");
     }
     if (chunkKey <= last) {
       throw new ValidationError(`chunk ${chunkKey} does not ascend: the last was ${last}`);
@@ -2821,7 +2817,7 @@ async function collectChunks(
     const max = bitmap.maximum?.();
     if (max !== undefined && max > MAX_REMAINDER) {
       throw new ValidationError(
-        `chunk ${chunkKey} holds ${max}, outside the 16-bit range [0, ${MAX_REMAINDER}]`,
+        `a chunk holds a value outside the 16-bit range [0, ${MAX_REMAINDER}]`,
       );
     }
     chunks.push({ chunkKey, bitmap });

@@ -77,9 +77,9 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 /** `null` is legal and meaningful: the segment has no Storage generation yet (see `RegistryRecord.currentGen`). */
 function validateGeneration(gen: number | null): void {
   if (gen === null) return;
-  if (!Number.isInteger(gen) || gen < 0) {
+  if (!Number.isSafeInteger(gen) || gen < 0) {
     throw new ValidationError(
-      `currentGen must be a non-negative integer or null (no Storage generation yet); got ${gen}`,
+      `currentGen must be a non-negative safe integer or null (no Storage generation yet); got ${gen}`,
     );
   }
 }
@@ -722,7 +722,7 @@ export function assertStoredRecordShape(
   }
   // Enforce the same value invariants the write path checks, so corrupt/tampered bytes are rejected at the
   // read boundary (invariant 5) rather than leaking a bad currentGen/status downstream.
-  if (r.currentGen !== null && (!Number.isInteger(r.currentGen) || r.currentGen < 0)) {
+  if (r.currentGen !== null && (!Number.isSafeInteger(r.currentGen) || r.currentGen < 0)) {
     throw new IntegrityError(`registry record has an invalid currentGen (${r.currentGen}): ${ctx}`);
   }
   if (!STATUSES.includes(r.status)) {

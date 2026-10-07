@@ -38,8 +38,15 @@ import {
   type RegistryEnvelope,
 } from '../_shared/registry';
 import { entropyIsAvailable, webCryptoEntropy } from '../_shared/entropy';
-import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
-import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
+import {
+  assertRegistryNamesFit,
+  registryDir,
+  registryRowPath,
+  parseNamespaceDir,
+  parseRegistryRow,
+} from './paths';
+import { ExactCase } from './exact-case';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -69,7 +76,7 @@ async function rowLockKey(path: string): Promise<string> {
       return join(await realpath(dir), ...tail);
     } catch (err) {
       const parent = dirname(dir);
-      if (!isCode(err, 'ENOENT') || parent === dir) throw mapFsError(err);
+      if (!isAbsent(err) || parent === dir) throw mapFsError(err);
       tail.unshift(basename(dir));
       dir = parent;
     }
@@ -87,10 +94,13 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   private readonly now: () => number;
   private readonly entropy: Entropy;
 
+  private readonly exactCase: ExactCase;
+
   constructor(
     private readonly root: string,
     options: LocalFsRegistryDriverOptions = {},
   ) {
+    this.exactCase = new ExactCase(root);
     this.now = options.now ?? (() => Date.now());
     this.entropy = options.entropy ?? webCryptoEntropy;
   }
@@ -113,6 +123,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
     const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
+    assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current !== null && !current.deleted) {
@@ -136,6 +147,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   ): Promise<{ token: Token }> {
     const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
+    assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current === null || current.deleted || current.record.token !== expected) {
@@ -154,11 +166,12 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
     for (const ns of await this.namespaceDirs(namespace)) {
       const dir = registryDir(this.root, ns);
+      if (await this.exactCase.differs(dir)) continue; // another case's directory is not this one
       let names: string[];
       try {
         names = await readdir(dir);
       } catch (err) {
-        if (isCode(err, 'ENOENT')) continue; // no registry rows in this namespace yet
+        if (isAbsent(err)) continue; // no registry rows in this namespace yet
         throw mapFsError(err);
       }
       for (const name of names) {
@@ -228,9 +241,10 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   private async readRow(path: string): Promise<RegistryEnvelope | null> {
     let handle;
     try {
+      if (await this.exactCase.differs(path)) return null; // another case's row is not this one
       handle = await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
-      if (isCode(err, 'ENOENT') || isCode(err, 'ELOOP')) return null;
+      if (isAbsent(err) || isCode(err, 'ELOOP')) return null;
       throw mapFsError(err);
     }
     try {
@@ -246,6 +260,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   private async writeRow(path: string, deleted: boolean, record: RegistryRecord): Promise<void> {
+    await this.exactCase.refuseVariant(path);
     await mkdir(dirname(path), { recursive: true });
     const out = Buffer.from(serializeRegistryEnvelope({ deleted, record }), 'utf8');
     // Cap on the write path too (the read path caps at the same size): never produce a row that would later
@@ -278,7 +293,9 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
 
   /** Serialize callbacks for a row so read-modify-write is atomic across every instance in the process. */
   private async withRowLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-    const key = await rowLockKey(path);
+    // On a case-insensitive root two spellings of a path are one row, so they take one lock.
+    const resolved = await rowLockKey(path);
+    const key = (await this.exactCase.folds()) ? resolved.toLowerCase() : resolved;
     const prev = rowChains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn);
     const tail = result.then(

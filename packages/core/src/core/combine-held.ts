@@ -49,7 +49,7 @@ export class HeldChunks {
         chunkKey <= last
       ) {
         throw new ValidationError(
-          `a held chunk's key must be an integer in [0, 65535] above the last; got ${String(chunkKey)}`,
+          `a held chunk's key must be an integer in [0, 65535] above the last`,
         );
       }
       assertChunkCardinalityInRange(cardinality);

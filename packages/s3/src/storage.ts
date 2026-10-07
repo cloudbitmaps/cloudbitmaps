@@ -75,6 +75,8 @@ import {
 import { resolveReadTimeoutMs, timedRead, type ReadSendOptions } from './read-timeout';
 import type { SocketAdvisory } from './socket-advisory';
 import { sendOnce } from './send-once';
+import { readBounded } from './bounded-body';
+import { scrubCredentials } from './scrub-error';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
@@ -222,7 +224,12 @@ export class S3StorageDriver implements IStorageDriver {
         }),
         options,
       );
-      const bytes = await collect(res.Body);
+      const bytes = await readBounded(
+        res.Body,
+        length,
+        () => this.badRead(key, 'range', `the response is longer than the ${length}B requested`),
+        res.ContentLength,
+      );
       // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result.
       if (bytes.length !== length) {
         throw new ValidationError(
@@ -249,7 +256,13 @@ export class S3StorageDriver implements IStorageDriver {
           }),
           options,
         );
-        return { bytes: await collect(res.Body), contentRange: res.ContentRange };
+        const bytes = await readBounded(
+          res.Body,
+          maxBytes,
+          () => this.badRead(key, 'tail', `the response is longer than the ${maxBytes}B requested`),
+          res.ContentLength,
+        );
+        return { bytes, contentRange: res.ContentRange };
       } catch (err) {
         // A zero-byte object has no suffix to satisfy, so S3 refuses the range with a 416. The HEAD below settles
         // whether that is an empty object or a real range fault.
@@ -273,6 +286,12 @@ export class S3StorageDriver implements IStorageDriver {
           : bytes.length;
     }
     return { bytes, size };
+  }
+
+  private badRead(key: GenKey, what: 'range' | 'tail', why: string): ValidationError {
+    return new ValidationError(
+      `S3 ${what} read of ${key.segment}.${key.generation} refused: ${why}`,
+    );
   }
 
   /** The object's size from a `HeadObject`, or `undefined` when the response does not carry one. */
@@ -346,6 +365,7 @@ export class S3StorageDriver implements IStorageDriver {
 
   /** Map S3 read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
+    err = scrubCredentials(err);
     if (isValidationError(err)) return err;
     if (isNotFound(err)) {
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
@@ -365,6 +385,7 @@ export class S3StorageDriver implements IStorageDriver {
    * read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
+    err = scrubCredentials(err);
     if (isTransient(err)) {
       return new TransientError(
         `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
@@ -524,7 +545,8 @@ class S3MultipartSink implements BlobSink {
       try {
         await send();
         return;
-      } catch (err) {
+      } catch (raw) {
+        const err = scrubCredentials(raw);
         if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
           const stored = await this.storedObject();
           if (stored?.id === this.writeId) return;
@@ -584,17 +606,3 @@ class S3MultipartSink implements BlobSink {
     }
   }
 }
-
-/**
- * Collect an S3 response body into a `Uint8Array`. `transformToByteArray` is added at runtime to the SDK's
- * Node stream by `@aws-sdk`'s sdk-stream-mixin, so the structural cast is sound on Node.
- */
-async function collect(body: GetObjectCommandBody): Promise<Uint8Array> {
-  if (body === undefined) {
-    throw new NotFoundError('S3 GetObject returned an empty body');
-  }
-  return body.transformToByteArray();
-}
-
-/** The S3 `GetObject` Body type, narrowed to the part we use (`transformToByteArray`). */
-type GetObjectCommandBody = { transformToByteArray(): Promise<Uint8Array> } | undefined;

@@ -53,6 +53,7 @@ import {
   isTransportFault,
 } from './gcs-errors';
 import { retryDownload } from './download-retry';
+import { scrubCredentials } from './scrub-error';
 import { saveOnce } from './send-once';
 import { downloadFile, readOnce, singleHeader, type ObjectRead } from './read-once';
 import {
@@ -392,6 +393,7 @@ export class GcsStorageDriver implements IStorageDriver {
 
   /** Map GCS read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
+    err = scrubCredentials(err);
     if (isValidationError(err)) return err;
     if (isNotFound(err))
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
@@ -421,6 +423,7 @@ export class GcsStorageDriver implements IStorageDriver {
    * in transit arrive typed, and anything else (a checksum mismatch, a credentials failure) as the SDK raised it.
    */
   private mapError(err: unknown): unknown {
+    err = scrubCredentials(err);
     if (isTransient(err)) {
       return new TransientError(
         `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? 'unknown'}`,

@@ -11,6 +11,49 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Security
+
+- **`export-segments` refuses a symlinked or foreign namespace directory in its output.** It writes only into
+  directories it made, or ones an earlier run of it left (yours and owner-only). A symlink, a path that is not a
+  directory, a directory of another user, or one open to group or others in a namespace directory's place is refused
+  with a `ValidationError`.
+- **`InProcessKeystore` checks `activeKeyId` and `recoveryKeyId` against the keys it was given.** A name every object
+  inherits, such as `constructor`, was counted as a key and failed later in `createDek()` with a `TypeError`; it is now
+  refused at construction with a `ValidationError`.
+- **The Azure and GCS storage drivers use the same `prefix` check as the registries and S3.** Built directly, they
+  accepted a prefix with a backslash, a DEL character or a percent-encoded `..`; each is now a `ValidationError`.
+- **`LocalFsStorage` tells names apart by case on a case-insensitive filesystem.** On macOS and Windows defaults a
+  namespace or segment that differed only by case opened the same file: it read as present, and a load wrote the next
+  generation of the other name's segment. The driver now compares the name on disk exactly, so a name in another case
+  reads as absent, and a write that would land on an existing case variant fails with a `ValidationError`. The on-disk
+  layout is unchanged, and a case-sensitive filesystem pays nothing.
+- **`LocalFsStorage` refuses a name too long for its file names with a `ValidationError`, before anything is written.**
+  A segment name of about 208 characters or more passed the 256-character cap but made a temp file name past the 255
+  bytes filesystems allow, and failed with a raw `ENAMETOOLONG` whose message carried the absolute storage root.
+- **A registry row's `currentGen` must be a safe integer, and a load refuses a number past it.** A row holding a
+  generation above `2^53 - 1` was accepted, and a load then published an object the reader could not open. The write and
+  read checks now use `Number.isSafeInteger`. At the largest safe generation, `load`, `intersectInto`, `unionInto` and
+  `andNotInto` throw an `IntegrityError` before writing anything, `materializeMany` returns that error on each output it
+  could not publish, and `eraseSubject` returns `erased: false` with a note instead of rewriting.
+- **GCS and S3 errors carry no request credential or live transport.** Both SDKs keep the request they sent on the
+  errors they raise (the GCS SDK `response.request` and `config`, the AWS SDK `$response`), and through it the HTTP
+  agent and its sockets, whose raw request text holds the bearer token or session token of calls still in flight. The
+  drivers passed those errors on as the error or its `cause`. They now throw a copy that has the same prototype, name,
+  message, stack, status, code and request id, and none of the request, agent, socket or configuration; the live SDK
+  objects are never changed. This holds under `util.inspect` with `showHidden`, `JSON.stringify` and the stack. The
+  Azure driver's errors were checked the same way and hold no credential.
+- **The S3 and Azure drivers bound every response body they read.** A range read, a tail read and a registry row are read
+  as a stream and counted, and the read fails with a typed error at the first byte past what was asked for (and at once
+  when the response advertises more), instead of buffering a body from an endpoint that ignores `Range` or sends no
+  length. The body is destroyed on the way out.
+- **Error messages no longer carry an id.** A refused id (`has`, `load`, `store.memory`, `eraseSubject`,
+  `subjectReport`), a bound (`after`, `through`, on `iterate` and `materializeMany`), an out-of-range chunk key or value
+  in a load input, and a bare value passed as a load input were echoed in the `ValidationError` message, and applications
+  log messages. The messages now say what is wrong without the value: `an id must be an integer from 0 to 4294967295`,
+  `after must be an integer from 0 to 4294967295`. A message about a feed record still names its chunk key, a number
+  from 0 to 65535 that 65,536 ids share, not an id.
+  Code that matched the old text `id must be an integer in 0..4294967295; got <value>` must match the new one.
+
 ## [0.18.1] — 2026-10-07
 
 ### Fixed

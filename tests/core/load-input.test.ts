@@ -104,7 +104,7 @@ describe('a byte array passed as ids is refused, not loaded byte by byte', () =>
       const w = world();
       const err = await loadSegment(SEG, new Kind([1n, 2n]), w.deps).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ValidationError);
-      expect((err as Error).message).toMatch(/^id must be an integer/);
+      expect((err as Error).message).toMatch(/^an id must be an integer/);
     },
   );
 

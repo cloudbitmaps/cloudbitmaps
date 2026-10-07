@@ -130,9 +130,7 @@ export function prepareLoadInput(
   subject = 'a load',
 ): Iterable<number> | AsyncIterable<number> | DecodedLoadInput {
   if (typeof input !== 'object' || input === null) {
-    throw new ValidationError(
-      `${subject} takes ids, { serialized } or { bitmap }; got ${String(input)}`,
-    );
+    throw new ValidationError(`${subject} takes ids, { serialized } or { bitmap }`);
   }
   const tag = tagOf(input);
   if (tag === 'Uint8Array' || tag === 'Uint8ClampedArray') {

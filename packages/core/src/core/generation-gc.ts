@@ -14,7 +14,7 @@
  * publish pushed out of that window ({@link deleteEvicted}). Pure orchestration over the driver ports — no I/O, time or
  * randomness of its own.
  */
-import { ValidationError, WriteConflictError, isNotFoundError } from './errors';
+import { IntegrityError, ValidationError, WriteConflictError, isNotFoundError } from './errors';
 import { MAX_KEPT_GENERATIONS, usableKeptGens } from './kept-generations';
 import { heldGenerations } from './leases';
 import type {
@@ -60,6 +60,14 @@ async function aboveEverything(
   for await (const key of deps.storage.list(ref)) {
     if (key.generation > highest) highest = key.generation;
   }
+  return numberAbove(highest);
+}
+
+/** `highest + 1`, refused when it is not a safe integer: a generation past that cannot be written or read back. */
+function numberAbove(highest: number): number {
+  if (highest >= Number.MAX_SAFE_INTEGER) {
+    throw new IntegrityError('the segment has no generation number left above its highest');
+  }
   return highest + 1;
 }
 
@@ -98,7 +106,7 @@ export async function nextLoadGeneration(
   deps: GenerationDeps,
   row: RegistryRecord | null,
 ): Promise<LoadNumber> {
-  const generation = (row?.currentGen ?? -1) + 1;
+  const generation = numberAbove(row?.currentGen ?? -1);
   try {
     await deps.storage.getTail({ namespace: ref.namespace, segment: ref.segment, generation }, 0);
   } catch (err) {

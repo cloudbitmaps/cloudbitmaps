@@ -914,3 +914,33 @@ describe('the leases: schema, shape and the pointer', () => {
     }
   });
 });
+
+describe('a registry generation is a safe integer', () => {
+  const row = {
+    segment: 's',
+    currentGen: 0,
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+    token: '0',
+  };
+  const UNSAFE = [2 ** 53, 2 ** 53 + 2, 1e21];
+
+  it('the largest safe generation is accepted, on the write and the read boundary', () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    expect(() => validateNewRegistryRecord({ currentGen: max })).not.toThrow();
+    expect(() => validateRegistryPatch({ currentGen: max })).not.toThrow();
+    expect(() => assertStoredRecordShape({ ...row, currentGen: max }, 'ok')).not.toThrow();
+  });
+
+  it.each(UNSAFE)('%s is refused when written, as a new row or a patch', (gen) => {
+    expect(() => validateNewRegistryRecord({ currentGen: gen })).toThrow(ValidationError);
+    expect(() => validateRegistryPatch({ currentGen: gen })).toThrow(ValidationError);
+  });
+
+  it.each(UNSAFE)('%s is refused when a stored row is read back', (gen) => {
+    expect(() => assertStoredRecordShape({ ...row, currentGen: gen }, 'bad')).toThrow(
+      IntegrityError,
+    );
+  });
+});

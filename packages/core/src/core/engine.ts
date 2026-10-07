@@ -186,8 +186,7 @@ function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
     ['through', through],
   ] as const) {
     if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      const got = typeof bound === 'number' ? String(bound) : `a ${typeof bound}`;
-      throw new ValidationError(`${name} must be an integer in 0..${U32_MAX}; got ${got}`);
+      throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
     }
   }
   const lo = after === undefined ? 0 : after + 1;

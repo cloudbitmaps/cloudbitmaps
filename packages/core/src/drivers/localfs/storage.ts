@@ -14,11 +14,16 @@ import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
-import { storageObjectPath, parseGeneration, segmentsDir } from './paths';
-import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
+import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
+import { ExactCase } from './exact-case';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
 
 export class LocalFsStorageDriver implements IStorageDriver {
-  constructor(private readonly root: string) {}
+  private readonly exactCase: ExactCase;
+
+  constructor(private readonly root: string) {
+    this.exactCase = new ExactCase(root);
+  }
 
   capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: false };
@@ -29,6 +34,8 @@ export class LocalFsStorageDriver implements IStorageDriver {
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
     const finalPath = storageObjectPath(this.root, key);
+    assertStorageNamesFit(key);
+    await this.exactCase.refuseVariant(finalPath);
     await mkdir(dirname(finalPath), { recursive: true });
 
     const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
@@ -108,18 +115,21 @@ export class LocalFsStorageDriver implements IStorageDriver {
 
   async delete(key: GenKey): Promise<void> {
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
-    await unlink(storageObjectPath(this.root, key)).catch((err) => {
-      if (!isCode(err, 'ENOENT')) throw mapFsError(err);
+    const path = storageObjectPath(this.root, key);
+    if (await this.exactCase.differs(path)) return; // another case's object is not this one
+    await unlink(path).catch((err) => {
+      if (!isAbsent(err)) throw mapFsError(err);
     });
   }
 
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
     const dir = segmentsDir(this.root, ref);
+    if (await this.exactCase.differs(dir)) return; // another case's directory is not this one
     let names: string[];
     try {
       names = await readdir(dir);
     } catch (err) {
-      if (isCode(err, 'ENOENT')) return; // no generations yet
+      if (isAbsent(err)) return; // no generations yet
       throw mapFsError(err);
     }
     for (const name of names) {
@@ -131,10 +141,15 @@ export class LocalFsStorageDriver implements IStorageDriver {
   }
 
   private async openRead(key: GenKey): Promise<Awaited<ReturnType<typeof open>>> {
+    const path = storageObjectPath(this.root, key);
+    // Another case's object is not this one: absent, as if nothing were stored under this name.
+    if (await this.exactCase.differs(path)) {
+      throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
+    }
     try {
-      return await open(storageObjectPath(this.root, key), FS.O_RDONLY | O_NOFOLLOW);
+      return await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
-      if (isCode(err, 'ENOENT')) {
+      if (isAbsent(err)) {
         throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
       }
       // A symlink at the object path is rejected (ELOOP) — treat as not-found, don't follow it.

@@ -24,27 +24,8 @@ import type { GenKey, SegmentRef } from '@cloudbitmaps/core/driver-kit';
 
 const SUFFIX = '.crbm';
 
-/**
- * Validate the caller-supplied blob-name prefix (trusted config, but a real containment boundary): reject
- * control characters and `.`/`..` path segments so a prefix can't traverse out of its intended space. Returns
- * it unchanged (the key builders normalize slashes).
- */
-export function normalizeAzurePrefix(prefix: string | undefined): string | undefined {
-  if (prefix === undefined) return undefined;
-  for (const ch of prefix) {
-    if (ch.charCodeAt(0) < 0x20) {
-      throw new ValidationError('prefix must not contain control characters');
-    }
-  }
-  for (const segment of prefix.split('/')) {
-    if (segment === '.' || segment === '..') {
-      throw new ValidationError(
-        `prefix must not contain "." or ".." path segments: ${JSON.stringify(prefix)}`,
-      );
-    }
-  }
-  return prefix;
-}
+/** Validate a caller-supplied key prefix. The rule is shared with every other object store. */
+export { normalizeObjectPrefix as normalizeAzurePrefix } from '@cloudbitmaps/core/driver-kit';
 
 /**
  * The Azure blob-name prefix shared by all of a segment's generations: `<prefix><ns>/segments/<segment>.`.
