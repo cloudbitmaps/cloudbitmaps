@@ -1,0 +1,327 @@
+/**
+ * `store.materializeMany` with a feed: operands that arrive as records, beside stored ones. A fed output is the same bytes
+ * the same operands stored would publish; a bad feed refuses every fed output; an erasure in the store refuses a fed call.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import {
+  BudgetExceededError,
+  StaleOperandError,
+  ValidationError,
+  isStaleOperandError,
+} from '@/index';
+import type { MaterializeManyFeed, MaterializeResult } from '@/index';
+import { batchWorld, range } from '../helpers/batch-world';
+import type { BatchWorld } from '../helpers/batch-world';
+import { feedOf, lcg, recordsOf } from '../helpers/combine-feed';
+
+const DATA = {
+  a: [...range(0, 70_000), ...range(200_000, 330_000, 7), ...range(500_000, 500_500)],
+  b: [...range(30_000, 140_000), ...range(250_000, 300_000, 3), ...range(500_100, 500_200)],
+  c: range(0, 400_000, 5),
+  optout: range(0, 400_000, 11),
+};
+const FED = { a: DATA.a, b: DATA.b, c: DATA.c };
+
+const published = (o: unknown): MaterializeResult => {
+  const r = o as MaterializeResult;
+  expect(r.published).toBe(true);
+  return r;
+};
+const failure = (o: unknown): Error => {
+  const r = o as { published: boolean; error?: Error };
+  expect(r.published).toBe(false);
+  return r.error!;
+};
+
+function feedFor(
+  fed: Record<string, number[]>,
+  extra: Partial<MaterializeManyFeed> = {},
+  seed = 1,
+): MaterializeManyFeed {
+  return {
+    names: Object.keys(fed),
+    records: feedOf(recordsOf(fed, lcg(seed))),
+    counts: Object.fromEntries(Object.entries(fed).map(([k, v]) => [k, new Set(v).size])),
+    ...extra,
+  };
+}
+
+/** A world with only the stored operand loaded; the fed ones are not segments at all. */
+const worldWithOptout = (): Promise<BatchWorld> => batchWorld({ optout: DATA.optout });
+
+describe('materializeMany with a feed', () => {
+  it('publishes each fed output as the same bytes the same operands stored would, stored and fed mixed', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    const stored = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b'), c: s('c'), optout: s('optout') },
+      outputs: [
+        { dest: s('s-and'), expr: { and: ['a', 'b'] }, exclude: ['optout'] },
+        { dest: s('s-or'), expr: { or: ['a', 'c'] } },
+        { dest: s('s-nested'), expr: { and: [{ or: ['a', 'b'] }, 'c'] }, exclude: ['optout'] },
+        { dest: s('s-only'), expr: { andNot: ['optout', 'c'] } },
+      ],
+      keep: 2,
+    });
+    stored.outputs.forEach((o) => published(o));
+    const fed = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: feedFor(FED),
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [
+        { dest: s('f-and'), expr: { and: ['a', 'b'] }, exclude: ['optout'] },
+        { dest: s('f-or'), expr: { or: ['a', 'c'] } },
+        { dest: s('f-nested'), expr: { and: [{ or: ['a', 'b'] }, 'c'] }, exclude: ['optout'] },
+        { dest: s('f-only'), expr: { andNot: ['optout', 'c'] } },
+      ],
+      keep: 2,
+    });
+    fed.outputs.forEach((o) => published(o));
+    for (const x of ['and', 'or', 'nested', 'only']) {
+      expect(await w.hex(`f-${x}`, 0)).toBe(await w.hex(`s-${x}`, 0));
+    }
+    expect(fed.stats.groups).toBe(1);
+    expect(fed.stats.feed).toMatchObject({
+      records: expect.any(Number) as number,
+      ids: DATA.a.length + DATA.b.length + DATA.c.length,
+    });
+    expect(fed.stats.outputs[0]!.operands).toEqual(['optout', 'a', 'b']);
+  });
+
+  it('runs every output as one group however small the budget leaves room, and needs maxBufferedBytes', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    await expect(
+      w.store.materializeMany({
+        operands: { optout: s('optout') },
+        feed: feedFor(FED),
+        outputs: [{ dest: s('f-1'), expr: 'a' }],
+        keep: 1,
+      }),
+    ).rejects.toThrow(/maxBufferedBytes is required with a feed/);
+  });
+
+  it('refuses a mayBeEmpty with no feed, or naming what is not fed, before anything is read', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const pulled = { taken: 0, returnedEarly: false, finished: false };
+    const feed = { ...feedFor(FED), records: feedOf(recordsOf(FED), pulled) };
+    const base = {
+      operands: { optout: s('optout') },
+      outputs: [{ dest: s('f-1'), expr: 'a' }],
+      keep: 1,
+      maxBufferedBytes: 64 * 1024 * 1024,
+    };
+    await expect(w.store.materializeMany({ ...base, mayBeEmpty: ['a'] })).rejects.toThrow(
+      /mayBeEmpty names fed operands, and the call has no feed/,
+    );
+    for (const mayBeEmpty of [['optout'], ['nobody']]) {
+      await expect(w.store.materializeMany({ ...base, feed, mayBeEmpty })).rejects.toThrow(
+        ValidationError,
+      );
+    }
+    await expect(
+      w.store.materializeMany({ ...base, feed: { ...feed, names: ['a', 'optout'] } }),
+    ).rejects.toThrow(/both a stored operand and a fed one/);
+    await expect(w.store.materializeMany({ ...base, feed: 5 as never })).rejects.toThrow(
+      /feed must be an object/,
+    );
+    expect(pulled.taken).toBe(0);
+  });
+
+  it('lets a name that may be empty be empty, and refuses a declared name that never appears', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const options = (mayBeEmpty?: string[]) => ({
+      operands: { optout: s('optout') },
+      feed: feedFor(
+        { a: DATA.a },
+        { names: ['a', 'quiet'], counts: { a: DATA.a.length, quiet: 0 } },
+      ),
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [
+        { dest: s('f-and'), expr: { and: ['a', 'quiet'] }, allowEmpty: true },
+        { dest: s('f-minus'), expr: 'a', exclude: ['quiet'] },
+        { dest: s('f-stored'), expr: 'optout' },
+      ],
+      keep: 1,
+      ...(mayBeEmpty === undefined ? {} : { mayBeEmpty }),
+    });
+    const refused = await w.store.materializeMany(options());
+    expect(failure(refused.outputs[0])).toBeInstanceOf(ValidationError);
+    expect(failure(refused.outputs[0]).message).toMatch(/operand "quiet" holds no id anywhere/);
+    expect(failure(refused.outputs[1])).toBeInstanceOf(ValidationError);
+    published(refused.outputs[2]);
+    expect(await w.store.exists({ segment: 'f-minus' })).toBe(false);
+    const allowed = await w.store.materializeMany(options(['quiet']));
+    expect((allowed.outputs[0] as MaterializeResult).cardinality).toBe(0);
+    expect((allowed.outputs[1] as MaterializeResult).cardinality).toBe(DATA.a.length);
+  });
+
+  it('publishes no fed output for a bad feed, and still the stored-only ones', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const bad = [...recordsOf(FED), { key: 70, operands: { a: Uint32Array.from([5]) } }];
+    const run = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: { ...feedFor(FED), records: feedOf(bad) },
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [
+        { dest: s('f-1'), expr: { and: ['a', 'b'] } },
+        { dest: s('f-2'), expr: { or: ['a', 'optout'] } },
+        { dest: s('f-3'), expr: 'optout' },
+      ],
+      keep: 1,
+    });
+    expect(failure(run.outputs[0])).toBeInstanceOf(ValidationError);
+    expect(failure(run.outputs[0]).message).toMatch(
+      /record at key 70, operand "a": the id at position 0 is not inside the key/,
+    );
+    expect(failure(run.outputs[1])).toBeInstanceOf(ValidationError);
+    published(run.outputs[2]);
+    expect(await w.store.exists({ segment: 'f-1' })).toBe(false);
+    expect(await w.store.exists({ segment: 'f-2' })).toBe(false);
+    expect(run.stats.requests.publishes).toBe(1);
+  });
+
+  it('is refused for every fed output once the ledger passes the budget, as a BudgetExceededError', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const pulled = { taken: 0, returnedEarly: false, finished: false };
+    const run = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: { ...feedFor(FED), records: feedOf(recordsOf(FED), pulled) },
+      maxBufferedBytes: 50_000,
+      outputs: [
+        { dest: s('f-1'), expr: { or: ['a', 'b', 'c'] } },
+        { dest: s('f-3'), expr: 'optout' },
+      ],
+      keep: 1,
+    });
+    expect(failure(run.outputs[0])).toBeInstanceOf(BudgetExceededError);
+    expect(pulled.returnedEarly).toBe(true);
+    expect(run.stats.memory.highWaterBytes).toBeLessThanOrEqual(50_000);
+  });
+});
+
+describe('an erasure in the store while a fed call runs', () => {
+  const erased = (o: unknown): StaleOperandError => {
+    const e = failure(o);
+    expect(isStaleOperandError(e)).toBe(true);
+    expect((e as StaleOperandError).reason).toBe('erased');
+    return e as StaleOperandError;
+  };
+
+  it('refuses every fed output when eraseSubject runs between two records, and publishes none', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const records = recordsOf(FED);
+    const run = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: {
+        ...feedFor(FED),
+        records: feedOf(records, undefined, async (i) => {
+          if (i === 2) await w.store.eraseSubject(4_000_000, { allNamespaces: true });
+        }),
+      },
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [
+        { dest: s('f-1'), expr: 'a' },
+        { dest: s('f-2'), expr: { and: ['a', 'b'] } },
+        { dest: s('f-3'), expr: 'optout' },
+      ],
+      keep: 1,
+    });
+    expect(erased(run.outputs[0]).operand).toBe('a');
+    erased(run.outputs[1]);
+    published(run.outputs[2]);
+    expect(await w.store.exists({ segment: 'f-1' })).toBe(false);
+  });
+
+  it('refuses a fed output not yet published when one lands during a publish, and keeps those that began', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    // A destination that holds a generation is published by a compare-and-swap, which the hook can see.
+    await w.load('f-1', [1]);
+    w.hooks.beforeCas = async (seg) => {
+      if (seg === 'f-1') {
+        w.hooks.beforeCas = undefined;
+        await w.store.eraseSubject(4_000_000, { allNamespaces: true });
+      }
+    };
+    const run = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: feedFor(FED),
+      maxBufferedBytes: 64 * 1024 * 1024,
+      publishConcurrency: 1,
+      outputs: [
+        { dest: s('f-1'), expr: 'a' },
+        { dest: s('f-2'), expr: 'b' },
+        { dest: s('f-3'), expr: 'optout' },
+      ],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+    expect(erased(run.outputs[1]).operand).toBe('b');
+    published(run.outputs[2]);
+    expect(await w.store.exists({ segment: 'f-2' })).toBe(false);
+  });
+
+  it('is not moved by an erasure in another store, which no counter can see', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const run = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: {
+        ...feedFor(FED),
+        records: feedOf(recordsOf(FED), undefined, async (i) => {
+          if (i === 1) await w.other.eraseSubject(4_000_000, { allNamespaces: true });
+        }),
+      },
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [{ dest: s('f-1'), expr: 'a' }],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+  });
+
+  it('does not read the counter for a call with no feed, and moves it for eraseSubject alone', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const probe = w.store as unknown as { epochNow(): number; erasureEpoch: number };
+    const spy = vi.spyOn(probe, 'epochNow');
+    published(
+      (
+        await w.store.materializeMany({
+          operands: { optout: s('optout') },
+          outputs: [{ dest: s('d-stored'), expr: 'optout' }],
+          keep: 1,
+        })
+      ).outputs[0],
+    );
+    expect(spy).not.toHaveBeenCalled();
+    await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      feed: feedFor(FED),
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [{ dest: s('d-fed'), expr: 'a' }],
+      keep: 1,
+    });
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+
+    const before = probe.erasureEpoch;
+    await w.store.eraseSubject(1, { allNamespaces: true });
+    expect(probe.erasureEpoch).toBe(before + 2);
+    // An erasure that is refused for its options still counts as having run.
+    await expect(w.store.eraseSubject(-1, { allNamespaces: true })).rejects.toThrow();
+    expect(probe.erasureEpoch).toBe(before + 4);
+    // The verbs that do not remove a subject's ids from caller data leave it where it was.
+    const mid = probe.erasureEpoch;
+    await w.load('optout', [1, 2, 3]);
+    await w.store.rollback({ segment: 'optout' }, 0);
+    await w.store.retireExpired({ namespace: 'x' });
+    await w.store.dropSegment({ segment: 'optout' }, { confirmSegment: 'optout' });
+    expect(probe.erasureEpoch).toBe(mid);
+  });
+});
