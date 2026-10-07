@@ -72,10 +72,9 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | The tombstone reaper — `store.reapRegistryTombstones` removes the `deleted: true` rows a release before 0.12 left in an object-store registry | **shipped** — admin call, `dryRun` first, each delete fenced on the version read, refused with `CapabilityError` where `conditionalDelete` is off; it cannot remove the `destroyed` tombstones `dropSegment` leaves, or one written while `conditionalDelete` was off, so it does not clean a bucket completely; see the [guide](guide/retention.md#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones) |
 | Deferred past `0.18.3` | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
-| A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite is rehearsed on MinIO and has not run against a real object store |
+| A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
 
-**What is next:** the large-suite run (combines on operands of a million to ten million ids, the `*Into` verbs
-included) against a real store, a Lambda run, other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
+**What is next:** the batch stage (a refresh-shaped `materializeMany` measured on S3), a Lambda run, other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -304,8 +303,8 @@ between here and there:
    runs ignore the precondition, so CI cannot show it. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput and `intersect` latency are measured in-region (the
    run above, with a sweep to 2,000 shared chunks). `*Into` latency and combines on operands of a million to ten million ids
-   are measured by the harness's [large suite](../bench/README.md#the-large-suite) (`node bench/calibrate-aws.cjs --suite large`),
-   which has been rehearsed on MinIO and has not yet run against a real object store; `intersect` over more than two
+   are measured on S3 by the harness's [large suite](../bench/README.md#the-large-suite) (`node bench/calibrate-aws.cjs --suite large`),
+   run `2026-10-07-88cd3`; `materializeMany` on S3, `intersect` over more than two
    operands and other overlaps are not measured.
    `iterate`'s request count is expected from the engine, not measured: the harness does not time it.
    **The RSS soak is measured:** `pnpm rss-gate` records its run, and
