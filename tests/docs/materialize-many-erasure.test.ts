@@ -3,8 +3,8 @@ import { join } from 'node:path';
 
 /**
  * The privacy notes and the erasure guide say, in one shape, what an erasure that runs during a `materializeMany`
- * call does and does not reach. The statement is a compliance one, read by an auditor in PRIVACY.md and followed by an
- * operator in the guide, and the three copies are written apart, so the gate holds each to the same two sentences.
+ * call does and does not reach, and what a call with a feed does under one. The statement is a compliance one, read by an auditor in PRIVACY.md and followed by an
+ * operator in the guide, and the three copies are written apart, so the gate holds each to the same sentences.
  *
  * KNOWN LIMIT. It reads the sentences, not the paragraphs around them: a surrounding sentence that contradicts them
  * in words is for the review of a change to this promise.
@@ -16,6 +16,8 @@ export const SENTENCES = [
   "An output of a `materializeMany` call can carry an id that was erased while the call ran, for as long as the call ran: the call reads each operand at the generation it pinned, and an output's publish is a load, so an erasure that lands after the chunks were read does not reach what the call holds, unless the output subtracts a pinned operand that the erasure rewrote, which the call re-reads just before the publishes and refuses.",
   "An erasure that rewrites a destination before that output's publish starts does not stop the publish, which writes on top of the erasure's generation; an erasure that lands inside the publish's own write, between its pointer read and its pointer write, makes the publish lose with `WriteConflictError`; after any call that overlapped an erasure, re-run `eraseSubject` and keep both ledgers.",
   '`eraseSubject` deletes the generation it rewrites even when a call holds it pinned, so a pin does not outlive an erasure, and an output that still needs a deleted operand generation fails with `NotFoundError`.',
+  'A `materializeMany` call with a feed is refused at its next record, and before each fed output is published, once `eraseSubject` has started in this store: nothing is published from operands the call read before the erasure returned, and the one record in hand when the erasure lands is processed and discarded.',
+  'An erasure in another store or another process is not seen by such a call, and is bounded by nothing.',
 ];
 
 /** How many times `sentence` occurs in `text`, with its line breaks undone. */
@@ -24,7 +26,7 @@ export function occurrences(text: string, sentence: string): number {
 }
 
 describe('what an erasure during a batch reaches', () => {
-  it.each(DOCS)('%s states both sentences once', (rel) => {
+  it.each(DOCS)('%s states every sentence once', (rel) => {
     const text = readFileSync(join(ROOT, rel), 'utf8');
     for (const sentence of SENTENCES) {
       expect(occurrences(text, sentence), `${rel}: ${sentence.slice(0, 50)}`).toBe(1);

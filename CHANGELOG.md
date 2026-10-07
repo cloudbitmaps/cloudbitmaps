@@ -38,6 +38,25 @@ so, and so do the module headers in the code.
   `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
   `@cloudbitmaps/roaring`, and `compileCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
   Nothing existing changes. [Guide](docs/guide/loading.md#many-outputs-from-one-pass-materializemany).
+- **`store.materializeMany` takes a feed: operands that arrive as records in chunk-key order, for conditions too many to hold or store.**
+  `feed: { names, records, counts }` declares the fed operand names, an `AsyncIterable` of `{ key, operands: Record<string,
+  Uint32Array> }` and the ids each name holds (an object, or a function called once after the last record), and an output names a fed operand as it names a stored
+  one; the two mix in one call and one pass, and the outputs are byte for byte what the same operands stored would publish. A key may arrive as several records and each name at most once per key;
+  every record is checked before the pass sees it (key in range and not below the last, every name declared, every value a real
+  `Uint32Array` read through the typed array's own accessors, ids strictly ascending and inside the key), and a bad feed is
+  refused, never read as fewer members, with a `ValidationError` that names the key and the operand and no id. Fed outputs are
+  atomic: they publish only after the whole feed was read and the end-of-feed checks passed (`counts` equal to the ids seen, which
+  catches a feed that ended early or skipped a key; a declared name that appeared in no record refused unless it is in
+  `mayBeEmpty`), so a bad feed, a throwing iterator, a budget overrun or an erasure refuses every fed output and publishes none
+  of them, while outputs that name only stored operands are unaffected. A feed is read once, so the call runs as one group and
+  `maxBufferedBytes` is required with it; each record is converted to compressed bitmaps as it arrives and the call fails as soon
+  as the ledger passes the budget. Counted with 10,000 fed operands of 800 ids a key (32 MB a key as `Uint32Array`s): a ledger high
+  water of 62 MB over five keys, process growth of 216 MB at its peak, 9 ns an id for check, conversion and evaluation together
+  (measured on a loaded machine). A call with a feed records the store's erasure counter, which `eraseSubject` moves at its start and
+  its end, and is refused with `StaleOperandError` (`reason: 'erased'`, new) at its next record and before each fed publish once it
+  moved; a call with no feed never reads it. New types `MaterializeManyFeed` and `MaterializeManyFeedRecord`, and `CombineManyFeed`
+  and `CombineManyFeedRecord` from `@cloudbitmaps/core`. Nothing existing changes except that `eraseSubject` moves the counter.
+  [Guide](docs/guide/loading.md#operands-that-arrive-as-records-a-feed).
 - **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on
   operands of about a million, five million and ten million ids, which the default suite's layout refuses: two operand
   segments a size, about 1,500 chunks each with 20 % shared. Its stages load the six operands through `store.load()`,
