@@ -76,7 +76,7 @@ export type { PinnedAt } from './core/pinned-storage-source';
 export { loadSegment, loadSegmentChunks } from './core/load';
 // A batch combine: many outputs, each an expression over named stored operands, computed in one chunk-ordered pass.
 // The store's `materializeMany` runs it; the free functions are for a flavor or driver author.
-export { compileCombineMany, runCombineMany } from './core/combine-many';
+export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/combine-many';
 export type {
   CombineExpr,
   CombineManyDeps,

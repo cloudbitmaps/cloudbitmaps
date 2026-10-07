@@ -558,7 +558,11 @@ describe('store.materializeMany', () => {
         await w.backend.registry.get({ segment: 'b' }).then((r) => r!.currentGen),
       );
       expect(gen('b').moved).toBe(true);
-      expect(gen('unused')).toMatchObject({ read: false, endGeneration: 0, moved: false });
+      expect(gen('unused')).toMatchObject({
+        read: false,
+        endGeneration: 0,
+        moved: pin ? false : undefined,
+      });
       if (pin) expect(gen('b')).toMatchObject({ pinnedGeneration: expect.any(Number) });
       else expect(gen('b').pinnedGeneration).toBeUndefined();
       expect(gen('a').startGeneration).toBe(0);
@@ -582,11 +586,16 @@ describe('store.materializeMany', () => {
     const { requests } = run.stats;
     expect(requests.rangeReads).toBe(w.calls.ranges);
     // the totals count what the call can prove; the opening reads and what a publish reads are not in them
-    expect(requests.get).toBeLessThanOrEqual(w.calls.ranges + w.calls.tails + w.calls.rowReads);
-    expect(requests.put).toBeLessThanOrEqual(w.calls.puts + w.calls.rowWrites);
-    expect(requests.put).toBe(2 + 2 + 1);
-    expect(requests.get).toBe(requests.rangeReads + requests.registryReads);
-    expect(requests.get).toBeGreaterThan(requests.rangeReads);
+    expect(requests.attributed.get).toBeLessThanOrEqual(
+      w.calls.ranges + w.calls.tails + w.calls.rowReads,
+    );
+    expect(requests.attributed.put).toBeLessThanOrEqual(w.calls.puts + w.calls.rowWrites);
+    expect(requests.attributed.put).toBe(2 + 2 + 1);
+    expect(requests.attributed.get).toBe(requests.rangeReads + requests.registryReads);
+    expect(requests.attributed.get).toBeGreaterThan(requests.rangeReads);
+    // three operands were opened, and each output was handed to a publish
+    expect(requests.opens).toBe(3);
+    expect(requests.publishes).toBe(3);
   });
 
   describe('the defaults', () => {
@@ -672,5 +681,93 @@ describe('store.materializeMany', () => {
       ValidationError,
     );
     published((await w.store.materializeMany(options({ allowAbsentOperands: true }))).outputs[0]);
+  });
+
+  it('refuses the outputs that subtract a generation number taken again by other bytes in the same row', async () => {
+    const w = await batchWorld({ ...DATA, optout: [5] });
+    await w.load('optout', [5, 7]);
+    const s = (n: string) => w.store.segment(n);
+    let passed = false;
+    w.hooks.beforeRange = () => {
+      passed = true;
+    };
+    w.hooks.beforeRowRead = async (segment) => {
+      if (!passed || segment !== 'optout') return;
+      w.hooks.beforeRowRead = undefined;
+      const ref = { segment: 'optout' };
+      // an operator rolls back, the leftover object is deleted, and a load takes the number again, in one row
+      await w.other.rollback(ref, 0);
+      await w.backend.storage.delete({ ...ref, generation: 1 });
+      await w.load('optout', [6], w.other);
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), optout: s('optout') },
+      outputs: [
+        { dest: s('d1'), expr: 'a', exclude: ['optout'] },
+        { dest: s('d2'), expr: 'a' },
+      ],
+      keep: 1,
+    });
+    expect((run.outputs[0] as { error: Error }).error).toBeInstanceOf(StaleOperandError);
+    published(run.outputs[1]);
+    expect(run.stats.operands.optout).toMatchObject({
+      pinnedGeneration: 1,
+      endGeneration: 1,
+      moved: true,
+    });
+  });
+
+  it('does not take a retention write or a lease on a subtracted operand for a replacement', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    let passed = false;
+    w.hooks.beforeRange = () => {
+      passed = true;
+    };
+    w.hooks.beforeRowRead = async (segment) => {
+      if (!passed || segment !== 'optout') return;
+      w.hooks.beforeRowRead = undefined;
+      await w.other.setRetention({ segment: 'optout' }, { expiresAt: Date.now() + 10 ** 10 });
+      await s('optout').pin({ leaseUntil: Date.now() + 60_000 });
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), optout: s('optout') },
+      outputs: [{ dest: s('d1'), expr: 'a', exclude: ['optout'] }],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+    expect(run.stats.operands.optout).toMatchObject({ moved: false });
+  });
+
+  it('reports a live operand purged and reloaded to the same generation number as moved, and one never opened as unknown', async () => {
+    const w = await batchWorld(DATA);
+    await w.load('b', [1, 2]);
+    const s = (n: string) => w.store.segment(n);
+    let passed = false;
+    w.hooks.beforeRange = () => {
+      passed = true;
+    };
+    w.hooks.beforeRowRead = async (segment) => {
+      if (!passed || segment !== 'b') return;
+      w.hooks.beforeRowRead = undefined;
+      const ref = { segment: 'b' };
+      await w.backend.registry.delete(ref);
+      for (const generation of [0, 1]) await w.backend.storage.delete({ ...ref, generation });
+      await w.load('b', [9], w.other);
+      await w.load('b', [8], w.other);
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b'), unused: s('c') },
+      outputs: [{ dest: s('d1'), expr: { or: ['a', 'b'] } }],
+      keep: 1,
+      pin: false,
+    });
+    expect(run.stats.operands.b).toMatchObject({
+      startGeneration: 1,
+      endGeneration: 1,
+      moved: true,
+    });
+    expect(run.stats.operands.a).toMatchObject({ moved: false });
+    expect(run.stats.operands.unused!.moved).toBeUndefined();
   });
 });

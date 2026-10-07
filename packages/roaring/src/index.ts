@@ -54,6 +54,7 @@ import {
   loadSegment,
   loadSegmentChunks,
   compileCombineMany,
+  rebindCombineMany,
   runCombineMany,
   mapWithConcurrency,
   resolveBudget,
@@ -1336,8 +1337,13 @@ export class CloudRoaring {
           ...(guarded ? { check: () => this.assertReadable('materializeMany', handle) } : {}),
           ...(pinnedAt === undefined
             ? {}
-            : { pinnedGeneration: pinnedAt.generation, pinnedVersion: pinnedAt.version }),
-          current: () => this.currentRowOf(view.ref),
+            : {
+                pinnedGeneration: pinnedAt.generation,
+                pinnedVersion: pinnedAt.version,
+                pinnedFingerprint: pinnedAt.fingerprint ?? null,
+              }),
+          current: (read?: { readonly fingerprint?: boolean }) =>
+            this.currentRowOf(view.ref, read?.fingerprint === true),
         };
       });
     const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
@@ -1376,7 +1382,7 @@ export class CloudRoaring {
       ...(budget === undefined ? {} : { budget }),
       ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
     });
-    compileCombineMany(request(new Map()));
+    const compiled = compileCombineMany(request(new Map()));
     // An expired or released handle anywhere is refused before any request, as the `*Into` verbs refuse one.
     for (const { dest } of outputs) this.assertWritable('materializeMany', dest);
     for (const handle of handles.values()) this.assertReadable('materializeMany', handle);
@@ -1429,7 +1435,7 @@ export class CloudRoaring {
       this.retryOptions === undefined
         ? pinnedSource
         : new RetryingStorageChunkSource(pinnedSource, this.retryOptions);
-    const final = compileCombineMany(request(pins));
+    const final = rebindCombineMany(compiled, operandSpecs(pins));
     const run = await runCombineMany(final, { source, codec: roaringCodec, clock: this.clock });
     return {
       outputs: run.outputs.map((o) =>
@@ -1444,11 +1450,29 @@ export class CloudRoaring {
     };
   }
 
-  /** The registry row of `ref`, read straight from the registry, not from a snapshot: a re-check must see a move. */
+  /**
+   * The registry row of `ref`, read straight from the registry, not from a snapshot: a re-check must see a move. With
+   * `fingerprint`, the current generation's object is opened too (one tail read, as a pin of it makes), and its
+   * fingerprint is returned beside the row: a generation's number is identified by its row and its object, since a number
+   * can be taken again once its object is gone.
+   */
   private async currentRowOf(
     ref: SegmentRef,
-  ): Promise<{ generation: number | null; token: string } | null> {
+    fingerprint: boolean,
+  ): Promise<{ generation: number | null; token: string; fingerprint?: string | null } | null> {
     const registry = this.requireRegistry('materializeMany');
+    if (fingerprint && this.crbmSource !== undefined) {
+      const crbm = this.crbmSource;
+      const at = await this.withRetries(() => crbm.pinGeneration(ref));
+      const colon = at?.version.indexOf(':') ?? -1;
+      if (at !== null && colon >= 0) {
+        return {
+          generation: at.generation,
+          token: at.version.slice(colon + 1),
+          fingerprint: at.fingerprint,
+        };
+      }
+    }
     const row = await this.withRetries(() => registry.get(ref));
     return row === null ? null : { generation: row.currentGen, token: row.token };
   }

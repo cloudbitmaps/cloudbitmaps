@@ -80,13 +80,16 @@ export interface CombineManyOperand {
    * generation 0, from the one that was pinned.
    */
   readonly pinnedVersion?: string | null;
+  /** The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken again. */
+  readonly pinnedFingerprint?: string | null;
   /**
    * A fresh read of the segment's registry row: its current generation and token, or `null` when it has no row. Read
    * for every subtracted pinned operand just before the publishes, and once more at the end of the call for the rest.
    */
-  readonly current?: () => Promise<{
+  readonly current?: (options?: { readonly fingerprint?: boolean }) => Promise<{
     readonly generation: number | null;
     readonly token: string;
+    readonly fingerprint?: string | null;
   } | null>;
 }
 
@@ -167,8 +170,10 @@ export interface CombineManyOperandStats {
   readonly endGeneration: number | null | undefined;
   /**
    * Whether the operand was replaced while the call ran: for a pinned operand, its pin no longer names what the
-   * registry holds (another generation, or the name deleted and created again); for one read live, its generation or
-   * incarnation changed from where the call began. `undefined` where `endGeneration` is.
+   * registry holds (another generation, the name deleted and created again, or the generation's number taken again by
+   * other bytes, which an operand an output subtracts is compared for by the object's fingerprint); for one read live, its
+   * generation or its incarnation changed from where the call began. `undefined` where `endGeneration` is, and for a live
+   * operand the call never opened, whose start is unknown.
    */
   readonly moved: boolean | undefined;
   /** Chunk keys in its index, inside the range. */
@@ -201,20 +206,24 @@ export interface CombineManyStats {
     readonly chunkReads: number;
     /** Registry reads of the call itself: the re-checks, the end-of-call reads and the existence checks. */
     readonly registryReads: number;
-    /** Outputs handed to a publish. */
+    /**
+     * Operands whose index the call opened. An open is one tail read of the operand's object plus at most one registry
+     * row read, made by the store's readers, which a pin taken before the call may already have made.
+     */
+    readonly opens: number;
+    /**
+     * Outputs handed to a publish. A publish is one object write and one pointer write where it succeeds, plus the row and
+     * tail reads the load makes for its guard, which the call does not see.
+     */
     readonly publishes: number;
     /**
-     * GET-class requests the call can attribute: range reads, registry reads, and what a settled publish's result
-     * proves. The tail and row reads that open an operand, and the reads inside a publish, are made by the store's
-     * readers and the load and are not here.
+     * The requests the call itself issues or can prove, a lower bound on what the drivers saw: `get` is range reads and
+     * registry reads, `put` the object write and pointer write of each published output and the object write of each
+     * refused one. Add `opens` tail reads (and at most as many row reads) and the load's reads for each publish to
+     * reconstruct the total. Unknown to the call: a multipart upload's extra requests, a listing, and what a publish
+     * that threw sent.
      */
-    readonly get: number;
-    /**
-     * PUT-class requests the call can attribute: from each settled publish's result, the object write and the pointer
-     * write of a published output and the object write of a refused one. A multipart upload's extra requests, a
-     * listing, and the writes of a publish that threw are made inside the load and are not here.
-     */
-    readonly put: number;
+    readonly attributed: { readonly get: number; readonly put: number };
   };
   readonly budget: {
     /** The limit used: `null` when lifted. */
@@ -251,6 +260,8 @@ interface CompiledOutput {
   /** Every operand under a subtracted position: a child of an `andNot` after the first, at any depth. */
   readonly subtracted: readonly number[];
   readonly depth: number;
+  /** Nodes in its expression, operators and names. */
+  readonly nodes: number;
   readonly write: CombineManyWrite;
 }
 
@@ -261,6 +272,9 @@ const COMPILED = new WeakMap<object, readonly CompiledOutput[]>();
 export interface CompiledCombineMany<R> {
   readonly request: CombineManyRequest<R>;
 }
+
+/** The most nodes the expressions of one call may hold in all, so that a thousand large outputs cannot be planned at once. */
+export const MAX_CALL_NODES = 200_000;
 
 /** Every operand under a child of an `andNot` after the first, at any depth. */
 function subtractedOperands(node: ExprNode, under: boolean, into: Set<number>): void {
@@ -316,6 +330,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   }
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
+  let totalNodes = 0;
   const compiled = outputs.map((output, i): CompiledOutput => {
     const where = `outputs[${i}]`;
     const budget = { remaining: MAX_EXPR_NODES };
@@ -332,6 +347,13 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     }
     const node: ExprNode =
       exclude.length === 0 ? root : { kind: 'andNot', kids: [root, ...exclude] };
+    const nodes = MAX_EXPR_NODES - budget.remaining + (exclude.length === 0 ? 0 : 1);
+    totalNodes += nodes;
+    if (totalNodes > MAX_CALL_NODES) {
+      throw new ValidationError(
+        `${where}: the expressions of the call hold more than ${MAX_CALL_NODES} nodes in all; split the outputs across calls`,
+      );
+    }
     const keep =
       output.keep === undefined ? request.keep : checkedKeep(output.keep, `${where}.keep`);
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
@@ -363,6 +385,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
       operands: operandsOf(node),
       subtracted: subtractedList(node),
       depth: depthOf(node),
+      nodes,
       write: {
         keep,
         ...(output.allowEmpty === undefined ? {} : { allowEmpty: output.allowEmpty }),
@@ -373,6 +396,30 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   });
   const result: CompiledCombineMany<R> = { request };
   COMPILED.set(result, compiled);
+  return result;
+}
+
+/**
+ * `compiled` with its operands replaced, the same names in the same order: what a flavor does once it has pinned them,
+ * without checking the expressions again.
+ */
+export function rebindCombineMany<R>(
+  compiled: CompiledCombineMany<R>,
+  operands: readonly CombineManyOperand[],
+): CompiledCombineMany<R> {
+  const outputs = COMPILED.get(compiled);
+  const before = compiled.request.operands;
+  if (
+    outputs === undefined ||
+    operands.length !== before.length ||
+    operands.some((op, i) => op.name !== before[i]!.name)
+  ) {
+    throw new ValidationError(
+      'rebindCombineMany takes the operands compileCombineMany was given, by name and order',
+    );
+  }
+  const result: CompiledCombineMany<R> = { request: { ...compiled.request, operands } };
+  COMPILED.set(result, outputs);
   return result;
 }
 
@@ -461,6 +508,13 @@ class Gate {
   }
 }
 
+/** What a read of an operand's registry row found. */
+interface EndRow {
+  readonly generation: number | null;
+  readonly token: string;
+  readonly fingerprint?: string | null;
+}
+
 interface OperandState {
   readonly index: number;
   readonly spec: CombineManyOperand;
@@ -472,7 +526,9 @@ interface OperandState {
   startGeneration: number | null | undefined;
   endGeneration: number | null | undefined;
   /** The row the last read at the end of the call, or before a publish, found: `undefined` when none was read. */
-  endRow: { readonly generation: number | null; readonly token: string } | null | undefined;
+  endRow: EndRow | null | undefined;
+  /** For an operand read live, the version (generation and row token) its index was read under, where the source says. */
+  startVersion: string | null | undefined;
   indexKeys: number;
   chunkReads: number;
   read: boolean;
@@ -505,16 +561,94 @@ interface OutputState<R> {
   solo: boolean;
 }
 
-interface GroupPlan {
+/** What planning keeps of a group: the outputs, and how many chunk reads it makes and skips. */
+interface GroupSummary {
   readonly outputs: readonly number[];
-  /** For each output and each operand it reads, the chunk keys its expression demands of the operand. */
-  readonly demand: ReadonlyMap<number, ReadonlyMap<number, Uint16Array>>;
-  readonly fetch: ReadonlyMap<number, readonly number[]>;
-  readonly keys: readonly number[];
   readonly reads: number;
   readonly pruned: number;
-  readonly fixedBytes: number;
 }
+
+/** A group's plan as the pass runs it, built when the group starts and dropped when it ends. */
+interface GroupPlan extends GroupSummary {
+  /** For each output and each operand it reads, the chunk keys its expression demands of the operand. */
+  readonly demand: ReadonlyMap<number, ReadonlyMap<number, Uint16Array>>;
+  readonly fetch: ReadonlyMap<number, Uint16Array>;
+  readonly keys: Uint16Array;
+  /** Resident bytes the operand streams hold for the whole pass. */
+  readonly fixedBytes: number;
+  /** Bytes the plan's own key lists occupy. */
+  readonly planBytes: number;
+}
+
+/** What one output's plan state costs beyond its keys: its compiled tree, per node, and its bookkeeping. */
+const BYTES_PER_NODE = 96;
+const BYTES_PER_OUTPUT = 256;
+
+/**
+ * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
+ * operands, not to the group's size: its buffered outputs, its operand streams, the chunks being evaluated, the objects
+ * being published beside the buffers, and the key lists of its own plan.
+ */
+class GroupCost {
+  private outputs = 0;
+  private depth = 0;
+  private largest = 0;
+  private count = 0;
+  private streams = 0;
+  private planWork = 0;
+  private readonly operands = new Set<number>();
+
+  constructor(
+    private readonly streamBytes: (operand: number) => number,
+    private readonly publishConcurrency: number,
+  ) {}
+
+  /** The cost of the group with `o` added. */
+  with<R>(o: OutputState<R>): number {
+    let streams = this.streams;
+    let operands = this.operands.size;
+    for (const i of o.compiled.operands) {
+      if (!this.operands.has(i)) {
+        streams += this.streamBytes(i);
+        operands++;
+      }
+    }
+    const depth = Math.max(this.depth, o.compiled.depth);
+    const largest = Math.max(this.largest, o.serializedBound);
+    const publishing = Math.min(this.publishConcurrency, this.count + 1) * largest;
+    return (
+      this.outputs +
+      o.bound +
+      streams +
+      (operands + depth + 2) * WORKING_CHUNK +
+      publishing +
+      this.planWork +
+      planWorkOf(o)
+    );
+  }
+
+  add<R>(o: OutputState<R>): void {
+    for (const i of o.compiled.operands) {
+      if (!this.operands.has(i)) {
+        this.operands.add(i);
+        this.streams += this.streamBytes(i);
+      }
+    }
+    this.outputs += o.bound;
+    this.depth = Math.max(this.depth, o.compiled.depth);
+    this.largest = Math.max(this.largest, o.serializedBound);
+    this.count++;
+    this.planWork += planWorkOf(o);
+  }
+
+  get size(): number {
+    return this.count;
+  }
+}
+
+/** The most key lists a group's plan holds for one output: its root keys, and one demand list for each operand it reads. */
+const planWorkOf = <R>(o: OutputState<R>): number =>
+  o.rootKeys.byteLength * (1 + o.compiled.operands.length);
 
 /** A bitmap held while an output is evaluated at one key: borrowed from the operand chunks, or owned and charged. */
 interface Held {
@@ -561,6 +695,8 @@ class Run<R> {
   private chunkReads = 0;
   private registryReads = 0;
   private publishes = 0;
+  private opens = 0;
+  private planCharge = 0;
   private attributedGet = 0;
   private attributedPut = 0;
   private planned = 0;
@@ -587,6 +723,7 @@ class Run<R> {
       startGeneration: undefined,
       endGeneration: undefined,
       endRow: undefined,
+      startVersion: undefined,
       indexKeys: 0,
       chunkReads: 0,
       read: false,
@@ -618,7 +755,7 @@ class Run<R> {
     this.planOutputs();
     const groups = this.formGroups(this.outputs.filter((o) => o.status === 'waiting'));
     this.settleBudget(groups);
-    for (const group of groups) await this.runGroup(group);
+    for (const group of groups) await this.runGroup(group.outputs);
     // Outputs a lying index made too big for their group run alone, one group each, until none is left.
     for (;;) {
       const deferred = this.outputs.filter((o) => o.status === 'deferred');
@@ -626,7 +763,7 @@ class Run<R> {
       for (const output of deferred) {
         output.status = 'waiting';
         output.solo = true;
-        await this.runGroup(this.buildGroup([output]));
+        await this.runGroup([output.index]);
       }
     }
     await this.readEnds();
@@ -659,8 +796,12 @@ class Run<R> {
           card[i] = given ?? 0x1_0000;
           serialized += serializedBound(card[i]!);
         }
+        this.opens++;
         const size = (await this.source.sizeOf?.(op.spec.ref))?.sizeBytes;
         op.startGeneration = await this.source.currentGeneration?.(op.spec.ref);
+        if (op.spec.pinnedGeneration === undefined) {
+          op.startVersion = await this.source.currentVersion?.(op.spec.ref);
+        }
         op.bounds = { keys: Uint16Array.from(keys), card };
         op.indexKeys = keys.length;
         // Held at once by its stream: its ranges, never more than its object or than the window it was asked for. The
@@ -707,7 +848,28 @@ class Run<R> {
     return this.operands.map((op) => op.bounds);
   }
 
+  /** Charge plan state that lives for the whole call, refusing a plan that alone passes the budget. */
+  private chargePlan(bytes: number, what: string): void {
+    if (this.ledger.tryCharge(bytes)) {
+      this.planCharge += bytes;
+      return;
+    }
+    throw new BudgetExceededError(
+      `materializeMany: the plan alone (${what}) passes maxBufferedBytes (${this.req.maxBufferedBytes}) with ` +
+        `${this.planCharge} bytes already held for it, before any chunk is read — raise maxBufferedBytes, or split ` +
+        'the outputs across calls',
+    );
+  }
+
   private planOutputs(): void {
+    for (const op of this.operands) {
+      if (op.read && op.error === undefined) {
+        this.chargePlan(
+          op.bounds.keys.byteLength + op.bounds.card.byteLength,
+          'the operand indexes',
+        );
+      }
+    }
     const bounds = this.boundsList();
     for (const o of this.outputs) {
       const failed = o.compiled.operands.map((i) => this.operands[i]!).find((op) => op.error);
@@ -721,6 +883,10 @@ class Run<R> {
       }
       const root = planKeys(o.compiled.node, bounds);
       o.rootKeys = root.keys;
+      this.chargePlan(
+        root.keys.byteLength + o.compiled.nodes * BYTES_PER_NODE + BYTES_PER_OUTPUT,
+        `${o.index + 1} outputs planned`,
+      );
       let resident = 0;
       let serialized = 0;
       for (let i = 0; i < root.keys.length; i++) {
@@ -733,48 +899,42 @@ class Run<R> {
     }
   }
 
-  /** What a group of outputs needs resident, from the index: outputs, operand streams, per-key work, publishes. */
-  private groupCost(members: readonly OutputState<R>[]): number {
-    const operands = new Set<number>();
-    let outputs = 0;
-    let depth = 0;
-    let largest = 0;
-    for (const o of members) {
-      outputs += o.bound;
-      depth = Math.max(depth, o.compiled.depth);
-      largest = Math.max(largest, o.serializedBound);
-      for (const i of o.compiled.operands) operands.add(i);
-    }
-    let streams = 0;
-    for (const i of operands) streams += this.operands[i]!.bytes;
-    const work = (operands.size + depth + 2) * WORKING_CHUNK;
-    const publishing = Math.min(this.req.publishConcurrency, members.length) * largest;
-    return outputs + streams + work + publishing;
+  /** The bytes a group may take: the budget less what the plan holds. */
+  private get room(): number {
+    return this.req.maxBufferedBytes - this.planCharge;
   }
 
   /** Outputs in call order, a group at a time while the ledger has room for the next. */
-  private formGroups(waiting: readonly OutputState<R>[]): GroupPlan[] {
-    const groups: GroupPlan[] = [];
+  private formGroups(waiting: readonly OutputState<R>[]): GroupSummary[] {
+    const groups: GroupSummary[] = [];
+    const fresh = (): GroupCost =>
+      new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency);
+    let cost = fresh();
     let current: Array<OutputState<R>> = [];
     const flush = (): void => {
-      if (current.length > 0) groups.push(this.buildGroup(current));
+      if (current.length > 0) {
+        const { reads, pruned } = this.buildGroup(current);
+        groups.push({ outputs: current.map((o) => o.index), reads, pruned });
+      }
       current = [];
+      cost = fresh();
     };
     for (const o of waiting) {
-      const alone = this.groupCost([o]);
-      if (alone > this.req.maxBufferedBytes) {
+      const alone = fresh().with(o);
+      if (alone > this.room) {
         this.fail(
           o,
           new BudgetExceededError(
-            `materializeMany: output ${o.index} needs about ${alone} bytes resident with its operands, over ` +
-              `maxBufferedBytes (${this.req.maxBufferedBytes}) — raise maxBufferedBytes to at least ${alone}`,
+            `materializeMany: output ${o.index} needs about ${alone} bytes resident with its operands, and the plan holds ` +
+              `${this.planCharge}, over maxBufferedBytes (${this.req.maxBufferedBytes}) — raise maxBufferedBytes to at least ` +
+              `${alone + this.planCharge}`,
           ),
         );
         continue;
       }
-      if (current.length > 0 && this.groupCost([...current, o]) > this.req.maxBufferedBytes)
-        flush();
+      if (cost.size > 0 && cost.with(o) > this.room) flush();
       current.push(o);
+      cost.add(o);
     }
     flush();
     return groups;
@@ -786,6 +946,7 @@ class Run<R> {
     const bits = new Map<number, KeyBits>();
     const visit = new KeyBits();
     const demand = new Map<number, Map<number, Uint16Array>>();
+    let planBytes = 0;
     for (const o of members) {
       visit.add(o.rootKeys);
       const planned: NodeKeys = new Map();
@@ -799,33 +960,40 @@ class Run<R> {
         if (mine === undefined) own.set(operand, (mine = new KeyBits()));
         mine.add(keys);
       });
-      demand.set(
-        o.index,
-        new Map([...own].map(([operand, set]) => [operand, Uint16Array.from(set.toKeys())])),
-      );
+      const lists = new Map<number, Uint16Array>();
+      for (const [operand, set] of own) {
+        const keys = Uint16Array.from(set.toKeys());
+        lists.set(operand, keys);
+        planBytes += keys.byteLength;
+      }
+      demand.set(o.index, lists);
     }
-    const fetch = new Map<number, number[]>();
+    const fetch = new Map<number, Uint16Array>();
     let reads = 0;
     let pruned = 0;
     let fixed = 0;
     for (const [operand, set] of [...bits.entries()].sort((a, b) => a[0] - b[0])) {
-      fetch.set(operand, set.toKeys());
+      const keys = Uint16Array.from(set.toKeys());
+      fetch.set(operand, keys);
+      planBytes += keys.byteLength;
       reads += set.size;
       pruned += this.operands[operand]!.indexKeys - set.size;
       fixed += this.operands[operand]!.bytes;
     }
+    const visited = Uint16Array.from(visit.toKeys());
     return {
       outputs: members.map((o) => o.index),
       demand,
       fetch,
-      keys: visit.toKeys(),
+      keys: visited,
       reads,
       pruned,
       fixedBytes: fixed,
+      planBytes: planBytes + visited.byteLength,
     };
   }
 
-  private settleBudget(groups: readonly GroupPlan[]): void {
+  private settleBudget(groups: readonly GroupSummary[]): void {
     this.planned = groups.reduce((sum, g) => sum + g.reads, 0);
     const given = this.req.budget;
     if (given === null) {
@@ -862,9 +1030,10 @@ class Run<R> {
 
   // ---- one group --------------------------------------------------------------------------------------------
 
-  private async runGroup(plan: GroupPlan): Promise<void> {
-    const members = plan.outputs.map((i) => this.outputs[i]!).filter((o) => o.status === 'waiting');
+  private async runGroup(indices: readonly number[]): Promise<void> {
+    const members = indices.map((i) => this.outputs[i]!).filter((o) => o.status === 'waiting');
     if (members.length === 0) return;
+    const plan = this.buildGroup(members);
     const group = this.groups++;
     const budget = this.limit;
     if (budget !== null && this.chunkReads + plan.reads > budget) {
@@ -884,7 +1053,7 @@ class Run<R> {
     }
     this.pruned += plan.pruned;
     // The operand streams' ranges are resident for the whole pass; reserved up front, released with the pass.
-    const fixed = plan.fixedBytes;
+    const fixed = plan.fixedBytes + plan.planBytes;
     if (!this.ledger.tryCharge(fixed)) {
       const error = budgetError(this.req.maxBufferedBytes, 'the operand streams');
       for (const o of members) this.fail(o, error);
@@ -929,7 +1098,7 @@ class Run<R> {
     }
     interface Cursor {
       readonly op: OperandState;
-      readonly keys: readonly number[];
+      readonly keys: Uint16Array;
       next: number;
       stream: ChunkStream | undefined;
       /** No more is read of this operand: it failed, or no live output reads it any more. */
@@ -1083,11 +1252,12 @@ class Run<R> {
   /** The operand's chunks at `keys` as a stream: the source's coalesced ranges, or chunk by chunk where it has none. */
   private readKeys(
     ref: SegmentRef,
-    keys: readonly number[],
+    wanted: Uint16Array,
     retry: <T>(request: () => Promise<T>) => Promise<T>,
     onRequest: (r: { readonly bytes: number; readonly ms: number }) => void,
   ): AsyncIterable<ChunkRead> {
     const source = this.source;
+    const keys = Array.from(wanted);
     if (source.getChunks !== undefined) {
       return source.getChunks(ref, keys, { concurrency: this.req.concurrency, retry, onRequest });
     }
@@ -1157,14 +1327,15 @@ class Run<R> {
     await mapWithConcurrency([...toCheck], INDEX_PARALLELISM, async (i) => {
       const op = this.operands[i]!;
       try {
-        const now = await this.readRow(op);
+        const now = await this.readRow(op, true);
         if (!pinnedStillCurrent(op.spec, now)) {
           verdict.set(
             i,
             new StaleOperandError(
               `materializeMany: operand "${op.spec.name}", subtracted by an output, was replaced while the call ran ` +
-                `(pinned at generation ${String(op.spec.pinnedGeneration)}, now ${String(now?.generation ?? null)}), so ` +
-                'its outputs were not published. Run the call again to subtract the current one.',
+                `(pinned at generation ${String(op.spec.pinnedGeneration)}; the registry now holds ` +
+                `${now === null ? 'no row' : `generation ${String(now.generation)}, and its row or its object is not the pinned one`}), ` +
+                'so its outputs were not published. Run the call again to subtract the current one.',
               op.spec.name,
               'moved',
             ),
@@ -1258,11 +1429,9 @@ class Run<R> {
   }
 
   /** A fresh read of the operand's row, remembered as where the operand stood last. */
-  private async readRow(
-    op: OperandState,
-  ): Promise<{ generation: number | null; token: string } | null> {
+  private async readRow(op: OperandState, fingerprint = false): Promise<EndRow | null> {
     this.registryReads++;
-    const row = (await op.spec.current!()) ?? null;
+    const row = (await op.spec.current!({ fingerprint })) ?? null;
     op.endRow = row;
     op.endGeneration = row?.generation ?? null;
     return row;
@@ -1296,7 +1465,7 @@ class Run<R> {
           ? undefined
           : pinned
             ? !pinnedStillCurrent(op.spec, op.endRow)
-            : op.startGeneration !== undefined && op.endGeneration !== op.startGeneration;
+            : liveMoved(op);
       operands[op.spec.name] = {
         read: op.read,
         pinned: op.spec.pinnedGeneration !== undefined,
@@ -1315,9 +1484,12 @@ class Run<R> {
         rangeBytes: this.rangeBytes,
         chunkReads: this.chunkReads,
         registryReads: this.registryReads,
+        opens: this.opens,
         publishes: this.publishes,
-        get: this.rangeReads + this.registryReads + this.attributedGet,
-        put: this.attributedPut,
+        attributed: {
+          get: this.rangeReads + this.registryReads + this.attributedGet,
+          put: this.attributedPut,
+        },
       },
       budget: { maxRequests: this.limit, planned: this.planned, used: this.chunkReads },
       memory: {
@@ -1338,26 +1510,43 @@ class Run<R> {
   }
 }
 
+/** The token of a version (`<generation>:<token>`), or `undefined` where the version names no row. */
+function tokenOfVersion(version: string | null | undefined): string | undefined {
+  if (version == null) return undefined;
+  const colon = version.indexOf(':');
+  return colon < 0 ? undefined : version.slice(colon + 1);
+}
+
+/** Whether two row tokens are one row: the same incarnation where they have one, else the same token. */
+function sameRow(a: string, b: string): boolean {
+  const ia = incarnationOf(a);
+  const ib = incarnationOf(b);
+  return ia !== undefined || ib !== undefined ? ia === ib : a === b;
+}
+
 /**
  * Whether what `spec` was pinned to is still what the registry holds, given the row read now (`null`: no row). The
- * generation number alone is not an identity: a name deleted and created again starts at generation 0. The pin's version
- * carries the row's token, and two tokens of one incarnation are writes of one row (a retention policy or a lease moves the
- * token and not the incarnation), so the incarnations are compared where the tokens have them and the tokens where not.
+ * generation number alone is not an identity: a name deleted and created again starts at generation 0, and a number can be
+ * taken again once its object is gone. So the incarnation of the row is compared (two tokens of one incarnation are writes
+ * of one row: a retention policy or a lease moves the token and not the incarnation), and, where the row read carries
+ * the current object's fingerprint, the object's too.
  */
-function pinnedStillCurrent(
-  spec: CombineManyOperand,
-  now: { readonly generation: number | null; readonly token: string } | null,
-): boolean {
+function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boolean {
   const pinned = spec.pinnedGeneration ?? null;
   if (pinned !== (now?.generation ?? null)) return false;
-  const version = spec.pinnedVersion;
-  if (pinned === null || version == null || now === null) return true;
-  const colon = version.indexOf(':');
-  if (colon < 0) return true;
-  const was = version.slice(colon + 1);
-  const a = incarnationOf(was);
-  const b = incarnationOf(now.token);
-  return a !== undefined || b !== undefined ? a === b : was === now.token;
+  if (pinned === null || now === null) return true;
+  const was = tokenOfVersion(spec.pinnedVersion);
+  if (was !== undefined && !sameRow(was, now.token)) return false;
+  const held = spec.pinnedFingerprint;
+  return held == null || now.fingerprint == null || held === now.fingerprint;
+}
+
+/** Whether an operand read live has changed row or generation since its index was read. */
+function liveMoved(op: OperandState): boolean | undefined {
+  if (op.endRow === undefined || !op.read) return undefined;
+  const was = tokenOfVersion(op.startVersion);
+  if (was !== undefined && op.endRow !== null && !sameRow(was, op.endRow.token)) return true;
+  return op.startGeneration === undefined ? undefined : op.endGeneration !== op.startGeneration;
 }
 
 /** Whether the ascending `keys` hold `key`. */

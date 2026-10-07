@@ -5,7 +5,7 @@
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { compileCombineMany, runCombineMany } from '@/core/combine-many';
+import { compileCombineMany, rebindCombineMany, runCombineMany } from '@/core/combine-many';
 import type { CombineExpr, CombineManyOperand } from '@/core/combine-many';
 import {
   BudgetExceededError,
@@ -168,13 +168,13 @@ describe('request counts', () => {
   it('re-reads an operand once per group, never more than the groups that use it', async () => {
     const sets = { a: ids([1, 2, 3]), b: ids([1, 2, 3]) };
     const specs = Array.from({ length: 40 }, () => ({ expr: { and: ['a', 'b'] } }));
-    const { run: r, setup } = await runBatch(sets, specs, { maxBufferedBytes: 120_000 });
+    const { run: r, setup } = await runBatch(sets, specs, { maxBufferedBytes: 140_000 });
     expect(r.stats.groups).toBeGreaterThan(1);
     for (const name of ['a', 'b']) {
       expect(setup.source.opened.filter((s) => s.segment === name)).toHaveLength(r.stats.groups);
     }
     r.outputs.forEach((o) => expect(ok(o).ids).toEqual(ids([1, 2, 3])));
-    expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(120_000);
+    expect(r.stats.memory.highWaterBytes).toBeLessThanOrEqual(140_000);
   });
 
   it('starts the next group only after the previous group settled its publishes', async () => {
@@ -199,7 +199,7 @@ describe('request counts', () => {
       };
     });
     const r = await runCombineMany(
-      compileCombineMany(request(setup, outputs, { maxBufferedBytes: 120_000 })),
+      compileCombineMany(request(setup, outputs, { maxBufferedBytes: 140_000 })),
       { source: setup.source, codec: roaringCodec, clock },
     );
     expect(r.stats.groups).toBeGreaterThan(1);
@@ -743,11 +743,13 @@ describe('operand names and stats', () => {
       codec: roaringCodec,
       clock,
     });
-    expect(r.stats.requests.put).toBe(6);
-    expect(r.stats.requests.get).toBe(
+    expect(r.stats.requests.attributed.put).toBe(6);
+    expect(r.stats.requests.attributed.get).toBe(
       r.stats.requests.rangeReads + r.stats.requests.registryReads + 3,
     );
     expect(r.stats.requests.rangeReads).toBe(setup.source.opened.length);
+    expect(r.stats.requests.opens).toBe(2);
+    expect(r.stats.requests.publishes).toBe(3);
   });
 });
 
@@ -803,5 +805,143 @@ describe('an operand failure, and who it fails', () => {
     // the same output alone, and with the damaged one, comes out the same
     const alone = await run(new TableSource(table), ['y', 'x', 'z'], [specs[0]!]);
     expect(alone.outputs[0]).toEqual(grouped.outputs[0]);
+  });
+});
+
+describe('the plan is charged to the budget', () => {
+  const wide = Array.from({ length: 2_000 }, (_, k) => k);
+  const many = (n: number) => Array.from({ length: n }, () => ({ expr: 'a' }));
+
+  it('refuses, before any chunk is read, a call whose plan alone passes maxBufferedBytes', async () => {
+    const source = new StreamChunkSource();
+    seed({ a: wide.flatMap((k) => [joinId(k, 1)]) }, source);
+    const setup = seed({}, source);
+    setup.operands.push({ name: 'a', ref: { segment: 'a' } });
+    const outputs = many(40).map(collecting);
+    // a thousand-chunk root list is 4 KB an output: forty of them are about 200 KB with their trees
+    await expect(
+      runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {
+        source,
+        codec: roaringCodec,
+        clock,
+      }),
+    ).rejects.toThrow(/the plan alone .* passes maxBufferedBytes \(100000\)/);
+    expect(source.opened).toEqual([]);
+    await expect(
+      runCombineMany(compileCombineMany(request(setup, outputs, { maxBufferedBytes: 100_000 })), {
+        source,
+        codec: roaringCodec,
+        clock,
+      }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+  });
+
+  it('holds the plan in the ledger while the groups run, and names what a lone output needs with it', async () => {
+    const source = new StreamChunkSource();
+    const setup = seed({ a: wide.map((k) => joinId(k, 1)) }, source);
+    const r = await runCombineMany(
+      compileCombineMany(request(setup, many(3).map(collecting), { maxBufferedBytes: 64 << 20 })),
+      { source, codec: roaringCodec, clock },
+    );
+    // three outputs of 2,000 keys: 4 KB of root keys each, the trees and the index, are in the high water mark
+    expect(r.stats.memory.highWaterBytes).toBeGreaterThan(3 * 4_000);
+    const tight = await runCombineMany(
+      compileCombineMany(request(setup, many(1).map(collecting), { maxBufferedBytes: 30_000 })),
+      { source, codec: roaringCodec, clock },
+    );
+    expect((tight.outputs[0] as { error: Error }).error.message).toMatch(/and the plan holds \d+/);
+    expect((tight.outputs[0] as { error: Error }).error.message).toMatch(
+      /raise maxBufferedBytes to at least \d+/,
+    );
+  });
+
+  it('refuses a call whose expressions hold more nodes in all than the limit, naming the output', () => {
+    const setup = seed({ a: ids([1]) });
+    const big = { and: Array.from({ length: 4_000 }, () => 'a') };
+    const outputs = Array.from({ length: 60 }, () => collecting({ expr: big }));
+    expect(() => compileCombineMany(request(setup, outputs))).toThrow(
+      /outputs\[\d+\]: the expressions of the call hold more than 200000 nodes in all/,
+    );
+    expect(() => compileCombineMany(request(setup, outputs.slice(0, 40)))).not.toThrow();
+  });
+});
+
+describe('pricing a group does not grow with the group', () => {
+  it('plans ten thousand tiny outputs in about the time of a quarter as many, four times over', async () => {
+    const plan = async (n: number): Promise<number> => {
+      const setup = seed({ a: ids([1]), b: ids([1]) });
+      const outputs = Array.from({ length: n }, (_, i) =>
+        collecting({ expr: i % 2 === 0 ? { and: ['a', 'b'] } : { or: ['a', 'b'] } }),
+      ).map((o) => ({ ...o, publish: async () => ({ ids: [], keys: [] }) }));
+      const started = performance.now();
+      await runCombineMany(
+        compileCombineMany(
+          request(setup, outputs, { maxBufferedBytes: 1 << 30, publishConcurrency: 8 }),
+        ),
+        { source: setup.source, codec: roaringCodec, clock },
+      );
+      return performance.now() - started;
+    };
+    await plan(500); // warm up
+    const small = Math.max(await plan(2_500), 5);
+    const large = await plan(10_000);
+    // linear is 4x; quadratic is 16x
+    expect(large / small).toBeLessThan(9);
+  }, 60_000);
+});
+
+describe('the identity of a pinned operand', () => {
+  it('compares the fingerprint of the object where the row read carries one', async () => {
+    const setup = seed({ a: ids([1]), opt: ids([1]) });
+    const A = token('a');
+    const operandsFor = (held: string | null, now: string | null): CombineManyOperand[] =>
+      setup.operands.map((o) =>
+        o.name === 'opt'
+          ? {
+              ...o,
+              pinnedGeneration: 1,
+              pinnedVersion: `1:${A}`,
+              pinnedFingerprint: held,
+              current: async () => ({ generation: 1, token: token('a', 5), fingerprint: now }),
+            }
+          : o,
+      );
+    const go = async (held: string | null, now: string | null) =>
+      runCombineMany(
+        compileCombineMany({
+          ...request(setup, [collecting({ expr: 'a', exclude: ['opt'] })]),
+          operands: operandsFor(held, now),
+        }),
+        { source: setup.source, codec: roaringCodec, clock },
+      );
+    expect(stale((await go('10:1', '10:2')).outputs[0]!)).toBe(true);
+    expect((await go('10:1', '10:1')).outputs[0]!.ok).toBe(true);
+    expect((await go(null, '10:2')).outputs[0]!.ok).toBe(true);
+    expect((await go('10:1', null)).outputs[0]!.ok).toBe(true);
+    const message = ((await go('10:1', '10:2')).outputs[0] as { error: Error }).error.message;
+    expect(message).toMatch(/its row or its object is not the pinned one/);
+  });
+
+  it('rebinds only the operands it was compiled with, and runs only what was compiled', async () => {
+    const setup = seed({ a: ids([1]), b: ids([1]) });
+    const compiled = compileCombineMany(request(setup, [collecting({ expr: 'a' })]));
+    expect(() => rebindCombineMany(compiled, setup.operands.slice(0, 1))).toThrow(
+      /by name and order/,
+    );
+    expect(() => rebindCombineMany(compiled, [...setup.operands].reverse())).toThrow(
+      /by name and order/,
+    );
+    expect(() => rebindCombineMany({ request: compiled.request }, setup.operands)).toThrow(
+      ValidationError,
+    );
+    const again = rebindCombineMany(compiled, setup.operands);
+    const r = await runCombineMany(again, { source: setup.source, codec: roaringCodec, clock });
+    expect(ok(r.outputs[0]!).keys).toEqual([1]);
+    await expect(
+      runCombineMany(
+        { request: compiled.request },
+        { source: setup.source, codec: roaringCodec, clock },
+      ),
+    ).rejects.toThrow(/takes the result of compileCombineMany/);
   });
 });
