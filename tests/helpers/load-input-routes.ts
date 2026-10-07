@@ -16,6 +16,8 @@ export const ROUTING_SETUP = 'tests/setup-load-via-serialized.ts';
 
 /** Run under ids and again under `{ serialized }`. */
 export const ROUTED: readonly string[] = [
+  'tests/drivers/localfs/exact-case.test.ts',
+  'tests/drivers/localfs/long-names.test.ts',
   'tests/bench/calibrate-guards.test.ts',
   'tests/bench/calibrate-samples.test.ts',
   'tests/bench/calibrate-stages.test.ts',
