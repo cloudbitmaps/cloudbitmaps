@@ -896,10 +896,12 @@ export class CloudRoaring {
   /** Resolved store-level per-op budget (null = disabled); the admin scans use it, with a per-op override. */
   private readonly budget: Budget | null;
   /**
-   * Moved at the start and at the end of each erasure verb this store runs. A `materializeMany` call with a feed records
+   * Moved at the start and at the end of each `eraseSubject` this store runs. A `materializeMany` call with a feed records
    * it when it begins and is refused once it has moved: it reads caller memory, which no erasure can reach.
    */
   private erasureEpoch = 0;
+  /** How many `eraseSubject` calls of this store are running: while any is, every check of the counter counts as moved. */
+  private erasuresRunning = 0;
 
   /**
    * Refuse any option key the store does not take, at the top level or inside a group, naming each one.
@@ -1551,11 +1553,12 @@ export class CloudRoaring {
   }
 
   /**
-   * Whether an erasure has run in this store since `at` was read, or was running when it was: the counter is odd while an
-   * `eraseSubject` runs, so a value read then is already stale. The one check every call that reads caller memory uses.
+   * Whether an erasure has started in this store since `at` was read, or was running when it was: one that is still
+   * running is seen by the count of those running, and one that has ended since by the counter, which its end moved.
+   * The one check every call that reads caller memory uses.
    */
   private epochMoved(at: number): boolean {
-    return at % 2 === 1 || this.epochNow() !== at;
+    return this.erasuresRunning > 0 || this.epochNow() !== at;
   }
 
   /** A call's feed with the store's erasure counter: read once here, checked by the combine before any record is read. */
@@ -1763,9 +1766,11 @@ export class CloudRoaring {
     // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
     // for its options still moves the counter: conservative, so an erasure is never missed.
     this.erasureEpoch++;
+    this.erasuresRunning++;
     try {
       return await this.eraseSubjectRun(id, options);
     } finally {
+      this.erasuresRunning--;
       this.erasureEpoch++;
     }
   }
