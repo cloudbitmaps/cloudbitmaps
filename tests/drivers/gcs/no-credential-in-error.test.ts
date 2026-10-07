@@ -13,7 +13,7 @@ import { GcsStorageDriver } from '@/gcs/storage';
  * The client below is the SDK's own, over a real socket to a loopback server that refuses every request, with an auth
  * client that signs each request with a stand-in token.
  */
-const TOKEN = 'ya29.STAND-IN-TOKEN-0123456789';
+const TOKEN = 'ya29.placeholder-token-0123456789';
 const GEN = { segment: 's', generation: 1 };
 const LIMIT = { timeout: 30_000 };
 

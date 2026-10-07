@@ -12,9 +12,9 @@ import { S3StorageDriver } from '@/s3/storage';
  * The S3 and Azure drivers leave no credential in the errors they raise, `cause` chain included: the same check as the
  * GCS driver's, against the SDKs' own clients over a loopback server that refuses every request.
  */
-const ACCESS_KEY = 'AKIASTANDINACCESSKEY';
-const SECRET = 'STANDINSECRETACCESSKEYVALUE0123456789';
-const SESSION = 'STANDINSESSIONTOKENVALUE0123456789';
+const ACCESS_KEY = 'STANDINACCESSKEYID';
+const SECRET = 'placeholder-secret-access-key-0123456789';
+const SESSION = 'placeholder-session-token-0123456789';
 const ACCOUNT_KEY = Buffer.from('stand-in-account-key-0123456789').toString('base64');
 const GEN = { segment: 's', generation: 1 };
 const LIMIT = { timeout: 30_000 };

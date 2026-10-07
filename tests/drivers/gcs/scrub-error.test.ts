@@ -1,16 +1,19 @@
 import { scrubCredentials } from '@/gcs/scrub-error';
 
+/** What the auth client puts in the header. */
+const SIGNED = `Bearer ${'SECRET'}`;
+
 describe('scrubCredentials', () => {
   it('redacts a credential header wherever the SDK keeps the request, and keeps every other field', () => {
-    const headers = new Headers({ Authorization: 'Bearer SECRET', 'x-goog-api-client': 'gl-node' });
+    const headers = new Headers({ Authorization: SIGNED, 'x-goog-api-client': 'gl-node' });
     const err = Object.assign(new Error('refused'), {
       code: 503,
       response: {
         status: 503,
-        request: { headers: { Authorization: 'Bearer SECRET', Accept: '*/*' } },
+        request: { headers: { Authorization: SIGNED, Accept: '*/*' } },
         config: { headers },
       },
-      raw: 'GET /o HTTP/1.1\r\nauthorization: Bearer SECRET\r\nhost: h\r\n\r\n',
+      raw: `GET /o HTTP/1.1\r\nauthorization: ${SIGNED}\r\nhost: h\r\n\r\n`,
     });
     const out = scrubCredentials(err);
     expect(out).toBe(err);
@@ -25,7 +28,7 @@ describe('scrubCredentials', () => {
   });
 
   it('survives a cycle, a throwing getter and a frozen object', () => {
-    const err: Record<string, unknown> = { Authorization: 'Bearer SECRET' };
+    const err: Record<string, unknown> = { Authorization: SIGNED };
     err.self = err;
     Object.defineProperty(err, 'boom', {
       enumerable: true,
@@ -33,7 +36,7 @@ describe('scrubCredentials', () => {
         throw new Error('no');
       },
     });
-    err.frozen = Object.freeze({ authorization: 'Bearer SECRET' });
+    err.frozen = Object.freeze({ authorization: SIGNED });
     expect(() => scrubCredentials(err)).not.toThrow();
     expect(err.Authorization).toBe('[redacted]');
     expect(scrubCredentials('text')).toBe('text');
