@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.18.3] — 2026-10-07
+
 ### Security
 
 - **The S3, GCS and Azure drivers trim `prefix` in linear time.** The trim of a prefix's leading and trailing slashes

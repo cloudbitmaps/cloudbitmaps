@@ -36,7 +36,7 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.18.2` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.18.3` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
@@ -70,7 +70,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **shipped** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
 | The tombstone reaper — `store.reapRegistryTombstones` removes the `deleted: true` rows a release before 0.12 left in an object-store registry | **shipped** — admin call, `dryRun` first, each delete fenced on the version read, refused with `CapabilityError` where `conditionalDelete` is off; it cannot remove the `destroyed` tombstones `dropSegment` leaves, or one written while `conditionalDelete` was off, so it does not clean a bucket completely; see the [guide](guide/retention.md#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones) |
-| Deferred past `0.18.2` | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred past `0.18.3` | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite is rehearsed on MinIO and has not run against a real object store |
 
@@ -347,7 +347,7 @@ between here and there:
    sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
    refuses the flag); a generation without metadata is the same bytes as before.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.18.2`:
+9. **Closing the named deferrals.** None of these is in `0.18.3`:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
    - an automated reconcile of unstamped tombstones;
