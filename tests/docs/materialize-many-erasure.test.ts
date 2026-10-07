@@ -3,9 +3,9 @@ import { join } from 'node:path';
 
 /**
  * The privacy notes and the erasure guide say, in one shape, what an erasure that runs during a `materializeMany`
- * call does and does not reach, and what a call with a feed does under one. The statement is a compliance one, read by an
- * auditor in PRIVACY.md and followed by an operator in the guide, and the three copies are written apart, so the gate holds
- * each to the same sentences and to the lead sentence that opens the paragraph.
+ * call does and does not reach. The statement is a compliance one, read by an auditor in PRIVACY.md and followed by an
+ * operator in the guide, and the three copies are written apart, so the gate holds each to the same three sentences and to the lead sentence that opens the paragraph.
+ * It holds the two sentences of a call with a feed to the same standard.
  *
  * KNOWN LIMIT. It reads the sentences, not the paragraphs around them: a surrounding sentence that contradicts them
  * in words is for the review of a change to this promise.
@@ -37,7 +37,7 @@ export function occurrences(text: string, sentence: string): number {
 }
 
 describe('what an erasure during a batch reaches', () => {
-  it.each(DOCS)('%s states every sentence once', (rel) => {
+  it.each(DOCS)('%s states both sentences once', (rel) => {
     const text = readFileSync(join(ROOT, rel), 'utf8');
     expect(occurrences(text, LEADS[rel]!), `${rel}: the lead sentence`).toBe(1);
     for (const sentence of SENTENCES) {
