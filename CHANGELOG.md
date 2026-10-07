@@ -57,6 +57,22 @@ so, and so do the module headers in the code.
   moved; a call with no feed never reads it. New types `MaterializeManyFeed` and `MaterializeManyFeedRecord`, and `CombineManyFeed`
   and `CombineManyFeedRecord` from `@cloudbitmaps/core`. Nothing existing changes except that `eraseSubject` moves the counter.
   [Guide](docs/guide/loading.md#operands-that-arrive-as-records-a-feed).
+- **`store.memory(input)` holds ids in memory as an operand of `store.materializeMany`, and of no other verb.** It takes what
+  `store.load` takes (ids as a sync or async iterable or a typed array, `{ bitmap }`, `{ serialized }`), checked the same way with the
+  same errors: the size cap, the structure, the safe deserializer and each id's range. Only a real `Uint32Array`, by the typed
+  array's own brand (a subclass, a shared-memory view and another realm's are real ones; a spoof and a proxy are not), skips the
+  per-id range check, and any other typed array goes through it; an object with an `ascending` key is refused with a message that
+  names the feed. The handle is a `MemoryOperand`: `release()` zeroes and drops its bytes, any later use throws, and a second
+  release does nothing. A held operand is read from memory beside stored and fed ones with no request and never touches the shared
+  chunk cache, and the output is byte for byte what the same operand stored would publish; its bytes count against
+  `maxBufferedBytes` while the call runs and are the caller's between calls. An empty held operand is accepted by `store.memory`
+  and refused by the call unless its name is in `mayBeEmpty`, which now names held operands as well as fed ones. A handle
+  belongs to the store that made it, and an erasure that starts in that store after the handle was made (the counter
+  `eraseSubject` moves) fails the outputs that read it with `StaleOperandError` (`reason: 'erased'`), before any request and
+  again immediately before each publish; an erasure in another store or process is not seen. `operands` is now typed
+  `Record<string, Segment | MemoryOperand>`. New: `MemoryOperand` from `@cloudbitmaps/roaring`; `prepareHeld`, `CombineManyHeld` and
+  `HeldChunks` from `@cloudbitmaps/core`; `held` on `CombineManyOperand`. Nothing else changes.
+  [Guide](docs/guide/loading.md#operands-held-in-memory-storememory).
 - **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on
   operands of about a million, five million and ten million ids, which the default suite's layout refuses: two operand
   segments a size, about 1,500 chunks each with 20 % shared. Its stages load the six operands through `store.load()`,

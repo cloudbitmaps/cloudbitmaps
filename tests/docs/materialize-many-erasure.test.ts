@@ -18,6 +18,7 @@ export const SENTENCES = [
   '`eraseSubject` deletes the generation it rewrites even when a call holds it pinned, so a pin does not outlive an erasure, and an output that still needs a deleted operand generation fails with `NotFoundError`.',
   'A `materializeMany` call with a feed is refused at its next record, and before each fed output is published, once `eraseSubject` has started in this store: nothing is published from operands the call read before the erasure returned, and the one record in hand when the erasure lands is processed and discarded.',
   'An erasure in another store or another process is not seen by such a call, and is bounded by nothing.',
+  'A `materializeMany` call that reads an in-memory operand from `store.memory` fails the outputs that read it, before any request and again just before each of their publishes, once `eraseSubject` has started in this store after the operand was made; an erasure in another store or another process is not seen by such an operand, and is bounded by nothing.',
 ];
 
 /** How many times `sentence` occurs in `text`, with its line breaks undone. */
@@ -40,5 +41,8 @@ describe('what an erasure during a batch reaches', () => {
     expect(occurrences(text.replace('pinned', 'opened'), first)).toBe(0);
     expect(occurrences(text.replace('refuses', 'allows'), first)).toBe(0);
     expect(occurrences('An output of a call can carry an id that was erased', first)).toBe(0);
+    const held = SENTENCES[SENTENCES.length - 1]!;
+    expect(occurrences(`x. ${held} y.`, held)).toBe(1);
+    expect(occurrences(held.replace('after the operand was made', 'before it ends'), held)).toBe(0);
   });
 });
