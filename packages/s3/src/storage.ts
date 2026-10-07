@@ -76,6 +76,7 @@ import { resolveReadTimeoutMs, timedRead, type ReadSendOptions } from './read-ti
 import type { SocketAdvisory } from './socket-advisory';
 import { sendOnce } from './send-once';
 import { readBounded } from './bounded-body';
+import { scrubCredentials } from './scrub-error';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
@@ -364,6 +365,7 @@ export class S3StorageDriver implements IStorageDriver {
 
   /** Map S3 read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
+    scrubCredentials(err);
     if (isValidationError(err)) return err;
     if (isNotFound(err)) {
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
@@ -383,6 +385,7 @@ export class S3StorageDriver implements IStorageDriver {
    * read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
+    scrubCredentials(err);
     if (isTransient(err)) {
       return new TransientError(
         `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
@@ -543,6 +546,7 @@ class S3MultipartSink implements BlobSink {
         await send();
         return;
       } catch (err) {
+        scrubCredentials(err);
         if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
           const stored = await this.storedObject();
           if (stored?.id === this.writeId) return;

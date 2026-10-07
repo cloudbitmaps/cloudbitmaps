@@ -34,11 +34,13 @@ so, and so do the module headers in the code.
   generation above `2^53 - 1` was accepted, and a load then published an object the reader could not open. The write and
   read checks now use `Number.isSafeInteger`, and `load` and the erasure rewrite refuse, with an `IntegrityError` and
   before writing, to number a generation past the largest safe integer.
-- **GCS errors carry no request credential.** The SDK keeps the request it sent, `Authorization` header included, on the
-  errors it raises, and the driver passed them on as the error or its `cause`. The driver removes the `Authorization`,
-  cookie and API-key headers, and the same lines of any raw request text, from an error before it throws it; the
-  status, code and message stay. The S3 and Azure drivers' errors were checked the same way: their enumerable surface
-  holds no credential.
+- **GCS and S3 errors carry no request credential.** The GCS SDK keeps the request it sent, `Authorization` header
+  included, on the errors it raises, and the AWS SDK keeps its HTTP response, and through the socket the signed request
+  with `x-amz-security-token`, on non-enumerable properties; the drivers passed both on as the error or its `cause`. The
+  GCS driver removes the `Authorization`, cookie and API-key headers, and the same lines of any raw request text, from
+  an error before it throws it. The S3 driver drops the raw response, request and socket objects and redacts those
+  headers wherever else they appear, including under `util.inspect` with `showHidden`. The status, code, message and
+  request id stay. The Azure driver's errors were checked the same way and hold no credential.
 - **The S3 and Azure drivers bound every response body they read.** A range read, a tail read and a registry row are read
   as a stream and counted, and the read fails with a typed error at the first byte past what was asked for (and at once
   when the response advertises more), instead of buffering a body from an endpoint that ignores `Range` or sends no

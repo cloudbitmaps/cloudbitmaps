@@ -73,27 +73,45 @@ for (const status of [503, 403]) {
           retryOptions: { maxTries: 1 },
         });
 
-      // The AWS SDK keeps its HTTP response, and through the socket the request line with `x-amz-security-token`, on a
-      // non-enumerable property: out of reach of `inspect` and `JSON.stringify` as they print by default, so S3 is
-      // checked at that level, and Azure, which keeps none, with the hidden properties too.
+      // Every case is checked with the properties `inspect` hides by default as well: the AWS SDK keeps its HTTP
+      // response, and through the socket the request line, on non-enumerable properties of the error.
       const cases: Array<[string, () => Promise<unknown>, string[], boolean]> = [
         [
           'S3 getRange',
           () => new S3StorageDriver({ client: s3(), bucket: 'b' }).getRange(GEN, 0, 8),
           [SECRET, SESSION],
-          false,
+          true,
         ],
         [
           'S3 getTail',
           () => new S3StorageDriver({ client: s3(), bucket: 'b' }).getTail(GEN, 8),
           [SECRET, SESSION],
-          false,
+          true,
         ],
         [
           'S3 registry get',
           () => new S3RegistryDriver({ client: s3(), bucket: 'b' }).get({ segment: 's' }),
           [SECRET, SESSION],
-          false,
+          true,
+        ],
+        [
+          'S3 putImmutable',
+          () =>
+            new S3StorageDriver({ client: s3(), bucket: 'b' }).putImmutable(GEN, async (sink) => {
+              await sink.write(new Uint8Array([1, 2, 3]));
+            }),
+          [SECRET, SESSION],
+          true,
+        ],
+        [
+          'S3 registry create',
+          () =>
+            new S3RegistryDriver({ client: s3(), bucket: 'b' }).create(
+              { segment: 's' },
+              { currentGen: 0 },
+            ),
+          [SECRET, SESSION],
+          true,
         ],
         [
           'Azure getRange',
