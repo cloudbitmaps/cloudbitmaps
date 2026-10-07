@@ -1664,8 +1664,11 @@ const HAND_WRITTEN_TOKENS = [
   token(String.raw`\]\(https:\/\/aws\.amazon\.com\/s3\/storage-classes\/\)`),
 ];
 const MARKER_TEXT = /<!-- SIZING:[A-Z][A-Z0-9_]*:(?:START|END) -->/g;
-/** HTML: a tag, a comment, a declaration or a processing instruction opening, or a comment or CDATA closing. */
-const HTML_TEXT = /<[!?/a-z]|-->|\]\]>/i;
+/**
+ * HTML: a tag, a comment, a declaration or a processing instruction opening, or a comment (`-->`, or `--!>`, which
+ * browsers also accept) or CDATA closing.
+ */
+const HTML_TEXT = /<[!?/a-z]|--!?>|\]\]>/i;
 /** A code fence at any depth: under a blockquote's `>`, a list item's marker, or indentation. */
 const FENCE = /^(?:[ \t>]|[-*+][ \t]|\d{1,9}[.)][ \t])*(?:`{3,}|~{3,})/m;
 /**

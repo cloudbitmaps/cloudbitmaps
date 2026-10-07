@@ -47,6 +47,7 @@ const path = require('node:path');
 const { classify } = require('./aws-meter.cjs');
 const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./calibrate-guards.cjs');
 const { windowRounds } = require('./calibrate-stages.cjs');
+const { removeAll } = require('./remove-all.cjs');
 
 /**
  * The last release whose engine held a combine's window at a fixed 8 keys. A run's depth is the depth of the engine
@@ -1615,15 +1616,17 @@ function mergeValues(a, b) {
  */
 function normalize(text) {
   return plain(
-    text
-      // A link's target and title, and an element's id, name a place, not a figure: `#3-bytes-on-the-wire` is not
-      // 3 bytes, and a tooltip is not the text a reader is given.
-      .replace(/\]\([^)]*\)/g, ']')
-      .replace(
-        /\s(?:href|id|src|class|for|name|title|alt|aria-labelledby|aria-describedby)="[^"]*"/g,
-        '',
-      )
-      .replace(/<\/?(?:strong|b|em|i|span|code|mark|sup|sub|small|abbr)\b[^>]*>/gi, ''),
+    removeAll(
+      text
+        // A link's target and title, and an element's id, name a place, not a figure: `#3-bytes-on-the-wire` is not
+        // 3 bytes, and a tooltip is not the text a reader is given.
+        .replace(/\]\([^)]*\)/g, ']')
+        .replace(
+          /\s(?:href|id|src|class|for|name|title|alt|aria-labelledby|aria-describedby)="[^"]*"/g,
+          '',
+        ),
+      /<\/?(?:strong|b|em|i|span|code|mark|sup|sub|small|abbr)\b[^>]*>/gi,
+    ),
   );
 }
 
@@ -1645,17 +1648,18 @@ function plain(text) {
       )
       .replace(/&#0*44;|&#x2c;/gi, ',')
       .replace(/`/g, '')
-      // Emphasis that opens before a number, or closes after one: `**25.6** KiB`, `_99.5%_`, `$**82**`.
-      .replace(/(^|[^\w])(?:\*\*|__|\*|_)+(?=[$\d.])/g, '$1')
-      .replace(/([\d%])(?:\*\*|__|\*|_)+(?=[^\w]|$)/g, '$1')
-      .replace(/(US\$|USD|\$)\s*(?:\*\*|__|\*|_)+\s*(?=[\d.])/g, '$1')
+      // Emphasis that opens before a number, or closes after one: `**25.6** KiB`, `_99.5%_`, `$**82**`. A run is one
+      // character class, not `**|__|*|_`, whose overlapping choices made a long run of marks exponential to reject.
+      .replace(/(^|[^\w])[*_]+(?=[$\d.])/g, '$1')
+      .replace(/([\d%])[*_]+(?=[^\w]|$)/g, '$1')
+      .replace(/(US\$|USD|\$)\s*[*_]+\s*(?=[\d.])/g, '$1')
       .replace(/\s+/g, ' ')
   );
 }
 
 /** What a reader sees: the text without its comments. An anchor hidden in a comment is not stated. */
 function visible(text) {
-  return text.replace(/<!--[\s\S]*?-->/g, '');
+  return removeAll(text, /<!--[\s\S]*?-->/g);
 }
 
 // Not a digit inside a word: `S3 PUTs` states no count of PUTs, and `v0.10.0` no amount.

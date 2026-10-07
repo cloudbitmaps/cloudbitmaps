@@ -53,8 +53,17 @@ function extractSection(markdown, version) {
 
   // Drop trailing HTML comments. They are editorial notes to whoever maintains the changelog ("new work goes
   // under [Unreleased]"), and the last section inevitably absorbs the ones parked at the end of the file.
-  // Invisible in rendered Markdown, so this would never be caught by eye.
-  body = body.replace(/(?:\s*<!--[\s\S]*?-->)+\s*$/, '').trim();
+  // Invisible in rendered Markdown, so this would never be caught by eye. Peeled one at a time from the end: the
+  // comment a final `-->` closes opens at the first `<!--` after the `-->` before it, so text between two
+  // comments is kept, and the work is linear in the section's length.
+  body = body.trimEnd();
+  while (body.endsWith('-->')) {
+    const previousClose = body.lastIndexOf('-->', body.length - 4);
+    const open = body.indexOf('<!--', previousClose === -1 ? 0 : previousClose + 3);
+    if (open === -1 || open > body.length - 7) break; // a stray `-->` that closes no comment
+    body = body.slice(0, open).trimEnd();
+  }
+  body = body.trim();
 
   if (body === '') throw new Error(`the "## [${v}]" section is empty`);
 

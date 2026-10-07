@@ -1431,7 +1431,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   it('runs from a scratch directory with only the files the CloudShell script copies', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
     const copied = [
-      ...sh.matchAll(/^cp ((?:bench\/[\w./-]+ ?)+) "\$WORK\/(bench\/(?:lib\/)?)"$/gm),
+      ...sh.matchAll(/^cp (bench\/[\w./-]+(?: bench\/[\w./-]+)*) "\$WORK\/(bench\/(?:lib\/)?)"$/gm),
     ].flatMap((m) => (m[1] ?? '').trim().split(/\s+/));
     expect(copied).toContain('bench/calibrate-aws.cjs');
     expect(copied.length).toBeGreaterThanOrEqual(5);

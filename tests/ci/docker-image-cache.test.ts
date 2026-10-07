@@ -158,6 +158,9 @@ function world(): World {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
     STUB: dir,
+    // The helper's path reaches the shell as a variable, not as text in the command, so a checkout path holding a
+    // space or a quote still runs.
+    DOCKER_PULL_HELPER: HELPER,
   };
   for (const name of [
     'DOCKER_IMAGE_CACHE',
@@ -227,8 +230,8 @@ const DIGEST = 'cgr.dev/chainguard/minio@sha256:abc';
 const idOf = (image: string) => createHash('sha256').update(image).digest('hex').slice(0, 16);
 const localName = (image: string) => `cloudbitmaps-ci.invalid/cache:${idOf(image)}`;
 const tarOf = (w: World, image: string) => join(w.cache, `${idOf(image)}.tar`);
-const pull = (image: string) => `. ${HELPER} && docker_pull_with_backoff '${image}'`;
-const PRUNE = `. ${HELPER} && docker_image_cache_prune`;
+const pull = (image: string) => `. "$DOCKER_PULL_HELPER" && docker_pull_with_backoff '${image}'`;
+const PRUNE = `. "$DOCKER_PULL_HELPER" && docker_image_cache_prune`;
 const prune = PRUNE;
 const overrideOf = (file: string) =>
   (parse(readFileSync(file, 'utf8')) as { services: Record<string, { image: string }> }).services;
@@ -610,7 +613,8 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   describe('scripts/ci-backend-images.sh', () => {
-    const script = () => `scripts/ci-backend-images.sh '${join(w.dir, 'override.yml')}'`;
+    // The path reaches the shell as `$STUB` (the world's directory), not as text in the command.
+    const script = () => `scripts/ci-backend-images.sh "$STUB/override.yml"`;
     const override = () => overrideOf(join(w.dir, 'override.yml'));
 
     it('runs each backend on the local name its own image is kept under, and on the image itself with no cache', () => {

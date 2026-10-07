@@ -98,7 +98,10 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
 
   /** The index's text under every `### \`<entry>\`` heading, so a name is held to the entry it is exported from. */
   const sectionsOf = (entry: string): string => {
-    const heading = new RegExp(`^### \`${entry.replace(/[/@-]/g, '\\$&')}\`(?: .*)?$`, 'm');
+    const heading = new RegExp(
+      `^### \`${entry.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}\`(?: .*)?$`,
+      'm',
+    );
     const chunks: string[] = [];
     let rest = exportIndex;
     for (let m = heading.exec(rest); m !== null; m = heading.exec(rest)) {

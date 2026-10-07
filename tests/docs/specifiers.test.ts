@@ -87,7 +87,7 @@ function packageReadmes(): string[] {
 const OFFENDERS: readonly RegExp[] = [
   // Every client people actually use: a pattern that matched `npm i` on one line would miss `pnpm add`,
   // `yarn add`, the `npm install` long form, and a command that wraps its package onto the next line.
-  /\b(?:npm|pnpm|yarn|bun)(?:&nbsp;| |\s)+(?:i|install|add)(?:&nbsp;| |\s)+cloud-roaring\b/,
+  /\b(?:npm|pnpm|yarn|bun)(?:&nbsp;|\s)+(?:i|install|add)(?:&nbsp;|\s)+cloud-roaring\b/,
   // `from 'cloud-roaring'` / `require("cloud-roaring/x")`, tolerating the site's syntax-highlight spans
   // between the keyword and the quoted specifier.
   /(?:from|require\s*\()[^'"\n]{0,80}['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,
