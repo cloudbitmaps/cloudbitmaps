@@ -91,6 +91,7 @@ smuggles in a breaking change.
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
 | `esbuild >=0.28.2 <0.29` | a direct devDependency, and `vitest` -> `vite` | |
 | `source-map-js >=1.2.2 <2` | the vitest toolchain: `vite` -> `postcss` | |
+| `shell-quote >=1.11.0 <2` | the changesets CLI: `@changesets/cli` -> `launch-editor` | |
 
 An override is a **claim that the forced version still works**, which is only worth making if it is tested, and
 only meaningful while something in the tree actually resolves to it. Every row above binds to at least one
