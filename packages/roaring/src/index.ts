@@ -1458,10 +1458,8 @@ export class CloudRoaring {
         }
         fedMayBeEmpty = rest;
       }
-      if (
-        feedIn === undefined &&
-        (heldHandles.size === 0 || !Array.isArray(fedMayBeEmpty) || fedMayBeEmpty.length > 0)
-      ) {
+      // An empty list, or one naming only held operands, names nothing a feed must check.
+      if (feedIn === undefined && (!Array.isArray(fedMayBeEmpty) || fedMayBeEmpty.length > 0)) {
         throw new ValidationError(
           'materializeMany: mayBeEmpty names fed operands, and the call has no feed',
         );
