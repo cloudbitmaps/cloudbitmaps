@@ -103,9 +103,9 @@ export class InProcessKeystore implements IKeystore {
     this.keys = new Map(entries.map(([id, k]) => [id, Buffer.from(k)]));
     // Membership is against the keys given, not the names an object inherits (`constructor`, `toString`).
     if (!this.keys.has(options.activeKeyId))
-      throw new ValidationError(`activeKeyId "${options.activeKeyId}" is not in keys`);
+      throw new ValidationError(`activeKeyId "${String(options.activeKeyId)}" is not in keys`);
     if (options.recoveryKeyId !== undefined && !this.keys.has(options.recoveryKeyId))
-      throw new ValidationError(`recoveryKeyId "${options.recoveryKeyId}" is not in keys`);
+      throw new ValidationError(`recoveryKeyId "${String(options.recoveryKeyId)}" is not in keys`);
     this.activeKeyId = options.activeKeyId;
     this.recoveryKeyId =
       options.recoveryKeyId === options.activeKeyId ? undefined : options.recoveryKeyId;

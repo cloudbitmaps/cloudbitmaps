@@ -32,15 +32,16 @@ so, and so do the module headers in the code.
   bytes filesystems allow, and failed with a raw `ENAMETOOLONG` whose message carried the absolute storage root.
 - **A registry row's `currentGen` must be a safe integer, and a load refuses a number past it.** A row holding a
   generation above `2^53 - 1` was accepted, and a load then published an object the reader could not open. The write and
-  read checks now use `Number.isSafeInteger`, and `load` and the erasure rewrite refuse, with an `IntegrityError` and
-  before writing, to number a generation past the largest safe integer.
-- **GCS and S3 errors carry no request credential.** The GCS SDK keeps the request it sent, `Authorization` header
-  included, on the errors it raises, and the AWS SDK keeps its HTTP response, and through the socket the signed request
-  with `x-amz-security-token`, on non-enumerable properties; the drivers passed both on as the error or its `cause`. The
-  GCS driver removes the `Authorization`, cookie and API-key headers, and the same lines of any raw request text, from
-  an error before it throws it. The S3 driver drops the raw response, request and socket objects and redacts those
-  headers wherever else they appear, including under `util.inspect` with `showHidden`. The status, code, message and
-  request id stay. The Azure driver's errors were checked the same way and hold no credential.
+  read checks now use `Number.isSafeInteger`. At the largest safe generation, `load` and the other verbs that take the
+  next number (`unionInto` and its kin) throw an `IntegrityError` before writing anything, and `eraseSubject` returns
+  `erased: false` with a note instead of rewriting.
+- **GCS and S3 errors carry no request credential or live transport.** Both SDKs keep the request they sent on the
+  errors they raise (the GCS SDK `response.request` and `config`, the AWS SDK `$response`), and through it the HTTP
+  agent and its sockets, whose raw request text holds the bearer token or session token of calls still in flight. The
+  drivers passed those errors on as the error or its `cause`. They now throw a copy that has the same prototype, name,
+  message, stack, status, code and request id, and none of the request, agent, socket or configuration; the live SDK
+  objects are never changed. This holds under `util.inspect` with `showHidden`, `JSON.stringify` and the stack. The
+  Azure driver's errors were checked the same way and hold no credential.
 - **The S3 and Azure drivers bound every response body they read.** A range read, a tail read and a registry row are read
   as a stream and counted, and the read fails with a typed error at the first byte past what was asked for (and at once
   when the response advertises more), instead of buffering a body from an endpoint that ignores `Range` or sends no

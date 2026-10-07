@@ -184,6 +184,12 @@ describe('InProcessKeystore (envelope BYOK)', () => {
         inherited,
       ).toThrow(ValidationError);
     }
+    // An id that is not a string is no key either, however the object's own keys read.
+    for (const id of [1, null, {}, Symbol('k')]) {
+      expect(
+        () => new InProcessKeystore({ keys: { '1': key() }, activeKeyId: id as unknown as string }),
+      ).toThrow(ValidationError);
+    }
     // A real key that happens to share such a name is still a key.
     expect(
       () => new InProcessKeystore({ keys: { constructor: key() }, activeKeyId: 'constructor' }),
