@@ -108,20 +108,20 @@ describe('what a group is priced at', () => {
 
   it('prices the objects written beside the buffers as the largest few outputs, not as the largest every time', () => {
     const cost = new GroupCost(stream, 2);
-    cost.add(item(1_000, 100, [0]));
-    cost.add(item(1_000, 5_000, [0]));
-    cost.add(item(1_000, 90, [0]));
-    const base = new GroupCost(stream, 2);
     for (const o of [item(1_000, 100, [0]), item(1_000, 5_000, [0]), item(1_000, 90, [0])])
-      base.add(o);
-    const next = item(1_000, 4_000, [0]);
+      cost.add(o);
+    const priced = cost.with(item(1_000, 4_000, [0]));
+    const others = 4 * 1_000 + stream(0) + (1 + 1 + 2) * residentBytes(8_208) + 4 * 60;
     // two are written at once: the 5,000 and the 4,000, not two of 5,000
-    const without = new GroupCost(stream, 2);
-    for (const o of [item(1_000, 100, [0]), item(1_000, 5_000, [0]), item(1_000, 90, [0])])
-      without.add(o);
-    const priced = cost.with(next);
-    const others = 4 * 1_000 + stream(0) + (1 + 1 + 2) * residentBytes(8_208) + 4 * 40;
     expect(priced).toBe(others + 5_000 + 4_000);
+  });
+
+  it("prices an output's plan keys as an upper bound for outputs with disjoint keys", () => {
+    const cost = new GroupCost(stream, 1);
+    const before = cost.with(item(0, 0, [0, 1]));
+    cost.add(item(0, 0, [0, 1]));
+    // root keys, a demand list and a fetch share for each of two operands: 10 keys of 2 bytes, (1 + 2 x 2) times
+    expect(cost.with(item(0, 0, [0, 1])) - before).toBeGreaterThanOrEqual(20 * 5);
   });
 
   it('prices a new operand once, and an output in work that does not depend on the group', () => {

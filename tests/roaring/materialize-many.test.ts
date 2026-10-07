@@ -790,4 +790,48 @@ describe('store.materializeMany', () => {
     expect(published(run.outputs[0]).generation).toBe(2);
     expect(await w.ids('d')).toEqual([1, 2, 3, 70_000]);
   });
+
+  describe('the recipe for the total GET-class requests', () => {
+    // attributed.get, plus two reads (a tail and a row) for each operand a pin took or an index opened, plus, for each
+    // publish, two reads of an existing destination or three of one with no generation, and one more when it was refused
+    const shapes: Array<[boolean, boolean, boolean, boolean, number]> = [];
+    for (const pin of [true, false])
+      for (const newDest of [true, false])
+        for (const refuse of [false, true])
+          for (const unused of [false, true])
+            for (const n of [1, 3]) shapes.push([pin, newDest, refuse, unused, n]);
+
+    it.each(shapes)(
+      'pin %s, new destinations %s, refused %s, unused operand %s, %i outputs',
+      async (pin, newDest, refuse, unused, n) => {
+        const w = await batchWorld({
+          a: range(0, 70_000),
+          b: range(30_000, 90_000),
+          c: range(5, 10),
+        });
+        const s = (x: string) => w.store.segment(x);
+        for (let i = 0; i < n; i++) if (!newDest) await w.load(`d${i}`, [1]);
+        w.resetCalls();
+        const operands: Record<string, ReturnType<typeof s>> = { a: s('a'), b: s('b') };
+        if (unused) operands.c = s('c');
+        const run = await w.store.materializeMany({
+          operands,
+          outputs: Array.from({ length: n }, (_, i) => ({
+            dest: s(`d${i}`),
+            expr: refuse ? { andNot: ['a', 'a'] } : { or: ['a', 'b'] },
+          })),
+          keep: 1,
+          pin,
+        });
+        const { requests } = run.stats;
+        const refused = run.outputs.filter((o) => !o.published).length;
+        expect(refused).toBe(refuse && !newDest ? n : 0);
+        const opened = pin ? Object.keys(operands).length : requests.opens;
+        const recipe = requests.attributed.get + 2 * opened + n * (newDest ? 3 : 2) + refused;
+        expect(w.calls.ranges + w.calls.tails + w.calls.rowReads).toBe(recipe);
+        expect(w.calls.puts + w.calls.rowWrites).toBeGreaterThanOrEqual(requests.attributed.put);
+        expect(requests.attributed.put).toBe(w.calls.puts + w.calls.rowWrites);
+      },
+    );
+  });
 });

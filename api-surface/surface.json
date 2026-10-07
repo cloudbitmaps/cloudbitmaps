@@ -185,7 +185,7 @@
     "@cloudbitmaps/core CombineManyStats.feed": "readonly feed?: { readonly records: number; readonly keys: number; readonly ids: number; };",
     "@cloudbitmaps/core CombineManyStats.groups": "readonly groups: number;",
     "@cloudbitmaps/core CombineManyStats.maxRangesInFlight": "readonly maxRangesInFlight: number;",
-    "@cloudbitmaps/core CombineManyStats.memory": "readonly memory: { readonly maxBufferedBytes: number; readonly highWaterBytes: number; };",
+    "@cloudbitmaps/core CombineManyStats.memory": "readonly memory: { readonly maxBufferedBytes: number; readonly highWaterBytes: number; readonly planBytes: number; };",
     "@cloudbitmaps/core CombineManyStats.operands": "readonly operands: Readonly<Record<string, CombineManyOperandStats>>;",
     "@cloudbitmaps/core CombineManyStats.outputs": "readonly outputs: readonly CombineManyOutputStats[];",
     "@cloudbitmaps/core CombineManyStats.requests": "readonly requests: { readonly rangeReads: number; readonly rangeBytes: number; readonly chunkReads: number; readonly registryReads: number; readonly opens: number; readonly publishes: number; readonly attributed: { readonly get: number; readonly put: number; }; };",

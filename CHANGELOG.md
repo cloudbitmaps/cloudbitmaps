@@ -29,15 +29,22 @@ so, and so do the module headers in the code.
   chunk cannot grow a group past it. Process memory is more than the count: measured on the in-memory backend, resident set
   size grew 1.6 times the ledger's high water on Linux and 2.5 to 5 times on macOS (see the guide). The operands are read
   once per group, so the number of groups grows with the total output size over the budget: 100 operands of 3,000,000
-  ids and 1,000 outputs of about 5 MB took 77 groups and 18,845 range reads at the default and 6 groups
-  and 3,564 at 2 GiB (counted). Range requests are held to one window of 64 across all operands. A leased operand's lease and an
+  ids and 1,000 outputs of about 5 MB took 81 groups and 19,005 range reads at the default and 6 groups
+  and 3,570 at 2 GiB (counted). Range requests are held to one window of 64 across all operands. A leased operand's lease and an
   operand's deadline are checked before each chunk key, and each `dest`'s again at its publish. Every chunk is decoded
   through the checks on untrusted bytes, and a listed key whose bytes are missing is an error for the outputs reading
-  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,490 GET-class (594 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
+  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,505 GET-class (590 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
   `MaterializeManyOutcome`, `MaterializeManyRun`, `MaterializeManyStats`, `MaterializeManyOperandStats`,
   `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
-  `@cloudbitmaps/roaring`, and `compileCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
+  `@cloudbitmaps/roaring`, and `compileCombineMany`, `rebindCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
   Nothing existing changes. [Guide](docs/guide/loading.md#many-outputs-from-one-pass-materializemany).
+- **A CI gate holds the public signatures.** `scripts/api-surface.cjs` compares the type declarations the build emits
+  for every public entry point with a committed snapshot, `api-surface/surface.json`. It fails a removed or changed
+  public signature, or a required member added to an existing interface, unless a reason row added in the same pull
+  request, in `api-surface/allowed.json`, excuses it; an addition passes. It runs after the build
+  (`pnpm api:surface:check`), in the release job, and on every pull request against its base branch
+  (`.github/workflows/api-surface-base.yml`). `pnpm api:surface` regenerates the snapshot. No library behaviour changes.
+
 - **`store.materializeMany` takes a feed: operands that arrive as records in chunk-key order, for conditions too many to hold or store.**
   `feed: { names, records, counts }` declares the fed operand names, an `AsyncIterable` of `{ key, operands: Record<string,
   Uint32Array> }` and the ids each name holds (an object, or a function called once after the last record), and an output names a fed operand as it names a stored
@@ -82,6 +89,11 @@ so, and so do the module headers in the code.
   earlier release is not asked for it. The meter no longer counts the `ContentLength` of a `HeadObject` as bytes read.
 
 ### Changed
+
+- **The checks on untrusted tier data are one module.** The engine's checks on chunk keys, chunk cardinalities and
+  chunk payloads (the safe decode under the size cap and the payload range check) moved, unchanged, into one core
+  module that is not exported, so every reader of stored bytes goes through the same checks. The error classes and
+  messages are the same, and a timing of the hot path, old build against new, showed no measurable difference.
 
 - **A steady `store.load()` at `keep: 12` is now measured on S3, and so is a reload.** A run from AWS CloudShell in
   `us-east-1` on 2026-10-06 (run `2026-10-06-9d36b`) loaded one segment 18 times. The first load made 2 PUT + 3 GET,
