@@ -84,7 +84,8 @@ export function entryTitles(lines: readonly string[]): string[] {
     current = undefined;
   };
   for (const line of lines) {
-    if (/^<!--.*-->\s*$/.test(line)) continue;
+    const trimmed = line.trimEnd();
+    if (trimmed.length >= 7 && trimmed.startsWith('<!--') && trimmed.endsWith('-->')) continue;
     if (line.startsWith('#')) flush();
     else if (/^[-*]\s/.test(line)) {
       flush();

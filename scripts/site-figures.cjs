@@ -40,6 +40,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { removeAll } = require('../bench/lib/remove-all.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const RESULTS = path.join(ROOT, 'bench', 'results.json');
@@ -192,13 +193,16 @@ function visibleText(html) {
     .filter((m) => /name="(description|og:description)"|property="og:description"/i.test(m[0]))
     .map((m) => m[1])
     .join(' ');
-  return (described + ' ' + html)
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\s+/g, ' ');
+  return (
+    (described + ' ' + html)
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;|&#160;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      // `&amp;` last, so `&amp;lt;` reads as the `&lt;` a reader is shown, not as `<`.
+      .replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ')
+  );
 }
 
 /** Every page under site/, as a [relative path, reader-visible text] pair. */
@@ -417,7 +421,7 @@ function withoutCommentsOrGenerated(text, rel) {
       fail(`${err.message}, so no gate reads the figures in it`);
     }
   }
-  return kept.replace(/<!--[\s\S]*?-->/g, '');
+  return removeAll(kept, /<!--[\s\S]*?-->/g);
 }
 
 function blocksOf(text, isHtml, metas, rel) {
@@ -428,9 +432,11 @@ function blocksOf(text, isHtml, metas, rel) {
       .flatMap((b) => b.split(/\n(?=\s*(?:[-*+]|\d+\.) |\s*\|)/))
       .filter((b) => b.trim() !== '');
   }
-  const html = body
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
-    .replace(/<svg[\s\S]*?<\/svg>/g, ' ');
+  const html = removeAll(
+    removeAll(body, /<(script|style)[^>]*>[\s\S]*?<\/\1>/g),
+    /<svg[\s\S]*?<\/svg>/g,
+    ' ',
+  );
   return [
     ...html
       .split(/<\/(?:p|li|tr|h[1-6]|figcaption|dd|dt|caption|blockquote)>|<br\s*\/?>/i)
@@ -522,10 +528,15 @@ for (const page of PAGES) {
   const isHtml = page.rel.endsWith('.html');
   const withoutComments = withoutCommentsOrGenerated(html, page.rel);
   const visible = isHtml
-    ? withoutComments
-        .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
-        .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
-        .replace(/<[^>]+>/g, ' ')
+    ? removeAll(
+        removeAll(
+          removeAll(withoutComments, /<(script|style)[^>]*>[\s\S]*?<\/\1>/g),
+          /<svg[\s\S]*?<\/svg>/g,
+          ' ',
+        ),
+        /<[^>]+>/g,
+        ' ',
+      )
         .replace(/&nbsp;|&#160;/gi, ' ')
         .concat(' ', metas, ' ', jsonLd, ' ', svgText)
     : withoutComments;
@@ -640,7 +651,7 @@ if (singleBucket !== null) {
   if (open === -1 || close === -1) {
     fail('site/benchmarks.html no longer has its #single-bucket panel');
   } else {
-    const panel = html.slice(open, close).replace(/<!--[\s\S]*?-->/g, '');
+    const panel = removeAll(html.slice(open, close), /<!--[\s\S]*?-->/g);
     const text = panel.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ');
     for (const figure of calibration.unaccounted(text, singleBucket.pageValues)) {
       fail(
@@ -653,7 +664,7 @@ if (singleBucket !== null) {
     if (body === '') fail("site/benchmarks.html's #single-bucket panel has no table body");
     const rows = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
       [...m[1].matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/g)].map((c) =>
-        calibration.normalize(c[1].replace(/<[^>]+>/g, '')).trim(),
+        calibration.normalize(removeAll(c[1], /<[^>]+>/g)).trim(),
       ),
     );
     const seen = new Map();

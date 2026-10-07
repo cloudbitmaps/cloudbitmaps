@@ -79,6 +79,24 @@ describe('changelog-section', () => {
     expect(extractSection(md, '1.0.0')).toBe('Real notes.');
   });
 
+  it('strips a row of trailing comments, and keeps the text between two comments', () => {
+    const row = '## [1.0.0]\n\nNotes\n\n<!-- a -->\n<!-- b --><!-- c -->\n';
+    expect(extractSection(row, '1.0.0')).toBe('Notes');
+    const between = '## [1.0.0]\n\nNotes\n\n<!-- a -->\nmore real text\n<!-- b -->\n';
+    expect(extractSection(between, '1.0.0')).toBe('Notes\n\n<!-- a -->\nmore real text');
+  });
+
+  it('keeps a stray `-->` that closes no comment', () => {
+    expect(extractSection('## [1.0.0]\n\nan arrow -->\n', '1.0.0')).toBe('an arrow -->');
+    expect(extractSection('## [1.0.0]\n\n<!-- a --> b -->\n', '1.0.0')).toBe('<!-- a --> b -->');
+  });
+
+  it('is linear in a long row of comments', () => {
+    // The trailing-comment regex this replaced backtracked exponentially here: about 4.6 s at 25 comments.
+    const md = `## [1.0.0]\n\nNotes\n${'<!-- a -->'.repeat(5_000)}x\n`;
+    expect(extractSection(md, '1.0.0').endsWith('x')).toBe(true);
+  });
+
   it('keeps an HTML comment that is genuinely mid-section', () => {
     const md = '## [1.0.0]\n\nA\n\n<!-- keep -->\n\nB\n';
     expect(extractSection(md, '1.0.0')).toContain('<!-- keep -->');

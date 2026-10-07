@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { removeAll } from '../helpers/prose';
+
 // The site's version badge drifts silently.
 //
 // Cutting a release bumps the manifests, which `tests/index.test.ts` holds to one version. The site pages carry the same number in two places each, and without this nothing reads them: a page
@@ -174,8 +176,7 @@ const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not p
  * legitimately discuss other releases, which a bare-token match would otherwise flag forever.
  */
 function badgeVersions(html: string): string[] {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, '')
+  return removeAll(html, /<!--[\s\S]*?-->/g)
     .split('\n')
     .flatMap((line) => {
       const short = [...line.matchAll(SHORT_VERSION_RE)]

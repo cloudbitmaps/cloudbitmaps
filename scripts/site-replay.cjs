@@ -32,6 +32,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { removeAll } = require('../bench/lib/remove-all.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SOURCE = path.join(ROOT, 'bench', 'scale-results.json');
@@ -183,10 +184,11 @@ function checkPage() {
       fc.arrayCrossoverIds,
     ].map((n) => n.toLocaleString('en-US')),
   );
-  const visible = html
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
-    .replace(/<[^>]+>/g, ' ');
+  const visible = removeAll(
+    removeAll(removeAll(html, /<!--[\s\S]*?-->/g), /<(script|style)[^>]*>[\s\S]*?<\/\1>/g),
+    /<[^>]+>/g,
+    ' ',
+  );
   const stated = new Set(visible.match(/\d{1,3}(?:,\d{3})+/g) || []);
   for (const n of stated) {
     if (!allowed.has(n)) {

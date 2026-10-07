@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { removeAll } from '../helpers/prose';
+
 // The code directories each carry a README that lists every part of them. A README that lists files is a
 // hand-kept list beside the thing it lists, which goes stale the day someone adds a script and nobody re-reads
 // the list. So each README is checked against the directory it describes, in both directions:
@@ -80,7 +82,7 @@ function tableEntries(readme: string, localFiles: ReadonlySet<string>): Entries 
   const refs: string[] = [];
   const bad: string[] = [];
   let inFence = false;
-  for (const raw of readme.replace(/<!--[\s\S]*?-->/g, '').split('\n')) {
+  for (const raw of removeAll(readme, /<!--[\s\S]*?-->/g).split('\n')) {
     const line = raw.trimStart();
     if (/^(```|~~~)/.test(line)) {
       inFence = !inFence;

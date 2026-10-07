@@ -7,6 +7,7 @@ import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
 import { S3_STORAGE_OPTION_KEYS } from '@/s3/backend';
 
 import { codeOnly, unknownConstructorKeys, unknownStoreKeys } from '../helpers/option-literals';
+import { removeAll } from '../helpers/prose';
 
 /**
  * The TypeScript samples in the docs must not make the mistakes that stop a copied sample running: a name declared
@@ -52,13 +53,13 @@ interface Fence {
 function htmlSamplesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];
   for (const m of text.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/dg)) {
-    const code = (m[1] as string)
-      .replace(/<[^>]+>/g, '')
+    // `&amp;` last, so an escaped entity (`&amp;quot;`) reads as the entity it shows, not as the character.
+    const code = removeAll(m[1] as string, /<[^>]+>/g)
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
-      .replace(/&amp;/g, '&')
       .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&');
     // Only the samples that are actually code we ship — skip shell blocks and prose-in-a-box.
     if (!/\b(new CloudRoaring|import\s|const\s|await\s)/.test(code)) continue;
     // The code starts right after `<code …>`, which may be on the `<pre>` line or the one below it.

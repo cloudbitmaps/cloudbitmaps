@@ -94,7 +94,7 @@ function connect(wsUrl) {
     if (msg.id === undefined) {
       // An event. `once`-style: fire and forget the handler.
       const cb = listeners.get(msg.method);
-      if (cb !== undefined) {
+      if (typeof cb === 'function') {
         listeners.delete(msg.method);
         cb(msg.params);
       }
