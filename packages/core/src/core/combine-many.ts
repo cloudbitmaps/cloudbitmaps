@@ -193,6 +193,10 @@ export interface CombineManyOutputStats {
   readonly endedAt: number | null;
   /** Chunks the output holds. */
   readonly chunks: number;
+  /** What the index said its buffer could reach resident, which is what groups are planned on. */
+  readonly boundBytes: number;
+  /** The most its buffer held resident, in the ledger's own measure; compare with `boundBytes` to see how tight a plan was. */
+  readonly peakBytes: number;
 }
 
 export interface CombineManyStats {
@@ -552,6 +556,10 @@ interface OutputState<R> {
   chunks: Array<{ chunkKey: number; bitmap: CodecBitmap }>;
   /** Resident bytes the buffer holds in the ledger. */
   charged: number;
+  /** The most `charged` reached. */
+  peak: number;
+  /** Chunks buffered over the output's last run. */
+  chunkCount: number;
   /** Serialized bytes of what is buffered. */
   serialized: number;
   cursor: number;
@@ -589,10 +597,19 @@ const BYTES_PER_OUTPUT = 256;
  * operands, not to the group's size: its buffered outputs, its operand streams, the chunks being evaluated, the objects
  * being published beside the buffers, and the key lists of its own plan.
  */
-class GroupCost {
+/** What {@link GroupCost} reads of an output. */
+export interface GroupCostItem {
+  readonly bound: number;
+  readonly serializedBound: number;
+  readonly rootKeys: Uint16Array;
+  readonly compiled: { readonly operands: readonly number[]; readonly depth: number };
+}
+
+export class GroupCost {
   private outputs = 0;
   private depth = 0;
-  private largest = 0;
+  /** The serialized bounds of the largest outputs, descending: at most `publishConcurrency` of them are written at once. */
+  private top: number[] = [];
   private count = 0;
   private streams = 0;
   private planWork = 0;
@@ -604,7 +621,7 @@ class GroupCost {
   ) {}
 
   /** The cost of the group with `o` added. */
-  with<R>(o: OutputState<R>): number {
+  with(o: GroupCostItem): number {
     let streams = this.streams;
     let operands = this.operands.size;
     for (const i of o.compiled.operands) {
@@ -614,8 +631,7 @@ class GroupCost {
       }
     }
     const depth = Math.max(this.depth, o.compiled.depth);
-    const largest = Math.max(this.largest, o.serializedBound);
-    const publishing = Math.min(this.publishConcurrency, this.count + 1) * largest;
+    const publishing = this.written(o.serializedBound);
     return (
       this.outputs +
       o.bound +
@@ -627,7 +643,7 @@ class GroupCost {
     );
   }
 
-  add<R>(o: OutputState<R>): void {
+  add(o: GroupCostItem): void {
     for (const i of o.compiled.operands) {
       if (!this.operands.has(i)) {
         this.operands.add(i);
@@ -636,7 +652,7 @@ class GroupCost {
     }
     this.outputs += o.bound;
     this.depth = Math.max(this.depth, o.compiled.depth);
-    this.largest = Math.max(this.largest, o.serializedBound);
+    this.top = this.withLargest(o.serializedBound);
     this.count++;
     this.planWork += planWorkOf(o);
   }
@@ -644,10 +660,29 @@ class GroupCost {
   get size(): number {
     return this.count;
   }
+
+  private withLargest(bound: number): number[] {
+    const top = [...this.top];
+    let at = top.length;
+    while (at > 0 && top[at - 1]! < bound) at--;
+    top.splice(at, 0, bound);
+    if (top.length > this.publishConcurrency) top.length = this.publishConcurrency;
+    return top;
+  }
+
+  /**
+   * The bytes of objects being written beside the buffers, at most: the `publishConcurrency` largest outputs, each as
+   * large as its bound, with `bound` among the candidates.
+   */
+  private written(bound: number): number {
+    let sum = 0;
+    for (const b of this.withLargest(bound)) sum += b;
+    return sum;
+  }
 }
 
 /** The most key lists a group's plan holds for one output: its root keys, and one demand list for each operand it reads. */
-const planWorkOf = <R>(o: OutputState<R>): number =>
+const planWorkOf = (o: GroupCostItem): number =>
   o.rootKeys.byteLength * (1 + o.compiled.operands.length);
 
 /** A bitmap held while an output is evaluated at one key: borrowed from the operand chunks, or owned and charged. */
@@ -739,6 +774,8 @@ class Run<R> {
       status: 'waiting',
       chunks: [],
       charged: 0,
+      peak: 0,
+      chunkCount: 0,
       serialized: 0,
       cursor: 0,
       group: null,
@@ -1050,6 +1087,8 @@ class Run<R> {
       o.group = group;
       o.startedAt = startedAt;
       o.cursor = 0;
+      o.chunkCount = 0;
+      o.peak = 0;
     }
     this.pruned += plan.pruned;
     // The operand streams' ranges are resident for the whole pass; reserved up front, released with the pass.
@@ -1308,8 +1347,10 @@ class Run<R> {
       return;
     }
     o.charged += resident;
+    if (o.charged > o.peak) o.peak = o.charged;
     o.serialized += serializedBound(size);
     o.chunks.push({ chunkKey: key, bitmap: held.bitmap });
+    o.chunkCount = o.chunks.length;
   }
 
   // ---- publish ----------------------------------------------------------------------------------------------
@@ -1504,7 +1545,9 @@ class Run<R> {
         group: o.group,
         startedAt: o.startedAt,
         endedAt: o.endedAt,
-        chunks: o.chunks.length,
+        chunks: o.chunkCount,
+        boundBytes: o.bound,
+        peakBytes: o.peak,
       })),
     };
   }

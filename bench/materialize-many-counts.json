@@ -9,7 +9,7 @@
         "published": 68,
         "groups": 1,
         "chunkReads": 21443,
-        "ledgerHighWaterBytes": 69205258,
+        "ledgerHighWaterBytes": 69668913,
         "rangeReads": 20,
         "tailReads": 120,
         "rowReads": 172,
@@ -23,7 +23,9 @@
           "get": 40,
           "put": 168,
           "rangeReads": 20,
-          "registryReads": 20
+          "registryReads": 20,
+          "opens": 20,
+          "publishes": 100
         }
       },
       "into": {
@@ -47,22 +49,24 @@
       "batch": {
         "published": 768,
         "groups": 6,
-        "chunkReads": 621314,
-        "ledgerHighWaterBytes": 222189349,
-        "rangeReads": 590,
+        "chunkReads": 620442,
+        "ledgerHighWaterBytes": 233933724,
+        "rangeReads": 594,
         "tailReads": 1100,
-        "rowReads": 1809,
+        "rowReads": 1796,
         "objectWrites": 1000,
         "rowWrites": 768,
         "listings": 0,
         "deletes": 232,
-        "getClass": 3499,
+        "getClass": 3490,
         "putClass": 1768,
         "attributed": {
-          "get": 1067,
+          "get": 1058,
           "put": 1768,
-          "rangeReads": 590,
-          "registryReads": 477
+          "rangeReads": 594,
+          "registryReads": 464,
+          "opens": 100,
+          "publishes": 1000
         }
       },
       "into": {
@@ -77,6 +81,64 @@
         "deletes": 232,
         "getClass": 143761,
         "putClass": 3404
+      }
+    },
+    "target": {
+      "operands": 100,
+      "outputs": 1000,
+      "idsPerOperand": 3000000,
+      "chunksPerOperand": 1500,
+      "budgets": {
+        "default256MiB": 268435456,
+        "budget2GiB": 2147483648
+      },
+      "batch": {
+        "default256MiB": {
+          "published": 926,
+          "groups": 77,
+          "chunkReads": 4807500,
+          "ledgerHighWaterBytes": 213846748,
+          "rangeReads": 18845,
+          "tailReads": 1100,
+          "rowReads": 2147,
+          "objectWrites": 1000,
+          "rowWrites": 926,
+          "listings": 0,
+          "deletes": 74,
+          "getClass": 22092,
+          "putClass": 1926,
+          "attributed": {
+            "get": 19818,
+            "put": 1926,
+            "rangeReads": 18845,
+            "registryReads": 973,
+            "opens": 100,
+            "publishes": 1000
+          }
+        },
+        "budget2GiB": {
+          "published": 926,
+          "groups": 6,
+          "chunkReads": 898500,
+          "ledgerHighWaterBytes": 1532254635,
+          "rangeReads": 3564,
+          "tailReads": 1000,
+          "rowReads": 1648,
+          "objectWrites": 1000,
+          "rowWrites": 926,
+          "listings": 0,
+          "deletes": 74,
+          "getClass": 6212,
+          "putClass": 1926,
+          "attributed": {
+            "get": 4038,
+            "put": 1926,
+            "rangeReads": 3564,
+            "registryReads": 474,
+            "opens": 100,
+            "publishes": 1000
+          }
+        }
       }
     }
   }

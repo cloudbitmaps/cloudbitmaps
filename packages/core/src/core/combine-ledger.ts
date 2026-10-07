@@ -23,9 +23,18 @@ export function serializedBound(cardinality: number): number {
   return Math.min(2 * cardinality + 16, MAX_CHUNK_SERIALIZED);
 }
 
+/**
+ * The most the data of one chunk's bitmap holds resident: an array container stops at 4,096 values and becomes a bitset
+ * of 8,192 bytes, so past that its spare capacity cannot grow. Measured at 8,538 to 8,641 bytes with the overhead, for
+ * every chunk of 4,096 values or more.
+ */
+const MAX_RESIDENT_DATA = 8_800;
+
 /** The resident bytes of one bitmap whose serialized size is `serialized`: above every measured point. */
 export function residentBytes(serialized: number): number {
-  return Math.ceil(RESIDENT_BITMAP_OVERHEAD + Math.min(1.6 * serialized, serialized + 2_000));
+  return Math.ceil(
+    RESIDENT_BITMAP_OVERHEAD + Math.min(1.6 * serialized, serialized + 2_000, MAX_RESIDENT_DATA),
+  );
 }
 
 /** The resident bytes of one chunk of at most `cardinality` ids. */

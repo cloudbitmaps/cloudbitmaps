@@ -8,6 +8,7 @@ import {
   residentBytes,
   serializedBound,
 } from '@/core/combine-ledger';
+import { GroupCost } from '@/core/combine-many';
 
 describe('the resident-bytes ledger', () => {
   it('charges, refuses what does not fit, releases, and keeps a high-water mark', () => {
@@ -94,4 +95,50 @@ describe('resident bytes of a native bitmap', () => {
     },
     60_000,
   );
+});
+
+describe('what a group is priced at', () => {
+  const item = (bound: number, serializedBound: number, operands: number[], depth = 1) => ({
+    bound,
+    serializedBound,
+    rootKeys: new Uint16Array(10),
+    compiled: { operands, depth },
+  });
+  const stream = (i: number): number => 1_000 * (i + 1);
+
+  it('prices the objects written beside the buffers as the largest few outputs, not as the largest every time', () => {
+    const cost = new GroupCost(stream, 2);
+    cost.add(item(1_000, 100, [0]));
+    cost.add(item(1_000, 5_000, [0]));
+    cost.add(item(1_000, 90, [0]));
+    const base = new GroupCost(stream, 2);
+    for (const o of [item(1_000, 100, [0]), item(1_000, 5_000, [0]), item(1_000, 90, [0])])
+      base.add(o);
+    const next = item(1_000, 4_000, [0]);
+    // two are written at once: the 5,000 and the 4,000, not two of 5,000
+    const without = new GroupCost(stream, 2);
+    for (const o of [item(1_000, 100, [0]), item(1_000, 5_000, [0]), item(1_000, 90, [0])])
+      without.add(o);
+    const priced = cost.with(next);
+    const others = 4 * 1_000 + stream(0) + (1 + 1 + 2) * residentBytes(8_208) + 4 * 40;
+    expect(priced).toBe(others + 5_000 + 4_000);
+  });
+
+  it('prices a new operand once, and an output in work that does not depend on the group', () => {
+    const cost = new GroupCost(stream, 8);
+    cost.add(item(100, 10, [0, 1]));
+    const a = cost.with(item(100, 10, [1]));
+    const b = cost.with(item(100, 10, [1]));
+    expect(a).toBe(b);
+    cost.add(item(100, 10, [1]));
+    expect(cost.size).toBe(2);
+    expect(cost.with(item(100, 10, [2])) - cost.with(item(100, 10, [1]))).toBe(stream(2) + 9_312);
+  });
+
+  it('caps what one chunk holds resident at a bitset and its overhead', () => {
+    expect(residentBytes(8_208)).toBe(9_312);
+    expect(residentBytes(6_016)).toBe(8_528);
+    expect(residentBytes(18)).toBe(Math.ceil(512 + 28.8));
+    expect(residentBound(65_536)).toBe(9_312);
+  });
 });

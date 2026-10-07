@@ -770,4 +770,24 @@ describe('store.materializeMany', () => {
     expect(run.stats.operands.a).toMatchObject({ moved: false });
     expect(run.stats.operands.unused!.moved).toBeUndefined();
   });
+
+  it('an erasure of a destination before its publish starts does not stop the publish', async () => {
+    const w = await batchWorld({ a: [1, 2, 3, 70_000] });
+    await w.load('d', [5, 4_000_000]);
+    const s = (n: string) => w.store.segment(n);
+    let hit = false;
+    w.hooks.beforeRange = async () => {
+      if (hit) return;
+      hit = true;
+      await w.other.eraseSubject(4_000_000, { allNamespaces: true });
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a') },
+      outputs: [{ dest: s('d'), expr: 'a' }],
+      keep: 1,
+    });
+    // the erasure rewrote the destination to a new generation, and the publish went on top of it
+    expect(published(run.outputs[0]).generation).toBe(2);
+    expect(await w.ids('d')).toEqual([1, 2, 3, 70_000]);
+  });
 });

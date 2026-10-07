@@ -516,9 +516,9 @@ export interface MaterializeManyOptions extends IdRange {
    */
   readonly pin?: boolean;
   /**
-   * The most resident bytes the call holds at once, default 256 MiB: the buffered outputs, the operand streams and the
-   * chunks being evaluated, counted as resident memory. Past it, outputs run in groups and the operands are read again for
-   * each group.
+   * The most resident bytes the call counts at once, default 256 MiB: the buffered outputs, the operand streams, the
+   * chunks being evaluated and the plan, counted as resident memory. Past it, outputs run in groups and the operands are read
+   * again for each group. Process memory is more than the count (measured 1.6 to 5 times; see the guide).
    */
   readonly maxBufferedBytes?: number;
   /**
@@ -1181,7 +1181,7 @@ export class CloudRoaring {
   }
 
   /**
-   * **Many outputs from one pass.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
+   * **Many outputs, each operand read once per group.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
    * to depth 64) published as a new generation of its own `dest`, exactly as an `*Into` would publish it, but computed
    * together: each operand's chunks are read once for all the outputs that use them, instead of once per output and
    * once more for every scratch segment a nested expression would otherwise need.
@@ -1216,10 +1216,13 @@ export class CloudRoaring {
    * group, and `stats.operands` carries every operand's pinned, start and end generation and whether it moved.
    *
    * **Memory.** Everything the pass holds resident is counted against `maxBufferedBytes` (default 256 MiB): each output's
-   * buffered chunks, the operand streams' ranges, and the chunks being evaluated. When the outputs do not fit, they run in
-   * groups, each reading its operands once, and a group's buffers are released only as its publishes settle. A chunk
-   * count the index understated does not grow a group past the budget: the largest buffer is dropped and that output
-   * re-runs alone. An output that cannot fit alone has `BudgetExceededError` as its result.
+   * buffered chunks, the operand streams' ranges, the chunks being evaluated, and the plan itself, and a call whose plan alone
+   * passes it is refused before any chunk is read. When the outputs do not fit, they run in groups, each reading its operands
+   * once (so the operand reads grow with the total output size over the budget), and a group's buffers are released only as
+   * its publishes settle. A chunk count the index understated does not grow a group past the budget: the largest buffer is
+   * dropped and that output re-runs alone. An output that cannot fit alone has `BudgetExceededError` as its result. The count
+   * is the pass's own: process memory is more, measured at 1.6 times the ledger's high water on Linux and 2.5 to 5 times on
+   * macOS on the in-memory backend (the guide has the shapes and what is not counted).
    *
    * **Untrusted bytes.** Every operand chunk is decoded through the checks on untrusted tier data. A key an operand's index
    * lists whose bytes are missing is an error for the outputs that read the operand, never an empty chunk.

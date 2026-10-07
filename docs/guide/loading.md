@@ -608,8 +608,9 @@ refused. `store.exists()` answers `false` for the first two, since a read of the
 
 A refresh that writes hundreds of segments, each a different `and` / `or` / `andNot` over the same stored operands,
 costs a lot as `*Into` calls: each one reads its operands again, and a nested expression needs a scratch segment per
-inner group, a published generation each. `store.materializeMany` computes all the outputs together. It reads each
-operand's chunks once for every output that uses them, evaluates every output chunk by chunk, and publishes each as the
+inner group, a published generation each. `store.materializeMany` computes the outputs together. It reads each
+operand's chunks once per group of outputs, for every output of the group that uses them (one group when the outputs fit the
+memory budget, more when they do not), evaluates every output chunk by chunk, and publishes each as the
 `*Into` it replaces would, to a `dest` of its own.
 
 ```ts
@@ -678,22 +679,48 @@ registry read of the operand's row when the call finishes, or the re-check's rea
 read of the call and not a snapshot of one instant. `stats.outputs[i]` gives the operands an output read, the group that
 computed it and when it ran.
 
-**Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass
-holds **resident**, which is not what it serializes to: a native bitmap costs a fixed amount over its serialized bytes
-(about 440 bytes for a sparse chunk on macOS and about 360 on Linux, measured on the shipped codec; the model sits above both), so
-the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size where the source knows it,
-capped at the window the call asked for, since an index is not trusted to say how much a stream holds) and each chunk being
-evaluated at its resident cost. When the outputs do not fit, they run in
-groups, filled in call order; each group reads its operands once, and a group's buffers are released only as its publishes
-settle, so the next group starts with room. Order related outputs next to each other and fewer operands are read again.
-The ledger is also enforced while the pass runs, so an index that understates a chunk's size cannot grow a group past the
-budget: the largest buffer is dropped and that output runs again alone. An output that cannot fit alone has
-`BudgetExceededError` as its result, naming the budget it needs. The budget is the pass's own count: process memory is more
-(the allocator's slack, the plan's key lists, and the encoded objects being written), and the ledger's high water is
-reported in `stats.memory`. The pass reads at most 64 range requests at once across all operands, inside the S3
-client's 128 sockets, so many operands do not queue behind the pool with their read timeouts running; `concurrency`
-(default 1) is the range requests held ahead per operand within that window, and `publishConcurrency` (default 8) the
-outputs published at once.
+**Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass counts
+as **resident**, which is not what it serializes to: a native bitmap costs a fixed amount over its serialized bytes
+(about 440 bytes for a sparse chunk on macOS and about 360 on Linux, measured on the shipped codec on arm64 only; the model
+sits above both), so the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size
+where the source knows it, capped at the window the call asked for, since an index is not trusted to say how much a stream
+holds; for a source that cannot say its size, which no shipped one is, the index's own cardinalities are the estimate), each
+chunk being evaluated, and the plan itself: the root keys and expression of every output and the operand indexes (2 bytes a root key, 96 a node and 256 an output, so about 5 KB an output of 8 nodes over 2,000
+keys: 5 MB at a thousand outputs and 50 MB at ten thousand, derived). A call
+whose plan alone passes the budget is refused with `BudgetExceededError` before any chunk is read, and the expressions of one
+call may hold 200,000 nodes in all (`ValidationError`, naming the output that passes it). When the outputs do not fit, they run
+in groups, filled in call order; each group reads its operands once, and a group's buffers are released only as its
+publishes settle, so the next group starts with room. Order related outputs next to each other and fewer operands are read
+again. The ledger is also enforced while the pass runs, so an index that understates a chunk's size cannot grow a group past
+the budget: the largest buffer is dropped and that output runs again alone. An output that cannot fit alone has
+`BudgetExceededError` as its result, naming the budget it needs. The pass reads at most 64 range requests at once across all
+operands, inside the S3 client's 128 sockets, so many operands do not queue behind the pool with their read timeouts running;
+`concurrency` (default 1) is the range requests held ahead per operand within that window, and `publishConcurrency` (default 8)
+the outputs published at once.
+
+**The budget is the pass's own count, and process memory is more.** Not counted: the process's own baseline, the
+allocator's slack, range responses and chunk buffers that wait for the garbage collector, the encoded bytes of an object
+being written beyond their serialized size, and, in a test against the in-memory backend, the backend's own objects. Measured
+on the in-memory backend with the baseline taken after the operands were loaded, the growth in resident set size over the
+ledger's high water was 1.6 times on Linux (aarch64, glibc 2.36, the 100-operand shape below at 256 MiB) and 2.5 to 5
+times on macOS (arm64, the same shape and a 200,000-id one); at a smaller budget the macOS growth stayed near 400 to 500 MB
+rather than shrinking with it. These are measurements on two machines, not a bound: size a container for the baseline, twice
+the budget and the plan, and watch the call's own `stats.memory`.
+
+**Groups, and the operand re-reads they cost, grow with the total output size over the budget.** The call reads each operand
+once per group, so it is one read of each operand only when every output fits one group. Each group also holds a window
+of every operand it reads (about 1 MiB an operand) for its whole pass, so many operands leave less of the budget for outputs.
+Counted in memory (`bench/materialize-many-counts.cjs`, the `target` shape: 100 operands of 3,000,000 ids over
+1,500 chunks, 1,000 outputs of about 5 MB each, 926 of them published):
+
+| budget | groups | range reads | chunk reads (the `budget` unit) | ledger high water |
+|---|---|---|---|---|
+| 256 MiB, the default | 77 | 18,845 | 4,807,500 | 204 MiB |
+| 2 GiB | 6 | 3,564 | 898,500 | 1,461 MiB |
+
+so at that size the default re-reads the operands 77 times, and a larger `maxBufferedBytes` is the lever.
+Planning sizes groups from the index, which cannot know how much two operands overlap, so an `and` of two large operands is
+priced at the smaller and is often far smaller in fact; the high water mark above shows how much of the budget a call used.
 
 **Reads are chunk-skipping, and bypass the chunk cache.** Each output reads an operand only at the chunks that can change
 its result: an `and` at the keys all its operands hold, an `or` at any, an `andNot` at its left side's keys, and a
@@ -720,28 +747,31 @@ demand with `node bench/materialize-many-counts.cjs --check --all`.
 | | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments |
 |---|---|---|---|---|---|---|
 | 1,000 `*Into` calls, nested groups through scratch segments | 137,037 | 2,736 | 3,988 | **143,761** | **3,404** | 818 |
-| one `materializeMany`, default 256 MiB (6 groups) | 590 | 1,100 | 1,809 | **3,499** | **1,768** | 0 |
+| one `materializeMany`, default 256 MiB (6 groups) | 594 | 1,100 | 1,796 | **3,490** | **1,768** | 0 |
 
 GET-class is range reads, tail reads and registry row reads; PUT-class is object writes, registry writes and listings;
 deletes are free and not counted. The publishes, one object and one pointer write per output, are the floor of any
 design and most of the batch's PUT-class. The `*Into` route reads with the default chunk cache, which holds 1,024
 chunks; a cache sized to the whole working set would cut its range reads, at the cost of the memory to hold it.
 
-**`stats.requests`** gives the call's own requests by class. `rangeReads`, `chunkReads`, `registryReads` (the re-checks,
-the end-of-call reads and the existence checks) and `publishes` are exact. `get` and `put` are the GET-class and PUT-class
-requests the call can attribute: `get` is the range reads and registry reads, and `put` the object write and pointer write
-of each published output and the object write of each refused one. They are a lower bound on what the drivers saw: the tail
-and row reads that open an operand are made by the store's readers, the reads inside a publish by the load, and a
-multipart upload's extra requests, a listing and the writes of a publish that threw are unknown to the call. In the
-counted call above `put` equals the drivers' PUT-class count and `get` is a small part of the GET-class count; the counts
-are side by side in the JSON.
+**`stats.requests`** gives the call's own requests. `rangeReads`, `chunkReads`, `registryReads` (the re-checks, the end-of-call
+reads and the existence checks), `opens` and `publishes` are exact counts of what the call did, and `attributed: { get, put }`
+is the part of the drivers' totals the call can name, a **lower bound** and not the cost: `get` is range reads plus registry
+reads, and `put` the object write and pointer write of each published output and the object write of each refused one.
+To reconstruct the total add, for each of `opens`, one tail read of the operand and at most one registry row read (a pin taken
+before the call may already have made them), and for each of `publishes`, the load's own reads of the destination's row and
+tail for its guard. Not known to the call: a multipart upload's extra requests, a listing, and what a publish that threw sent.
+In the counted call above `attributed.put` equals the drivers' PUT-class count and `attributed.get` is a small part of the
+GET-class count; the counts are side by side in the JSON.
 
-**The budget.** `budget` counts chunk reads over all the groups. A call that passes none gets, when the store was built
-with a `budget` of its own, that one, so a store ceiling below the plan throws `BudgetExceededError` before any chunk is
-read, as it does for every other operation; when the store is on the library default, the call sizes its own from its
-plan, twice the chunk reads the plan needs and a thousand, so it trips only when an output has to run again past it.
-Pass `budget` to set one for the call, or `false` to lift it. `stats.budget` has the limit, the chunk reads planned and
-those made.
+**The budget.** `budget` counts chunk reads over all the groups, re-reads included. A call that passes none gets, when the store
+was built with a `budget` of its own, that one, so a store ceiling below the plan throws `BudgetExceededError` before any chunk
+is read, as it does for every other operation, and it can refuse a realistic call: the `target` shape above plans
+4,807,500 chunk reads at the default memory budget and 898,500 at 2 GiB, against a library default of
+1,000,000. When the store is on the library default (a store whose `budget` is exactly 1,000,000 is treated as one on it), the
+call sizes its own from its plan, twice the chunk reads the plan needs and a thousand, so it trips only when an output has to
+run again past it. Pass `budget` to set one for the call, or `false` to lift it. `stats.budget` has the limit, the chunk reads
+planned and those made.
 
 **Erasure.** A batch widens the window of an in-flight read to the length of the call:
 see [a batch of materializations](erasure.md#a-batch-of-materializations).
