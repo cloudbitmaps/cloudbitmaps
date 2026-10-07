@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
+    "reason": "widened to accept a held MemoryOperand beside a Segment; every existing caller passing a Segment is unaffected; agreed with the maintainer"
+  }
+]
