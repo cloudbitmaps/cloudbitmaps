@@ -77,8 +77,9 @@ export class LeaseLimitError extends CloudRoaringError {}
 /**
  * An operand a call relied on changed while the call ran, so what the call built from it is not published. Carries the
  * operand's name in the call and why it is stale (`'moved'`: it was pinned at a generation and its pointer has since
- * moved; `'erased'`: an erasure ran in the store after a call with a feed began, so what the feed gave it may hold an
- * erased id), under the stable `code` `'stale-operand'`. Deterministic: run the call again against the current operand.
+ * moved; `'erased'`: an erasure ran in the store after a call with a feed began, or after a held operand the call reads
+ * was made, so what the feed gave it, or what the operand holds, may hold an erased id), under the stable `code`
+ * `'stale-operand'`. Deterministic: run the call again against the current operand.
  */
 export class StaleOperandError extends CloudRoaringError {
   readonly code = 'stale-operand' as const;

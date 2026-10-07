@@ -50,7 +50,7 @@ and LocalFsStorage come from the flavor's main entry; S3Storage, GcsStorage and 
 Only by loading a whole new generation. `store.load(ref, ids)` writes one immutable object, checks the result is
 plausible (an empty result over a non-empty segment is refused, reported as `published: false` with a `reason`),
 moves the pointer to it by a compare-and-swap fenced on the registry row it read, and collects what the move
-superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor. A backend
+superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor, or a bitmap you already hold (`{ bitmap }`, or `{ serialized }` for portable bytes). A backend
 (MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both the generations and the pointer and is what
 `storage` normally takes; a hand-written `{ storage, registry }` object is refused. `storage` also accepts a
 bare `IStorageDriver` (a storage driver, not a backend), which has no registry, so the store is read-only and cleartext; or an already-built
@@ -62,7 +62,10 @@ no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than
 wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
-target survives a materialization.
+target survives a materialization. `store.materializeMany` publishes many such outputs (each an `and` / `or` / `andNot`
+expression over named operands) from one chunk-ordered pass that reads each operand once, instead of once per `*Into`
+call; its operands can be stored segments, records that arrive as a feed, or sets you hold in memory with
+`store.memory(ids)`. It needs `keep`, reports `stats` on its result, and emits no `storage.get`, `cache`, `intersect` or `op` metrics event.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,

@@ -1,8 +1,9 @@
 # Loading in depth
 
 [Getting started](getting-started.md#load-real-data) shows one load. This page covers the rest of the write side:
-why a load is refused, what a load accepts, how many old generations to keep, how to roll back, and how to write a
-result into another segment. How loads stay correct under crashes and races is at the end.
+why a load is refused, what a load accepts, how many old generations to keep, how to roll back, how to write a
+result into another segment, and how to write many results from one pass, with operands that arrive as records or
+that you hold in memory. How loads stay correct under crashes and races is at the end.
 
 ## Load a segment
 
@@ -604,6 +605,8 @@ segment with a registry row but no ids is still accepted, because somebody creat
 refused. `store.exists()` answers `false` for the first two, since a read of them finds nothing. Pass
 `allowAbsentOperands: true` to combine against a name that may not exist yet; it then reads as empty.
 
+To write many results over the same operands, see [many outputs from one pass](#many-outputs-from-one-pass-materializemany).
+
 ## Many outputs from one pass: `materializeMany`
 
 A refresh that writes hundreds of segments, each a different `and` / `or` / `andNot` over the same stored operands,
@@ -666,7 +669,7 @@ one registry read at the end, that it moved.
 dangerous staleness. An output subtracts an operand when it is in its `exclude`, or under any entry of an `andNot` after
 the first, at any depth, so `{ andNot: ['us', 'opt-out'] }` and `exclude: ['opt-out']` are guarded alike. Immediately
 before the publishes the call re-reads the registry row of every pinned operand any output of the group subtracts, and
-compares what it finds with what was pinned: the generation, the row's incarnation and the fingerprint of the generation's
+compares what it finds with what was pinned: the generation, the row's incarnation and, where both reads carry one, the fingerprint of the generation's
 object, not the generation number alone, since a name deleted and created again starts at generation 0 and a number can be
 taken again by other bytes once its object is gone. A write to the row that is not a replacement (a retention policy, a
 lease) is not a move. The re-check costs one registry read per subtracted operand per group, and, to read the object's
@@ -845,7 +848,7 @@ and the iterator is told to stop; the call does not throw, each `run.outputs[i]`
 feed has been read and checked, each fed output publishes on its own, as any output does: an erasure is checked again before each
 publish, so one that lands while the publishes run refuses every fed output not yet published and leaves those already published,
 and a fed output whose object would not fit the budget at its publish is refused alone, with `BudgetExceededError`, while the
-others publish. Outputs that name only stored operands are planned and published as before and are not affected.
+others publish. Outputs that name only stored operands are planned and published as a call without a feed plans and publishes them, and are not affected.
 
 **One group, and a budget that is required.** A feed is read once, so a call with one runs all its outputs as one group, and a fed
 output's size is not known before the feed is read. `maxBufferedBytes` is therefore **required** with a feed (a
@@ -913,7 +916,7 @@ is in `mayBeEmpty`, for the reason a stored operand that names no segment is ref
 an upstream query that failed quietly. With the name in `mayBeEmpty`, an `and` with it empties and an exclude of it subtracts
 nothing. `mayBeEmpty` may name fed and held operands; naming anything else is a `ValidationError`.
 
-**Memory.** The handle holds the ids as the chunks a stored generation would hold (a 10,000,000-id operand is about 15 MB), and
+**Memory.** The handle holds the ids as the chunks a stored generation of those ids would hold, so its size follows the ids' layout (from kilobytes for consecutive ids to tens of megabytes for 10,000,000 scattered ones), and
 **between calls that memory is the caller's**: `release()` zeroes and drops it, any later use throws `ValidationError`, and
 releasing twice does nothing. While a call runs, its held operands count against `maxBufferedBytes` (a handle under two names is
 counted once), and a call whose held operands alone pass it throws `BudgetExceededError` before any chunk is read. There is no size option: a serialized input has the load's cap.

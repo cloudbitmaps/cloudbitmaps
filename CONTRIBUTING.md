@@ -17,7 +17,7 @@ forms and template in [`.github/`](.github/); security reports go **privately** 
 Every change must pass these locally, and CI runs each of them on every pull request (TypeScript, pnpm):
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
-  `pnpm smoke`
+  `pnpm api:surface:check` · `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
   Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
   (`docker compose up -d`, as [`tests/README.md`](tests/README.md) says), and a change that touches a driver runs it
@@ -204,7 +204,7 @@ order:
    property tests over loaded generations and crash/race tests for the write-then-publish path.
 3. **Run the full local gate — and it must be green.** Before review or merge, run every gate command and
    confirm each passes: `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · **`pnpm typecheck`** ·
-   `pnpm test` · `pnpm build` · `pnpm smoke`. **`pnpm typecheck` is a required gate exactly like lint and the
+   `pnpm test` · `pnpm build` · `pnpm api:surface:check` · `pnpm smoke`. **`pnpm typecheck` is a required gate exactly like lint and the
    tests**, and it runs two compilers, each `--noEmit` over the root program and every package's own
    `tsconfig.json`: TypeScript 5.9, which lint and the declaration build use, and TypeScript 7
    (`typecheck:next`); `typecheck` collapses to TypeScript 7 alone once `typescript-eslint` supports it. A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is

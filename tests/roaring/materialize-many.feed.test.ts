@@ -101,6 +101,19 @@ describe('materializeMany with a feed', () => {
     ).rejects.toThrow(/maxBufferedBytes is required with a feed/);
   });
 
+  it('accepts an empty mayBeEmpty on any call, since it names nothing', async () => {
+    const w = await worldWithOptout();
+    const s = (n: string) => w.store.segment(n);
+    const run = await w.store.materializeMany({
+      operands: { optout: s('optout') },
+      outputs: [{ dest: s('only-stored'), expr: 'optout' }],
+      mayBeEmpty: [],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+    expect(await w.ids('only-stored')).toEqual(DATA.optout);
+  });
+
   it('refuses a mayBeEmpty with no feed, or naming what is not fed, before anything is read', async () => {
     const w = await worldWithOptout();
     const s = (n: string) => w.store.segment(n);

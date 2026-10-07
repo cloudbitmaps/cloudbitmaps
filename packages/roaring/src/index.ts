@@ -1307,8 +1307,9 @@ export class CloudRoaring {
    *
    * **Every pinned operand an output subtracts is re-checked.** An output subtracts an operand when it is in its `exclude`
    * or under any entry of an `andNot` after the first, at any depth. Immediately before the publishes the call re-reads the
-   * registry row of each such operand and compares its generation and incarnation with what was pinned (a name deleted and
-   * created again is a replacement though it is generation 0 again). If one was replaced, each output that subtracts it is
+   * registry row of each such operand and compares its generation and incarnation, and the fingerprint of the current
+   * object where both reads carry one, with what was pinned (a name deleted and created again is a replacement though it
+   * is generation 0 again). If one was replaced, each output that subtracts it is
    * not published and carries {@link StaleOperandError}; the others publish. It costs one registry read per such operand per
    * group, and `stats.operands` carries every operand's pinned, start and end generation and whether it moved.
    *
@@ -1457,10 +1458,8 @@ export class CloudRoaring {
         }
         fedMayBeEmpty = rest;
       }
-      if (
-        feedIn === undefined &&
-        (heldHandles.size === 0 || !Array.isArray(fedMayBeEmpty) || fedMayBeEmpty.length > 0)
-      ) {
+      // An empty list, or one naming only held operands, names nothing a feed must check.
+      if (feedIn === undefined && (!Array.isArray(fedMayBeEmpty) || fedMayBeEmpty.length > 0)) {
         throw new ValidationError(
           'materializeMany: mayBeEmpty names fed operands, and the call has no feed',
         );

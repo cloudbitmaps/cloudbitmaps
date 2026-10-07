@@ -476,20 +476,36 @@
            The in-region run measured latency and load throughput on S3; what it did not measure is listed here,
            and the same list docs/benchmarks.md keeps under "What is still owed" is the source: this one follows it.
 
-           Rows 01-04 are debts, not results. Row 05 is a published ceiling, because the gate that measures it
+           Rows 01-07 are debts, not results. Row 08 is a published ceiling, because the gate that measures it
            RECORDS what it measured, and it is marked differently so the two kinds are not read as one. Do not
            generalise this comment to "every row is a debt". -->
       <section id="owed">
         <h2>What is still owed</h2>
         <p class="lede">
           The in-region run timed a cold intersect, a load, point reads and <span class="m">andNot</span> on S3, so
-          those are published above, as one shape on one client. Four things are not measured. Wall-clock
-          throughput on shared runners is too noisy to gate. The first four rows below are what is still owed;
-          the fifth is a measured ceiling, marked as such.
+          those are published above, as one shape on one client. Seven things are not measured. Wall-clock
+          throughput on shared runners is too noisy to gate. The first seven rows below are what is still owed;
+          the eighth is a measured ceiling, marked as such.
         </p>
         <ul class="rowlist">
           <li>
             <span class="rl-mark">01</span>
+            <span class="rl-what"><span class="m">iterate</span> on S3</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              Its request count is expected and not measured, and the run did not time it.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Ranges of other sizes</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              The cold intersect's and the <span class="m">andNot</span>'s times are measured for ranges of up to about 1&nbsp;MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads outside the region, are not.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
             <span class="rl-what">A Lambda figure</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
@@ -497,25 +513,31 @@
             </span>
           </li>
           <li>
-            <span class="rl-mark">02</span>
-            <span class="rl-what">The <span class="m">*Into</span> verbs</span>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">The <span class="m">*Into</span> verbs, <span class="m">materializeMany</span>, and combines at larger sizes</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              Materialising a combine's result back into a segment, against a real object store.
+              Materialising a combine's result back into a segment, and <span class="m">intersect</span>, <span class="m">union</span>, <span class="m">andNot</span> and the <span class="m">*Into</span> verbs on operands of about a million, five million and ten million ids, against a real object store. The request counts of a <span class="m">materializeMany</span> call are counted in memory and not measured on S3.
             </span>
           </li>
           <li>
-            <span class="rl-mark">03</span>
+            <span class="rl-mark">05</span>
             <span class="rl-what">Other combine shapes</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              More than two operands, other overlaps than the sweep to 2,000 shared chunks, <span class="m">iterate</span>,
-              whose request count is expected and not measured, and the larger chunks of a medium or large deployment,
-              against a real object store.
+              More than two operands, and other overlaps than the sweep to 2,000 shared chunks, against a real object store.
             </span>
           </li>
           <li>
-            <span class="rl-mark">04</span>
+            <span class="rl-mark">06</span>
+            <span class="rl-what">A steady <span class="m">store.load()</span> at another <span class="m">keep</span></span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              The run measured <span class="m">keep: 12</span>; the requests at a <span class="m">keep</span> of 1, or of 64, are counted by the engine and not measured on S3.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">07</span>
             <span class="rl-what">GCS and Azure Blob, in-region</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
@@ -523,7 +545,7 @@
             </span>
           </li>
           <li>
-            <span class="rl-mark">05</span>
+            <span class="rl-mark">08</span>
             <span class="rl-what">RSS ceiling</span>
             <span class="rl-fig is-live">384m</span>
             <span class="rl-note">

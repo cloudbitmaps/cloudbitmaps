@@ -206,6 +206,7 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │  materializeMany() ← many *Into    intersectInto() unionInto()        │
   │  exists()  segments()              andNotInto()                       │
   │  generations() rollback()                                             │
+  │  memory(ids)         ← held operand of materializeMany                │
   │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
   │  setRetention() getRetention()     costReport()                       │
   │  clearRetention()                                                     │
@@ -289,7 +290,7 @@ You need **Node ≥ 22.12** and **pnpm 9**; Docker is needed only for the integr
 
 ```bash
 pnpm install
-pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm smoke
+pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm api:surface:check && pnpm smoke
 ```
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is the canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent

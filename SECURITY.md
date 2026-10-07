@@ -153,7 +153,7 @@ produced the package they installed**. The controls:
   serves. If you are checking signatures, expect exactly those prerelease versions to have none, and treat an
   unattested tarball at a **real** version as untrusted.
 - **Publish only a re-verified tree.** The release workflow re-runs the gate that governs the artifact
-  (`lint · lint:arch · format:check · typecheck · test · audit · build · smoke`, plus a `leak-scan` of the
+  (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is
   necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
   served from `main`, not what is published. A pushed `vX.Y.Z` tag must also match every package's

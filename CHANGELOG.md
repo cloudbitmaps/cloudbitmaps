@@ -11,6 +11,20 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`store.materializeMany` accepts an empty `mayBeEmpty` on any call.** A call with no feed and no held operand refused
+  `mayBeEmpty: []` with a `ValidationError`, though an empty list names nothing and the same list was accepted beside a
+  feed or a held operand. Code that always passes a computed list, empty when nothing may be empty, is no longer refused;
+  naming an operand that is neither held nor fed is still a `ValidationError`.
+- **Documentation corrections.** The package READMEs no longer say they describe `main` ahead of the release they ship in. The
+  `roaring` README, the site's API lists and `llms.txt` name `store.materializeMany` and `store.memory`, and the guides say that
+  `materializeMany` emits no `storage.get`, `cache`, `intersect` or `op` metrics event while its per-output audit events still
+  fire. `StaleOperandError`'s doc comment says `'erased'` also applies to a held operand, and the pinned re-check's
+  fingerprint compare is described as the code does it. A held operand's size is described by how it follows the ids' layout, and
+  the roadmap names the registry row's schema as 3. The getting-started guide's Redis table maps `BITOP ANDOR` and `BITOP XOR` to
+  one `store.materializeMany` expression, where it said neither has a single call.
+
 ## [0.18.0] — 2026-10-06
 
 ### Added

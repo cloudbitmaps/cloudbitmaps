@@ -203,8 +203,8 @@ The *read* side carries over one-for-one:
 | `BITOP AND dst a b` | `a.intersect([b])` / `a.intersectInto(dst, [b])` | streams, and skips chunks that cannot contribute; `dst` becomes a new generation |
 | `BITOP OR dst a b` | `a.union([b])` / `unionInto` | none in meaning |
 | `BITOP DIFF dst a b` (Redis 8.2+) | `a.andNot([b])` / `andNotInto` | none in meaning; reads `b` only where it overlaps `a` |
-| `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
-| `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
+| `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | `store.materializeMany` with `expr: { and: ['x', { or: ['y1', 'y2'] }] }` | one pass, no temp segment; one call can write many such outputs ([many outputs from one pass](loading.md#many-outputs-from-one-pass-materializemany)) |
+| `BITOP XOR` | `store.materializeMany` with `expr: { andNot: [{ or: ['a', 'b'] }, { and: ['a', 'b'] }] }` | one pass: `(a ∪ b) \ (a ∩ b)`, written to a segment |
 | `BITOP NOT` · `BITOP ONE` | — | no equivalent |
 | `SETBIT key id 1` / `SETBIT key id 0` | — | **no per-id write.** Build the set upstream and `store.load()` it; remove one id everywhere with `eraseSubject` (a rewrite, for compliance — not a hot-path verb) |
 | `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt) |
@@ -404,7 +404,7 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
 | **keep** | How many old generations a load leaves behind for readers still using them. The default, `1`, is right for almost everyone. |
 | **operand** | A segment you combine with another: in `a.intersect([b])`, `b` is an operand. |
 | **exclude** | A segment whose ids are removed from the result of a combine, in the same pass. |
-| **combine** | `intersect`, `union` or `andNot`: a read that combines a segment with others. Each has an `*Into` twin that writes the result as a new generation of another segment. |
+| **combine** | `intersect`, `union` or `andNot`: a read that combines a segment with others. Each has an `*Into` twin that writes the result as a new generation of another segment, and `store.materializeMany` writes many such results, each an expression over named operands, in one pass. |
 | **collect** | Delete old generations that a newer one has superseded. A load does it as its last step and leaves `keep` of them. |
 | **`cache.genTtlMs`** | How long a reader may keep serving the generation it has before it checks for a newer one: 2 s by default. See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load). |
 | **sweep** | `store.retireExpired()`, which you schedule: it retires the segments whose recorded expiry has passed. |
