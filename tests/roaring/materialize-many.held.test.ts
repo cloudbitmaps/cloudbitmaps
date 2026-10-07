@@ -399,18 +399,18 @@ describe('an erasure in the store', () => {
     expect(await w.ids('o-after')).toEqual([4, 5, 6]);
   });
 
-  it('is refused before any request for an output that reads only the stale handle', async () => {
+  it('is refused before any request, even for an output that also reads a stored operand', async () => {
     const w = await batchWorld(DATA);
     const before = await w.store.memory([1, 2, 3]);
     await erase(w);
     w.resetCalls();
     const run = await w.store.materializeMany({
-      operands: { before },
-      outputs: [{ dest: w.store.segment('o'), expr: 'before' }],
+      operands: { before, a: w.store.segment('a') },
+      outputs: [{ dest: w.store.segment('o'), expr: { and: ['a', 'before'] } }],
       keep: 1,
     });
     stale(run.outputs[0]);
-    expect(w.calls.storage + w.calls.registry).toBe(0);
+    expect(w.calls.ranges).toBe(0);
   });
 
   it('an erasure that starts while a handle is being made makes it stale', async () => {
