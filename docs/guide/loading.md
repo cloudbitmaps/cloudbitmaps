@@ -824,8 +824,7 @@ realm's `Uint32Array` are accepted, and are read through the typed array's own a
 check different ids from the ones used); an array whose buffer was detached; ids that are not ascending and unique, or that
 fall outside the key; and a name given twice at one key. Each is a `ValidationError` that names the record's key and the operand; it
 never names an id. The ids are read once, in one pass that checks and copies them, so an array a producer changes after
-yielding it cannot make the checked ids differ from the used ones. The check costs about 9 ns an id end to end (check,
-conversion and evaluation, with 800 ids an operand; measured with a load average of 13 on 11 cores, so a quiet machine is faster) and about 2 µs an operand.
+yielding it cannot make the checked ids differ from the used ones.
 
 **The end of the feed.** `feed.counts` is **required**: an object, or a function called exactly once after the iterator has
 ended and before any fed output is published, that gives the ids each fed operand holds over the whole feed, keyed by exactly
@@ -839,11 +838,14 @@ or held operand is a `ValidationError`. The counts are the producer's own: a pro
 same failed source agrees with itself, and the call cannot tell.
 
 **Fed outputs are atomic.** A fed output (one that names a fed operand) is published only after the whole feed has been read and
-every end-of-feed check passed. A bad record, an iterator that throws, a count that does not match, an empty name, the budget or an
-erasure refuses **every fed output** and publishes none of them, and the iterator is told to stop; the call does not throw, each
-`run.outputs[i]` of a fed output carries the error (`ValidationError` for the feed, the error the iterator threw as it
-was, `BudgetExceededError`, `StaleOperandError`). Outputs that name only stored operands are planned and published as before and are not
-affected.
+every end-of-feed check passed. A bad record, an iterator that throws, a count that does not match, an empty name, the budget
+passed while the feed is read, or an erasure before the publishes begin refuses **every fed output** and publishes none of them,
+and the iterator is told to stop; the call does not throw, each `run.outputs[i]` of a fed output carries the error
+(`ValidationError` for the feed, the error the iterator threw as it was, `BudgetExceededError`, `StaleOperandError`). Once the
+feed has been read and checked, each fed output publishes on its own, as any output does: an erasure is checked again before each
+publish, so one that lands while the publishes run refuses every fed output not yet published and leaves those already published,
+and a fed output whose object would not fit the budget at its publish is refused alone, with `BudgetExceededError`, while the
+others publish. Outputs that name only stored operands are planned and published as before and are not affected.
 
 **One group, and a budget that is required.** A feed is read once, so a call with one runs all its outputs as one group, and a fed
 output's size is not known before the feed is read. `maxBufferedBytes` is therefore **required** with a feed (a
@@ -852,12 +854,10 @@ the one that proved it whole) and every fed output's buffer are counted, and **t
 budget**, with `BudgetExceededError` for every fed output, not after the whole feed was read. Stored-only outputs of the same call run again alone, as a call
 without a feed does, if the pass has to evict them.
 
-**Memory.** The operand side is one key plus the key that proved it whole. Measured on the in-memory backend with 10,000 fed
-operands of 800 ids a key (a key is 32 MB as the caller's `Uint32Array`s, and the call's bitmaps for it are 31 MB in the
-ledger): the ledger's high water was 62 MB over five keys, two keys' worth, where holding the feed would be five; process memory
-grew 216 MB at its peak, which includes the caller's record in hand. With 5,000 ids an operand it was 186 MB in the ledger
-and 434 MB of process growth; with 50 ids, 14 MB and 70 MB. The count is the ledger's own, as for stored operands, and the
-caller's record, which is 4 bytes an id, is on top of it.
+**Memory.** The operand side is one key plus the key that proved it whole. Counted with 10,000 fed operands of 800 ids a key (a
+key is 32 MB as the caller's `Uint32Array`s, and the call's bitmaps for it are 31 MB in the ledger): the ledger's high water was
+62 MB over five keys, two keys' worth, where holding the feed would be five. The count is the ledger's own, so process memory runs
+above it as it does for stored operands, and the caller's record, which is 4 bytes an id, is on top of it.
 
 **Range.** `after` and `through` apply as to stored operands: a record outside the window is checked and counted, then dropped,
 and edge chunks are cut after evaluation. A bad record beyond `through` is refused all the same.

@@ -13,6 +13,42 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`store.memory(input)` holds ids in memory as an operand of `store.materializeMany`, and of no other verb.** It takes what
+  `store.load` takes (ids as a sync or async iterable or a typed array, `{ bitmap }`, `{ serialized }`), checked the same way with the
+  same errors: the size cap, the structure, the safe deserializer and each id's range. Only a real `Uint32Array`, by the typed
+  array's own brand (a subclass, a shared-memory view and another realm's are real ones; a spoof and a proxy are not), skips the
+  per-id range check, and any other typed array goes through it; an object with an `ascending` key is refused with a message that
+  names the feed. The handle is a `MemoryOperand`: `release()` zeroes and drops its bytes, any later use throws, and a second
+  release does nothing. A held operand is read from memory beside stored and fed ones with no request and never touches the shared
+  chunk cache, and the output is byte for byte what the same operand stored would publish; its bytes count against
+  `maxBufferedBytes` while the call runs and are the caller's between calls. An empty held operand is accepted by `store.memory`
+  and refused by the call unless its name is in `mayBeEmpty`, which now names held operands as well as fed ones. A handle
+  belongs to the store that made it, and an erasure that starts in that store after the handle was made (the counter
+  `eraseSubject` moves) fails the outputs that read it with `StaleOperandError` (`reason: 'erased'`), before any request and
+  again immediately before each publish; an erasure in another store or process is not seen. `operands` is now typed
+  `Record<string, Segment | MemoryOperand>`. New: `MemoryOperand` from `@cloudbitmaps/roaring`; `prepareHeld`, `CombineManyHeld` and
+  `HeldChunks` from `@cloudbitmaps/core`; `held` on `CombineManyOperand`. Nothing else changes.
+  [Guide](docs/guide/loading.md#operands-held-in-memory-storememory).
+- **`store.materializeMany` takes a feed: operands that arrive as records in chunk-key order, for conditions too many to hold or store.**
+  `feed: { names, records, counts }` declares the fed operand names, an `AsyncIterable` of `{ key, operands: Record<string,
+  Uint32Array> }` and the ids each name holds (an object, or a function called once after the last record), and an output names a fed operand as it names a stored
+  one; the two mix in one call and one pass, and the outputs are byte for byte what the same operands stored would publish. A key may arrive as several records and each name at most once per key;
+  every record is checked before the pass sees it (key in range and not below the last, every name declared, every value a real
+  `Uint32Array` read through the typed array's own accessors, ids strictly ascending and inside the key), and a bad feed is
+  refused, never read as fewer members, with a `ValidationError` that names the key and the operand and no id. Fed outputs are
+  atomic: they publish only after the whole feed was read and the end-of-feed checks passed (`counts` equal to the ids seen, which
+  catches a feed that ended early or skipped a key; a declared name that appeared in no record refused unless it is in
+  `mayBeEmpty`), so a bad feed, a throwing iterator, a budget overrun while the feed is read or an erasure before the publishes
+  begin refuses every fed output and publishes none of them, while outputs that name only stored operands are unaffected; after
+  that each fed output publishes on its own, refused alone if an erasure lands before its publish or its object does not fit
+  the budget. A feed is read once, so the call runs as one group and
+  `maxBufferedBytes` is required with it; each record is converted to compressed bitmaps as it arrives and the call fails as soon
+  as the ledger passes the budget. Counted with 10,000 fed operands of 800 ids a key (32 MB a key as `Uint32Array`s): a ledger high
+  water of 62 MB over five keys, two keys' worth. A call with a feed records the store's erasure counter, which `eraseSubject` moves at its start and
+  its end, and is refused with `StaleOperandError` (`reason: 'erased'`, new) at its next record and before each fed publish once it
+  moved, and at its first record when an erasure was already running as it began; a call with no feed never reads it. New types `MaterializeManyFeed` and `MaterializeManyFeedRecord`, and `CombineManyFeed`
+  and `CombineManyFeedRecord` from `@cloudbitmaps/core`. Nothing existing changes except that `eraseSubject` moves the counter.
+  [Guide](docs/guide/loading.md#operands-that-arrive-as-records-a-feed).
 - **`store.materializeMany` writes many `*Into` outputs in a chunk-ordered pass that reads each operand once per group.** Each output is an expression
   (`and`, `or`, `andNot`, nested to 64 operators) over named stored operands, with an `exclude` list, published as a new
   generation of its own `dest` exactly as an `*Into` publishes. Every operand chunk is read once for all the outputs of a
@@ -45,41 +81,6 @@ so, and so do the module headers in the code.
   (`pnpm api:surface:check`), in the release job, and on every pull request against its base branch
   (`.github/workflows/api-surface-base.yml`). `pnpm api:surface` regenerates the snapshot. No library behaviour changes.
 
-- **`store.materializeMany` takes a feed: operands that arrive as records in chunk-key order, for conditions too many to hold or store.**
-  `feed: { names, records, counts }` declares the fed operand names, an `AsyncIterable` of `{ key, operands: Record<string,
-  Uint32Array> }` and the ids each name holds (an object, or a function called once after the last record), and an output names a fed operand as it names a stored
-  one; the two mix in one call and one pass, and the outputs are byte for byte what the same operands stored would publish. A key may arrive as several records and each name at most once per key;
-  every record is checked before the pass sees it (key in range and not below the last, every name declared, every value a real
-  `Uint32Array` read through the typed array's own accessors, ids strictly ascending and inside the key), and a bad feed is
-  refused, never read as fewer members, with a `ValidationError` that names the key and the operand and no id. Fed outputs are
-  atomic: they publish only after the whole feed was read and the end-of-feed checks passed (`counts` equal to the ids seen, which
-  catches a feed that ended early or skipped a key; a declared name that appeared in no record refused unless it is in
-  `mayBeEmpty`), so a bad feed, a throwing iterator, a budget overrun or an erasure refuses every fed output and publishes none
-  of them, while outputs that name only stored operands are unaffected. A feed is read once, so the call runs as one group and
-  `maxBufferedBytes` is required with it; each record is converted to compressed bitmaps as it arrives and the call fails as soon
-  as the ledger passes the budget. Counted with 10,000 fed operands of 800 ids a key (32 MB a key as `Uint32Array`s): a ledger high
-  water of 62 MB over five keys, process growth of 216 MB at its peak, 9 ns an id for check, conversion and evaluation together
-  (measured on a loaded machine). A call with a feed records the store's erasure counter, which `eraseSubject` moves at its start and
-  its end, and is refused with `StaleOperandError` (`reason: 'erased'`, new) at its next record and before each fed publish once it
-  moved, and at its first record when an erasure was already running as it began; a call with no feed never reads it. New types `MaterializeManyFeed` and `MaterializeManyFeedRecord`, and `CombineManyFeed`
-  and `CombineManyFeedRecord` from `@cloudbitmaps/core`. Nothing existing changes except that `eraseSubject` moves the counter.
-  [Guide](docs/guide/loading.md#operands-that-arrive-as-records-a-feed).
-- **`store.memory(input)` holds ids in memory as an operand of `store.materializeMany`, and of no other verb.** It takes what
-  `store.load` takes (ids as a sync or async iterable or a typed array, `{ bitmap }`, `{ serialized }`), checked the same way with the
-  same errors: the size cap, the structure, the safe deserializer and each id's range. Only a real `Uint32Array`, by the typed
-  array's own brand (a subclass, a shared-memory view and another realm's are real ones; a spoof and a proxy are not), skips the
-  per-id range check, and any other typed array goes through it; an object with an `ascending` key is refused with a message that
-  names the feed. The handle is a `MemoryOperand`: `release()` zeroes and drops its bytes, any later use throws, and a second
-  release does nothing. A held operand is read from memory beside stored and fed ones with no request and never touches the shared
-  chunk cache, and the output is byte for byte what the same operand stored would publish; its bytes count against
-  `maxBufferedBytes` while the call runs and are the caller's between calls. An empty held operand is accepted by `store.memory`
-  and refused by the call unless its name is in `mayBeEmpty`, which now names held operands as well as fed ones. A handle
-  belongs to the store that made it, and an erasure that starts in that store after the handle was made (the counter
-  `eraseSubject` moves) fails the outputs that read it with `StaleOperandError` (`reason: 'erased'`), before any request and
-  again immediately before each publish; an erasure in another store or process is not seen. `operands` is now typed
-  `Record<string, Segment | MemoryOperand>`. New: `MemoryOperand` from `@cloudbitmaps/roaring`; `prepareHeld`, `CombineManyHeld` and
-  `HeldChunks` from `@cloudbitmaps/core`; `held` on `CombineManyOperand`. Nothing else changes.
-  [Guide](docs/guide/loading.md#operands-held-in-memory-storememory).
 - **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on
   operands of about a million, five million and ten million ids, which the default suite's layout refuses: two operand
   segments a size, about 1,500 chunks each with 20 % shared. Its stages load the six operands through `store.load()`,

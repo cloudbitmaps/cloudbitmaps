@@ -5,7 +5,7 @@ import { join } from 'node:path';
  * The privacy notes and the erasure guide say, in one shape, what an erasure that runs during a `materializeMany`
  * call does and does not reach. The statement is a compliance one, read by an auditor in PRIVACY.md and followed by an
  * operator in the guide, and the three copies are written apart, so the gate holds each to the same three sentences and to the lead sentence that opens the paragraph.
- * It holds the two sentences of a call with a feed to the same standard.
+ * It holds the three sentences of a call with a feed to the same standard.
  *
  * KNOWN LIMIT. It reads the sentences, not the paragraphs around them: a surrounding sentence that contradicts them
  * in words is for the review of a change to this promise.
@@ -28,6 +28,7 @@ export const SENTENCES = [
   "An erasure that rewrites a destination before that output's publish starts does not stop the publish, which, subject to the output's own `guard` and the refusal of an empty result over a non-empty destination, writes on top of the erasure's generation; an erasure that lands inside the publish's own write, between its pointer read and its pointer write, makes the publish lose with `WriteConflictError`; after any call that overlapped an erasure, re-run `eraseSubject` and keep both ledgers.",
   '`eraseSubject` deletes the generation it rewrites even when a call holds it pinned, so a pin does not outlive an erasure, and an output that still needs a deleted operand generation fails with `NotFoundError`.',
   "A `materializeMany` call with a feed is refused at its next record, and immediately before each fed output's publish (after the output has waited for its room in the memory budget), once `eraseSubject` has started in this store, one already running when the call began included: nothing is published from operands the call read before the erasure returned, and the one record in hand when the erasure lands is processed and discarded.",
+  "An erasure that starts after a fed output's last check and finishes before that publish's pointer write is not caught by the counter, and its window is the publish's own object write and pointer write, which lasts as long as the object takes to upload; the fences above still apply to what it touched.",
   "Only this store's `eraseSubject` moves the counter such a call reads, so an erasure by any other path (another store, another process, or the free function `eraseIdFromSegment` in this process) is not seen by it, and is bounded by nothing.",
   "A `materializeMany` call that reads an in-memory operand from `store.memory` fails the outputs that read it, before any request and immediately before each of their publishes, once `eraseSubject` has started in this store since the operand began to be made, one already running when it began included; an erasure by any path but this store's `eraseSubject` is not seen by such an operand, and is bounded by nothing.",
 ];

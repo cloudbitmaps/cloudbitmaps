@@ -267,28 +267,72 @@ describe('an erasure in the store while a fed call runs', () => {
     expect(await w.store.exists({ segment: 'f-2' })).toBe(false);
   });
 
+  /** Holds each erasure at its first registry read, so that it is still running while a call starts and runs. */
+  function holdErasures(w: BatchWorld) {
+    const waiting: Array<() => void> = [];
+    let armed = true;
+    w.hooks.beforeRowRead = async () => {
+      if (armed) await new Promise<void>((resolve) => waiting.push(resolve));
+    };
+    return {
+      async until(n: number): Promise<void> {
+        for (let i = 0; i < 1_000 && waiting.length < n; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        expect(waiting.length).toBe(n);
+        armed = false;
+      },
+      releaseOne: (): void => waiting.shift()!(),
+      releaseAll: (): void => {
+        while (waiting.length > 0) waiting.shift()!();
+      },
+    };
+  }
+
+  const callOn = (w: BatchWorld) => (prefix: string) =>
+    w.store.materializeMany({
+      operands: { optout: w.store.segment('optout') },
+      feed: feedFor(FED),
+      maxBufferedBytes: 64 * 1024 * 1024,
+      outputs: [
+        { dest: w.store.segment(`${prefix}-fed`), expr: 'a' },
+        { dest: w.store.segment(`${prefix}-stored`), expr: 'optout' },
+      ],
+      keep: 1,
+    });
+
   it('refuses a call that starts while an erasure is running, and serves one that starts after it', async () => {
     const w = await worldWithOptout();
-    const s = (n: string) => w.store.segment(n);
-    const call = (prefix: string) =>
-      w.store.materializeMany({
-        operands: { optout: s('optout') },
-        feed: feedFor(FED),
-        maxBufferedBytes: 64 * 1024 * 1024,
-        outputs: [
-          { dest: s(`${prefix}-fed`), expr: 'a' },
-          { dest: s(`${prefix}-stored`), expr: 'optout' },
-        ],
-        keep: 1,
-      });
-    // An erasure that runs for the whole call: the counter is odd when the call records it and does not move until it ends.
-    const probe = w.store as unknown as { erasureEpoch: number };
-    probe.erasureEpoch++;
+    const call = callOn(w);
+    const hold = holdErasures(w);
+    const erasure = w.store.eraseSubject(4_000_000, { allNamespaces: true });
+    await hold.until(1);
     const during = await call('during');
     erased(during.outputs[0]);
     published(during.outputs[1]);
     expect(await w.store.exists({ segment: 'during-fed' })).toBe(false);
-    probe.erasureEpoch++;
+    hold.releaseAll();
+    await erasure;
+    const after = await call('after');
+    published(after.outputs[0]);
+    published(after.outputs[1]);
+  });
+
+  it('refuses a call that starts while erasures overlap, until the last of them has ended', async () => {
+    const w = await worldWithOptout();
+    const call = callOn(w);
+    const hold = holdErasures(w);
+    const first = w.store.eraseSubject(4_000_000, { allNamespaces: true });
+    const second = w.store.eraseSubject(4_000_001, { allNamespaces: true });
+    await hold.until(2);
+    // Two erasures running: whatever the counter reads, the call is refused.
+    erased((await call('both')).outputs[0]);
+    hold.releaseOne();
+    await Promise.race([first, second]);
+    // One has ended and one still runs.
+    erased((await call('one')).outputs[0]);
+    hold.releaseAll();
+    await Promise.all([first, second]);
     const after = await call('after');
     published(after.outputs[0]);
     published(after.outputs[1]);
