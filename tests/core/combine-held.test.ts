@@ -192,6 +192,30 @@ describe('a held operand in the pass', () => {
   });
 });
 
+describe('an erasure that lands while the pass reads', () => {
+  it('stops reading the held operand at the next key and fails the outputs that read it', async () => {
+    const chunks = await held(ids(0, 6 * 65_536, 40_000));
+    expect(chunks.keys.length).toBeGreaterThan(4);
+    const reads: number[] = [];
+    const payload = chunks.payload.bind(chunks);
+    chunks.payload = (key: number) => {
+      reads.push(key);
+      return payload(key);
+    };
+    let checks = 0;
+    // the first check is the start of the call, the second the first key the pass reads, then the erasure lands
+    const run = await runWith(
+      { a: ids(0, 6 * 65_536, 5) },
+      [heldOperand('v', chunks, { erased: () => ++checks > 2 })],
+      [{ expr: { and: ['a', 'v'] } as never }],
+    );
+    const failed = (run.run.outputs[0] as { ok: false; error: StaleOperandError }).error;
+    expect(failed).toBeInstanceOf(StaleOperandError);
+    expect(failed.reason).toBe('erased');
+    expect(reads.length).toBeLessThan(chunks.keys.length);
+  });
+});
+
 describe('prepareHeld', () => {
   it('refuses an `ascending` option and names the feed', async () => {
     await expect(
