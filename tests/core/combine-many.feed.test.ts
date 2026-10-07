@@ -26,6 +26,14 @@ const error = (o: { ok: boolean }): Error => {
   return (o as unknown as { error: Error }).error;
 };
 
+type Resizable = new (
+  length: number,
+  options: { maxByteLength: number },
+) => ArrayBuffer & {
+  resize(length: number): void;
+};
+const ResizableBuffer = ArrayBuffer as unknown as Resizable;
+
 /** A feed of `records` for operand `a`, beside a stored operand `s` an output of its own reads. */
 async function feedA(records: unknown[], names = ['a'], counts?: Record<string, number>) {
   return runFed([{ expr: 'a' }, { expr: 's' }, { expr: { or: ['a', 's'] } }], {
@@ -165,7 +173,7 @@ describe('a record is checked before the pass sees it', () => {
   });
 
   it('refuses a view that a resizable buffer shrank out from under, rather than reading it as empty', async () => {
-    const buffer = new ArrayBuffer(8, { maxByteLength: 16 });
+    const buffer = new ResizableBuffer(8, { maxByteLength: 16 });
     const ids = new Uint32Array(buffer, 4, 1);
     ids[0] = K + 1;
     buffer.resize(0);
@@ -175,7 +183,7 @@ describe('a record is checked before the pass sees it', () => {
       /out of bounds of its resizable buffer/,
     );
     // A view that tracks the length of a resizable buffer, or fits inside it, is a Uint32Array like another.
-    const grown = new ArrayBuffer(8, { maxByteLength: 16 });
+    const grown = new ResizableBuffer(8, { maxByteLength: 16 });
     const tracking = new Uint32Array(grown);
     tracking.set([K + 1, K + 2]);
     await expectAccepted([{ key: 1, operands: { a: tracking } }], [K + 1, K + 2]);
@@ -183,7 +191,7 @@ describe('a record is checked before the pass sees it', () => {
       [
         {
           key: 1,
-          operands: { a: new Uint32Array(new ArrayBuffer(8, { maxByteLength: 16 }), 0, 0) },
+          operands: { a: new Uint32Array(new ResizableBuffer(8, { maxByteLength: 16 }), 0, 0) },
         },
       ],
       [],
