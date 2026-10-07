@@ -29,11 +29,11 @@ so, and so do the module headers in the code.
   chunk cannot grow a group past it. Process memory is more than the count: measured on the in-memory backend, resident set
   size grew 1.6 times the ledger's high water on Linux and 2.5 to 5 times on macOS (see the guide). The operands are read
   once per group, so the number of groups grows with the total output size over the budget: 100 operands of 3,000,000
-  ids and 1,000 outputs of about 5 MB took 77 groups and 18,845 range reads at the default and 6 groups
-  and 3,564 at 2 GiB (counted). Range requests are held to one window of 64 across all operands. A leased operand's lease and an
+  ids and 1,000 outputs of about 5 MB took 81 groups and 19,005 range reads at the default and 6 groups
+  and 3,570 at 2 GiB (counted). Range requests are held to one window of 64 across all operands. A leased operand's lease and an
   operand's deadline are checked before each chunk key, and each `dest`'s again at its publish. Every chunk is decoded
   through the checks on untrusted bytes, and a listed key whose bytes are missing is an error for the outputs reading
-  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,490 GET-class (594 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
+  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,505 GET-class (590 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
   `MaterializeManyOutcome`, `MaterializeManyRun`, `MaterializeManyStats`, `MaterializeManyOperandStats`,
   `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
   `@cloudbitmaps/roaring`, and `compileCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.

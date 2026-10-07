@@ -666,12 +666,14 @@ one registry read at the end, that it moved.
 dangerous staleness. An output subtracts an operand when it is in its `exclude`, or under any entry of an `andNot` after
 the first, at any depth, so `{ andNot: ['us', 'opt-out'] }` and `exclude: ['opt-out']` are guarded alike. Immediately
 before the publishes the call re-reads the registry row of every pinned operand any output of the group subtracts, and
-compares what it finds with what was pinned: the generation **and** the row's incarnation, not the generation number
-alone, since a name deleted and created again starts at generation 0. A write to the row that is not a replacement (a
-retention policy, a lease) is not a move. If one moved, every output that subtracts it gets `{ published: false, error:
+compares what it finds with what was pinned: the generation, the row's incarnation and the fingerprint of the generation's
+object, not the generation number alone, since a name deleted and created again starts at generation 0 and a number can be
+taken again by other bytes once its object is gone. A write to the row that is not a replacement (a retention policy, a
+lease) is not a move. The re-check costs one registry read per subtracted operand per group, and, to read the object's
+fingerprint, a tail read of the current generation where the store does not already hold its reader. If one moved, every output that subtracts it gets `{ published: false, error:
 StaleOperandError }` and is not published, and the others publish. `StaleOperandError` carries `code: 'stale-operand'`, the
 operand's name in the call (`operand`) and why (`reason: 'moved'`). A subtracted operand that cannot be re-read is not
-assumed unchanged, and its outputs are not published. The re-check costs one registry read per subtracted operand per group.
+assumed unchanged, and its outputs are not published.
 
 **`stats.operands[name]`** (an object with no prototype, so any name is a key) gives each operand's `pinnedGeneration`,
 `startGeneration`, `endGeneration` and `moved`, for every operand of the call, those read live included: the end is one
@@ -685,8 +687,9 @@ as **resident**, which is not what it serializes to: a native bitmap costs a fix
 sits above both), so the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size
 where the source knows it, capped at the window the call asked for, since an index is not trusted to say how much a stream
 holds; for a source that cannot say its size, which no shipped one is, the index's own cardinalities are the estimate), each
-chunk being evaluated, and the plan itself: the root keys and expression of every output and the operand indexes (2 bytes a root key, 96 a node and 256 an output, so about 5 KB an output of 8 nodes over 2,000
-keys: 5 MB at a thousand outputs and 50 MB at ten thousand, derived). A call
+chunk being evaluated, and the plan itself: the root keys and expression of every output and the operand indexes (2 bytes a root key, 320 a node and 3,700 an output, so about 10 KB an output of 8 nodes over 2,000
+keys: 10 MB at a thousand outputs and 103 MB at ten thousand, derived; the constants are measured upper bounds, about 1.5 times
+what a wide and a deep expression held in a process of its own). A call
 whose plan alone passes the budget is refused with `BudgetExceededError` before any chunk is read, and the expressions of one
 call may hold 200,000 nodes in all (`ValidationError`, naming the output that passes it). When the outputs do not fit, they run
 in groups, filled in call order; each group reads its operands once, and a group's buffers are released only as its
@@ -715,10 +718,10 @@ Counted in memory (`bench/materialize-many-counts.cjs`, the `target` shape: 100 
 
 | budget | groups | range reads | chunk reads (the `budget` unit) | ledger high water |
 |---|---|---|---|---|
-| 256 MiB, the default | 77 | 18,845 | 4,807,500 | 204 MiB |
-| 2 GiB | 6 | 3,564 | 898,500 | 1,461 MiB |
+| 256 MiB, the default | 81 | 19,005 | 4,852,500 | 201 MiB |
+| 2 GiB | 6 | 3,570 | 900,000 | 1,472 MiB |
 
-so at that size the default re-reads the operands 77 times, and a larger `maxBufferedBytes` is the lever.
+so at that size the default makes 4,852,500 chunk reads in 81 groups, about 32 times the 150,000 that one read of every chunk of every operand (100 operands of 1,500 chunks) makes, and 5.4 times the 2 GiB call's; a larger `maxBufferedBytes` is the lever.
 Planning sizes groups from the index, which cannot know how much two operands overlap, so an `and` of two large operands is
 priced at the smaller and is often far smaller in fact; the high water mark above shows how much of the budget a call used.
 
@@ -747,7 +750,7 @@ demand with `node bench/materialize-many-counts.cjs --check --all`.
 | | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments |
 |---|---|---|---|---|---|---|
 | 1,000 `*Into` calls, nested groups through scratch segments | 137,037 | 2,736 | 3,988 | **143,761** | **3,404** | 818 |
-| one `materializeMany`, default 256 MiB (6 groups) | 594 | 1,100 | 1,796 | **3,490** | **1,768** | 0 |
+| one `materializeMany`, default 256 MiB (6 groups) | 590 | 1,100 | 1,815 | **3,505** | **1,768** | 0 |
 
 GET-class is range reads, tail reads and registry row reads; PUT-class is object writes, registry writes and listings;
 deletes are free and not counted. The publishes, one object and one pointer write per output, are the floor of any
@@ -758,16 +761,19 @@ chunks; a cache sized to the whole working set would cut its range reads, at the
 reads and the existence checks), `opens` and `publishes` are exact counts of what the call did, and `attributed: { get, put }`
 is the part of the drivers' totals the call can name, a **lower bound** and not the cost: `get` is range reads plus registry
 reads, and `put` the object write and pointer write of each published output and the object write of each refused one.
-To reconstruct the total add, for each of `opens`, one tail read of the operand and at most one registry row read (a pin taken
-before the call may already have made them), and for each of `publishes`, the load's own reads of the destination's row and
-tail for its guard. Not known to the call: a multipart upload's extra requests, a listing, and what a publish that threw sent.
+To reconstruct the total GET-class requests, add to `attributed.get` two reads (a tail read and a row read, fewer where the
+store already holds the operand's reader) for each operand a pin took, which with `pin` on is every named operand whether or not
+an output reads it, or for each of `opens` with `pin: false`; and for each publish the reads of its load, two for a destination
+that has a generation and three for one that has none, and one more when the guard refuses it. A test holds that recipe to a
+recording driver over pinned and live operands, new and existing destinations, refused and published outputs and unused
+operands. Not known to the call: a multipart upload's extra requests, a listing, and what a publish that threw sent.
 In the counted call above `attributed.put` equals the drivers' PUT-class count and `attributed.get` is a small part of the
 GET-class count; the counts are side by side in the JSON.
 
 **The budget.** `budget` counts chunk reads over all the groups, re-reads included. A call that passes none gets, when the store
 was built with a `budget` of its own, that one, so a store ceiling below the plan throws `BudgetExceededError` before any chunk
 is read, as it does for every other operation, and it can refuse a realistic call: the `target` shape above plans
-4,807,500 chunk reads at the default memory budget and 898,500 at 2 GiB, against a library default of
+4,852,500 chunk reads at the default memory budget and 900,000 at 2 GiB, against a library default of
 1,000,000. When the store is on the library default (a store whose `budget` is exactly 1,000,000 is treated as one on it), the
 call sizes its own from its plan, twice the chunk reads the plan needs and a thousand, so it trips only when an output has to
 run again past it. Pass `budget` to set one for the call, or `false` to lift it. `stats.budget` has the limit, the chunk reads

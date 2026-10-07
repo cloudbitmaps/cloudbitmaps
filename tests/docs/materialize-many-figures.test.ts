@@ -29,6 +29,7 @@ interface Target {
   outputs: number;
   idsPerOperand: number;
   chunksPerOperand: number;
+  budgets: Record<'default256MiB' | 'budget2GiB', number>;
   batch: Record<'default256MiB' | 'budget2GiB', Record<string, number>>;
 }
 const target = (counts.shapes as unknown as Record<string, Target>).target!;
@@ -128,6 +129,28 @@ describe('the figures of the target-sized call', () => {
       target.batch.budget2GiB.rangeReads!,
     );
     expect(target.batch.default256MiB.published).toBe(target.batch.budget2GiB.published);
-    for (const run of both) expect(run.ledgerHighWaterBytes).toBeLessThanOrEqual(2 * 1024 ** 3);
+  });
+
+  it('keeps each run inside its own budget, and quotes its high water and what it published', () => {
+    const guide = flat('docs/guide/loading.md');
+    expect(target.budgets).toEqual({ default256MiB: 256 * 1024 ** 2, budget2GiB: 2 * 1024 ** 3 });
+    for (const name of ['default256MiB', 'budget2GiB'] as const) {
+      const run = target.batch[name];
+      expect(run.ledgerHighWaterBytes).toBeLessThanOrEqual(target.budgets[name]);
+      expect(guide).toContain(`${fmt(Math.round(run.ledgerHighWaterBytes! / 1024 ** 2))} MiB`);
+    }
+    expect(guide).toContain(`${fmt(target.batch.default256MiB.published!)} of them published`);
+  });
+
+  it('says how many times one pass over every operand the default reads, from the counted figures', () => {
+    const guide = flat('docs/guide/loading.md');
+    const once = target.operands * target.chunksPerOperand;
+    const small = target.batch.default256MiB;
+    const large = target.batch.budget2GiB;
+    expect(guide).toContain(`about ${Math.round(small.chunkReads! / once)} times the ${fmt(once)}`);
+    expect(guide).toContain(
+      `${(small.chunkReads! / large.chunkReads!).toFixed(1)} times the 2 GiB call's`,
+    );
+    expect(guide).not.toContain('re-reads the operands 77 times');
   });
 });
