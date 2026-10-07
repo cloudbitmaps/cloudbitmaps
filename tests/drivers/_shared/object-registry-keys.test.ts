@@ -1,6 +1,7 @@
 import {
   normalizeObjectPrefix,
   parseRegistryKey,
+  prefixPart,
   registryListPrefix,
   registryObjectKey,
 } from '@/drivers/_shared/object-registry-keys';
@@ -32,6 +33,44 @@ describe('normalizeObjectPrefix — containment', () => {
       expect(() => normalizeObjectPrefix(prefix), JSON.stringify(prefix)).not.toThrow();
     }
     expect(normalizeObjectPrefix(undefined)).toBeUndefined();
+  });
+});
+
+describe('prefixPart — slashes trimmed from both ends', () => {
+  it('builds the same prefix as a trim of leading and trailing slashes', () => {
+    const cases: ReadonlyArray<readonly [string | undefined, string]> = [
+      [undefined, ''],
+      ['', ''],
+      ['/', ''],
+      ['///', ''],
+      ['cr', 'cr/'],
+      ['/cr/', 'cr/'],
+      ['//a/b//', 'a/b/'],
+      ['a//b', 'a//b/'],
+      ['/a/ /', 'a/ /'],
+    ];
+    for (const [prefix, expected] of cases) {
+      expect(prefixPart(prefix), JSON.stringify(prefix)).toBe(expected);
+    }
+  });
+
+  it('matches the regex trim on every short string of slashes and letters', () => {
+    const alphabet = ['/', 'a', 'b'];
+    let strings = [''];
+    for (let length = 1; length <= 6; length++) {
+      strings = strings.flatMap((s) => alphabet.map((c) => s + c));
+      for (const s of strings) {
+        const trimmed = s.replace(/^\/+|\/+$/g, '');
+        expect(prefixPart(s), JSON.stringify(s)).toBe(trimmed === '' ? '' : `${trimmed}/`);
+      }
+    }
+  });
+
+  it('is linear in a long run of inner slashes', () => {
+    // The trailing-slash regex this replaced took about 23 s here (quadratic); the trim is linear and this takes
+    // under a millisecond. The regex blocks the event loop, so the timeout is reported once it returns.
+    const inner = '/'.repeat(200_000);
+    expect(prefixPart(`/a${inner}x//`)).toBe(`a${inner}x/`);
   });
 });
 

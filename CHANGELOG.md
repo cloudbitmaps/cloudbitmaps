@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Security
+
+- **The S3, GCS and Azure drivers trim `prefix` in linear time.** The trim of a prefix's leading and trailing slashes
+  used a regular expression that backtracked over every run of slashes not at the end, so a prefix holding a long run
+  took time quadratic in its length, on every key a driver built (measured on a laptop: about 6 seconds a key for a
+  run of 100,000). The prefix comes from the application's own driver options, never from a stored object or a
+  caller's id. The keys built are unchanged.
+
 ## [0.18.2] — 2026-10-07
 
 ### Security

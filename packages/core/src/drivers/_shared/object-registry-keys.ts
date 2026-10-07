@@ -20,7 +20,13 @@ const REGISTRY_SUFFIX = '.reg';
 /** Normalize an optional caller prefix to either `''` or `trimmed/` (no leading/trailing slashes). */
 export function prefixPart(prefix: string | undefined): string {
   if (prefix === undefined) return '';
-  const trimmed = prefix.replace(/^\/+|\/+$/g, '');
+  // Index scans, not a regex: `/\/+$/` retries from every slash of a run that is not at the end, which is
+  // quadratic in the run's length.
+  let start = 0;
+  let end = prefix.length;
+  while (start < end && prefix.charCodeAt(start) === 0x2f) start++;
+  while (end > start && prefix.charCodeAt(end - 1) === 0x2f) end--;
+  const trimmed = prefix.slice(start, end);
   return trimmed === '' ? '' : `${trimmed}/`;
 }
 
