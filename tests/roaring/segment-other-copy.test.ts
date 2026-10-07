@@ -8,8 +8,9 @@ import { CloudRoaring, MemoryStorage } from '@/index';
  */
 describe('a segment from another copy of the package', () => {
   it('is taken by a combine and an *Into call, as before', async () => {
-    const other =
-      (await import('../../packages/roaring/src/index.ts?another-copy')) as typeof import('@/index');
+    // The query makes the module loader evaluate the source again: a second copy, as a second install would be.
+    const specifier = '../../packages/roaring/src/index.ts?another-copy';
+    const other = (await import(/* @vite-ignore */ specifier)) as typeof import('@/index');
     expect(other.CloudRoaring).not.toBe(CloudRoaring);
     const storage = new MemoryStorage();
     const store = new CloudRoaring({ storage });
