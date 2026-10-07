@@ -23,6 +23,7 @@ import { MAX_REMAINDER, U32_MAX } from './bit-route';
 import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import type { CodecBitmap, CodecInterface } from './codec';
+import type { IMetricsSink } from './metrics';
 import {
   ANY_BOUNDS,
   canHold,
@@ -178,6 +179,11 @@ export interface CombineManyDeps {
   readonly codec: CodecInterface;
   readonly clock: Clock;
   readonly maxBitmapBytes?: number;
+  /**
+   * Where the call reports a `storage.get` event for each range request it sends, as a combine does; absent, it reports
+   * none. The call never looks up the chunk cache, so it reports no `cache` event.
+   */
+  readonly metrics?: IMetricsSink;
 }
 
 /** What one output came to. */
@@ -801,6 +807,7 @@ class Run<R> {
   private readonly codec: CodecInterface;
   private readonly clock: Clock;
   private readonly maxBitmapBytes: number;
+  private readonly metrics: IMetricsSink | undefined;
   private readonly ledger: ResidentLedger;
   private readonly gate = new Gate(MAX_RANGES_IN_FLIGHT);
   private readonly operands: OperandState[];
@@ -841,6 +848,7 @@ class Run<R> {
     this.codec = deps.codec;
     this.clock = deps.clock;
     this.maxBitmapBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
+    this.metrics = deps.metrics;
     this.ledger = new ResidentLedger(this.req.maxBufferedBytes);
     this.tick = yieldEvery(deps.clock, 256);
     this.operands = this.req.operands.map((spec, index) => ({
@@ -1417,12 +1425,21 @@ class Run<R> {
       });
     }
     const retry = <T>(request: () => Promise<T>): Promise<T> => this.gate.run(request);
-    const onRequest = (r: { readonly bytes: number }): void => {
-      this.rangeReads++;
-      this.rangeBytes += r.bytes;
-    };
+    const onRequestOf =
+      (op: OperandState) =>
+      (r: { readonly bytes: number; readonly ms: number }): void => {
+        this.rangeReads++;
+        this.rangeBytes += r.bytes;
+        this.metrics?.onEvent({
+          kind: 'storage.get',
+          namespace: op.spec.ref.namespace,
+          segment: op.spec.ref.segment,
+          bytes: r.bytes,
+          ms: r.ms,
+        });
+      };
     const streamOf = (c: Cursor): ChunkStream => {
-      c.stream ??= new ChunkStream(this.readKeys(c.op, c.keys, retry, onRequest));
+      c.stream ??= new ChunkStream(this.readKeys(c.op, c.keys, retry, onRequestOf(c.op)));
       return c.stream;
     };
     const stop = (c: Cursor): void => {
@@ -1626,6 +1643,7 @@ class Run<R> {
     onRequest: (r: { readonly bytes: number; readonly ms: number }) => void,
   ): AsyncIterable<ChunkRead> {
     const source = this.source;
+    const clock = this.clock;
     const keys = Array.from(wanted);
     const held = op.spec.held;
     if (held !== undefined) {
@@ -1650,8 +1668,9 @@ class Run<R> {
     return {
       async *[Symbol.asyncIterator]() {
         for (const key of keys) {
+          const startedAt = clock.now();
           const bytes = await retry(() => source.getChunk({ ...ref, chunkKey: key }));
-          onRequest({ bytes: bytes?.length ?? 0, ms: 0 });
+          onRequest({ bytes: bytes?.length ?? 0, ms: Math.max(0, clock.now() - startedAt) });
           yield { key, bytes, version: null };
         }
       },

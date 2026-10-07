@@ -48,6 +48,7 @@ describe('CountingMetricsSink', () => {
       'count',
       'has',
       'intersectInto',
+      'materializeMany',
       'unionInto',
     ]);
   });

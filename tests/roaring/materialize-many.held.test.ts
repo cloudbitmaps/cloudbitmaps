@@ -85,13 +85,33 @@ describe('store.memory: the input forms', () => {
       ValidationError,
     );
     const a = w.store.segment('a') as unknown as Record<string, (...args: unknown[]) => unknown>;
+    const heldOnly =
+      /^a memory operand from store\.memory\(\) is an operand of store\.materializeMany\(\) only/;
+    const read = async (stream: unknown): Promise<void> => {
+      for await (const _ of stream as AsyncIterable<number>) void _;
+    };
     for (const verb of ['intersect', 'union', 'andNot']) {
-      // The verbs read their operands as segments: a held operand is refused when the result is read.
-      const read = async (): Promise<void> => {
-        for await (const _ of a[verb]!([vip]) as AsyncIterable<number>) void _;
-      };
-      await expect(read(), verb).rejects.toThrow();
+      // A combine refuses a held operand, or one in `exclude`, when its result is read: a ValidationError, never a
+      // TypeError from reading it as a segment.
+      await expect(read(a[verb]!([vip])), verb).rejects.toThrow(ValidationError);
+      await expect(read(a[verb]!([vip])), verb).rejects.toThrow(heldOnly);
+      await expect(read(a[verb]!(['a'])), verb).rejects.toThrow(
+        'an operand must be a segment from store.segment()',
+      );
     }
+    for (const verb of ['intersect', 'union']) {
+      await expect(read(a[verb]!([], { exclude: [vip] })), verb).rejects.toThrow(heldOnly);
+    }
+    const d = w.store.segment('d');
+    for (const verb of ['intersectInto', 'unionInto', 'andNotInto']) {
+      // An `*Into` call refuses it before reading anything, as an operand, an exclude or the destination.
+      await expect(a[verb]!(d, [vip]), verb).rejects.toThrow(heldOnly);
+      await expect(a[verb]!(vip, []), verb).rejects.toThrow(heldOnly);
+    }
+    for (const verb of ['intersectInto', 'unionInto']) {
+      await expect(a[verb]!(d, [], { exclude: [vip] }), verb).rejects.toThrow(heldOnly);
+    }
+    expect(await w.store.exists({ segment: 'd' })).toBe(false);
     await expect(
       w.store.materializeMany({
         operands: { a: w.store.segment('a') },
@@ -100,7 +120,7 @@ describe('store.memory: the input forms', () => {
         // a held operand as an exclude name that the call does not hold is an unknown operand
         ...({ mayBeEmpty: ['vip'] } as object),
       }),
-    ).rejects.toThrow(/mayBeEmpty names fed operands, and the call has no feed/);
+    ).rejects.toThrow(/mayBeEmpty names "vip", which is not an operand of this call;/);
   });
 
   it('refuses a forged handle with a ValidationError naming the operand', async () => {
@@ -332,7 +352,7 @@ describe('an empty held operand', () => {
         mayBeEmpty: ['none', 'a'],
         keep: 1,
       }),
-    ).rejects.toThrow(/mayBeEmpty names fed operands, and the call has no feed/);
+    ).rejects.toThrow(/mayBeEmpty names "a", a stored operand;/);
   });
 });
 

@@ -2,5 +2,13 @@
   {
     "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
     "reason": "widened to accept a held MemoryOperand beside a Segment before any release carried materializeMany, so no published code reads the narrower type; options built with segments compile and behave as before, and code that reads a member of operands back as a Segment narrows it first; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core MetricOpName",
+    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape, a sink with a default branch needs no change, and one that switches exhaustively on name adds a case, as the type's doc says; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MetricOpName",
+    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape, a sink with a default branch needs no change, and one that switches exhaustively on name adds a case, as the type's doc says; agreed with the maintainer"
   }
 ]

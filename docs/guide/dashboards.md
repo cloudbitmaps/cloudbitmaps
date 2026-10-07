@@ -22,15 +22,16 @@ The metrics sink pushes raw observations on the I/O path. There are six event ki
 
 | `kind` | When | Payload |
 | --- | --- | --- |
-| `storage.get` | one object-store GET for chunks: a range of a combine or `iterate`, carrying every chunk the read needs from a stretch of the object, or one chunk of a point read | `bytes` (the range's, gaps between its chunks included; 0 if a point read's chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
+| `storage.get` | one object-store GET for chunks: a range of a combine, `iterate` or `store.materializeMany`, carrying every chunk the read needs from a stretch of the object, or one chunk of a point read | `bytes` (the range's, gaps between its chunks included; 0 if a point read's chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
 | `cache` | one cache lookup (only when a cache is configured) | `hit`. With a cache, a miss that waits on a point read another caller already has open adds no `storage.get`, and a range carries several chunks, so `misses` can exceed the `storage.get` count; `storage.get` is the number of chunk requests |
 | `retry` | a transient infrastructure fault (throttling, 5xx, a dropped connection) is about to be retried — the one kind of retry the store does | `reason: 'transient'`, `attempt`, `delayMs` |
 | `intersect` | one chunk-aligned combine | `op` (`intersect` / `union` / `andNot`; absent means `intersect`), `operands`, `fetchedChunks`, `skippedChunks` |
-| `op` | one timed segment operation | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` |
+| `op` | one timed operation | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto` / `materializeMany`), `ms` |
 | `advisory` | once, after the first S3 read finishes, when the client's socket pool is smaller than twice the default `concurrency` (64): a note, not a fault, and silent for a handler the store cannot read | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency`. Not a quantity to chart: route it to an alert or a log line |
 
-`store.materializeMany` emits no `storage.get`, `cache`, `intersect` or `op` event, so its reads and writes appear in no
-panel built on them; its request counts are in the `stats` on its result.
+`store.materializeMany` emits an `op` event per call and a `storage.get` per range request, so its latency and reads
+appear in those panels. It emits no `cache` event (it never looks up the cache) and no `intersect` event (an output
+is an expression, not one combine); the chunks it pruned are in the `stats` on its result.
 
 Map the handful you chart to counters/histograms:
 

@@ -15,8 +15,15 @@
  * guide.
  */
 
-/** The segment operations that emit an `op` latency event (timed with the injected clock, at the facade). */
-export type MetricOpName = 'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto';
+/**
+ * The operations that emit an `op` latency event (timed with the injected clock, at the facade). `materializeMany` is
+ * timed from its first request, the pins, to its last publish: a call its input checks refuse emits none.
+ *
+ * A sink that switches on `name` with an exhaustive `never` check stops compiling when a name is added: add a case (or
+ * use a `default` branch, which needs no change).
+ */
+export type MetricOpName =
+  'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto' | 'materializeMany';
 
 /**
  * One observability event. A discriminated union on `kind` — new variants can be added over time without
@@ -30,9 +37,10 @@ export type MetricEvent =
       readonly namespace?: string;
       readonly segment: string;
       /**
-       * One event per request for chunks: a range request of a combine or `iterate`, which carries every chunk the read
-       * needs from a stretch of the object, or the one chunk of a read made on its own, however many callers were waiting
-       * on it. Bytes returned: the range's, the gaps between its chunks included (0 if a single chunk was absent — a GET
+       * One event per request for chunks: a range request of a combine, `iterate` or `materializeMany`, which carries every
+       * chunk the read needs from a stretch of the object, or the one chunk of a read made on its own, however many
+       * callers were waiting on it. A `materializeMany` range serves every output of its group, so its events count the
+       * requests the call sent, not requests per output. Bytes returned: the range's, the gaps between its chunks included (0 if a single chunk was absent — a GET
        * still happened).
        */
       readonly bytes: number;
@@ -49,7 +57,7 @@ export type MetricEvent =
        * no cached chunk. A combine or `iterate` looks up every chunk it needs when it opens its streams. A caller that
        * missed while another caller's read of the same chunk was open waits on that read and adds no `storage.get`, and a
        * range carries several chunks, so the misses can outnumber the `storage.get` events; the `storage.get` count is
-       * the number of requests for chunks.
+       * the number of requests for chunks. `materializeMany` never looks up the cache, so it emits none.
        */
       readonly kind: 'cache';
       readonly hit: boolean;
@@ -63,6 +71,10 @@ export type MetricEvent =
       readonly delayMs: number;
     }
   | {
+      /**
+       * One per chunk-aligned combine of one operator. `materializeMany` emits none: an output is an expression over
+       * several operators, and the call's `stats.chunks.pruned` counts the index keys it did not read.
+       */
       readonly kind: 'intersect';
       /**
        * Which chunk-aligned combine this was. **Optional** — absent means `'intersect'`.
@@ -175,6 +187,7 @@ const OP_NAMES: readonly MetricOpName[] = [
   'intersectInto',
   'unionInto',
   'andNotInto',
+  'materializeMany',
 ];
 
 /**

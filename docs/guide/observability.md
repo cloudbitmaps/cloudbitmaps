@@ -29,16 +29,20 @@ handful you care about:
 
 | Event | Carries | Fired |
 | --- | --- | --- |
-| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one request for chunks to Storage: a range request of a combine or `iterate`, which carries every chunk the read needs from a stretch of the object (`bytes` is the range's, the gaps between chunks it reads across included), or the one chunk of a point read — the number of chunk GETs, one per request however many callers were waiting on a point read. Pointer and index reads are not counted. A range a read had already requested when the caller stopped is reported too, when it settles, since it is billed. One event is one request's outcome, its retries included, and one that failed reports 0 `bytes`. A chunk a small generation's reader kept from its open is no request and reports none |
+| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one request for chunks to Storage: a range request of a combine, `iterate` or `store.materializeMany`, which carries every chunk the read needs from a stretch of the object (`bytes` is the range's, the gaps between chunks it reads across included), or the one chunk of a point read — the number of chunk GETs, one per request however many callers were waiting on a point read. Pointer and index reads are not counted. A range a read had already requested when the caller stopped is reported too, when it settles, since it is billed. One event is one request's outcome, its retries included, and one that failed reports 0 `bytes`. A chunk a small generation's reader kept from its open is no request and reports none |
 | `cache` | `hit` | every cache lookup, when a cache is configured. A miss is a lookup that found no cached chunk; it is counted even when the caller then waits on a point read another caller already has open, and a combine or `iterate` looks up every chunk it needs when it opens, so misses can exceed `storage.get` events, which are fewer than the chunks when a range carries several |
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
-| `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
+| `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto` / `materializeMany`), `ms` | per timed op |
 | `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read finishes (even one that fails), when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
 
-`store.materializeMany` emits no `storage.get`, `cache`, `intersect` or `op` event, so an `*Into` call that
-moves into a batch drops out of the op-latency, chunk-skipping and cache-hit series. Its counts are the `stats` on
-its result (requests, bytes, chunks pruned, memory high-water mark), and its `audit` sink still fires per output.
+`store.materializeMany` emits one `op` event per call, timed from its first request to its last publish, and a
+`storage.get` event per range request it sends. A range serves every output of its group, so the events count the
+call's requests, not requests per output, and a held operand sends none. It emits no `cache` event, since it never
+looks up the chunk cache, and no `intersect` event, since an output is an expression over several operators: an
+`*Into` call that moves into a batch keeps its place in the op-latency and request series and leaves the
+chunk-skipping and cache-hit ones. The `stats` on its result carry the rest (bytes, chunks pruned, memory high-water
+mark), and its `audit` sink fires per output.
 
 A quick look in dev is one line:
 

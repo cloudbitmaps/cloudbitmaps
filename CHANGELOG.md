@@ -11,6 +11,30 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`store.materializeMany` reports to the store's metrics sink, as the `*Into` calls do.** One `op` event per call,
+  with `name: 'materializeMany'`, timed from its first request (the pins) to its last publish; a call its input checks
+  refuse sends nothing and reports nothing. And one `storage.get` event per range request it sends, naming the operand's
+  segment, with the range's bytes and time: a range serves every output of its group, so the events count the call's
+  requests, which equal `stats.requests.rangeReads`, and a held operand sends none. It reports no `cache` event, since it
+  never looks up the chunk cache, and no `intersect` event, since an output is an expression over several operators;
+  `stats.chunks.pruned` counts what it did not read. `MetricOpName` gains `'materializeMany'`, and
+  `CountingMetricsSink`'s `ops` gains its tally: a sink that switches on `name` with an exhaustive `never` check adds a
+  case, and one with a `default` branch needs no change.
+
+### Fixed
+
+- **A memory operand passed to a combine or an `*Into` call is refused with a `ValidationError`.** `intersect`, `union`,
+  `andNot` and the `*Into` calls failed with a raw `TypeError` (`h.leaseError is not a function`) when given a handle
+  from `store.memory()`, as an operand, an `exclude` or a destination. They now refuse it before reading anything, with
+  a message that says it is an operand of `store.materializeMany()` only; any other value that is not a segment is
+  refused the same way.
+- **`store.materializeMany`'s `mayBeEmpty` with no feed says what is wrong with it.** The message was "mayBeEmpty names
+  fed operands, and the call has no feed" for every name that was not a held operand. It now names the first such
+  entry and what it is (`"a", a stored operand`, `"x", which is not an operand of this call`, or something that is not
+  a name), and a value that is not an array is refused as one. Code that matched the old text must match the new one.
+
 ## [0.18.3] — 2026-10-07
 
 ### Security
