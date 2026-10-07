@@ -120,6 +120,13 @@ export interface FedOptions {
   feed?: Partial<CombineManyFeed>;
   pulled?: Pulled;
   source?: Parameters<typeof seed>[1];
+  clock?: {
+    now: () => number;
+    sleep: (ms: number) => Promise<void>;
+    yieldNow?: () => Promise<void>;
+  };
+  /** Called instead of collecting, to see publishes happen. */
+  onPublish?: (index: number) => void;
 }
 
 export async function runFed(
@@ -137,8 +144,27 @@ export async function runFed(
     ...o.feed,
   };
   const run = await runCombineMany(
-    compileCombineMany(request(setup, specs.map(collecting), { feed, ...o.extra })),
-    { source: setup.source, codec: roaringCodec, clock: { now: () => 0, sleep: async () => {} } },
+    compileCombineMany(
+      request(
+        setup,
+        specs.map((spec, i) => {
+          const out = collecting(spec);
+          return {
+            ...out,
+            publish: (chunks, write) => {
+              o.onPublish?.(i);
+              return out.publish(chunks, write);
+            },
+          };
+        }),
+        { feed, ...o.extra },
+      ),
+    ),
+    {
+      source: setup.source,
+      codec: roaringCodec,
+      clock: o.clock ?? { now: () => 0, sleep: async () => {} },
+    },
   );
   return { run, setup, pulled };
 }
