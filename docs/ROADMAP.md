@@ -30,7 +30,7 @@ Everything described under [Shipped today](#shipped-today) is implemented and co
 property-vs-oracle, conformance suites run against real backends (or a faithful emulator), coverage-guided
 fuzzing of the untrusted-`.crbm` boundary, and mutation testing of the highest-risk core modules.
 
-**Where it is headed (September 2026).** `1.0` centres on the **loaded store**: sets are computed upstream and
+**Where it is headed (October 2026).** `1.0` centres on the **loaded store**: sets are computed upstream and
 loaded as immutable generations, then read and chunk-skipping-intersected from anywhere — one bucket, one
 registry row per segment, no background process. Every roaring-based engine that needs freshness micro-batches
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
@@ -70,9 +70,10 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | The tombstone reaper — `store.reapRegistryTombstones` removes the `deleted: true` rows a release before 0.12 left in an object-store registry | **shipped** — admin call, `dryRun` first, each delete fenced on the version read, refused with `CapabilityError` where `conditionalDelete` is off; it cannot remove the `destroyed` tombstones `dropSegment` leaves, or one written while `conditionalDelete` was off, so it does not clean a bucket completely; see the [guide](guide/retention.md#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones) |
 | Deferred past `0.17.0` | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
+| A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **on `main`, in the next release's [changelog](../CHANGELOG.md#unreleased)**: no library behaviour changes; the large suite is rehearsed on MinIO and has not run against a real object store |
 
-**What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
-and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
+**What is next:** the large-suite run (combines on operands of a million to ten million ids, the `*Into` verbs
+included) against a real store, a Lambda run, other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -268,7 +269,7 @@ envelope**:
 | **Scale** | up to ~100K segments; reads and intersects of segments up to 500,000 ids on S3 and 2,000,000 in memory, the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments, which a load holds in RAM as their distinct ids (an external-merge bulk load is planned), and ids past 2³²−1, which want the reserved 64-bit format |
 | **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has a published in-region run, for cost and latency: the 2026-10-06 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
-| **Cost figures** | the **in-region run `2026-10-06-9d36b`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; the `*Into` verbs and other combine shapes; and GCS and Azure on a real account |
+| **Cost figures** | the **in-region run `2026-10-06-9d36b`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; the `*Into` verbs and combines on operands of a million to ten million ids, which the harness's large suite measures and no published run has yet; other combine shapes; and GCS and Azure on a real account |
 
 **Measured, not asserted — and measured on what.** The cloud figures on the [benchmarks page](benchmarks.md) are
 the requests the engine actually issued and the time they took, from the 2026-10-06 run in `us-east-1`, driven from
@@ -300,8 +301,10 @@ between here and there:
    been run, so GCS defaults off and needs the probe before its default turns on; the emulators the integration lane
    runs ignore the precondition, so CI cannot show it. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput and `intersect` latency are measured in-region (the
-   run above, with a sweep to 2,000 shared chunks). `*Into` latency, and `intersect` over more operands and other
-   overlaps, are still owed against a real object store from inside the region; the harness does not measure them yet.
+   run above, with a sweep to 2,000 shared chunks). `*Into` latency and combines on operands of a million to ten million ids
+   are measured by the harness's [large suite](../bench/README.md#the-large-suite) (`node bench/calibrate-aws.cjs --suite large`),
+   which has been rehearsed on MinIO and has not yet run against a real object store; `intersect` over more than two
+   operands and other overlaps are not measured.
    `iterate`'s request count is expected from the engine, not measured: the harness does not time it.
    **The RSS soak is measured:** `pnpm rss-gate` records its run, and
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard

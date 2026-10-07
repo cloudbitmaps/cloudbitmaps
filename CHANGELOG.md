@@ -36,8 +36,15 @@ so, and so do the module headers in the code.
   that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,505 GET-class (590 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
   `MaterializeManyOutcome`, `MaterializeManyRun`, `MaterializeManyStats`, `MaterializeManyOperandStats`,
   `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
-  `@cloudbitmaps/roaring`, and `compileCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
+  `@cloudbitmaps/roaring`, and `compileCombineMany`, `rebindCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
   Nothing existing changes. [Guide](docs/guide/loading.md#many-outputs-from-one-pass-materializemany).
+- **A CI gate holds the public signatures.** `scripts/api-surface.cjs` compares the type declarations the build emits
+  for every public entry point with a committed snapshot, `api-surface/surface.json`. It fails a removed or changed
+  public signature, or a required member added to an existing interface, unless a reason row added in the same pull
+  request, in `api-surface/allowed.json`, excuses it; an addition passes. It runs after the build
+  (`pnpm api:surface:check`), in the release job, and on every pull request against its base branch
+  (`.github/workflows/api-surface-base.yml`). `pnpm api:surface` regenerates the snapshot. No library behaviour changes.
+
 - **The calibration harness has a large suite.** `--suite large` (or `CR_CALIBRATE_SUITE=large`) measures combines on
   operands of about a million, five million and ten million ids, which the default suite's layout refuses: two operand
   segments a size, about 1,500 chunks each with 20 % shared. Its stages load the six operands through `store.load()`,
@@ -63,6 +70,11 @@ so, and so do the module headers in the code.
   earlier release is not asked for it. The meter no longer counts the `ContentLength` of a `HeadObject` as bytes read.
 
 ### Changed
+
+- **The checks on untrusted tier data are one module.** The engine's checks on chunk keys, chunk cardinalities and
+  chunk payloads (the safe decode under the size cap and the payload range check) moved, unchanged, into one core
+  module that is not exported, so every reader of stored bytes goes through the same checks. The error classes and
+  messages are the same, and a timing of the hot path, old build against new, showed no measurable difference.
 
 - **A steady `store.load()` at `keep: 12` is now measured on S3, and so is a reload.** A run from AWS CloudShell in
   `us-east-1` on 2026-10-06 (run `2026-10-06-9d36b`) loaded one segment 18 times. The first load made 2 PUT + 3 GET,
