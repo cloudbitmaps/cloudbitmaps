@@ -13,6 +13,31 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`store.materializeMany` writes many `*Into` outputs in a chunk-ordered pass that reads each operand once per group.** Each output is an expression
+  (`and`, `or`, `andNot`, nested to 64 operators) over named stored operands, with an `exclude` list, published as a new
+  generation of its own `dest` exactly as an `*Into` publishes. Every operand chunk is read once for all the outputs of a
+  group that use it, an operand is read only at the chunks an output can hold (an exclude only where the left side can
+  overlap it), and a nested expression needs no scratch segment. `run.outputs[i]` is what the output's `*Into` would have
+  returned, or `{ published: false, error }` for what it would have thrown, so one output's refusal, lost race or damaged
+  operand never stops another; the call throws `ValidationError` for bad input before any request. `keep` is required
+  and an output's own overrides it. Every stored operand is pinned for the call by default, one generation per operand and
+  not one instant across operands (`pin: false` reads live). Immediately before the publishes the call re-reads each
+  pinned operand an output subtracts (in `exclude`, or after the first entry of an `andNot`), and an output whose subtracted operand was replaced, a name deleted and created again included, is not published: it carries the new
+  `StaleOperandError` (`code: 'stale-operand'`, `operand`, `reason: 'moved'`). `maxBufferedBytes` (default 256 MiB)
+  counts resident bytes, not serialized size (a native bitmap costs about 440 bytes over its serialized bytes), the plan
+  included, and the outputs run in groups when they do not fit, enforced while the pass runs so an index that understates a
+  chunk cannot grow a group past it. Process memory is more than the count: measured on the in-memory backend, resident set
+  size grew 1.6 times the ledger's high water on Linux and 2.5 to 5 times on macOS (see the guide). The operands are read
+  once per group, so the number of groups grows with the total output size over the budget: 100 operands of 3,000,000
+  ids and 1,000 outputs of about 5 MB took 81 groups and 19,005 range reads at the default and 6 groups
+  and 3,570 at 2 GiB (counted). Range requests are held to one window of 64 across all operands. A leased operand's lease and an
+  operand's deadline are checked before each chunk key, and each `dest`'s again at its publish. Every chunk is decoded
+  through the checks on untrusted bytes, and a listed key whose bytes are missing is an error for the outputs reading
+  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,505 GET-class (590 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
+  `MaterializeManyOutcome`, `MaterializeManyRun`, `MaterializeManyStats`, `MaterializeManyOperandStats`,
+  `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
+  `@cloudbitmaps/roaring`, and `compileCombineMany`, `rebindCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.
+  Nothing existing changes. [Guide](docs/guide/loading.md#many-outputs-from-one-pass-materializemany).
 - **A CI gate holds the public signatures.** `scripts/api-surface.cjs` compares the type declarations the build emits
   for every public entry point with a committed snapshot, `api-surface/surface.json`. It fails a removed or changed
   public signature, or a required member added to an existing interface, unless a reason row added in the same pull

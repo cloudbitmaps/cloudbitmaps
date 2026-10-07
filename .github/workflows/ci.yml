@@ -87,6 +87,10 @@ jobs:
       # counts by running the built engine over the in-memory backend. This fails if bench/range-counts.json is not what
       # it makes now; regenerate with `pnpm bench:range-counts`. It measures nothing on a cloud.
       - run: pnpm bench:range-counts:check
+      # The guide's and the changelog's requests for a refresh-shaped materializeMany call are counted by
+      # bench/materialize-many-counts.cjs over the in-memory backend. This recounts its small shape and fails if the committed
+      # file is not what the library makes; regenerate with `pnpm bench:materialize-many-counts`. It measures nothing on a cloud.
+      - run: pnpm bench:materialize-many-counts:check
       # The site's figures gate holds the pages to the figures the engine is expected to cost, which it reads from
       # bench/expected-figures.json so it needs no build. This fails if that file is not what the built estimator gives
       # from bench/range-counts.json and bench/results.json; regenerate with `pnpm bench:expected-figures`.

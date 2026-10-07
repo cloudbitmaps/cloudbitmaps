@@ -38,6 +38,8 @@
     "bench:sizing:check": "node bench/sizing.cjs --check",
     "bench:range-counts": "pnpm run build && node bench/range-counts.cjs",
     "bench:range-counts:check": "node bench/range-counts.cjs --check",
+    "bench:materialize-many-counts": "pnpm run build && node bench/materialize-many-counts.cjs",
+    "bench:materialize-many-counts:check": "node bench/materialize-many-counts.cjs --check",
     "bench:expected-figures": "pnpm run build && node bench/expected-figures.cjs",
     "bench:expected-figures:check": "node bench/expected-figures.cjs --check",
     "bench:check": "node bench/run.cjs --check",

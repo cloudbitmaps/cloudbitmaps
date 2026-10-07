@@ -1,0 +1,145 @@
+{
+  "note": "Counted by running the library over the in-memory backend with its drivers wrapped; not measured on a cloud, and no time is recorded. Rewritten by bench/materialize-many-counts.cjs.",
+  "shapes": {
+    "small": {
+      "operands": 20,
+      "outputs": 100,
+      "idsPerOperand": 100000,
+      "batch": {
+        "published": 68,
+        "groups": 1,
+        "chunkReads": 21443,
+        "ledgerHighWaterBytes": 70173473,
+        "rangeReads": 20,
+        "tailReads": 120,
+        "rowReads": 172,
+        "objectWrites": 100,
+        "rowWrites": 68,
+        "listings": 0,
+        "deletes": 32,
+        "getClass": 312,
+        "putClass": 168,
+        "attributed": {
+          "get": 40,
+          "put": 168,
+          "rangeReads": 20,
+          "registryReads": 20,
+          "opens": 20,
+          "publishes": 100
+        }
+      },
+      "into": {
+        "published": 68,
+        "scratchSegments": 66,
+        "rangeReads": 19785,
+        "tailReads": 252,
+        "rowReads": 360,
+        "objectWrites": 166,
+        "rowWrites": 134,
+        "listings": 0,
+        "deletes": 32,
+        "getClass": 20397,
+        "putClass": 300
+      }
+    },
+    "refresh": {
+      "operands": 100,
+      "outputs": 1000,
+      "idsPerOperand": 200000,
+      "batch": {
+        "published": 768,
+        "groups": 6,
+        "chunkReads": 625055,
+        "ledgerHighWaterBytes": 237482746,
+        "rangeReads": 590,
+        "tailReads": 1100,
+        "rowReads": 1815,
+        "objectWrites": 1000,
+        "rowWrites": 768,
+        "listings": 0,
+        "deletes": 232,
+        "getClass": 3505,
+        "putClass": 1768,
+        "attributed": {
+          "get": 1073,
+          "put": 1768,
+          "rangeReads": 590,
+          "registryReads": 483,
+          "opens": 100,
+          "publishes": 1000
+        }
+      },
+      "into": {
+        "published": 768,
+        "scratchSegments": 818,
+        "rangeReads": 137037,
+        "tailReads": 2736,
+        "rowReads": 3988,
+        "objectWrites": 1818,
+        "rowWrites": 1586,
+        "listings": 0,
+        "deletes": 232,
+        "getClass": 143761,
+        "putClass": 3404
+      }
+    },
+    "target": {
+      "operands": 100,
+      "outputs": 1000,
+      "idsPerOperand": 3000000,
+      "chunksPerOperand": 1500,
+      "budgets": {
+        "default256MiB": 268435456,
+        "budget2GiB": 2147483648
+      },
+      "batch": {
+        "default256MiB": {
+          "published": 926,
+          "groups": 81,
+          "chunkReads": 4852500,
+          "ledgerHighWaterBytes": 210598030,
+          "rangeReads": 19005,
+          "tailReads": 1100,
+          "rowReads": 2160,
+          "objectWrites": 1000,
+          "rowWrites": 926,
+          "listings": 0,
+          "deletes": 74,
+          "getClass": 22265,
+          "putClass": 1926,
+          "attributed": {
+            "get": 19991,
+            "put": 1926,
+            "rangeReads": 19005,
+            "registryReads": 986,
+            "opens": 100,
+            "publishes": 1000
+          }
+        },
+        "budget2GiB": {
+          "published": 926,
+          "groups": 6,
+          "chunkReads": 900000,
+          "ledgerHighWaterBytes": 1543120563,
+          "rangeReads": 3570,
+          "tailReads": 1000,
+          "rowReads": 1652,
+          "objectWrites": 1000,
+          "rowWrites": 926,
+          "listings": 0,
+          "deletes": 74,
+          "getClass": 6222,
+          "putClass": 1926,
+          "attributed": {
+            "get": 4048,
+            "put": 1926,
+            "rangeReads": 3570,
+            "registryReads": 478,
+            "opens": 100,
+            "publishes": 1000
+          }
+        }
+      }
+    }
+  }
+}

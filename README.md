@@ -203,8 +203,9 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │  ─────────────                     ──────────────                     │
   │  load(ref, input)    ← the write   has(id)      count()   iterate()   │
   │  segment(name, opts)               intersect()  union()   andNot()    │
-  │  exists()  segments()              intersectInto() unionInto()        │
-  │  generations() rollback()          andNotInto()                       │
+  │  materializeMany() ← many *Into    intersectInto() unionInto()        │
+  │  exists()  segments()              andNotInto()                       │
+  │  generations() rollback()                                             │
   │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
   │  setRetention() getRetention()     costReport()                       │
   │  clearRetention()                                                     │

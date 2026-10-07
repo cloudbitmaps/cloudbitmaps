@@ -74,6 +74,23 @@ export type { PinnedAt } from './core/pinned-storage-source';
 // Composes next-generation → write → guard → publish → collect, which is the sequence every load performs and
 // the one whose last step gets left out when it is composed by hand.
 export { loadSegment, loadSegmentChunks } from './core/load';
+// A batch combine: many outputs, each an expression over named stored operands, computed in one chunk-ordered pass.
+// The store's `materializeMany` runs it; the free functions are for a flavor or driver author.
+export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/combine-many';
+export type {
+  CombineExpr,
+  CombineManyDeps,
+  CombineManyOperand,
+  CombineManyOperandStats,
+  CombineManyOutcome,
+  CombineManyOutput,
+  CombineManyOutputStats,
+  CombineManyRequest,
+  CombineManyRun,
+  CombineManyStats,
+  CombineManyWrite,
+  CompiledCombineMany,
+} from './core/combine-many';
 export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
 export type { LoadInput, PortableBitmap } from './core/load-input';
 export { decodeSerialized } from './core/load-input';
@@ -127,6 +144,7 @@ export {
   BudgetExceededError,
   LeaseExpiredError,
   LeaseLimitError,
+  StaleOperandError,
   // Copy-safe predicates. On an ordinary install `instanceof` holds everywhere — every package in the family
   // is published with `@cloudbitmaps/core` left external, so one copy of these classes is shared and you can
   // catch them however you normally would. Prefer these where that stops being true and nothing here can
@@ -142,6 +160,7 @@ export {
   isValidationError,
   isLeaseExpiredError,
   isLeaseLimitError,
+  isStaleOperandError,
 } from './core/errors';
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM

@@ -53,6 +53,9 @@ import {
   groundedReport,
   loadSegment,
   loadSegmentChunks,
+  compileCombineMany,
+  rebindCombineMany,
+  runCombineMany,
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
@@ -120,6 +123,13 @@ import { OpenChargingStorage } from './open-charging-storage';
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
+import type {
+  CombineExpr,
+  CombineManyOperand,
+  CombineManyOperandStats,
+  CombineManyOutputStats,
+  CombineManyStats,
+} from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
@@ -446,6 +456,146 @@ export interface EraseSubjectResult {
  * in prose means the compiler enforces it, and a caller's exhaustive `switch` has no dead branch.
  */
 export type MaterializeRefusal = Exclude<LoadRefusal, 'superseded'>;
+
+/**
+ * An expression over the operands of a {@link CloudRoaring.materializeMany} call: a string names an operand; a node holds
+ * exactly one of `and`, `or` or `andNot` over a non-empty list of expressions. `andNot` subtracts every entry after the
+ * first from the first, so it takes at least two. Plain JSON, so it can be logged and sent between tasks.
+ */
+export type Expr = CombineExpr;
+
+/** What the call did to one operand: see {@link MaterializeManyStats.operands}. */
+export type MaterializeManyOperandStats = CombineManyOperandStats;
+/** What the call did to one output: see {@link MaterializeManyStats.outputs}. */
+export type MaterializeManyOutputStats = CombineManyOutputStats;
+/**
+ * What a {@link CloudRoaring.materializeMany} call did: the groups it ran, its requests by class, the chunk-read budget it
+ * used, the most it held resident, and, for each operand, the generation it was pinned at, began at and ended at.
+ */
+export type MaterializeManyStats = CombineManyStats;
+
+/** One output of a {@link CloudRoaring.materializeMany} call. */
+export interface MaterializeManyOutput {
+  /** The segment this output becomes a new generation of. Not an operand of the call, and named by no other output. */
+  readonly dest: Segment;
+  /** What to compute. */
+  readonly expr: Expr;
+  /** Subtracted from the result, as the entries of an `andNot` after the first are. Pinned operands it names are re-checked before the publish. */
+  readonly exclude?: Expr[];
+  /** As on {@link MaterializeOptions}. */
+  readonly guard?: LoadGuard;
+  /** As on {@link MaterializeOptions}. */
+  readonly allowEmpty?: boolean;
+  /** As on {@link MaterializeOptions}. */
+  readonly metadata?: GenerationMetadata;
+  /** As on {@link MaterializeOptions}. */
+  readonly audit?: IAuditSink;
+  /** Generations to keep below the new one, as on {@link MaterializeOptions}; overrides the call's `keep`. */
+  readonly keep?: number;
+}
+
+/** The options of {@link CloudRoaring.materializeMany}. */
+export interface MaterializeManyOptions extends IdRange {
+  /** The stored segments the expressions name. */
+  readonly operands: Record<string, Segment>;
+  /** The outputs, in the order their results come back. */
+  readonly outputs: ReadonlyArray<MaterializeManyOutput>;
+  /**
+   * Generations to keep below each new one: a non-negative integer, **required**, since a materialisation otherwise keeps
+   * every generation and a call of a thousand outputs would leave a thousand uncollected destinations on every refresh.
+   * An output's own `keep` overrides it.
+   */
+  readonly keep: number;
+  /**
+   * Read every stored operand at the generation it has when the call starts, for the whole call (default `true`): the call
+   * pins each one that is not already pinned. It is one generation per operand, **not one instant across operands**.
+   * `false` reads each live, as a combine does, which can describe two generations of one operand and break its pruning, and runs
+   * **no re-check** of an operand an output subtracts: an opt-out list can move during the call and the outputs that subtract it are
+   * published (`stats.operands` still reports, from one read at the end, that it moved).
+   * An operand passed already pinned is used as it is whatever this says.
+   */
+  readonly pin?: boolean;
+  /**
+   * The most resident bytes the call counts at once, default 256 MiB: the buffered outputs, the operand streams, the
+   * chunks being evaluated and the plan, counted as resident memory. Past it, outputs run in groups and the operands are read
+   * again for each group. Process memory is more than the count (measured 1.6 to 5 times; see the guide).
+   */
+  readonly maxBufferedBytes?: number;
+  /**
+   * The most chunk reads the call may make, counted over all its groups. Default: the store's own `budget` when it was built
+   * with one (a ceiling below the plan throws `BudgetExceededError` before any chunk is read), else what the plan needs,
+   * with headroom. `false` lifts it. The budget used is in the result's stats.
+   */
+  readonly budget?: BudgetOption;
+  /** Outputs published at once, default 8. */
+  readonly publishConcurrency?: number;
+  /** Range requests held ahead per operand, default 1. */
+  readonly concurrency?: number;
+  /** As on every combine. */
+  readonly allowAbsentOperands?: boolean;
+}
+
+/**
+ * What one output of {@link CloudRoaring.materializeMany} came to: exactly what its `*Into` would have returned (a
+ * {@link MaterializeResult}, published or refused with its `reason`), or `{ published: false, error }` for what it would
+ * have thrown, or for what stopped it: a lost race ({@link WriteConflictError}), a publish whose outcome is unknown
+ * ({@link TransientError}), a damaged operand ({@link IntegrityError}), a lapsed lease ({@link LeaseExpiredError}), a
+ * pinned exclude that moved ({@link StaleOperandError}), memory ({@link BudgetExceededError}).
+ */
+export type MaterializeManyOutcome =
+  MaterializeResult | { readonly published: false; readonly error: Error };
+
+/** The result of {@link CloudRoaring.materializeMany}. */
+export interface MaterializeManyRun {
+  /** One per output, in the order given: one output's refusal or error never stops another. */
+  readonly outputs: MaterializeManyOutcome[];
+  readonly stats: MaterializeManyStats;
+}
+
+/** What a handle shows the store that it does not show a caller. */
+interface HandleView {
+  readonly ref: SegmentRef;
+  readonly pinnedAt: PinnedAt | undefined;
+  readonly expiresAt: number | undefined;
+  /** The lease error a read of the handle must throw now, or `undefined`. */
+  readonly leaseError: () => LeaseExpiredError | undefined;
+  /** Whether its deadline has passed. */
+  readonly expired: () => boolean;
+}
+
+/** Set by the `Segment` class, whose private state it reads. */
+let viewOf: (segment: Segment) => HandleView;
+
+const MATERIALIZE_MANY_KEYS = [
+  'operands',
+  'outputs',
+  'keep',
+  'pin',
+  'maxBufferedBytes',
+  'budget',
+  'publishConcurrency',
+  'concurrency',
+  'allowAbsentOperands',
+  'after',
+  'through',
+] as const;
+const MATERIALIZE_MANY_OUTPUT_KEYS = [
+  'dest',
+  'expr',
+  'exclude',
+  'guard',
+  'allowEmpty',
+  'metadata',
+  'audit',
+  'keep',
+] as const;
+
+/** The default of `maxBufferedBytes`: 256 MiB. */
+const DEFAULT_MAX_BUFFERED_BYTES = 256 * 1024 * 1024;
+const DEFAULT_PUBLISH_CONCURRENCY = 8;
+const DEFAULT_BATCH_CONCURRENCY = 1;
+/** Pins taken at once. */
+const PIN_PARALLELISM = 16;
 
 /** What an `*Into` verb wrote: the new generation of the destination, and whether it became current. */
 export interface MaterializeResult {
@@ -1028,6 +1178,324 @@ export class CloudRoaring {
       size: result.size,
       collected: result.collected,
     };
+  }
+
+  /**
+   * **Many outputs, each operand read once per group.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
+   * to depth 64) published as a new generation of its own `dest`, exactly as an `*Into` would publish it, but computed
+   * together: each operand's chunks are read once for all the outputs that use them, instead of once per output and
+   * once more for every scratch segment a nested expression would otherwise need.
+   *
+   * ```ts
+   * const run = await store.materializeMany({
+   *   operands: { us: store.segment('us'), engaged: store.segment('engaged'), optOut: store.segment('opt-out') },
+   *   outputs: [
+   *     { dest: store.segment('send-1'), expr: { and: ['us', 'engaged'] }, exclude: ['optOut'] },
+   *     { dest: store.segment('send-2'), expr: { andNot: ['us', 'engaged'] } },
+   *   ],
+   *   keep: 3,
+   * });
+   * run.outputs[0]; // a MaterializeResult, or { published: false, error }
+   * ```
+   *
+   * **Results.** `run.outputs[i]` is index-aligned with `outputs` and is exactly what output `i`'s `*Into` would have
+   * returned (a {@link MaterializeResult}: published, or refused with its `reason`), or `{ published: false, error }` for
+   * what it would have thrown. One output's refusal or error never stops another. The call itself throws only for bad
+   * input ({@link ValidationError} naming the output index and path, before any request), an operand that names no
+   * segment (unless `allowAbsentOperands`), and a `budget` its own plan exceeds, the last two before any chunk is read.
+   *
+   * **One generation per operand.** By default every stored operand is pinned for the call: read at the generation it had
+   * when the call started, however long the call runs and whatever loads land meanwhile. That is one generation per
+   * operand, not one instant across operands (two pins are two registry reads). `pin: false` reads live, as a combine does.
+   *
+   * **Every pinned operand an output subtracts is re-checked.** An output subtracts an operand when it is in its `exclude`
+   * or under any entry of an `andNot` after the first, at any depth. Immediately before the publishes the call re-reads the
+   * registry row of each such operand and compares its generation and incarnation with what was pinned (a name deleted and
+   * created again is a replacement though it is generation 0 again). If one was replaced, each output that subtracts it is
+   * not published and carries {@link StaleOperandError}; the others publish. It costs one registry read per such operand per
+   * group, and `stats.operands` carries every operand's pinned, start and end generation and whether it moved.
+   *
+   * **Memory.** Everything the pass holds resident is counted against `maxBufferedBytes` (default 256 MiB): each output's
+   * buffered chunks, the operand streams' ranges, the chunks being evaluated, and the plan itself, and a call whose plan alone
+   * passes it is refused before any chunk is read. When the outputs do not fit, they run in groups, each reading its operands
+   * once (so the operand reads grow with the total output size over the budget), and a group's buffers are released only as
+   * its publishes settle. A chunk count the index understated does not grow a group past the budget: the largest buffer is
+   * dropped and that output re-runs alone. An output that cannot fit alone has `BudgetExceededError` as its result. The count
+   * is the pass's own: process memory is more, measured at 1.6 times the ledger's high water on Linux and 2.5 to 5 times on
+   * macOS on the in-memory backend (the guide has the shapes and what is not counted).
+   *
+   * **Untrusted bytes.** Every operand chunk is decoded through the checks on untrusted tier data. A key an operand's index
+   * lists whose bytes are missing is an error for the outputs that read the operand, never an empty chunk.
+   *
+   * **Handles.** An expired or released handle anywhere in the call (an operand or a `dest`) is refused before any request,
+   * as on the `*Into` verbs. A leased operand's lease, and an operand's deadline, are checked before each chunk key
+   * is read: a lapse fails only the outputs that read that operand, never reads empty. Each `dest`'s lease and deadline
+   * are checked again just before its publish.
+   *
+   * **The chunk cache is bypassed:** the pass reads through the storage source and never writes the decoded-chunk cache, so
+   * a batch does not evict other readers' hot chunks. Each publish still invalidates its `dest` as an `*Into` does.
+   *
+   * **A limit of the form.** An output cannot name another output of the same call: a `dest` that is also an operand is
+   * refused. Chain two calls.
+   */
+  async materializeMany(options: MaterializeManyOptions): Promise<MaterializeManyRun> {
+    if (typeof options !== 'object' || options === null) {
+      throw new ValidationError(
+        'materializeMany needs an options object with `operands`, `outputs` and `keep`',
+      );
+    }
+    const unknown = Object.keys(options).filter(
+      (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
+    );
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `materializeMany: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}`,
+      );
+    }
+    // Read once, here: a getter or a proxy answering twice would be checked as one value and used as another.
+    const operandsIn: unknown = options.operands;
+    const outputsIn: unknown = options.outputs;
+    const keep = options.keep;
+    const after = options.after;
+    const through = options.through;
+    const pinOption = options.pin ?? true;
+    const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    const publishConcurrency = options.publishConcurrency ?? DEFAULT_PUBLISH_CONCURRENCY;
+    const concurrency = options.concurrency ?? DEFAULT_BATCH_CONCURRENCY;
+    const budgetOption = options.budget;
+    const allowAbsentOperands = options.allowAbsentOperands;
+    if (typeof pinOption !== 'boolean')
+      throw new ValidationError('materializeMany: pin must be a boolean');
+    if (allowAbsentOperands !== undefined && typeof allowAbsentOperands !== 'boolean') {
+      throw new ValidationError('materializeMany: allowAbsentOperands must be a boolean');
+    }
+    if (typeof operandsIn !== 'object' || operandsIn === null || Array.isArray(operandsIn)) {
+      throw new ValidationError('materializeMany: operands must be an object of name to segment');
+    }
+    if (!Array.isArray(outputsIn) || outputsIn.length === 0) {
+      throw new ValidationError('materializeMany: outputs must be a non-empty array');
+    }
+    const names = Object.keys(operandsIn);
+    const handles = new Map<string, Segment>();
+    for (const name of names) {
+      const handle = (operandsIn as Record<string, unknown>)[name];
+      if (!(handle instanceof Segment)) {
+        throw new ValidationError(
+          `materializeMany: operands["${name}"] must be a segment from store.segment()`,
+        );
+      }
+      handles.set(name, handle);
+    }
+    const operandKeys = new Set([...handles.values()].map((h) => h.key()));
+    const outputs: Array<{ spec: MaterializeManyOutput; dest: Segment }> = [];
+    const destKeys = new Set<string>();
+    (outputsIn as unknown[]).forEach((raw, i) => {
+      if (typeof raw !== 'object' || raw === null) {
+        throw new ValidationError(`outputs[${i}] must be an object`);
+      }
+      const bad = Object.keys(raw).filter(
+        (k) => !(MATERIALIZE_MANY_OUTPUT_KEYS as readonly string[]).includes(k),
+      );
+      if (bad.length > 0) {
+        throw new ValidationError(
+          `outputs[${i}]: unknown option${bad.length > 1 ? 's' : ''} ${bad.map((k) => `"${k}"`).join(', ')}`,
+        );
+      }
+      const spec = raw as MaterializeManyOutput;
+      const dest: unknown = spec.dest;
+      if (!(dest instanceof Segment)) {
+        throw new ValidationError(`outputs[${i}].dest must be a segment from store.segment()`);
+      }
+      if (operandKeys.has(dest.key())) {
+        throw new ValidationError(
+          `outputs[${i}].dest is also an operand of the call: one call is one pass over operands that do not change under it, so chain two calls`,
+        );
+      }
+      if (destKeys.has(dest.key())) {
+        throw new ValidationError(
+          `outputs[${i}].dest names a segment another output of the call writes`,
+        );
+      }
+      destKeys.add(dest.key());
+      outputs.push({ spec, dest });
+    });
+    // A ceiling the store was built with applies to a call that names none, as it does to every other operation; only a
+    // store left on the library default lets the call size its own from its plan.
+    const storeCeiling =
+      this.budget === null || this.budget.maxRequests !== DEFAULT_BUDGET.maxRequests
+        ? this.budget
+        : undefined;
+    const budget =
+      budgetOption === undefined ? storeCeiling : resolvePerOpBudget(budgetOption, this.budget);
+    // Every expression and option is checked here, with no operand pinned and no request made.
+    const operandSpecs = (pins: ReadonlyMap<string, PinnedAt | undefined>): CombineManyOperand[] =>
+      names.map((name) => {
+        const handle = handles.get(name)!;
+        const view = viewOf(handle);
+        const pinnedAt = pins.get(handle.key());
+        const guarded = view.expiresAt !== undefined || handle.lease !== undefined;
+        return {
+          name,
+          ref: view.ref,
+          ...(guarded ? { check: () => this.assertReadable('materializeMany', handle) } : {}),
+          ...(pinnedAt === undefined
+            ? {}
+            : {
+                pinnedGeneration: pinnedAt.generation,
+                pinnedVersion: pinnedAt.version,
+                pinnedFingerprint: pinnedAt.fingerprint ?? null,
+              }),
+          current: (read?: { readonly fingerprint?: boolean }) =>
+            this.currentRowOf(view.ref, read?.fingerprint === true),
+        };
+      });
+    const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
+      operands: operandSpecs(pins),
+      outputs: outputs.map(({ spec, dest }, i) => ({
+        expr: spec.expr,
+        ...(spec.exclude === undefined ? {} : { exclude: spec.exclude }),
+        ...(spec.allowEmpty === undefined ? {} : { allowEmpty: spec.allowEmpty }),
+        ...(spec.guard === undefined ? {} : { guard: spec.guard }),
+        ...(spec.metadata === undefined ? {} : { metadata: spec.metadata }),
+        ...(spec.keep === undefined ? {} : { keep: spec.keep }),
+        beforePublish: () => this.assertWritable(`outputs[${i}]`, dest),
+        // What a settled publish proves it sent: a published one wrote its object and moved the pointer, a refused one
+        // wrote its object and deleted it.
+        requestsOf: (result: MaterializeResult) => ({ get: 0, put: result.published ? 2 : 1 }),
+        publish: (
+          chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
+          write: {
+            readonly keep: number;
+            readonly allowEmpty?: boolean;
+            readonly guard?: LoadGuard;
+            readonly metadata?: GenerationMetadata;
+          },
+        ): Promise<MaterializeResult> =>
+          this.materialize(viewOf(dest).ref, new CombineChunks(chunks), 'materializeMany', {
+            ...write,
+            ...(spec.audit === undefined ? {} : { audit: spec.audit }),
+          }),
+      })),
+      keep: keep as number,
+      ...(after === undefined ? {} : { after }),
+      ...(through === undefined ? {} : { through }),
+      maxBufferedBytes,
+      publishConcurrency,
+      concurrency,
+      ...(budget === undefined ? {} : { budget }),
+      ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
+    });
+    const compiled = compileCombineMany(request(new Map()));
+    // An expired or released handle anywhere is refused before any request, as the `*Into` verbs refuse one.
+    for (const { dest } of outputs) this.assertWritable('materializeMany', dest);
+    for (const handle of handles.values()) this.assertReadable('materializeMany', handle);
+    this.lifecycleDeps('materializeMany');
+    const crbm = this.crbmSource;
+    if (crbm === undefined) {
+      throw new UnsupportedError(
+        'materializeMany needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage`',
+      );
+    }
+    // One pin per segment, shared by every name that holds it. A handle passed already pinned is used as it is.
+    const held = new Map<string, { at: PinnedAt | undefined; handle: Segment }>();
+    for (const [name, handle] of handles) {
+      const key = handle.key();
+      const at = handle.pinnedAt;
+      const prior = held.get(key);
+      if (prior === undefined) {
+        held.set(key, { at, handle });
+      } else if (prior.at !== undefined && at !== undefined) {
+        if (!samePin(prior.at, at)) {
+          throw new ValidationError(
+            `materializeMany: operand "${name}" holds a segment another operand holds, ${twoPins(prior.at, at)}: one call reads a segment at one generation`,
+          );
+        }
+      } else if (prior.at !== undefined || at !== undefined) {
+        if (!pinOption) {
+          throw new ValidationError(
+            `materializeMany: operand "${name}" holds a segment another operand holds, ${twoPins(prior.at, at)}: one call reads a segment at one generation`,
+          );
+        }
+        if (at !== undefined) held.set(key, { at, handle });
+      }
+    }
+    const pins = new Map<string, PinnedAt | undefined>();
+    const toPin: Array<[string, Segment]> = [];
+    for (const [key, { at, handle }] of held) {
+      if (at !== undefined) pins.set(key, at);
+      else if (pinOption) toPin.push([key, handle]);
+      else pins.set(key, undefined);
+    }
+    const taken = await mapWithConcurrency(
+      toPin,
+      PIN_PARALLELISM,
+      async ([key, handle]) => [key, (await handle.pin()).pinnedAt] as const,
+    );
+    for (const [key, at] of taken) pins.set(key, at);
+    const live = new Map([...pins].filter((e): e is [string, PinnedAt] => e[1] !== undefined));
+    const pinnedSource = new PinnedStorageChunkSource(crbm, live);
+    const source =
+      this.retryOptions === undefined
+        ? pinnedSource
+        : new RetryingStorageChunkSource(pinnedSource, this.retryOptions);
+    const final = rebindCombineMany(compiled, operandSpecs(pins));
+    const run = await runCombineMany(final, { source, codec: roaringCodec, clock: this.clock });
+    return {
+      outputs: run.outputs.map((o) =>
+        o.ok
+          ? o.value
+          : {
+              published: false as const,
+              error: o.error instanceof Error ? o.error : new Error(String(o.error)),
+            },
+      ),
+      stats: run.stats,
+    };
+  }
+
+  /**
+   * The registry row of `ref`, read straight from the registry, not from a snapshot: a re-check must see a move. With
+   * `fingerprint`, the current generation's object is opened too (one tail read, as a pin of it makes), and its
+   * fingerprint is returned beside the row: a generation's number is identified by its row and its object, since a number
+   * can be taken again once its object is gone.
+   */
+  private async currentRowOf(
+    ref: SegmentRef,
+    fingerprint: boolean,
+  ): Promise<{ generation: number | null; token: string; fingerprint?: string | null } | null> {
+    const registry = this.requireRegistry('materializeMany');
+    if (fingerprint && this.crbmSource !== undefined) {
+      const crbm = this.crbmSource;
+      const at = await this.withRetries(() => crbm.pinGeneration(ref));
+      const colon = at?.version.indexOf(':') ?? -1;
+      if (at !== null && colon >= 0) {
+        return {
+          generation: at.generation,
+          token: at.version.slice(colon + 1),
+          fingerprint: at.fingerprint,
+        };
+      }
+    }
+    const row = await this.withRetries(() => registry.get(ref));
+    return row === null ? null : { generation: row.currentGen, token: row.token };
+  }
+
+  /** Throw what a read of `handle` must throw now: its lease error, or a refusal for a deadline that has passed. */
+  private assertReadable(op: string, handle: Segment): void {
+    const view = viewOf(handle);
+    const lease = view.leaseError();
+    if (lease !== undefined) throw lease;
+    if (view.expired()) {
+      throw new ValidationError(
+        `${op}: refusing to read "${view.ref.segment}", whose handle has expired — an expired handle reads as empty, so ` +
+          'a generation built from it would be short. Open the handle without `expiresAt` if you meant to materialise.',
+      );
+    }
+  }
+
+  /** {@link assertReadable} for a destination, named by where it sits in the call. */
+  private assertWritable(where: string, dest: Segment): void {
+    this.assertReadable(where, dest);
   }
 
   /**
@@ -2449,6 +2917,13 @@ export class Segment {
         minting = false;
       }
     };
+    viewOf = (segment) => ({
+      ref: segment.ref,
+      pinnedAt: segment.pinnedAt,
+      expiresAt: segment.expiresAt,
+      leaseError: () => segment.leaseError(),
+      expired: () => segment.expired(),
+    });
   }
 
   /**
@@ -3287,6 +3762,7 @@ export {
   BudgetExceededError,
   LeaseExpiredError,
   LeaseLimitError,
+  StaleOperandError,
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,
@@ -3295,6 +3771,7 @@ export {
   isValidationError,
   isLeaseExpiredError,
   isLeaseLimitError,
+  isStaleOperandError,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
