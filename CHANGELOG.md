@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-06
+
 ### Added
 
 - **`store.memory(input)` holds ids in memory as an operand of `store.materializeMany`, and of no other verb.** It takes what
