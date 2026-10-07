@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.18.2] — 2026-10-07
+
 ### Security
 
 - **`export-segments` refuses a symlinked or foreign namespace directory in its output.** It writes only into
