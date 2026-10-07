@@ -365,7 +365,7 @@ export class S3StorageDriver implements IStorageDriver {
 
   /** Map S3 read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
-    scrubCredentials(err);
+    err = scrubCredentials(err);
     if (isValidationError(err)) return err;
     if (isNotFound(err)) {
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
@@ -385,7 +385,7 @@ export class S3StorageDriver implements IStorageDriver {
    * read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    scrubCredentials(err);
+    err = scrubCredentials(err);
     if (isTransient(err)) {
       return new TransientError(
         `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
@@ -545,8 +545,8 @@ class S3MultipartSink implements BlobSink {
       try {
         await send();
         return;
-      } catch (err) {
-        scrubCredentials(err);
+      } catch (raw) {
+        const err = scrubCredentials(raw);
         if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
           const stored = await this.storedObject();
           if (stored?.id === this.writeId) return;

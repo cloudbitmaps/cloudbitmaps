@@ -19,12 +19,17 @@ describe('S3 scrubCredentials', () => {
       writable: false,
       configurable: false,
     });
-    scrubCredentials(err);
-    const text = JSON.stringify(err, Object.getOwnPropertyNames(err));
+    const clean = scrubCredentials(err);
+    const text = JSON.stringify(clean, Object.getOwnPropertyNames(clean));
     expect(text).not.toContain(VALUE);
-    expect(JSON.stringify(response.body)).not.toContain('req');
-    expect(err.message).toBe('refused');
-    expect(err.$metadata).toEqual({ httpStatusCode: 403, requestId: 'r1' });
+    // The original and its live transport are untouched: a socket still closing reads them.
+    expect(response.body.req).toBe(request);
+    expect('$response' in clean).toBe(false);
+    expect(clean).toBeInstanceOf(Error);
+    expect(clean.name).toBe('Refused');
+    expect(clean.message).toBe('refused');
+    expect(clean.stack).toBe(err.stack);
+    expect(clean.$metadata).toEqual({ httpStatusCode: 403, requestId: 'r1' });
   });
 
   it('redacts a credential header held in a symbol-keyed map and in a flat header list', () => {
@@ -33,16 +38,17 @@ describe('S3 scrubCredentials', () => {
       [key]: { 'x-amz-security-token': ['x-amz-security-token', VALUE] },
       list: ['X-Amz-Security-Token', VALUE],
     };
-    scrubCredentials(holder);
-    expect(JSON.stringify(holder)).not.toContain(VALUE);
-    expect(JSON.stringify(holder[key])).not.toContain(VALUE);
+    const clean = scrubCredentials(holder);
+    expect(JSON.stringify(clean)).not.toContain(VALUE);
+    expect(JSON.stringify(clean[key])).not.toContain(VALUE);
   });
 
   it('survives a cycle and leaves other values alone', () => {
     const err: Record<string, unknown> = { note: 'fine', code: 'X' };
     err.self = err;
-    expect(() => scrubCredentials(err)).not.toThrow();
-    expect(err.note).toBe('fine');
+    const clean = scrubCredentials(err) as Record<string, unknown>;
+    expect(clean.note).toBe('fine');
+    expect(clean.code).toBe('X');
     expect(scrubCredentials('text')).toBe('text');
   });
 });

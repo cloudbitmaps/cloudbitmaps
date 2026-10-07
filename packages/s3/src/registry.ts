@@ -270,7 +270,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
 
 /** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
-  scrubCredentials(err);
+  err = scrubCredentials(err);
   if (isTransient(err)) {
     return new TransientError(
       `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
