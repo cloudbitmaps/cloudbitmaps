@@ -18,6 +18,38 @@ import {
   namespacePathPart,
 } from '../_shared/keys';
 
+/** The longest file or directory name the common filesystems accept, in bytes. */
+const MAX_COMPONENT_BYTES = 255;
+/** What a temp file adds to its final name: `.`, a 36-character uuid and `.tmp`. */
+const TEMP_SUFFIX_BYTES = 1 + 36 + 4;
+
+function assertFits(component: string, extraBytes: number): void {
+  // Encoded names are ASCII, so a character is a byte.
+  if (component.length + extraBytes > MAX_COMPONENT_BYTES) {
+    throw new ValidationError(
+      `a name is too long for a file name on this backend: the namespace, or the segment with its generation and ` +
+        `the temp file's suffix, must fit in ${MAX_COMPONENT_BYTES} bytes once encoded`,
+    );
+  }
+}
+
+/**
+ * Refuse, before anything is written, a generation whose namespace directory or temp file name (the object's name and
+ * the temp suffix) would be longer than a filesystem allows. A name inside the library's own cap can still be.
+ */
+export function assertStorageNamesFit(key: GenKey): void {
+  validateSegmentRef(key);
+  assertFits(namespacePathPart(key.namespace), 0);
+  assertFits(storageObjectFilename(key.segment, key.generation), TEMP_SUFFIX_BYTES);
+}
+
+/** The same refusal for a registry row: the namespace directory, and the row file with the temp suffix. */
+export function assertRegistryNamesFit(ref: SegmentRef): void {
+  validateSegmentRef(ref);
+  assertFits(namespacePathPart(ref.namespace), 0);
+  assertFits(`${encodeNameForPath(ref.segment)}${REGISTRY_SUFFIX}`, TEMP_SUFFIX_BYTES);
+}
+
 /** Directory holding all of a namespace's segment objects. */
 export function segmentsDir(root: string, ref: SegmentRef): string {
   validateSegmentRef(ref);

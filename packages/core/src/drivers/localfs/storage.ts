@@ -14,7 +14,7 @@ import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
-import { storageObjectPath, parseGeneration, segmentsDir } from './paths';
+import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
 export class LocalFsStorageDriver implements IStorageDriver {
@@ -29,6 +29,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
     const finalPath = storageObjectPath(this.root, key);
+    assertStorageNamesFit(key);
     await mkdir(dirname(finalPath), { recursive: true });
 
     const tmpPath = `${finalPath}.${randomUUID()}.tmp`;

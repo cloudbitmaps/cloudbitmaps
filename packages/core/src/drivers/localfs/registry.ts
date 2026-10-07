@@ -38,7 +38,13 @@ import {
   type RegistryEnvelope,
 } from '../_shared/registry';
 import { entropyIsAvailable, webCryptoEntropy } from '../_shared/entropy';
-import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
+import {
+  assertRegistryNamesFit,
+  registryDir,
+  registryRowPath,
+  parseNamespaceDir,
+  parseRegistryRow,
+} from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
@@ -113,6 +119,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
     const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
+    assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current !== null && !current.deleted) {
@@ -136,6 +143,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   ): Promise<{ token: Token }> {
     const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
+    assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
       const current = await this.readRow(path);
       if (current === null || current.deleted || current.record.token !== expected) {
