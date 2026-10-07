@@ -148,8 +148,9 @@ CloudBitmaps is published through a hardened pipeline so that a consumer can ver
 produced the package they installed**. The controls:
 
 - **Static analysis.** The [CodeQL workflow](.github/workflows/codeql.yml) analyses the JavaScript and TypeScript
-  source on every pull request, on every push to `main` and weekly, and reports findings as code-scanning alerts. Its
-  action versions are pinned to commits like every other workflow's.
+  source on every pull request, on every push to `main` and weekly, and reports findings as code-scanning alerts. It
+  covers the packages, the scripts and bench harnesses that CI runs, and the site; it leaves out the test suite and
+  the fuzz harnesses, which ship nowhere. Its action versions are pinned to commits like every other workflow's.
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
   `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
   manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*
