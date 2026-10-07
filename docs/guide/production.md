@@ -419,8 +419,8 @@ Two separate limits protect you. It helps to know which one you hit.
 | | `budget` | the memory ceilings |
 | --- | --- | --- |
 | bounds | **cost**: chunk reads a single operation may fan out into, an upper bound on its backend requests (neighbouring chunks share one) | **memory**: what a process holds resident, whatever the segments' size |
-| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` readers, default 1024 / 64 MiB: their parsed indices, and the chunk bytes of a small generation) · the combines' `concurrency` window · the per-chunk decode cap. **`budget: false` lifts none of them.** |
-| covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` readers, default 1024 / 64 MiB: their parsed indices, and the chunk bytes of a small generation) · the combines' `concurrency` window · the per-chunk decode cap · `maxBufferedBytes` for `materializeMany` (default 256 MiB; required with a feed). **`budget: false` lifts none of them.** |
+| covers | `count` · `iterate` · the combines · `materializeMany` · `subjectReport` · `eraseSubject` | every read, on every backend |
 
 ### The request budget
 

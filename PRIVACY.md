@@ -41,7 +41,7 @@ from constructing a cross-region topology. The points where personal data moves 
 | **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected. Azure Blob objects, and GCS objects above the simple-upload threshold, also carry a random write id in their metadata (`cbwid`): 128 random bits, no data from the bitmap or the source | the region of the bucket you wire |
 | **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata, and the current generation's id count and your metadata (sealed when the segment is encrypted) — no IDs, unless you put one in the metadata, which you must not. An Azure Blob row also carries the random write id in its metadata | the region of the bucket you wire |
 | **cache** (process RAM) | decoded chunks, and the stored chunk bytes (ciphertext on an encrypted segment) a reader keeps of a small generation it read whole; bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
-| **Loads and rewrites** (`store.load()`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
+| **Loads and rewrites** (`store.load()`, the `*Into` verbs, `store.materializeMany()`, `eraseSubject`) | read your source (or existing generations), write a new generation; a fed or held operand of `materializeMany` is read from your own process's memory | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
@@ -199,7 +199,7 @@ single-subject erasure is a rewrite (`eraseSubject`), while crypto-shred (`destr
 handles segment/tenant-level erasure and is the only erasure that reaches immutable backups / WORM copies of the
 objects — once no copy of the segment's registry row still holds its wrapped key, or every KEK that wrapped it
 is destroyed (below). And a
-**materialized segment** (`intersectInto` / `unionInto` / `andNotInto`) is a point-in-time snapshot of its
+**materialized segment** (`intersectInto` / `unionInto` / `andNotInto`, or an output of `materializeMany`) is a point-in-time snapshot of its
 inputs: erasing a subject from a source does not touch a destination computed earlier — which is exactly why
 `eraseSubject` scans *every* registered segment, destinations included, rather than erasing per source. What that
 costs is one unit of the per-op `budget` for each segment, and one more for each generation it opens in a segment

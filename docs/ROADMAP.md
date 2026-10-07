@@ -339,8 +339,8 @@ between here and there:
    code, and another refuses a count of third-party dependencies that does not name the package it counts.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
-   2: an optional cached summary of the current generation (its id count and metadata, sealed on an encrypted
-   segment), and a token that carries a random 128-bit incarnation id and a random part for every write, so a
+   3: an optional cached summary of the current generation (its id count and metadata, sealed on an encrypted
+   segment), the generations its loads keep and its live leases, and a token that carries a random 128-bit incarnation id and a random part for every write, so a
    re-created name is told apart from its earlier incarnations even once their rows are gone, and a row restored from
    a backup from the tokens it had before. Every row change before the freeze rides that one bump.
    The object format stays 1.0: a generation written with metadata carries it in an extension block of typed

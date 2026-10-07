@@ -36,6 +36,10 @@ handful you care about:
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
 | `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read finishes (even one that fails), when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
 
+`store.materializeMany` emits no `storage.get`, `cache`, `intersect` or `op` event, so an `*Into` call that
+moves into a batch drops out of the op-latency, chunk-skipping and cache-hit series. Its counts are the `stats` on
+its result (requests, bytes, chunks pruned, memory high-water mark), and its `audit` sink still fires per output.
+
 A quick look in dev is one line:
 
 ```ts
@@ -119,7 +123,7 @@ The events are vendor-neutral. There are seven kinds, each carrying the segment'
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
-| `segment.publish` | a load — `store.load` or an `*Into` verb — makes a generation the current one | `generation` |
+| `segment.publish` | a load — `store.load`, an `*Into` verb or an output of `store.materializeMany` — makes a generation the current one | `generation` |
 | `segment.load-refused` | a load did not publish: a guard refused its result, the segment's row changed while it wrote, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal that follows a registry write that got no answer: that write may have landed first, so the generation may have been current for a while before it was replaced | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
 | `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |

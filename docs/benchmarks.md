@@ -326,10 +326,11 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
-- **The `*Into` verbs, and combines at larger sizes** — materialising a combine's result back into a segment, and
-  `intersect`, `union`, `andNot` and the `*Into` verbs on operands of about a million, five million and ten million
+- **The `*Into` verbs, `materializeMany`, and combines at larger sizes** — materialising a combine's result back into a
+  segment, and `intersect`, `union`, `andNot` and the `*Into` verbs on operands of about a million, five million and ten million
   ids. The harness's [large suite](../bench/README.md#the-large-suite) measures them; it has been rehearsed on MinIO only
-  and has not run against a real object store, so no figure is published.
+  and has not run against a real object store, so no figure is published. The request counts of a `materializeMany` call are
+  counted in memory and not measured on S3.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.
 - **A steady `store.load()` at another `keep`.** The run above measured `keep: 12`; the requests at a `keep` of 1, or of 64, are counted by the engine and not measured on S3.
 - **GCS and Azure Blob in-region runs** — the run measured S3 only.

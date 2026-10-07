@@ -42,7 +42,7 @@ and `union`, throw a `ValidationError` naming the expired handle, before any req
 the list without one.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
-generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs).
+generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
 
 ## What a read costs
 

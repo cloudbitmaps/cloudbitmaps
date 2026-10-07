@@ -7,7 +7,7 @@ file, then ask `has`, `count`, `iterate`, `intersect`, `union` and `andNot`, wit
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
-> Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
+> Pre-1.0: the API and the on-disk format can still change. These docs ship with the release they are in; the changelog says what each release changed.
 
 ## Install
 
@@ -52,6 +52,11 @@ request handler. `store.exists(ref)` says whether a segment has been loaded. A l
 hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }` for portable Roaring bytes, checked
 before anything is written and loaded with no per-id work, into the same bytes its ids would write.
 
+To write many results over the same stored operands, `store.materializeMany` reads each operand once for a whole batch of
+`and` / `or` / `andNot` outputs instead of once per `*Into` call, and `store.memory(ids)` holds a set you already have in
+memory as an operand of that batch. [Many outputs from one pass](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#many-outputs-from-one-pass-materializemany) and
+[held operands](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#operands-held-in-memory-storememory) cover both.
+
 ## Options
 
 `new CloudRoaring({ storage, ...options })`. Only `storage` is required. A key the store does not take is refused by
@@ -93,7 +98,8 @@ The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/mai
 ## Coming from Redis bitmaps?
 
 `GETBIT` is `has`, `BITCOUNT` is `count`, and `BITOP AND` / `OR` / `DIFF` are `intersect` / `union` / `andNot`, with
-`intersectInto`, `unionInto` and `andNotInto` publishing the result as a new generation. `EXPIRE` becomes
+`intersectInto`, `unionInto` and `andNotInto` publishing the result as a new generation, and `materializeMany` publishing
+many such results from one pass. `EXPIRE` becomes
 `setRetention` plus a `retireExpired` sweep you schedule, per segment, never per id. `SETBIT` has no equivalent:
 there is no per-id write. Build the set upstream and load it, and do not loop one id at a time. Remove one id
 everywhere with `eraseSubject`, a rewrite for compliance, not a hot-path verb. This is not a drop-in replacement, and

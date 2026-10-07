@@ -11,6 +11,15 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Documentation corrections.** The package READMEs no longer say they describe `main` ahead of the release they ship in. The
+  `roaring` README, the site's API lists and `llms.txt` name `store.materializeMany` and `store.memory`, and the guides say that
+  `materializeMany` emits no `storage.get`, `cache`, `intersect` or `op` metrics event while its per-output audit events still
+  fire. `StaleOperandError`'s doc comment says `'erased'` also applies to a held operand, and the pinned re-check's
+  fingerprint compare is described as the code does it. A held operand's size is described by how it follows the ids' layout, and
+  the roadmap names the registry row's schema as 3.
+
 ## [0.18.0] — 2026-10-06
 
 ### Added
