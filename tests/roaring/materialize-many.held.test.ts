@@ -103,6 +103,33 @@ describe('store.memory: the input forms', () => {
     ).rejects.toThrow(/mayBeEmpty names fed operands, and the call has no feed/);
   });
 
+  it('refuses a forged handle with a ValidationError naming the operand', async () => {
+    const w = await batchWorld(DATA);
+    const forged = Object.create(MemoryOperand.prototype) as MemoryOperand;
+    await expect(
+      w.store.materializeMany({
+        operands: { fake: forged, a: w.store.segment('a') },
+        outputs: [{ dest: w.store.segment('d'), expr: 'a' }],
+        keep: 1,
+      }),
+    ).rejects.toThrow(/operands\["fake"\] is not a memory operand/);
+  });
+
+  it('holds the real contents of a Uint32Array subclass whose length and iterator lie', async () => {
+    const w = await batchWorld();
+    class Liar extends Uint32Array {
+      override get length(): number {
+        return 1;
+      }
+      override [Symbol.iterator](): ArrayIterator<number> {
+        return [0][Symbol.iterator]() as ArrayIterator<number>;
+      }
+    }
+    expect(await idsOfHeld(w, await w.store.memory(Liar.from([5, 9, 70_000])), 'liar')).toEqual([
+      5, 9, 70_000,
+    ]);
+  });
+
   it('refuses an object with an `ascending` key, naming the feed', async () => {
     const w = await batchWorld();
     const input = { ids: Uint32Array.from([1, 2]), ascending: true } as never;

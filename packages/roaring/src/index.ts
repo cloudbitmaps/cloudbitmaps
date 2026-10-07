@@ -1259,10 +1259,11 @@ export class CloudRoaring {
    * memory is the caller's, and during a call it counts against `maxBufferedBytes`. There is no size option: the load's
    * own cap applies to a serialized input.
    *
-   * **Erasure.** An erasure verb that starts in this store after the handle began to be made (the store's own counter moves
-   * when `eraseSubject` starts and when it ends) makes a call that reads the handle fail the outputs that read it with
+   * **Erasure.** Only `eraseSubject` moves the store's counter (at its start and at its end). One that starts in this store after
+   * the handle began to be made makes a call that reads the handle fail the outputs that read it with
    * {@link StaleOperandError} (`reason: 'erased'`), before any request and again just before each publish. An erasure in
-   * another store or another process is not seen: the handle is the caller's copy, so build it from the source of truth at
+   * another store or another process is not seen, nor are `dropSegment`, `eraseNamespace`, `destroySegment` and the free
+   * function `eraseIdFromSegment`, which do not move it: the handle is the caller's copy, so build it from the source of truth at
    * the start of each refresh and release it at the end.
    *
    * @throws {ValidationError} where a load of the same input would.
@@ -1416,7 +1417,12 @@ export class CloudRoaring {
     for (const name of names) {
       const handle = (operandsIn as Record<string, unknown>)[name];
       if (handle instanceof MemoryOperand) {
-        const view = heldOf(handle);
+        const view = heldOf(handle) as HeldView | undefined;
+        if (view === undefined) {
+          throw new ValidationError(
+            `materializeMany: operands["${name}"] is not a memory operand from store.memory()`,
+          );
+        }
         if (view.store !== this) {
           throw new ValidationError(
             `materializeMany: operands["${name}"] was made by another store: a memory operand belongs to the store that made it`,
@@ -3106,14 +3112,15 @@ let mintingMemory = false;
  * A set of ids held in memory by {@link CloudRoaring.memory}, to be an operand of {@link CloudRoaring.materializeMany}
  * and of no other verb. The bytes are the caller's until {@link MemoryOperand.release}.
  *
- * It belongs to the store that made it. An erasure that starts in that store after the handle was made makes any use of it
- * throw {@link StaleOperandError} (`reason: 'erased'`); an erasure in another store or process is not seen.
+ * It belongs to the store that made it. `eraseSubject` in that store, run after the handle was made, makes any use of it
+ * throw {@link StaleOperandError} (`reason: 'erased'`). Nothing else is seen: an erasure in another store or process, and
+ * `dropSegment`, `eraseNamespace`, `destroySegment` and the free function `eraseIdFromSegment`, do not move the counter.
  */
 export class MemoryOperand {
   private readonly view: HeldView;
 
   static {
-    heldOf = (operand) => operand.view;
+    heldOf = (operand) => operand.view as HeldView | undefined as HeldView;
     makeMemoryOperand = (view) => {
       mintingMemory = true;
       try {
