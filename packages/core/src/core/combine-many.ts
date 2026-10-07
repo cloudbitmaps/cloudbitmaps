@@ -374,7 +374,10 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     ['after', request.after],
     ['through', request.through],
   ] as const) {
-    if (bound !== undefined) integerIn(bound, 0, U32_MAX, name);
+    // An `after` or `through` is an id: the refusal says what is wrong, never the value.
+    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
+      throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
+    }
   }
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
