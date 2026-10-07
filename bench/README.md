@@ -66,8 +66,8 @@ a dollar for a cost. A ratio's binary tail runs to 17 digits, and one of exactly
 
 ## Real-cloud calibration
 
-`calibrate-aws.cjs` measures three things that need a real object store rather than local disk. The benchmarks page
-publishes all three:
+`calibrate-aws.cjs`'s default suite measures three things that need a real object store rather than local disk; its
+[large suite](#the-large-suite) measures combines at larger sizes. The benchmarks page publishes the default suite's three:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket through `store.load()`, the whole write path, for
    objects that fit one PUT and objects large enough to upload multipart. **Paid** by the in-region run,
@@ -463,7 +463,7 @@ the destinations. Latencies from different CloudShell sessions are not comparabl
 
 ### What it does not measure
 
-Its scope is the three measurements above, on one workload shape. Still owed, and **not** in this harness yet:
+The default suite's scope is the three measurements above, on one workload shape. Still owed, and **not** in this harness yet:
 
 - **The `*Into` verbs and a union at the default suite's size.** The [large suite](#the-large-suite) measures them, on
   operands of a million to ten million ids; the default suite's operands hold 500,000.

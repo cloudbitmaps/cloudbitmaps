@@ -326,13 +326,16 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
-- **The `*Into` verbs** — materialising a combine's result back into a segment, against a real object store.
+- **The `*Into` verbs, and combines at larger sizes** — materialising a combine's result back into a segment, and
+  `intersect`, `union`, `andNot` and the `*Into` verbs on operands of about a million, five million and ten million
+  ids. The harness's [large suite](../bench/README.md#the-large-suite) measures them; it has been rehearsed on MinIO only
+  and has not run against a real object store, so no figure is published.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.
 - **A steady `store.load()` at another `keep`.** The run above measured `keep: 12`; the requests at a `keep` of 1, or of 64, are counted by the engine and not measured on S3.
 - **GCS and Azure Blob in-region runs** — the run measured S3 only.
 
 **The harness is built, and has run for real from inside the region.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
-(`pnpm calibrate:aws`) measures, in one run against a real bucket, in eight stages: load throughput through
+(`pnpm calibrate:aws`) measures, in one run against a real bucket, in the default suite's eight stages: load throughput through
 `store.load()`, single-part and multipart, each load's own requests recorded; cold `A ∩ B` latency for two 500,000-id
 operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the at-scale section reports, at a quarter
 of its density — and again with the same overlap spread uniformly over each segment's chunks; a sweep over how many
@@ -365,6 +368,7 @@ Nothing above should be read as covering any of these.
 ```sh
 pnpm calibrate:aws            # projection only — touches nothing, needs no credentials
 pnpm calibrate:aws --rehearse # the workload against MinIO from docker-compose, free — no money guards run
+node bench/calibrate-aws.cjs --suite large   # the large suite's projection; add --rehearse to run it on MinIO
 bash bench/calibrate-cloudshell.sh   # from AWS CloudShell: in-region, against the PUBLISHED packages
 pnpm bench         # builds, then regenerates bench/crossover.svg, bench/results.json, and the cost table here + the site
 pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, and prints

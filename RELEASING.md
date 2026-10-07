@@ -107,7 +107,7 @@ A pushed `v*.*.*` tag starts one job in the `release` environment. It waits for 
 runs, and then, in order (a run started by hand skips some of these; see [A manual run](#a-manual-run)):
 
 - **Re-runs the gate that governs the artifact** against the exact commit being published — `lint ·
-  lint:arch · format:check · typecheck · test · audit · build · smoke`. A green `main` is necessary but not
+  lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`. A green `main` is necessary but not
   sufficient; the tagged commit is re-verified from scratch on a clean runner with `--frozen-lockfile`.
   It is not literally every check CI runs. The `build & test` job's checks of the site and the benchmark pages
   against their sources (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`,
