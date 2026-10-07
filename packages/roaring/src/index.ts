@@ -3126,8 +3126,10 @@ let mintingMemory = false;
  * A set of ids held in memory by {@link CloudRoaring.memory}, to be an operand of {@link CloudRoaring.materializeMany}
  * and of no other verb. The bytes are the caller's until {@link MemoryOperand.release}.
  *
- * It belongs to the store that made it. `eraseSubject` in that store, run after the handle was made, makes any use of it
- * throw {@link StaleOperandError} (`reason: 'erased'`). Nothing else is seen: an erasure in another store or process, and
+ * It belongs to the store that made it. `eraseSubject` in that store, started after the handle began to be made or still
+ * running when it was, fails the outputs of a `materializeMany` call that read it with {@link StaleOperandError}
+ * (`reason: 'erased'`): the call does not throw, and its outputs that do not read the handle publish. Nothing else is
+ * seen: an erasure in another store or process, and
  * `dropSegment`, `eraseNamespace`, `destroySegment` and the free function `eraseIdFromSegment`, do not move the counter.
  */
 export class MemoryOperand {

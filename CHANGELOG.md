@@ -23,8 +23,8 @@ so, and so do the module headers in the code.
   chunk cache, and the output is byte for byte what the same operand stored would publish; its bytes count against
   `maxBufferedBytes` while the call runs and are the caller's between calls. An empty held operand is accepted by `store.memory`
   and refused by the call unless its name is in `mayBeEmpty`, which now names held operands as well as fed ones. A handle
-  belongs to the store that made it, and an erasure that starts in that store after the handle was made (the counter
-  `eraseSubject` moves) fails the outputs that read it with `StaleOperandError` (`reason: 'erased'`), before any request and
+  belongs to the store that made it, and an erasure that starts in that store after the handle began to be made, or is still
+  running when it was (the counter `eraseSubject` moves), fails the outputs that read it with `StaleOperandError` (`reason: 'erased'`), before any request and
   again immediately before each publish; an erasure in another store or process is not seen. `operands` is now typed
   `Record<string, Segment | MemoryOperand>`. New: `MemoryOperand` from `@cloudbitmaps/roaring`; `prepareHeld`, `CombineManyHeld` and
   `HeldChunks` from `@cloudbitmaps/core`; `held` on `CombineManyOperand`. Nothing else changes.
