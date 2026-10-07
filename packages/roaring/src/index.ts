@@ -479,7 +479,7 @@ export interface MaterializeManyOutput {
   readonly dest: Segment;
   /** What to compute. */
   readonly expr: Expr;
-  /** Subtracted from the result: the operands it names are the ones re-checked before the publish. */
+  /** Subtracted from the result, as the entries of an `andNot` after the first are. Pinned operands it names are re-checked before the publish. */
   readonly exclude?: Expr[];
   /** As on {@link MaterializeOptions}. */
   readonly guard?: LoadGuard;
@@ -508,7 +508,9 @@ export interface MaterializeManyOptions extends IdRange {
   /**
    * Read every stored operand at the generation it has when the call starts, for the whole call (default `true`): the call
    * pins each one that is not already pinned. It is one generation per operand, **not one instant across operands**.
-   * `false` reads each live, as a combine does, which can describe two generations of one operand and break its pruning.
+   * `false` reads each live, as a combine does, which can describe two generations of one operand and break its pruning, and runs
+   * **no re-check** of an operand an output subtracts: an opt-out list can move during the call and the outputs that subtract it are
+   * published (`stats.operands` still reports, from one read at the end, that it moved).
    * An operand passed already pinned is used as it is whatever this says.
    */
   readonly pin?: boolean;
@@ -519,8 +521,9 @@ export interface MaterializeManyOptions extends IdRange {
    */
   readonly maxBufferedBytes?: number;
   /**
-   * The most chunk reads the call may make, counted over all its groups. Default: what the plan needs, with headroom. The
-   * budget used is in the result's stats.
+   * The most chunk reads the call may make, counted over all its groups. Default: the store's own `budget` when it was built
+   * with one (a ceiling below the plan throws `BudgetExceededError` before any chunk is read), else what the plan needs,
+   * with headroom. `false` lifts it. The budget used is in the result's stats.
    */
   readonly budget?: BudgetOption;
   /** Outputs published at once, default 8. */
@@ -1204,10 +1207,12 @@ export class CloudRoaring {
    * when the call started, however long the call runs and whatever loads land meanwhile. That is one generation per
    * operand, not one instant across operands (two pins are two registry reads). `pin: false` reads live, as a combine does.
    *
-   * **A pinned exclude is re-checked.** Immediately before the publishes the call re-reads the current generation of
-   * every pinned operand that appears in an output's `exclude`. If one moved since it was pinned, each output that
-   * excludes it is not published and carries {@link StaleOperandError}; the others publish. It costs one registry read per
-   * such operand per group, and `stats.operands` carries each operand's pinned, start and end generation.
+   * **Every pinned operand an output subtracts is re-checked.** An output subtracts an operand when it is in its `exclude`
+   * or under any entry of an `andNot` after the first, at any depth. Immediately before the publishes the call re-reads the
+   * registry row of each such operand and compares its generation and incarnation with what was pinned (a name deleted and
+   * created again is a replacement though it is generation 0 again). If one was replaced, each output that subtracts it is
+   * not published and carries {@link StaleOperandError}; the others publish. It costs one registry read per such operand per
+   * group, and `stats.operands` carries every operand's pinned, start and end generation and whether it moved.
    *
    * **Memory.** Everything the pass holds resident is counted against `maxBufferedBytes` (default 256 MiB): each output's
    * buffered chunks, the operand streams' ranges, and the chunks being evaluated. When the outputs do not fit, they run in

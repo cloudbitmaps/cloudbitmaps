@@ -8,8 +8,12 @@
  * a bitset. {@link residentBytes} is a model that stays above every measured point.
  */
 
-/** The fixed resident cost of one native bitmap beyond its serialized bytes, as measured. */
-export const RESIDENT_BITMAP_OVERHEAD = 450;
+/**
+ * The fixed resident cost of one native bitmap beyond its serialized bytes. Measured on the shipped codec, over 50,000
+ * bitmaps of one chunk each, it was 430 to 450 bytes for a chunk of up to 50 ids on macOS (arm64) and 357 to 373 on Linux
+ * (arm64, glibc 2.36), and 279 to 433 for a bitset; the constant sits above the highest of those.
+ */
+export const RESIDENT_BITMAP_OVERHEAD = 512;
 
 /** The most one chunk's portable payload can be after run optimization: a bitset container and its header. */
 const MAX_CHUNK_SERIALIZED = 8_208;
@@ -21,7 +25,7 @@ export function serializedBound(cardinality: number): number {
 
 /** The resident bytes of one bitmap whose serialized size is `serialized`: above every measured point. */
 export function residentBytes(serialized: number): number {
-  return Math.ceil(RESIDENT_BITMAP_OVERHEAD + Math.min(1.6 * serialized, serialized + 1_800));
+  return Math.ceil(RESIDENT_BITMAP_OVERHEAD + Math.min(1.6 * serialized, serialized + 2_000));
 }
 
 /** The resident bytes of one chunk of at most `cardinality` ids. */

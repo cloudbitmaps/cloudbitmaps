@@ -22,19 +22,14 @@ so, and so do the module headers in the code.
   operand never stops another; the call throws `ValidationError` for bad input before any request. `keep` is required
   and an output's own overrides it. Every stored operand is pinned for the call by default, one generation per operand and
   not one instant across operands (`pin: false` reads live). Immediately before the publishes the call re-reads each
-  pinned operand an output excludes, and an output whose excluded operand moved is not published: it carries the new
+  pinned operand an output subtracts (in `exclude`, or after the first entry of an `andNot`), and an output whose subtracted operand was replaced, a name deleted and created again included, is not published: it carries the new
   `StaleOperandError` (`code: 'stale-operand'`, `operand`, `reason: 'moved'`). `maxBufferedBytes` (default 256 MiB)
   bounds resident bytes, not serialized size (a native bitmap costs about 440 bytes over its serialized bytes), and the
   outputs run in groups when they do not fit, enforced while the pass runs so an index that understates a chunk cannot
   grow a group past it. Range requests are held to one window of 64 across all operands. A leased operand's lease and an
   operand's deadline are checked before each chunk key, and each `dest`'s again at its publish. Every chunk is decoded
   through the checks on untrusted bytes, and a listed key whose bytes are missing is an error for the outputs reading
-  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call,
-  **counted in memory** by recording every storage and registry driver call, **not measured on S3**: 100 stored operands
-  of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation,
-  `keep: 12`. 1,000 `*Into` calls with scratch segments made 156,140 GET-class (149,207 range reads) and 3,486
-  PUT-class requests with 855 scratch segments; one `materializeMany` made 3,025 GET-class (595 range reads) and 1,776
-  PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
+  that operand, never an empty chunk. The pass does not touch the decoded-chunk cache. Requests of a refresh-shaped call, **counted in memory** by wrapping the storage and registry drivers (`bench/materialize-many-counts.cjs`, whose JSON the figures are held to), **not measured on S3**: 100 stored operands of 200,000 ids and 1,000 outputs of one or two levels with an opt-out excluded, each `dest` holding a generation, `keep: 12`. 1,000 `*Into` calls with scratch segments made 143,761 GET-class (137,037 range reads) and 3,404 PUT-class requests with 818 scratch segments; one `materializeMany` made 3,499 GET-class (590 range reads) and 1,768 PUT-class in 6 groups at the default budget. The new types (`Expr`, `MaterializeManyOptions`, `MaterializeManyOutput`,
   `MaterializeManyOutcome`, `MaterializeManyRun`, `MaterializeManyStats`, `MaterializeManyOperandStats`,
   `MaterializeManyOutputStats`), `StaleOperandError` and `isStaleOperandError` are exported from
   `@cloudbitmaps/roaring`, and `compileCombineMany` and `runCombineMany` with their types from `@cloudbitmaps/core`.

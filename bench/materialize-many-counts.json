@@ -1,0 +1,83 @@
+{
+  "note": "Counted by running the library over the in-memory backend with its drivers wrapped; not measured on a cloud, and no time is recorded. Rewritten by bench/materialize-many-counts.cjs.",
+  "shapes": {
+    "small": {
+      "operands": 20,
+      "outputs": 100,
+      "idsPerOperand": 100000,
+      "batch": {
+        "published": 68,
+        "groups": 1,
+        "chunkReads": 21443,
+        "ledgerHighWaterBytes": 69205258,
+        "rangeReads": 20,
+        "tailReads": 120,
+        "rowReads": 172,
+        "objectWrites": 100,
+        "rowWrites": 68,
+        "listings": 0,
+        "deletes": 32,
+        "getClass": 312,
+        "putClass": 168,
+        "attributed": {
+          "get": 40,
+          "put": 168,
+          "rangeReads": 20,
+          "registryReads": 20
+        }
+      },
+      "into": {
+        "published": 68,
+        "scratchSegments": 66,
+        "rangeReads": 19785,
+        "tailReads": 252,
+        "rowReads": 360,
+        "objectWrites": 166,
+        "rowWrites": 134,
+        "listings": 0,
+        "deletes": 32,
+        "getClass": 20397,
+        "putClass": 300
+      }
+    },
+    "refresh": {
+      "operands": 100,
+      "outputs": 1000,
+      "idsPerOperand": 200000,
+      "batch": {
+        "published": 768,
+        "groups": 6,
+        "chunkReads": 621314,
+        "ledgerHighWaterBytes": 222189349,
+        "rangeReads": 590,
+        "tailReads": 1100,
+        "rowReads": 1809,
+        "objectWrites": 1000,
+        "rowWrites": 768,
+        "listings": 0,
+        "deletes": 232,
+        "getClass": 3499,
+        "putClass": 1768,
+        "attributed": {
+          "get": 1067,
+          "put": 1768,
+          "rangeReads": 590,
+          "registryReads": 477
+        }
+      },
+      "into": {
+        "published": 768,
+        "scratchSegments": 818,
+        "rangeReads": 137037,
+        "tailReads": 2736,
+        "rowReads": 3988,
+        "objectWrites": 1818,
+        "rowWrites": 1586,
+        "listings": 0,
+        "deletes": 232,
+        "getClass": 143761,
+        "putClass": 3404
+      }
+    }
+  }
+}

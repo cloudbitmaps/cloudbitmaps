@@ -657,28 +657,40 @@ snapshot. On a cold store a pin makes the row and tail reads the pass would have
 one row read and one tail read per operand more. An operand you pass already pinned is used as it is. A generation collected during the call fails the
 outputs that read it with `NotFoundError`, where a live read would have served a mix, so size `keep` on the operands'
 loaders past the call, or lease the pins. `pin: false` reads each operand live, as a combine does, and can describe two
-generations of one operand, which also breaks the call's pruning.
+generations of one operand, which also breaks the call's pruning. **With `pin: false` the re-check below does not run**: an
+opt-out list can move during the call and the outputs that subtract it are published; `stats.operands` still says, from
+one registry read at the end, that it moved.
 
-**A pinned exclude is re-checked.** A suppression list that moved during a long call is the dangerous staleness. So
-immediately before the publishes the call re-reads the current generation of every pinned operand that appears in an
-output's `exclude`. If one moved since it was pinned, every output that excludes it gets `{ published: false, error:
-StaleOperandError }` and is not published, and the others publish. `StaleOperandError` carries `code: 'stale-operand'`,
-the operand's name in the call (`operand`) and why (`reason: 'moved'`). It costs one registry read per exclude operand
-per group; an exclude that cannot be re-read is not assumed unchanged, and its outputs are not published.
-`stats.operands[name]` gives each operand's `pinnedGeneration`, `startGeneration` and, for a re-read exclude,
-`endGeneration`; `stats.outputs[i]` gives the operands an output read, the group that computed it and when it ran.
+**Every pinned operand an output subtracts is re-checked.** A suppression list that moved during a long call is the
+dangerous staleness. An output subtracts an operand when it is in its `exclude`, or under any entry of an `andNot` after
+the first, at any depth, so `{ andNot: ['us', 'opt-out'] }` and `exclude: ['opt-out']` are guarded alike. Immediately
+before the publishes the call re-reads the registry row of every pinned operand any output of the group subtracts, and
+compares what it finds with what was pinned: the generation **and** the row's incarnation, not the generation number
+alone, since a name deleted and created again starts at generation 0. A write to the row that is not a replacement (a
+retention policy, a lease) is not a move. If one moved, every output that subtracts it gets `{ published: false, error:
+StaleOperandError }` and is not published, and the others publish. `StaleOperandError` carries `code: 'stale-operand'`, the
+operand's name in the call (`operand`) and why (`reason: 'moved'`). A subtracted operand that cannot be re-read is not
+assumed unchanged, and its outputs are not published. The re-check costs one registry read per subtracted operand per group.
+
+**`stats.operands[name]`** (an object with no prototype, so any name is a key) gives each operand's `pinnedGeneration`,
+`startGeneration`, `endGeneration` and `moved`, for every operand of the call, those read live included: the end is one
+registry read of the operand's row when the call finishes, or the re-check's read for a subtracted one, so it is the last
+read of the call and not a snapshot of one instant. `stats.outputs[i]` gives the operands an output read, the group that
+computed it and when it ran.
 
 **Memory is a budget, and the call regroups to keep it.** `maxBufferedBytes` (default 256 MiB) bounds what the pass
 holds **resident**, which is not what it serializes to: a native bitmap costs a fixed amount over its serialized bytes
-(about 440 bytes for a sparse chunk, measured on the shipped codec), so the ledger counts each buffered output chunk, each
-operand stream's ranges and each chunk being evaluated at its resident cost. When the outputs do not fit, they run in
+(about 440 bytes for a sparse chunk on macOS and about 360 on Linux, measured on the shipped codec; the model sits above both), so
+the ledger counts each buffered output chunk, each operand stream's ranges (the operand's object size where the source knows it,
+capped at the window the call asked for, since an index is not trusted to say how much a stream holds) and each chunk being
+evaluated at its resident cost. When the outputs do not fit, they run in
 groups, filled in call order; each group reads its operands once, and a group's buffers are released only as its publishes
 settle, so the next group starts with room. Order related outputs next to each other and fewer operands are read again.
 The ledger is also enforced while the pass runs, so an index that understates a chunk's size cannot grow a group past the
 budget: the largest buffer is dropped and that output runs again alone. An output that cannot fit alone has
 `BudgetExceededError` as its result, naming the budget it needs. The budget is the pass's own count: process memory is more
-(the allocator's slack, the plan's key lists, and the encoded objects being written), about 1.3 times the ledger's high
-water in the measurement below. The pass reads at most 64 range requests at once across all operands, inside the S3
+(the allocator's slack, the plan's key lists, and the encoded objects being written), and the ledger's high water is
+reported in `stats.memory`. The pass reads at most 64 range requests at once across all operands, inside the S3
 client's 128 sockets, so many operands do not queue behind the pool with their read timeouts running; `concurrency`
 (default 1) is the range requests held ahead per operand within that window, and `publishConcurrency` (default 8) the
 outputs published at once.
@@ -697,23 +709,39 @@ each chunk key is read: a lapse fails only the outputs that read that operand (`
 `ValidationError` for a deadline) and never reads empty. Each `dest`'s lease and deadline are checked again just before
 its publish.
 
-**Requests of a refresh-shaped call.** Counted in memory, by recording every call to the storage and registry drivers, not
-measured on S3: 100 stored operands of 200,000 ids each, 1,000 outputs that are trees of one or two levels of `and` /
-`or` / `andNot`, each with the same opt-out list excluded, every `dest` already holding a generation, `keep: 12`.
+**Requests of a refresh-shaped call.** Counted in memory by `bench/materialize-many-counts.cjs`, which wraps the storage
+driver and the registry of the in-memory backend and counts every call they are asked, not measured on S3 and with no
+time recorded: 100 stored operands of 200,000 ids each, 1,000 outputs that are trees of one or two levels of
+`and` / `or` / `andNot`, each with the same opt-out list excluded, every `dest` already holding a generation, `keep: 12`.
+The counts are in `bench/materialize-many-counts.json`, and a test holds these figures to it; CI recounts a smaller shape
+(20 operands, 100 outputs) with `pnpm bench:materialize-many-counts:check`, and this one is committed and recounted on
+demand with `node bench/materialize-many-counts.cjs --check --all`.
 
-| | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments | time |
-|---|---|---|---|---|---|---|---|
-| 1,000 `*Into` calls, nested groups through scratch segments | 149,207 | 2,810 | 4,123 | **156,140** | **3,486** | 855 | 53.0 s |
-| one `materializeMany`, default 256 MiB (6 groups) | 595 | 1,100 | 1,330 | **3,025** | **1,776** | 0 | 13.2 s |
+| | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments |
+|---|---|---|---|---|---|---|
+| 1,000 `*Into` calls, nested groups through scratch segments | 137,037 | 2,736 | 3,988 | **143,761** | **3,404** | 818 |
+| one `materializeMany`, default 256 MiB (6 groups) | 590 | 1,100 | 1,809 | **3,499** | **1,768** | 0 |
 
-GET-class is range reads, tail reads and registry row reads; PUT-class is object writes and registry writes. The
-publishes, one object and one pointer write per output, are the floor of any design and most of the batch's PUT-class.
-The `*Into` row reads with the default chunk cache, which holds 1,024 chunks, fewer than one operand has; a cache sized
-to the whole working set would cut its range reads and cost the memory to hold it. The call's `stats.requests` reports
-the range reads, chunk reads, registry re-reads and publishes it made, and `stats.budget` the chunk reads it planned and
-used. The tail and row reads of opening an operand are the store's own and are not in `stats`. The default `budget` is
-what the plan needs with headroom, so it trips only when a re-run goes past it; pass `budget` to cap a call, or `false`
-to lift it.
+GET-class is range reads, tail reads and registry row reads; PUT-class is object writes, registry writes and listings;
+deletes are free and not counted. The publishes, one object and one pointer write per output, are the floor of any
+design and most of the batch's PUT-class. The `*Into` route reads with the default chunk cache, which holds 1,024
+chunks; a cache sized to the whole working set would cut its range reads, at the cost of the memory to hold it.
+
+**`stats.requests`** gives the call's own requests by class. `rangeReads`, `chunkReads`, `registryReads` (the re-checks,
+the end-of-call reads and the existence checks) and `publishes` are exact. `get` and `put` are the GET-class and PUT-class
+requests the call can attribute: `get` is the range reads and registry reads, and `put` the object write and pointer write
+of each published output and the object write of each refused one. They are a lower bound on what the drivers saw: the tail
+and row reads that open an operand are made by the store's readers, the reads inside a publish by the load, and a
+multipart upload's extra requests, a listing and the writes of a publish that threw are unknown to the call. In the
+counted call above `put` equals the drivers' PUT-class count and `get` is a small part of the GET-class count; the counts
+are side by side in the JSON.
+
+**The budget.** `budget` counts chunk reads over all the groups. A call that passes none gets, when the store was built
+with a `budget` of its own, that one, so a store ceiling below the plan throws `BudgetExceededError` before any chunk is
+read, as it does for every other operation; when the store is on the library default, the call sizes its own from its
+plan, twice the chunk reads the plan needs and a thousand, so it trips only when an output has to run again past it.
+Pass `budget` to set one for the call, or `false` to lift it. `stats.budget` has the limit, the chunk reads planned and
+those made.
 
 **Erasure.** A batch widens the window of an in-flight read to the length of the call:
 see [a batch of materializations](erasure.md#a-batch-of-materializations).

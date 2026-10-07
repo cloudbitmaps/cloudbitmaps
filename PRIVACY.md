@@ -119,7 +119,7 @@ after it returns, and re-run any erasure a rollback interrupted.
 
 ### A batch of materializations
 
-A `store.materializeMany` call computes many `*Into` outputs in one pass, and its window is the call's length, not one read's. An output of a `materializeMany` call can carry an id that was erased while the call ran, for as long as the call ran: the call reads each operand at the generation it pinned, and an output's publish is a load, so an erasure that lands after the chunks were read does not reach what the call holds, unless the output excludes a pinned operand that the erasure rewrote, which the call re-reads just before the publishes and refuses. An erasure that rewrites a destination while the call runs makes that output's publish lose with `WriteConflictError`; after any call that overlapped an erasure, re-run `eraseSubject` and keep both ledgers.
+A `store.materializeMany` call computes many `*Into` outputs in one pass, and its window is the call's length, not one read's. An output of a `materializeMany` call can carry an id that was erased while the call ran, for as long as the call ran: the call reads each operand at the generation it pinned, and an output's publish is a load, so an erasure that lands after the chunks were read does not reach what the call holds, unless the output subtracts a pinned operand that the erasure rewrote, which the call re-reads just before the publishes and refuses. An erasure that rewrites a destination while the call runs makes that output's publish lose with `WriteConflictError`; after any call that overlapped an erasure, re-run `eraseSubject` and keep both ledgers.
 
 ### One process, and the rest of your fleet
 
