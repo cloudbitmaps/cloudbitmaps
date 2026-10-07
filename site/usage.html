@@ -316,7 +316,8 @@ npm audit signatures</code></pre>
                     <span class="m">or</span> / <span class="m">andNot</span> expression over named operands, and
                     <span class="m">run.outputs[i]</span> is what that output's <span class="m">*Into</span> would
                     have returned, or <span class="m">{ published: false, error }</span>. Its counts are in
-                    <span class="m">run.stats</span>; it emits no metrics events.
+                    <span class="m">run.stats</span>; it emits no <span class="m">storage.get</span>, <span class="m">cache</span>,
+                    <span class="m">intersect</span> or <span class="m">op</span> metrics event.
                   </td>
                   <td class="num">storage + registry</td>
                 </tr>
@@ -325,7 +326,7 @@ npm audit signatures</code></pre>
                   <td class="from">
                     Holds a set you already have in memory as an operand of
                     <span class="m">materializeMany</span>, read with no request. It is checked as a load checks
-                    its input, its outputs are refused if an erasure has run in the store since it was made, and it is yours to
+                    its input, its outputs are refused once this store&rsquo;s <span class="m">eraseSubject</span> has started since it was made, and it is yours to
                     <span class="m">release()</span>; no other verb accepts it.
                   </td>
                   <td class="num">none: read from memory</td>

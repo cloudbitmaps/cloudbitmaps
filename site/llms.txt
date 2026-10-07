@@ -65,7 +65,7 @@ wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect not
 target survives a materialization. `store.materializeMany` publishes many such outputs (each an `and` / `or` / `andNot`
 expression over named operands) from one chunk-ordered pass that reads each operand once, instead of once per `*Into`
 call; its operands can be stored segments, records that arrive as a feed, or sets you hold in memory with
-`store.memory(ids)`. It needs `keep`, reports `stats` on its result, and emits no metrics events.
+`store.memory(ids)`. It needs `keep`, reports `stats` on its result, and emits no `storage.get`, `cache`, `intersect` or `op` metrics event.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,

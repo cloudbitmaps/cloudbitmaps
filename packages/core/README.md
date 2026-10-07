@@ -14,7 +14,7 @@ Depend on `@cloudbitmaps/core` directly only to write a flavor or a driver.
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
-> Pre-1.0: the API and the on-disk format can still change. These docs ship with the release they are in; the changelog says what each release changed.
+> Pre-1.0: the API and the on-disk format can still change. On npm these docs match the version they ship in; on GitHub they describe `main`, and the changelog says what each release changed.
 
 ## What it is
 

@@ -18,7 +18,8 @@ so, and so do the module headers in the code.
   `materializeMany` emits no `storage.get`, `cache`, `intersect` or `op` metrics event while its per-output audit events still
   fire. `StaleOperandError`'s doc comment says `'erased'` also applies to a held operand, and the pinned re-check's
   fingerprint compare is described as the code does it. A held operand's size is described by how it follows the ids' layout, and
-  the roadmap names the registry row's schema as 3.
+  the roadmap names the registry row's schema as 3. The getting-started guide's Redis table maps `BITOP ANDOR` and `BITOP XOR` to
+  one `store.materializeMany` expression, where it said neither has a single call.
 
 ## [0.18.0] — 2026-10-06
 
