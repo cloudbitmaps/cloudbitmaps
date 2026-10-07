@@ -32,9 +32,9 @@ so, and so do the module headers in the code.
   bytes filesystems allow, and failed with a raw `ENAMETOOLONG` whose message carried the absolute storage root.
 - **A registry row's `currentGen` must be a safe integer, and a load refuses a number past it.** A row holding a
   generation above `2^53 - 1` was accepted, and a load then published an object the reader could not open. The write and
-  read checks now use `Number.isSafeInteger`. At the largest safe generation, `load` and the other verbs that take the
-  next number (`unionInto` and its kin) throw an `IntegrityError` before writing anything, and `eraseSubject` returns
-  `erased: false` with a note instead of rewriting.
+  read checks now use `Number.isSafeInteger`. At the largest safe generation, `load`, `intersectInto`, `unionInto` and
+  `andNotInto` throw an `IntegrityError` before writing anything, `materializeMany` returns that error on each output it
+  could not publish, and `eraseSubject` returns `erased: false` with a note instead of rewriting.
 - **GCS and S3 errors carry no request credential or live transport.** Both SDKs keep the request they sent on the
   errors they raise (the GCS SDK `response.request` and `config`, the AWS SDK `$response`), and through it the HTTP
   agent and its sockets, whose raw request text holds the bearer token or session token of calls still in flight. The
@@ -47,9 +47,11 @@ so, and so do the module headers in the code.
   when the response advertises more), instead of buffering a body from an endpoint that ignores `Range` or sends no
   length. The body is destroyed on the way out.
 - **Error messages no longer carry an id.** A refused id (`has`, `load`, `store.memory`, `eraseSubject`,
-  `subjectReport`), an `iterate` bound (`after`, `through`), a feed or held chunk key and a bare value passed as a load
-  input were echoed in the `ValidationError` message, and applications log messages. The messages now say what is wrong
-  without the value: `an id must be an integer from 0 to 4294967295`, `after must be an integer from 0 to 4294967295`.
+  `subjectReport`), a bound (`after`, `through`, on `iterate` and `materializeMany`), an out-of-range chunk key or value
+  in a load input, and a bare value passed as a load input were echoed in the `ValidationError` message, and applications
+  log messages. The messages now say what is wrong without the value: `an id must be an integer from 0 to 4294967295`,
+  `after must be an integer from 0 to 4294967295`. A message about a feed record still names its chunk key, a number
+  from 0 to 65535 that 65,536 ids share, not an id.
   Code that matched the old text `id must be an integer in 0..4294967295; got <value>` must match the new one.
 
 ## [0.18.1] — 2026-10-07

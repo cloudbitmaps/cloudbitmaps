@@ -67,7 +67,7 @@ describe('an error message never carries an id', () => {
     expect(messages[0]).toMatch(/an id must be an integer from 0 to 4294967295/);
   });
 
-  it('a refused feed says what is wrong without a key or an id', async () => {
+  it('a refused feed says what is wrong without an id', async () => {
     const w = await batchWorld({ a: [1, 2, 3] });
     const seg = w.store.segment('a');
     const HIGH = 3_000_000_123;
