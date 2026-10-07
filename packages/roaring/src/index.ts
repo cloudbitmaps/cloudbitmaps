@@ -125,6 +125,8 @@ import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
 import type {
   CombineExpr,
+  CombineManyFeed,
+  CombineManyFeedRecord,
   CombineManyOperand,
   CombineManyOperandStats,
   CombineManyOutputStats,
@@ -494,6 +496,35 @@ export interface MaterializeManyOutput {
   readonly keep?: number;
 }
 
+/**
+ * One record of the feed of {@link CloudRoaring.materializeMany}: the ids some of the fed operands hold at one chunk key.
+ * `key` is `id >>> 16`, an integer from 0 to 65,535, never below the previous record's; a key may arrive as several
+ * consecutive records, each carrying some of the operands, and one record per key is the usual shape. `operands` maps a
+ * declared fed name to its ids at the key: a real `Uint32Array` (not an `Int32Array`, `Buffer`, array or look-alike),
+ * strictly ascending, every id inside the key. A name is given at most once per key, and an empty array is the same as
+ * leaving the name out. The record is copied as it arrives, so the caller may drop or reuse its arrays once it has yielded it.
+ */
+export type MaterializeManyFeedRecord = CombineManyFeedRecord;
+
+/**
+ * Operands that arrive as records in chunk-key order instead of being stored, for {@link MaterializeManyOptions.feed}.
+ * Outputs name a fed operand as they name a stored one.
+ */
+export interface MaterializeManyFeed {
+  /** The fed operand names, declared up front. A name is either stored or fed, never both. */
+  readonly names: string[];
+  /** The records, read once, in key order. */
+  readonly records: AsyncIterable<MaterializeManyFeedRecord>;
+  /**
+   * How many ids each fed operand holds over the whole feed, **required**: an object keyed by exactly `names`, or a
+   * function returning one (or a promise of one), called once after the last record and before any fed output is
+   * published. A feed whose count of ids for any operand differs (one that ended early, or skipped a key) refuses every
+   * fed output; so does a count that is missing, extra, thrown or rejected.
+   */
+  readonly counts:
+    (() => Record<string, number> | Promise<Record<string, number>>) | Record<string, number>;
+}
+
 /** The options of {@link CloudRoaring.materializeMany}. */
 export interface MaterializeManyOptions extends IdRange {
   /** The stored segments the expressions name. */
@@ -533,6 +564,19 @@ export interface MaterializeManyOptions extends IdRange {
   readonly concurrency?: number;
   /** As on every combine. */
   readonly allowAbsentOperands?: boolean;
+  /**
+   * Operands fed as records in chunk-key order, beside the stored ones; an output names a fed operand as it names a stored
+   * one. **A feed is read once, so a call with one runs its outputs as one group, and `maxBufferedBytes` is then required**:
+   * the feed's records and the fed outputs are counted against it as they arrive, and a fed call fails as soon as the count
+   * passes it. A fed output is published only after the whole feed was read and every end-of-feed check passed.
+   */
+  readonly feed?: MaterializeManyFeed;
+  /**
+   * Fed operand names allowed to hold no id anywhere in the feed. A declared fed name that appears in no record is refused
+   * at the end of the feed, because an operand that is empty everywhere is usually an upstream query that failed quietly.
+   * Naming something that is not a fed operand is a {@link ValidationError}.
+   */
+  readonly mayBeEmpty?: readonly string[];
 }
 
 /**
@@ -540,7 +584,9 @@ export interface MaterializeManyOptions extends IdRange {
  * {@link MaterializeResult}, published or refused with its `reason`), or `{ published: false, error }` for what it would
  * have thrown, or for what stopped it: a lost race ({@link WriteConflictError}), a publish whose outcome is unknown
  * ({@link TransientError}), a damaged operand ({@link IntegrityError}), a lapsed lease ({@link LeaseExpiredError}), a
- * pinned exclude that moved ({@link StaleOperandError}), memory ({@link BudgetExceededError}).
+ * pinned exclude that moved ({@link StaleOperandError}), memory ({@link BudgetExceededError}), or, for an output that names a
+ * fed operand, a bad feed ({@link ValidationError}) or an erasure in this store while the call ran ({@link StaleOperandError}
+ * with `reason: 'erased'`).
  */
 export type MaterializeManyOutcome =
   MaterializeResult | { readonly published: false; readonly error: Error };
@@ -578,6 +624,8 @@ const MATERIALIZE_MANY_KEYS = [
   'allowAbsentOperands',
   'after',
   'through',
+  'feed',
+  'mayBeEmpty',
 ] as const;
 const MATERIALIZE_MANY_OUTPUT_KEYS = [
   'dest',
@@ -847,6 +895,13 @@ export class CloudRoaring {
   private readonly requireEncryption: boolean;
   /** Resolved store-level per-op budget (null = disabled); the admin scans use it, with a per-op override. */
   private readonly budget: Budget | null;
+  /**
+   * Moved at the start and at the end of each `eraseSubject` this store runs. A `materializeMany` call with a feed records
+   * it when it begins and is refused once it has moved: it reads caller memory, which no erasure can reach.
+   */
+  private erasureEpoch = 0;
+  /** How many `eraseSubject` calls of this store are running: while any is, every check of the counter counts as moved. */
+  private erasuresRunning = 0;
 
   /**
    * Refuse any option key the store does not take, at the top level or inside a group, naming each one.
@@ -1237,6 +1292,31 @@ export class CloudRoaring {
    *
    * **A limit of the form.** An output cannot name another output of the same call: a `dest` that is also an operand is
    * refused. Chain two calls.
+   *
+   * **A feed.** `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order, for conditions
+   * too many to hold or store. Each record is checked before the pass sees it (see {@link MaterializeManyFeedRecord}): a bad
+   * feed is refused, never read as fewer members, and **a fed output is published only after the whole feed was read and every
+   * end-of-feed check passed**, so a bad feed refuses every fed output and publishes none of them; outputs that name only
+   * stored operands are unaffected. At the end of the feed `counts` must equal the ids the feed held for each name, and a
+   * name that appeared in no record is refused unless it is in `mayBeEmpty`. A feed is read once, so the call runs its outputs
+   * as one group and **`maxBufferedBytes` is required**: each record is converted to compressed bitmaps as it arrives, the key
+   * in hand and its fed outputs are counted against the budget, and the call fails as soon as the count passes it, with
+   * {@link BudgetExceededError} for every fed output. **Erasure:** a fed call is refused at its next record, and before each
+   * fed publish, once `eraseSubject` has started in this store ({@link StaleOperandError}, `reason: 'erased'`).
+   *
+   * ```ts
+   * await store.materializeMany({
+   *   operands: { unsub: store.segment('global-unsub') },
+   *   feed: {
+   *     names: ['us', 'engaged'],
+   *     records: warehouseRecords(), // yields { key, operands: { us: Uint32Array, engaged: Uint32Array } } by key
+   *     counts: () => warehouseCounts(),
+   *   },
+   *   maxBufferedBytes: 512 * 1024 * 1024,
+   *   outputs: [{ dest: store.segment('send-1'), expr: { and: ['us', 'engaged'] }, exclude: ['unsub'] }],
+   *   keep: 12,
+   * });
+   * ```
    */
   async materializeMany(options: MaterializeManyOptions): Promise<MaterializeManyRun> {
     if (typeof options !== 'object' || options === null) {
@@ -1244,6 +1324,8 @@ export class CloudRoaring {
         'materializeMany needs an options object with `operands`, `outputs` and `keep`',
       );
     }
+    // The erasure counter as the call begins: a fed call is refused once it has moved.
+    const epochAt = options.feed === undefined ? 0 : this.epochNow();
     const unknown = Object.keys(options).filter(
       (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
     );
@@ -1259,6 +1341,18 @@ export class CloudRoaring {
     const after = options.after;
     const through = options.through;
     const pinOption = options.pin ?? true;
+    const feedIn: unknown = options.feed;
+    const mayBeEmptyIn: unknown = options.mayBeEmpty;
+    if (feedIn === undefined && mayBeEmptyIn !== undefined) {
+      throw new ValidationError(
+        'materializeMany: mayBeEmpty names fed operands, and the call has no feed',
+      );
+    }
+    if (feedIn !== undefined && options.maxBufferedBytes === undefined) {
+      throw new ValidationError(
+        'materializeMany: maxBufferedBytes is required with a feed: the feed is read once, so the call runs as one group and the budget is what bounds it',
+      );
+    }
     const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
     const publishConcurrency = options.publishConcurrency ?? DEFAULT_PUBLISH_CONCURRENCY;
     const concurrency = options.concurrency ?? DEFAULT_BATCH_CONCURRENCY;
@@ -1384,6 +1478,7 @@ export class CloudRoaring {
       concurrency,
       ...(budget === undefined ? {} : { budget }),
       ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
+      ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, mayBeEmptyIn, epochAt) }),
     });
     const compiled = compileCombineMany(request(new Map()));
     // An expired or released handle anywhere is refused before any request, as the `*Into` verbs refuse one.
@@ -1450,6 +1545,36 @@ export class CloudRoaring {
             },
       ),
       stats: run.stats,
+    };
+  }
+
+  private epochNow(): number {
+    return this.erasureEpoch;
+  }
+
+  /**
+   * Whether an erasure has started in this store since `at` was read, or was running when it was: one that is still
+   * running is seen by the count of those running, and one that has ended since by the counter, which its end moved.
+   * The one check every call that reads caller memory uses.
+   */
+  private epochMoved(at: number): boolean {
+    return this.erasuresRunning > 0 || this.epochNow() !== at;
+  }
+
+  /** A call's feed with the store's erasure counter: read once here, checked by the combine before any record is read. */
+  private feedOf(feed: unknown, mayBeEmpty: unknown, epochAt: number): CombineManyFeed {
+    if (typeof feed !== 'object' || feed === null || Array.isArray(feed)) {
+      throw new ValidationError(
+        'materializeMany: feed must be an object with names, records and counts',
+      );
+    }
+    const f = feed as Record<string, unknown>;
+    return {
+      names: f.names as string[],
+      records: f.records as AsyncIterable<CombineManyFeedRecord>,
+      counts: f.counts as CombineManyFeed['counts'],
+      ...(mayBeEmpty === undefined ? {} : { mayBeEmpty: mayBeEmpty as string[] }),
+      epoch: { moved: () => this.epochMoved(epochAt) },
     };
   }
 
@@ -1637,6 +1762,22 @@ export class CloudRoaring {
       concurrency?: number;
       budget?: BudgetOption;
     } = {},
+  ): Promise<EraseSubjectResult> {
+    // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
+    // for its options still moves the counter: conservative, so an erasure is never missed.
+    this.erasureEpoch++;
+    this.erasuresRunning++;
+    try {
+      return await this.eraseSubjectRun(id, options);
+    } finally {
+      this.erasuresRunning--;
+      this.erasureEpoch++;
+    }
+  }
+
+  private async eraseSubjectRun(
+    id: number,
+    options: NonNullable<Parameters<CloudRoaring['eraseSubject']>[1]>,
   ): Promise<EraseSubjectResult> {
     const deps = this.lifecycleDeps('eraseSubject');
     requireScope(options, 'eraseSubject'); // tenancy: explicit namespace, or an { allNamespaces: true } ack

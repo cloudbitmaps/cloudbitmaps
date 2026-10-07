@@ -15,6 +15,10 @@
  *
  * `S` over-approximates (two operands can both hold a key and not overlap), which costs one read and never a wrong
  * result; it never under-approximates, so a key outside `S(root)` is provably empty and is never requested.
+ *
+ * A fed operand's keys arrive with the feed, so the plan cannot know them: it is {@link ANY_KEYS}, every key. An `and`
+ * ignores such a child, an `or` over one is `ANY_KEYS` itself, and an `andNot` is its left side's. {@link canHold} is the
+ * exact per-key rule once a key's operands are known.
  */
 import { ValidationError } from './errors';
 
@@ -124,6 +128,11 @@ export interface KeyBounds {
 
 const CHUNK_IDS = 65_536;
 
+/** The keys of an operand the plan cannot know (a fed one): every key. Compared by identity, never by content. */
+export const ANY_KEYS: Uint16Array = new Uint16Array(0);
+/** The bounds of an operand the plan cannot know. */
+export const ANY_BOUNDS: KeyBounds = { keys: ANY_KEYS, card: new Uint32Array(0) };
+
 const EMPTY_BOUNDS: KeyBounds = { keys: new Uint16Array(0), card: new Uint32Array(0) };
 
 /** `a ∩ b`, the smaller bound at each key. */
@@ -175,6 +184,8 @@ function unionBounds(a: KeyBounds, b: KeyBounds): KeyBounds {
 
 /** The keys of `a` that `b` holds. */
 function intersectKeys(a: Uint16Array, b: Uint16Array): Uint16Array {
+  if (a === ANY_KEYS) return b;
+  if (b === ANY_KEYS) return a;
   const out = new Uint16Array(Math.min(a.length, b.length));
   let i = 0;
   let j = 0;
@@ -215,12 +226,15 @@ export function planKeys(
   } else {
     const kids = node.kids.map((kid) => planKeys(kid, operands, into));
     if (node.kind === 'and') {
-      // Smallest first: the running intersection can only shrink.
-      kids.sort((a, b) => a.keys.length - b.keys.length);
-      result = kids[0]!;
-      for (let i = 1; i < kids.length && result.keys.length > 0; i++) {
-        result = intersectBounds(result, kids[i]!);
+      // A child that can hold any key adds no constraint. Smallest first: the running intersection can only shrink.
+      const known = kids.filter((kid) => kid.keys !== ANY_KEYS);
+      known.sort((a, b) => a.keys.length - b.keys.length);
+      result = known[0] ?? ANY_BOUNDS;
+      for (let i = 1; i < known.length && result.keys.length > 0; i++) {
+        result = intersectBounds(result, known[i]!);
       }
+    } else if (kids.some((kid) => kid.keys === ANY_KEYS)) {
+      result = ANY_BOUNDS;
     } else {
       result = kids[0]!;
       for (let i = 1; i < kids.length; i++) result = unionBounds(result, kids[i]!);
@@ -249,14 +263,33 @@ export function collectFetch(
   planned: NodeKeys,
   fetch: (operand: number, keys: Uint16Array) => void,
 ): void {
-  if (demanded.length === 0) return;
-  const here = intersectKeys(demanded, keysOf(node, operands, planned));
-  if (here.length === 0) return;
+  if (demanded.length === 0 && demanded !== ANY_KEYS) return;
+  const own = keysOf(node, operands, planned);
+  const here = intersectKeys(demanded, own);
+  if (here.length === 0 && here !== ANY_KEYS) return;
   if (node.kind === 'leaf') {
-    fetch(node.operand, here);
+    // A leaf that can hold any key is a fed operand: there is nothing stored to fetch.
+    if (own !== ANY_KEYS) fetch(node.operand, here);
     return;
   }
   for (const kid of node.kids) collectFetch(kid, here, operands, planned, fetch);
+}
+
+/**
+ * Whether `node` can be non-empty at one key, given which operands hold it: an `and` needs every child, an `or` any,
+ * and an `andNot` its left child. Exact for the key, where {@link planKeys} is a bound over all of them.
+ */
+export function canHold(node: ExprNode, holds: (operand: number) => boolean): boolean {
+  switch (node.kind) {
+    case 'leaf':
+      return holds(node.operand);
+    case 'and':
+      return node.kids.every((kid) => canHold(kid, holds));
+    case 'or':
+      return node.kids.some((kid) => canHold(kid, holds));
+    case 'andNot':
+      return canHold(node.kids[0]!, holds);
+  }
 }
 
 /** A set of chunk keys as bits, for the keys an operand is fetched at across the outputs of a group. */

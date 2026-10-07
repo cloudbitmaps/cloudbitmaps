@@ -80,6 +80,8 @@ export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/co
 export type {
   CombineExpr,
   CombineManyDeps,
+  CombineManyFeed,
+  CombineManyFeedRecord,
   CombineManyOperand,
   CombineManyOperandStats,
   CombineManyOutcome,

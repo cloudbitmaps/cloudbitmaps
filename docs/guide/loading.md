@@ -786,6 +786,99 @@ see [a batch of materializations](erasure.md#a-batch-of-materializations).
 tasks each running a range of one expression into one `dest` supersede each other. And an output cannot name another
 output of the call.
 
+### Operands that arrive as records: a feed
+
+Conditions too many to hold or to store (tens of thousands of audience queries, say) can be **fed** to the call as records in
+chunk-key order, beside the stored operands. The call keeps one chunk key of them at a time.
+
+```ts
+await store.materializeMany({
+  operands: { unsub: store.segment('global-unsub', { namespace: 'suppression' }) }, // stored, as above
+  feed: {
+    names: ['us', 'ca', 'engaged'], // the fed operand names, declared up front
+    records, // AsyncIterable<{ key: number; operands: Record<string, Uint32Array> }>
+    counts: () => countsFromTheWarehouse(), // required: the ids each fed operand holds, or an object
+  },
+  mayBeEmpty: ['ca'], // fed names allowed to be empty everywhere
+  maxBufferedBytes: 512 * 1024 * 1024, // required with a feed
+  outputs: [{ dest: store.segment('send-1'), expr: { and: ['us', 'engaged'] }, exclude: ['unsub'] }],
+  keep: 12,
+});
+```
+
+An output names a fed operand as it names a stored one, and one name is not both. The call's outputs are byte for byte what the
+same operands stored would publish.
+
+**The records.** `key` is `id >>> 16`, an integer from 0 to 65,535, and never below the previous record's. A key may arrive
+as several consecutive records, each carrying some of the operands, or as one; an operand is named at most once per key (a
+second appearance is refused, never merged), and an empty array is the same as leaving the name out. Each value is a real
+`Uint32Array`: strictly ascending, no duplicates, every id inside its key. A key is evaluated when a record with a higher key
+arrives or the feed ends, so a key's operands are never held across keys. The call converts each record into compressed
+bitmaps as it arrives, so the caller may drop or reuse its arrays once it has yielded the record.
+
+**Every record is checked before the pass sees it, and a bad feed is refused, never read as fewer members.** A key that is not an
+integer in range or is below the previous; `operands` that is not an object, or that holds a name `feed.names` does not declare
+(or a symbol key); a value that is not a real `Uint32Array` (an `Int32Array`, a `Buffer`, an array, an object that claims the
+type and a proxy are all refused, since each would read as other members; a subclass, a view on shared memory and another
+realm's `Uint32Array` are accepted, and are read through the typed array's own accessors, so a subclass cannot show the
+check different ids from the ones used); an array whose buffer was detached; ids that are not ascending and unique, or that
+fall outside the key; and a name given twice at one key. Each is a `ValidationError` that names the record's key and the operand; it
+never names an id. The ids are read once, in one pass that checks and copies them, so an array a producer changes after
+yielding it cannot make the checked ids differ from the used ones.
+
+**The end of the feed.** `feed.counts` is **required**: an object, or a function called exactly once after the iterator has
+ended and before any fed output is published, that gives the ids each fed operand holds over the whole feed, keyed by exactly
+`feed.names`. The call counts the ids it saw for each name while it checks them, and a count that differs, a name missing or
+extra, a count that is not a non-negative integer, or a function that throws or rejects refuses every fed output. That is what
+catches a feed that ended early or skipped a key, which no record check can see: the records are valid, and short. A declared
+fed name that appears in no record of the whole feed is refused too, since an operand that is empty everywhere is usually an
+upstream query that failed quietly (a suppression list that came back empty subtracts nothing); name it in `mayBeEmpty` where
+that is expected, and an `and` with it empties and an exclude of it subtracts nothing. `mayBeEmpty` naming anything that is not a fed
+operand is a `ValidationError`. The counts are the producer's own: a producer whose records and counts both come from the
+same failed source agrees with itself, and the call cannot tell.
+
+**Fed outputs are atomic.** A fed output (one that names a fed operand) is published only after the whole feed has been read and
+every end-of-feed check passed. A bad record, an iterator that throws, a count that does not match, an empty name, the budget
+passed while the feed is read, or an erasure before the publishes begin refuses **every fed output** and publishes none of them,
+and the iterator is told to stop; the call does not throw, each `run.outputs[i]` of a fed output carries the error
+(`ValidationError` for the feed, the error the iterator threw as it was, `BudgetExceededError`, `StaleOperandError`). Once the
+feed has been read and checked, each fed output publishes on its own, as any output does: an erasure is checked again before each
+publish, so one that lands while the publishes run refuses every fed output not yet published and leaves those already published,
+and a fed output whose object would not fit the budget at its publish is refused alone, with `BudgetExceededError`, while the
+others publish. Outputs that name only stored operands are planned and published as before and are not affected.
+
+**One group, and a budget that is required.** A feed is read once, so a call with one runs all its outputs as one group, and a fed
+output's size is not known before the feed is read. `maxBufferedBytes` is therefore **required** with a feed (a
+`ValidationError` without it), and the ledger is enforced while the feed is read: the records' bitmaps (the key in hand and
+the one that proved it whole) and every fed output's buffer are counted, and **the call fails as soon as the count passes the
+budget**, with `BudgetExceededError` for every fed output, not after the whole feed was read. Stored-only outputs of the same call run again alone, as a call
+without a feed does, if the pass has to evict them.
+
+**Memory.** The operand side is one key plus the key that proved it whole. Counted with 10,000 fed operands of 800 ids a key (a
+key is 32 MB as the caller's `Uint32Array`s, and the call's bitmaps for it are 31 MB in the ledger): the ledger's high water was
+62 MB over five keys, two keys' worth, where holding the feed would be five. The count is the ledger's own, so process memory runs
+above it as it does for stored operands, and the caller's record, which is 4 bytes an id, is on top of it.
+
+**Range.** `after` and `through` apply as to stored operands: a record outside the window is checked and counted, then dropped,
+and edge chunks are cut after evaluation. A bad record beyond `through` is refused all the same.
+
+**Reads.** A stored operand is read at the keys an output can hold it at. A fed operand's keys are not known until its records
+arrive, so with a fed operand an output's stored operands are fetched over a superset (`and(storedA, fedB)` fetches `A` at every key it holds,
+since the feed's future keys are unknowable), and each key is then decided exactly: an output is evaluated, and a stored chunk decoded,
+only at a key where the output can be non-empty given the record at that key. A fed operand is empty at a key the feed has passed,
+which is exact because the feed is ascending.
+
+**The call waits as long as the producer takes.** The call has no timeout and no abort option. A slow producer that ends is
+read to its end and the call completes correctly. A `records` iterator or a `counts` function that never settles hangs the
+call, and with it every output of the call that is not yet published, the stored-only ones too, since a fed call is one group
+and nothing is published before the feed ends. A caller that wants a bound ends its own iterator (and rejects its `counts`) after
+its deadline. When a fed call stops early (a bad record, the budget, an erasure), the call also waits for the iterator's own
+`return()` to settle before it returns, so a slow cleanup in the producer delays the call, stored-only publishes included. A
+feed that no output names is never read, and its `counts` is never called: declare only names an output uses.
+
+**Erasure.** A fed operand is the caller's memory, which no erasure can reach, so the call is refused instead: see
+[a batch of materializations](erasure.md#a-batch-of-materializations).
+
 ## How it stays correct
 
 This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.
