@@ -40,8 +40,8 @@ so, and so do the module headers in the code.
   catches a feed that ended early or skipped a key; a declared name that appeared in no record refused unless it is in
   `mayBeEmpty`), so a bad feed, a throwing iterator, a budget overrun while the feed is read or an erasure before the publishes
   begin refuses every fed output and publishes none of them, while outputs that name only stored operands are unaffected; after
-  that each fed output publishes on its own, refused alone if an erasure lands before its publish or its object does not fit
-  the budget. A feed is read once, so the call runs as one group and
+  that each fed output publishes on its own: an erasure that lands before a publish refuses every fed output not yet
+  published, and one whose object does not fit the budget at its publish is refused alone. A feed is read once, so the call runs as one group and
   `maxBufferedBytes` is required with it; each record is converted to compressed bitmaps as it arrives and the call fails as soon
   as the ledger passes the budget. Counted with 10,000 fed operands of 800 ids a key (32 MB a key as `Uint32Array`s): a ledger high
   water of 62 MB over five keys, two keys' worth. A call with a feed records the store's erasure counter, which `eraseSubject` moves at its start and
