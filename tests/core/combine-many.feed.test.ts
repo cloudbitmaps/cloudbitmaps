@@ -735,3 +735,20 @@ describe('an erasure in the store while a fed call runs', () => {
     expect(run.outputs[0]!.ok).toBe(true);
   });
 });
+
+describe('a fed call is one group', () => {
+  it('runs every output together where the same outputs without a feed would be split', async () => {
+    const stored: Record<string, number[]> = {};
+    for (let i = 0; i < 6; i++) stored[`s${i}`] = at(1, range(i, 60_000, 7));
+    const specs = Object.keys(stored).map((n) => ({ expr: n }));
+    const budget = 100_000;
+    const split = await runBatch(stored, specs, { maxBufferedBytes: budget });
+    expect(split.run.stats.groups).toBeGreaterThan(1);
+    const fed = await runFed([...specs, { expr: 'a' }], {
+      stored,
+      fed: { a: at(1, [1, 2]) },
+      extra: { maxBufferedBytes: budget },
+    });
+    expect(fed.run.stats.groups).toBe(1);
+  });
+});
