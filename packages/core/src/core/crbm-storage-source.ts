@@ -1665,6 +1665,32 @@ export async function writeCrbmGeneration(
   return { size, sha256, fingerprint };
 }
 
+/**
+ * The chunks a load of ids, or of a decoded bitmap, writes: ascending by key, each non-empty and run-optimized. A decoded
+ * bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot encode its own
+ * chunks, are bucketed per chunk instead; both give the same bytes. Exported for a caller that holds the chunks itself
+ * instead of writing them.
+ */
+export async function encodedChunksOfInput(
+  ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
+  codec: CodecInterface,
+  clock: Clock | undefined,
+): Promise<Iterable<EncodedChunk>> {
+  if (ids instanceof DecodedLoadInput && ids.bitmap.encodeChunks !== undefined) {
+    // The whole-bitmap steps each get a slice of their own: the decode the load made before its first request, the
+    // re-encode and serialize `encodeChunks` makes when called, and then the cut, which is lazy, so the writer's
+    // periodic yield interrupts it.
+    const pause = yieldEvery(clock, 1);
+    await pause();
+    const chunks = ids.bitmap.encodeChunks();
+    await pause();
+    return chunks;
+  }
+  return encodeEach(
+    await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, clock),
+  );
+}
+
 /** Each non-empty bitmap as the chunk it stores, in the order given. */
 function* encodeEach(
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
@@ -2591,22 +2617,12 @@ export async function bulkLoadAhead(
   // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
   // encode its own chunks, are bucketed per chunk instead; both give the same bytes.
   let chunks: Iterable<EncodedChunk>;
-  if (ids instanceof DecodedLoadInput && ids.bitmap.encodeChunks !== undefined) {
-    // The whole-bitmap steps each get a slice of their own: the decode the load made before its first request, the
-    // re-encode and serialize `encodeChunks` makes when called, and then the cut, which is lazy, so the writer's
-    // periodic yield interrupts it.
-    const pause = yieldEvery(options.clock, 1);
-    await pause();
-    chunks = ids.bitmap.encodeChunks();
-    await pause();
-  } else if (ids instanceof ChunkLoadInput) {
+  if (ids instanceof ChunkLoadInput) {
     // A combine's chunks are held whole before the first write, as the bucketed ids are, so the reads they cost come
     // where the ids' do: before the row is read, and a read that fails writes nothing.
     chunks = encodeEach(rangeCheckedAtWrite(await collectChunks(ids, codec, options.clock)));
   } else {
-    chunks = encodeEach(
-      await bucketIds(ids instanceof DecodedLoadInput ? ids.bitmap : ids, codec, options.clock),
-    );
+    chunks = await encodedChunksOfInput(ids, codec, options.clock);
   }
 
   if (options.keystore !== undefined && options.registry === undefined) {

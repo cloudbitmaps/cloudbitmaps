@@ -834,7 +834,7 @@ catches a feed that ended early or skipped a key, which no record check can see:
 fed name that appears in no record of the whole feed is refused too, since an operand that is empty everywhere is usually an
 upstream query that failed quietly (a suppression list that came back empty subtracts nothing); name it in `mayBeEmpty` where
 that is expected, and an `and` with it empties and an exclude of it subtracts nothing. `mayBeEmpty` naming anything that is not a fed
-operand is a `ValidationError`. The counts are the producer's own: a producer whose records and counts both come from the
+or held operand is a `ValidationError`. The counts are the producer's own: a producer whose records and counts both come from the
 same failed source agrees with itself, and the call cannot tell.
 
 **Fed outputs are atomic.** A fed output (one that names a fed operand) is published only after the whole feed has been read and
@@ -878,6 +878,60 @@ feed that no output names is never read, and its `counts` is never called: decla
 
 **Erasure.** A fed operand is the caller's memory, which no erasure can reach, so the call is refused instead: see
 [a batch of materializations](erasure.md#a-batch-of-materializations).
+
+### Operands held in memory: `store.memory`
+
+A few conditions, or one suppression list the caller already holds, need no producer: `await store.memory(input)` holds them
+as an operand of `materializeMany`, beside stored and fed ones.
+
+```ts
+const vip = await store.memory([7, 42, 99_001]); // or { bitmap } or { serialized }
+await store.materializeMany({
+  operands: { vip, engaged: store.segment('cond-engaged') },
+  outputs: [{ dest: store.segment('send-1'), expr: { and: ['vip', 'engaged'] } }],
+  keep: 12,
+});
+vip.release(); // frees it; any later use throws
+```
+
+**Where it works.** A held operand is accepted in `materializeMany`'s `operands` and nowhere else: `intersect`, `union`,
+`andNot`, the `*Into` verbs and `load` take what they always took. The call's outputs are byte for byte what the same
+operands stored, or fed, would publish, and the three kinds mix in one call.
+
+**What it takes, and what is checked.** `store.memory` takes what [a load takes](#what-a-load-accepts) as input (ids as a
+sync or async iterable or a typed array, `{ bitmap }`, `{ serialized }`) and runs the same checks with the same errors, before
+the handle exists: the size cap, the structure, the safe deserializer and each id's range. **Only a real `Uint32Array` skips the
+per-id range check**, by a brand that nothing but a real typed array carries: a subclass, a view on shared memory and another realm's
+`Uint32Array` are real ones and are read through the typed array's own accessors, and any other typed array (an `Int32Array`
+holding `-1`, a `Float64Array` holding `1.5` or `NaN`), an array with a bad id, an object that claims the type and a proxy go
+through the per-id check and are refused with `ValidationError`. An object with an `ascending` key is refused, with a message that names the feed: ids that
+arrive in key order are fed, not held. The ids are held as they were when the call returned: a change to a caller's array or
+bitmap afterwards is not seen.
+
+**Empty.** An empty set is accepted by `store.memory` and **refused by `materializeMany`**, before any request, unless its name
+is in `mayBeEmpty`, for the reason a stored operand that names no segment is refused: an empty suppression list is usually
+an upstream query that failed quietly. With the name in `mayBeEmpty`, an `and` with it empties and an exclude of it subtracts
+nothing. `mayBeEmpty` may name fed and held operands; naming anything else is a `ValidationError`.
+
+**Memory.** The handle holds the ids as the chunks a stored generation would hold (a 10,000,000-id operand is about 15 MB), and
+**between calls that memory is the caller's**: `release()` zeroes and drops it, any later use throws `ValidationError`, and
+releasing twice does nothing. While a call runs, its held operands count against `maxBufferedBytes` (a handle under two names is
+counted once), and a call whose held operands alone pass it throws `BudgetExceededError` before any chunk is read. There is no size option: a serialized input has the load's cap.
+A held operand is read from memory, so it makes no request and the shared chunk cache never sees it; its chunks still count as
+chunk reads in `stats.requests.chunkReads` and against `budget`. A release that lands while a call runs fails the outputs that
+read it with `ValidationError` and never reads zeros.
+
+**One store.** A handle belongs to the store that made it; passing it to another is a `ValidationError`.
+
+**Erasure.** A held operand is the caller's memory, which no erasure can reach, so it is refused instead. The store keeps a counter
+that `eraseSubject` moves when it starts and again when it ends. A handle records it when `store.memory` is called, so a handle made
+while an erasure is running, or one an erasure starts under while its ids are still being read, is stale. A call checks it before
+any request and again immediately before each publish of an output that reads the handle, and an output whose handle was made
+before an erasure that has started in this store since fails with `StaleOperandError` (`reason: 'erased'`, `operand` naming it)
+and is not published; outputs that do not read it publish. A handle made after the erasure ended works. **Only this store's
+`eraseSubject` moves the counter**: an erasure by any other path (another store, another process, `dropSegment`,
+`eraseNamespace`, `destroySegment` or the free function `eraseIdFromSegment`) is not seen. The handle is the caller's copy, so
+build it from the source of truth at the start of each refresh and release it at the end. See [a batch of materializations](erasure.md#a-batch-of-materializations).
 
 ## How it stays correct
 

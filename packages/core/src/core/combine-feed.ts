@@ -152,7 +152,9 @@ const valuesOf = (TYPED as { values: (this: unknown) => unknown }).values;
  * of that kind (a subclass or another realm's included) and throws for a spoof, a proxy or any other object. The view's
  * extent is then read through the intrinsic getters, so a subclass that overrides `length` or the iterator is never asked.
  */
-function plainUint32(value: unknown): Uint32Array | 'detached' | 'out of bounds' | undefined {
+export function plainUint32(
+  value: unknown,
+): Uint32Array | 'detached' | 'out of bounds' | undefined {
   let tag: unknown;
   try {
     tag = brandOf.call(value);

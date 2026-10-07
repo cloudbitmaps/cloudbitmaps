@@ -30,6 +30,7 @@ export const SENTENCES = [
   "A `materializeMany` call with a feed is refused at its next record, and immediately before each fed output's publish (after the output has waited for its room in the memory budget), once `eraseSubject` has started in this store, one already running when the call began included: nothing is published from operands the call read before the erasure returned, apart from the window below, and the one record in hand when the erasure lands is processed and discarded.",
   "An erasure that starts after a fed output's last check and finishes before that publish's pointer write is not caught by the counter, and its window is the publish's own object write and pointer write, which lasts as long as the object takes to upload; the fences above still apply to what it touched.",
   "Only this store's `eraseSubject` moves the counter such a call reads, so an erasure by any other path (another store, another process, or the free function `eraseIdFromSegment` in this process) is not seen by it, and is bounded by nothing.",
+  "A `materializeMany` call that reads an in-memory operand from `store.memory` fails the outputs that read it, before any request and immediately before each of their publishes, once `eraseSubject` has started in this store since the operand began to be made, one already running when it began included; an erasure by any path but this store's `eraseSubject` is not seen by such an operand, and is bounded by nothing.",
 ];
 
 /** How many times `sentence` occurs in `text`, with its line breaks undone. */
@@ -53,5 +54,10 @@ describe('what an erasure during a batch reaches', () => {
     expect(occurrences(text.replace('pinned', 'opened'), first)).toBe(0);
     expect(occurrences(text.replace('refuses', 'allows'), first)).toBe(0);
     expect(occurrences('An output of a call can carry an id that was erased', first)).toBe(0);
+    const held = SENTENCES[SENTENCES.length - 1]!;
+    expect(occurrences(`x. ${held} y.`, held)).toBe(1);
+    expect(
+      occurrences(held.replace('since the operand began to be made', 'before it ends'), held),
+    ).toBe(0);
   });
 });

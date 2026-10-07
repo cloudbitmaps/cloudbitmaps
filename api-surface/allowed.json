@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
+    "reason": "widened to accept a held MemoryOperand beside a Segment before any release carried materializeMany, so no published code reads the narrower type; options built with segments compile and behave as before, and code that reads a member of operands back as a Segment narrows it first; agreed with the maintainer"
+  }
+]
