@@ -4,7 +4,7 @@ import { join } from 'node:path';
 /**
  * The privacy notes and the erasure guide say, in one shape, what an erasure that runs during a `materializeMany`
  * call does and does not reach. The statement is a compliance one, read by an auditor in PRIVACY.md and followed by an
- * operator in the guide, and the three copies are written apart, so the gate holds each to the same two sentences.
+ * operator in the guide, and the three copies are written apart, so the gate holds each to the same three sentences and to the lead sentence that opens the paragraph.
  *
  * KNOWN LIMIT. It reads the sentences, not the paragraphs around them: a surrounding sentence that contradicts them
  * in words is for the review of a change to this promise.
@@ -12,9 +12,19 @@ import { join } from 'node:path';
 const ROOT = join(__dirname, '..', '..');
 const DOCS = ['PRIVACY.md', 'packages/roaring/PRIVACY.md', 'docs/guide/erasure.md'] as const;
 
+/** The sentence that opens the paragraph in each document: the same words, with the guide's link to the section. */
+export const LEADS: Record<string, string> = {
+  'PRIVACY.md':
+    "A `store.materializeMany` call computes many `*Into` outputs in passes that read each operand once per group, and its window is the call's length, not one read's.",
+  'packages/roaring/PRIVACY.md':
+    "A `store.materializeMany` call computes many `*Into` outputs in passes that read each operand once per group, and its window is the call's length, not one read's.",
+  'docs/guide/erasure.md':
+    "A [`store.materializeMany`](loading.md#many-outputs-from-one-pass-materializemany) call computes many `*Into` outputs in passes that read each operand once per group, and its window is the call's length, not one read's.",
+};
+
 export const SENTENCES = [
   "An output of a `materializeMany` call can carry an id that was erased while the call ran, for as long as the call ran: the call reads each operand at the generation it pinned, and an output's publish is a load, so an erasure that lands after the chunks were read does not reach what the call holds, unless the output subtracts a pinned operand that the erasure rewrote, which the call re-reads just before the publishes and refuses.",
-  "An erasure that rewrites a destination before that output's publish starts does not stop the publish, which writes on top of the erasure's generation; an erasure that lands inside the publish's own write, between its pointer read and its pointer write, makes the publish lose with `WriteConflictError`; after any call that overlapped an erasure, re-run `eraseSubject` and keep both ledgers.",
+  "An erasure that rewrites a destination before that output's publish starts does not stop the publish, which, subject to the output's own `guard` and the refusal of an empty result over a non-empty destination, writes on top of the erasure's generation; an erasure that lands inside the publish's own write, between its pointer read and its pointer write, makes the publish lose with `WriteConflictError`; after any call that overlapped an erasure, re-run `eraseSubject` and keep both ledgers.",
   '`eraseSubject` deletes the generation it rewrites even when a call holds it pinned, so a pin does not outlive an erasure, and an output that still needs a deleted operand generation fails with `NotFoundError`.',
 ];
 
@@ -26,6 +36,7 @@ export function occurrences(text: string, sentence: string): number {
 describe('what an erasure during a batch reaches', () => {
   it.each(DOCS)('%s states both sentences once', (rel) => {
     const text = readFileSync(join(ROOT, rel), 'utf8');
+    expect(occurrences(text, LEADS[rel]!), `${rel}: the lead sentence`).toBe(1);
     for (const sentence of SENTENCES) {
       expect(occurrences(text, sentence), `${rel}: ${sentence.slice(0, 50)}`).toBe(1);
     }
