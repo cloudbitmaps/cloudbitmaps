@@ -24,6 +24,8 @@ import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } fro
 import { ChunkStream } from './chunk-stream';
 import type { CodecBitmap, CodecInterface } from './codec';
 import {
+  ANY_BOUNDS,
+  canHold,
   collectFetch,
   compileExpr,
   depthOf,
@@ -32,6 +34,8 @@ import {
   operandsOf,
   planKeys,
 } from './combine-expr';
+import { checkFeed, FeedClosed, FeedCursor, FeedStale } from './combine-feed';
+import type { CheckedFeed, CombineManyFeed } from './combine-feed';
 import type { CombineExpr, ExprNode, KeyBounds, NodeKeys } from './combine-expr';
 import { residentBound, residentBytes, ResidentLedger, serializedBound } from './combine-ledger';
 import { mapWithConcurrency } from './concurrency';
@@ -47,6 +51,7 @@ import type { ChunkRead, GenerationMetadata, SegmentRef, StorageChunkSource } fr
 
 export type { CombineExpr } from './combine-expr';
 export { MAX_EXPR_DEPTH, MAX_EXPR_NODES } from './combine-expr';
+export type { CombineManyFeed, CombineManyFeedRecord } from './combine-feed';
 
 /** The range requests a pass keeps in flight at once across all its operands, inside a client's socket pool. */
 export const MAX_RANGES_IN_FLIGHT = 64;
@@ -132,12 +137,18 @@ export interface CombineManyRequest<R> {
   readonly keep: number;
   readonly after?: number;
   readonly through?: number;
+  /** Required with a feed: the feed's records and the fed outputs are counted against it as they arrive. */
   readonly maxBufferedBytes: number;
   readonly publishConcurrency: number;
   readonly concurrency: number;
   /** `undefined`: the plan's chunk reads with headroom. `null`: none. */
   readonly budget?: Budget | null;
   readonly allowAbsentOperands?: boolean;
+  /**
+   * Operands fed as records in chunk-key order, beside the stored ones. A feed is read once, so a call with one runs its
+   * outputs as one group; a fed output publishes only after the whole feed was read and checked.
+   */
+  readonly feed?: CombineManyFeed;
 }
 
 export interface CombineManyDeps {
@@ -184,7 +195,7 @@ export interface CombineManyOperandStats {
 
 /** What the call did to one output. */
 export interface CombineManyOutputStats {
-  /** The names of the operands its expression reads, ascending. */
+  /** The names of the operands its expression reads: the stored ones in call order, then the fed ones in `feed.names` order. */
   readonly operands: readonly string[];
   /** The group that computed it (from 0), or `null` when it never ran. */
   readonly group: number | null;
@@ -248,6 +259,8 @@ export interface CombineManyStats {
   };
   /** The most range requests in flight at once. */
   readonly maxRangesInFlight: number;
+  /** What the feed delivered, when the call had one: records read, chunk keys evaluated from it, ids checked. */
+  readonly feed?: { readonly records: number; readonly keys: number; readonly ids: number };
   /** By operand name, an object with no prototype, so any name is a key. */
   readonly operands: Readonly<Record<string, CombineManyOperandStats>>;
   readonly outputs: readonly CombineManyOutputStats[];
@@ -260,7 +273,10 @@ export interface CombineManyRun<R> {
 
 interface CompiledOutput {
   readonly node: ExprNode;
+  /** The stored operands it reads, by index. */
   readonly operands: readonly number[];
+  /** The fed operands it reads, by their index among all operands (the stored ones come first). */
+  readonly fed: readonly number[];
   /** Every operand under a subtracted position: a child of an `andNot` after the first, at any depth. */
   readonly subtracted: readonly number[];
   readonly depth: number;
@@ -270,7 +286,11 @@ interface CompiledOutput {
 }
 
 /** What {@link compileCombineMany} checked, for {@link runCombineMany}: its compiled form is private to this module. */
-const COMPILED = new WeakMap<object, readonly CompiledOutput[]>();
+interface Compiled {
+  readonly outputs: readonly CompiledOutput[];
+  readonly feed: CheckedFeed | undefined;
+}
+const COMPILED = new WeakMap<object, Compiled>();
 
 /** A request that passed every check that needs no I/O: what {@link runCombineMany} runs. */
 export interface CompiledCombineMany<R> {
@@ -334,6 +354,9 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   }
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
+  const feed =
+    request.feed === undefined ? undefined : checkFeed(request.feed, new Set(index.keys()));
+  feed?.names.forEach((name, j) => index.set(name, operands.length + j));
   let totalNodes = 0;
   const compiled = outputs.map((output, i): CompiledOutput => {
     const where = `outputs[${i}]`;
@@ -384,10 +407,12 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     const metadata = copiedMetadata(output.metadata, (message) => {
       throw new ValidationError(`${where}.metadata: ${message}`);
     });
+    const read = operandsOf(node);
     return {
       node,
-      operands: operandsOf(node),
-      subtracted: subtractedList(node),
+      operands: read.filter((i) => i < operands.length),
+      fed: read.filter((i) => i >= operands.length),
+      subtracted: subtractedList(node).filter((i) => i < operands.length),
       depth: depthOf(node),
       nodes,
       write: {
@@ -399,7 +424,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     };
   });
   const result: CompiledCombineMany<R> = { request };
-  COMPILED.set(result, compiled);
+  COMPILED.set(result, { outputs: compiled, feed });
   return result;
 }
 
@@ -411,10 +436,10 @@ export function rebindCombineMany<R>(
   compiled: CompiledCombineMany<R>,
   operands: readonly CombineManyOperand[],
 ): CompiledCombineMany<R> {
-  const outputs = COMPILED.get(compiled);
+  const checked = COMPILED.get(compiled);
   const before = compiled.request.operands;
   if (
-    outputs === undefined ||
+    checked === undefined ||
     operands.length !== before.length ||
     operands.some((op, i) => op.name !== before[i]!.name)
   ) {
@@ -423,7 +448,7 @@ export function rebindCombineMany<R>(
     );
   }
   const result: CompiledCombineMany<R> = { request: { ...compiled.request, operands } };
-  COMPILED.set(result, outputs);
+  COMPILED.set(result, checked);
   return result;
 }
 
@@ -737,12 +762,22 @@ class Run<R> {
   private planned = 0;
   private pruned = 0;
   private limit: number | null = null;
+  private readonly checkedFeed: CheckedFeed | undefined;
+  private feed: FeedCursor | undefined;
+  /** The index the first fed operand has among the call's operands: the stored ones come first. */
+  private readonly fedBase: number;
+  /** The outputs of the group that is running, for the ledger to evict from. */
+  private running: ReadonlyArray<OutputState<R>> = [];
+  private bounds: KeyBounds[] | undefined;
 
   constructor(compiled: CompiledCombineMany<R>, deps: CombineManyDeps) {
-    const compiledOutputs = COMPILED.get(compiled);
-    if (compiledOutputs === undefined) {
+    const checked = COMPILED.get(compiled);
+    if (checked === undefined) {
       throw new ValidationError('runCombineMany takes the result of compileCombineMany');
     }
+    const compiledOutputs = checked.outputs;
+    this.checkedFeed = checked.feed;
+    this.fedBase = compiled.request.operands.length;
     this.req = compiled.request;
     this.source = deps.source;
     this.codec = deps.codec;
@@ -787,10 +822,15 @@ class Run<R> {
 
   async execute(): Promise<CombineManyRun<R>> {
     this.window = windowOf(this.req.after, this.req.through);
+    if (this.checkedFeed !== undefined) this.feed = this.openFeed(this.checkedFeed);
     await this.readIndexes();
     await this.refuseAbsent();
     this.planOutputs();
-    const groups = this.formGroups(this.outputs.filter((o) => o.status === 'waiting'));
+    // A feed is read once, so a call with one runs every output as one group.
+    const groups = this.formGroups(
+      this.outputs.filter((o) => o.status === 'waiting'),
+      this.feed !== undefined,
+    );
     this.settleBudget(groups);
     for (const group of groups) await this.runGroup(group.outputs);
     // Outputs a lying index made too big for their group run alone, one group each, until none is left.
@@ -805,6 +845,70 @@ class Run<R> {
     }
     await this.readEnds();
     return { outputs: this.outputs.map((o) => o.outcome ?? this.neverRan()), stats: this.stats() };
+  }
+
+  private openFeed(feed: CheckedFeed): FeedCursor {
+    const w = this.window;
+    return new FeedCursor({
+      feed,
+      codec: this.codec,
+      base: this.fedBase,
+      charge: (bytes) => {
+        if (!this.ledger.reserve(bytes, () => this.reclaim())) {
+          throw budgetError(this.req.maxBufferedBytes, 'the feed');
+        }
+      },
+      release: (bytes) => this.ledger.release(bytes),
+      tick: this.tick,
+      inWindow: (key) => (w === 'empty' ? false : w === null || (key >= w.loKey && key <= w.hiKey)),
+    });
+  }
+
+  /** Whether the store's erasure counter has moved since the call began: always `false` without a feed. */
+  private erased(): boolean {
+    const epoch = this.checkedFeed?.epoch;
+    return epoch !== undefined && epoch.now() !== epoch.at;
+  }
+
+  /** What an output that read fed operands gets when an erasure ran in the store since the call began. */
+  private staleError(o: OutputState<R>): StaleOperandError {
+    const names = this.checkedFeed!.names;
+    return new StaleOperandError(
+      'materializeMany: an erasure ran in this store after the call began, so the operands it was fed may hold an ' +
+        'erased id and its fed outputs were not published. Run the call again, with a feed read after the erasure.',
+      names[o.compiled.fed[0]! - this.fedBase] ?? '',
+      'erased',
+    );
+  }
+
+  /**
+   * Refuse every fed output not yet published, and stop reading the feed. `error` is what the feed (or the budget, or an
+   * erasure) found; stored-only outputs are untouched.
+   */
+  private failFed(error: unknown): void {
+    this.feed?.close();
+    for (const o of this.outputs) {
+      if (o.compiled.fed.length === 0 || o.status === 'done') continue;
+      this.fail(o, error instanceof FeedStale ? this.staleError(o) : error);
+    }
+  }
+
+  /**
+   * Make room in the ledger. A fed output cannot be run again (the feed is read once), so a fed call gives up its fed
+   * outputs and the feed first, as soon as the ledger passes the budget; only then is a stored-only buffer evicted, to run
+   * again alone.
+   */
+  private reclaim(): boolean {
+    if (this.feed !== undefined) {
+      let fed = this.feed.heldBytes;
+      for (const o of this.running)
+        if (o.compiled.fed.length > 0 && o.status === 'live') fed += o.charged;
+      if (fed > 0) {
+        this.failFed(budgetError(this.req.maxBufferedBytes, 'the feed and the fed outputs'));
+        return true;
+      }
+    }
+    return this.evictLargest(this.running);
   }
 
   private neverRan(): CombineManyOutcome<R> {
@@ -881,8 +985,16 @@ class Run<R> {
 
   // ---- plan -------------------------------------------------------------------------------------------------
 
+  /** The stored operands' bounds, then one that holds any key for each fed operand. */
   private boundsList(): KeyBounds[] {
-    return this.operands.map((op) => op.bounds);
+    if (this.bounds === undefined) {
+      const fed = this.checkedFeed?.names.length ?? 0;
+      this.bounds = [
+        ...this.operands.map((op) => op.bounds),
+        ...Array<KeyBounds>(fed).fill(ANY_BOUNDS),
+      ];
+    }
+    return this.bounds;
   }
 
   /** Charge plan state that lives for the whole call, refusing a plan that alone passes the budget. */
@@ -942,7 +1054,7 @@ class Run<R> {
   }
 
   /** Outputs in call order, a group at a time while the ledger has room for the next. */
-  private formGroups(waiting: readonly OutputState<R>[]): GroupSummary[] {
+  private formGroups(waiting: readonly OutputState<R>[], single: boolean): GroupSummary[] {
     const groups: GroupSummary[] = [];
     const fresh = (): GroupCost =>
       new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency);
@@ -969,7 +1081,7 @@ class Run<R> {
         );
         continue;
       }
-      if (cost.size > 0 && cost.with(o) > this.room) flush();
+      if (!single && cost.size > 0 && cost.with(o) > this.room) flush();
       current.push(o);
       cost.add(o);
     }
@@ -1012,6 +1124,8 @@ class Run<R> {
     for (const [operand, set] of [...bits.entries()].sort((a, b) => a[0] - b[0])) {
       const keys = Uint16Array.from(set.toKeys());
       fetch.set(operand, keys);
+      // An output with a fed operand has no root key list to visit; the keys it fetches are visited all the same.
+      visit.add(keys);
       planBytes += keys.byteLength;
       reads += set.size;
       pruned += this.operands[operand]!.indexKeys - set.size;
@@ -1098,6 +1212,7 @@ class Run<R> {
       for (const o of members) this.fail(o, error);
       return;
     }
+    this.running = members;
     try {
       await this.pass(plan, members);
     } catch (error) {
@@ -1169,122 +1284,192 @@ class Run<R> {
       c.done = true;
       c.stream?.close();
     };
-    /** The live outputs whose expression demands `c`'s operand at `key`. */
-    const wanting = (c: Cursor, key: number): Array<OutputState<R>> =>
-      (readers.get(c.op.index) ?? []).filter(
-        (o) => o.status === 'live' && hasKey(plan.demand.get(o.index)?.get(c.op.index), key),
-      );
     const failOperand = (c: Cursor, error: unknown, victims: Array<OutputState<R>>): void => {
       stop(c);
       c.failure = { error };
       for (const o of victims) if (o.status === 'live') this.fail(o, error);
     };
     const w = this.window === 'empty' ? null : this.window;
-    const makeRoom = (): boolean => this.evictLargest(members);
+    const makeRoom = (): boolean => this.reclaim();
+    const feed = this.feed !== undefined && this.feed.active ? this.feed : undefined;
+    const fedBase = this.fedBase;
+    let at = 0;
     try {
-      for (const key of plan.keys) {
+      for (;;) {
         if (!members.some((o) => o.status === 'live')) break;
-        // While every output is live, what was fetched is demanded; once one is gone, who still wants a chunk is asked.
-        const exact = members.some((o) => o.status !== 'live');
-        const at: Array<{ c: Cursor; victims: Array<OutputState<R>> | undefined }> = [];
-        for (const c of cursors) {
-          if (c.keys[c.next] !== key) continue;
-          const victims = exact || c.failure !== undefined ? wanting(c, key) : undefined;
-          if (c.failure !== undefined) {
-            // The operand failed at an earlier key: an output that needs this key of it fails with the same error.
-            c.next++;
-            for (const o of victims ?? []) this.fail(o, c.failure.error);
-            continue;
-          }
-          if (c.done) {
-            c.next++;
-            continue;
-          }
-          if (!(readers.get(c.op.index) ?? []).some((o) => o.status === 'live')) {
-            stop(c);
-            c.next++;
-            continue;
-          }
-          if (victims === undefined || victims.length > 0) {
-            try {
-              c.op.spec.check?.();
-            } catch (error) {
-              c.next++;
-              failOperand(c, error, victims ?? wanting(c, key));
-              continue;
-            }
-          }
-          at.push({ c, victims });
+        // The feed is only worth reading while a fed output still lives.
+        if (
+          feed?.active === true &&
+          !members.some((o) => o.status === 'live' && o.compiled.fed.length > 0)
+        ) {
+          feed.close();
         }
-        // Taken in key order before anything is awaited: concurrent takes of one stream must line up with its keys.
-        const settled = await Promise.allSettled(at.map(({ c }) => streamOf(c).take(key)));
-        const decoded = new Map<number, CodecBitmap>();
-        let held = 0;
-        try {
-          for (let i = 0; i < at.length; i++) {
-            const { c, victims } = at[i]!;
-            const result = settled[i]!;
-            c.next++;
-            if (c.done) continue;
-            if (result.status === 'rejected') {
-              failOperand(c, result.reason, victims ?? wanting(c, key));
-              continue;
-            }
-            this.chunkReads++;
-            c.op.chunkReads++;
-            // A chunk no live output demands any more is taken off the stream and dropped, undecoded.
-            if (victims !== undefined && victims.length === 0) continue;
-            const bytes = result.value.bytes;
-            if (bytes === null) {
-              // The index lists the key, so the generation must hold its bytes: a hole is a fault, never an empty chunk.
-              failOperand(
-                c,
-                new IntegrityError(
-                  `operand "${c.op.spec.name}" lists chunk ${key} but its generation holds no bytes for it`,
-                ),
-                victims ?? wanting(c, key),
-              );
-              continue;
-            }
-            try {
-              const resident = residentBytes(bytes.length);
-              if (!this.ledger.reserve(resident, makeRoom)) {
-                throw budgetError(
-                  this.req.maxBufferedBytes,
-                  `operand "${c.op.spec.name}" at chunk ${key}`,
-                );
-              }
-              held += resident;
-              decoded.set(
-                c.op.index,
-                decodeChunkBytes(this.codec, bytes, key, this.maxBitmapBytes),
-              );
-            } catch (error) {
-              failOperand(c, error, victims ?? wanting(c, key));
-            }
+        // The next key is the lower of the stored cursor's and the feed's: the feed is ascending, so a fed operand is
+        // empty at every key it has passed.
+        let feedKey: number | undefined;
+        if (feed?.active === true) {
+          try {
+            feedKey = await feed.nextKey();
+          } catch (error) {
+            if (!(error instanceof FeedClosed)) this.failFed(error);
           }
-          for (const o of members) {
-            if (o.status !== 'live') continue;
-            const roots = o.rootKeys;
-            while (o.cursor < roots.length && roots[o.cursor]! < key) o.cursor++;
-            if (o.cursor >= roots.length || roots[o.cursor] !== key) continue;
-            o.cursor++;
-            const kc = new KeyContext(this.ledger, makeRoom, decoded);
-            try {
-              this.evaluateInto(o, key, kc, w, makeRoom);
-            } catch (error) {
-              kc.reset();
-              if (o.status === 'live') this.fail(o, error);
+        }
+        const storedKey = at < plan.keys.length ? plan.keys[at] : undefined;
+        const key =
+          storedKey === undefined
+            ? feedKey
+            : feedKey === undefined
+              ? storedKey
+              : Math.min(storedKey, feedKey);
+        if (key === undefined) break;
+        if (storedKey === key) at++;
+        let fedHere: ReadonlyMap<number, CodecBitmap> | undefined;
+        if (feedKey === key && feed !== undefined) {
+          try {
+            await feed.completeKey();
+            fedHere = feed.take();
+          } catch (error) {
+            if (!(error instanceof FeedClosed)) this.failFed(error);
+          }
+        }
+        // Which operands hold the key: a stored one by its index, a fed one by the record of the key.
+        const holds = (operand: number): boolean =>
+          operand >= fedBase
+            ? fedHere?.has(operand) === true
+            : hasKey(this.operands[operand]!.bounds.keys, key);
+        // An output with fed operands is evaluated, and a stored chunk decoded for it, only where it can be non-empty.
+        const needs = (o: OutputState<R>): boolean =>
+          o.compiled.fed.length === 0 || canHold(o.compiled.node, holds);
+        try {
+          // While every output is live, what was fetched is demanded; once one is gone, who still wants a chunk is
+          // asked. A fed output's demand is a bound over every key, so with a feed it is always asked.
+          const exact = feed !== undefined || members.some((o) => o.status !== 'live');
+          const cursorsAt: Array<{ c: Cursor; victims: Array<OutputState<R>> | undefined }> = [];
+          const wanting = (c: Cursor): Array<OutputState<R>> =>
+            (readers.get(c.op.index) ?? []).filter(
+              (o) =>
+                o.status === 'live' &&
+                hasKey(plan.demand.get(o.index)?.get(c.op.index), key) &&
+                needs(o),
+            );
+          for (const c of cursors) {
+            if (c.keys[c.next] !== key) continue;
+            const victims = exact || c.failure !== undefined ? wanting(c) : undefined;
+            if (c.failure !== undefined) {
+              // The operand failed at an earlier key: an output that needs this key of it fails with the same error.
+              c.next++;
+              for (const o of victims ?? []) this.fail(o, c.failure.error);
+              continue;
             }
-            const pause = this.tick();
-            if (pause !== null) await pause;
+            if (c.done) {
+              c.next++;
+              continue;
+            }
+            if (!(readers.get(c.op.index) ?? []).some((o) => o.status === 'live')) {
+              stop(c);
+              c.next++;
+              continue;
+            }
+            if (victims === undefined || victims.length > 0) {
+              try {
+                c.op.spec.check?.();
+              } catch (error) {
+                c.next++;
+                failOperand(c, error, victims ?? wanting(c));
+                continue;
+              }
+            }
+            cursorsAt.push({ c, victims });
+          }
+          // Taken in key order before anything is awaited: concurrent takes of one stream must line up with its keys.
+          const settled = await Promise.allSettled(cursorsAt.map(({ c }) => streamOf(c).take(key)));
+          const decoded = new Map<number, CodecBitmap>();
+          let held = 0;
+          try {
+            for (let i = 0; i < cursorsAt.length; i++) {
+              const { c, victims } = cursorsAt[i]!;
+              const result = settled[i]!;
+              c.next++;
+              if (c.done) continue;
+              if (result.status === 'rejected') {
+                failOperand(c, result.reason, victims ?? wanting(c));
+                continue;
+              }
+              this.chunkReads++;
+              c.op.chunkReads++;
+              // A chunk no live output demands any more is taken off the stream and dropped, undecoded.
+              if (victims !== undefined && victims.length === 0) continue;
+              const bytes = result.value.bytes;
+              if (bytes === null) {
+                // The index lists the key, so the generation must hold its bytes: a hole is a fault, never an empty chunk.
+                failOperand(
+                  c,
+                  new IntegrityError(
+                    `operand "${c.op.spec.name}" lists chunk ${key} but its generation holds no bytes for it`,
+                  ),
+                  victims ?? wanting(c),
+                );
+                continue;
+              }
+              try {
+                const resident = residentBytes(bytes.length);
+                if (!this.ledger.reserve(resident, makeRoom)) {
+                  throw budgetError(
+                    this.req.maxBufferedBytes,
+                    `operand "${c.op.spec.name}" at chunk ${key}`,
+                  );
+                }
+                held += resident;
+                decoded.set(
+                  c.op.index,
+                  decodeChunkBytes(this.codec, bytes, key, this.maxBitmapBytes),
+                );
+              } catch (error) {
+                failOperand(c, error, victims ?? wanting(c));
+              }
+            }
+            const chunks = {
+              get: (operand: number): CodecBitmap | undefined =>
+                operand >= fedBase ? fedHere?.get(operand) : decoded.get(operand),
+            };
+            for (const o of members) {
+              if (o.status !== 'live') continue;
+              if (o.compiled.fed.length > 0) {
+                if (!needs(o)) continue;
+              } else {
+                const roots = o.rootKeys;
+                while (o.cursor < roots.length && roots[o.cursor]! < key) o.cursor++;
+                if (o.cursor >= roots.length || roots[o.cursor] !== key) continue;
+                o.cursor++;
+              }
+              const kc = new KeyContext(this.ledger, makeRoom, chunks);
+              try {
+                this.evaluateInto(o, key, kc, w, makeRoom);
+              } catch (error) {
+                kc.reset();
+                if (o.status === 'live') this.fail(o, error);
+              }
+              const pause = this.tick();
+              if (pause !== null) await pause;
+            }
+          } finally {
+            this.ledger.release(held);
           }
         } finally {
-          this.ledger.release(held);
+          feed?.release();
         }
+      }
+      // A fed output is published only after the whole feed was read and checked, so one that outlived the loop without
+      // that is refused rather than published.
+      if (feed !== undefined && !feed.complete) {
+        this.failFed(new IntegrityError('materializeMany: the feed was not read to its end'));
       }
     } finally {
       for (const c of cursors) c.stream?.close();
+      if (feed !== undefined) {
+        feed.close();
+        await feed.drained();
+      }
     }
   }
 
@@ -1408,6 +1593,11 @@ class Run<R> {
       for (;;) {
         const o = queue[next++];
         if (o === undefined) return;
+        // An erasure since the call began makes what the feed gave it suspect: nothing fed is published after one.
+        if (o.compiled.fed.length > 0 && this.erased()) {
+          this.fail(o, this.staleError(o));
+          continue;
+        }
         try {
           o.spec.beforePublish?.();
         } catch (error) {
@@ -1422,7 +1612,8 @@ class Run<R> {
           admitted = this.ledger.tryCharge(transient);
         }
         if (!admitted) {
-          if (o.solo) {
+          if (o.solo || o.compiled.fed.length > 0) {
+            // A fed output cannot run again: the feed was read once.
             this.fail(o, budgetError(this.req.maxBufferedBytes, `publishing output ${o.index}`));
           } else {
             // The buffers filled the budget, so the object it would write has no room beside them: it runs again alone.
@@ -1539,9 +1730,13 @@ class Run<R> {
       },
       chunks: { pruned: this.pruned },
       maxRangesInFlight: this.gate.highWater,
+      ...(this.feed === undefined ? {} : { feed: this.feed.stats }),
       operands,
       outputs: this.outputs.map((o) => ({
-        operands: o.compiled.operands.map((i) => this.operands[i]!.spec.name),
+        operands: [
+          ...o.compiled.operands.map((i) => this.operands[i]!.spec.name),
+          ...o.compiled.fed.map((i) => this.checkedFeed!.names[i - this.fedBase]!),
+        ],
         group: o.group,
         startedAt: o.startedAt,
         endedAt: o.endedAt,
@@ -1621,7 +1816,7 @@ class KeyContext {
   constructor(
     private readonly ledger: ResidentLedger,
     private readonly makeRoom: () => boolean,
-    readonly chunks: ReadonlyMap<number, CodecBitmap>,
+    readonly chunks: { get(operand: number): CodecBitmap | undefined },
   ) {}
 
   /** Charge `bytes` for a bitmap this evaluation made. */
