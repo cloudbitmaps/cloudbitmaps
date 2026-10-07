@@ -18,7 +18,8 @@ This directory is separate from `bench/calibration/` on purpose. The default sui
 site's single-bucket figures list that directory without descending into it, so a run of the large suite is never
 their latest run and cannot move them. `tests/bench/calibrate-large.test.ts` holds that, and holds each file here to
 being a finished, exact run of the large suite: every stage kept the requests it was expected to make, none was
-exceeded, and the bill is recorded. 
+exceeded, and the bill is recorded.
+
 ## Runs
 
 | report · evidence | when, and from where | what it established |

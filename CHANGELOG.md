@@ -15,7 +15,7 @@ so, and so do the module headers in the code.
 
 - **Combines on operands of a million to ten million ids, and the `*Into` verbs, are now measured on S3.** The first
   run of the calibration harness's large suite, from AWS CloudShell in `us-east-1` on 2026-10-07 (run
-  `2026-10-07-88cd3`, against the published `0.18.3` packages), timed 40 cold reads a size on two operands of about
+  `2026-10-07-88cd3`, against the published `0.18.3` packages), timed 40 cold reads of each combine at each size on two operands of about
   1,500 chunks each, 20 % shared. A cold `intersect` took 108.8 ms at the median in 6 GETs at about a million ids an
   operand, 140.0 ms in 8 at five million and 158.0 ms in 10 at ten million. A cold `union` took 203.5 ms in 8 GETs, 532.3 ms in 24
   and 682.7 ms in 26, and an `andNot` 144.9 ms in 7, 323.0 ms in 16 and 392.4 ms in 18. Five `intersectInto`, `unionInto`

@@ -207,7 +207,7 @@ and every median GET count is the one the engine was expected to make (**measure
 | 10,000,000 | `andNot` | 392.4 ms | 500.0 ms | 590.3 ms | 18 | yes, exact |
 
 **The `*Into` verbs.** Each verb ran 5 calls a size onto a destination segment of its own, on a fresh store, and each
-published exactly the cardinality the layout says. A union's output of more than one part is written as a multipart
+published exactly the cardinality the layout says. An output of more than one part is written as a multipart
 upload. The median is of the 5 calls; the first call makes one GET more than the repeats (**measured**).
 
 | Ids an operand | Verb | Median | Output | Written as | PUT-class a call | GETs a call (first, repeat) |
@@ -221,7 +221,6 @@ upload. The median is of the 5 calls; the first call makes one GET more than the
 | 10,000,000 | `intersectInto` | 340.9 ms | 2.26 MB | one PUT | 2 | 13, 12 |
 | 10,000,000 | `unionInto` | 1,337.6 ms | 20.32 MB | 3 parts | 6 | 29, 28 |
 | 10,000,000 | `andNotInto` | 857.9 ms | 9.03 MB | 2 parts | 5 | 21, 20 |
-
 
 **Loads.** The six operands went through `store.load()`: a single-part load (the 1,000,000-id operands, 2 loads) at a
 median of 3.84 million ids a second, and a multipart load (the 5,000,000 and 10,000,000-id operands, 4 loads) at 5.67
