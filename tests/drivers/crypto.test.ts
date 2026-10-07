@@ -172,6 +172,24 @@ describe('InProcessKeystore (envelope BYOK)', () => {
     ).toThrow(ValidationError);
   });
 
+  it('counts only the keys it was given as key ids, never a name every object inherits', () => {
+    for (const inherited of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      expect(
+        () => new InProcessKeystore({ keys: { k: key() }, activeKeyId: inherited }),
+        inherited,
+      ).toThrow(ValidationError);
+      expect(
+        () =>
+          new InProcessKeystore({ keys: { k: key() }, activeKeyId: 'k', recoveryKeyId: inherited }),
+        inherited,
+      ).toThrow(ValidationError);
+    }
+    // A real key that happens to share such a name is still a key.
+    expect(
+      () => new InProcessKeystore({ keys: { constructor: key() }, activeKeyId: 'constructor' }),
+    ).not.toThrow();
+  });
+
   it('rejects a corrupt/foreign wrapped blob under a held keyId (IntegrityError)', async () => {
     const ks = new InProcessKeystore({ keys: { k1: key() }, activeKeyId: 'k1' });
     await expect(
