@@ -36,13 +36,16 @@ handful you care about:
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto` / `materializeMany`), `ms` | per timed op |
 | `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read finishes (even one that fails), when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
 
-`store.materializeMany` emits one `op` event per call, timed from its first request to its last publish, and a
-`storage.get` event per range request it sends. A range serves every output of its group, so the events count the
-call's requests, not requests per output, and a held operand sends none. It emits no `cache` event, since it never
-looks up the chunk cache, and no `intersect` event, since an output is an expression over several operators: an
-`*Into` call that moves into a batch keeps its place in the op-latency and request series and leaves the
-chunk-skipping and cache-hit ones. The `stats` on its result carry the rest (bytes, chunks pruned, memory high-water
-mark), and its `audit` sink fires per output.
+`store.materializeMany` emits one `op` event per call, `name: 'materializeMany'`, timed from its first request (the
+pins) to its last publish, and a `storage.get` event per range request it sends. The `op` event fires when the call
+ends, also when it throws after its first request (a budget refusal, a failed pin), and not when its input checks
+refuse it; a fed call's time includes the time spent waiting on the feed. A range serves every output of its group,
+so the events count the call's requests, not requests per output, and a held operand sends none. It emits no `cache`
+event, since it never looks up the chunk cache, and no `intersect` event, since an output is an expression over
+several operators. So an `*Into` call that moves into a batch leaves its own name's op series and the chunk-skipping
+and cache-hit series: the batch's latency is one series for the whole call, not comparable with a per-output `*Into`
+one, and its reads stay in the request series. The `stats` on its result carry the rest (bytes, chunks pruned, memory
+high-water mark), and its `audit` sink fires per output.
 
 A quick look in dev is one line:
 

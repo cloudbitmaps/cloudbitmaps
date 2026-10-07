@@ -21,15 +21,18 @@ so, and so do the module headers in the code.
   never looks up the chunk cache, and no `intersect` event, since an output is an expression over several operators;
   `stats.chunks.pruned` counts what it did not read. `MetricOpName` gains `'materializeMany'`, and
   `CountingMetricsSink`'s `ops` gains its tally: a sink that switches on `name` with an exhaustive `never` check adds a
-  case, and one with a `default` branch needs no change.
+  case (one with a `default` branch needs no change), and a `Record<MetricOpName, …>` built by hand, a
+  `MetricsSnapshot` literal among them, adds the key. The `op` event also fires for a call that throws after its first
+  request, such as a budget refusal.
 
 ### Fixed
 
 - **A memory operand passed to a combine or an `*Into` call is refused with a `ValidationError`.** `intersect`, `union`,
   `andNot` and the `*Into` calls failed with a raw `TypeError` (`h.leaseError is not a function`) when given a handle
   from `store.memory()`, as an operand, an `exclude` or a destination. They now refuse it before reading anything, with
-  a message that says it is an operand of `store.materializeMany()` only; any other value that is not a segment is
-  refused the same way.
+  a message that says it is an operand of `store.materializeMany()` only, and refuse any other element of an operand
+  list that is not a segment with a `ValidationError` too. A segment from another copy of the package is accepted, as
+  before. An operand list that is not an array still fails as it did.
 - **`store.materializeMany`'s `mayBeEmpty` with no feed says what is wrong with it.** The message was "mayBeEmpty names
   fed operands, and the call has no feed" for every name that was not a held operand. It now names the first such
   entry and what it is (`"a", a stored operand`, `"x", which is not an operand of this call`, or something that is not

@@ -3136,7 +3136,10 @@ export interface SegmentStat {
   readonly metadata?: GenerationMetadata;
 }
 
-/** Time `fn` with `clock` and emit an `op` metric to `metrics` when it settles, on success or throw. */
+/**
+ * Time `fn` with `clock` and emit an `op` metric to `metrics` when it settles, on success or throw: the store's timing,
+ * as a segment's `timed` does its own inline, which keeps a promise off the path of `has` and `count`.
+ */
 async function timeOp<T>(
   metrics: IMetricsSink,
   clock: Clock,
@@ -3479,7 +3482,17 @@ export class Segment {
    */
   private assertSegments(handles: readonly unknown[]): void {
     for (const h of handles) {
-      if (h instanceof Segment) continue;
+      // A segment of another copy of this package (a second install) is not an instance of this one's class, and a
+      // combine has always taken it: what it has, a lease check, is what the call reads first.
+      if (
+        h instanceof Segment ||
+        (typeof h === 'object' &&
+          h !== null &&
+          !(h instanceof MemoryOperand) &&
+          typeof (h as { leaseError?: unknown }).leaseError === 'function')
+      ) {
+        continue;
+      }
       throw new ValidationError(
         h instanceof MemoryOperand
           ? 'a memory operand from store.memory() is an operand of store.materializeMany() only; this call takes segments from store.segment()'
@@ -3627,7 +3640,12 @@ export class Segment {
    */
   private async timed<T>(name: MetricOpName, fn: () => Promise<T>): Promise<T> {
     if (!this.metricsOn) return fn();
-    return timeOp(this.metrics, this.clock, name, fn);
+    const startedAt = this.clock.now();
+    try {
+      return await fn();
+    } finally {
+      this.metrics.onEvent({ kind: 'op', name, ms: Math.max(0, this.clock.now() - startedAt) });
+    }
   }
 
   /** Membership: one chunk — the cache, else one ranged GET. Throws {@link ValidationError} on a bad id. */

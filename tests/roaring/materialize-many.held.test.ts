@@ -111,6 +111,11 @@ describe('store.memory: the input forms', () => {
     for (const verb of ['intersectInto', 'unionInto']) {
       await expect(a[verb]!(d, [], { exclude: [vip] }), verb).rejects.toThrow(heldOnly);
     }
+    for (const value of [null, 5, {}, 'a']) {
+      await expect(a['intersectInto']!(d, [value]), String(value)).rejects.toThrow(
+        'an operand must be a segment from store.segment()',
+      );
+    }
     expect(await w.store.exists({ segment: 'd' })).toBe(false);
     await expect(
       w.store.materializeMany({

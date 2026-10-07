@@ -471,6 +471,19 @@ describe('store.materializeMany', () => {
     );
     expect(events.filter((e) => e.kind === 'op')).toHaveLength(1);
 
+    // A call that throws after its first request reports its time, and the reads it never sent are not reported.
+    events.length = 0;
+    await expect(
+      w.store.materializeMany({
+        operands: { a: s('a'), b: s('b') },
+        outputs: [{ dest: s('d5'), expr: { and: ['a', 'b'] } }],
+        keep: 1,
+        budget: { maxRequests: 1 },
+      }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(events.filter((e) => e.kind === 'op')).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'storage.get')).toEqual([]);
+
     // A call its input checks refuse sends nothing and reports nothing.
     events.length = 0;
     await expect(

@@ -23,6 +23,7 @@ import { MAX_REMAINDER, U32_MAX } from './bit-route';
 import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import type { CodecBitmap, CodecInterface } from './codec';
+import { safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
 import {
   ANY_BOUNDS,
@@ -181,7 +182,8 @@ export interface CombineManyDeps {
   readonly maxBitmapBytes?: number;
   /**
    * Where the call reports a `storage.get` event for each range request it sends, as a combine does; absent, it reports
-   * none. The call never looks up the chunk cache, so it reports no `cache` event.
+   * none. The call never looks up the chunk cache, so it reports no `cache` event. A sink that throws is ignored, as
+   * {@link safeMetrics} makes it.
    */
   readonly metrics?: IMetricsSink;
 }
@@ -848,7 +850,7 @@ class Run<R> {
     this.codec = deps.codec;
     this.clock = deps.clock;
     this.maxBitmapBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
-    this.metrics = deps.metrics;
+    this.metrics = deps.metrics === undefined ? undefined : safeMetrics(deps.metrics);
     this.ledger = new ResidentLedger(this.req.maxBufferedBytes);
     this.tick = yieldEvery(deps.clock, 256);
     this.operands = this.req.operands.map((spec, index) => ({

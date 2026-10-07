@@ -5,10 +5,10 @@
   },
   {
     "entry": "@cloudbitmaps/core MetricOpName",
-    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape, a sink with a default branch needs no change, and one that switches exhaustively on name adds a case, as the type's doc says; agreed with the maintainer"
+    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape and a sink with a default branch needs no change, while a sink that switches exhaustively on name adds a case, and a Record<MetricOpName, ...> built by hand (a MetricsSnapshot literal) adds the key, as the type's doc says; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/roaring MetricOpName",
-    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape, a sink with a default branch needs no change, and one that switches exhaustively on name adds a case, as the type's doc says; agreed with the maintainer"
+    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape and a sink with a default branch needs no change, while a sink that switches exhaustively on name adds a case, and a Record<MetricOpName, ...> built by hand (a MetricsSnapshot literal) adds the key, as the type's doc says; agreed with the maintainer"
   }
 ]

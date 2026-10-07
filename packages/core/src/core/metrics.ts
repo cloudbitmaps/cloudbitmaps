@@ -19,8 +19,9 @@
  * The operations that emit an `op` latency event (timed with the injected clock, at the facade). `materializeMany` is
  * timed from its first request, the pins, to its last publish: a call its input checks refuse emits none.
  *
- * A sink that switches on `name` with an exhaustive `never` check stops compiling when a name is added: add a case (or
- * use a `default` branch, which needs no change).
+ * A name added here stops two kinds of code compiling: a sink that switches on `name` with an exhaustive `never` check
+ * (add a case, or use a `default` branch, which needs no change), and a `Record<MetricOpName, …>` built by hand, a
+ * `MetricsSnapshot` literal among them (add the key).
  */
 export type MetricOpName =
   'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto' | 'materializeMany';
@@ -37,11 +38,11 @@ export type MetricEvent =
       readonly namespace?: string;
       readonly segment: string;
       /**
-       * One event per request for chunks: a range request of a combine, `iterate` or `materializeMany`, which carries every
-       * chunk the read needs from a stretch of the object, or the one chunk of a read made on its own, however many
-       * callers were waiting on it. A `materializeMany` range serves every output of its group, so its events count the
-       * requests the call sent, not requests per output. Bytes returned: the range's, the gaps between its chunks included (0 if a single chunk was absent — a GET
-       * still happened).
+       * One event per request for chunks: a range request of a combine, `iterate` or `materializeMany`, which carries
+       * every chunk the read needs from a stretch of the object, or the one chunk of a read made on its own, however
+       * many callers were waiting on it. A `materializeMany` range serves every output of its group, so its events
+       * count the requests the call sent, not requests per output. Bytes returned: the range's, the gaps between its
+       * chunks included (0 if a single chunk was absent — a GET still happened).
        */
       readonly bytes: number;
       /**
