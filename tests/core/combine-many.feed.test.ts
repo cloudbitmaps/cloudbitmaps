@@ -704,6 +704,32 @@ describe('memory', () => {
     expect(ok(run.outputs[2]!).ids).toEqual(at(2, [1, 2]));
     expect(run.stats.requests.publishes).toBe(1);
   });
+
+  it('refuses alone a fed output whose object does not fit at its publish, once the feed was read, and publishes the others', async () => {
+    const keys = 20;
+    const records = Array.from({ length: keys }, (_, i) => ({
+      key: i + 1,
+      operands: {
+        a: Uint32Array.from({ length: 3000 }, (_, v) => (i + 1) * K + v * 2),
+        b: Uint32Array.from({ length: 3000 }, (_, v) => (i + 1) * K + v * 2 + 1),
+      },
+    }));
+    // The feed and both fed outputs' buffers fit; the first output's object, written beside them, does not.
+    const budget = 400_000;
+    const { run, pulled } = await runFed([{ expr: 'a' }, { expr: 'b' }, { expr: 's' }], {
+      stored: { s: at(2, [1, 2]) },
+      names: ['a', 'b'],
+      records,
+      counts: { a: 3000 * keys, b: 3000 * keys },
+      extra: { maxBufferedBytes: budget },
+    });
+    expect(pulled.finished).toBe(true);
+    expect(error(run.outputs[0]!)).toBeInstanceOf(BudgetExceededError);
+    expect(error(run.outputs[0]!).message).toMatch(/publishing output 0/);
+    expect(ok(run.outputs[1]!).ids.length).toBe(3000 * keys);
+    expect(ok(run.outputs[2]!).ids).toEqual(at(2, [1, 2]));
+    expect(run.stats.memory.highWaterBytes).toBeLessThanOrEqual(budget);
+  });
 });
 
 describe('the pass yields while it converts a dense record', () => {
