@@ -669,7 +669,7 @@ describe('an erasure in the store while a fed call runs', () => {
       feed: {
         epoch: epoch(state),
         records: feedOf(recordsOf(sets), pulled, (i) => {
-          if (i === 2) state.n++;
+          if (i === 1) state.n++;
         }),
       },
     });
