@@ -868,6 +868,14 @@ since the feed's future keys are unknowable), and each key is then decided exact
 only at a key where the output can be non-empty given the record at that key. A fed operand is empty at a key the feed has passed,
 which is exact because the feed is ascending.
 
+**The call waits as long as the producer takes.** The call has no timeout and no abort option. A slow producer that ends is
+read to its end and the call completes correctly. A `records` iterator or a `counts` function that never settles hangs the
+call, and with it every output of the call that is not yet published, the stored-only ones too, since a fed call is one group
+and nothing is published before the feed ends. A caller that wants a bound ends its own iterator (and rejects its `counts`) after
+its deadline. When a fed call stops early (a bad record, the budget, an erasure), the call also waits for the iterator's own
+`return()` to settle before it returns, so a slow cleanup in the producer delays the call, stored-only publishes included. A
+feed that no output names is never read, and its `counts` is never called: declare only names an output uses.
+
 **Erasure.** A fed operand is the caller's memory, which no erasure can reach, so the call is refused instead: see
 [a batch of materializations](erasure.md#a-batch-of-materializations).
 

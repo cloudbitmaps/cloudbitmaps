@@ -93,7 +93,7 @@ describe('a record is checked before the pass sees it', () => {
 
   it('refuses operands that is not an object, and a name that was not declared', async () => {
     for (const operands of [null, undefined, [], 'a', 3]) {
-      await expectRefused([{ key: 1, operands }], /operands must be an object/);
+      await expectRefused([{ key: 1, operands }], /operands must be a plain object/);
     }
     await expectRefused(
       [{ key: 1, operands: { b: u32(K + 1) } }],
@@ -162,6 +162,50 @@ describe('a record is checked before the pass sees it', () => {
     for (const value of [shared, lying, foreign, view, u32(...ids)]) {
       await expectAccepted([{ key: 1, operands: { a: value } }], ids);
     }
+  });
+
+  it('refuses a view that a resizable buffer shrank out from under, rather than reading it as empty', async () => {
+    const buffer = new ArrayBuffer(8, { maxByteLength: 16 });
+    const ids = new Uint32Array(buffer, 4, 1);
+    ids[0] = K + 1;
+    buffer.resize(0);
+    expect(ids.length).toBe(0);
+    await expectRefused(
+      [{ key: 1, operands: { a: ids } }],
+      /out of bounds of its resizable buffer/,
+    );
+    // A view that tracks the length of a resizable buffer, or fits inside it, is a Uint32Array like another.
+    const grown = new ArrayBuffer(8, { maxByteLength: 16 });
+    const tracking = new Uint32Array(grown);
+    tracking.set([K + 1, K + 2]);
+    await expectAccepted([{ key: 1, operands: { a: tracking } }], [K + 1, K + 2]);
+    await expectAccepted(
+      [
+        {
+          key: 1,
+          operands: { a: new Uint32Array(new ArrayBuffer(8, { maxByteLength: 16 }), 0, 0) },
+        },
+      ],
+      [],
+    );
+  });
+
+  it('refuses operands that is not a plain object, even when it would read as empty', async () => {
+    class Holder {
+      a = u32(K + 1);
+    }
+    const inherited = Object.create({ a: u32(K + 1) }) as unknown;
+    for (const operands of [new Map([['a', u32(K + 1)]]), new Holder(), inherited, [u32(K + 1)]]) {
+      await expectRefused([{ key: 1, operands }], /operands must be a plain object/);
+    }
+    // A null-prototype object and another realm's plain object are plain.
+    const bare = Object.assign(Object.create(null) as Record<string, Uint32Array>, {
+      a: u32(K + 1),
+    });
+    await expectAccepted([{ key: 1, operands: bare }], [K + 1]);
+    const foreign = vm.runInNewContext('({})') as Record<string, Uint32Array>;
+    foreign.a = u32(K + 1);
+    await expectAccepted([{ key: 1, operands: foreign }], [K + 1]);
   });
 
   it('refuses an array whose buffer was detached, rather than reading it as empty', async () => {
@@ -716,6 +760,44 @@ describe('an erasure in the store while a fed call runs', () => {
     expect((error(run.outputs[3]!) as unknown as { reason: string }).reason).toBe('erased');
   });
 
+  it('refuses a fed output that waited for room in the budget while an erasure ran', async () => {
+    const dense = {
+      a: [...at(1, range(0, 3000)), ...at(2, range(0, 3000)), ...at(3, range(0, 3000))],
+    };
+    const fedSpecs = [{ expr: 'a' }, { expr: { or: ['a'] } }];
+    let contended = 0;
+    // Sweep budgets: at some, the second output cannot be admitted until the first has settled.
+    for (let budget = 60_000; budget <= 130_000; budget += 1_000) {
+      const events: string[] = [];
+      const state = { n: 0 };
+      const { run } = await runFed(fedSpecs, {
+        fed: dense,
+        extra: { maxBufferedBytes: budget, publishConcurrency: 2 },
+        onPublish: (i) => {
+          events.push(`p${i}`);
+          if (i === 0) {
+            void Promise.resolve().then(() => {
+              events.push('erase');
+              state.n++;
+            });
+          }
+        },
+        feed: { epoch: epoch(state) },
+      });
+      // Nothing fed may start its publish after the erasure.
+      const erase = events.indexOf('erase');
+      if (erase >= 0) expect(events.slice(erase)).not.toContain('p1');
+      const second = run.outputs[1]!;
+      if (
+        !second.ok &&
+        (second as unknown as { error: { reason?: string } }).error.reason === 'erased'
+      ) {
+        contended++;
+      }
+    }
+    expect(contended).toBeGreaterThan(0);
+  });
+
   it('does not touch an erasure that lands after the last fed publish began', async () => {
     const state = { n: 0 };
     const { run } = await runFed(specs, {
@@ -750,5 +832,38 @@ describe('a fed call is one group', () => {
       extra: { maxBufferedBytes: budget },
     });
     expect(fed.run.stats.groups).toBe(1);
+  });
+});
+
+describe('a producer that is slow but ends', () => {
+  it('completes correctly, and every fed output waits for it', async () => {
+    const sets = { a: [...at(1, range(0, 50)), ...at(3, [1, 2, 3])] };
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const published: number[] = [];
+    const { run } = await runFed([{ expr: 'a' }, { expr: 's' }], {
+      stored: { s: at(4, [1]) },
+      fed: sets,
+      records: recordsOf(sets),
+      counts: async () => {
+        await sleep(40);
+        return { a: 53 };
+      },
+      feed: {
+        records: {
+          async *[Symbol.asyncIterator]() {
+            for (const r of recordsOf(sets)) {
+              await sleep(25);
+              yield r;
+            }
+            await sleep(25);
+          },
+        },
+      },
+      onPublish: (i) => published.push(i),
+    });
+    expect(ok(run.outputs[0]!).ids).toEqual(sets.a);
+    expect(ok(run.outputs[1]!).ids).toEqual(at(4, [1]));
+    // The stored-only output is in the same group, so it publishes after the feed ended too.
+    expect(published.length).toBe(2);
   });
 });

@@ -1752,7 +1752,8 @@ export class CloudRoaring {
       budget?: BudgetOption;
     } = {},
   ): Promise<EraseSubjectResult> {
-    // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start.
+    // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
+    // for its options still moves the counter: conservative, so an erasure is never missed.
     this.erasureEpoch++;
     try {
       return await this.eraseSubjectRun(id, options);

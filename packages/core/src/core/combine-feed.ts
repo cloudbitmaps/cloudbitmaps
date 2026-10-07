@@ -148,6 +148,8 @@ const byteOffsetOf = typedGetter('byteOffset');
 const byteLengthOf = typedGetter('byteLength');
 const detachedOf = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached')?.get as
   ((this: unknown) => unknown) | undefined;
+/** `%TypedArray%.prototype.values`: it throws for a view that is out of bounds or detached, and changes nothing. */
+const valuesOf = (TYPED as { values: (this: unknown) => unknown }).values;
 
 /**
  * The view a real `Uint32Array` holds, as a plain `Uint32Array` over the same bytes, or `undefined` for anything else.
@@ -155,7 +157,7 @@ const detachedOf = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detac
  * of that kind (a subclass or another realm's included) and throws for a spoof, a proxy or any other object. The view's
  * extent is then read through the intrinsic getters, so a subclass that overrides `length` or the iterator is never asked.
  */
-function plainUint32(value: unknown): Uint32Array | 'detached' | undefined {
+function plainUint32(value: unknown): Uint32Array | 'detached' | 'out of bounds' | undefined {
   let tag: unknown;
   try {
     tag = brandOf.call(value);
@@ -172,9 +174,25 @@ function plainUint32(value: unknown): Uint32Array | 'detached' | undefined {
     } catch {
       // A SharedArrayBuffer is never detached.
     }
+    try {
+      // A view on a resizable buffer that shrank past it also reports no bytes: its own iterator refuses it.
+      valuesOf.call(value);
+    } catch {
+      return 'out of bounds';
+    }
     return new Uint32Array(0);
   }
   return new Uint32Array(buffer, byteOffsetOf.call(value) as number, length >>> 2);
+}
+
+/**
+ * Whether `value` is a plain object: its prototype is `null`, or a root of a prototype chain that has `Object.prototype`'s
+ * own methods (so another realm's plain object passes). An inherited name or a `Map`'s entries are never read as operands.
+ */
+function isPlainObject(value: object): boolean {
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto === null) return true;
+  return Object.getPrototypeOf(proto) === null && Object.hasOwn(proto as object, 'hasOwnProperty');
 }
 
 /** What a group of one key holds: each operand's bitmap, by operand index, and what it is charged. */
@@ -407,8 +425,12 @@ export class FeedCursor {
       this.touched.length = 0;
       this.prevKey = key;
     }
-    if (typeof operands !== 'object' || operands === null || Array.isArray(operands)) {
-      this.refuse(key, undefined, 'operands must be an object of fed operand name to Uint32Array');
+    if (typeof operands !== 'object' || operands === null || !isPlainObject(operands)) {
+      this.refuse(
+        key,
+        undefined,
+        'operands must be a plain object of fed operand name to Uint32Array (not a Map, an array or a class instance)',
+      );
     }
     const keep = this.deps.inWindow(key);
     const ops = keep ? new Map<number, Held>() : null;
@@ -430,6 +452,13 @@ export class FeedCursor {
           );
         }
         if (view === 'detached') this.refuse(key, name, "the array's buffer is detached");
+        if (view === 'out of bounds') {
+          this.refuse(
+            key,
+            name,
+            'the array is out of bounds of its resizable buffer, which shrank under it',
+          );
+        }
         if (view.length === 0) continue;
         if (this.seen[at] === 1) {
           this.refuse(key, name, 'named twice at one key: an operand appears at most once per key');

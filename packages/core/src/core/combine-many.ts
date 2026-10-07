@@ -1673,6 +1673,13 @@ class Run<R> {
           wake();
           continue;
         }
+        // Waiting for room can take as long as the publishes ahead: the counter is read again once the output has it.
+        if (o.compiled.fed.length > 0 && this.erased()) {
+          this.ledger.release(transient);
+          this.fail(o, this.staleError(o));
+          wake();
+          continue;
+        }
         inFlight++;
         this.publishes++;
         const chunks = o.chunks;
