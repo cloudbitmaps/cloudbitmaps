@@ -42,6 +42,7 @@ import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError
 import type { Budget } from './budget';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
+import { incarnationOf } from './token';
 import type { ChunkRead, GenerationMetadata, SegmentRef, StorageChunkSource } from './ports';
 
 export type { CombineExpr } from './combine-expr';
@@ -73,14 +74,26 @@ export interface CombineManyOperand {
   readonly check?: () => void;
   /** The generation the operand is pinned to: `null` when pinned to a segment with none, `undefined` when not pinned. */
   readonly pinnedGeneration?: number | null;
-  /** A fresh read of the segment's current generation, for the re-check of a pinned exclude. */
-  readonly currentGeneration?: () => Promise<number | null>;
+  /**
+   * The pin's version: the generation and the registry row's token it was taken under (`<generation>:<token>`), or just
+   * the generation where there is no row. It is what tells a name deleted and created again, which restarts at
+   * generation 0, from the one that was pinned.
+   */
+  readonly pinnedVersion?: string | null;
+  /**
+   * A fresh read of the segment's registry row: its current generation and token, or `null` when it has no row. Read
+   * for every subtracted pinned operand just before the publishes, and once more at the end of the call for the rest.
+   */
+  readonly current?: () => Promise<{
+    readonly generation: number | null;
+    readonly token: string;
+  } | null>;
 }
 
 /** What one output asks for. */
 export interface CombineManyOutput<R> {
   readonly expr: CombineExpr;
-  /** Subtracted from the result: a root `andNot`, and the operands a pinned re-check looks at. */
+  /** Subtracted from the result: a root `andNot`. */
   readonly exclude?: readonly CombineExpr[];
   readonly allowEmpty?: boolean;
   readonly guard?: LoadGuard;
@@ -89,6 +102,11 @@ export interface CombineManyOutput<R> {
   readonly keep?: number;
   /** Throws to refuse the publish: the destination's lease or deadline, checked again just before it. */
   readonly beforePublish?: () => void;
+  /**
+   * The requests a settled publish made that its value proves, for the call's totals by class; absent, a publish adds
+   * none. A publish that threw is not counted: what it sent is unknown.
+   */
+  readonly requestsOf?: (value: R) => { readonly get: number; readonly put: number };
   /** Publish the finished chunks, ascending by key. What it returns or throws is the output's outcome. */
   readonly publish: (
     chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
@@ -142,10 +160,17 @@ export interface CombineManyOperandStats {
   /** The generation the call began reading it at: the pin's, or the one live when its index was read. */
   readonly startGeneration: number | null | undefined;
   /**
-   * The generation current just before the publishes, from the re-read of a pinned operand an output excludes; `undefined`
-   * where it was not re-read.
+   * The generation current when the call ended, from one registry read of the operand's row: the re-read made before
+   * the publishes for an operand an output subtracts, one more at the end of the call for the rest. `undefined` where the
+   * operand was not read, or its row could not be.
    */
   readonly endGeneration: number | null | undefined;
+  /**
+   * Whether the operand was replaced while the call ran: for a pinned operand, its pin no longer names what the
+   * registry holds (another generation, or the name deleted and created again); for one read live, its generation or
+   * incarnation changed from where the call began. `undefined` where `endGeneration` is.
+   */
+  readonly moved: boolean | undefined;
   /** Chunk keys in its index, inside the range. */
   readonly keys: number;
   /** Chunk reads made of it, over all groups. */
@@ -174,10 +199,22 @@ export interface CombineManyStats {
     readonly rangeBytes: number;
     /** (operand, key) chunk reads, the unit `budget` is counted in. */
     readonly chunkReads: number;
-    /** Registry reads to re-check a pinned exclude. */
+    /** Registry reads of the call itself: the re-checks, the end-of-call reads and the existence checks. */
     readonly registryReads: number;
     /** Outputs handed to a publish. */
     readonly publishes: number;
+    /**
+     * GET-class requests the call can attribute: range reads, registry reads, and what a settled publish's result
+     * proves. The tail and row reads that open an operand, and the reads inside a publish, are made by the store's
+     * readers and the load and are not here.
+     */
+    readonly get: number;
+    /**
+     * PUT-class requests the call can attribute: from each settled publish's result, the object write and the pointer
+     * write of a published output and the object write of a refused one. A multipart upload's extra requests, a
+     * listing, and the writes of a publish that threw are made inside the load and are not here.
+     */
+    readonly put: number;
   };
   readonly budget: {
     /** The limit used: `null` when lifted. */
@@ -198,6 +235,7 @@ export interface CombineManyStats {
   };
   /** The most range requests in flight at once. */
   readonly maxRangesInFlight: number;
+  /** By operand name, an object with no prototype, so any name is a key. */
   readonly operands: Readonly<Record<string, CombineManyOperandStats>>;
   readonly outputs: readonly CombineManyOutputStats[];
 }
@@ -210,15 +248,29 @@ export interface CombineManyRun<R> {
 interface CompiledOutput {
   readonly node: ExprNode;
   readonly operands: readonly number[];
-  readonly excludeOperands: readonly number[];
+  /** Every operand under a subtracted position: a child of an `andNot` after the first, at any depth. */
+  readonly subtracted: readonly number[];
   readonly depth: number;
   readonly write: CombineManyWrite;
 }
 
+/** What {@link compileCombineMany} checked, for {@link runCombineMany}: its compiled form is private to this module. */
+const COMPILED = new WeakMap<object, readonly CompiledOutput[]>();
+
 /** A request that passed every check that needs no I/O: what {@link runCombineMany} runs. */
 export interface CompiledCombineMany<R> {
   readonly request: CombineManyRequest<R>;
-  readonly outputs: readonly CompiledOutput[];
+}
+
+/** Every operand under a child of an `andNot` after the first, at any depth. */
+function subtractedOperands(node: ExprNode, under: boolean, into: Set<number>): void {
+  if (node.kind === 'leaf') {
+    if (under) into.add(node.operand);
+    return;
+  }
+  node.kids.forEach((kid, i) =>
+    subtractedOperands(kid, under || (node.kind === 'andNot' && i > 0), into),
+  );
 }
 
 function integerIn(value: unknown, min: number, max: number, what: string): number {
@@ -309,7 +361,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     return {
       node,
       operands: operandsOf(node),
-      excludeOperands: [...new Set(exclude.flatMap((e) => operandsOf(e)))].sort((a, b) => a - b),
+      subtracted: subtractedList(node),
       depth: depthOf(node),
       write: {
         keep,
@@ -319,7 +371,15 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
       },
     };
   });
-  return { request, outputs: compiled };
+  const result: CompiledCombineMany<R> = { request };
+  COMPILED.set(result, compiled);
+  return result;
+}
+
+function subtractedList(node: ExprNode): number[] {
+  const into = new Set<number>();
+  subtractedOperands(node, false, into);
+  return [...into].sort((a, b) => a - b);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -411,6 +471,8 @@ interface OperandState {
   bytes: number;
   startGeneration: number | null | undefined;
   endGeneration: number | null | undefined;
+  /** The row the last read at the end of the call, or before a publish, found: `undefined` when none was read. */
+  endRow: { readonly generation: number | null; readonly token: string } | null | undefined;
   indexKeys: number;
   chunkReads: number;
   read: boolean;
@@ -445,6 +507,8 @@ interface OutputState<R> {
 
 interface GroupPlan {
   readonly outputs: readonly number[];
+  /** For each output and each operand it reads, the chunk keys its expression demands of the operand. */
+  readonly demand: ReadonlyMap<number, ReadonlyMap<number, Uint16Array>>;
   readonly fetch: ReadonlyMap<number, readonly number[]>;
   readonly keys: readonly number[];
   readonly reads: number;
@@ -497,11 +561,17 @@ class Run<R> {
   private chunkReads = 0;
   private registryReads = 0;
   private publishes = 0;
+  private attributedGet = 0;
+  private attributedPut = 0;
   private planned = 0;
   private pruned = 0;
   private limit: number | null = null;
 
   constructor(compiled: CompiledCombineMany<R>, deps: CombineManyDeps) {
+    const compiledOutputs = COMPILED.get(compiled);
+    if (compiledOutputs === undefined) {
+      throw new ValidationError('runCombineMany takes the result of compileCombineMany');
+    }
     this.req = compiled.request;
     this.source = deps.source;
     this.codec = deps.codec;
@@ -516,6 +586,7 @@ class Run<R> {
       bytes: 0,
       startGeneration: undefined,
       endGeneration: undefined,
+      endRow: undefined,
       indexKeys: 0,
       chunkReads: 0,
       read: false,
@@ -524,7 +595,7 @@ class Run<R> {
     this.outputs = this.req.outputs.map((spec, index) => ({
       index,
       spec,
-      compiled: compiled.outputs[index]!,
+      compiled: compiledOutputs[index]!,
       rootKeys: new Uint16Array(0),
       bound: 0,
       serializedBound: 0,
@@ -558,6 +629,7 @@ class Run<R> {
         await this.runGroup(this.buildGroup([output]));
       }
     }
+    await this.readEnds();
     return { outputs: this.outputs.map((o) => o.outcome ?? this.neverRan()), stats: this.stats() };
   }
 
@@ -591,9 +663,11 @@ class Run<R> {
         op.startGeneration = await this.source.currentGeneration?.(op.spec.ref);
         op.bounds = { keys: Uint16Array.from(keys), card };
         op.indexKeys = keys.length;
-        // Held at once by its stream: its ranges, never more than its object or than the window it was asked for.
+        // Held at once by its stream: its ranges, never more than its object or than the window it was asked for. The
+        // object's size is what bounds it where the source knows it; the index's own cardinalities are not trusted to
+        // (a generation can understate them), and are the estimate only for a source that cannot say its size.
         const window = this.req.concurrency * (RANGE_BYTES + 28);
-        op.bytes = Math.min(window, size ?? Infinity, serialized + 64);
+        op.bytes = Math.min(window, size ?? serialized + 64);
         op.chunkless = listed.length === 0;
       } catch (error) {
         op.error = { error };
@@ -601,16 +675,22 @@ class Run<R> {
     });
   }
 
-  /** An operand that names no segment would contribute nothing: refused, as a combine refuses it. */
+  /**
+   * An operand that names no segment would contribute nothing: refused, as a combine refuses it, for every operand of
+   * the call. One whose index was read is judged only if it has no chunk at all; one whose index was not read (no output
+   * names it, or the range is empty) is asked outright.
+   */
   private async refuseAbsent(): Promise<void> {
     if (this.req.allowAbsentOperands === true || this.source.exists === undefined) return;
-    const chunkless = this.operands.filter(
-      (op) => op.read && op.error === undefined && op.chunkless,
+    const judged = this.operands.filter(
+      (op) => op.error === undefined && (op.read ? op.chunkless : true),
     );
-    if (chunkless.length === 0) return;
-    const checked = await Promise.all(
-      chunkless.map(async (op) => ({ op, exists: await this.source.exists!(op.spec.ref) })),
-    );
+    if (judged.length === 0) return;
+    const exists = this.source.exists.bind(this.source);
+    const checked = await mapWithConcurrency(judged, INDEX_PARALLELISM, async (op) => {
+      this.registryReads++;
+      return { op, exists: await exists(op.spec.ref) };
+    });
     const absent = checked.filter((c) => !c.exists).map((c) => c.op.spec.name);
     if (absent.length === 0) return;
     throw new ValidationError(
@@ -705,15 +785,24 @@ class Run<R> {
     const bounds = this.boundsList();
     const bits = new Map<number, KeyBits>();
     const visit = new KeyBits();
+    const demand = new Map<number, Map<number, Uint16Array>>();
     for (const o of members) {
       visit.add(o.rootKeys);
       const planned: NodeKeys = new Map();
       planKeys(o.compiled.node, bounds, planned);
+      const own = new Map<number, KeyBits>();
       collectFetch(o.compiled.node, o.rootKeys, bounds, planned, (operand, keys) => {
         let set = bits.get(operand);
         if (set === undefined) bits.set(operand, (set = new KeyBits()));
         set.add(keys);
+        let mine = own.get(operand);
+        if (mine === undefined) own.set(operand, (mine = new KeyBits()));
+        mine.add(keys);
       });
+      demand.set(
+        o.index,
+        new Map([...own].map(([operand, set]) => [operand, Uint16Array.from(set.toKeys())])),
+      );
     }
     const fetch = new Map<number, number[]>();
     let reads = 0;
@@ -727,6 +816,7 @@ class Run<R> {
     }
     return {
       outputs: members.map((o) => o.index),
+      demand,
       fetch,
       keys: visit.toKeys(),
       reads,
@@ -844,10 +934,19 @@ class Run<R> {
       stream: ChunkStream | undefined;
       /** No more is read of this operand: it failed, or no live output reads it any more. */
       done: boolean;
+      /** Why it failed, when it did: an output that demands a later key of it fails with this. */
+      failure: { readonly error: unknown } | undefined;
     }
     const cursors: Cursor[] = [];
     for (const [index, keys] of plan.fetch) {
-      cursors.push({ op: this.operands[index]!, keys, next: 0, stream: undefined, done: false });
+      cursors.push({
+        op: this.operands[index]!,
+        keys,
+        next: 0,
+        stream: undefined,
+        done: false,
+        failure: undefined,
+      });
     }
     const retry = <T>(request: () => Promise<T>): Promise<T> => this.gate.run(request);
     const onRequest = (r: { readonly bytes: number }): void => {
@@ -862,47 +961,71 @@ class Run<R> {
       c.done = true;
       c.stream?.close();
     };
-    const failOperand = (c: Cursor, error: unknown): void => {
+    /** The live outputs whose expression demands `c`'s operand at `key`. */
+    const wanting = (c: Cursor, key: number): Array<OutputState<R>> =>
+      (readers.get(c.op.index) ?? []).filter(
+        (o) => o.status === 'live' && hasKey(plan.demand.get(o.index)?.get(c.op.index), key),
+      );
+    const failOperand = (c: Cursor, error: unknown, victims: Array<OutputState<R>>): void => {
       stop(c);
-      for (const o of readers.get(c.op.index) ?? []) if (o.status === 'live') this.fail(o, error);
+      c.failure = { error };
+      for (const o of victims) if (o.status === 'live') this.fail(o, error);
     };
     const w = this.window === 'empty' ? null : this.window;
     const makeRoom = (): boolean => this.evictLargest(members);
     try {
       for (const key of plan.keys) {
         if (!members.some((o) => o.status === 'live')) break;
-        // The operands read at this key: those whose next fetch key it is and that a live output still reads.
-        const needed: Cursor[] = [];
+        // While every output is live, what was fetched is demanded; once one is gone, who still wants a chunk is asked.
+        const exact = members.some((o) => o.status !== 'live');
+        const at: Array<{ c: Cursor; victims: Array<OutputState<R>> | undefined }> = [];
         for (const c of cursors) {
-          if (c.done || c.keys[c.next] !== key) continue;
+          if (c.keys[c.next] !== key) continue;
+          const victims = exact || c.failure !== undefined ? wanting(c, key) : undefined;
+          if (c.failure !== undefined) {
+            // The operand failed at an earlier key: an output that needs this key of it fails with the same error.
+            c.next++;
+            for (const o of victims ?? []) this.fail(o, c.failure.error);
+            continue;
+          }
+          if (c.done) {
+            c.next++;
+            continue;
+          }
           if (!(readers.get(c.op.index) ?? []).some((o) => o.status === 'live')) {
             stop(c);
+            c.next++;
             continue;
           }
-          try {
-            c.op.spec.check?.();
-          } catch (error) {
-            failOperand(c, error);
-            continue;
+          if (victims === undefined || victims.length > 0) {
+            try {
+              c.op.spec.check?.();
+            } catch (error) {
+              c.next++;
+              failOperand(c, error, victims ?? wanting(c, key));
+              continue;
+            }
           }
-          needed.push(c);
+          at.push({ c, victims });
         }
         // Taken in key order before anything is awaited: concurrent takes of one stream must line up with its keys.
-        const settled = await Promise.allSettled(needed.map((c) => streamOf(c).take(key)));
+        const settled = await Promise.allSettled(at.map(({ c }) => streamOf(c).take(key)));
         const decoded = new Map<number, CodecBitmap>();
         let held = 0;
         try {
-          for (let i = 0; i < needed.length; i++) {
-            const c = needed[i]!;
+          for (let i = 0; i < at.length; i++) {
+            const { c, victims } = at[i]!;
             const result = settled[i]!;
             c.next++;
             if (c.done) continue;
             if (result.status === 'rejected') {
-              failOperand(c, result.reason);
+              failOperand(c, result.reason, victims ?? wanting(c, key));
               continue;
             }
             this.chunkReads++;
             c.op.chunkReads++;
+            // A chunk no live output demands any more is taken off the stream and dropped, undecoded.
+            if (victims !== undefined && victims.length === 0) continue;
             const bytes = result.value.bytes;
             if (bytes === null) {
               // The index lists the key, so the generation must hold its bytes: a hole is a fault, never an empty chunk.
@@ -911,6 +1034,7 @@ class Run<R> {
                 new IntegrityError(
                   `operand "${c.op.spec.name}" lists chunk ${key} but its generation holds no bytes for it`,
                 ),
+                victims ?? wanting(c, key),
               );
               continue;
             }
@@ -928,7 +1052,7 @@ class Run<R> {
                 decodeChunkBytes(this.codec, bytes, key, this.maxBitmapBytes),
               );
             } catch (error) {
-              failOperand(c, error);
+              failOperand(c, error, victims ?? wanting(c, key));
             }
           }
           for (const o of members) {
@@ -1020,42 +1144,39 @@ class Run<R> {
 
   // ---- publish ----------------------------------------------------------------------------------------------
 
-  /** Re-check the pinned excludes, then publish what is left, `publishConcurrency` at a time. */
+  /** Re-check the pinned operands the survivors subtract, then publish what is left, `publishConcurrency` at a time. */
   private async publishWave(survivors: Array<OutputState<R>>): Promise<void> {
     const toCheck = new Set<number>();
     for (const o of survivors) {
-      for (const i of o.compiled.excludeOperands) {
+      for (const i of o.compiled.subtracted) {
         const spec = this.operands[i]!.spec;
-        if (spec.pinnedGeneration !== undefined && spec.currentGeneration !== undefined)
-          toCheck.add(i);
+        if (spec.pinnedGeneration !== undefined && spec.current !== undefined) toCheck.add(i);
       }
     }
     const verdict = new Map<number, unknown>();
     await mapWithConcurrency([...toCheck], INDEX_PARALLELISM, async (i) => {
       const op = this.operands[i]!;
-      this.registryReads++;
       try {
-        const now = await op.spec.currentGeneration!();
-        op.endGeneration = now;
-        if (now !== op.spec.pinnedGeneration) {
+        const now = await this.readRow(op);
+        if (!pinnedStillCurrent(op.spec, now)) {
           verdict.set(
             i,
             new StaleOperandError(
-              `materializeMany: operand "${op.spec.name}", excluded by an output, moved from generation ` +
-                `${String(op.spec.pinnedGeneration)} to ${String(now)} while the call ran, so its outputs were not ` +
-                'published. Run the call again to exclude the current one.',
+              `materializeMany: operand "${op.spec.name}", subtracted by an output, was replaced while the call ran ` +
+                `(pinned at generation ${String(op.spec.pinnedGeneration)}, now ${String(now?.generation ?? null)}), so ` +
+                'its outputs were not published. Run the call again to subtract the current one.',
               op.spec.name,
               'moved',
             ),
           );
         }
       } catch (error) {
-        // An exclude that cannot be re-checked is not assumed unchanged: the outputs it guards are not published.
+        // A subtracted operand that cannot be re-checked is not assumed unchanged: its outputs are not published.
         verdict.set(i, error);
       }
     });
     for (const o of survivors) {
-      for (const i of o.compiled.excludeOperands) {
+      for (const i of o.compiled.subtracted) {
         if (verdict.has(i)) {
           this.fail(o, verdict.get(i));
           break;
@@ -1114,6 +1235,11 @@ class Run<R> {
             o.compiled.write,
           );
           o.outcome = { ok: true, value };
+          const proven = o.spec.requestsOf?.(value);
+          if (proven !== undefined) {
+            this.attributedGet += proven.get;
+            this.attributedPut += proven.put;
+          }
         } catch (error) {
           o.outcome = { ok: false, error };
         } finally {
@@ -1131,17 +1257,53 @@ class Run<R> {
     );
   }
 
+  /** A fresh read of the operand's row, remembered as where the operand stood last. */
+  private async readRow(
+    op: OperandState,
+  ): Promise<{ generation: number | null; token: string } | null> {
+    this.registryReads++;
+    const row = (await op.spec.current!()) ?? null;
+    op.endRow = row;
+    op.endGeneration = row?.generation ?? null;
+    return row;
+  }
+
+  /** Where every operand stands when the call ends: one row read each, the re-checked ones already read. */
+  private async readEnds(): Promise<void> {
+    const pending = this.operands.filter(
+      (op) => op.endRow === undefined && op.spec.current !== undefined,
+    );
+    await mapWithConcurrency(pending, INDEX_PARALLELISM, async (op) => {
+      try {
+        await this.readRow(op);
+      } catch {
+        // Reported as not read: the end of a call is no reason to fail what it already settled.
+      }
+    });
+  }
+
   // ---- stats ------------------------------------------------------------------------------------------------
 
   private stats(): CombineManyStats {
-    const operands: Record<string, CombineManyOperandStats> = {};
+    const operands: Record<string, CombineManyOperandStats> = Object.create(null) as Record<
+      string,
+      CombineManyOperandStats
+    >;
     for (const op of this.operands) {
+      const pinned = op.spec.pinnedGeneration !== undefined;
+      const moved =
+        op.endRow === undefined
+          ? undefined
+          : pinned
+            ? !pinnedStillCurrent(op.spec, op.endRow)
+            : op.startGeneration !== undefined && op.endGeneration !== op.startGeneration;
       operands[op.spec.name] = {
         read: op.read,
         pinned: op.spec.pinnedGeneration !== undefined,
         pinnedGeneration: op.spec.pinnedGeneration,
         startGeneration: op.startGeneration,
         endGeneration: op.endGeneration,
+        moved,
         keys: op.indexKeys,
         chunkReads: op.chunkReads,
       };
@@ -1154,6 +1316,8 @@ class Run<R> {
         chunkReads: this.chunkReads,
         registryReads: this.registryReads,
         publishes: this.publishes,
+        get: this.rangeReads + this.registryReads + this.attributedGet,
+        put: this.attributedPut,
       },
       budget: { maxRequests: this.limit, planned: this.planned, used: this.chunkReads },
       memory: {
@@ -1172,6 +1336,41 @@ class Run<R> {
       })),
     };
   }
+}
+
+/**
+ * Whether what `spec` was pinned to is still what the registry holds, given the row read now (`null`: no row). The
+ * generation number alone is not an identity: a name deleted and created again starts at generation 0. The pin's version
+ * carries the row's token, and two tokens of one incarnation are writes of one row (a retention policy or a lease moves the
+ * token and not the incarnation), so the incarnations are compared where the tokens have them and the tokens where not.
+ */
+function pinnedStillCurrent(
+  spec: CombineManyOperand,
+  now: { readonly generation: number | null; readonly token: string } | null,
+): boolean {
+  const pinned = spec.pinnedGeneration ?? null;
+  if (pinned !== (now?.generation ?? null)) return false;
+  const version = spec.pinnedVersion;
+  if (pinned === null || version == null || now === null) return true;
+  const colon = version.indexOf(':');
+  if (colon < 0) return true;
+  const was = version.slice(colon + 1);
+  const a = incarnationOf(was);
+  const b = incarnationOf(now.token);
+  return a !== undefined || b !== undefined ? a === b : was === now.token;
+}
+
+/** Whether the ascending `keys` hold `key`. */
+function hasKey(keys: Uint16Array | undefined, key: number): boolean {
+  if (keys === undefined) return false;
+  let lo = 0;
+  let hi = keys.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (keys[mid]! < key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < keys.length && keys[lo] === key;
 }
 
 /** The ascending `keys` inside the window's chunk span. */

@@ -25,11 +25,23 @@ export interface BatchWorld {
   /** A second store over the same backend: another process. */
   other: CloudRoaring;
   backend: MemoryStorage;
-  calls: { storage: number; registry: number; ranges: number; casBySegment: Map<string, number> };
+  calls: {
+    storage: number;
+    registry: number;
+    ranges: number;
+    /** Tail reads of storage, registry row reads, object writes and registry writes (a create or a swap). */
+    tails: number;
+    rowReads: number;
+    puts: number;
+    rowWrites: number;
+    casBySegment: Map<string, number>;
+  };
   hooks: {
     beforeRange?: (segment: string) => Promise<void> | void;
     beforeCas?: (segment: string) => Promise<void> | void;
+    beforeRowRead?: (segment: string) => Promise<void> | void;
   };
+  resetCalls(): void;
   load(name: string, ids: Iterable<number>, store?: CloudRoaring): Promise<void>;
   hex(ref: SegmentRef | string, generation: number): Promise<string>;
   ids(name: string, store?: CloudRoaring): Promise<number[]>;
@@ -44,6 +56,10 @@ export async function batchWorld(
     storage: 0,
     registry: 0,
     ranges: 0,
+    tails: 0,
+    rowReads: 0,
+    puts: 0,
+    rowWrites: 0,
     casBySegment: new Map(),
   };
   const hooks: BatchWorld['hooks'] = {};
@@ -73,6 +89,8 @@ export async function batchWorld(
   const segmentOf = (a: unknown): string => (a as { segment?: string } | undefined)?.segment ?? '';
   const storage = wrap<IStorageDriver>(backend.storage, async (m, args) => {
     calls.storage++;
+    if (m === 'getTail') calls.tails++;
+    if (m === 'putImmutable') calls.puts++;
     if (m === 'getRange') {
       calls.ranges++;
       await hooks.beforeRange?.(segmentOf(args[0]));
@@ -80,6 +98,11 @@ export async function batchWorld(
   });
   const registry = wrap<IRegistryDriver>(backend.registry, async (m, args) => {
     calls.registry++;
+    if (m === 'get') {
+      calls.rowReads++;
+      await hooks.beforeRowRead?.(segmentOf(args[0]));
+    }
+    if (m === 'create' || m === 'compareAndSwap') calls.rowWrites++;
     if (m === 'compareAndSwap') {
       const seg = segmentOf(args[0]);
       calls.casBySegment.set(seg, (calls.casBySegment.get(seg) ?? 0) + 1);
@@ -100,6 +123,11 @@ export async function batchWorld(
     backend,
     calls,
     hooks,
+    resetCalls() {
+      calls.storage = calls.registry = calls.ranges = 0;
+      calls.tails = calls.rowReads = calls.puts = calls.rowWrites = 0;
+      calls.casBySegment.clear();
+    },
     async load(name, ids, s = store) {
       await s.load({ segment: name }, { bitmap: bitmapOf(ids) });
     },
@@ -115,8 +143,7 @@ export async function batchWorld(
     },
   };
   for (const [name, ids] of Object.entries(data)) await world.load(name, ids);
-  calls.storage = calls.registry = calls.ranges = 0;
-  calls.casBySegment.clear();
+  world.resetCalls();
   return world;
 }
 

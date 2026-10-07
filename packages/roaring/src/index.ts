@@ -1310,8 +1310,14 @@ export class CloudRoaring {
       destKeys.add(dest.key());
       outputs.push({ spec, dest });
     });
+    // A ceiling the store was built with applies to a call that names none, as it does to every other operation; only a
+    // store left on the library default lets the call size its own from its plan.
+    const storeCeiling =
+      this.budget === null || this.budget.maxRequests !== DEFAULT_BUDGET.maxRequests
+        ? this.budget
+        : undefined;
     const budget =
-      budgetOption === undefined ? undefined : resolvePerOpBudget(budgetOption, this.budget);
+      budgetOption === undefined ? storeCeiling : resolvePerOpBudget(budgetOption, this.budget);
     // Every expression and option is checked here, with no operand pinned and no request made.
     const operandSpecs = (pins: ReadonlyMap<string, PinnedAt | undefined>): CombineManyOperand[] =>
       names.map((name) => {
@@ -1325,10 +1331,8 @@ export class CloudRoaring {
           ...(guarded ? { check: () => this.assertReadable('materializeMany', handle) } : {}),
           ...(pinnedAt === undefined
             ? {}
-            : {
-                pinnedGeneration: pinnedAt.generation,
-                currentGeneration: () => this.currentGenerationOf(view.ref),
-              }),
+            : { pinnedGeneration: pinnedAt.generation, pinnedVersion: pinnedAt.version }),
+          current: () => this.currentRowOf(view.ref),
         };
       });
     const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
@@ -1341,6 +1345,9 @@ export class CloudRoaring {
         ...(spec.metadata === undefined ? {} : { metadata: spec.metadata }),
         ...(spec.keep === undefined ? {} : { keep: spec.keep }),
         beforePublish: () => this.assertWritable(`outputs[${i}]`, dest),
+        // What a settled publish proves it sent: a published one wrote its object and moved the pointer, a refused one
+        // wrote its object and deleted it.
+        requestsOf: (result: MaterializeResult) => ({ get: 0, put: result.published ? 2 : 1 }),
         publish: (
           chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
           write: {
@@ -1364,7 +1371,7 @@ export class CloudRoaring {
       ...(budget === undefined ? {} : { budget }),
       ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
     });
-    const compiled = compileCombineMany(request(new Map()));
+    compileCombineMany(request(new Map()));
     // An expired or released handle anywhere is refused before any request, as the `*Into` verbs refuse one.
     for (const { dest } of outputs) this.assertWritable('materializeMany', dest);
     for (const handle of handles.values()) this.assertReadable('materializeMany', handle);
@@ -1417,7 +1424,7 @@ export class CloudRoaring {
       this.retryOptions === undefined
         ? pinnedSource
         : new RetryingStorageChunkSource(pinnedSource, this.retryOptions);
-    const final = { request: request(pins), outputs: compiled.outputs };
+    const final = compileCombineMany(request(pins));
     const run = await runCombineMany(final, { source, codec: roaringCodec, clock: this.clock });
     return {
       outputs: run.outputs.map((o) =>
@@ -1432,11 +1439,13 @@ export class CloudRoaring {
     };
   }
 
-  /** The current generation of `ref` straight from the registry, not from a snapshot: a re-check must see a move. */
-  private async currentGenerationOf(ref: SegmentRef): Promise<number | null> {
+  /** The registry row of `ref`, read straight from the registry, not from a snapshot: a re-check must see a move. */
+  private async currentRowOf(
+    ref: SegmentRef,
+  ): Promise<{ generation: number | null; token: string } | null> {
     const registry = this.requireRegistry('materializeMany');
     const row = await this.withRetries(() => registry.get(ref));
-    return row?.currentGen ?? null;
+    return row === null ? null : { generation: row.currentGen, token: row.token };
   }
 
   /** Throw what a read of `handle` must throw now: its lease error, or a refusal for a deadline that has passed. */

@@ -115,7 +115,7 @@ describe('store.materializeMany', () => {
     expect(run.stats.operands.a!).toMatchObject({ pinnedGeneration: 0, startGeneration: 0 });
   });
 
-  it('refuses exactly the outputs that exclude a pinned operand that moved', async () => {
+  it('refuses exactly the outputs that subtract a pinned operand that moved, by any spelling', async () => {
     const w = await batchWorld(DATA);
     const s = (n: string) => w.store.segment(n);
     let hit = false;
@@ -130,22 +130,64 @@ describe('store.materializeMany', () => {
         { dest: s('d1'), expr: 'a', exclude: ['optout'] },
         { dest: s('d2'), expr: 'b' },
         { dest: s('d3'), expr: { andNot: ['a', 'optout'] } },
+        { dest: s('d4'), expr: { and: ['b', { andNot: ['b', { or: ['a', 'optout'] }] }] } },
+        { dest: s('d5'), expr: { or: ['a', 'optout'] } },
       ],
       keep: 1,
     });
-    const refused = run.outputs[0] as { published: false; error: Error };
-    expect(refused.published).toBe(false);
-    expect(isStaleOperandError(refused.error)).toBe(true);
-    expect(refused.error).toBeInstanceOf(StaleOperandError);
-    expect(refused.error).toMatchObject({
-      code: 'stale-operand',
-      operand: 'optout',
-      reason: 'moved',
-    });
+    for (const i of [0, 2, 3]) {
+      const refused = run.outputs[i] as { published: false; error: Error };
+      expect(refused.published).toBe(false);
+      expect(isStaleOperandError(refused.error)).toBe(true);
+      expect(refused.error).toBeInstanceOf(StaleOperandError);
+      expect(refused.error).toMatchObject({
+        code: 'stale-operand',
+        operand: 'optout',
+        reason: 'moved',
+      });
+    }
     published(run.outputs[1]);
-    published(run.outputs[2]);
-    expect(run.stats.operands.optout).toMatchObject({ pinnedGeneration: 0, endGeneration: 1 });
+    published(run.outputs[4]);
+    expect(run.stats.operands.optout).toMatchObject({
+      pinnedGeneration: 0,
+      endGeneration: 1,
+      moved: true,
+    });
     expect(await w.backend.registry.get({ segment: 'd1' })).toBeNull();
+    expect(await w.backend.registry.get({ segment: 'd3' })).toBeNull();
+  });
+
+  it('refuses the outputs that subtract a name deleted and created again, though it is generation 0 again', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    // the re-check's own row read: by then every chunk is read, and the name is replaced under it
+    let passed = false;
+    w.hooks.beforeRange = () => {
+      passed = true;
+    };
+    w.hooks.beforeRowRead = async (segment) => {
+      if (!passed || segment !== 'optout') return;
+      w.hooks.beforeRowRead = undefined;
+      const ref = { segment: 'optout' };
+      await w.backend.registry.delete(ref);
+      await w.backend.storage.delete({ ...ref, generation: 0 });
+      await w.load('optout', [1, 2, 3], w.other);
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), optout: s('optout') },
+      outputs: [
+        { dest: s('d1'), expr: 'a', exclude: ['optout'] },
+        { dest: s('d2'), expr: 'a' },
+      ],
+      keep: 1,
+    });
+    expect((run.outputs[0] as { error: Error }).error).toBeInstanceOf(StaleOperandError);
+    published(run.outputs[1]);
+    expect(run.stats.operands.optout).toMatchObject({
+      pinnedGeneration: 0,
+      endGeneration: 0,
+      moved: true,
+    });
   });
 
   it('with pin: false an operand read live can move under the call', async () => {
@@ -450,5 +492,185 @@ describe('store.materializeMany', () => {
       error: expect.any(WriteConflictError),
     });
     expect(await w.ids('d')).toEqual([5]);
+  });
+
+  describe('the request budget', () => {
+    const one = (
+      w: Awaited<ReturnType<typeof batchWorld>>,
+      budget?: Parameters<typeof w.store.materializeMany>[0]['budget'],
+    ) =>
+      w.store.materializeMany({
+        operands: { a: w.store.segment('a') },
+        outputs: [{ dest: w.store.segment('d'), expr: 'a' }],
+        keep: 1,
+        ...(budget === undefined ? {} : { budget }),
+      });
+
+    it('sizes its own from the plan when the store has the library default', async () => {
+      const w = await batchWorld(DATA);
+      const run = await one(w);
+      expect(run.stats.budget.maxRequests).toBe(run.stats.budget.planned * 2 + 1_000);
+    });
+
+    it('honours a ceiling the store was built with, before any chunk is read', async () => {
+      const w = await batchWorld(DATA, { budget: { maxRequests: 3 } });
+      await expect(one(w)).rejects.toBeInstanceOf(BudgetExceededError);
+      expect(w.calls.ranges).toBe(0);
+      const roomy = await batchWorld(DATA, { budget: { maxRequests: 500_000 } });
+      expect((await one(roomy)).stats.budget.maxRequests).toBe(500_000);
+    });
+
+    it('lets a call set its own, or lift the limit, over the store', async () => {
+      const w = await batchWorld(DATA, { budget: { maxRequests: 3 } });
+      expect((await one(w, { maxRequests: 900_000 })).stats.budget.maxRequests).toBe(900_000);
+      const lifted = await batchWorld(DATA, { budget: { maxRequests: 3 } });
+      expect((await one(lifted, false)).stats.budget.maxRequests).toBeNull();
+      const plain = await batchWorld(DATA);
+      expect((await one(plain, false)).stats.budget.maxRequests).toBeNull();
+    });
+
+    it('lifts the limit for a store built with budget: false', async () => {
+      const w = await batchWorld(DATA, { budget: false });
+      expect((await one(w)).stats.budget.maxRequests).toBeNull();
+    });
+  });
+
+  it('reports where every operand began and ended, read live or pinned', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    for (const pin of [true, false]) {
+      let hit = false;
+      w.hooks.beforeRange = async () => {
+        if (hit) return;
+        hit = true;
+        await w.load('b', [1, 2, 3], w.other);
+      };
+      const run = await w.store.materializeMany({
+        operands: { a: s('a'), b: s('b'), unused: s('c') },
+        outputs: [{ dest: s(`d-${pin}`), expr: { or: ['a', 'b'] } }],
+        keep: 1,
+        pin,
+      });
+      w.hooks.beforeRange = undefined;
+      const gen = (name: string) => run.stats.operands[name]!;
+      expect(gen('a')).toMatchObject({ pinned: pin, endGeneration: 0, moved: false });
+      expect(gen('b').endGeneration).toBe(
+        await w.backend.registry.get({ segment: 'b' }).then((r) => r!.currentGen),
+      );
+      expect(gen('b').moved).toBe(true);
+      expect(gen('unused')).toMatchObject({ read: false, endGeneration: 0, moved: false });
+      if (pin) expect(gen('b')).toMatchObject({ pinnedGeneration: expect.any(Number) });
+      else expect(gen('b').pinnedGeneration).toBeUndefined();
+      expect(gen('a').startGeneration).toBe(0);
+    }
+  });
+
+  it('counts the requests it can attribute by class, never more than the drivers saw', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    await w.load('d-refused', [1]);
+    w.resetCalls();
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b'), optout: s('optout'), empty: s('c') },
+      outputs: [
+        { dest: s('d1'), expr: { and: ['a', 'b'] }, exclude: ['optout'] },
+        { dest: s('d2'), expr: { or: ['a', 'b'] } },
+        { dest: s('d-refused'), expr: { and: ['a', { andNot: ['a', 'a'] }] } },
+      ],
+      keep: 1,
+    });
+    const { requests } = run.stats;
+    expect(requests.rangeReads).toBe(w.calls.ranges);
+    // the totals count what the call can prove; the opening reads and what a publish reads are not in them
+    expect(requests.get).toBeLessThanOrEqual(w.calls.ranges + w.calls.tails + w.calls.rowReads);
+    expect(requests.put).toBeLessThanOrEqual(w.calls.puts + w.calls.rowWrites);
+    expect(requests.put).toBe(2 + 2 + 1);
+    expect(requests.get).toBe(requests.rangeReads + requests.registryReads);
+    expect(requests.get).toBeGreaterThan(requests.rangeReads);
+  });
+
+  describe('the defaults', () => {
+    it('keeps 256 MiB resident at most', async () => {
+      const w = await batchWorld(DATA);
+      const run = await w.store.materializeMany({
+        operands: { a: w.store.segment('a') },
+        outputs: [{ dest: w.store.segment('d'), expr: 'a' }],
+        keep: 1,
+      });
+      expect(run.stats.memory.maxBufferedBytes).toBe(256 * 1024 * 1024);
+    });
+
+    it('publishes 8 outputs at once, and as many as publishConcurrency says', async () => {
+      const peaks: number[] = [];
+      for (const publishConcurrency of [undefined, 3]) {
+        const w = await batchWorld(DATA);
+        for (let i = 0; i < 30; i++) await w.load(`d${i}`, [1]);
+        let now = 0;
+        let peak = 0;
+        w.hooks.beforeCas = async () => {
+          now++;
+          peak = Math.max(peak, now);
+          await new Promise<void>((r) => setImmediate(r));
+          now--;
+        };
+        const run = await w.store.materializeMany({
+          operands: { a: w.store.segment('c') },
+          outputs: Array.from({ length: 30 }, (_, i) => ({
+            dest: w.store.segment(`d${i}`),
+            expr: 'a',
+          })),
+          keep: 1,
+          ...(publishConcurrency === undefined ? {} : { publishConcurrency }),
+        });
+        run.outputs.forEach((o) => published(o));
+        peaks.push(peak);
+      }
+      expect(peaks).toEqual([8, 3]);
+    });
+
+    it('holds one range ahead per operand, and as many as concurrency says', async () => {
+      const wide = Array.from({ length: 200 }, (_, k) =>
+        range(0, 65_536, 16).map((v) => k * 65_536 + v),
+      ).flat();
+      const pick = [0, 40, 80, 120, 160].map((k) => k * 65_536 + 3);
+      const peaks: number[] = [];
+      for (const concurrency of [undefined, 4]) {
+        const w = await batchWorld({ wide, pick });
+        const inFlight: Record<string, number> = {};
+        let peak = 0;
+        w.hooks.beforeRange = async (segment) => {
+          inFlight[segment] = (inFlight[segment] ?? 0) + 1;
+          if (segment === 'wide') peak = Math.max(peak, inFlight[segment]!);
+          await new Promise<void>((r) => setImmediate(r));
+          inFlight[segment]!--;
+        };
+        const run = await w.store.materializeMany({
+          operands: { wide: w.store.segment('wide'), pick: w.store.segment('pick') },
+          outputs: [{ dest: w.store.segment('d'), expr: { and: ['wide', 'pick'] } }],
+          keep: 1,
+          ...(concurrency === undefined ? {} : { concurrency }),
+        });
+        published(run.outputs[0]);
+        peaks.push(peak);
+      }
+      expect(peaks[0]).toBe(1);
+      expect(peaks[1]).toBeGreaterThan(1);
+    });
+  });
+
+  it('refuses an operand that names no segment, for every operand of the call', async () => {
+    const w = await batchWorld(DATA);
+    const options = (extra: object) => ({
+      operands: { a: w.store.segment('a'), ghost: w.store.segment('ghost') },
+      outputs: [{ dest: w.store.segment('d'), expr: 'a' as const }],
+      keep: 1,
+      ...extra,
+    });
+    await expect(w.store.materializeMany(options({}))).rejects.toBeInstanceOf(ValidationError);
+    await expect(w.store.materializeMany(options({}))).rejects.toThrow(/"ghost"/);
+    await expect(w.store.materializeMany(options({ after: 5, through: 3 }))).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    published((await w.store.materializeMany(options({ allowAbsentOperands: true }))).outputs[0]);
   });
 });

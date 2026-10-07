@@ -7,7 +7,12 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { compileCombineMany, runCombineMany } from '@/core/combine-many';
 import type { CombineExpr, CombineManyOperand } from '@/core/combine-many';
-import { BudgetExceededError, IntegrityError, LeaseExpiredError } from '@/core/errors';
+import {
+  BudgetExceededError,
+  IntegrityError,
+  LeaseExpiredError,
+  ValidationError,
+} from '@/core/errors';
 import type { ChunkRead, ReadChunksOptions, SegmentRef, StorageChunkSource } from '@/core/ports';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
@@ -30,12 +35,16 @@ class TableSource implements StorageChunkSource {
   inFlight = 0;
   peak = 0;
   /** What `listChunkKeys` answers, when it differs from the table's keys. */
-  listed: Record<string, number[]> = {};
+  listed: Record<string, number[]> = Object.create(null) as Record<string, number[]>;
   /** What `cardinalities` answers, when it should lie. */
   cards: ((segment: string, key: number) => number) | undefined;
   /** Hold every range request for a macrotask, so concurrent ones overlap. */
   slow = false;
   events: string[] = [];
+  /** What `sizeOf` answers, per segment: absent, the source cannot say. */
+  sizes: Record<string, number> | undefined;
+  /** The segments `exists` answers true for; absent, the source cannot say. */
+  existing: Set<string> | undefined;
 
   constructor(readonly table: Record<string, Record<number, Uint8Array | null>>) {}
 
@@ -43,21 +52,34 @@ class TableSource implements StorageChunkSource {
     return Promise.reject(new Error('getChunk is not used by a batch'));
   }
 
+  get sizeOf(): StorageChunkSource['sizeOf'] {
+    const sizes = this.sizes;
+    if (sizes === undefined) return undefined;
+    return (ref) =>
+      Promise.resolve(sizes[ref.segment] === undefined ? null : { sizeBytes: sizes[ref.segment]! });
+  }
+
+  get exists(): StorageChunkSource['exists'] {
+    const existing = this.existing;
+    if (existing === undefined) return undefined;
+    return (ref) => Promise.resolve(existing.has(ref.segment));
+  }
+
+  private keysOf(segment: string): number[] {
+    const listed = this.listed[segment];
+    if (listed !== undefined) return listed;
+    return Object.hasOwn(this.table, segment) ? Object.keys(this.table[segment]!).map(Number) : [];
+  }
+
   listChunkKeys(ref: SegmentRef): Promise<number[]> {
-    return Promise.resolve(
-      this.listed[ref.segment] ?? Object.keys(this.table[ref.segment] ?? {}).map(Number),
-    );
+    return Promise.resolve(this.keysOf(ref.segment));
   }
 
   cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
     if (this.cards === undefined) return Promise.resolve(null);
     const cards = this.cards;
     return Promise.resolve(
-      new Map(
-        (this.listed[ref.segment] ?? Object.keys(this.table[ref.segment] ?? {}).map(Number)).map(
-          (k) => [k, cards(ref.segment, k)],
-        ),
-      ),
+      new Map(this.keysOf(ref.segment).map((k) => [k, cards(ref.segment, k)])),
     );
   }
 
@@ -74,7 +96,9 @@ class TableSource implements StorageChunkSource {
         this.peak = Math.max(this.peak, this.inFlight);
         if (this.slow) await new Promise<void>((r) => setImmediate(r));
         this.inFlight--;
-        return this.table[ref.segment]?.[key] ?? null;
+        return (
+          (Object.hasOwn(this.table, ref.segment) ? this.table[ref.segment]![key] : null) ?? null
+        );
       };
       const bytes = await (options?.retry ? options.retry(request) : request());
       options?.onRequest?.({ bytes: bytes?.length ?? 0, ms: 0 });
@@ -481,44 +505,162 @@ describe('leases and deadlines, per key', () => {
   });
 });
 
-describe('the exclude re-check', () => {
-  it('refuses the outputs that exclude an operand whose generation moved, reads it once per group', async () => {
-    const sets = { a: ids([1]), b: ids([1]), opt: ids([1]) };
+/** A registry token of one incarnation: the incarnation id, a counter and a write part. */
+const token = (incarnation: string, counter = 0): string =>
+  `${incarnation.repeat(32)}.${counter}.${'f'.repeat(16)}`;
+type Row = { generation: number | null; token: string } | null;
+
+/** Operands pinned at `pinned` (generation, token) whose row reads as `now[name]`, counting the reads made. */
+function pinnedOperands(
+  setup: ReturnType<typeof seed>,
+  pinned: Record<string, [number | null, string]>,
+  now: Record<string, Row>,
+  reads: { n: number },
+): CombineManyOperand[] {
+  return setup.operands.map((o) => {
+    const at = pinned[o.name];
+    if (at === undefined) return { ...o, current: async () => (reads.n++, now[o.name] ?? null) };
+    return {
+      ...o,
+      pinnedGeneration: at[0],
+      pinnedVersion: at[0] === null ? null : `${at[0]}:${at[1]}`,
+      current: async () => (reads.n++, now[o.name] ?? null),
+    };
+  });
+}
+
+const stale = (o: { ok: boolean }): boolean =>
+  !o.ok && (o as unknown as { error: Error }).error.name === 'StaleOperandError';
+
+describe('the re-check of subtracted operands', () => {
+  const sets = { a: ids([1]), b: ids([1]), c: ids([1]), opt: ids([1]) };
+  const A = token('a');
+  const run = async (
+    specs: Array<{ expr: CombineExpr; exclude?: CombineExpr[] }>,
+    now: Record<string, Row>,
+    pinned: Record<string, [number | null, string]> = Object.fromEntries(
+      Object.keys(sets).map((n) => [n, [0, A]]),
+    ),
+  ) => {
     const setup = seed(sets);
-    let reads = 0;
-    const operands = setup.operands.map((o) =>
-      o.name === 'opt'
-        ? { ...o, pinnedGeneration: 3, currentGeneration: async () => (reads++, 4) }
-        : { ...o, pinnedGeneration: 0, currentGeneration: async () => (reads++, 0) },
+    const reads = { n: 0 };
+    const operands = pinnedOperands(setup, pinned, now, reads);
+    const r = await runCombineMany(
+      compileCombineMany({ ...request(setup, specs.map(collecting)), operands }),
+      { source: setup.source, codec: roaringCodec, clock },
     );
-    const outputs = [
-      { expr: 'a', exclude: ['opt'] },
-      { expr: 'b', exclude: ['a'] },
-      { expr: { andNot: ['a', 'opt'] } },
-    ].map(collecting);
-    const r = await runCombineMany(compileCombineMany({ ...request(setup, outputs), operands }), {
-      source: setup.source,
-      codec: roaringCodec,
-      clock,
+    return { r, reads: reads.n };
+  };
+  const unmoved: Record<string, Row> = Object.fromEntries(
+    Object.keys(sets).map((n) => [n, { generation: 0, token: A }]),
+  );
+
+  it('refuses every output that subtracts a moved operand, by any spelling, and no other', async () => {
+    const now = { ...unmoved, opt: { generation: 1, token: A } };
+    const { r } = await run(
+      [
+        { expr: 'a', exclude: ['opt'] },
+        { expr: { andNot: ['a', 'opt'] } },
+        { expr: { and: ['a', { andNot: ['b', 'c', { or: ['c', 'opt'] }] }] } },
+        { expr: { andNot: ['a', 'b'] } },
+        { expr: { or: ['a', 'opt'] } },
+        { expr: 'opt' },
+      ],
+      now,
+    );
+    expect(r.outputs.map(stale)).toEqual([true, true, true, false, false, false]);
+    for (const i of [3, 4, 5]) ok(r.outputs[i]!);
+    expect(r.stats.operands.opt).toMatchObject({
+      pinnedGeneration: 0,
+      endGeneration: 1,
+      moved: true,
     });
-    expect((r.outputs[0] as { error: Error }).error.name).toBe('StaleOperandError');
-    ok(r.outputs[1]!);
-    ok(r.outputs[2]!);
-    expect(reads).toBe(2);
-    expect(r.stats.requests.registryReads).toBe(2);
-    expect(r.stats.operands.opt).toMatchObject({ pinnedGeneration: 3, endGeneration: 4 });
   });
 
-  it('an exclude that cannot be re-checked is not assumed unchanged', async () => {
+  it('compares identity, not the number: the same generation of a name created again is stale', async () => {
+    const now = { ...unmoved, opt: { generation: 0, token: token('b') } };
+    const { r } = await run([{ expr: 'a', exclude: ['opt'] }, { expr: 'b' }], now);
+    expect(stale(r.outputs[0]!)).toBe(true);
+    ok(r.outputs[1]!);
+    expect(r.stats.operands.opt).toMatchObject({ endGeneration: 0, moved: true });
+  });
+
+  it('does not take a write of the same row for a replacement', async () => {
+    const now = { ...unmoved, opt: { generation: 0, token: token('a', 7) } };
+    const { r } = await run([{ expr: 'a', exclude: ['opt'] }], now);
+    ok(r.outputs[0]!);
+    expect(r.stats.operands.opt).toMatchObject({ moved: false });
+  });
+
+  it('compares whole tokens where they have no incarnation, and a missing row as moved', async () => {
+    const legacy = (
+      await run(
+        [{ expr: 'a', exclude: ['opt'] }],
+        { ...unmoved, opt: { generation: 0, token: '8.x' } },
+        {
+          a: [0, A],
+          opt: [0, '7'],
+        },
+      )
+    ).r;
+    expect(stale(legacy.outputs[0]!)).toBe(true);
+    const same = (
+      await run(
+        [{ expr: 'a', exclude: ['opt'] }],
+        { ...unmoved, opt: { generation: 0, token: '7' } },
+        {
+          a: [0, A],
+          opt: [0, '7'],
+        },
+      )
+    ).r;
+    ok(same.outputs[0]!);
+    const gone = (await run([{ expr: 'a', exclude: ['opt'] }], { ...unmoved, opt: null })).r;
+    expect(stale(gone.outputs[0]!)).toBe(true);
+  });
+
+  it('reads each subtracted operand once per group, and every other operand once at the end', async () => {
+    const { r, reads } = await run(
+      [{ expr: 'a', exclude: ['opt'] }, { expr: { andNot: ['b', 'c'] } }],
+      unmoved,
+    );
+    // opt, c re-checked before the publishes; a and b read once at the end
+    expect(reads).toBe(4);
+    expect(r.stats.requests.registryReads).toBe(4);
+    for (const name of Object.keys(sets)) {
+      expect(r.stats.operands[name]).toMatchObject({
+        pinnedGeneration: 0,
+        endGeneration: 0,
+        moved: false,
+      });
+    }
+  });
+
+  it('does not assume an operand that cannot be re-checked is unchanged', async () => {
     const setup = seed({ a: ids([1]), opt: ids([1]) });
     const operands = setup.operands.map((o) =>
       o.name === 'opt'
-        ? {
-            ...o,
-            pinnedGeneration: 0,
-            currentGeneration: () => Promise.reject(new Error('registry down')),
-          }
+        ? { ...o, pinnedGeneration: 0, current: () => Promise.reject(new Error('registry down')) }
         : o,
+    );
+    const r = await runCombineMany(
+      compileCombineMany({
+        ...request(setup, [collecting({ expr: { andNot: ['a', 'opt'] } })]),
+        operands,
+      }),
+      { source: setup.source, codec: roaringCodec, clock },
+    );
+    expect((r.outputs[0] as { error: Error }).error.message).toBe('registry down');
+  });
+
+  it('runs no re-check for an operand that was not pinned, and reports where it ended', async () => {
+    const setup = seed({ a: ids([1]), opt: ids([1]) });
+    const reads = { n: 0 };
+    const operands = pinnedOperands(
+      setup,
+      {},
+      { a: { generation: 3, token: A }, opt: { generation: 4, token: A } },
+      reads,
     );
     const r = await runCombineMany(
       compileCombineMany({
@@ -527,7 +669,9 @@ describe('the exclude re-check', () => {
       }),
       { source: setup.source, codec: roaringCodec, clock },
     );
-    expect((r.outputs[0] as { error: Error }).error.message).toBe('registry down');
+    ok(r.outputs[0]!);
+    expect(r.stats.operands.opt).toMatchObject({ pinned: false, endGeneration: 4 });
+    expect(reads.n).toBe(2);
   });
 });
 
@@ -552,5 +696,112 @@ describe('budgets and absent operands', () => {
       { source: setup.source, codec: roaringCodec, clock },
     );
     expect(r.stats.budget.maxRequests).toBeNull();
+  });
+});
+
+describe('what the ledger charges for an operand stream', () => {
+  it('charges the object a stream can hold even when its index understates every chunk', async () => {
+    const chunk = bytesOf(Array.from({ length: 20_000 }, (_, i) => i * 3));
+    const table = Object.fromEntries(
+      ['x', 'y', 'z'].map((n) => [
+        n,
+        Object.fromEntries([0, 1, 2, 3, 4, 5].map((k) => [k, chunk])),
+      ]),
+    );
+    const source = new TableSource(table);
+    source.cards = () => 1;
+    source.sizes = { x: 6 * chunk.length, y: 6 * chunk.length, z: 6 * chunk.length };
+    const r = await run(source, ['x', 'y', 'z'], [{ expr: { or: ['x', 'y', 'z'] } }]);
+    ok(r.outputs[0]!);
+    // three operands hold their whole object, which is under one range: at least that is charged, though the index says 18 bytes a chunk
+    expect(r.stats.memory.highWaterBytes).toBeGreaterThanOrEqual(3 * 6 * chunk.length);
+  });
+});
+
+describe('operand names and stats', () => {
+  it('keeps every name, `__proto__` and the names of Object.prototype among them', async () => {
+    const names = ['__proto__', 'constructor', 'toString', 'plain'];
+    const table = Object.fromEntries(names.map((n) => [n, { 1: bytesOf([1]) }]));
+    const source = new TableSource(table);
+    const r = await run(source, names, [{ expr: { or: names } }]);
+    expect(ok(r.outputs[0]!).keys).toEqual([1]);
+    expect(Object.getPrototypeOf(r.stats.operands)).toBeNull();
+    expect(Object.keys(r.stats.operands).sort()).toEqual([...names].sort());
+    for (const n of names) expect(r.stats.operands[n]).toMatchObject({ read: true, chunkReads: 1 });
+  });
+
+  it('adds up the requests it can attribute by class', async () => {
+    const sets = { a: ids([1, 2]), b: ids([1, 2]) };
+    const setup = seed(sets);
+    const specs = [{ expr: 'a' }, { expr: 'b' }, { expr: { and: ['a', 'b'] } }];
+    const outputs = specs.map((s) => ({
+      ...collecting(s),
+      requestsOf: () => ({ get: 1, put: 2 }),
+    }));
+    const r = await runCombineMany(compileCombineMany(request(setup, outputs)), {
+      source: setup.source,
+      codec: roaringCodec,
+      clock,
+    });
+    expect(r.stats.requests.put).toBe(6);
+    expect(r.stats.requests.get).toBe(
+      r.stats.requests.rangeReads + r.stats.requests.registryReads + 3,
+    );
+    expect(r.stats.requests.rangeReads).toBe(setup.source.opened.length);
+  });
+});
+
+describe('absent operands, for every operand of the call', () => {
+  const build = () => {
+    const source = new TableSource({ a: { 1: bytesOf([1]) }, z: {}, unused: {} });
+    source.existing = new Set(['a']);
+    return source;
+  };
+  const fresh = (extra: Parameters<typeof request>[2], names: string[], expr: CombineExpr) =>
+    run(build(), names, [{ expr }], { allowAbsentOperands: false, ...extra });
+
+  it('refuses one that names no segment, whether or not an output reads it, and under an empty range', async () => {
+    await expect(fresh({}, ['a', 'z'], { or: ['a', 'z'] })).rejects.toBeInstanceOf(ValidationError);
+    await expect(fresh({}, ['a', 'unused'], 'a')).rejects.toThrow(
+      /"unused" names a segment that does not exist/,
+    );
+    await expect(fresh({ after: 5, through: 3 }, ['a', 'z'], 'a')).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    const source = build();
+    expect(source.opens).toEqual([]);
+  });
+
+  it('accepts them when told to, and an operand that exists', async () => {
+    const r = await fresh({ allowAbsentOperands: true }, ['a', 'z'], { or: ['a', 'z'] });
+    expect(ok(r.outputs[0]!).keys).toEqual([1]);
+    const ok2 = await fresh({}, ['a'], 'a');
+    ok(ok2.outputs[0]!);
+  });
+});
+
+describe('an operand failure, and who it fails', () => {
+  it('fails only the outputs that demand the failed chunk, whatever else is in the group', async () => {
+    const good = bytesOf([1, 2, 3]);
+    const table = {
+      y: { 1: good },
+      x: { 2: new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]), 3: good },
+      z: { 3: good },
+    };
+    const specs = [
+      { expr: { and: ['y', 'x'] } },
+      { expr: 'x' },
+      { expr: { and: ['x', 'z'] } },
+      { expr: { or: ['y', 'z'] } },
+    ];
+    const grouped = await run(new TableSource(table), ['y', 'x', 'z'], specs);
+    // y and x share no key, so output 0 never needs x: it is empty, not damaged
+    expect(ok(grouped.outputs[0]!).keys).toEqual([]);
+    expect((grouped.outputs[1] as { error: Error }).error).toBeInstanceOf(IntegrityError);
+    expect((grouped.outputs[2] as { error: Error }).error).toBeInstanceOf(IntegrityError);
+    expect(ok(grouped.outputs[3]!).keys).toEqual([1, 3]);
+    // the same output alone, and with the damaged one, comes out the same
+    const alone = await run(new TableSource(table), ['y', 'x', 'z'], [specs[0]!]);
+    expect(alone.outputs[0]).toEqual(grouped.outputs[0]);
   });
 });
