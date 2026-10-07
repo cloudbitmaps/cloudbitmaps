@@ -18,7 +18,7 @@ export interface BitRoute {
 /** Split a u32 id into `{ chunkKey, remainder }`. Throws `ValidationError` for non-u32 input. */
 export function splitId(id: number): BitRoute {
   if (!Number.isInteger(id) || id < 0 || id > U32_MAX) {
-    throw new ValidationError(`id must be an integer in 0..${U32_MAX}; got ${id}`);
+    throw new ValidationError(`an id must be an integer from 0 to ${U32_MAX}`);
   }
   return { chunkKey: id >>> 16, remainder: id & LOW_16 };
 }

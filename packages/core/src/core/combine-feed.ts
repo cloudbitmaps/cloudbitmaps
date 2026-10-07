@@ -404,11 +404,7 @@ export class FeedCursor {
     const key: unknown = (record as { key?: unknown }).key;
     const operands: unknown = (record as { operands?: unknown }).operands;
     if (typeof key !== 'number' || !Number.isInteger(key) || key < 0 || key >= KEY_IDS) {
-      this.refuse(
-        typeof key === 'number' ? key : '?',
-        undefined,
-        'the key must be an integer from 0 to 65535',
-      );
+      this.refuse('?', undefined, 'the key must be an integer from 0 to 65535');
     }
     if (key < this.prevKey) {
       this.refuse(

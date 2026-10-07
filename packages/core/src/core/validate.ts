@@ -162,8 +162,6 @@ export function validateChunkKeyOrder(keys: readonly number[]): void {
 export function validateChunkRef(ref: ChunkRef): void {
   validateSegmentRef(ref);
   if (!Number.isInteger(ref.chunkKey) || ref.chunkKey < 0 || ref.chunkKey > CHUNK_KEY_MAX) {
-    throw new ValidationError(
-      `chunkKey must be an integer in [0, ${CHUNK_KEY_MAX}]; got ${ref.chunkKey}`,
-    );
+    throw new ValidationError(`chunkKey must be an integer in [0, ${CHUNK_KEY_MAX}]`);
   }
 }

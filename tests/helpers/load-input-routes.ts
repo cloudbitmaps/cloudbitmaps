@@ -90,6 +90,9 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/roaring/errors-carry-no-id.test.ts':
+    'passes an id that is out of range inside the id list, to read the refusal it gets; a serialized rerouting would turn ' +
+    'the list into bytes and refuse nothing',
   'tests/core/load-chunk-input.test.ts':
     "loads a combine's chunks, an input of its own that a serialized rerouting of ids does not reach; the ids it passes are " +
     'only the reference the chunk load is compared against, so a second run under the serialized input would exercise nothing new',
