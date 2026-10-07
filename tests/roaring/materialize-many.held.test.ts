@@ -443,7 +443,7 @@ describe('an erasure in the store', () => {
   it('refuses a handle made while an erasure is still running, and accepts one made after it ends', async () => {
     const w = await batchWorld(DATA);
     const s = (n: string) => w.store.segment(n);
-    const probe = w.store as unknown as { erasureEpoch: number };
+    const probe = w.store as unknown as { erasuresRunning: number };
     // Hold the erasure at its first registry read so that it is still running while the handle is made and the call runs.
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
@@ -454,8 +454,8 @@ describe('an erasure in the store', () => {
       await gate;
     };
     const erasure = erase(w);
-    for (let i = 0; i < 1_000 && probe.erasureEpoch % 2 === 0; i++) await Promise.resolve();
-    expect(probe.erasureEpoch % 2).toBe(1);
+    for (let i = 0; i < 1_000 && probe.erasuresRunning === 0; i++) await Promise.resolve();
+    expect(probe.erasuresRunning).toBe(1);
     const during = await w.store.memory([1, 2, 3]);
     const run = await w.store.materializeMany({
       operands: { during },
@@ -480,6 +480,46 @@ describe('an erasure in the store', () => {
       keep: 1,
     });
     published(ok.outputs[0]);
+    expect(await w.ids('o-after')).toEqual([4, 5]);
+  });
+
+  it('refuses a handle made while erasures overlap, until the last of them has ended', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    const waiting: Array<() => void> = [];
+    let armed = true;
+    w.hooks.beforeRowRead = async () => {
+      if (armed) await new Promise<void>((resolve) => waiting.push(resolve));
+    };
+    // One row read at a time, so that each erasure is held at exactly one.
+    const first = w.store.eraseSubject(4_000_000, { allNamespaces: true, concurrency: 1 });
+    const second = w.store.eraseSubject(4_000_001, { allNamespaces: true, concurrency: 1 });
+    for (let i = 0; i < 1_000 && waiting.length < 2; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(waiting.length).toBe(2);
+    armed = false;
+    const use = async (h: MemoryOperand, dest: string) =>
+      (
+        await w.store.materializeMany({
+          operands: { h },
+          outputs: [{ dest: s(dest), expr: 'h' }],
+          keep: 1,
+        })
+      ).outputs[0];
+    // Two erasures running, whatever the counter reads: a handle made now is refused.
+    const both = await w.store.memory([1, 2, 3]);
+    expect(stale(await use(both, 'o-both')).operand).toBe('h');
+    waiting.shift()!();
+    await Promise.race([first, second]);
+    // One has ended and one still runs: a handle made now is refused too.
+    const one = await w.store.memory([1, 2, 3]);
+    stale(await use(one, 'o-one'));
+    while (waiting.length > 0) waiting.shift()!();
+    await Promise.all([first, second]);
+    stale(await use(both, 'o-both-again'));
+    const after = await w.store.memory([4, 5]);
+    published(await use(after, 'o-after'));
     expect(await w.ids('o-after')).toEqual([4, 5]);
   });
 
