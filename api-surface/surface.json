@@ -121,7 +121,7 @@
     "@cloudbitmaps/core CombineManyDeps.source": "readonly source: StorageChunkSource;",
     "@cloudbitmaps/core CombineManyFeed": "interface CombineManyFeed",
     "@cloudbitmaps/core CombineManyFeed.counts": "readonly counts: Readonly<Record<string, number>> | (() => Readonly<Record<string, number>> | Promise<Readonly<Record<string, number>>>);",
-    "@cloudbitmaps/core CombineManyFeed.epoch": "readonly epoch?: { readonly at: number; readonly now: () => number; };",
+    "@cloudbitmaps/core CombineManyFeed.epoch": "readonly epoch?: { readonly moved: () => boolean; };",
     "@cloudbitmaps/core CombineManyFeed.mayBeEmpty": "readonly mayBeEmpty?: readonly string[];",
     "@cloudbitmaps/core CombineManyFeed.names": "readonly names: readonly string[];",
     "@cloudbitmaps/core CombineManyFeed.records": "readonly records: AsyncIterable<CombineManyFeedRecord>;",
