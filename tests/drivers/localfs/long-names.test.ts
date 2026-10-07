@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CloudRoaring, LocalFsStorage, ValidationError } from '@/index';
+import { CloudRoaring, LocalFsStorage, NotFoundError, ValidationError } from '@/index';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
@@ -79,6 +79,38 @@ describe('LocalFs: a name too long for the derived file names', () => {
       const seg = store.segment(fill(n));
       expect(await seg.count()).toBe(0);
       expect(await seg.has(1)).toBe(false);
+    }
+  });
+
+  it('a name that cannot exist on disk reads as absent in every storage and registry read, with no path in a message', async () => {
+    const storage = new LocalFsStorageDriver(join(root, 'storage'));
+    const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+    // A real entry first, so a case-insensitive root has something to compare against.
+    await put(storage, 'real');
+    await registry.create({ segment: 'real' }, { currentGen: 0 });
+    for (const n of [250, 256]) {
+      const key = { segment: fill(n), generation: 1 };
+      const absent = async (run: () => Promise<unknown>): Promise<void> => {
+        const err = await run().then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        if (err !== undefined) {
+          expect(err).toBeInstanceOf(NotFoundError);
+          expect((err as Error).message).not.toContain(root);
+        }
+      };
+      await absent(() => storage.getRange(key, 0, 1));
+      await absent(() => storage.getTail(key, 8));
+      await storage.delete(key);
+      const listed: unknown[] = [];
+      for await (const k of storage.list({ segment: fill(n) })) listed.push(k);
+      expect(listed).toEqual([]);
+      expect(await registry.get({ segment: fill(n) })).toBeNull();
+      await registry.delete({ segment: fill(n) });
+      const rows: unknown[] = [];
+      for await (const row of registry.list(fill(n))) rows.push(row);
+      expect(rows).toEqual([]);
     }
   });
 });

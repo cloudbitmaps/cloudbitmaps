@@ -135,6 +135,24 @@ describe.skipIf(!INSENSITIVE)(TITLE, () => {
     );
   });
 
+  it('two concurrent creates of case variants: one wins, the other is refused, and no row is overwritten', async () => {
+    for (let trial = 0; trial < 5; trial++) {
+      const registry = new LocalFsRegistryDriver(join(root, `race${trial}`));
+      const [first, second] = await Promise.allSettled([
+        registry.create({ namespace: 'Foo', segment: 's' }, { currentGen: 1 }),
+        registry.create({ namespace: 'foo', segment: 's' }, { currentGen: 2 }),
+      ]);
+      const outcomes = [first, second];
+      expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+      const refused = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+      expect(refused.reason).toBeInstanceOf(ValidationError);
+      const winner = first.status === 'fulfilled' ? 'Foo' : 'foo';
+      expect((await registry.get({ namespace: winner, segment: 's' }))?.currentGen).toBe(
+        first.status === 'fulfilled' ? 1 : 2,
+      );
+    }
+  });
+
   it('an existing root whose own path is in another case is not mistaken for a mismatch', async () => {
     await mkdir(join(root, 'Sub'), { recursive: true });
     const viaOtherCase = new CloudRoaring({ storage: new LocalFsStorage(join(root, 'sUB')) });

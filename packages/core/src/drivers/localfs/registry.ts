@@ -46,7 +46,7 @@ import {
   parseRegistryRow,
 } from './paths';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -76,7 +76,7 @@ async function rowLockKey(path: string): Promise<string> {
       return join(await realpath(dir), ...tail);
     } catch (err) {
       const parent = dirname(dir);
-      if (!isCode(err, 'ENOENT') || parent === dir) throw mapFsError(err);
+      if (!isAbsent(err) || parent === dir) throw mapFsError(err);
       tail.unshift(basename(dir));
       dir = parent;
     }
@@ -171,7 +171,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       try {
         names = await readdir(dir);
       } catch (err) {
-        if (isCode(err, 'ENOENT')) continue; // no registry rows in this namespace yet
+        if (isAbsent(err)) continue; // no registry rows in this namespace yet
         throw mapFsError(err);
       }
       for (const name of names) {
@@ -244,7 +244,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       if (await this.exactCase.differs(path)) return null; // another case's row is not this one
       handle = await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
-      if (isCode(err, 'ENOENT') || isCode(err, 'ELOOP')) return null;
+      if (isAbsent(err) || isCode(err, 'ELOOP')) return null;
       throw mapFsError(err);
     }
     try {
@@ -293,7 +293,9 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
 
   /** Serialize callbacks for a row so read-modify-write is atomic across every instance in the process. */
   private async withRowLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-    const key = await rowLockKey(path);
+    // On a case-insensitive root two spellings of a path are one row, so they take one lock.
+    const resolved = await rowLockKey(path);
+    const key = (await this.exactCase.folds()) ? resolved.toLowerCase() : resolved;
     const prev = rowChains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn);
     const tail = result.then(

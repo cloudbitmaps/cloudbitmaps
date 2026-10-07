@@ -15,6 +15,13 @@ export const isCode = (err: unknown, code: string): boolean =>
   err instanceof Error && (err as NodeError).code === code;
 
 /**
+ * True when `err` says nothing is at the path: it is not there, a parent is not a directory, or the name is longer than
+ * the filesystem allows, so no such object can exist.
+ */
+export const isAbsent = (err: unknown): boolean =>
+  isCode(err, 'ENOENT') || isCode(err, 'ENOTDIR') || isCode(err, 'ENAMETOOLONG');
+
+/**
  * Filesystem error codes that are transient — a retry after a brief backoff often succeeds: the resource is
  * busy (`EBUSY`), the OS asked us to retry (`EAGAIN`), or we hit the open-file-descriptor ceiling
  * (`EMFILE`/`ENFILE`, common under heavy concurrency once earlier handles close). A networked FS may also

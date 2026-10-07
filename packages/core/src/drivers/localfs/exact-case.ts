@@ -8,9 +8,9 @@
  * detected once, and the check is skipped from then on.
  */
 import { readdir, realpath, stat } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, parse, relative, resolve, sep } from 'node:path';
 import { ValidationError } from '@/core/errors';
-import { isCode } from './fs-util';
+import { isAbsent } from './fs-util';
 
 /**
  * The index of the first component of `actual` (the path as it is on disk, relative to the root) that equals the same
@@ -60,7 +60,7 @@ export class ExactCase {
     try {
       names = await readdir(this.root);
     } catch (err) {
-      if (isCode(err, 'ENOENT') || isCode(err, 'ENOTDIR')) return false;
+      if (isAbsent(err)) return this.foldsAtAncestor();
       throw err;
     }
     for (const name of names) {
@@ -72,7 +72,42 @@ export class ExactCase {
       this.insensitive = other !== undefined && other.ino === own.ino && other.dev === own.dev;
       return this.insensitive;
     }
-    return false;
+    return this.foldsAtAncestor();
+  }
+
+  /**
+   * The same question asked of the root's own name, or the nearest existing directory above it, when the root holds
+   * nothing to try: a root with no entries has none to alias yet, but two names created at once still would. Not
+   * remembered, since it is the volume above the root that answers.
+   */
+  private async foldsAtAncestor(): Promise<boolean> {
+    let dir = resolve(this.root);
+    for (;;) {
+      const top = parse(dir).root;
+      const parts = components(relative(top, dir));
+      let at = parts.length - 1;
+      while (at >= 0 && swapCase(parts[at]!) === parts[at]) at--;
+      if (at === -1) return false;
+      const swapped = [...parts];
+      swapped[at] = swapCase(parts[at]!);
+      let own;
+      try {
+        own = await stat(dir, { bigint: true });
+      } catch (err) {
+        if (!isAbsent(err)) return false;
+        const parent = dirname(dir);
+        if (parent === dir) return false;
+        dir = parent;
+        continue;
+      }
+      const other = await stat(join(top, ...swapped), { bigint: true }).catch(() => undefined);
+      return other !== undefined && other.ino === own.ino && other.dev === own.dev;
+    }
+  }
+
+  /** Whether the root's filesystem folds case: names that differ only by case are one file there. */
+  folds(): Promise<boolean> {
+    return this.foldsCase();
   }
 
   /**
@@ -97,7 +132,7 @@ export class ExactCase {
         real = await realpath(probe);
         break;
       } catch (err) {
-        if (!isCode(err, 'ENOENT') && !isCode(err, 'ENOTDIR')) throw err;
+        if (!isAbsent(err)) throw err;
         probe = dirname(probe);
       }
     }

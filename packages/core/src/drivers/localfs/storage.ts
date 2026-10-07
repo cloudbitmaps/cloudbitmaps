@@ -16,7 +16,7 @@ import type { BlobSink } from '@/core/blob';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
 
 export class LocalFsStorageDriver implements IStorageDriver {
   private readonly exactCase: ExactCase;
@@ -118,7 +118,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     const path = storageObjectPath(this.root, key);
     if (await this.exactCase.differs(path)) return; // another case's object is not this one
     await unlink(path).catch((err) => {
-      if (!isCode(err, 'ENOENT')) throw mapFsError(err);
+      if (!isAbsent(err)) throw mapFsError(err);
     });
   }
 
@@ -129,7 +129,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     try {
       names = await readdir(dir);
     } catch (err) {
-      if (isCode(err, 'ENOENT')) return; // no generations yet
+      if (isAbsent(err)) return; // no generations yet
       throw mapFsError(err);
     }
     for (const name of names) {
@@ -149,7 +149,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     try {
       return await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
-      if (isCode(err, 'ENOENT')) {
+      if (isAbsent(err)) {
         throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
       }
       // A symlink at the object path is rejected (ELOOP) — treat as not-found, don't follow it.
