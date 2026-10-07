@@ -223,8 +223,9 @@ export interface CombineManyStats {
     /**
      * The requests the call itself issues or can prove, a lower bound on what the drivers saw: `get` is range reads and
      * registry reads, `put` the object write and pointer write of each published output and the object write of each
-     * refused one. Add `opens` tail reads (and at most as many row reads) and the load's reads for each publish to
-     * reconstruct the total. Unknown to the call: a multipart upload's extra requests, a listing, and what a publish
+     * refused one. To reconstruct the total GET-class requests add two reads (a tail and a row) for each operand a pin took,
+     * every named operand when `pin` is on, or for each of `opens` when it is off, and for each publish the reads of its load:
+     * two for a destination with a generation, three for one with none, and one more when its guard refuses it. Unknown to the call: a multipart upload's extra requests, a listing, and what a publish
      * that threw sent.
      */
     readonly attributed: { readonly get: number; readonly put: number };
@@ -241,6 +242,8 @@ export interface CombineManyStats {
     readonly maxBufferedBytes: number;
     /** The most the ledger held at once. */
     readonly highWaterBytes: number;
+    /** What the plan holds for the whole call, charged to the ledger: operand indexes, and each output's keys and expression. */
+    readonly planBytes: number;
   };
   readonly chunks: {
     /** Index keys not read because no output needed them there, summed over groups. */
@@ -574,7 +577,12 @@ interface GroupSummary {
   readonly outputs: readonly number[];
   readonly reads: number;
   readonly pruned: number;
+  /** The plan built for the summary, kept while the plans kept stay small, so a group's plan is built once. */
+  plan?: GroupPlan;
 }
+
+/** The most bytes of group plans held between planning and running; past it a plan is built again when its group starts. */
+const PLAN_KEEP_BYTES = 8 * 1024 * 1024;
 
 /** A group's plan as the pass runs it, built when the group starts and dropped when it ends. */
 interface GroupPlan extends GroupSummary {
@@ -588,9 +596,13 @@ interface GroupPlan extends GroupSummary {
   readonly planBytes: number;
 }
 
-/** What one output's plan state costs beyond its keys: its compiled tree, per node, and its bookkeeping. */
-const BYTES_PER_NODE = 96;
-const BYTES_PER_OUTPUT = 256;
+/**
+ * What one output's plan state costs beyond its keys: its compiled tree, per node, and its bookkeeping. Measured in a
+ * process of its own (`tests/core/combine-plan-memory.test.ts`): about 120 to 210 bytes a node (a wide `or` and a deep
+ * chain) and about 2,400 an output, so these carry a margin of about 1.5.
+ */
+const BYTES_PER_NODE = 320;
+const BYTES_PER_OUTPUT = 3_700;
 
 /**
  * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
@@ -604,6 +616,12 @@ export interface GroupCostItem {
   readonly rootKeys: Uint16Array;
   readonly compiled: { readonly operands: readonly number[]; readonly depth: number };
 }
+
+/**
+ * Work counters of the planner, for the tests that hold it to its cost: how many times a group was priced, how many
+ * operands those prices walked, and how many group plans were built. Plain numbers, never read by the planner.
+ */
+export const combineWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
 
 export class GroupCost {
   private outputs = 0;
@@ -622,9 +640,11 @@ export class GroupCost {
 
   /** The cost of the group with `o` added. */
   with(o: GroupCostItem): number {
+    combineWork.withs++;
     let streams = this.streams;
     let operands = this.operands.size;
     for (const i of o.compiled.operands) {
+      combineWork.operandSteps++;
       if (!this.operands.has(i)) {
         streams += this.streamBytes(i);
         operands++;
@@ -644,7 +664,9 @@ export class GroupCost {
   }
 
   add(o: GroupCostItem): void {
+    combineWork.adds++;
     for (const i of o.compiled.operands) {
+      combineWork.operandSteps++;
       if (!this.operands.has(i)) {
         this.operands.add(i);
         this.streams += this.streamBytes(i);
@@ -681,9 +703,13 @@ export class GroupCost {
   }
 }
 
-/** The most key lists a group's plan holds for one output: its root keys, and one demand list for each operand it reads. */
+/**
+ * The most key lists a group's plan holds for one output, as an upper bound: its root keys, a demand list for each
+ * operand it reads, and its share of the operands' fetch lists, which are unions of the demand lists and so no larger than
+ * their sum (outputs with disjoint keys do not overlap at all).
+ */
 const planWorkOf = (o: GroupCostItem): number =>
-  o.rootKeys.byteLength * (1 + o.compiled.operands.length);
+  o.rootKeys.byteLength * (1 + 2 * o.compiled.operands.length);
 
 /** A bitmap held while an output is evaluated at one key: borrowed from the operand chunks, or owned and charged. */
 interface Held {
@@ -792,7 +818,7 @@ class Run<R> {
     this.planOutputs();
     const groups = this.formGroups(this.outputs.filter((o) => o.status === 'waiting'));
     this.settleBudget(groups);
-    for (const group of groups) await this.runGroup(group.outputs);
+    for (const group of groups) await this.runGroup(group.outputs, group);
     // Outputs a lying index made too big for their group run alone, one group each, until none is left.
     for (;;) {
       const deferred = this.outputs.filter((o) => o.status === 'deferred');
@@ -947,11 +973,23 @@ class Run<R> {
     const fresh = (): GroupCost =>
       new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency);
     let cost = fresh();
+    let kept = 0;
     let current: Array<OutputState<R>> = [];
     const flush = (): void => {
       if (current.length > 0) {
-        const { reads, pruned } = this.buildGroup(current);
-        groups.push({ outputs: current.map((o) => o.index), reads, pruned });
+        const plan = this.buildGroup(current);
+        const summary: GroupSummary = {
+          outputs: current.map((o) => o.index),
+          reads: plan.reads,
+          pruned: plan.pruned,
+        };
+        // Kept for the group's start only while the plans kept stay small, and charged while they are held.
+        if (kept + plan.planBytes <= PLAN_KEEP_BYTES && this.ledger.tryCharge(plan.planBytes)) {
+          kept += plan.planBytes;
+          this.planCharge += plan.planBytes;
+          summary.plan = plan;
+        }
+        groups.push(summary);
       }
       current = [];
       cost = fresh();
@@ -979,6 +1017,7 @@ class Run<R> {
 
   /** The keys each operand is fetched at for `members`, and the keys the pass visits. */
   private buildGroup(members: readonly OutputState<R>[]): GroupPlan {
+    combineWork.planBuilds++;
     const bounds = this.boundsList();
     const bits = new Map<number, KeyBits>();
     const visit = new KeyBits();
@@ -1067,10 +1106,19 @@ class Run<R> {
 
   // ---- one group --------------------------------------------------------------------------------------------
 
-  private async runGroup(indices: readonly number[]): Promise<void> {
+  private async runGroup(indices: readonly number[], summary?: GroupSummary): Promise<void> {
     const members = indices.map((i) => this.outputs[i]!).filter((o) => o.status === 'waiting');
     if (members.length === 0) return;
-    const plan = this.buildGroup(members);
+    // The plan made when the group was formed, unless an output has left it since or it was not kept.
+    const kept = summary?.plan;
+    if (summary !== undefined) summary.plan = undefined;
+    if (kept !== undefined) {
+      // Its bytes were charged when it was kept; whichever plan runs is charged again below, as the group's own.
+      this.ledger.release(kept.planBytes);
+      this.planCharge -= kept.planBytes;
+    }
+    const plan =
+      kept !== undefined && members.length === indices.length ? kept : this.buildGroup(members);
     const group = this.groups++;
     const budget = this.limit;
     if (budget !== null && this.chunkReads + plan.reads > budget) {
@@ -1536,6 +1584,7 @@ class Run<R> {
       memory: {
         maxBufferedBytes: this.req.maxBufferedBytes,
         highWaterBytes: this.ledger.highWater,
+        planBytes: this.planCharge,
       },
       chunks: { pruned: this.pruned },
       maxRangesInFlight: this.gate.highWater,
