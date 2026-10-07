@@ -217,7 +217,7 @@ function generationFence(version: string, key: string): number {
 
 /** A read's error: a connection that failed or was cut off is transient too, after the driver's retries. */
 function mapReadError(err: unknown): unknown {
-  scrubCredentials(err);
+  err = scrubCredentials(err);
   // Timed out on every attempt: transient, in words that name the read and the timeout.
   if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
   if (isTransportFault(err)) {
@@ -230,7 +230,7 @@ function mapReadError(err: unknown): unknown {
 
 /** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
-  scrubCredentials(err);
+  err = scrubCredentials(err);
   if (isTransient(err)) {
     return new TransientError(
       `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? (err as { name?: string } | null)?.name ?? 'unknown'}`,

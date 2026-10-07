@@ -393,7 +393,7 @@ export class GcsStorageDriver implements IStorageDriver {
 
   /** Map GCS read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
-    scrubCredentials(err);
+    err = scrubCredentials(err);
     if (isValidationError(err)) return err;
     if (isNotFound(err))
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
@@ -423,7 +423,7 @@ export class GcsStorageDriver implements IStorageDriver {
    * in transit arrive typed, and anything else (a checksum mismatch, a credentials failure) as the SDK raised it.
    */
   private mapError(err: unknown): unknown {
-    scrubCredentials(err);
+    err = scrubCredentials(err);
     if (isTransient(err)) {
       return new TransientError(
         `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? 'unknown'}`,
