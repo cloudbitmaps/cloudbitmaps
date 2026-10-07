@@ -613,7 +613,8 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   describe('scripts/ci-backend-images.sh', () => {
-    const script = () => `scripts/ci-backend-images.sh '${join(w.dir, 'override.yml')}'`;
+    // The path reaches the shell as `$STUB` (the world's directory), not as text in the command.
+    const script = () => `scripts/ci-backend-images.sh "$STUB/override.yml"`;
     const override = () => overrideOf(join(w.dir, 'override.yml'));
 
     it('runs each backend on the local name its own image is kept under, and on the image itself with no cache', () => {

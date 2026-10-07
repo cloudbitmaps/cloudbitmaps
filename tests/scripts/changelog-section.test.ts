@@ -95,6 +95,9 @@ describe('changelog-section', () => {
     // The trailing-comment regex this replaced backtracked exponentially here: about 4.6 s at 25 comments.
     const md = `## [1.0.0]\n\nNotes\n${'<!-- a -->'.repeat(5_000)}x\n`;
     expect(extractSection(md, '1.0.0').endsWith('x')).toBe(true);
+    // And the loop itself, peeling a long row of trailing comments one by one.
+    const trailing = `## [1.0.0]\n\nNotes\n${'<!-- a -->'.repeat(100_000)}\n`;
+    expect(extractSection(trailing, '1.0.0')).toBe('Notes');
   });
 
   it('keeps an HTML comment that is genuinely mid-section', () => {
