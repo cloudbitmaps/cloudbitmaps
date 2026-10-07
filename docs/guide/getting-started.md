@@ -91,6 +91,13 @@ await store.load({ segment: 'active-this-week' }, [1, 2, 3]);
 `LocalFsStorage` is for one process on one folder: two processes on the same folder do not protect each other from
 writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket.
 
+Names keep their case, but a case-insensitive filesystem (the macOS and Windows default) would open one file for
+`TenantA` and `tenanta`. `LocalFsStorage` compares the name it finds on disk exactly, so there a name in another case
+reads as absent, and a load that would write beside an existing case variant fails with a `ValidationError` that says
+so. The on-disk layout does not change, and a case-sensitive filesystem pays nothing for the check. A name is also
+refused, before anything is written, when a file name derived from it (the segment, its generation and the temp file's
+suffix, or the namespace directory) would pass the 255 bytes filesystems allow: about 207 characters of segment name.
+
 ## Load real data
 
 A load is one call. Give it any iterable of ids, in any order, with duplicates allowed. It can be an array, a

@@ -45,6 +45,7 @@ import {
   parseNamespaceDir,
   parseRegistryRow,
 } from './paths';
+import { ExactCase } from './exact-case';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
@@ -93,10 +94,13 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   private readonly now: () => number;
   private readonly entropy: Entropy;
 
+  private readonly exactCase: ExactCase;
+
   constructor(
     private readonly root: string,
     options: LocalFsRegistryDriverOptions = {},
   ) {
+    this.exactCase = new ExactCase(root);
     this.now = options.now ?? (() => Date.now());
     this.entropy = options.entropy ?? webCryptoEntropy;
   }
@@ -162,6 +166,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
     for (const ns of await this.namespaceDirs(namespace)) {
       const dir = registryDir(this.root, ns);
+      if (await this.exactCase.differs(dir)) continue; // another case's directory is not this one
       let names: string[];
       try {
         names = await readdir(dir);
@@ -236,6 +241,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   private async readRow(path: string): Promise<RegistryEnvelope | null> {
     let handle;
     try {
+      if (await this.exactCase.differs(path)) return null; // another case's row is not this one
       handle = await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
       if (isCode(err, 'ENOENT') || isCode(err, 'ELOOP')) return null;
@@ -254,6 +260,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   private async writeRow(path: string, deleted: boolean, record: RegistryRecord): Promise<void> {
+    await this.exactCase.refuseVariant(path);
     await mkdir(dirname(path), { recursive: true });
     const out = Buffer.from(serializeRegistryEnvelope({ deleted, record }), 'utf8');
     // Cap on the write path too (the read path caps at the same size): never produce a row that would later
