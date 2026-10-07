@@ -33,6 +33,14 @@ jobs:
           languages: javascript-typescript
           # TypeScript is analysed from source: there is no build to run.
           build-mode: none
+          # The default query suite, over what ships or runs in CI: the packages, the scripts and bench harnesses (the
+          # release job runs some of them) and the site. Not the test suite or the fuzz harnesses, which ship nowhere
+          # and run only as tests: their loopback stubs and fixtures are written to look like the inputs these
+          # queries warn about, so they report false positives.
+          config: |
+            paths-ignore:
+              - tests
+              - fuzz
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: /language:javascript-typescript
