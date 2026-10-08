@@ -3,10 +3,10 @@ import type { ExportSink, Segment } from '@/index';
 
 /**
  * Every call's options, as plain JavaScript passes them. A bag that is not an object, or a key the call does not take,
- * used to read as no option at all, and that silently widened what the call did: a string scope listed or swept every
- * namespace, a `dryRun: 'true'` deleted, a guard bound written one level too high was never applied. Each is refused
- * now, with a `ValidationError` naming what is wrong, before anything is read or written; `undefined`, `null` and a
- * key whose value is `undefined` still read as absent, so a spread of options keeps working.
+ * would read as no option at all and silently widen what the call does: a string scope that lists or sweeps every
+ * namespace, a `dryRun: 'true'` that deletes, a guard bound written one level too high that is never applied. Each is
+ * refused, with a `ValidationError` naming what is wrong, before anything is read or written; `undefined`, `null` and a
+ * key whose value is `undefined` read as absent, so a spread of options keeps working.
  */
 
 const DAY = 86_400_000;

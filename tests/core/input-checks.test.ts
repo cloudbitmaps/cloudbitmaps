@@ -5,7 +5,7 @@ import { InProcessKeystore, NodeAead } from '@/drivers/crypto';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';
 
 /**
- * Inputs that plain JavaScript lets through and that used to change what a call did without a word: an erasure scope
+ * Inputs that plain JavaScript lets through and that would change what a call does without a word: an erasure scope
  * that scanned nothing and read as a clean erasure, a key given as text, a retry delay of `NaN` that made backoff a hot
  * loop, a shard numbering that left a shard unswept for good, an export that never flushed, a hit rate given as a
  * percentage. Each is now a `ValidationError` naming what is wrong, before anything is read or written.
