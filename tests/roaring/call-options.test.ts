@@ -258,3 +258,17 @@ describe('a seam the store calls through must have the methods it calls', () => 
     ).not.toThrow();
   });
 });
+
+describe('a retention policy names a date', () => {
+  it('an expiry past the latest date is refused, not stored where no index bucket holds it', async () => {
+    const { store } = await world();
+    for (const expiresAt of [1e300, 8_640_000_000_000_001]) {
+      await expect(store.setRetention({ segment: 'a' }, { expiresAt })).rejects.toThrow(
+        /past the latest time a date can name/,
+      );
+    }
+    await expect(
+      store.setRetention({ segment: 'a' }, { expiresAt: 8_640_000_000_000_000 }),
+    ).resolves.toBeDefined();
+  });
+});

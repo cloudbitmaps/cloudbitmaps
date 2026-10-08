@@ -19,6 +19,7 @@ import { type ChurnDeps, leaseChurn } from './leases';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
+import { withoutSweepMark } from './retention';
 
 export interface EraseDeps extends ChurnDeps {
   readonly registry: IRegistryDriver;
@@ -574,6 +575,7 @@ async function shredSegment(
     if (!encrypted && !allowCleartext) {
       return { ...base, destroyed: false, cryptoShredded: false, reason: 'cleartext' };
     }
+    const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
     try {
       await deps.registry.compareAndSwap(ref, record.token, {
         status: 'destroyed',
@@ -584,8 +586,13 @@ async function shredSegment(
         summary: undefined,
         // A tombstone holds nothing: a lease names a generation of a segment that now resolves none.
         leases: undefined,
-        // A sweep's mark, in this same write, so no other tombstone ever carries it.
-        ...(sweep === undefined ? {} : { retention: sweep.stamp(record.retention) }),
+        // A sweep's mark, in this same write, so no other tombstone ever carries it: any other tombstone write removes
+        // one a restored or hand-edited row carried.
+        ...(sweep !== undefined
+          ? { retention: sweep.stamp(record.retention) }
+          : unmarked === null
+            ? {}
+            : { retention: unmarked }),
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).

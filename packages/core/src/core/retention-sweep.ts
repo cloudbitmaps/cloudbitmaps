@@ -51,7 +51,7 @@ import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
 import { dropSegmentFor } from './erasure';
 import type { DropDeps, DropResult } from './erasure';
-import { MIN_EXPIRES_AT_MS, readRetentionPolicy } from './retention';
+import { MIN_EXPIRES_AT_MS, SWEEP_MARK, readRetentionPolicy } from './retention';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 import {
   canIndex,
@@ -223,7 +223,10 @@ export type RetireEntry =
 export interface RetireExpiredResult {
   /** Registry rows enumerated. */
   readonly scanned: number;
-  /** Rows whose policy said "expired" — including any the `limit` deferred. */
+  /**
+   * Rows whose policy said "expired", counted until the `limit` stopped the scan: the first row it deferred is counted
+   * and the rows after it are not read, so with `limited: true` this is a lower bound.
+   */
   readonly eligible: number;
   /**
    * Segments **actually retired**. Zero under `dryRun` — see `wouldRetire`. Kept honest because this is the field
@@ -892,7 +895,7 @@ export async function retireExpired(
 }
 
 /** The key the sweep stamps on its own tombstones, so a purge is attributable rather than inferred. */
-const RETIRED_AT = 'retiredBySweepAt';
+const RETIRED_AT = SWEEP_MARK;
 
 /** Read the sweep's own retirement stamp off a row, or `null` if this tombstone is not one of ours. */
 function retirementStamp(meta: GovernanceMeta | undefined): number | null {

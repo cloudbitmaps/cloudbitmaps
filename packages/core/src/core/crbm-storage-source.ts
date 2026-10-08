@@ -736,6 +736,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     lease?: PinLease,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
+    validateUserRef(ref);
     for (let moved = 0; ; moved++) {
       try {
         try {
@@ -773,6 +774,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     at: { readonly generation: number; readonly fingerprint: string },
     lease?: PinLease,
   ): Promise<{ generation: number } & Required<PinnedObject>> {
+    validateUserRef(ref);
     const { generation, fingerprint } = at;
     const gone = (why: string): NotFoundError =>
       new NotFoundError(
@@ -1182,6 +1184,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * tell apart.
    */
   async exists(ref: SegmentRef): Promise<boolean> {
+    validateUserRef(ref);
     // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
     // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
     // nobody. A row with no generation yet (a retention policy set first) still exists.

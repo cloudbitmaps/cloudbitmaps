@@ -89,6 +89,27 @@ export interface SetRetentionResult {
 }
 
 /** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
+/**
+ * The key of the retention sweep's mark on a tombstone it wrote, which is what lets a later sweep purge the row. Only the
+ * sweep's own tombstone write sets it, and every other tombstone write removes it ({@link withoutSweepMark}), so a
+ * restored or hand-edited row cannot hand the sweep a tombstone it did not write.
+ */
+export const SWEEP_MARK = 'retiredBySweepAt';
+
+/** `meta` without the sweep's mark, or `undefined` when it carries none, so a write that changes nothing is not made. */
+export function withoutSweepMark(
+  meta: GovernanceMeta | undefined,
+): GovernanceMeta | undefined | null {
+  if (meta === undefined || meta === null || typeof meta !== 'object' || Array.isArray(meta))
+    return null;
+  if (!Object.prototype.hasOwnProperty.call(meta, SWEEP_MARK)) return null;
+  const rest = Object.fromEntries(Object.entries(meta).filter(([key]) => key !== SWEEP_MARK));
+  return Object.keys(rest).length === 0 ? undefined : (rest as GovernanceMeta);
+}
+
+/** The latest epoch millisecond a `Date` can hold. An expiry past it is no date, and no index bucket holds it. */
+const MAX_DATE_MS = 8_640_000_000_000_000;
+
 function validateRetentionPolicy(policy: RetentionPolicy): void {
   if (policy === null || typeof policy !== 'object' || Array.isArray(policy)) {
     throw new ValidationError(
@@ -99,6 +120,12 @@ function validateRetentionPolicy(policy: RetentionPolicy): void {
   if (typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)) {
     throw new ValidationError(
       `retention.expiresAt must be an integer epoch-ms; got ${String(expiresAt)}`,
+    );
+  }
+  if (expiresAt > MAX_DATE_MS) {
+    throw new ValidationError(
+      `retention.expiresAt (${expiresAt}) is past the latest time a date can name (${MAX_DATE_MS}); to keep a segment, ` +
+        'leave it without a policy or call clearRetention',
     );
   }
   if (expiresAt < MIN_EXPIRES_AT_MS) {

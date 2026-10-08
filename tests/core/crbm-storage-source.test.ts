@@ -7,6 +7,7 @@ import { storageObjectPath } from '@/drivers/localfs/paths';
 import { SafeBitmap } from '@/roaring-codec';
 import { CapabilityError, IntegrityError, ValidationError } from '@/core/errors';
 import type { IStorageDriver } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 let root: string;
 let driver: LocalFsStorageDriver;
@@ -178,5 +179,21 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
       capabilities: () => ({ rangeRead: false, maxObjectBytes: 1 }),
     } as unknown as IStorageDriver;
     expect(() => new CrbmStorageChunkSource(noRange)).toThrow(CapabilityError);
+  });
+});
+
+describe('the cold entries check the ref they are given', () => {
+  it('a pin, a pin by fingerprint and an existence check refuse a ref in the reserved namespace', async () => {
+    const source = new CrbmStorageChunkSource(new MemoryStorageDriver(), {
+      registry: new MemoryRegistryDriver(),
+    });
+    // The library's own bookkeeping namespace: a driver stores names there, and only the user-facing check refuses it.
+    for (const ref of [{ segment: 's', namespace: 'cbm.due.20000' }, { segment: '' }] as never[]) {
+      await expect(source.pinGeneration(ref)).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        source.pinGenerationAt(ref, { generation: 0, fingerprint: 'x' }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(source.exists(ref)).rejects.toBeInstanceOf(ValidationError);
+    }
   });
 });

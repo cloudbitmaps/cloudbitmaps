@@ -103,6 +103,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Three retention and read checks.** A retention `expiresAt` past the latest date a `Date` can hold (`1e300`) was
+  stored, and no due-index bucket ever held it; it is a `ValidationError` now. A tombstone that a manual `dropSegment`
+  or `destroySegment` writes no longer keeps the retention sweep's mark a restored or hand-edited row carried, so a
+  sweep never purges a tombstone it did not write. A core storage source's `pinGeneration`, `pinGenerationAt` and
+  `exists` refuse a name in the library's own bookkeeping namespace, as every other entry does.
 - **Smaller fixes from the pre-release review.** A `KeyUnavailableError` listed every key id the keystore holds, and
   the message reaches `eraseSubject`'s ledger and logs; it names only the ids the wrappings reference now. A
   `count()` over a custom source's per-chunk counts added a count that was `NaN`, negative or past 65,536; it is

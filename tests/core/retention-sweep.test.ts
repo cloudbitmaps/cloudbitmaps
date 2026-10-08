@@ -772,6 +772,24 @@ describe('retireExpired — tombstone purge', () => {
     expect(res.firstPurgeFault).toMatch(/AccessDenied/);
   });
 
+  it('a tombstone the sweep did not write never carries its marker, even from a hand-edited row', async () => {
+    // The marker is what lets a later sweep purge a row. A restored or hand-edited row could carry one, and a manual
+    // drop kept `retention` as it found it, so the sweep would purge a tombstone it never wrote.
+    const w = world();
+    await w.load('day', [1]);
+    const row = (await w.registry.get({ segment: 'day' }))!;
+    await w.registry.compareAndSwap({ segment: 'day' }, row.token, {
+      retention: { retiredBySweepAt: T0 - 9 * DAY, note: 'kept' },
+    });
+    await w.store().dropSegment({ segment: 'day' }, { confirmSegment: 'day' });
+    const tomb = (await w.registry.get({ segment: 'day' }))!;
+    expect(tomb.status).toBe('destroyed');
+    expect(tomb.retention).toEqual({ note: 'kept' });
+    const res = await retireExpired(w.dropDeps, { now: T0 + 2 * DAY });
+    expect(res.tombstonesPurged).toBe(0);
+    expect((await w.registry.get({ segment: 'day' }))!.status).toBe('destroyed');
+  });
+
   it('charges tombstone purges against the same per-cycle limit', async () => {
     // A purge branch outside the cap would let a sweep advertised as "one bounded batch" delete thousands of
     // rows and issue two list calls for each.
