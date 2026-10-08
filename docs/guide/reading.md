@@ -151,7 +151,8 @@ load landing mid-call never tears a chunk. A long call can still re-resolve: a `
 the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
 its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
 `retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
-`iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, exactly where
+`iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, one held in the
+store's chunk cache included, exactly where
 a read of one chunk would, so a range it had already requested of the earlier generation is dropped, not served; an
 `exclude` read after an AND of two or more includes, a point read and every read of a source that reads chunk by chunk
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already

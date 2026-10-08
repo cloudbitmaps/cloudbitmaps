@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A read in progress re-resolves the segment before each chunk it serves from the cache, as it does for the rest.** A
+  combine or `iterate` whose chunks were in the store's decoded-chunk cache served the generation it planned under for
+  as long as it was pulled, past `cache.genTtlMs`: another process's load did not reach it, and an id that process
+  erased could still be yielded, so the written bound on what a read in progress yields after an erasure held only
+  for chunks read from storage. Each cached chunk a read serves is now checked against the segment's current version,
+  a lookup and not a request within `genTtlMs`, and one of a generation since replaced is read as the segment is now.
+  A point read resolves the version just before it asks, and is unchanged. Measured on a laptop over 2,000 cached
+  chunks, the check adds about a microsecond a chunk.
 - **`store.segment` refuses an option it does not know, and options that are not an object.** A misspelt `namespace`
   (`{ nameSpace: tenant }`), or a namespace passed on its own (`store.segment('a', 'tenant')`), was read as no
   namespace, so the handle addressed the segment of that name in the default namespace: a read of another

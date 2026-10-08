@@ -466,7 +466,7 @@ export class SegmentEngine {
   ): ChunkWindow<CodecBitmap | null> {
     return new ChunkWindow(
       chunkKeys,
-      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen),
+      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen, true),
       DEFAULT_INTERSECT_CONCURRENCY,
       ramp,
     );
@@ -1095,7 +1095,9 @@ export class SegmentEngine {
     if (relevant.length > 0) {
       const cuts = together
         ? fetched.slice(present.length)
-        : await Promise.all(relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen)));
+        : await Promise.all(
+            relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen, true)),
+          );
       for (const cut of cuts) {
         if (cut === null) continue;
         acc.andNotInPlace(cut);
@@ -1111,7 +1113,7 @@ export class SegmentEngine {
    */
   private operandChunk(op: Operand, chunkKey: number): Promise<CodecBitmap | null> {
     return op.streamed === undefined
-      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen)
+      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen, true)
       : this.streamedChunk(op.streamed, chunkKey);
   }
 
@@ -1204,15 +1206,19 @@ export class SegmentEngine {
     if (!streamed.opened) {
       const cache = this.cache;
       if (cache) {
-        const hit = cache.get(this.chunkCacheKey({ ...streamed.seg, chunkKey }, streamed.gen));
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
-        if (hit) return Promise.resolve(hit);
+        const ref = { ...streamed.seg, chunkKey };
+        const hit = cache.get(this.chunkCacheKey(ref, streamed.gen));
+        if (hit) return this.cachedIfCurrent(ref, streamed.gen, hit, true);
+        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
       }
       this.startStream(streamed, chunkKey);
     } else if (streamed.inStream !== undefined && !streamed.inStream.has(chunkKey)) {
+      // Counted as a hit when the stream opened, so not counted again here.
       const ref = { ...streamed.seg, chunkKey };
       const hit = this.cache?.get(this.chunkCacheKey(ref, streamed.gen));
-      return hit ? Promise.resolve(hit) : this.storageChunk(ref, streamed.gen);
+      return hit
+        ? this.cachedIfCurrent(ref, streamed.gen, hit, false)
+        : this.storageChunk(ref, streamed.gen, true);
     }
     return streamed.stream!.take(chunkKey).then((read) => {
       if (read.bytes === null) return null;
@@ -1240,6 +1246,28 @@ export class SegmentEngine {
     read: string | null,
   ): string | number | null | undefined {
     return planned === undefined || this.storage.currentVersion === undefined ? planned : read;
+  }
+
+  /**
+   * `hit`, a chunk cached under the version a multi-chunk read planned under, if that is still the segment's version;
+   * else the chunk as it is now. A read resolves the segment again before it serves each chunk, which the source's
+   * stream does for the chunks it delivers; a chunk served from the cache is checked here, or a read whose chunks are
+   * all cached would go on serving the generation it planned under, an erased id included, for as long as it is pulled.
+   * Within `cache.genTtlMs` the source answers from its snapshot, so the check is a lookup, not a request. `report`:
+   * emit the `cache` event for this lookup, which a key counted when its stream opened does not.
+   */
+  private async cachedIfCurrent(
+    ref: ChunkRef,
+    planned: string | number | null | undefined,
+    hit: CodecBitmap,
+    report: boolean,
+  ): Promise<CodecBitmap | null> {
+    const now = planned === undefined ? undefined : await this.cacheVersion(ref);
+    if (now === planned) {
+      if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
+      return hit;
+    }
+    return this.storageChunk(ref, now);
   }
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
@@ -1357,16 +1385,21 @@ export class SegmentEngine {
    *
    * The returned instance is **shared** (it may be the cached one, and every caller that joined a read gets the same
    * one): callers read it or clone it, never mutate it.
+   *
+   * `recheck`: `gen` was planned for a read of many chunks, so a cached chunk is served only while it is still the
+   * segment's version ({@link cachedIfCurrent}). A point read resolves `gen` just before it asks, and passes none.
    */
   private async storageChunk(
     ref: ChunkRef,
     gen: string | number | null | undefined,
+    recheck = false,
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
     const cacheKey = this.chunkCacheKey(ref, gen);
     if (this.cache) {
       const cached = this.cache.get(cacheKey);
       if (cached) {
+        if (recheck) return this.cachedIfCurrent(ref, gen, cached, true);
         if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
         return cached;
       }
