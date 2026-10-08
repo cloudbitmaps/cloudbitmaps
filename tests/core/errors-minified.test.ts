@@ -45,9 +45,10 @@ describe('the errors under a minifying bundler', () => {
       for (const [name, C] of classes) {
         const err = new C('a message');
         expect(err.name, name).toBe(name);
+        // Every exported class has a predicate, so a caller never has to fall back on `instanceof`.
         const predicate = core[`is${name}`];
-        if (typeof predicate === 'function')
-          expect((predicate as (e: unknown) => boolean)(err), name).toBe(true);
+        expect(typeof predicate, `is${name}`).toBe('function');
+        expect((predicate as (e: unknown) => boolean)(err), name).toBe(true);
         expect((core.isCloudRoaringError as (e: unknown) => boolean)(err), name).toBe(
           name !== 'Error',
         );

@@ -13,6 +13,10 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A predicate for every error class: `isUnsupportedError`, `isCapabilityError`, `isBudgetExceededError` and
+  `isKeyUnavailableError`**, from `@cloudbitmaps/core` and `@cloudbitmaps/roaring`. These four classes had none, so a
+  caller classifying them fell back on `instanceof`, which a second copy of the package or another realm defeats. Each
+  matches the brand and the name, as the other predicates do, and holds under a minifying bundler.
 - **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
   exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
   object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,

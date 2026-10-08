@@ -878,8 +878,10 @@ Two things worth knowing:
   ids, `$metadata`). The library's own `message` is identifier-only and safe to log; serializing the whole error
   *chain* includes that metadata.
 
-**Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
-`isNotFoundError` · `isIntegrityError` · `isValidationError`.
+**Bundle-safe predicates**, one for every error class: `isCloudRoaringError` · `isValidationError` ·
+`isWriteConflictError` · `isIntegrityError` · `isNotFoundError` · `isTransientError` · `isUnsupportedError` ·
+`isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError` · `isLeaseExpiredError` · `isLeaseLimitError` ·
+`isStaleOperandError`.
 
 **On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the backend
 packages and `@cloudbitmaps/core` itself. Every package is published with `@cloudbitmaps/core` left
@@ -929,7 +931,8 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
 `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
-· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError`
+· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError` · `isUnsupportedError`
+· `isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError`
 
 ### `@cloudbitmaps/roaring` — types
 

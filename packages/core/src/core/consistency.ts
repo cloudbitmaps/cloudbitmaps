@@ -18,7 +18,7 @@
  */
 
 import { mapWithConcurrency } from './concurrency';
-import { ValidationError, isCloudRoaringError, isIntegrityError } from './errors';
+import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { openGenerationReader } from './crbm-storage-source';
@@ -113,7 +113,7 @@ async function checkSummary(
     try {
       aead = await deps.keystore.openDek(live.wrappedDeks as readonly WrappedDek[]);
     } catch (err) {
-      if (isIntegrityError(err) || (isCloudRoaringError(err) && err.name === 'KeyUnavailableError'))
+      if (isIntegrityError(err) || isKeyUnavailableError(err))
         return { kind: 'ok', unchecked: true };
       throw err;
     }
