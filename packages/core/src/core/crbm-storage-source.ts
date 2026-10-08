@@ -358,6 +358,9 @@ const BULK_FLUSH_IDS = 1 << 20;
  */
 const YIELD_EVERY_IDS = 1 << 14;
 
+/** How many segments' keys {@link CrbmStorageChunkSource} keeps at hand: a few operands of one combine. */
+const RECENT_KEYS = 8;
+
 export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * One resolved reader per segment, re-resolved on a short TTL ({@link CrbmStorageChunkSourceOptions.currentGenTtlMs},
@@ -496,8 +499,29 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * The segment's live snapshot, refreshing on the TTL. Cheap within the TTL window. The snapshot holds the resolved
    * target, and its reader once a read has asked for one.
    */
-  private liveSnapshot(ref: SegmentRef): Snapshot {
+  /**
+   * The last few segments' keys, newest first. A stream asks for its segment's snapshot before every cached chunk it
+   * serves, and a combine alternates between a few operands, so comparing two names beats encoding them again, which
+   * cost about a microsecond a chunk.
+   */
+  private readonly recentKeys: Array<{
+    namespace: string | undefined;
+    segment: string;
+    key: string;
+  }> = [];
+
+  private keyOf(ref: SegmentRef): string {
+    for (const k of this.recentKeys) {
+      if (k.segment === ref.segment && k.namespace === ref.namespace) return k.key;
+    }
     const key = segmentKey(ref);
+    this.recentKeys.unshift({ namespace: ref.namespace, segment: ref.segment, key });
+    if (this.recentKeys.length > RECENT_KEYS) this.recentKeys.pop();
+    return key;
+  }
+
+  private liveSnapshot(ref: SegmentRef): Snapshot {
+    const key = this.keyOf(ref);
     const existing = this.snapshots.get(key);
     if (existing === undefined) {
       return this.install(
