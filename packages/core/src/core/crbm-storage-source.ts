@@ -2599,6 +2599,18 @@ export interface LoadAhead {
   };
 }
 
+/** What a load with `requireEncryption` meets on a segment that already has a cleartext generation. */
+export function cleartextUnderRequiredEncryption(
+  ref: SegmentRef,
+  currentGen: number,
+): ValidationError {
+  return new ValidationError(
+    `requireEncryption: segment "${ref.segment}" already has generation ${currentGen} in ` +
+      `cleartext, so this load cannot be encrypted — encryption is chosen when a segment is first ` +
+      `loaded. Load into a new segment with the keystore wired, then drop this one.`,
+  );
+}
+
 /**
  * {@link bulkLoadCrbmGeneration} for a load whose number, and perhaps its key, are still being fetched: the same
  * options, with the same meaning, and the same writes. The number is joined only where the object is written.
@@ -2693,13 +2705,8 @@ export async function bulkLoadAhead(
       // half-encrypted — a pin of a superseded generation, once its reader is reopened, would find bytes its key
       // cannot open, and a later `destroySegment` would attest that shredding one DEK made every copy unreadable
       // while the older cleartext objects stay readable from any of them.
-      if (options.requireEncryption === true) {
-        throw new ValidationError(
-          `requireEncryption: segment "${ref.segment}" already has generation ${existing.currentGen} in ` +
-            `cleartext, so this load cannot be encrypted — encryption is chosen when a segment is first ` +
-            `loaded. Load into a new segment with the keystore wired, then drop this one.`,
-        );
-      }
+      if (options.requireEncryption === true)
+        throw cleartextUnderRequiredEncryption(ref, existing.currentGen);
       // Otherwise the segment stays what it is: cleartext.
     } else {
       const minted = await options.keystore.createDek();

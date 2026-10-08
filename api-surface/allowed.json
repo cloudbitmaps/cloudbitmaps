@@ -1,5 +1,9 @@
 [
   {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.materializeMany",
+    "reason": "overloaded for dryRun: the first signature is now the dry-run form (dryRun: true returns a MaterializeManyDryRun), and the plain form follows it as the last signature, so a call without dryRun (or with dryRun: false) resolves to the same parameter type and the same Promise<MaterializeManyRun> as before, and ReturnType and Parameters, which read the last signature, are unchanged; no caller's code or types change; agreed with the maintainer"
+  },
+  {
     "entry": "@cloudbitmaps/core LoadRefusal",
     "reason": "widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; it is returned only to a load or an *Into that sets that bound, so an existing call's reasons are unchanged, while a caller that switches exhaustively on reason adds a case (MaterializeRefusal, derived from it, widens with it); agreed with the maintainer"
   },

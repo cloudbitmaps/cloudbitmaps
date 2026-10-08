@@ -63,8 +63,27 @@ larger than an absolute number of ids, set each load's `maxGrowth` from the segm
 `maxGrowth: before ? Math.max(1.5, 1 + 1000 / before) : 0` refuses only above both `before × 1.5` and
 `before + 1000`, since `new > max(f × b, b + d)` is the same as `new > b × max(f, 1 + d / b)`. With no current size
 (a first load, or an empty segment) it passes `0`, no bound, as the bound itself would judge nothing there. `before` is
-`await segment.count()`, or what your last load left: its `cardinality` if it published, its `cardinalityBefore` if it
-was refused. The rule is exact while nothing else writes the segment in between.
+`await segment.count()`, what your last load left (its `cardinality` if it published, its `cardinalityBefore` if it
+was refused), or a `materializeMany` dry run's `cardinalityBefore` ([below](#look-before-you-publish-a-dry-run)). The rule
+is exact while nothing else writes the segment in between.
+
+A key shift keeps the size: a join on the wrong key can replace a segment's members with as many others, which no ratio
+sees. To refuse one, count how many of the current ids the new set keeps before you load it, reading the segment a chunk
+at a time:
+
+```ts
+// next: the RoaringBitmap32 you are about to load
+const before = await store.segment('active-us').count();
+let kept = 0;
+for await (const batch of store.segment('active-us').iterate().batches()) {
+  for (const id of batch) if (next.has(id)) kept++;
+}
+if (before > 0 && kept < 0.8 * before) throw new Error('refusing a load that keeps under 80% of the segment');
+await store.load({ segment: 'active-us' }, { bitmap: next }, { guard: { maxGrowth: 1.5 } });
+```
+
+It reads the current generation once, and nothing fences it against another writer between the count and the load. For
+the outputs of a `materializeMany` call, count it with a dry run ([below](#recipes-over-a-dry-run)).
 
 **What throws instead.** A refusal is an outcome. A throw is a fault:
 
@@ -165,8 +184,9 @@ await store.load({ segment: 'audience:retained' }, { bitmap: retained });
 await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 ```
 
-- **It is the same load.** The generation is byte for byte the one the same ids write, and everything above holds
-  unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
+- **It is the same load.** The generation is byte for byte the one the same ids write (on an encrypted segment, chunk
+  for chunk: each write seals its chunks with a fresh nonce, so two writes of one set are never the same bytes), and
+  everything above holds unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
 - **It is checked first.** The bytes are size-capped at 537,403,396 bytes, more than any canonical 32-bit bitmap
   serializes to (call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
   every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
@@ -477,6 +497,17 @@ const { collected } = await store
   .intersectInto(store.segment('campaign-final'), [store.segment('opted-in')], { keep: 1 });
 ```
 
+**Keep every generation of the last N hours.** `keep` counts generations, so how far back you can roll a segment depends
+on how often it refreshes: hourly at `keep: 12` is 12 hours, and a bad landing at 19:00 found at 09:00 the next day can
+no longer be rolled back to 18:00. Two ways to hold a time window, both with what the library has:
+
+- **Size `keep` from the cadence.** Hourly for 72 hours is `keep: 72`. The row records the newest 64 kept generations,
+  so a `keep` above 64 makes each load list the segment to collect, one listing per load.
+- **Lease each generation as it lands.** Right after a publish, `await store.segment(name).pin({ leaseUntil: Date.now()
+  + 72 * 3_600_000 })` holds the generation current when the pin lands for 72 hours, however `keep` collects (a lease is
+  at most 14 days, and a segment holds at most 64 at once, so hourly for 72 hours needs the first way). It costs one row
+  write per lease, and suits a segment that refreshes rarely, where `keep` would hold more than the window. An erasure still deletes a leased generation that held the erased id.
+
 ## Roll back a segment
 
 `store.generations(ref)` lists what the bucket holds for a segment, and
@@ -665,7 +696,8 @@ pinned exclude that moved (`StaleOperandError`), the memory budget (`BudgetExcee
 never stops another. The call throws only for bad input (`ValidationError` naming the output index and the path in the
 expression, before any request), an operand that names no segment unless `allowAbsentOperands`, and a `budget` its own
 plan exceeds, the last two before any chunk is read. Each output's generation is byte for byte what the same ids would
-load, since every chunk goes through the codec's canonical encoding before it is written.
+load (chunk for chunk on an encrypted segment), since every chunk goes through the codec's canonical encoding before it is
+written.
 
 **`keep` is required.** An `*Into` keeps every generation unless told otherwise, and a thousand outputs would leave a
 thousand uncollected destinations on every refresh. The call's `keep` applies to every output, and an output's own
@@ -953,7 +985,78 @@ and is not published; outputs that do not read it publish. A handle made after t
 `eraseNamespace`, `destroySegment` or the free function `eraseIdFromSegment`) is not seen. The handle is the caller's copy, so
 build it from the source of truth at the start of each refresh and release it at the end. See [a batch of materializations](erasure.md#a-batch-of-materializations).
 
+### Look before you publish: a dry run
+
+`dryRun: true` computes every output exactly as the call would, judges each against its `dest` as its publish would be,
+and writes nothing: no object, no pointer, no audit event. Use it to look at a whole refresh before any of it is live,
+for instance to hold a landing in which a third of the segments moved more than usual.
+
+```ts
+const review = await store.materializeMany({ operands, outputs, keep: 12, dryRun: true });
+for (const [i, o] of review.outputs.entries()) {
+  if ('error' in o) continue; // what would fail its publish
+  // o.cardinality: the ids it would hold · o.cardinalityBefore: what dest holds now · o.wouldRefuse: the bound that would refuse it
+}
+```
+
+- **What it reports.** Each output is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }`,
+  or `{ published: false, error }` for what would fail its publish: an expired or destroyed `dest`, a moved exclude, an
+  erasure, a damaged operand. `cardinalityBefore` is always read, `null` when `dest` has no current generation, and
+  `wouldRefuse` is the `reason` a publish would give now, absent when it would publish. `published` is `false`, so code
+  that branches on it never takes a dry run for a publish.
+- **What it costs.** The operand reads of the publishing call, and for each output the reads a publish's own guard
+  makes: one registry read for its `dest`'s size, or two where the row has no usable summary. No write, so no more than
+  the publish. `stats.requests.publishes` is `0`, and `stats.requests.attributed.get` counts the reads of each `dest`. It
+  holds the memory the publish would, so it is admitted, deferred and refused for memory where the publish would be, and
+  it reports to the metrics sink as the same `materializeMany` op.
+- **What it holds for.** Now only: a publish made later reads its operands and judges each `dest` as they are then.
+
+#### Publish what you reviewed
+
+A dry run decides nothing by itself. Publish the outputs you accept by calling again without `dryRun`. The second call
+is an ordinary one: every guard and every race check runs, judged against each `dest` as it is then.
+
+- **Stored operands:** pass both calls the same handles, pinned with a lease (`pin({ leaseUntil })`), so both read the
+  same generations and the publish writes the ids the dry run counted, whatever loads land between the calls. An erasure
+  between the calls deletes every generation that held the erased id, a leased one included, so each output that reads
+  it fails with `NotFoundError` and publishes nothing, while the others publish. Without a pin, an operand that moved
+  between the calls is read as it is at the publish; each call's `stats.operands` says which generation it read.
+- **A feed:** replay the same records. **A replayed feed is your memory, which no erasure reaches**: a fed call is
+  refused only for an erasure this store runs while that call runs. If an erasure has run since the records were made,
+  rebuild them from the source rather than replay them. Or publish through candidates: write each accepted output to a
+  scratch segment of its own, which `eraseSubject` sweeps like any other, then publish each candidate to its `dest` in a
+  second call whose output is `expr: '<candidate>'`, and drop the candidates.
+- **The same ids give the same chunks.** On an encrypted segment each write seals with a fresh nonce, so the objects of
+  the two calls are not the same bytes.
+
+#### Recipes over a dry run
+
+- **A growth ceiling with an absolute floor.** Set each output's `guard.maxGrowth` in the publishing call from the dry
+  run's `cardinalityBefore`: `before ? Math.max(1.5, 1 + 1000 / before) : 0` refuses only above both `before × 1.5` and
+  `before + 1000` ([the two ratio bounds](#when-a-load-is-refused)).
+- **The overlap with what is live.** A key shift keeps the size, so compare members. One call cannot read its own
+  destination, so count the overlap in a second dry run that reads each `dest` as an operand:
+
+  ```ts
+  const overlap = await store.materializeMany({
+    operands: { ...operands, ...Object.fromEntries(outputs.map((o, i) => [`live-${i}`, o.dest])) },
+    outputs: outputs.map((o, i) => ({
+      dest: store.segment(`overlap-${i}`), // judged, never written
+      expr: { and: [o.expr, `live-${i}`] },
+      allowEmpty: true,
+    })),
+    allowAbsentOperands: true, // a dest with no generation yet reads as empty: its overlap is 0
+    keep: 1,
+    dryRun: true,
+  });
+  // overlap.outputs[i].cardinality: how many of dest i's current ids output i keeps
+  ```
+
+  Hold the publish of an output whose overlap is under your share of its `cardinalityBefore`. It reads the operands a
+  second time, and replays a feed.
+
 ## How it stays correct
+
 
 This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.
 

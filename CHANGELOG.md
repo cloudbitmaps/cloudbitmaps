@@ -13,6 +13,16 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
+  exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
+  object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,
+  wouldRefuse? }`, or `{ published: false, error }` for what would fail its publish; `wouldRefuse` is the `reason` a
+  publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
+  publish would, so it fails for memory where the publish would. A call with `dryRun: true`
+  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
+  `judgeLoad`, which a dry run runs for each output. The guide shows how to publish what was reviewed, and recipes over
+  a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives
+  recipes for refusing a key shift on a single load and for keeping every generation of the last N hours.
 - **`guard.maxGrowth`: refuse a load that grows a segment more than you allow.** The ceiling to `minRetained`'s floor,
   for a source that lands duplicated or joined on the wrong key: `guard: { maxGrowth: 1.5 }` refuses a generation larger
   than one and a half times the current one, with `published: false` and `reason: 'max-growth'`, and the previous

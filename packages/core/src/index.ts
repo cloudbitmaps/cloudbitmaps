@@ -73,7 +73,7 @@ export type { PinnedAt } from './core/pinned-storage-source';
 // The loaded store's primary write path: replace a segment's contents with one immutable generation, guarded.
 // Composes next-generation → write → guard → publish → collect, which is the sequence every load performs and
 // the one whose last step gets left out when it is composed by hand.
-export { loadSegment, loadSegmentChunks } from './core/load';
+export { judgeLoad, loadSegment, loadSegmentChunks } from './core/load';
 // A batch combine: many outputs, each an expression over named stored operands, computed in one chunk-ordered pass.
 // The store's `materializeMany` runs it; the free functions are for a flavor or driver author.
 export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/combine-many';
@@ -97,7 +97,14 @@ export type {
 // Operands held in memory for a batch: checked as a load checks its input, and kept as chunks.
 export { prepareHeld } from './core/combine-held';
 export type { HeldChunks } from './core/combine-held';
-export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
+export type {
+  LoadDeps,
+  LoadOptions,
+  LoadGuard,
+  LoadJudgement,
+  LoadResult,
+  LoadRefusal,
+} from './core/load';
 export type { LoadInput, PortableBitmap } from './core/load-input';
 export { decodeSerialized } from './core/load-input';
 // See what a segment has been, and put it back. `rollbackSegment` is the one pointer move that goes backwards,

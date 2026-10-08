@@ -23,6 +23,7 @@ import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadAhead,
+  cleartextUnderRequiredEncryption,
   holdsObject,
   openGenerationReader,
   provesOwnObject,
@@ -36,7 +37,9 @@ import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
   KeyUnavailableError,
   ValidationError,
+  isIntegrityError,
   isNotFoundError,
+  isTransientError,
   isValidationError,
   isWriteConflictError,
 } from './errors';
@@ -201,6 +204,114 @@ export interface LoadOptions {
    */
   readonly metadata?: GenerationMetadata;
   readonly audit?: IAuditSink;
+}
+
+/** The bounds a guard can refuse a generation for: every {@link LoadRefusal} but a lost race. */
+export type GuardRefusal = Exclude<LoadRefusal, 'superseded'>;
+
+/**
+ * The bound a generation of `cardinality` ids breaks over a current one of `before` (`null`: none, or not read), in the
+ * order a load checks them, or `undefined`. Pure: the one judgement a load and a dry run share.
+ */
+export function guardRefusal(
+  cardinality: number,
+  before: number | null,
+  guard: LoadGuard | undefined,
+  allowEmpty: boolean | undefined,
+): GuardRefusal | undefined {
+  if (cardinality === 0 && allowEmpty !== true && (before ?? 0) > 0) return 'empty';
+  if (guard?.minCardinality !== undefined && cardinality < guard.minCardinality) {
+    return 'min-cardinality';
+  }
+  if (
+    guard?.minRetained !== undefined &&
+    before !== null &&
+    cardinality < before * guard.minRetained
+  ) {
+    return 'min-retained';
+  }
+  // Last, so a load that breaks an older bound as well is refused for the same reason it always was. Not applied with
+  // no current size, or a zero one: no ceiling is a multiple of nothing, and refusing a refill would wedge the repair.
+  if (
+    guard?.maxGrowth !== undefined &&
+    guard.maxGrowth !== 0 &&
+    before !== null &&
+    before > 0 &&
+    cardinality > before * guard.maxGrowth
+  ) {
+    return 'max-growth';
+  }
+  return undefined;
+}
+
+/** What a dry run learns about one write: the size it would replace, and the bound that would refuse it. */
+export interface LoadJudgement {
+  /** The current generation's size, `null` when there is none or its object is gone. Always read. */
+  readonly cardinalityBefore: number | null;
+  /** The bound a load of this size would be refused for now, absent when it would publish. */
+  readonly wouldRefuse?: GuardRefusal;
+  /** The requests the judgement made: the row, and the object's index when the row had no usable summary. */
+  readonly reads: number;
+}
+
+/**
+ * Judge a write of `cardinality` ids into `ref` as a load would, and write nothing: read the row and the current size
+ * as the load reads them, and apply the same bounds. A `destroyed` segment throws the `ValidationError` a load's write
+ * would, and an encrypted one with no keystore the `KeyUnavailableError`. What it says holds for now only: a load
+ * made later is judged against the segment as it is then.
+ */
+export async function judgeLoad(
+  ref: SegmentRef,
+  cardinality: number,
+  deps: LoadDeps,
+  options: Pick<LoadOptions, 'allowEmpty' | 'guard'> = {},
+): Promise<LoadJudgement> {
+  validateUserRef(ref);
+  if (!Number.isSafeInteger(cardinality) || cardinality < 0) {
+    throw new ValidationError('judgeLoad: cardinality must be a non-negative integer');
+  }
+  const guard = checkedGuard(options.guard, '');
+  // What a load refuses before its guard, in the order it refuses it.
+  assertRegistryCanWrite(deps.registry, 'load');
+  if (deps.requireEncryption === true && deps.keystore === undefined) {
+    throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
+  }
+  const row = await deps.registry.get(ref);
+  if (row?.status === 'destroyed') {
+    throw new ValidationError(
+      `segment "${ref.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+    );
+  }
+  const cleartext = row?.wrappedDeks === undefined || row.wrappedDeks.length === 0;
+  if (deps.requireEncryption === true && row !== null && row.currentGen !== null && cleartext) {
+    throw cleartextUnderRequiredEncryption(ref, row.currentGen);
+  }
+  // A load that no bound needs the size for never reads the current object, so a damaged one does not stop it: the
+  // judgement reports the size it could not read as `null` instead of failing where the load would publish.
+  let current: CurrentSize;
+  try {
+    current = await currentCardinality(ref, deps, row, undefined);
+  } catch (err) {
+    if (sizeNeeded(guard, options.allowEmpty) || !isUnreadableObject(err)) throw err;
+    current = { cardinality: null, fromSummary: false };
+  }
+  const wouldRefuse = guardRefusal(cardinality, current.cardinality, guard, options.allowEmpty);
+  const openedObject = row !== null && row.currentGen !== null && !current.fromSummary;
+  return {
+    cardinalityBefore: current.cardinality,
+    ...(wouldRefuse === undefined ? {} : { wouldRefuse }),
+    reads: openedObject ? 2 : 1,
+  };
+}
+
+/** Whether a load reads the current generation's size: for the empty refusal, or a ratio bound. */
+function sizeNeeded(guard: LoadGuard | undefined, allowEmpty: boolean | undefined): boolean {
+  return guard?.minRetained !== undefined || guard?.maxGrowth !== undefined || allowEmpty !== true;
+}
+
+/** A failure to read the current object that a load which never reads it would not meet. */
+function isUnreadableObject(err: unknown): boolean {
+  return isIntegrityError(err) || isTransientError(err) || isNotFoundError(err);
 }
 
 /** Why a load did not become current. */
@@ -443,10 +554,7 @@ async function runLoad(
   // Read the "before" cardinality ONLY when a bound needs it. The empty guard needs to know whether the current
   // generation is non-empty; `minRetained` and `maxGrowth` need its size. `minCardinality` compares against the new
   // generation alone, so it costs nothing extra.
-  const needsBefore =
-    guard?.minRetained !== undefined ||
-    guard?.maxGrowth !== undefined ||
-    options.allowEmpty !== true;
+  const needsBefore = sizeNeeded(guard, options.allowEmpty);
   const current: CurrentSize = needsBefore
     ? await currentCardinality(ref, deps, row, unwrapped?.aead)
     : { cardinality: null, fromSummary: false };
@@ -585,20 +693,8 @@ async function runLoad(
     };
   };
 
-  if (written.cardinality === 0 && options.allowEmpty !== true && (before ?? 0) > 0) {
-    return refuse('empty');
-  }
-  if (guard?.minCardinality !== undefined && written.cardinality < guard.minCardinality) {
-    return refuse('min-cardinality');
-  }
-  if (guard?.minRetained !== undefined && before !== null) {
-    if (written.cardinality < before * guard.minRetained) return refuse('min-retained');
-  }
-  // Last, so a load that breaks an older bound as well is refused for the same reason it always was. Not applied with
-  // no current size, or a zero one: no ceiling is a multiple of nothing, and refusing a refill would wedge the repair.
-  if (guard?.maxGrowth !== undefined && guard.maxGrowth !== 0 && before !== null && before > 0) {
-    if (written.cardinality > before * guard.maxGrowth) return refuse('max-growth');
-  }
+  const refusal = guardRefusal(written.cardinality, before, guard, options.allowEmpty);
+  if (refusal !== undefined) return refuse(refusal);
 
   // What judges a lease: the load's clock, when it has one. Without one a collection holds every lease.
   const leasesNow =

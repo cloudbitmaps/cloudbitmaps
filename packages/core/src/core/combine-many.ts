@@ -173,6 +173,12 @@ export interface CombineManyRequest<R> {
    * outputs as one group; a fed output publishes only after the whole feed was read and checked.
    */
   readonly feed?: CombineManyFeed;
+  /**
+   * The outputs' publish callbacks judge their finished chunks and must write nothing. Each is still charged the object
+   * a write would hold, so a dry run admits, defers and refuses for memory exactly where a publish would, and none
+   * counts as a publish in the stats.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface CombineManyDeps {
@@ -1813,7 +1819,7 @@ class Run<R> {
           continue;
         }
         inFlight++;
-        this.publishes++;
+        if (this.req.dryRun !== true) this.publishes++;
         const chunks = o.chunks;
         try {
           const value = await o.spec.publish(

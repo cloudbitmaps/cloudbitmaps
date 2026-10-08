@@ -111,6 +111,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/roaring/materialize-many.property.test.ts':
     'its loads seed the operands and the reference generations a batch is compared against byte for byte, from bitmaps; a ' +
     'second run under the serialized input would repeat the comparison and exercise no part of the load path',
+  'tests/roaring/materialize-many.dry-run.test.ts':
+    'its loads seed the operands and the destinations a dry run judges, from ids; the behaviour under test is the dry run, ' +
+    'which writes nothing, so a second run under the serialized input would repeat it and exercise no part of the load path',
   'tests/roaring/materialize-many.feed.test.ts':
     'its loads seed the stored operands and the reference generations a fed call is compared against byte for byte, from ' +
     'bitmaps; the behaviour under test is the feed, so a second run under the serialized input would repeat it and exercise ' +
