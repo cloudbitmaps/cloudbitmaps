@@ -1513,6 +1513,14 @@ export class CloudRoaring {
    */
   materializeMany(options: MaterializeManyDryRunOptions): Promise<MaterializeManyDryRun>;
   /**
+   * The call with `dryRun` a switch held in a variable: a {@link MaterializeManyDryRun} when it is `true` and a
+   * {@link MaterializeManyRun} when it is `false`, so with a `boolean` the result is typed as either, and the flag passed
+   * says which. A literal `true` or `false` is typed exactly, as by the forms either side of this one.
+   */
+  materializeMany<D extends boolean>(
+    options: MaterializeManyOptions & { readonly dryRun: D },
+  ): Promise<D extends true ? MaterializeManyDryRun : MaterializeManyRun>;
+  /**
    * **Many outputs, each operand read once per group.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
    * to depth 64) published as a new generation of its own `dest`, exactly as an `*Into` would publish it, but computed
    * together: each operand's chunks are read once for all the outputs that use them, instead of once per output and

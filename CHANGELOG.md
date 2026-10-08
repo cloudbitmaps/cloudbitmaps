@@ -13,6 +13,10 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`materializeMany` takes `dryRun` as a `boolean` held in a variable.** The call had a form for `dryRun: true` and
+  one for a publish, so `{ ...options, dryRun: flag }` matched neither and failed to compile. A third form takes a
+  `boolean` and is typed as either result; a literal `true` or `false` is typed exactly as before, and so is a call
+  without `dryRun`.
 - **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
   exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
   object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,
