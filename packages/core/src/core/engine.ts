@@ -161,6 +161,11 @@ interface StreamedChunks {
   readonly rampStart: number;
   /** Whether the stream has been opened, by the first chunk the cache did not hold. */
   opened: boolean;
+  /**
+   * Whether the keys from where the stream first opened have been counted as cache hits or misses. A stream closed by a
+   * move opens again over keys already counted, which are not counted twice.
+   */
+  counted: boolean;
   /** The keys the stream carries; `undefined` when it carries every key from where it opened (nothing was cached). */
   inStream: ReadonlySet<number> | undefined;
   stream: ChunkStream | undefined;
@@ -726,12 +731,12 @@ export class SegmentEngine {
    * hit is invariant 3's: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an
    * operand's not-yet-requested chunks may re-resolve forward to the newer generation (a generation hop within one long
    * call) — the call never crashes or returns a torn object, but may mix generations. Three things hop it without
-   * waiting for the TTL, so a shorter call can meet them too: on a store with no timed refresh (`genTtlMs: 0`, or no
-   * registry), **the reader cache evicting an operand mid-call** (`maxOpenSegments`), whose re-read re-resolves fresh;
-   * a sweep deleting the generation it was reading, which heals the read forward; and an invalidation, which this
-   * store's own `load`, `rollback` and `eraseSubject` make and `invalidate()` makes on request. Still whole/immutable
-   * per read, never torn. An operand's stream checks for each of those before it serves each chunk, so each moves a
-   * running read, and the ranges it had requested of the earlier generation are dropped, not served.
+   * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
+   * (`maxOpenSegments`), which moves a running read on a store with no timed refresh (`genTtlMs: 0`, or no registry),
+   * and on any store once the read serves a chunk of that operand from the chunk cache; a sweep deleting the generation
+   * it was reading, which heals the read forward; and an invalidation, which this store's own `load`, `rollback` and
+   * `eraseSubject` make and `invalidate()` makes on request. Still whole/immutable per read, never torn. When one of
+   * them moves a running read, the ranges it had requested of the earlier generation are dropped, not served.
    */
   intersect(segs: readonly SegmentRef[], options?: CombineOptions): AsyncGenerator<number> {
     return this.combine(segs, options?.exclude ?? [], 'all', 'intersect', options);
@@ -1144,6 +1149,7 @@ export class SegmentEngine {
       concurrency,
       rampStart,
       opened: false,
+      counted: false,
       inStream: undefined,
       stream: undefined,
       invalidated: false,
@@ -1164,7 +1170,9 @@ export class SegmentEngine {
         const chunkKey = wanted[i]!;
         const hit = this.cache.get(this.chunkCacheKey({ ...seg, chunkKey }, gen));
         if (!hit) misses.push(chunkKey);
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
+        if (this.metricsOn && !streamed.counted) {
+          this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
+        }
       }
       if (misses.length < wanted.length) streamed.inStream = new Set(misses);
       wanted = misses;
@@ -1190,6 +1198,7 @@ export class SegmentEngine {
       }),
     );
     streamed.opened = true;
+    streamed.counted = true;
     // Only a source with no `currentVersion` caches a chunk under the planned key, so only there can an invalidation
     // since the read began put newer bytes under an older key; elsewhere a chunk is cached under the version it read.
     streamed.invalidated =
@@ -1213,8 +1222,10 @@ export class SegmentEngine {
       if (cache) {
         const ref = { ...streamed.seg, chunkKey };
         const hit = cache.get(this.chunkCacheKey(ref, streamed.gen));
-        if (hit) return this.cachedIfCurrent(ref, streamed.gen, hit, true, streamed);
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
+        if (hit) return this.cachedIfCurrent(ref, streamed.gen, hit, !streamed.counted, streamed);
+        if (this.metricsOn && !streamed.counted) {
+          this.metrics.onEvent({ kind: 'cache', hit: false });
+        }
       }
       this.startStream(streamed, chunkKey);
     } else if (streamed.inStream !== undefined && !streamed.inStream.has(chunkKey)) {
@@ -1255,13 +1266,15 @@ export class SegmentEngine {
 
   /**
    * `hit`, a chunk cached under the version a multi-chunk read planned under, if that is still the segment's version;
-   * else the chunk as it is now. A read resolves the segment again before it serves each chunk, which the source's
-   * stream does for the chunks it delivers; a chunk served from the cache is checked here, or a read whose chunks are
-   * all cached would go on serving the generation it planned under, an erased id included, for as long as it is pulled.
-   * Within `cache.genTtlMs` the source answers from its snapshot, so the check is a lookup, not a request. `report`:
-   * emit the `cache` event for this lookup, which a key counted when its stream opened does not. `streamed`: the read
-   * this chunk belongs to, which a move carries to the version now current, so the rest of it looks there: a read whose
-   * stream is not yet open reads the rest as one stream, not a chunk at a time.
+   * else the chunk as it is now. A read checks whether its segment has moved before it serves each chunk, which the
+   * source's stream does for the chunks it delivers; a chunk served from the cache is checked here, or a read whose
+   * chunks are all cached would go on serving the generation it planned under, an erased id included, for as long as it
+   * is pulled. Within `cache.genTtlMs` the source answers from its snapshot, so the check is a lookup, not a request.
+   * `report`: emit the `cache` event for this lookup, which a key counted when its stream opened does not. `streamed`:
+   * the read this chunk belongs to, which a move carries to the version now current, so the rest of it looks there: a
+   * read whose stream is not yet open reads the rest as one stream, not a chunk at a time, and one whose stream is open
+   * closes it, since the stream may not have seen the move (an eviction alone does not move it on a store with a timed
+   * refresh).
    */
   private async cachedIfCurrent(
     ref: ChunkRef,
@@ -1275,7 +1288,18 @@ export class SegmentEngine {
       if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
       return hit;
     }
-    if (streamed !== undefined && streamed.gen === planned && now !== null) streamed.gen = now;
+    if (streamed !== undefined && streamed.gen === planned && now !== null) {
+      streamed.gen = now;
+      // The stream may still be reading the earlier generation: a source with a timed refresh does not move a stream
+      // for the reader cache letting its segment go, while this check resolves an evicted segment afresh. Close it, so
+      // the rest of the read opens again at the version now current instead of alternating between the two.
+      if (streamed.opened) {
+        this.closeStreamed(streamed);
+        streamed.opened = false;
+        streamed.stream = undefined;
+        streamed.inStream = undefined;
+      }
+    }
     return this.storageChunk(ref, now, false, report);
   }
 

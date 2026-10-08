@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { destroySegment } from '@/core/erasure';
-import type { Clock, SegmentRef } from '@/index';
+import type { Clock, IMetricsSink, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { withoutRangedReads } from '../helpers/no-ranged-reads';
 
@@ -47,7 +47,14 @@ function manualClock(): Clock & { advance(ms: number): void } {
   return { now: () => t, sleep: async () => {}, advance: (ms) => void (t += ms) };
 }
 
-async function world(options: { keystore?: InProcessKeystore; ttl?: number } = {}) {
+async function world(
+  options: {
+    keystore?: InProcessKeystore;
+    ttl?: number;
+    readerMax?: number;
+    metrics?: IMetricsSink;
+  } = {},
+) {
   const backend = new MemoryStorage();
   const { storage, registry } = backend;
   await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, gen(0), {
@@ -58,8 +65,12 @@ async function world(options: { keystore?: InProcessKeystore; ttl?: number } = {
   const open = (): CloudRoaring =>
     new CloudRoaring({
       storage: brandAsBackend({ storage, registry }),
-      cache: { genTtlMs: options.ttl ?? 0 },
+      cache: {
+        genTtlMs: options.ttl ?? 0,
+        ...(options.readerMax === undefined ? {} : { readerMax: options.readerMax }),
+      },
       seams: { clock },
+      ...(options.metrics ? { metrics: options.metrics } : {}),
       ...(options.keystore ? { encryption: { keystore: options.keystore } } : {}),
     });
   return { storage, registry, clock, open, store: open() };
@@ -311,6 +322,41 @@ describe('a warm cache, and another store writes while a read is open, once cach
           mode,
         ).toBe(true);
       }
+    },
+    60_000,
+  );
+});
+
+describe('a partly warm read under reader-cache pressure, and another store publishes while it runs', () => {
+  it.each(MODES)(
+    'intersect (%s): the read moves to the new generation once, and never goes back',
+    async (mode) => {
+      inMode(mode);
+      // A long TTL, so nothing but the reader cache letting a segment go can show the read the publish: a cached chunk
+      // checked against its segment resolves an evicted segment afresh, and the stream must follow it there.
+      let counting = false;
+      let lookups = 0;
+      const metrics: IMetricsSink = {
+        onEvent: (e) => void (counting && e.kind === 'cache' && lookups++),
+      };
+      const w = await world({ ttl: 1_000_000, readerMax: 1, metrics });
+      await addMirror(w);
+      const seg = w.store.segment('s', { namespace: 'ns' });
+      for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
+      for (let c = 0; c < CHUNKS; c += 2) expect(await seg.has(c * CHUNK + 1)).toBe(true);
+      counting = true;
+      const got = await reach(w.store, 'intersect', async () => {
+        await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, gen(1), {
+          registry: w.registry,
+        });
+      });
+      expect(got.error).toBeNull();
+      const first = got.after.findIndex((id) => genOf(id) === 1);
+      expect(first, 'the read reached the new generation').toBeGreaterThanOrEqual(0);
+      const back = got.after.slice(first).filter((id) => genOf(id) === 0);
+      expect(back.length, 'ids of the earlier generation after the move').toBe(0);
+      // each chunk of each operand is looked up in the cache once, however often its stream opens
+      expect(lookups).toBe(2 * CHUNKS);
     },
     60_000,
   );

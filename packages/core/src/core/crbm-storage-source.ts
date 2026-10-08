@@ -412,6 +412,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   private readonly keepChunkBytesUpTo: number;
   private readonly clock: Pick<Clock, 'now'> | undefined;
   private readonly currentGenTtlMs: number;
+  /**
+   * Whether the segment's pointer is re-read on a timer: it needs a clock (the TTL), a registry (the cheap row read; with
+   * none, resolving is a listing of the bucket) and a TTL above 0. It decides the keeping of chunk bytes, the TTL lapse,
+   * and whether the reader cache letting a segment go moves a stream, so it is decided once.
+   */
+  private readonly timedRefresh: boolean;
 
   constructor(
     private readonly driver: IStorageDriver,
@@ -464,11 +470,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.
-    const refreshes =
+    this.timedRefresh =
       registry !== undefined &&
       clock !== undefined &&
       (currentGenTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS) > 0;
-    this.keepChunkBytesUpTo = refreshes
+    this.keepChunkBytesUpTo = this.timedRefresh
       ? Math.floor(
           (maxOpenIndexBytes ?? DEFAULT_MAX_OPEN_INDEX_BYTES) /
             (maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS),
@@ -637,7 +643,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * this.
    */
   get pointerRefreshMs(): number {
-    return this.clock !== undefined && this.registry !== undefined ? this.currentGenTtlMs : 0;
+    return this.timedRefresh ? this.currentGenTtlMs : 0;
   }
 
   /**
@@ -645,26 +651,20 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * lapsed, an invalidation has happened since `epoch`, another read installed a newer snapshot, or the reader cache let
    * the snapshot go on a store with no timed refresh. With a timed refresh the TTL already bounds what the stream serves,
    * so an eviction alone is not a move (under reader-cache pressure it would cost a registry read per chunk), and an
-   * invalidation, which also removes the snapshot, is seen through `epoch` alone. Else nothing can have moved it, and
-   * the check costs a compare and a lookup.
+   * invalidation, which also removes the snapshot, is seen through `epoch` alone. Otherwise the stream goes on, at the
+   * cost of a compare and a lookup: a move this cannot see, such as one another read found after the snapshot was let
+   * go, is bounded by the TTL, and a sweep of the generation is met by the stream's own range request failing.
    */
   private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
     if (this.invalidations !== epoch || this.expired(snap.installedAtMs)) return true;
     const held = this.snapshots.get(key);
-    return held === undefined ? this.pointerRefreshMs === 0 : held !== snap;
+    return held === undefined ? !this.timedRefresh : held !== snap;
   }
 
   private expired(installedAtMs: number): boolean {
-    // Refresh needs a clock (the TTL) AND a registry (the *cheap* `currentGen` read the design assumes —
-    // without one, re-resolution is a full storage `list`-scan, and a registry-less setup is single-process
-    // local, not the shared bucket that separate loaders publish into). Otherwise there is no timed refresh, and
-    // only an eviction, a sweep's heal or `invalidate` re-resolves the segment.
-    return (
-      this.clock !== undefined &&
-      this.registry !== undefined &&
-      this.currentGenTtlMs > 0 &&
-      this.clock.now() - installedAtMs >= this.currentGenTtlMs
-    );
+    // With no timed refresh, only an eviction, a sweep's heal or `invalidate` re-resolves the segment. A registry-less
+    // setup is single-process local, not the shared bucket that separate loaders publish into.
+    return this.timedRefresh && this.now() - installedAtMs >= this.currentGenTtlMs;
   }
 
   /**
@@ -1441,8 +1441,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             // no timed refresh, the reader cache having let the segment go each leave the snapshot this stream was
             // opened on no longer the one to read from. If that moved the segment to another generation or
             // incarnation, or to none, nothing more is served from this stream: its ranges are dropped and the keys
-            // not yet yielded are read afresh. The version is compared from the resolution, the registry's row, so no
-            // object is opened to learn it, and a fault in resolving starts the stream over at the top, where a
+            // not yet yielded are read afresh. The version is compared from the resolution (the registry's row, or a
+            // listing of the bucket with no registry), so no object is opened to learn it, and a fault in resolving starts the stream over at the top, where a
             // caller's retry runs the resolution.
             if (this.mayHaveMoved(key, snap, epoch)) {
               // The epoch this check is good for is the one before the resolution is awaited: an invalidation that

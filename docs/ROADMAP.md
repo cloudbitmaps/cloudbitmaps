@@ -327,7 +327,7 @@ between here and there:
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
    describes a single instant rather than whichever generations happened to be current as it went. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded, and, unless leased, holds nothing alive. Generation
-   GC's grace window (`keep`) never provided this: of the four things that move a long read to another
+   GC's grace window (`keep`) never provided this: of the four things that can move a long read to another
    generation, a larger `keep` removes one, the sweep's heal, except after an erasure, whose rewrite collects the
    erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
    Size `keep` past your longest pinned job, or lease the pin (`pin({ leaseUntil })`, up to 14 days) — a pinned read
