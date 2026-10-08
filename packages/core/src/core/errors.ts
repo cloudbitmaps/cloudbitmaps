@@ -22,15 +22,22 @@
 const ERROR_BRAND: unique symbol = Symbol.for('cloudbitmaps.error');
 const TRANSIENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.error.transient');
 
+/**
+ * Each class's name as written. A minifying bundler renames the classes themselves, so the name an error carries, which
+ * the predicates match on and a log prints, comes from here: strings no minifier touches. A class not listed (an
+ * application's own subclass) keeps the name its class has.
+ */
+const NAMES = new WeakMap<abstract new (...args: never[]) => unknown, string>();
+
 /** Base class for every error CloudRoaring throws. */
 export class CloudRoaringError extends Error {
   /** Cross-bundle brand — see the predicates ({@link isCloudRoaringError}, …). Non-enumerable-ish (symbol key ⇒ not in JSON). */
   readonly [ERROR_BRAND] = true as const;
   constructor(message: string) {
     super(message);
-    // Subclass name (works under transpilation since we set it explicitly). Also the discriminator the
-    // predicates match on — a runtime string, so it survives bundling where the class identity does not.
-    this.name = new.target.name;
+    // Also the discriminator the predicates match on: a runtime string, so it survives a second copy of the package
+    // where the class identity does not, and a minifier where the class's own name does not.
+    this.name = NAMES.get(new.target) ?? new.target.name;
   }
 }
 
@@ -151,6 +158,21 @@ export class TransientError extends CloudRoaringError {
     if (options && 'cause' in options) this.cause = options.cause;
   }
 }
+
+// The names, registered once the classes exist. A class added above and left out here is named by the minifier.
+NAMES.set(CloudRoaringError, 'CloudRoaringError');
+NAMES.set(ValidationError, 'ValidationError');
+NAMES.set(WriteConflictError, 'WriteConflictError');
+NAMES.set(IntegrityError, 'IntegrityError');
+NAMES.set(NotFoundError, 'NotFoundError');
+NAMES.set(LeaseExpiredError, 'LeaseExpiredError');
+NAMES.set(LeaseLimitError, 'LeaseLimitError');
+NAMES.set(StaleOperandError, 'StaleOperandError');
+NAMES.set(UnsupportedError, 'UnsupportedError');
+NAMES.set(CapabilityError, 'CapabilityError');
+NAMES.set(BudgetExceededError, 'BudgetExceededError');
+NAMES.set(KeyUnavailableError, 'KeyUnavailableError');
+NAMES.set(TransientError, 'TransientError');
 
 /**
  * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver

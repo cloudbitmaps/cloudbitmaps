@@ -103,6 +103,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The library's errors keep their names in an application bundled with a minifier.** Each error took its `name`
+  from its class, which a minifying bundler renames (`WriteConflictError` became a letter or two), and the predicates
+  (`isWriteConflictError`, `isNotFoundError` and the rest) match on that name: so in such a bundle the library's own
+  handling went wrong, as a lost compare-and-swap thrown instead of retried, a read that heals off a collected
+  generation thrown instead of healed, and a load refused under a dropped row leaving its object in the bucket. Each
+  class now carries its name as a string no minifier touches, and a test bundles the library with esbuild's `minify`
+  and holds every error class to its name and its predicate. An application's own subclass keeps its own name.
 - **An audit or metrics sink without an `onEvent` method is refused.** A bare callback passed as `audit`
   (`audit: (e) => log(e)`), or a sink whose method is named `emit`, was accepted and received nothing: the guard that
   keeps a throwing sink from breaking an operation swallowed the error of calling it, so an erasure returned
