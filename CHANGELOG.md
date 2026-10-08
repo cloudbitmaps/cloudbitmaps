@@ -50,10 +50,15 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **A test double passed to `GcsStorage` as `client` needs `retryOptions: { autoRetry: false }`.** An object that is not a
-  `Storage` client is used as it is only with it, and refused when the backend is built without it. A real `Storage`
-  whose `bucket` is stubbed on the instance is refused too, since the client its downloads go through (see Fixed) would
-  not carry the stub: stub `Storage.prototype.bucket` instead, which reaches both.
+- **`GcsStorage` refuses, when it is built, a `client` it cannot send downloads through safely, where it used it as it
+  was.** Its downloads now go through a second client built from the same class and settings (see Fixed), so:
+  - a test double that is not a `Storage` client needs `retryOptions: { autoRetry: false }`, and is used as it is with
+    it; with the SDK's module mocked, pass the mock as `client`;
+  - a `Storage` whose `bucket` is stubbed on the instance, or whose class overrides `bucket` (a test double built on
+    `Storage`), is refused: stub `Storage.prototype` instead, or use a double that does not extend `Storage`;
+  - a `Storage` subclass whose constructor builds from its own configuration rather than the options it is given is
+    refused, even with `autoRetry: false` as the guide used to advise: pass a plain `Storage`, or have the constructor
+    pass its options on.
 
 - **Combines on operands of a million to ten million ids, and the `*Into` verbs, are now measured on S3.** The first
   run of the calibration harness's large suite, from AWS CloudShell in `us-east-1` on 2026-10-07 (run

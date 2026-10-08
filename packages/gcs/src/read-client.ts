@@ -11,7 +11,7 @@
  *   the client
  *        │
  *        ├── not a Storage client (a test double) ──▶ its retries off? yes: used as it is; no: refused
- *        ├── its `bucket` replaced on the instance (a test stub) ──▶ refused
+ *        ├── its `bucket` replaced on the instance (a test stub), or overridden by its class ──▶ refused
  *        ▼
  *   a twin, from the client's own class, with:
  *     the same credentials object (one token cache), endpoint, universe, project, user agent, timeout, checksum
@@ -47,25 +47,38 @@ type Intercept = NonNullable<StorageOptions['interceptors_']>[number]['request']
  * `supplied`: the caller handed `client` in, rather than the backend building it.
  */
 export function downloadClient(client: Storage, supplied: boolean): Storage {
-  // A `Storage` client sends its own requests; a test double, which does not, has nothing a twin could copy.
-  if (
-    typeof (client as { makeAuthenticatedRequest?: unknown }).makeAuthenticatedRequest !==
-    'function'
-  ) {
+  // A test double has nothing a twin could copy, and is used as it is when it says its retries are off.
+  if (!isSdkClient(client)) {
     if (client.retryOptions?.autoRetry === false) return client;
-    throw refusal(
-      supplied,
-      'it is not a `Storage` client (a test double, say)',
-      'Give it `retryOptions: { autoRetry: false }` to have it used as it is',
-    );
+    throw supplied
+      ? refusal(
+          true,
+          'it is not a `Storage` client (a test double, say)',
+          'Give it `retryOptions: { autoRetry: false }` to have it used as it is',
+        )
+      : refusal(
+          false,
+          "the `Storage` it was built from is not the SDK's (a mocked module, say)",
+          'Pass the mock as `client`, with `retryOptions: { autoRetry: false }`',
+        );
   }
+  const instead =
+    'Stub `Storage.prototype.bucket` instead, which reaches that client too, or pass a test double that does not ' +
+    'extend `Storage`, with `retryOptions: { autoRetry: false }`';
   if (Object.hasOwn(client, 'bucket')) {
     throw refusal(
       supplied,
       'its `bucket` method is replaced on the instance, as by a test stub, which a client built from its class would ' +
         'not have',
-      'Stub `Storage.prototype.bucket` instead, which reaches that client too, or pass a test double that is not a ' +
-        '`Storage`, with `retryOptions: { autoRetry: false }`',
+      instead,
+    );
+  }
+  if (overridesBucket(client)) {
+    throw refusal(
+      supplied,
+      'its class overrides `bucket`, as a test double built on `Storage` does, so a client built from its class need ' +
+        'not hold what this one holds',
+      instead,
     );
   }
   const second = supplied
@@ -83,6 +96,31 @@ export function downloadClient(client: Storage, supplied: boolean): Storage {
   const why = unfaithful(client, twin);
   if (why !== undefined) throw refusal(supplied, `${second} ${why}`, remedy);
   return twin;
+}
+
+/**
+ * Whether `client` is the SDK's own: its constructor sets `authClient` from the request factory it builds. A mock that
+ * answers every property with a function, as an auto-mocking library's does, answers that one too, but not with the
+ * same credentials object.
+ */
+function isSdkClient(client: Storage): boolean {
+  const factory: unknown = (client as { makeAuthenticatedRequest?: unknown })
+    .makeAuthenticatedRequest;
+  return (
+    client.authClient !== undefined &&
+    typeof factory === 'function' &&
+    (factory as { authClient?: unknown }).authClient === client.authClient
+  );
+}
+
+/** Whether a subclass of the SDK's client defines `bucket` over the SDK's own. */
+function overridesBucket(client: Storage): boolean {
+  let defined = 0;
+  for (let proto: unknown = Object.getPrototypeOf(client); proto !== null;) {
+    if (Object.hasOwn(proto as object, 'bucket')) defined++;
+    proto = Object.getPrototypeOf(proto);
+  }
+  return defined > 1;
 }
 
 function twinOf(client: Storage): Storage {

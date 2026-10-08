@@ -32,10 +32,11 @@ export interface GcsStorageOptions {
    * 429, 500, 502, 503 or 504 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, so downloads go through a twin of
    * this client, built from its own class with the same credentials object, endpoint and settings and the SDK's retries
    * off over any its class set, and the driver retries them itself. A client whose twin would use other credentials or
-   * another endpoint (a subclass that builds from options of its own), or whose `bucket` is replaced on the instance (a
-   * test stub; stub `Storage.prototype.bucket` instead), is refused at construction. A test double that is not a
-   * `Storage` client is used as it is when it has `retryOptions: { autoRetry: false }`, and refused without it. What is
-   * set on the client after it was built, such as its `timeout`, is not carried to the twin.
+   * another endpoint (a subclass that builds from options of its own), whose class overrides `bucket` (a test double
+   * built on `Storage`), or whose `bucket` is replaced on the instance (a test stub; stub `Storage.prototype` instead)
+   * is refused at construction. A test double that is not a `Storage` client is used as it is when it has
+   * `retryOptions: { autoRetry: false }`, and refused without it. What is set on the client after the backend was
+   * built, other than an interceptor, is not carried to the twin.
    */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */

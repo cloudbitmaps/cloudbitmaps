@@ -559,7 +559,8 @@ describe('a GCS download', () => {
         const auth = {};
         /** A client whose second instance, the one built with options, differs from the first in `field` alone. */
         class Differs {
-          readonly makeAuthenticatedRequest = (): void => undefined;
+          // As the SDK's constructor leaves them: the request factory carries the client's credentials object.
+          readonly makeAuthenticatedRequest: (() => void) & { authClient?: unknown };
           readonly authClient: unknown;
           retryOptions = { autoRetry: true };
           readonly baseUrl: unknown = 'http://127.0.0.1:1/storage/v1';
@@ -567,6 +568,9 @@ describe('a GCS download', () => {
           readonly customEndpoint: unknown = false;
           constructor(options?: StorageOptions) {
             this.authClient = options?.authClient ?? auth;
+            this.makeAuthenticatedRequest = Object.assign(() => undefined, {
+              authClient: this.authClient,
+            });
             if (options !== undefined) Object.assign(this, { [field]: other });
           }
           bucket(): void {}
@@ -575,6 +579,34 @@ describe('a GCS download', () => {
           }
         }
         expect(refusal(new Differs()).message).toMatch(why);
+      });
+
+      it('refuses a subclass that overrides `bucket`, as an in-memory double built on `Storage` does', () => {
+        class MemStorage extends Storage {
+          readonly files = new Map<string, Uint8Array>();
+          override bucket(name: string): ReturnType<Storage['bucket']> {
+            return super.bucket(name);
+          }
+        }
+        const err = refusal(new MemStorage({ ...at, retryOptions: { autoRetry: false } }));
+        expect(err.message).toMatch(/its class overrides `bucket`.*does not extend `Storage`/);
+      });
+
+      it('takes an auto-mock that answers every property as a test double, not as a `Storage` client', () => {
+        // As a mocking library's `mock<Storage>()` behaves: a function for any property not set on it.
+        const mockOf = (set: Record<string, unknown>): Storage =>
+          new Proxy(set, {
+            get: (target, key) => (key in target ? target[key as string] : () => undefined),
+          }) as unknown as Storage;
+        const off = mockOf({ retryOptions: { autoRetry: false } });
+        expect(readClientOf(new GcsStorage({ bucket: 'b', client: off }))).toBe(off);
+        expect(refusal(mockOf({})).message).toMatch(/not a `Storage` client/);
+      });
+
+      it('says to pass the mock as `client` when the backend built its own from a mocked module', () => {
+        expect(() =>
+          downloadClient({ bucket: () => undefined } as unknown as Storage, false),
+        ).toThrow(/is not the SDK's \(a mocked module, say\)\. Pass the mock as `client`/);
       });
 
       it('refuses a client built before STORAGE_EMULATOR_HOST was set, whose twin would go to the emulator', () => {
