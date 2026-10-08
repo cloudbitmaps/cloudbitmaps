@@ -936,6 +936,29 @@ function buildReport(input: {
  * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export function estimateCost(input: EstimateInput): CostReport {
+  // Shapes a plain-JavaScript caller can get wrong, refused as such rather than as a raw TypeError from deep inside.
+  if (input === null || typeof input !== 'object') {
+    throw new ValidationError('estimateCost: input must be an object such as { segments }');
+  }
+  if (!Array.isArray(input.segments)) {
+    throw new ValidationError(
+      'estimateCost: segments must be an array of { sizeBytes } or { cardinality }',
+    );
+  }
+  input.segments.forEach((spec, i) => {
+    if (spec === null || typeof spec !== 'object') {
+      throw new ValidationError(`estimateCost: segments[${i}] must be an object`);
+    }
+  });
+  if (
+    input.pricing !== undefined &&
+    (input.pricing === null ||
+      typeof input.pricing !== 'object' ||
+      input.pricing.storage === null ||
+      typeof input.pricing.storage !== 'object')
+  ) {
+    throw new ValidationError('estimateCost: pricing must be a profile with a storage price list');
+  }
   const pricing = input.pricing ?? AWS_US_EAST_1_ONDEMAND;
   const workload = input.workload ?? {};
   let storageBytes = 0;

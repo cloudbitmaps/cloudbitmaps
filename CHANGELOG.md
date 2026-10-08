@@ -103,6 +103,8 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`estimateCost` refuses an input of the wrong shape** with `ValidationError`: no input, `segments` that are not an
+  array, a `null` entry, or a `pricing` with no storage price list threw a raw `TypeError` from inside the model.
 - **`retireExpired({ scan: 'index' })` holds at most `maxScanSegments` stray pointers a call.** Pointers whose
   segment is gone, left when removing them failed, were all held and checked in one call however many there were;
   those past the bound now wait for a later call, as the fleet scan's pointers already did.

@@ -1794,3 +1794,18 @@ describe('retention sweep cost term', () => {
     ).toThrow(ValidationError);
   });
 });
+
+describe('estimateCost refuses an input of the wrong shape', () => {
+  it('a missing input, segments that are not an array, a null entry, or pricing without storage', () => {
+    for (const input of [
+      null,
+      {},
+      { segments: 5 },
+      { segments: [null] },
+      { segments: [{ sizeBytes: 1 }], pricing: {} },
+      { segments: [{ sizeBytes: 1 }], pricing: null },
+    ]) {
+      expect(() => estimateCost(input as never), JSON.stringify(input)).toThrow(ValidationError);
+    }
+  });
+});
