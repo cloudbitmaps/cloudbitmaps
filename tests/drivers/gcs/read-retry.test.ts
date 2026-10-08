@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { GcsStorage } from '@/gcs/backend';
-import { Storage } from '@google-cloud/storage';
+import { CRC32C, Storage, type StorageOptions } from '@google-cloud/storage';
+import { ValidationError } from '@/core/errors';
+import { downloadClient } from '@/gcs/read-client';
 
 /**
  * A GCS download is sent once by the SDK and retried by the driver, and a retried read cannot crash the process.
@@ -325,25 +327,185 @@ describe('a GCS download', () => {
       expect(sent.headers?.['x-later']).toBe('1');
     });
 
-    it('use a client that already sends downloads once as it is', () => {
+    it('carry the checksum generator, universe, auth-on-custom-endpoint flag and retry settings to the twin', () => {
+      const crc32cGenerator = () => new CRC32C();
+      const retryableErrorFn = () => false;
+      const own = new Storage({
+        apiEndpoint: 'http://127.0.0.1:1',
+        projectId: 'p',
+        universeDomain: 'example.test',
+        useAuthWithCustomEndpoint: true,
+        crc32cGenerator,
+        retryOptions: { maxRetries: 7, retryableErrorFn, idempotencyStrategy: 2 },
+      });
+      const twin = readClientOf(new GcsStorage({ bucket: 'b', client: own }));
+      expect(twin.crc32cGenerator).toBe(crc32cGenerator);
+      expect(twin.universeDomain).toBe('example.test');
+      expect(twin.useAuthWithCustomEndpoint).toBe(true);
+      expect(twin.retryOptions).toMatchObject({
+        autoRetry: false,
+        maxRetries: 7,
+        retryableErrorFn,
+        idempotencyStrategy: 2,
+      });
+      expect(twin.retryOptions).not.toBe(own.retryOptions);
+    });
+
+    it.each([
+      ['with a trailing slash', 'https://storage.googleapis.com/'],
+      ['with no scheme', 'storage.googleapis.com'],
+    ])(
+      'take the default endpoint written %s as the client does: custom, so sent without credentials',
+      (_, apiEndpoint) => {
+        const own = new Storage({ apiEndpoint, projectId: 'p' });
+        const built = new GcsStorage({ bucket: 'b', apiEndpoint, projectId: 'p' });
+        for (const [client, twin] of [
+          [own, readClientOf(new GcsStorage({ bucket: 'b', client: own }))],
+          [built.client, readClientOf(built)],
+        ] as const) {
+          expect(client.customEndpoint).toBe(true);
+          expect([twin.baseUrl, twin.apiEndpoint, twin.customEndpoint]).toEqual([
+            client.baseUrl,
+            client.apiEndpoint,
+            true,
+          ]);
+        }
+      },
+    );
+
+    it('build a twin for a client whose retries read off while a write of its own is in flight, and keep it off', async () => {
+      // The SDK turns a client's `autoRetry` off while a delete with no precondition is in flight, and back on when it
+      // ends: a store built over a shared client meanwhile must not take that reading for how the client was built.
+      const stub = await startStub();
+      try {
+        const own = new Storage({ apiEndpoint: stub.endpoint, projectId: 'p' });
+        const deleting = own.bucket('b').file('o').delete();
+        expect(own.retryOptions.autoRetry).toBe(false);
+        const twin = readClientOf(new GcsStorage({ bucket: 'b', client: own }));
+        await deleting;
+        expect(own.retryOptions.autoRetry).toBe(true);
+        expect(twin).not.toBe(own);
+        expect(twin.retryOptions.autoRetry).toBe(false);
+      } finally {
+        await stub.close();
+      }
+    });
+
+    it('give a client built with its retries off a twin as well, with retry settings of its own', () => {
       const own = new Storage({
         apiEndpoint: 'http://127.0.0.1:1',
         projectId: 'p',
         retryOptions: { autoRetry: false },
       });
-      expect(readClientOf(new GcsStorage({ bucket: 'b', client: own }))).toBe(own);
+      const twin = readClientOf(new GcsStorage({ bucket: 'b', client: own }));
+      expect(twin).not.toBe(own);
+      expect(twin.retryOptions.autoRetry).toBe(false);
+      expect(twin.retryOptions).not.toBe(own.retryOptions);
     });
 
-    it('refuse, at construction, a client no twin can be built from', () => {
-      class Wrapped extends Storage {
-        constructor(endpoint: string) {
-          super({ apiEndpoint: endpoint, projectId: 'p' });
+    describe('refuse, at construction, a client whose twin did not take its settings, unless its retries are off', () => {
+      class Pinned extends Storage {
+        // An organisation's wrapper that sets its own retry policy whatever it is given.
+        constructor(options: StorageOptions = {}) {
+          super({ ...options, retryOptions: { maxRetries: 3 } });
         }
       }
-      // A subclass whose constructor takes other arguments builds a twin that addresses another place.
-      expect(
-        () => new GcsStorage({ bucket: 'b', client: new Wrapped('http://127.0.0.1:1') }),
-      ).toThrow(/autoRetry: false/);
+      class FromConfig extends Storage {
+        // An application's client built from its own configuration, not from the SDK's options.
+        constructor(config: { project?: string; endpoint?: string; retries?: boolean }) {
+          super({
+            projectId: config.project,
+            apiEndpoint: config.endpoint,
+            retryOptions: { autoRetry: config.retries ?? true },
+          });
+        }
+      }
+      class Throws extends Storage {
+        constructor(options?: StorageOptions) {
+          if (options?.authClient !== undefined) {
+            throw Object.assign(new Error('cannot build'), {
+              config: { headers: { Authorization: 'Bearer t0ken' } },
+            });
+          }
+          super({ apiEndpoint: 'http://127.0.0.1:1', projectId: 'p' });
+        }
+      }
+      /** A test double that keeps objects in memory: a new one is another, empty store. */
+      class InMemory {
+        readonly files = new Map<string, Uint8Array>();
+        constructor(readonly retryOptions?: { autoRetry: boolean }) {}
+        bucket(): never {
+          throw new Error('not reached');
+        }
+      }
+      const refused = (client: unknown, why: RegExp): void => {
+        let caught: unknown;
+        try {
+          new GcsStorage({ bucket: 'b', client: client as Storage });
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(ValidationError);
+        expect((caught as Error).message).toMatch(why);
+        expect((caught as Error).message).toMatch(/autoRetry: false/);
+      };
+
+      it("a subclass that sets its own retries: its twin keeps the SDK's", () => {
+        refused(
+          new Pinned({ apiEndpoint: 'http://127.0.0.1:1', projectId: 'p' }),
+          /keeps the SDK's retries/,
+        );
+      });
+
+      it('a subclass built from its own configuration: its twin would use other credentials', () => {
+        refused(
+          new FromConfig({ project: 'p', endpoint: 'http://127.0.0.1:1' }),
+          /other credentials/,
+        );
+      });
+
+      it('a subclass whose constructor throws, with the cause kept and its credentials left out', () => {
+        let caught: unknown;
+        try {
+          new GcsStorage({ bucket: 'b', client: new Throws() });
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(ValidationError);
+        expect((caught as Error).message).toMatch(/could not be built/);
+        const cause = (caught as Error).cause as Error & { config?: unknown };
+        expect(cause.message).toBe('cannot build');
+        expect(cause.config).toBeUndefined();
+        expect(JSON.stringify(cause)).not.toContain('t0ken');
+      });
+
+      it('a plain-object double, which no twin can be built from', () => {
+        refused({ bucket: () => undefined }, /no `bucket` method/);
+      });
+
+      it('an in-memory double, whose twin would be another, empty store', () => {
+        refused(new InMemory(), /other credentials/);
+      });
+
+      it('but uses any of them as it is when built with its retries off', () => {
+        const off = { autoRetry: false };
+        const clients: unknown[] = [
+          new FromConfig({ project: 'p', endpoint: 'http://127.0.0.1:1', retries: false }),
+          { bucket: () => undefined, retryOptions: off },
+          new InMemory(off),
+        ];
+        for (const client of clients) {
+          expect(readClientOf(new GcsStorage({ bucket: 'b', client: client as Storage }))).toBe(
+            client,
+          );
+        }
+      });
+
+      it('names the setting to change when the client is the one the backend builds', () => {
+        expect(() =>
+          downloadClient(new Pinned({ apiEndpoint: 'http://127.0.0.1:1' }), false),
+        ).toThrow(/cannot build a client .* Pass a `client`/);
+      });
     });
 
     it('built for the caller, share one set of credentials between the two clients', () => {

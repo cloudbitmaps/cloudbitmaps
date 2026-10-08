@@ -110,9 +110,13 @@ so, and so do the module headers in the code.
   all that stood in the way, and that advice turned off the SDK's retries of listings and uploads too. Downloads now go
   through a twin of the client, built from its own class with the same credentials object, endpoint and settings and
   the SDK's retries off, and the driver retries them itself, as it does for the client it builds. The client's other
-  requests keep its retries. A client already built with `autoRetry: false` is used as it is; one no twin can be built
-  from, or whose twin would address another endpoint, is refused when the backend is built. The client `GcsStorage`
-  builds shares one credentials object with its download twin, so one token fetch serves both.
+  requests keep its retries. The twin is built even for a client whose retries read off, since the SDK turns them off
+  while a delete or an upload with no precondition is in flight. A twin that did not take the client's settings (other
+  credentials, the SDK's retries, another endpoint), as from a subclass that builds from options of its own or a test
+  double, is never used: the client is used as it is if it was built with `retryOptions: { autoRetry: false }`, and is
+  refused when the backend is built otherwise. A test double passed as `client` therefore needs
+  `retryOptions: { autoRetry: false }`. The client `GcsStorage` builds shares one credentials object with its download
+  twin, so one token fetch serves both.
 - **`setSegmentRetention` from `@cloudbitmaps/core` shows its documentation again** in editors and the published
   `.d.ts`: its doc comment sat above another declaration, and TypeScript attached it there instead. Eleven more doc comments
   inside the packages had come apart from their declarations the same way, and a test now holds every one to its own.

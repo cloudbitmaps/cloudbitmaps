@@ -1022,12 +1022,16 @@ this library's word for the durable tier, so the backend takes it as `client`.
 The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
 and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
 `ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after
-a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its other requests keep
-the SDK's retries. A client you pass as `client` keeps its own retries for everything else: its downloads go through a
-twin of it, built from its own class with the same credentials object, endpoint, project, user agent, timeout and
-interceptors and the SDK's retries off. A client already built with `retryOptions: { autoRetry: false }` is used as it
-is, and one no twin can be built from, or whose twin would address another endpoint, is refused when the backend is
-built. ([why](production.md#reliability-retries-backoff--timeouts)).
+a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its listings,
+deletes, resumable uploads and the metadata read that settles a write keep the SDK's retries; a single-request
+conditional write is sent without them. A client you pass as `client` keeps its own retries for those requests: its
+downloads go through a twin of it, built from its own class with the same credentials object, endpoint, project, user
+agent, timeout, checksum generator and interceptors and the SDK's retries off
+([why](production.md#reliability-retries-backoff--timeouts)).
+The twin must take those settings. When it does not (a subclass that builds from options of its own, say, or a test
+double), the client is used as it is if it was built with `retryOptions: { autoRetry: false }`, and is refused when the
+backend is built otherwise. What is set on the client after it was built, such as a method stubbed on it in a test, is
+not carried to the twin.
 
 A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. It bounds
 one read as a whole (a tail with the metadata read it falls back on for an empty object, a range, a registry row): one

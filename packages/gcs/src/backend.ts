@@ -31,8 +31,10 @@ export interface GcsStorageOptions {
    * its own backoff), and the downloads. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408,
    * 429, 500, 502, 503 or 504 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, so downloads go through a twin of
    * this client, built from its own class with the same credentials object, endpoint and settings and the SDK's retries
-   * off, and the driver retries them itself. A client built with `retryOptions: { autoRetry: false }` is used as it is.
-   * One no twin can be built from, or whose twin would address another endpoint, is refused at construction.
+   * off, and the driver retries them itself. A twin that did not take those settings (other credentials, the SDK's
+   * retries, another endpoint) is never used: the client is used as it is if it was built with
+   * `retryOptions: { autoRetry: false }`, and is refused at construction otherwise. What is set on the client after it
+   * was built, such as a method stubbed on it, is not carried to the twin.
    */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
@@ -153,7 +155,7 @@ export class GcsStorage implements StorageBackend {
         );
       }
       this.client = options.client;
-      readClient = downloadClient(options.client);
+      readClient = downloadClient(options.client, true);
     } else {
       const settings = {
         ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
@@ -162,7 +164,7 @@ export class GcsStorage implements StorageBackend {
       this.client = new GcsClient(settings);
       // Downloads go through a twin that sends each once (see `read-client.ts`); it shares this client's credentials
       // object, so one token fetch and one hourly refresh serve both.
-      readClient = downloadClient(this.client);
+      readClient = downloadClient(this.client, false);
     }
     const shared = {
       storage: this.client,

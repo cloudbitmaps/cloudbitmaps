@@ -180,12 +180,18 @@ and 8.1.0), a download the SDK retries after any status it retries (408, 429, 50
 `GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
 backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure), so a download is retried whichever
 call made it and whether or not the store's own `retry` is on. What still fails after those attempts is a
-`TransientError`, which the store's read retry, above, can run again. The client's other requests keep the SDK's
-retries. A client you pass as `client` keeps its own retries for everything else: its downloads go through a twin of it,
-built from its own class with the same credentials object, endpoint, project, user agent, timeout and interceptors and
-the SDK's retries off. A client already built with `retryOptions: { autoRetry: false }` is used as it is, and one no
-twin can be built from, or whose twin would address another endpoint, is refused when the backend is built. The two
-clients share one credentials object, so one token fetch serves both.
+`TransientError`, which the store's read retry, above, can run again. The client's listings, deletes, resumable
+uploads and the metadata read that settles a write keep the SDK's retries; a single-request conditional write is sent
+without them. A client you pass as `client` keeps its own retries for those requests: its downloads go through a twin
+of it, built from its own class with the same credentials object, endpoint, project, user agent, timeout, checksum
+generator and interceptors and the SDK's retries off. The two clients share one credentials object, so one token fetch
+serves both. The twin is built even for a client whose retries are off, because the SDK turns a client's retries off
+while a delete or an upload with no precondition is in flight, so that setting, read once, does not say how the client
+was built.
+The twin must take those settings. When it does not (a subclass that builds from options of its own, say, or a test
+double), the client is used as it is if it was built with `retryOptions: { autoRetry: false }`, and is refused when the
+backend is built otherwise. What is set on the client after it was built, such as a method stubbed on it in a test, is
+not carried to the twin.
 
 **A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
 client that has no such option. Measured against a local server that accepts a read and never answers, a read through
