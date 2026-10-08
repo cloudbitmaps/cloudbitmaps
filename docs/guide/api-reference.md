@@ -60,6 +60,12 @@ package: doing so would put that SDK back into every install.
 
 ## The everyday surface (what you'll call)
 
+**Every call checks its options.** An options bag that is not an object, a key the call does not take, and a switch
+(`dryRun`, `allowEmpty`, `purgeTombstones` and the like) that is not a boolean throw `ValidationError` naming what is
+wrong, before anything is read or written, so a misspelt key or a scope passed as a bare string never silently widens
+what a call does. `undefined`, `null` and a key whose value is `undefined` read as absent, so a spread of options keeps
+working. The same holds for the keys inside `guard` and `budget`, and for `store.segment`'s options.
+
 ### Build a store — `new CloudRoaring(options)`
 
 `storage` is the **only option a store needs**. Pass a backend and you are done: it carries the pointer, which is

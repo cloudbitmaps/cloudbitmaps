@@ -140,6 +140,19 @@ export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadG
       `${where}guard must be an object of bounds, such as { minRetained: 0.5 }; got ${shown(guard)}`,
     );
   }
+  // A misspelt bound (`minRetain`) would otherwise be no bound at all. A key whose value is `undefined` reads as absent,
+  // so a spread of bounds keeps working.
+  const bounds = guard as Record<string, unknown>;
+  const unknown = Object.keys(bounds).filter(
+    (k) =>
+      k !== 'minCardinality' && k !== 'minRetained' && k !== 'maxGrowth' && bounds[k] !== undefined,
+  );
+  if (unknown.length > 0) {
+    throw new ValidationError(
+      `${where}guard: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+        'it takes { minCardinality, minRetained, maxGrowth }',
+    );
+  }
   const { minCardinality, minRetained, maxGrowth } = guard;
   if (minCardinality !== undefined && (!Number.isInteger(minCardinality) || minCardinality < 0)) {
     throw new ValidationError(

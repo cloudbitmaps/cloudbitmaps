@@ -176,12 +176,22 @@ export function run(w: World, call: Call, route: 'chunks' | 'ids'): Promise<Mate
       ) => Promise<MaterializeResult>;
     }
   ).materialize.bind(w.store);
+  // The read takes the read's options only: the write's (`audit`, `allowEmpty`, `guard`, `metadata`, `keep`) go to the
+  // load, and a read verb refuses them.
+  const readNoExclude = {
+    after: opts.after,
+    through: opts.through,
+    concurrency: opts.concurrency,
+    budget: opts.budget,
+    allowAbsentOperands: opts.allowAbsentOperands,
+  };
+  const read = { ...readNoExclude, exclude: opts.exclude };
   const ids =
     verb === 'intersect'
-      ? a.intersect(handles, opts)
+      ? a.intersect(handles, read)
       : verb === 'union'
-        ? a.union(handles, opts)
-        : a.andNot(handles, opts);
+        ? a.union(handles, read)
+        : a.andNot(handles, readNoExclude);
   return internals.timed(name, () => materialize(DEST, ids, name, opts));
 }
 

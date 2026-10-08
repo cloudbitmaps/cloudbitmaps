@@ -103,6 +103,18 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Every call refuses an option it does not take, options that are not an object, and a switch that is not a
+  boolean.** Only the store's constructor, `materializeMany` and the pins checked their options; every other call read
+  a bag of the wrong shape as no options and ignored an unknown key, and that silently widened what it did:
+  `retireExpired({ dryRun: 'true' })` and `dropSegment(ref, { confirmSegment, dryRun: 'true' })` deleted,
+  `purgeTombstones: 'false'` purged the tombstones `false` keeps, `segments('tenantA')`, `exportSegments(sink,
+  'tenantA')`, `retireExpired('tenantB')` and `checkConsistency('ns1')` reached every namespace, and
+  `load(ref, ids, { minRetained: 0.5 })` (the bound outside `guard`) published the shrink it was meant to refuse. Each
+  is now a `ValidationError` naming the call and the key, before anything is read or written, on the reads, the
+  combines and `*Into` verbs, `load`, `rollback`, `dropSegment`, `retireExpired`, `subjectReport`, `eraseSubject`,
+  `segments`, `checkConsistency`, `exportSegments` and `costReport`, and for an unknown bound inside `guard`.
+  `undefined`, `null` and a key whose value is `undefined` still read as absent. Code that passed a key a call does not
+  take, such as an `*Into` call's `audit` handed to `intersect`, removes it.
 - **`retireExpired` retires only a segment that is still expired when its tombstone is written, and claims only the
   tombstones it wrote.** The sweep re-read each row before retiring it, but the drop read it again and acted on what it
   found, so a retention extended or cleared between the two reads, or by a write the drop's own write lost to, was

@@ -91,6 +91,8 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/roaring/call-options.test.ts':
+    'its loads only seed segments for the option checks of other calls; the input form is not what it tests',
   'tests/drivers/localfs/exact-case.test.ts':
     'its loads only create names to compare by case, and where the temp root is case-sensitive (Linux) those tests skip ' +
     'and no load runs, so a serialized second run would route nothing; the input form is not what it tests',
