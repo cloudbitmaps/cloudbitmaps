@@ -282,7 +282,10 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   shred, a drop, a rollback and a retention write are fenced on. None of them is refused by it: a row that differs from the
   one the writer read only in its leases does not refuse the writer, which goes on against the row it finds, after a
   jittered wait and without redoing its work ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one
-  write per job, not per read.
+  write per job, not per read, and its release is one more. Each of those writes, like every write of the row (a load's
+  publish, a `setRetention`), moves the version every store keys its cached reader and chunks on: each store reading
+  the segment opens it again at its next pointer refresh, one tail read, and fetches again the chunks it reads next.
+  On a segment many processes read, a leased job costs each of them that re-open twice, so lease per job, not per read.
 - **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
   with no current generation. A failed pin releases the lease it took. A store built with no clock cannot judge a lease,
   and its loads read none: `CloudRoaring` always has one, and a core `loadSegment` is given one in `deps.clock`.
