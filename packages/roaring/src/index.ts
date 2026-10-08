@@ -672,8 +672,8 @@ export interface MaterializeResult {
   readonly cardinality: number;
   /**
    * What the destination held when the guard judged it — `null` when it had no current generation, **or when
-   * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with no
-   * `guard.minRetained` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
+   * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with neither
+   * `guard.minRetained` nor `guard.maxGrowth` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
    * carries a summary of its current generation the count comes from the row and the object is not read; a row
    * written before rows carried a summary costs one object-header fetch.
    */
@@ -1125,7 +1125,7 @@ export class CloudRoaring {
    * materialisation is a load, and publishes the same way (hard invariant 1): every load that finds a row fences its
    * publish on the row's token; a guarded load (the default, since the empty refusal needs the size of the current generation)
    * also fences on the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead.
-   * Only an unguarded load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare
+   * Only an unguarded load (`allowEmpty: true`, with neither `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row publishes bare
    * forward-only. The destination's previous generation stays readable until the publish lands (readers re-resolve
    * within `cache.genTtlMs`).
    *
@@ -3896,7 +3896,7 @@ export class Segment {
    * write is **refused and reported**: `published: false`, `reason: 'empty'`, and `dest` keeps what it had.
    * Pass `allowEmpty: true` when emptying the destination is the point.
    *
-   * `guard` adds the same plausibility bounds `load()` takes — `minCardinality` and `minRetained` — judged
+   * `guard` adds the same plausibility bounds `load()` takes — `minCardinality`, `minRetained` and `maxGrowth` — judged
    * against what `dest` held before. A refusal is **reported, not thrown**, exactly as on `load()`; branch on
    * `published`. A lost race is the one outcome that still throws ({@link WriteConflictError}), because a
    * materialisation that silently did not take effect is the one thing a caller cannot detect on its own.

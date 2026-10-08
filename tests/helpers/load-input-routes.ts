@@ -43,6 +43,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/intersect.test.ts',
   'tests/core/live-read-reused-number.test.ts',
   'tests/core/load-guard-summary.test.ts',
+  'tests/core/load-max-growth.test.ts',
   'tests/core/load-routing.test.ts',
   'tests/core/load.test.ts',
   'tests/core/materialize-expiry-guard.test.ts',

@@ -51,7 +51,7 @@ export type AuditEvent =
        * downstream system reconciling "the segment should now contain X" needs as much as it needs the publish.
        *
        * `reason` is `'empty'` (an empty result over a non-empty segment, with no `allowEmpty`),
-       * `'min-cardinality'`, `'min-retained'`, or `'superseded'` (another load took the generation number, or the
+       * `'min-cardinality'`, `'min-retained'`, `'max-growth'`, or `'superseded'` (another load took the generation number, or the
        * segment's registry row changed while the load was writing). `cardinality` is what the refused generation
        * would have contained, and `0` for a load that lost its generation number and wrote nothing.
        *
@@ -64,7 +64,7 @@ export type AuditEvent =
       readonly namespace?: string;
       readonly segment: string;
       readonly generation: number;
-      readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'superseded';
+      readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth' | 'superseded';
       readonly cardinality: number;
       readonly unanswered?: true;
     }

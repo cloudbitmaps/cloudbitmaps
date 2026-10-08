@@ -90,8 +90,9 @@ export interface LoadDeps {
 /**
  * What a plausible result looks like, so an implausible one is refused instead of published.
  *
- * Both bounds are compared against the **current** generation's cardinality, read from the `.crbm` index rather
- * than its payload — one object-header read, and only when a bound is actually set.
+ * `minCardinality` judges the new generation alone. `minRetained` and `maxGrowth` judge it against the **current**
+ * generation's cardinality, which the load takes from the registry row's summary of it when the row has a usable one,
+ * and otherwise from the `.crbm` index (one object-header read, never the payload), and only when a bound needs it.
  */
 export interface LoadGuard {
   /** Refuse a generation with fewer than this many ids. Use for "this segment is never legitimately tiny". */
@@ -107,6 +108,56 @@ export interface LoadGuard {
    * permissive, which is where an inversion would eventually be written and not noticed.
    */
   readonly minRetained?: number;
+  /**
+   * Refuse a generation larger than this multiple of the current one — `1.5` means "at most half as large again".
+   * The ceiling to `minRetained`'s floor: a source that lands duplicated or joined wrong grows a segment as quietly as
+   * a partial one shrinks it. A shrinking load is never refused by this bound, and neither is the first load of a
+   * segment nor one onto an empty segment, which have no size to multiply. `1` means "never grow".
+   *
+   * `0` means no bound, as on the two fields above. Setting it makes the load read the current size and fence its
+   * publish on it, as `minRetained` does, `allowEmpty: true` or not. The comparison is in floating point, so do not
+   * rely on the exact boundary: `100 × 1.15` is `114.99999999999999`.
+   */
+  readonly maxGrowth?: number;
+}
+
+/**
+ * Check a guard's bounds before any round trip, and copy them: the one check `load` and each output of
+ * `materializeMany` share. The copy is what the load judges, so a guard object the caller reuses or changes while the
+ * call runs cannot change the bound it is judged by. `where` prefixes each field's name in the message (`''`, or
+ * `'outputs[3].'`).
+ */
+export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadGuard | undefined {
+  if (guard === undefined || guard === null) return undefined;
+  // A value that is not a number is named by its type: `'2'` printed as "got 2" would read as a valid bound.
+  const shown = (v: unknown): string => (typeof v === 'number' ? String(v) : `a ${typeof v}`);
+  const { minCardinality, minRetained, maxGrowth } = guard;
+  if (minCardinality !== undefined && (!Number.isInteger(minCardinality) || minCardinality < 0)) {
+    throw new ValidationError(
+      `${where}guard.minCardinality must be a non-negative integer; got ${shown(minCardinality)}`,
+    );
+  }
+  if (
+    minRetained !== undefined &&
+    (!Number.isFinite(minRetained) || minRetained < 0 || minRetained > 1)
+  ) {
+    throw new ValidationError(
+      `${where}guard.minRetained must be a fraction in 0..1; got ${shown(minRetained)}`,
+    );
+  }
+  if (
+    maxGrowth !== undefined &&
+    (!Number.isFinite(maxGrowth) || (maxGrowth !== 0 && maxGrowth < 1))
+  ) {
+    throw new ValidationError(
+      `${where}guard.maxGrowth must be 0 (no bound) or a factor of at least 1; got ${shown(maxGrowth)}`,
+    );
+  }
+  return Object.freeze({
+    ...(minCardinality === undefined ? {} : { minCardinality }),
+    ...(minRetained === undefined ? {} : { minRetained }),
+    ...(maxGrowth === undefined ? {} : { maxGrowth }),
+  });
 }
 
 export interface LoadOptions {
@@ -157,6 +208,7 @@ export type LoadRefusal =
   | 'empty'
   | 'min-cardinality'
   | 'min-retained'
+  | 'max-growth'
   /**
    * Another writer got there first. Either another load wrote the same generation number first, so the write-once
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
@@ -349,21 +401,7 @@ async function runLoad(
   if (!Number.isInteger(keep) || keep < 0) {
     throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
   }
-  const guard = options.guard;
-  if (guard?.minCardinality !== undefined) {
-    const m = guard.minCardinality;
-    if (!Number.isInteger(m) || m < 0) {
-      throw new ValidationError(
-        `guard.minCardinality must be a non-negative integer; got ${String(m)}`,
-      );
-    }
-  }
-  if (guard?.minRetained !== undefined) {
-    const s = guard.minRetained;
-    if (!Number.isFinite(s) || s < 0 || s > 1) {
-      throw new ValidationError(`guard.minRetained must be a fraction in 0..1; got ${String(s)}`);
-    }
-  }
+  const guard = checkedGuard(options.guard, '');
   // The metadata as of this call, checked and copied before any round trip: what is stored is what the caller passed
   // now, however long the load runs and whatever its object does meanwhile.
   const metadata = copiedMetadata(options.metadata, (message) => {
@@ -403,9 +441,12 @@ async function runLoad(
       : undefined;
 
   // Read the "before" cardinality ONLY when a bound needs it. The empty guard needs to know whether the current
-  // generation is non-empty; `minRetained` needs its size. `minCardinality` compares against the new generation
-  // alone, so it costs nothing extra.
-  const needsBefore = guard?.minRetained !== undefined || options.allowEmpty !== true;
+  // generation is non-empty; `minRetained` and `maxGrowth` need its size. `minCardinality` compares against the new
+  // generation alone, so it costs nothing extra.
+  const needsBefore =
+    guard?.minRetained !== undefined ||
+    guard?.maxGrowth !== undefined ||
+    options.allowEmpty !== true;
   const current: CurrentSize = needsBefore
     ? await currentCardinality(ref, deps, row, unwrapped?.aead)
     : { cardinality: null, fromSummary: false };
@@ -553,6 +594,11 @@ async function runLoad(
   if (guard?.minRetained !== undefined && before !== null) {
     if (written.cardinality < before * guard.minRetained) return refuse('min-retained');
   }
+  // Last, so a load that breaks an older bound as well is refused for the same reason it always was. Not applied with
+  // no current size, or a zero one: no ceiling is a multiple of nothing, and refusing a refill would wedge the repair.
+  if (guard?.maxGrowth !== undefined && guard.maxGrowth !== 0 && before !== null && before > 0) {
+    if (written.cardinality > before * guard.maxGrowth) return refuse('max-growth');
+  }
 
   // What judges a lease: the load's clock, when it has one. Without one a collection holds every lease.
   const leasesNow =
@@ -585,8 +631,8 @@ async function runLoad(
       // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment
       // that had NO ROW. Both `expectFrom` and `expectToken` compare against a value read from a row, so with no
       // row both are omitted and the publish becomes a bare forward-only advance — which lands over anything
-      // that appeared in between. `before` was `null`, so the empty and `minRetained` bounds had nothing to
-      // judge and passed vacuously. Verified: an empty generation published over a thousand ids that a
+      // that appeared in between. `before` was `null`, so the empty, `minRetained` and `maxGrowth` bounds had nothing
+      // to judge and passed vacuously. Verified: an empty generation published over a thousand ids that a
       // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
       // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
       ...(needsBefore && row === null ? { expectAbsent: true } : {}),
@@ -626,7 +672,8 @@ async function runLoad(
   // not found (a row with no pointer numbers 0, which has nothing below it to take, and a destroyed row is refused
   // at its publish). A guard that took the size from the row's summary opened nothing, so it learned nothing about
   // the object: the collection looks for itself, with one zero-byte read of it, only if it is about to delete by name
-  // a generation the window keeps. A load that made no read at all (`allowEmpty` without `minRetained`) cannot tell.
+  // a generation the window keeps. A load that made no read at all (`allowEmpty` with neither `minRetained` nor
+  // `maxGrowth`) cannot tell.
   const currentObjectGone = needsBefore && before === null;
   const collected = await collectAfterLoad(ref, deps, {
     generation,

@@ -209,7 +209,10 @@ a receipt that the generation was there. Memory is bounded by the **distinct set
 not a request handler's — and the store's clock makes a long load yield the event loop. On a store built with a
 keystore it writes encrypted: it mints the segment's DEK on its **first** generation, reuses it afterwards, and
 never encrypts a segment whose existing generations are cleartext. `audit?` emits `segment.publish` for a generation
-it lands and `segment.load-refused` for one it refuses.
+it lands and `segment.load-refused` for one it refuses. `guard?` is `{ minCardinality?, minRetained?, maxGrowth? }`:
+a fewest number of ids, a floor and a ceiling on the new size as a multiple of the current one, each refused with its
+own `reason`, and an invalid one is a `ValidationError` before any request
+([details](loading.md#when-a-load-is-refused)).
 
 **`metadata`** — a small record of your own, written with the generation: a flat object of string keys and string or
 finite-number values, at most 1,024 bytes as canonical JSON (keys sorted by UTF-16 code unit, no whitespace) with no key
@@ -227,7 +230,7 @@ row has a usable one, and opens no object for it; a row with none is read from t
 ([details](loading.md#where-the-guard-reads-the-size-of-the-current-generation)).
 
 **Branch on `published`.** `false` is a normal outcome, not a throw, and `reason` says why. Either a guard refused
-the result (`'empty'`, `'min-cardinality'` or `'min-retained'`), or another writer got there first (`'superseded'`).
+the result (`'empty'`, `'min-cardinality'`, `'min-retained'` or `'max-growth'`), or another writer got there first (`'superseded'`).
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
