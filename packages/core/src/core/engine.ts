@@ -1324,7 +1324,7 @@ export class SegmentEngine {
       .map((s) => (s.namespace === undefined ? `"${s.segment}"` : `"${s.namespace}/${s.segment}"`))
       .join(', ');
     throw new ValidationError(
-      `${op}: operand ${named} names a segment that does not exist, so it would contribute nothing — ` +
+      `${op}: operand ${named} names a segment that does not exist or was dropped, so it would contribute nothing — ` +
         `an exclude would suppress no ids and an include would contribute none. Check the name and the ` +
         `namespace (a segment addressed without its \`namespace\` is a DIFFERENT segment). ` +
         `Pass \`allowAbsentOperands: true\` if you meant it.`,

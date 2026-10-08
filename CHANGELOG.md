@@ -103,6 +103,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A combine refuses an operand whose segment was dropped, retired or crypto-shredded, as it refuses one that never
+  existed.** The check that refuses an operand naming no segment asked the registry whether a row was there, and a
+  tombstone is a row, so an `exclude` that a drop or a retention sweep had retired passed the check, read as empty and
+  suppressed nobody: `audience.andNot([optOut])` returned the opted-out ids once `optOut` was dropped, with no error,
+  while `store.exists(optOut)` already answered `false`. It is now refused with `ValidationError` ("does not exist or
+  was dropped"), on the combines, the `*Into` verbs and `materializeMany`; pass `allowAbsentOperands: true` to read it
+  as empty on purpose. A row with no generation yet still exists.
 - **The library's errors keep their names in an application bundled with a minifier.** Each error took its `name`
   from its class, which a minifying bundler renames (`WriteConflictError` became a letter or two), and the predicates
   (`isWriteConflictError`, `isNotFoundError` and the rest) match on that name: so in such a bundle the library's own

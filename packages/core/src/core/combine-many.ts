@@ -1010,7 +1010,7 @@ class Run<R> {
     const absent = checked.filter((c) => !c.exists).map((c) => c.op.spec.name);
     if (absent.length === 0) return;
     throw new ValidationError(
-      `materializeMany: operand ${absent.map((n) => `"${n}"`).join(', ')} names a segment that does not exist, so it ` +
+      `materializeMany: operand ${absent.map((n) => `"${n}"`).join(', ')} names a segment that does not exist or was dropped, so it ` +
         'would contribute nothing — an exclude would suppress no ids and an include would contribute none. Check ' +
         'the name and the namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
         '`allowAbsentOperands: true` if you meant it.',

@@ -1184,7 +1184,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * tell apart.
    */
   async exists(ref: SegmentRef): Promise<boolean> {
-    if (this.registry !== undefined) return (await this.registry.get(ref)) !== null;
+    // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
+    // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
+    // nobody. A row with no generation yet (a retention policy set first) still exists.
+    if (this.registry !== undefined) {
+      const row = await this.registry.get(ref);
+      return row !== null && row.status !== 'destroyed';
+    }
     for await (const key of this.driver.list(ref)) {
       void key;
       return true;
