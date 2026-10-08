@@ -103,6 +103,9 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`setSegmentRetention` from `@cloudbitmaps/core` shows its documentation again** in editors and the published
+  `.d.ts`: its doc comment sat above another declaration, and TypeScript attached it there instead. Eleven more doc comments
+  inside the packages had come apart from their declarations the same way, and a test now holds every one to its own.
 - **`estimateCost` and `costReport` refuse an input of the wrong shape** with `ValidationError`: no input, `segments`
   that are not an array, a `null` entry or a hole in it, or a `pricing` with no storage price list threw a raw
   `TypeError` from inside the model, and a `workload` that is not an object (a string, an array) was ignored.
@@ -122,8 +125,8 @@ so, and so do the module headers in the code.
 - **The cloud drivers check more of what they are told and what they are answered.** An S3 range answer of the
   right length from another place in the object, an S3 tail answer that is not the suffix asked for, and an S3 listing
   page that said more followed without saying how to ask for it, were believed; the first two are refused and the
-  third is an `IntegrityError`, not a listing ended short. A listing page, S3 or GCS, that hands back the token it was
-  asked with is an `IntegrityError` too, where the driver asked for the same page forever.
+  third is an `IntegrityError`, not a listing ended short. An S3 listing page, or a GCS registry listing page, that hands
+  back the token it was asked with is an `IntegrityError` too, where the driver asked for the same page forever.
   An Azure Blob tail answer short of the bytes asked for, and a tail length of `NaN`, `1.5` or `Infinity`, are
   refused, and a registry compare-and-swap whose row was deleted since it was read is a lost race on a service that
   answers it `404`. `S3Storage` and `GcsStorage` refuse a `bucket` that is not a non-empty string and every backend a

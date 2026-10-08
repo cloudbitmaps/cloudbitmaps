@@ -253,8 +253,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
   another erasure, or a rollback. It means this call did not erase the id, not that the id is still there. Re-run, and
   if a racing erasure of the same id got there first, the re-run reports `'not-member'`.
 - A racing erasure collects with `keep: 0`, so it can delete the generation this call was streaming or the object it had
-  just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` and one purged by
-  the retention sweep reports `'absent'`.
+  just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` once the
+  tombstone's objects are searched as a fresh call searches them (`erased: true` when one still held the id and was
+  deleted), and one purged by the retention sweep reports `'absent'`.
 - A `NotFoundError` is raised only when the pointer still names the missing object, the forbidden
   `missing-storage-generation` state, which no re-run fixes.
 - `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what to

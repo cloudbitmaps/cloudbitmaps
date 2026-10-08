@@ -27,7 +27,6 @@ import { aadFor } from './crypto';
 import { summaryAgrees, usableSummary } from './summary';
 import { validateUserNamespace } from './validate';
 
-/** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 /**
  * Default ceiling on how many registry records one consistency check may hold resident: 250,000.
  *
@@ -44,6 +43,7 @@ import { validateUserNamespace } from './validate';
 // re-export: it is not on `@cloudbitmaps/core`'s main entry, and a caller passes their own `maxScanSegments` rather
 // than read ours.
 export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
+/** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
 export interface ConsistencyIssue {

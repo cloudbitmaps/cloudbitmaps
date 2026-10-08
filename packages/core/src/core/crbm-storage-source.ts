@@ -188,11 +188,6 @@ function versionOf(generation: number, lineage: unknown): string {
   return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
 }
 
-/**
- * What one resolution of a segment's pointer found: the target, and what its row says of the generation, each
- * computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
- * transient fault in the keystore is asked again.
- */
 /** What a pin that leases its generation does between reading the row and opening the object. */
 export interface PinLease {
   /** Write the lease against the row the pin read: its token, or `'moved'` when the pointer is no longer at the generation. */
@@ -202,6 +197,11 @@ export interface PinLease {
 /** The pointer moved before a lease could be written against it: the pin starts again from a fresh read. */
 class PinMoved extends Error {}
 
+/**
+ * What one resolution of a segment's pointer found: the target, and what its row says of the generation, each
+ * computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
+ * transient fault in the keystore is asked again.
+ */
 interface Live {
   readonly target: Target;
   /** The row this resolution read, when it came from a registry. */
@@ -2012,6 +2012,25 @@ const UNANSWERED_RESENDS = 3;
 const UNANSWERED_RESEND_BASE_MS = 500;
 
 /**
+ * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
+ * (for a caller that deletes every generation below the pointer) none. Ended entries are ignored by every collector
+ * whether or not they are pruned; pruning here costs no request, since the write is made anyway.
+ */
+function leasesPatch(
+  record: RegistryRecord,
+  options: { leasesNow?: () => number; clearLeases?: boolean },
+): { leases?: readonly LeaseEntry[] | undefined } {
+  const held = record.leases;
+  if (held === undefined) return {};
+  if (options.clearLeases === true) return { leases: undefined };
+  if (options.leasesNow === undefined) return {};
+  const now = options.leasesNow();
+  const live = held.filter((e) => isLive(e, now));
+  if (live.length === held.length) return {};
+  return { leases: live.length === 0 ? undefined : live };
+}
+
+/**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
  * if the registry has no row it creates one; if it's already at/ahead of `key.generation` it's a no-op (an
@@ -2073,25 +2092,6 @@ const UNANSWERED_RESEND_BASE_MS = 500;
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
  * keys call for: sealed for an object written with a key, clear for one written without.
  */
-/**
- * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
- * (for a caller that deletes every generation below the pointer) none. Ended entries are ignored by every collector
- * whether or not they are pruned; pruning here costs no request, since the write is made anyway.
- */
-function leasesPatch(
-  record: RegistryRecord,
-  options: { leasesNow?: () => number; clearLeases?: boolean },
-): { leases?: readonly LeaseEntry[] | undefined } {
-  const held = record.leases;
-  if (held === undefined) return {};
-  if (options.clearLeases === true) return { leases: undefined };
-  if (options.leasesNow === undefined) return {};
-  const now = options.leasesNow();
-  const live = held.filter((e) => isLive(e, now));
-  if (live.length === held.length) return {};
-  return { leases: live.length === 0 ? undefined : live };
-}
-
 export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
@@ -2862,12 +2862,6 @@ export async function bulkLoadAhead(
 }
 
 /**
- * Take a combine's chunks as they come, checking each as an id's chunk is checked: the bitmap one the codec made, the
- * key a u16 and above the last, the values 16-bit (`maximum()`, one call per chunk). The bitmaps are the load's to
- * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
- * ids, and the writer checks the cardinality when it adds a chunk.
- */
-/**
  * The chunks a load was handed, each range-checked again as it is written: a caller's bitmap could have been changed
  * after the load collected it.
  */
@@ -2885,6 +2879,12 @@ function* rangeCheckedAtWrite(
   }
 }
 
+/**
+ * Take a combine's chunks as they come, checking each as an id's chunk is checked: the bitmap one the codec made, the
+ * key a u16 and above the last, the values 16-bit (`maximum()`, one call per chunk). The bitmaps are the load's to
+ * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
+ * ids, and the writer checks the cardinality when it adds a chunk.
+ */
 async function collectChunks(
   input: ChunkLoadInput,
   codec: CodecInterface,

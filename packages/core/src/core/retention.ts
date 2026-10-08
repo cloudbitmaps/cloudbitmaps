@@ -175,15 +175,6 @@ export async function getSegmentRetention(
   return readRetentionPolicy(record.retention);
 }
 
-/**
- * Record when a segment becomes eligible for retirement, creating its registry row if it has none.
- *
- * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
- * row's `retention` metadata are preserved — this owns one key, not the whole object.
- *
- * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
- * a sweep repeatedly "retire" bytes that are already gone.
- */
 /** The expiry currently recorded on a row, if any — the input to deciding which old pointer to remove. */
 function readExpiresAt(record: { retention?: GovernanceMeta } | null): number | undefined {
   const parsed = record === null ? null : readRetentionPolicy(record.retention);
@@ -236,6 +227,15 @@ async function reindex(
   return indexed;
 }
 
+/**
+ * Record when a segment becomes eligible for retirement, creating its registry row if it has none.
+ *
+ * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
+ * row's `retention` metadata are preserved — this owns one key, not the whole object.
+ *
+ * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
+ * a sweep repeatedly "retire" bytes that are already gone.
+ */
 export async function setSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,

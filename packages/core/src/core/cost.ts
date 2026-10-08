@@ -929,13 +929,6 @@ function buildReport(input: {
 }
 
 /**
- * **Planning** cost estimate — pure, no instance or live data needed (sizing, sales, what-if). Segment sizes
- * are taken as given (or roughly derived from cardinality); use the grounded `segment.costReport()` for
- * exact, real sizes. See {@link CostReport}.
- * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
- * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
- */
-/**
  * Refuses a `pricing` that is not a profile with a storage price list, and a `workload` that is not an object (`null`
  * reads as none), as a `ValidationError` naming the call rather than a raw `TypeError` from inside the model.
  */
@@ -956,6 +949,13 @@ function checkModelInputs(op: string, pricing: unknown, workload: unknown): void
   }
 }
 
+/**
+ * **Planning** cost estimate — pure, no instance or live data needed (sizing, sales, what-if). Segment sizes
+ * are taken as given (or roughly derived from cardinality); use the grounded `segment.costReport()` for
+ * exact, real sizes. See {@link CostReport}.
+ * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
+ * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
+ */
 export function estimateCost(input: EstimateInput): CostReport {
   // Shapes a plain-JavaScript caller can get wrong, refused as such rather than as a raw TypeError from deep inside.
   if (input === null || typeof input !== 'object') {

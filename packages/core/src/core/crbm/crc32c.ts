@@ -8,7 +8,6 @@
  * by SSE/iSCSI/Btrfs, and it is the algorithm the `.crbm` format locks in.
  */
 
-/** Reflected CRC32C lookup table (256 entries), built once from the reflected polynomial. */
 /**
  * Slicing-by-8 tables. `TABLES[0]` is the classic byte-at-a-time table; each subsequent table is the previous
  * one advanced by another byte position, which is what lets the loop below consume 8 bytes per iteration

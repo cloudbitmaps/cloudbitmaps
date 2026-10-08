@@ -918,7 +918,9 @@ export interface MaterializeResult {
 /**
  * Resolve the `storage` option to a {@link StorageChunkSource} at construction (wiring-time only — no hot-path cost).
  *
- * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two: a raw {@link IStorageDriver} exposes `putImmutable`
+ * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two, never by
+ * `instanceof`, so a backend or driver from a different copy of the package still works (the same reason the error
+ * predicates are brand-based): a raw {@link IStorageDriver} exposes `putImmutable`
  * (the byte-mover seam); a pre-built {@link StorageChunkSource} exposes `getChunk` (the engine's read seam). The
  * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
  * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
@@ -935,12 +937,6 @@ export interface MaterializeResult {
  * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
  * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IStorageDriver` to
  * write through, so its writes throw {@link UnsupportedError}).
- */
-/**
- * Work out what the caller handed us, and build the read path from it.
- *
- * Three accepted shapes. A backend is identified by its brand, the other two structurally — never by `instanceof`, so a backend or driver from a
- * different copy of the package still works (the same reason the error predicates are brand-based).
  */
 function resolveStorageSource(
   options: CloudRoaringOptions,
@@ -3215,7 +3211,6 @@ export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
  */
 const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
-/** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
 type Pin = (ref: SegmentRef, leaseUntil?: number, at?: PinAt) => Promise<Segment>;
 
@@ -3225,6 +3220,7 @@ type Pin = (ref: SegmentRef, leaseUntil?: number, at?: PinAt) => Promise<Segment
  */
 type CombineEngine = (handles: readonly Segment[]) => SegmentEngine | undefined;
 
+/** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 type Materialize = (
   dest: SegmentRef,
   ids: LoadInput | CombineChunks,

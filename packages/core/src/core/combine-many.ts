@@ -635,11 +635,6 @@ interface GroupPlan extends GroupSummary {
 const BYTES_PER_NODE = 320;
 const BYTES_PER_OUTPUT = 3_700;
 
-/**
- * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
- * operands, not to the group's size: its buffered outputs, its operand streams, the chunks being evaluated, the objects
- * being published beside the buffers, and the key lists of its own plan.
- */
 /** What {@link GroupCost} reads of an output. */
 export interface GroupCostItem {
   readonly bound: number;
@@ -654,6 +649,11 @@ export interface GroupCostItem {
  */
 export const combineWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
 
+/**
+ * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
+ * operands, not to the group's size: its buffered outputs, its operand streams, the chunks being evaluated, the objects
+ * being published beside the buffers, and the key lists of its own plan.
+ */
 export class GroupCost {
   private outputs = 0;
   private depth = 0;
