@@ -90,8 +90,9 @@ export interface LoadDeps {
 /**
  * What a plausible result looks like, so an implausible one is refused instead of published.
  *
- * Both bounds are compared against the **current** generation's cardinality, read from the `.crbm` index rather
- * than its payload — one object-header read, and only when a bound is actually set.
+ * `minCardinality` judges the new generation alone. `minRetained` and `maxGrowth` judge it against the **current**
+ * generation's cardinality, which the load takes from the registry row's summary of it when the row has a usable one,
+ * and otherwise from the `.crbm` index (one object-header read, never the payload), and only when a bound needs it.
  */
 export interface LoadGuard {
   /** Refuse a generation with fewer than this many ids. Use for "this segment is never legitimately tiny". */
@@ -121,34 +122,42 @@ export interface LoadGuard {
 }
 
 /**
- * Check a guard's bounds, before any round trip: the one check `load` and each output of `materializeMany` share.
- * `where` prefixes each field's name in the message (`''`, or `'outputs[3].'`).
+ * Check a guard's bounds before any round trip, and copy them: the one check `load` and each output of
+ * `materializeMany` share. The copy is what the load judges, so a guard object the caller reuses or changes while the
+ * call runs cannot change the bound it is judged by. `where` prefixes each field's name in the message (`''`, or
+ * `'outputs[3].'`).
  */
-export function validateGuardBounds(guard: LoadGuard | undefined, where: string): void {
-  if (guard?.minCardinality !== undefined) {
-    const m = guard.minCardinality;
-    if (!Number.isInteger(m) || m < 0) {
-      throw new ValidationError(
-        `${where}guard.minCardinality must be a non-negative integer; got ${String(m)}`,
-      );
-    }
+export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadGuard | undefined {
+  if (guard === undefined || guard === null) return undefined;
+  // A value that is not a number is named by its type: `'2'` printed as "got 2" would read as a valid bound.
+  const shown = (v: unknown): string => (typeof v === 'number' ? String(v) : `a ${typeof v}`);
+  const { minCardinality, minRetained, maxGrowth } = guard;
+  if (minCardinality !== undefined && (!Number.isInteger(minCardinality) || minCardinality < 0)) {
+    throw new ValidationError(
+      `${where}guard.minCardinality must be a non-negative integer; got ${shown(minCardinality)}`,
+    );
   }
-  if (guard?.minRetained !== undefined) {
-    const s = guard.minRetained;
-    if (!Number.isFinite(s) || s < 0 || s > 1) {
-      throw new ValidationError(
-        `${where}guard.minRetained must be a fraction in 0..1; got ${String(s)}`,
-      );
-    }
+  if (
+    minRetained !== undefined &&
+    (!Number.isFinite(minRetained) || minRetained < 0 || minRetained > 1)
+  ) {
+    throw new ValidationError(
+      `${where}guard.minRetained must be a fraction in 0..1; got ${shown(minRetained)}`,
+    );
   }
-  if (guard?.maxGrowth !== undefined) {
-    const g = guard.maxGrowth;
-    if (!Number.isFinite(g) || (g !== 0 && g < 1)) {
-      throw new ValidationError(
-        `${where}guard.maxGrowth must be 0 (no bound) or a factor of at least 1; got ${String(g)}`,
-      );
-    }
+  if (
+    maxGrowth !== undefined &&
+    (!Number.isFinite(maxGrowth) || (maxGrowth !== 0 && maxGrowth < 1))
+  ) {
+    throw new ValidationError(
+      `${where}guard.maxGrowth must be 0 (no bound) or a factor of at least 1; got ${shown(maxGrowth)}`,
+    );
   }
+  return Object.freeze({
+    ...(minCardinality === undefined ? {} : { minCardinality }),
+    ...(minRetained === undefined ? {} : { minRetained }),
+    ...(maxGrowth === undefined ? {} : { maxGrowth }),
+  });
 }
 
 export interface LoadOptions {
@@ -392,8 +401,7 @@ async function runLoad(
   if (!Number.isInteger(keep) || keep < 0) {
     throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
   }
-  const guard = options.guard;
-  validateGuardBounds(guard, '');
+  const guard = checkedGuard(options.guard, '');
   // The metadata as of this call, checked and copied before any round trip: what is stored is what the caller passed
   // now, however long the load runs and whatever its object does meanwhile.
   const metadata = copiedMetadata(options.metadata, (message) => {

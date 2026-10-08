@@ -22,7 +22,8 @@ so, and so do the module headers in the code.
   with `allowEmpty: true` too. It is judged after the other bounds, so a load that breaks one of those as well keeps
   that reason. `LoadRefusal`, `MaterializeRefusal` and the `segment.load-refused` audit event's `reason` gain
   `'max-growth'`; it appears only when the bound is set, and a caller that switches exhaustively on `reason` adds a
-  case.
+  case. Every bound of a guard is now copied when the call begins, so a guard object changed while a load runs no
+  longer changes what it is judged by, and a bound that is not a number is named by its type in the `ValidationError`.
 - **`store.materializeMany` reports to the store's metrics sink, as the `*Into` calls do.** One `op` event per call,
   with `name: 'materializeMany'`, timed from its first request (the pins) to its last publish; a call its input checks
   refuse sends nothing and reports nothing. And one `storage.get` event per range request it sends, naming the operand's

@@ -107,6 +107,32 @@ describe('guard.maxGrowth on load', () => {
     ]);
   });
 
+  it('judges the bound as it was when the call began, whatever the caller does to its guard object meanwhile', async () => {
+    const w = world();
+    await loadSegment(SEG, ids(100), w.deps);
+    const guard = { maxGrowth: 1.5 };
+    // Changed once the load is under way: at its first row read, e.g. one object reused for the next segment's load.
+    const realGet = w.registry.get.bind(w.registry);
+    w.registry.get = async (ref) => {
+      guard.maxGrowth = 100;
+      return realGet(ref);
+    };
+    const r = await loadSegment(SEG, ids(151), w.deps, { guard });
+    w.registry.get = realGet;
+    expect(guard.maxGrowth).toBe(100);
+    expect(r.reason).toBe('max-growth');
+  });
+
+  it('names a value that is not a number by its type, never as a number', async () => {
+    const w = world();
+    await expect(
+      loadSegment(SEG, ids(3), w.deps, { guard: { maxGrowth: '2' as unknown as number } }),
+    ).rejects.toThrow(/got a string$/);
+    await expect(
+      loadSegment(SEG, ids(3), w.deps, { guard: { maxGrowth: Object.create(null) as number } }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
   it.each([0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, '2' as unknown as number])(
     'refuses maxGrowth %s before any request',
     async (maxGrowth) => {

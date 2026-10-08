@@ -47,7 +47,7 @@ import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import type { Clock } from './determinism';
 import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
 import type { Budget } from './budget';
-import { validateGuardBounds } from './load';
+import { checkedGuard } from './load';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -430,13 +430,11 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
       throw new ValidationError(`${where}.allowEmpty must be a boolean`);
     }
-    const guard = output.guard;
-    if (guard !== undefined) {
-      if (typeof guard !== 'object' || guard === null) {
-        throw new ValidationError(`${where}.guard must be an object`);
-      }
-      validateGuardBounds(guard, `${where}.`);
+    if (output.guard !== undefined && (typeof output.guard !== 'object' || output.guard === null)) {
+      throw new ValidationError(`${where}.guard must be an object`);
     }
+    // The checked copy is what each publish judges, however long the call runs.
+    const guard = checkedGuard(output.guard, `${where}.`);
     const metadata = copiedMetadata(output.metadata, (message) => {
       throw new ValidationError(`${where}.metadata: ${message}`);
     });
