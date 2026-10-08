@@ -342,7 +342,9 @@ so, and so do the module headers in the code.
   a lookup and not a request within `genTtlMs`, and one of a generation since replaced is read as the segment is now.
   A point read resolves the version just before it asks, and is unchanged. Measured on a laptop over 2,000 cached
   chunks, the check adds about a microsecond a chunk. A read whose chunks were all cached, and that meets a move, reads
-  the rest as one stream at the version now current, as a cold read does.
+  the rest as one stream at the version now current, as a cold read does. On a store with a timed refresh, the reader
+  cache letting the segment go mid-read is not a move, since `genTtlMs` already bounds what the read serves, so a read
+  under reader-cache pressure makes no registry read per chunk; with `genTtlMs: 0` it is still one.
 - **`store.segment` refuses an option it does not know, and options that are not an object.** A misspelt `namespace`
   (`{ nameSpace: tenant }`), or a namespace passed on its own (`store.segment('a', 'tenant')`), was read as no
   namespace, so the handle addressed the segment of that name in the default namespace: a read of another

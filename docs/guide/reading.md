@@ -151,7 +151,8 @@ bound is stated; other pages link here.
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
 load landing mid-call never tears a chunk. A long call can still re-resolve: a `cache.genTtlMs` boundary after a publish,
-the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
+the reader cache evicting the segment on a store with no timed refresh (`cache.genTtlMs: 0`), a sweep that collects the
+generation it was reading or an object replaced under
 its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
 `retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
 `iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, one held in the

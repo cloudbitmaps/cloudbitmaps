@@ -642,16 +642,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * Whether a stream reading from `snap` must resolve its segment again before its next chunk, as a read of one chunk
-   * would: the snapshot's TTL has lapsed, an invalidation has happened since `epoch`, or the snapshot is no longer the
-   * one the reader cache holds for the segment (it let it go, or another read installed a newer one). Else nothing can
-   * have moved it, and the check costs a compare and a lookup.
+   * would: the snapshot's TTL has lapsed, an invalidation has happened since `epoch`, another read installed a newer
+   * snapshot, or the reader cache let the snapshot go on a store with no timed refresh. With a timed refresh the TTL
+   * already bounds what the stream serves, so an eviction alone is not a move: under reader-cache pressure it would
+   * cost a registry read per chunk. Else nothing can have moved it, and the check costs a compare and a lookup.
    */
   private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
-    return (
-      this.invalidations !== epoch ||
-      this.expired(snap.installedAtMs) ||
-      this.snapshots.get(key) !== snap
-    );
+    if (this.invalidations !== epoch || this.expired(snap.installedAtMs)) return true;
+    const held = this.snapshots.get(key);
+    return held === undefined ? this.pointerRefreshMs === 0 : held !== snap;
   }
 
   private expired(installedAtMs: number): boolean {

@@ -356,10 +356,10 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     for (let i = 0; i < CHUNKS; i++)
       for (const s of streams) expect((await s.next()).done).toBe(false);
     for (const s of streams) await s.return!(undefined);
-    // Each check after the cache let a segment go reads its row, as a read of that chunk alone would; none opens an
-    // object (a tail read and an index parse) to learn a version the row already names.
+    // With a timed refresh the TTL bounds what a stream serves, so the cache letting a segment go is not a move: no
+    // chunk reads the row again, and none opens an object (a tail read and an index parse).
     expect(storage.tails).toBeLessThanOrEqual(segments.length);
-    expect(gets).toBeGreaterThan(0);
+    expect(gets).toBeLessThanOrEqual(segments.length);
   });
 
   it("retries a transient fault in opening the generation it moves to mid-stream, through the caller's retry", async () => {
