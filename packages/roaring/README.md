@@ -53,9 +53,9 @@ hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }`
 before anything is written and loaded with no per-id work, into the same bytes its ids would write.
 
 To write many results over the same stored operands, `store.materializeMany` reads each operand once for a whole batch of
-`and` / `or` / `andNot` outputs instead of once per `*Into` call, and `store.memory(ids)` holds a set you already have in
-memory as an operand of that batch. [Many outputs from one pass](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#many-outputs-from-one-pass-materializemany) and
-[held operands](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#operands-held-in-memory-storememory) cover both.
+`and` / `or` / `andNot` outputs instead of once per `*Into` call, and a set you already hold in memory streams in as its
+feed. [Many outputs from one pass](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#many-outputs-from-one-pass-materializemany)
+covers both.
 
 ## Options
 

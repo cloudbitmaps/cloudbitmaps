@@ -10,9 +10,8 @@ import { collect, loadedStore } from '../helpers/loaded';
  * they need the same guard: without it, `a.intersectInto(dest, [b])` where the intersection comes out empty
  * wipes `dest` and reports a fresh generation number, reachable without passing any option.
  *
- * The narrow case where an operand has EXPIRED is refused on its own (`materialize-expiry-guard.test.ts`).
- * This is the general one: a typo'd operand, an `exclude` that swallowed everything, an operand that has not
- * loaded yet — every shape that produces an empty result on live handles.
+ * Every shape that produces an empty result is held to it: a typo'd operand, an `exclude` that swallowed
+ * everything, an operand that has not loaded yet.
  *
  * The verbs route through `loadSegment`, so what is pinned here is not just "empty is refused" but that the
  * whole guard applies: the plausibility bounds, the reported (not thrown) refusal, and — the part

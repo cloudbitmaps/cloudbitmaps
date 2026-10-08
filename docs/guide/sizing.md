@@ -177,7 +177,7 @@ the long tail: the segments that are too many or too large to keep in RAM, and t
 
 ## Price your own
 
-`CloudRoaring.estimateCost()` keeps working until it leaves the library for a package of its own ([when, and why](cost.md)).
+`CloudRoaring.estimateCost()` keeps working until it moves to `@cloudbitmaps/tools` ([when, and why](cost.md)).
 
 <!-- SIZING:SAMPLE:START -->
 ```ts

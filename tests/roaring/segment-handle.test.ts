@@ -54,3 +54,59 @@ describe('a Segment handle is not constructible', () => {
     expect(store.segment('s', { namespace: 'ns' }).key()).not.toBe(live.key());
   });
 });
+
+describe('a handle takes no deadline', () => {
+  const MESSAGE =
+    'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
+    '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`';
+  /** `expiresAt` is not in `SegmentOptions`, so each call goes through a cast, as plain JavaScript would. */
+  const segmentOf = (store: CloudRoaring, options: unknown): Segment =>
+    store.segment('s', options as Parameters<CloudRoaring['segment']>[1]);
+
+  it('refuses an `expiresAt` with ValidationError, whatever its value, rather than ignore it', () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    for (const expiresAt of [Date.now() + 86_400_000, Date.now() - 86_400_000, 0, null, 'soon']) {
+      expect(() => segmentOf(store, { expiresAt })).toThrow(ValidationError);
+      expect(() => segmentOf(store, { namespace: 'ns', expiresAt })).toThrow(MESSAGE);
+    }
+  });
+
+  it('reads as any handle does with `expiresAt` absent or undefined', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 's' }, [1, 2, 3]);
+    expect(await segmentOf(store, { expiresAt: undefined }).count()).toBe(3);
+    expect(await store.segment('s', {}).count()).toBe(3);
+  });
+});
+
+describe('an operand list holds segments only', () => {
+  const NOT_SEGMENTS: readonly unknown[] = [null, 5, {}, 'a'];
+  const message = 'an operand must be a segment from store.segment()';
+
+  it('every combine and *Into refuses a value that is not a segment, before reading anything', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    await store.load({ segment: 'dest' }, [9]);
+    const a = store.segment('a');
+    const dest = store.segment('dest');
+    for (const bad of NOT_SEGMENTS) {
+      const x = bad as Segment;
+      const drain = async (it: AsyncIterable<number>) => {
+        for await (const _ of it) void _;
+      };
+      await expect(drain(a.intersect([x]))).rejects.toThrow(message);
+      await expect(drain(a.union([x]))).rejects.toThrow(message);
+      await expect(drain(a.andNot([x]))).rejects.toThrow(message);
+      await expect(drain(a.intersect([a], { exclude: [x] }))).rejects.toThrow(message);
+      await expect(drain(a.union([a], { exclude: [x] }))).rejects.toThrow(message);
+      await expect(a.intersectInto(dest, [x])).rejects.toThrow(message);
+      await expect(a.unionInto(dest, [x])).rejects.toThrow(message);
+      await expect(a.andNotInto(dest, [x])).rejects.toThrow(message);
+      await expect(a.intersectInto(x, [a])).rejects.toThrow(message);
+      await expect(a.intersectInto(dest, [x])).rejects.toBeInstanceOf(ValidationError);
+    }
+    // No refused call wrote the destination.
+    expect((await store.generations({ segment: 'dest' })).length).toBe(1);
+  });
+});

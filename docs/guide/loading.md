@@ -40,6 +40,12 @@ A load that is refused returns `published: false` and a `reason`. It does not th
 current, and the result still carries the numbers (`cardinality`, `cardinalityBefore`) so you can log what was
 refused.
 
+**A bound is judged after the write, before the publish.** The load writes the new generation's object first, unpublished,
+then judges it, and only then moves the pointer. A refused load has written its object and deletes it, one write and one
+delete, unless another write changed the segment's row meanwhile, in which case collection takes it. Nothing a reader sees
+changes. To judge the outputs of a `materializeMany` call without writing anything, use a
+[dry run](#look-before-you-publish-a-dry-run).
+
 | `reason` | Means | What to do |
 |---|---|---|
 | `'empty'` | The ids produced nothing, and the segment is not empty. | Usually an upstream query that failed quietly. Fix it and re-run, or pass `allowEmpty: true` if emptying the segment is the point. |
@@ -390,7 +396,7 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
 - `exists` answers `false` for a row minted ahead of the first load (`setRetention` does that) and for a `destroyed`
   tombstone, because a read answers empty in both. Two states answer `true` where a read still gives you nothing, and neither is
   this call's job. A torn restore (a live pointer whose object was deleted) makes reads of the object throw, while a cold `count()` still
-  answers the number the row records, so `checkConsistency` is the call for it. And a handle with an expired `expiresAt` reads empty by a rule that lives on the handle.
+  answers the number the row records, so `checkConsistency` is the call for it.
 - `segments()` yields `destroyed` tombstones and rows whose `currentGen` is `null`, because a filtered enumeration that
   looks complete is worse than an honest one. Filter yourself, or ask `exists` the narrower question. Internal
   bookkeeping rows are the one exclusion, and only on an unscoped scan: they live in the reserved `cbm.due.` namespace,
@@ -635,8 +641,8 @@ otherwise. Five properties follow from "a write is a load":
 A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
 mean nothing was published. The same error covers a pointer that moved, a row rewritten by something that is not a
 supersession at all (a `setRetention`), and a purge. Re-read
-the destination and decide; do not treat it as "the write did not happen". A call that involves an expired handle is
-refused earlier and harder, with `ValidationError`. An `*Into` publishes with the fences a load does: see
+the destination and decide; do not treat it as "the write did not happen". A call that involves a released or lapsed
+lease is refused earlier and harder, with `LeaseExpiredError`. An `*Into` publishes with the fences a load does: see
 [which fence a publish carries](#how-it-stays-correct).
 
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
@@ -785,11 +791,10 @@ chunk cache, so a batch neither evicts another reader's hot chunks nor is served
 through the checks on untrusted bytes. A key an operand's index lists whose bytes are missing is an error for the outputs
 that read that operand, never an empty chunk: an exclude would otherwise subtract nothing.
 
-**Leases and deadlines.** An expired or released handle anywhere in the call, an operand or a `dest`, is refused before
-any request, as the `*Into` verbs refuse one. A leased operand's lease, and an operand's `expiresAt`, are checked before
-each chunk key is read: a lapse fails only the outputs that read that operand (`LeaseExpiredError` for a lease,
-`ValidationError` for a deadline) and never reads empty. Each `dest`'s lease and deadline are checked again just before
-its publish.
+**Leases.** A handle anywhere in the call, an operand or a `dest`, whose lease has lapsed or was released is refused
+before any request, as the `*Into` verbs refuse one. A leased operand's lease is checked before each chunk key is read:
+a lapse fails only the outputs that read that operand, with `LeaseExpiredError`, and never reads empty. Each `dest`'s
+lease is checked again just before its publish.
 
 **Requests of a refresh-shaped call.** Counted in memory by `bench/materialize-many-counts.cjs`, which wraps the storage
 driver and the registry of the in-memory backend and counts every call they are asked, not measured on S3 and with no
@@ -886,7 +891,7 @@ catches a feed that ended early or skipped a key, which no record check can see:
 fed name that appears in no record of the whole feed is refused too, since an operand that is empty everywhere is usually an
 upstream query that failed quietly (a suppression list that came back empty subtracts nothing); name it in `mayBeEmpty` where
 that is expected, and an `and` with it empties and an exclude of it subtracts nothing. `mayBeEmpty` naming anything that is not a fed
-or held operand is a `ValidationError`. The counts are the producer's own: a producer whose records and counts both come from the
+operand is a `ValidationError`. The counts are the producer's own: a producer whose records and counts both come from the
 same failed source agrees with itself, and the call cannot tell.
 
 **Fed outputs are atomic.** A fed output (one that names a fed operand) is published only after the whole feed has been read and
@@ -931,59 +936,76 @@ feed that no output names is never read, and its `counts` is never called: decla
 **Erasure.** A fed operand is the caller's memory, which no erasure can reach, so the call is refused instead: see
 [a batch of materializations](erasure.md#a-batch-of-materializations).
 
-### Operands held in memory: `store.memory`
+<a id="operands-held-in-memory-storememory"></a>
 
-A few conditions, or one suppression list the caller already holds, need no producer: `await store.memory(input)` holds them
-as an operand of `materializeMany`, beside stored and fed ones.
+### A set you hold: feed it
+
+A few conditions, or a suppression list the caller already holds as a bitmap, go into the call as a feed. Each record is
+one chunk key (`id >>> 16`) and the ids a name holds there, in ascending key order; a key may arrive as several records,
+each naming an operand once. This walks the sets you hold, by chunk key, and yields them in that order:
 
 ```ts
-const vip = await store.memory([7, 42, 99_001]); // or { bitmap } or { serialized }
+import type { RoaringBitmap32 } from 'roaring';
+
+/** The chunks of one set: each key with its ids, ascending. */
+function* chunksOf(bm: RoaringBitmap32): Generator<{ key: number; ids: Uint32Array }> {
+  let key = -1;
+  let ids: number[] = [];
+  for (const id of bm) {
+    if (id >>> 16 !== key && ids.length > 0) {
+      yield { key, ids: Uint32Array.from(ids) };
+      ids = [];
+    }
+    key = id >>> 16;
+    ids.push(id);
+  }
+  if (ids.length > 0) yield { key, ids: Uint32Array.from(ids) };
+}
+
+/** A feed of the sets you hold, by operand name: one record per set and key, in ascending key order. */
+async function* feedOf(sets: Record<string, RoaringBitmap32>) {
+  const heads = Object.entries(sets).map(([name, bm]) => {
+    const it = chunksOf(bm);
+    return { name, it, next: it.next() };
+  });
+  for (;;) {
+    const live = heads.filter((h) => !h.next.done);
+    if (live.length === 0) return;
+    const key = Math.min(...live.map((h) => (h.next.value as { key: number }).key));
+    for (const h of live) {
+      const chunk = h.next.value as { key: number; ids: Uint32Array };
+      if (chunk.key !== key) continue;
+      yield { key, operands: { [h.name]: chunk.ids } };
+      h.next = h.it.next();
+    }
+  }
+}
+
+const held = { vip, lapsed }; // RoaringBitmap32s you hold
 await store.materializeMany({
-  operands: { vip, engaged: store.segment('cond-engaged') },
-  outputs: [{ dest: store.segment('send-1'), expr: { and: ['vip', 'engaged'] } }],
+  operands: { engaged: store.segment('cond-engaged') },
+  feed: {
+    names: Object.keys(held),
+    records: feedOf(held),
+    counts: Object.fromEntries(Object.entries(held).map(([n, bm]) => [n, bm.size])),
+  },
+  maxBufferedBytes: 256 * 1024 * 1024,
+  mayBeEmpty: ['lapsed'], // a set that may hold no id is named here, at the call's top level
+  outputs: [{ dest: store.segment('send-1'), expr: { and: ['vip', 'engaged'] }, exclude: ['lapsed'] }],
   keep: 12,
 });
-vip.release(); // frees it; any later use throws
 ```
 
-**Where it works.** A held operand is accepted in `materializeMany`'s `operands` and nowhere else: `intersect`, `union`,
-`andNot`, the `*Into` verbs and `load` take what they always took. The call's outputs are byte for byte what the same
-operands stored, or fed, would publish, and the three kinds mix in one call.
+The outputs are byte for byte what the same sets stored would publish. Everything said of a feed above holds: every record
+is checked, a fed call runs as one group and needs `maxBufferedBytes`, a set that holds no id is refused unless its name is
+in `mayBeEmpty`, and an erasure that this store runs while the call runs refuses it. The sets are your copy, which no
+erasure reaches: build them from the source after any erasure.
 
-**What it takes, and what is checked.** `store.memory` takes what [a load takes](#what-a-load-accepts) as input (ids as a
-sync or async iterable or a typed array, `{ bitmap }`, `{ serialized }`) and runs the same checks with the same errors, before
-the handle exists: the size cap, the structure, the safe deserializer and each id's range. **Only a real `Uint32Array` skips the
-per-id range check**, by a brand that nothing but a real typed array carries: a subclass, a view on shared memory and another realm's
-`Uint32Array` are real ones and are read through the typed array's own accessors, and any other typed array (an `Int32Array`
-holding `-1`, a `Float64Array` holding `1.5` or `NaN`), an array with a bad id, an object that claims the type and a proxy go
-through the per-id check and are refused with `ValidationError`. An object with an `ascending` key is refused, with a message that names the feed: ids that
-arrive in key order are fed, not held. The ids are held as they were when the call returned: a change to a caller's array or
-bitmap afterwards is not seen.
-
-**Empty.** An empty set is accepted by `store.memory` and **refused by `materializeMany`**, before any request, unless its name
-is in `mayBeEmpty`, for the reason a stored operand that names no segment is refused: an empty suppression list is usually
-an upstream query that failed quietly. With the name in `mayBeEmpty`, an `and` with it empties and an exclude of it subtracts
-nothing. `mayBeEmpty` may name fed and held operands; naming anything else is a `ValidationError`.
-
-**Memory.** The handle holds the ids as the chunks a stored generation of those ids would hold, so its size follows the ids' layout (from kilobytes for consecutive ids to tens of megabytes for 10,000,000 scattered ones), and
-**between calls that memory is the caller's**: `release()` zeroes and drops it, any later use throws `ValidationError`, and
-releasing twice does nothing. While a call runs, its held operands count against `maxBufferedBytes` (a handle under two names is
-counted once), and a call whose held operands alone pass it throws `BudgetExceededError` before any chunk is read. There is no size option: a serialized input has the load's cap.
-A held operand is read from memory, so it makes no request and the shared chunk cache never sees it; its chunks still count as
-chunk reads in `stats.requests.chunkReads` and against `budget`. A release that lands while a call runs fails the outputs that
-read it with `ValidationError` and never reads zeros.
-
-**One store.** A handle belongs to the store that made it; passing it to another is a `ValidationError`.
-
-**Erasure.** A held operand is the caller's memory, which no erasure can reach, so it is refused instead. The store keeps a counter
-that `eraseSubject` moves when it starts and again when it ends. A handle records it when `store.memory` is called, so a handle made
-while an erasure is running, or one an erasure starts under while its ids are still being read, is stale. A call checks it before
-any request and again immediately before each publish of an output that reads the handle, and an output whose handle was made
-before an erasure that has started in this store since fails with `StaleOperandError` (`reason: 'erased'`, `operand` naming it)
-and is not published; outputs that do not read it publish. A handle made after the erasure ended works. **Only this store's
-`eraseSubject` moves the counter**: an erasure by any other path (another store, another process, `dropSegment`,
-`eraseNamespace`, `destroySegment` or the free function `eraseIdFromSegment`) is not seen. The handle is the caller's copy, so
-build it from the source of truth at the start of each refresh and release it at the end. See [a batch of materializations](erasure.md#a-batch-of-materializations).
+**A small set that narrows a large stored one: load it instead.** A fed operand names no chunk keys before the pass, so
+an `and` of a fed set with a stored segment reads every chunk of the stored one, even where the fed set holds no id.
+When a set you hold is small and the stored operand it narrows is large, load the set as a segment of its own and name
+it as a stored operand: the call then reads only the chunks the two share, at the cost of that load. Drop it with
+`dropSegment` when the refresh is done.
 
 ### Look before you publish: a dry run
 

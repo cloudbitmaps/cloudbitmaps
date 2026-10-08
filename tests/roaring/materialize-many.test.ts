@@ -363,21 +363,6 @@ describe('store.materializeMany', () => {
       await expect(w.store.materializeMany(options)).rejects.toBeInstanceOf(ValidationError);
       expect(w.calls.storage + w.calls.registry).toBe(0);
     });
-
-    it('refuses an expired handle', async () => {
-      const w = await batchWorld(DATA);
-      const gone = w.store.segment('a', { expiresAt: Date.now() - 1_000_000 + 2 ** 41 - 2 ** 41 });
-      void gone;
-      const past = w.store.segment('a', { expiresAt: 1_000_000_000_000 });
-      await expect(
-        w.store.materializeMany({
-          operands: { a: past },
-          outputs: [{ dest: w.store.segment('d'), expr: 'a' }],
-          keep: 1,
-        }),
-      ).rejects.toThrow(/expired/);
-      expect(w.calls.storage + w.calls.registry).toBe(0);
-    });
   });
 
   it('an operand that names no segment is refused unless allowed', async () => {
@@ -456,20 +441,6 @@ describe('store.materializeMany', () => {
     expect(new Set(gets.map((e) => e.segment))).toEqual(new Set(['a', 'b', 'c']));
     expect(gets.every((e) => e.namespace === undefined && e.ms >= 0)).toBe(true);
     expect(events.filter((e) => e.kind === 'cache' || e.kind === 'intersect')).toEqual([]);
-
-    // A held operand sends no request, so it reports none.
-    events.length = 0;
-    const vip = await w.store.memory([5, 31_000]);
-    const held = await w.store.materializeMany({
-      operands: { a: s('a'), vip },
-      outputs: [{ dest: s('d3'), expr: { and: ['a', 'vip'] } }],
-      keep: 1,
-    });
-    published(held.outputs[0]);
-    expect(new Set(events.filter((e) => e.kind === 'storage.get').map((e) => e.segment))).toEqual(
-      new Set(['a']),
-    );
-    expect(events.filter((e) => e.kind === 'op')).toHaveLength(1);
 
     // A call that throws after its first request reports its time, and the reads it never sent are not reported.
     events.length = 0;

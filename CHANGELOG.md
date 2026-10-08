@@ -38,7 +38,7 @@ so, and so do the module headers in the code.
   with `name: 'materializeMany'`, timed from its first request (the pins) to its last publish; a call its input checks
   refuse sends nothing and reports nothing. And one `storage.get` event per range request it sends, naming the operand's
   segment, with the range's bytes and time: a range serves every output of its group, so the events count the call's
-  requests, which equal `stats.requests.rangeReads`, and a held operand sends none. It reports no `cache` event, since it
+  requests, which equal `stats.requests.rangeReads`. It reports no `cache` event, since it
   never looks up the chunk cache, and no `intersect` event, since an output is an expression over several operators;
   `stats.chunks.pruned` counts what it did not read. `MetricOpName` gains `'materializeMany'`, and
   `CountingMetricsSink`'s `ops` gains its tally: a sink that switches on `name` with an exhaustive `never` check adds a
@@ -64,27 +64,44 @@ so, and so do the module headers in the code.
 
 ### Deprecated
 
-- **The cost model, and `store.reapRegistryTombstones`, each marked `@deprecated` for 1.0.** Both keep working
-  unchanged until then.
-  - `CloudRoaring.estimateCost`, `segment.costReport`, core's `estimateCost` and `groundedReport`, and the price lists
-    `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER` move to their own
-    package at 1.0. They are a planning tool, not part of reading or writing a set, and the price list ships as old as
-    the release that carries it. `stat()` gains the generation's byte size then, so a grounded report needs nothing
-    internal.
-  - `store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
-    `IRegistryDriver.reapLegacyTombstones` leave the store at 1.0, where the reaper is kept as a one-off script. Only a
-    bucket written by a release before 0.12 holds the rows it removes.
+- **The cost model, marked `@deprecated`: it moves to a package of its own, `@cloudbitmaps/tools`, in the minor after
+  this one.** `CloudRoaring.estimateCost`, `segment.costReport`, core's `estimateCost` and `groundedReport`, and the
+  price lists `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER` keep working
+  unchanged until then. They are a planning tool, not part of reading or writing a set, and a price list in the library
+  is as old as the release that carries it. `stat()` gains the generation's byte size with the move, so a grounded report
+  needs nothing internal.
+
+### Removed
+
+- **`expiresAt` on a handle: `store.segment(name, { expiresAt })` and `seg.expiresAt`.** A handle carried a deadline past
+  which its reads answered empty, an expired operand emptied an `intersect` or left a `union`, and an expired exclusion
+  or an `*Into` involving an expired handle threw. It reclaimed nothing and bound one handle, and every combine carried
+  its rules. `expiresAt` among `store.segment`'s options now throws `ValidationError`, so a deadline is never silently
+  dropped. For a set that must stop being served after a deadline, record it with `setRetention` and run
+  `retireExpired`, or check the deadline where you read ([a deadline on a set](docs/guide/retention.md#a-deadline-on-a-set)).
+  Retention's own `expiresAt` is unchanged. An older copy of `@cloudbitmaps/roaring` installed beside this one asks each
+  handle whether it has expired, so a handle of this release passed to that copy's combine throws a `TypeError` there,
+  and a handle of that copy carrying `expiresAt`, passed to this release, reads its data: keep one version of the package
+  in an application.
+- **Held operands: `store.memory`, `MemoryOperand`, and core's `prepareHeld`, `CombineManyHeld` and `HeldChunks`.** A held
+  operand did what a feed does, with the whole set resident instead of one chunk key at a time. A set you hold goes into
+  `materializeMany` as a feed: the guide's recipe walks the sets by chunk key and yields them in the feed's order
+  ([a set you hold](docs/guide/loading.md#a-set-you-hold-feed-it)). `MaterializeManyOptions.operands` takes segments only,
+  `mayBeEmpty` names fed operands only, and `StaleOperandError`'s `'erased'` applies to a fed call only.
+- **`store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
+  `IRegistryDriver.reapLegacyTombstones`.** Only a bucket a release before 0.12 wrote holds the `deleted: true` rows the
+  reaper removed. The guide's recipe runs the reaper the 0.18 releases ship, once, from a scratch directory
+  ([retention](docs/guide/retention.md#remove-the-deleted-rows-a-release-before-012-left)). A registry driver that
+  implemented `reapLegacyTombstones` can drop it: nothing calls it.
 
 ### Fixed
 
-- **A memory operand passed to a combine or an `*Into` call is refused with a `ValidationError`.** `intersect`, `union`,
-  `andNot` and the `*Into` calls failed with a raw `TypeError` (`h.leaseError is not a function`) when given a handle
-  from `store.memory()`, as an operand, an `exclude` or a destination. They now refuse it before reading anything, with
-  a message that says it is an operand of `store.materializeMany()` only, and refuse any other element of an operand
-  list that is not a segment with a `ValidationError` too. A segment from another copy of the package is accepted, as
-  before. An operand list that is not an array still fails as it did.
+- **An element of an operand list that is not a segment is refused with a `ValidationError`.** `intersect`, `union`,
+  `andNot` and the `*Into` calls failed with a raw `TypeError` (`h.leaseError is not a function`) when an operand, an
+  `exclude` or a destination was not a segment. They now refuse it before reading anything. A segment from another copy
+  of the package is accepted, as before. An operand list that is not an array still fails as it did.
 - **`store.materializeMany`'s `mayBeEmpty` with no feed says what is wrong with it.** The message was "mayBeEmpty names
-  fed operands, and the call has no feed" for every name that was not a held operand. It now names the first such
+  fed operands, and the call has no feed" for every name. It now names the first such
   entry and what it is (`"a", a stored operand`, `"x", which is not an operand of this call`, or something that is not
   a name), and a value that is not an array is refused as one. Code that matched the old text must match the new one.
 

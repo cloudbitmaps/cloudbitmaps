@@ -36,7 +36,6 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-id.test.ts',
   'tests/core/erase-not-in-current-awaited.test.ts',
   'tests/core/erase-swept-generation.test.ts',
-  'tests/core/expired-exclusion.test.ts',
   'tests/core/generation-gc.test.ts',
   'tests/core/generation-metadata-read.test.ts',
   'tests/core/generation-metadata-write.test.ts',
@@ -46,7 +45,6 @@ export const ROUTED: readonly string[] = [
   'tests/core/load-max-growth.test.ts',
   'tests/core/load-routing.test.ts',
   'tests/core/load.test.ts',
-  'tests/core/materialize-expiry-guard.test.ts',
   'tests/core/materialize-load-guard.test.ts',
   'tests/core/null-generation-row.test.ts',
   'tests/core/option-groups.test.ts',
@@ -118,10 +116,6 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'its loads seed the stored operands and the reference generations a fed call is compared against byte for byte, from ' +
     'bitmaps; the behaviour under test is the feed, so a second run under the serialized input would repeat it and exercise ' +
     'no part of the load path',
-  'tests/roaring/materialize-many.held.test.ts':
-    'its loads seed the stored operands and a destination a publish races, and the input forms under test are the ones ' +
-    '`store.memory` takes, which the file runs each of; a second run of its loads under the serialized input would repeat it ' +
-    'and exercise no part of the load path',
   'tests/core/erase-coalesced-reads.test.ts':
     'its loads only seed fixtures for the erasure read path, whose range requests it counts; a second run under ' +
     'the serialized input would repeat those counts and exercise no part of the load path',

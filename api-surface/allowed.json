@@ -1,5 +1,81 @@
 [
   {
+    "entry": "@cloudbitmaps/core/driver-kit ObjectRegistryStore.resolveCapabilities",
+    "reason": "removed with the tombstone reaper, its only caller: the sweep and delete settle conditionalDelete through their first read or listing, so a store that implemented it can drop it; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core CombineManyHeld*",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core HeldChunks*",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core prepareHeld",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core CombineManyOperand.held",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MemoryOperand*",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.memory",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
+    "reason": "narrowed from Record<string, Segment | MemoryOperand> to Record<string, Segment> with the removal of held operands; a call that passed segments only is unchanged; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ReapLegacyTombstones*",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ReapRegistryTombstones*",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core reapRegistryTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core IRegistryDriver.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IRegistryDriver.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit ObjectStoreRegistry.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IRegistryDriver.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ReapRegistryTombstones*",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.reapRegistryTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.expiresAt",
+    "reason": "removed with expiresAt on a handle: a deadline is recorded with setRetention and acted on by retireExpired, or checked where the set is read, by the guide's recipe; an expiresAt option on store.segment throws ValidationError; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentOptions.expiresAt",
+    "reason": "removed with expiresAt on a handle: a deadline is recorded with setRetention and acted on by retireExpired, or checked where the set is read, by the guide's recipe; an expiresAt option on store.segment throws ValidationError; agreed with the maintainer"
+  },
+  {
     "entry": "@cloudbitmaps/roaring CloudRoaring.materializeMany",
     "reason": "overloaded for dryRun: the first signature is now the dry-run form (dryRun: true returns a MaterializeManyDryRun), and the plain form follows it as the last signature, so a call without dryRun (or with dryRun: false) resolves to the same parameter type and the same Promise<MaterializeManyRun> as before, and ReturnType and Parameters, which read the last signature, are unchanged; no caller's code or types change; agreed with the maintainer"
   },

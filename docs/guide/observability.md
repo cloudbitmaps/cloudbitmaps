@@ -40,7 +40,7 @@ handful you care about:
 pins) to its last publish, and a `storage.get` event per range request it sends. The `op` event fires when the call
 ends, also when it throws after its first request (a budget refusal, a failed pin), and not when its input checks
 refuse it; a fed call's time includes the time spent waiting on the feed. A range serves every output of its group,
-so the events count the call's requests, not requests per output, and a held operand sends none. It emits no `cache`
+so the events count the call's requests, not requests per output. It emits no `cache`
 event, since it never looks up the chunk cache, and no `intersect` event, since an output is an expression over
 several operators. So an `*Into` call that moves into a batch leaves its own name's op series and the chunk-skipping
 and cache-hit series: the batch's latency is one series for the whole call, not comparable with a per-output `*Into`

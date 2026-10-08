@@ -1668,10 +1668,9 @@ export async function writeCrbmGeneration(
 /**
  * The chunks a load of ids, or of a decoded bitmap, writes: ascending by key, each non-empty and run-optimized. A decoded
  * bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot encode its own
- * chunks, are bucketed per chunk instead; both give the same bytes. Exported for a caller that holds the chunks itself
- * instead of writing them.
+ * chunks, are bucketed per chunk instead; both give the same bytes.
  */
-export async function encodedChunksOfInput(
+async function encodedChunksOfInput(
   ids: Iterable<number> | AsyncIterable<number> | DecodedLoadInput,
   codec: CodecInterface,
   clock: Clock | undefined,

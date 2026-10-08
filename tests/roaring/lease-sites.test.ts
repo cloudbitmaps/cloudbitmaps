@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 /**
  * A leased handle must throw past its lease at every site that reads, and a new read method that forgets the check is the
  * way that stops being true. This lists every method of `Segment` that reaches the engine, a combine, or a write, and
- * fails if one does not check a lease (directly, or through the refusal the `*Into` verbs share).
+ * fails if one does not check a lease (directly, or through the check the `*Into` verbs share).
  */
 
 const SOURCE = readFileSync(
@@ -20,7 +20,7 @@ const REACHES = [
   /this\.pinned\(/,
 ];
 /** What counts as checking a lease. */
-const CHECKS = [/assertLeases\(/, /leaseError\(/, /refuseIfExpired\(/];
+const CHECKS = [/assertLeases\(/, /leaseError\(/, /assertIntoHandles\(/];
 /** Methods that touch no data: they name the segment, hold the check itself, or time a call. */
 const EXEMPT = new Set([
   'constructor',
@@ -30,7 +30,6 @@ const EXEMPT = new Set([
   'release',
   'refsIn',
   'liveExcludes',
-  'expired',
 ]);
 
 /** `[name, body]` for each method of the class `Segment`, found by its two-space indent. */
@@ -91,7 +90,7 @@ describe('every Segment method that reads checks a lease', () => {
   it('fails when a read method does not check, and not for a method that reads nothing', () => {
     // A read site with its check removed.
     const mutated = SOURCE.replace(
-      /(has\(id: number\): Promise<boolean> \{\n)[\s\S]*?(\n {4}if \(this\.expired\(\)\) return Promise\.resolve\(false\);)/,
+      /(has\(id: number\): Promise<boolean> \{\n)[\s\S]*?(\n {4}return this\.timed\('has')/,
       '$1$2',
     );
     expect(mutated).not.toBe(SOURCE);
@@ -105,7 +104,7 @@ describe('every Segment method that reads checks a lease', () => {
     // A new route to the object that skips the check: the way `pinAt` reaches it.
     const pinned = SOURCE.replace(
       '  key(): string {',
-      '  sneakyPin(): Promise<Segment> {\n    return this.pinned(this.ref, this.expiresAt);\n  }\n\n  key(): string {',
+      '  sneakyPin(): Promise<Segment> {\n    return this.pinned(this.ref);\n  }\n\n  key(): string {',
     );
     expect(unchecked(pinned)).toEqual(['sneakyPin']);
     // `key` reads no data, and is not flagged.

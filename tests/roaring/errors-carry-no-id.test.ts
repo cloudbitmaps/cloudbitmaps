@@ -33,7 +33,7 @@ function expectNoId(message: string): void {
 }
 
 describe('an error message never carries an id', () => {
-  it('has, load, store.memory, eraseSubject, subjectReport, iterate bounds and the feed', async () => {
+  it('has, load, eraseSubject, subjectReport, iterate bounds and the feed', async () => {
     const w = await batchWorld({ s: [1, 2, 3] });
     const seg = w.store.segment('s');
     const messages: string[] = [];
@@ -41,7 +41,6 @@ describe('an error message never carries an id', () => {
       const v = bad as number;
       messages.push(await messageOf(() => seg.has(v)));
       messages.push(await messageOf(() => w.store.load({ segment: 't' }, [1, v])));
-      messages.push(await messageOf(() => w.store.memory([1, v])));
       messages.push(await messageOf(() => w.store.eraseSubject(v, { namespace: 'n' })));
       messages.push(await messageOf(() => w.store.subjectReport(v, { namespace: 'n' })));
       messages.push(await messageOf(() => drain(seg.iterate({ after: v }))));

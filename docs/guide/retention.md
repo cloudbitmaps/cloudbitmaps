@@ -86,17 +86,25 @@ hand-edited one. That is deliberately not folded into `null`: a malformed policy
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
 
-**A deadline can also sit on a handle.** `store.segment(name, { namespace, expiresAt })` takes the same
-epoch-millisecond instant. Past it, every read through that handle answers empty (`has` is `false`, `count` is `0`,
-`iterate` yields nothing) as one comparison against the store's clock, with no I/O. An expired operand makes an
-`intersect` empty and drops out of a `union`. **An expired exclusion throws, in every shape**: in an
-`andNot`, and as `exclude` on an `intersect` or a `union`, the stream rejects with a `ValidationError` that names it,
-before any request is made, so an opt-out list that has lapsed cannot quietly stop suppressing. An `*Into` that
-involves an expired handle, an exclusion included, throws `ValidationError` too. A handle deadline reclaims
-nothing and binds no other handle, so `count()` answering `0` while the
-objects are still in the bucket is expected: it is one reader's cut-off, not a policy. Record the policy with
-`setRetention` to make the expiry durable, visible to the sweep and reclaimable. A seconds-shaped value is refused at
-the handle, and `seg.expiresAt` reads it back.
+### A deadline on a set
+
+A handle carries no deadline of its own (`expiresAt` among `store.segment`'s options throws
+`ValidationError`). For a set that must stop being served after a deadline, use one of two shapes:
+
+- **Durable, for every reader:** record it with `setRetention` (above) and run `retireExpired` on a schedule. The sweep
+  drops the segment once the instant passes, so every process stops reading it and its bytes are reclaimed. Reads go on
+  until the sweep has run and each reader has re-resolved the segment (within its `cache.genTtlMs`, or longer for a
+  pinned handle), so the cut-off is as exact as the schedule.
+- **One reader's cut-off:** check the deadline where you read, against the same clock you would hand the store:
+
+  ```ts
+  const deadline = Date.parse('2026-12-31T18:00:00Z');
+  const promo = store.segment('promo');
+  const served = Date.now() < deadline ? await promo.has(id) : false;
+  ```
+
+  Use this where the cut-off must be exact. Keep the check beside an exclusion too: an opt-out list that should stop applying is a decision to make where it
+  is used, not a list that quietly reads as empty.
 
 ## Run the sweep: `store.retireExpired()`
 
@@ -312,69 +320,56 @@ Two limits to know before you automate it:
 > A lifecycle rule is still a fine backstop for orphans left by a failed `dropSegment`. Set its expiry window
 > comfortably longer than your retention window, so it can never get there first.
 
-## Remove the deleted rows a release before 0.12 left: `store.reapRegistryTombstones`
+## Remove the deleted rows a release before 0.12 left
 
 A release before 0.12 never removed a row it deleted. It kept a `{ deleted: true }` envelope, its token a bare counter
 with no incarnation id, and a 0.12 or later release does the same when it deletes a row that was born before 0.12. No
-call removes one: `retireExpired` and `dropSegment` leave it as they found it, and every full listing of the registry
-still reads it, one GET apiece, though no read of a segment ever returns it. A segment name that was personal data also
-survives in it, in the row's record. This call removes them. It is an admin call, run once by hand after the last
-process on a release before 0.12 is gone, and nothing schedules it.
+call of this release removes one: `retireExpired` and `dropSegment` leave it as they found it, and every full listing of
+the registry still reads it, one GET apiece, though no read of a segment ever returns it. A segment name that was
+personal data also survives in it, in the row's record. Only a bucket a release before 0.12 wrote holds such rows.
 
-**Deprecated, and leaving the store at 1.0, where it is kept as a one-off script.** Only a bucket written by a release
-before 0.12 holds such rows. Until then it is this store call.
+To remove them, run the reaper the 0.18 releases ship, once, from a scratch directory, after the last process on a
+release before 0.12 is gone:
 
-```ts
-const preview = await store.reapRegistryTombstones({ dryRun: true });
-console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`, preview.skipped);
-
-const done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true, namespace: 'sends', limit: 5_000 });
-if (done.limited) runAgain(); // `limit` was spent with keys left
+```sh
+mkdir reap && cd reap && npm init -y && npm install @cloudbitmaps/roaring@0.18 @cloudbitmaps/s3@0.18
 ```
 
-| option | |
-| --- | --- |
-| `confirmNoLegacyWriters` | required `true` for a real run, else a `ValidationError` and no request. Your statement that no process on a release before 0.12 writes this registry: one that did, re-creating a removed name over nothing, would start its counter at 0 and issue the removed row's tokens again |
-| `dryRun` | counts what a real run would remove (`wouldReap`) and removes nothing; needs no confirmation |
-| `namespace` | only that namespace; without it, every namespace, the default one and the library's own bookkeeping rows included. The default namespace cannot be named, so it cannot be scoped to alone |
-| `limit` | the most removals (default 1,000); see below for what it does and does not bound |
+```js
+// reap.mjs: count first, then remove; `limit` (default 1,000) bounds each run, so run until it is not limited
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { S3Storage } from '@cloudbitmaps/s3';
 
-**What it removes, and what it never touches.** A row that is `deleted: true` and whose token has no incarnation id,
-whatever its `status`: the purge tombstone an earlier sweep left (`deleted: true`, `destroyed`, a bare token) is removed
-too. The result says what it left, by reason, in `skipped`: a `live` row, a `destroyed` row that is not `deleted` (a
-crypto-shred's tombstone, or one `dropSegment` left: the attestation of an erasure), an `incarnated` row (a deleted row a
-0.12 or later release wrote, which `delete` and the sweep remove themselves where the registry removes rows), and a
-`raced` row. It never touches a generation. **It does not clean a bucket completely.** A tombstone `dropSegment` leaves
-is a `destroyed` row with no stamp the call could tell from a crypto-shred's, so it stays, and so does every live row
-written before 0.12. **A known limit:** a tombstone a 0.12 or later release wrote while `conditionalDelete` was off (GCS by
-default, S3 on a custom endpoint) has an incarnation id, so it stays too, every full listing still reads it, and this call
-neither removes it nor runs on such a registry. Only a later delete or purge made where the registry removes rows, or a
-rule on the bucket that removes the object, gets rid of it.
+// The same storage options as your store: the bucket, and the prefix and region it uses.
+const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bucket', prefix: 'cloudbitmaps' }) });
+const preview = await store.reapRegistryTombstones({ dryRun: true, limit: 100_000 });
+console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`, preview.skipped, { limited: preview.limited });
+let done;
+do done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true, limit: 100_000 });
+while (done.limited);
+```
 
-**Every removal is fenced, where the backend applies the fence.** Each delete is conditioned on the version the call read
-(`If-Match` on S3 and Azure Blob, `ifGenerationMatch` on GCS), so a `create` that writes over the envelope first wins: the
-delete is refused, the new row survives, and the row is counted as `raced` (which also counts a row already gone). A
-`create` that had already read the envelope, and whose own write meets the removal, throws `WriteConflictError`, which the
-library does not retry. Retry the create: it finds no row and writes one. Where the registry's `conditionalDelete` is off
-(GCS by default, S3 on a custom endpoint, or set to `false`), the call throws `CapabilityError` before its first request,
-a dry run included, and never falls back to an unconditional delete. The detected gate is a fenced one (S3 is on only for
-an AWS host). **On an endpoint that ignores `If-Match` (MinIO, fake-gcs-server), a `conditionalDelete: true` you set makes
-this an unfenced delete:** run it with every writer stopped. The in-memory and local-filesystem registries throw
-`UnsupportedError`. On a versioned bucket a delete leaves a delete marker and the earlier version, record included, so
-the name is not erased from the bucket.
+Use the driver package of your storage (`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) in place of S3.
 
-**Cost, and what `limit` bounds.** Over R rows read and E removed: `ceil(R / 1000)` LIST requests, R GETs and E DELETEs (a
-dry run, no DELETEs). Reads run 48 at a time. R = 100,000 is 100 LIST requests, 100,000 GETs and up to 100,000 DELETEs,
-about $0.04 on S3 at the default prices. `limit` bounds the removals, not the reads: **a run is not resumable.** Each one
-lists and reads the registry from the start, so every run pays for the rows ahead of the next removable one, and a dry
-run with a `limit` reports the same first rows every time, so `wouldReap` is a total only when `limited` is `false`.
-`limited` is `true` whenever the limit was spent with keys left, whether or not any of them is removable, so a final
-`limited: true` can be followed by a run that removes nothing.
-
-**An unreadable object stops the run.** One that cannot be read or parsed (a corrupt body, or a row of a newer schema)
-stops it with an error that names its key, and the call removes nothing more: it may be a newer release's row, and the
-call never guesses. Nothing is half-done: each row is one delete, a rerun is safe, and the next run stops at the same
-object until it is restored or removed. Scope the run with `namespace` to get past an object in another namespace.
+- **What it removes:** a row that is `deleted: true` and whose token has no incarnation id, and nothing else. It never
+  touches a live row, a `destroyed` row that is not `deleted` (the attestation of an erasure), a deleted row a 0.12 or
+  later release wrote, or a generation, so it does not clean a bucket completely.
+- **Every removal is fenced:** each delete is conditioned on the version it read, so a `create` that writes over the
+  envelope first wins and the row is counted as `raced`. Where the registry cannot delete under that condition (GCS by
+  default, S3 on a custom endpoint) it refuses before its first request, a dry run included.
+- **`confirmNoLegacyWriters: true` is your statement** that no process on a release before 0.12 writes the registry. One
+  that did, re-creating a removed name, would issue the removed row's tokens again.
+- **A run is not resumable:** each lists and reads from the start, so a run costs a listing and one GET per row, plus a
+  DELETE per removal, and every turn of the loop pays the reads again. `limit` bounds the removals of one run (default
+  1,000); a large one keeps the loop to a turn or two. A dry run's `wouldReap` is a total only when `limited` is `false`.
+- **Where the fence does not hold:** on an endpoint that ignores the condition (MinIO, fake-gcs-server), a
+  `conditionalDelete: true` you set makes each delete unfenced, so run it with every writer stopped. On a versioned
+  bucket a delete leaves a delete marker and the earlier version, record included, so a name that was personal data is
+  not erased from the bucket by this.
+- **What stops it:** an object it cannot read stops the run with an error naming its key, and removes nothing more,
+  since it may be a newer release's row; scope the run with `namespace` to get past it. A `create` that had already read
+  an envelope and meets its removal throws `WriteConflictError`: retry the create. A tombstone a 0.12 or later release
+  wrote while `conditionalDelete` was off carries an incarnation id, so it stays, and the call refuses such a registry.
 
 ## There is no per-id TTL
 
@@ -520,8 +515,8 @@ one request per row. That is the case:
   tombstone: the new row has an incarnation, and when it is purged nothing keeps the legacy counter. It matters only for
   a 0.11 process that outlived the upgrade's stop-every-0.11-process step, which the upgrade does not support.
 
-A `deleted: true` row already in the bucket stays: the purge never sees a row that is already deleted. The one call that
-removes the ones a release before 0.12 left is [`store.reapRegistryTombstones`](#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones).
+A `deleted: true` row already in the bucket stays: the purge never sees a row that is already deleted. To remove the ones
+a release before 0.12 left, see [the recipe above](#remove-the-deleted-rows-a-release-before-012-left).
 
 **An index scan purges too, where the registry removes rows.** Each retirement files a pointer in the due index under
 the day its tombstone's grace ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace

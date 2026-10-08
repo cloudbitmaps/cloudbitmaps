@@ -189,11 +189,8 @@ describe('pin({ leaseUntil }): the call', () => {
     expect(snap.lease?.until).toBe(T0 + MAX_LEASE_MS);
   });
 
-  it('refuses a lease that outlasts the handle own deadline, and a non-object option', async () => {
+  it('refuses a non-object option, and takes an empty or absent one', async () => {
     const h = await seeded();
-    const seg = h.reader.segment(REF.segment, { namespace: 'ns', expiresAt: T0 + HOUR });
-    await expect(seg.pin({ leaseUntil: T0 + 2 * HOUR })).rejects.toThrow(/expiresAt/);
-    await expect(seg.pin({ leaseUntil: T0 + HOUR })).resolves.toBeDefined();
     await expect(
       h.reader
         .segment(REF.segment, { namespace: 'ns' })
@@ -338,21 +335,6 @@ describe('every read site of a leased handle', () => {
     await expect(snap.count()).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 
-  it('a leased exclude past its lease is never skipped, even when another handle has expired by expiresAt', async () => {
-    const h = await seeded();
-    const optOut = await lease(h, HOUR);
-    h.advance(HOUR);
-    const gone = h.reader.segment(OTHER.segment, { namespace: 'ns', expiresAt: T0 + 1 });
-    const err = await collect(gone.intersect([plain(h, REF)], { exclude: [optOut] })).catch(
-      (e: unknown) => e,
-    );
-    expect(isLeaseExpiredError(err)).toBe(true);
-    const err2 = await collect(plain(h, REF).intersect([gone], { exclude: [optOut] })).catch(
-      (e: unknown) => e,
-    );
-    expect(isLeaseExpiredError(err2)).toBe(true);
-  });
-
   it('a lease that outlives a small generation cached reader still throws: it never answers from the cache', async () => {
     const h = await seeded();
     const snap = await lease(h, HOUR);
@@ -361,36 +343,6 @@ describe('every read site of a leased handle', () => {
     h.advance(HOUR + 1);
     await expect(snap.has(5)).rejects.toBeInstanceOf(LeaseExpiredError);
     await expect(collect(snap.iterate())).rejects.toBeInstanceOf(LeaseExpiredError);
-  });
-
-  it('expiresAt is unchanged: an expired unleased handle reads empty, and an expired exclude is refused', async () => {
-    const h = await seeded();
-    const expired = h.reader.segment(OTHER.segment, { namespace: 'ns', expiresAt: T0 + 1 });
-    h.advance(10);
-    expect(await expired.count()).toBe(0);
-    // An expired exclusion is a lapsed suppression list: refused with a ValidationError, never dropped.
-    await expect(collect(plain(h, REF).andNot([expired]))).rejects.toBeInstanceOf(ValidationError);
-    await expect(collect(plain(h, REF).andNot([expired]))).rejects.toThrow(
-      /exclusions have expired/,
-    );
-  });
-
-  it('a leased exclude that is past its lease and past its expiresAt throws LeaseExpiredError: the lease is checked first', async () => {
-    const h = await seeded();
-    const seg = h.reader.segment(REF.segment, { namespace: 'ns', expiresAt: T0 + 2 * HOUR });
-    const optOut = await seg.pin({ leaseUntil: T0 + HOUR });
-    h.advance(3 * HOUR); // past the lease and past expiresAt
-    const live = plain(h, THIRD);
-    for (const read of [
-      collect(live.andNot([optOut])),
-      collect(live.intersect([plain(h)], { exclude: [optOut] })),
-      collect(live.union([plain(h)], { exclude: [optOut] })),
-    ]) {
-      await expect(read).rejects.toBeInstanceOf(LeaseExpiredError);
-    }
-    // An unleased handle past its expiresAt, in the same position, is the expired-exclusion rule's.
-    const plainExpired = h.reader.segment(OTHER.segment, { namespace: 'ns', expiresAt: T0 + HOUR });
-    await expect(collect(live.andNot([plainExpired]))).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('a leased exclude past its lease throws LeaseExpiredError, in every combine, whatever the other handles are', async () => {
@@ -404,16 +356,6 @@ describe('every read site of a leased handle', () => {
       collect(live.andNot([optOut])),
     ];
     for (const r of reads) await expect(r).rejects.toBeInstanceOf(LeaseExpiredError);
-  });
-
-  it('a handle with both a lease and an expiresAt throws once the lease is past, and still when expiresAt is too', async () => {
-    const h = await seeded();
-    const seg = h.reader.segment(REF.segment, { namespace: 'ns', expiresAt: T0 + 2 * HOUR });
-    const snap = await seg.pin({ leaseUntil: T0 + HOUR });
-    h.advance(HOUR + HOUR / 2); // the lease is past, expiresAt is not
-    await expect(snap.count()).rejects.toBeInstanceOf(LeaseExpiredError);
-    h.advance(HOUR); // both are past: the lease still wins, nothing reads empty
-    await expect(snap.count()).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 
   it('pin() from a leased handle past its lease throws; before it, it returns an unleased pin and writes nothing', async () => {
@@ -525,14 +467,6 @@ describe('a stream built while the lease is live and pulled after it ended never
     h.advance(1_000);
     await expect(collect(empty)).rejects.toBeInstanceOf(LeaseExpiredError);
     await expect(collect(some)).rejects.toBeInstanceOf(LeaseExpiredError);
-    await expect(collect(snap.everyNth(1))).rejects.toBeInstanceOf(LeaseExpiredError);
-  });
-
-  it('everyNth: a handle past its lease and its expiresAt throws, and does not read empty', async () => {
-    const h = await setup();
-    const seg = h.reader.segment(REF.segment, { namespace: 'ns', expiresAt: T0 + 2_000 });
-    const snap = await seg.pin({ leaseUntil: T0 + 1_000 });
-    h.advance(3_000);
     await expect(collect(snap.everyNth(1))).rejects.toBeInstanceOf(LeaseExpiredError);
   });
 

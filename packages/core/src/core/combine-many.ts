@@ -37,7 +37,6 @@ import {
   planKeys,
 } from './combine-expr';
 import { checkFeed, FeedClosed, FeedCursor, FeedStale } from './combine-feed';
-import type { HeldChunks } from './combine-held';
 import type { CheckedFeed, CombineManyFeed } from './combine-feed';
 import type { CombineExpr, ExprNode, KeyBounds, NodeKeys } from './combine-expr';
 import { residentBound, residentBytes, ResidentLedger, serializedBound } from './combine-ledger';
@@ -76,9 +75,9 @@ export interface CombineManyOperand {
   readonly name: string;
   readonly ref: SegmentRef;
   /**
-   * Throws the typed error when this operand's handle can no longer be read: a lease that ended or was released, or a
-   * deadline that passed. Called before each chunk key the operand is read at, so a lapse fails the outputs that read
-   * it and never reads empty.
+   * Throws the typed error when this operand's handle can no longer be read: a lease that ended or was released.
+   * Called before each chunk key the operand is read at, so a lapse fails the outputs that read it and never reads
+   * empty.
    */
   readonly check?: () => void;
   /** The generation the operand is pinned to: `null` when pinned to a segment with none, `undefined` when not pinned. */
@@ -100,26 +99,6 @@ export interface CombineManyOperand {
     readonly token: string;
     readonly fingerprint?: string | null;
   } | null>;
-  /**
-   * Set for an operand held in memory: its chunks are read from here, never from the source, and `ref`, `pinned*` and
-   * `current` are not used. It has no registry row, so nothing about it can move; what can invalidate it is an erasure in
-   * the store that made it ({@link CombineManyHeld.moved}) or its release.
-   */
-  readonly held?: CombineManyHeld;
-}
-
-/** An operand held in memory, as the pass reads it. */
-export interface CombineManyHeld {
-  /** The operand's chunks. Once released, reading one throws. */
-  readonly chunks: HeldChunks;
-  /**
-   * Whether an erasure has run in the store since the operand began to be made, one still running included, so what it holds may include an erased id. Checked
-   * before the call's first request, before each chunk key is read and immediately before each publish of an output that
-   * reads it.
-   */
-  readonly moved: () => boolean;
-  /** Whether holding no id is accepted: an include then empties an AND and an exclude subtracts nothing. */
-  readonly mayBeEmpty: boolean;
 }
 
 /** What one output asks for. */
@@ -132,7 +111,7 @@ export interface CombineManyOutput<R> {
   readonly metadata?: GenerationMetadata;
   /** Overrides the call's `keep`. */
   readonly keep?: number;
-  /** Throws to refuse the publish: the destination's lease or deadline, checked again just before it. */
+  /** Throws to refuse the publish: the destination's lease, checked again just before it. */
   readonly beforePublish?: () => void;
   /**
    * The requests a settled publish made that its value proves, for the call's totals by class; absent, a publish adds
@@ -396,14 +375,6 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   }
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
-  for (const op of operands) {
-    if (op.held !== undefined && op.held.chunks.empty && !op.held.mayBeEmpty) {
-      throw new ValidationError(
-        `materializeMany: operand "${op.name}" holds no id, so an include would contribute none and an exclude would ` +
-          'subtract none. Check what it was made from, or name it in `mayBeEmpty` if it may be empty.',
-      );
-    }
-  }
   const feed =
     request.feed === undefined ? undefined : checkFeed(request.feed, new Set(index.keys()));
   feed?.names.forEach((name, j) => index.set(name, operands.length + j));
@@ -885,7 +856,6 @@ class Run<R> {
   async execute(): Promise<CombineManyRun<R>> {
     this.window = windowOf(this.req.after, this.req.through);
     if (this.checkedFeed !== undefined) this.feed = this.openFeed(this.checkedFeed);
-    this.indexHeld();
     await this.readIndexes();
     await this.refuseAbsent();
     this.planOutputs();
@@ -980,76 +950,13 @@ class Run<R> {
 
   // ---- index ------------------------------------------------------------------------------------------------
 
-  /** What an output that reads the held operand `op` gets when an erasure ran in the store since it was made. */
-  private staleHeldError(op: OperandState): StaleOperandError {
-    return new StaleOperandError(
-      `materializeMany: an erasure ran in this store after operand "${op.spec.name}" was made, so it may hold an ` +
-        'erased id and the outputs that read it were not published. Make it again from the source of truth, after the ' +
-        'erasure, and run the call again.',
-      op.spec.name,
-      'erased',
-    );
-  }
-
-  /** The error of the first held operand `o` reads that an erasure has made stale, if any. */
-  private staleHeld(o: OutputState<R>): StaleOperandError | undefined {
-    for (const i of o.compiled.operands) {
-      const op = this.operands[i]!;
-      if (op.spec.held?.moved() === true) return this.staleHeldError(op);
-    }
-    return undefined;
-  }
-
-  /**
-   * Index the held operands the outputs read, before any request: their keys and exact cardinalities are in memory, and
-   * one that an erasure has made stale is failed here, so the outputs that read it fail without a read.
-   */
-  private indexHeld(): void {
-    const wanted = new Set<number>();
-    for (const o of this.outputs) for (const op of o.compiled.operands) wanted.add(op);
-    if (this.window === 'empty') return;
-    const w = this.window;
-    const charged = new Set<HeldChunks>();
-    let resident = 0;
-    for (const index of wanted) {
-      const op = this.operands[index]!;
-      const held = op.spec.held;
-      if (held === undefined) continue;
-      op.read = true;
-      if (held.moved()) {
-        op.error = { error: this.staleHeldError(op) };
-        continue;
-      }
-      if (!charged.has(held.chunks)) {
-        charged.add(held.chunks);
-        resident += held.chunks.residentBytes;
-      }
-      const all = held.chunks.keys;
-      const cards = held.chunks.cardinalities;
-      const keep: number[] = [];
-      const card: number[] = [];
-      for (let i = 0; i < all.length; i++) {
-        const key = all[i]!;
-        if (w !== null && (key < w.loKey || key > w.hiKey)) continue;
-        keep.push(key);
-        card.push(cards[i]!);
-      }
-      op.bounds = { keys: Uint16Array.from(keep), card: Uint32Array.from(card) };
-      op.indexKeys = keep.length;
-      op.chunkless = all.length === 0;
-    }
-    // What the call holds of them while it runs: counted like its plan, against the same ledger.
-    if (resident > 0) this.chargePlan(resident, 'the held operands');
-  }
-
   private async readIndexes(): Promise<void> {
     const wanted = new Set<number>();
     for (const o of this.outputs) for (const op of o.compiled.operands) wanted.add(op);
     if (this.window === 'empty') return;
     for (const index of wanted) this.operands[index]!.read = true;
     const w = this.window;
-    const stored = [...wanted].filter((index) => this.operands[index]!.spec.held === undefined);
-    await mapWithConcurrency(stored, INDEX_PARALLELISM, async (index) => {
+    await mapWithConcurrency([...wanted], INDEX_PARALLELISM, async (index) => {
       const op = this.operands[index]!;
       try {
         const listed = checkedChunkKeys(await this.source.listChunkKeys(op.spec.ref));
@@ -1091,8 +998,7 @@ class Run<R> {
   private async refuseAbsent(): Promise<void> {
     if (this.req.allowAbsentOperands === true || this.source.exists === undefined) return;
     const judged = this.operands.filter(
-      (op) =>
-        op.spec.held === undefined && op.error === undefined && (op.read ? op.chunkless : true),
+      (op) => op.error === undefined && (op.read ? op.chunkless : true),
     );
     if (judged.length === 0) return;
     const exists = this.source.exists.bind(this.source);
@@ -1641,22 +1547,6 @@ class Run<R> {
     const source = this.source;
     const clock = this.clock;
     const keys = Array.from(wanted);
-    const held = op.spec.held;
-    if (held !== undefined) {
-      const stale = (): StaleOperandError => this.staleHeldError(op);
-      return {
-        // Each chunk is checked and read in one step with no wait between, so a release or an erasure cannot land after
-        // the check and before the bytes.
-        async *[Symbol.asyncIterator]() {
-          for (const key of keys) {
-            if (held.moved()) throw stale();
-            // A copy (never `slice`, which a Buffer answers with a view): a release that lands after this chunk was taken must not zero what is about to be decoded.
-            const bytes = held.chunks.payload(key);
-            yield { key, bytes: bytes === null ? null : new Uint8Array(bytes), version: null };
-          }
-        },
-      };
-    }
     const ref = op.spec.ref;
     if (source.getChunks !== undefined) {
       return source.getChunks(ref, keys, { concurrency: this.req.concurrency, retry, onRequest });
@@ -1802,16 +1692,8 @@ class Run<R> {
           wake();
           continue;
         }
-        // Waiting for room can take as long as the publishes ahead: the counters are read again once the output has it.
-        // Last of all, with nothing awaited between them and the publish: an erasure that began since a held operand was
-        // made keeps what was built from it from being published.
-        const staleHeld = this.staleHeld(o);
-        if (staleHeld !== undefined) {
-          this.ledger.release(transient);
-          this.fail(o, staleHeld);
-          wake();
-          continue;
-        }
+        // Waiting for room can take as long as the publishes ahead: the counter is read again once the output has it,
+        // with nothing awaited between it and the publish.
         if (o.compiled.fed.length > 0 && this.erased()) {
           this.ledger.release(transient);
           this.fail(o, this.staleError(o));

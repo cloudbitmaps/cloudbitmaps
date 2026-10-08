@@ -64,8 +64,9 @@ or implausible combine over a non-empty destination is refused (`published: fals
 wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
 target survives a materialization. `store.materializeMany` publishes many such outputs (each an `and` / `or` / `andNot`
 expression over named operands) from one chunk-ordered pass that reads each operand once, instead of once per `*Into`
-call; its operands can be stored segments, records that arrive as a feed, or sets you hold in memory with
-`store.memory(ids)`. It needs `keep`, reports `stats` on its result, and emits no `storage.get`, `cache`, `intersect` or `op` metrics event.
+call; its operands are stored segments, and sets you hold arrive as a feed of records in chunk-key order. It needs
+`keep`, reports `stats` on its result, and reports an `op` event and a `storage.get` per range request to the metrics
+sink; with `dryRun: true` it writes nothing and reports what each publish would do.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,
@@ -119,9 +120,9 @@ for retirement, and retireExpired() is the sweep that acts on it, retiring each 
 dropSegment. The expiry is an absolute instant the writer sets, not a duration derived from anything observed,
 because every load rewrites the basis such a duration would use. The sweep is a function you schedule -- this
 library starts no timer, so the sweep behaves the same in a Lambda and in a long-running server. (An edge
-isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle can also
-carry its own deadline, store.segment(name, { expiresAt }), and reads empty past it with no I/O; that reclaims
-nothing and binds that handle alone. There is no per-id TTL: a bitmap stores ids, not timestamps, and a per-id
+isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle carries no
+deadline of its own; a reader that must stop serving a set on time checks the deadline where it reads. There is no
+per-id TTL: a bitmap stores ids, not timestamps, and a per-id
 timestamp costs more than the compression saves.
 
 ## No background process, and nothing to seed

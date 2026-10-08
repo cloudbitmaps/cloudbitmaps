@@ -42,10 +42,9 @@ export interface SegmentInfo extends SegmentRef {
  * distinction between "never loaded" and "loaded, and genuinely empty" is the one `count()` cannot make and
  * the main reason this function is worth having.
  *
- * Two states answer `true` where a read still gives you nothing, and neither is this call's job to detect: a
+ * One state answers `true` where a read still gives you nothing, and it is not this call's job to detect: a
  * **torn restore** (`missing-storage-generation` — a live pointer whose object was deleted) makes reads *throw*
- * `NotFoundError` rather than answer empty, and `runConsistencyCheck` is the call that looks for it; and a
- * handle carrying an expired `expiresAt` reads as empty by a rule that lives on the handle, not on the row.
+ * `NotFoundError` rather than answer empty, and `runConsistencyCheck` is the call that looks for it.
  *
  * Not a lock. A segment can be created or dropped between this call and whatever you do next; if the answer
  * has to hold, use the fences that exist for it — `load`'s guard, or `expectFrom`/`expectToken` on a publish.

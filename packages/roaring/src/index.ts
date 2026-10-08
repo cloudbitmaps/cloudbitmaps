@@ -43,7 +43,6 @@ import {
   UnsupportedError,
   ValidationError,
   WriteConflictError,
-  MIN_EXPIRES_AT_MS,
   checkBudget,
   collectWithinBudget,
   excludingReservedRows,
@@ -55,13 +54,11 @@ import {
   loadSegment,
   loadSegmentChunks,
   compileCombineMany,
-  prepareHeld,
   rebindCombineMany,
   runCombineMany,
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
-  reapRegistryTombstones,
   retireExpired,
   runConsistencyCheck,
   runExport,
@@ -78,7 +75,6 @@ import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
   BudgetOption,
-  HeldChunks,
   GenerationEntry,
   GenerationMetadata,
   LoadGuard,
@@ -86,8 +82,6 @@ import type {
   LoadOptions,
   LoadRefusal,
   LoadResult,
-  ReapRegistryTombstonesOptions,
-  ReapRegistryTombstonesResult,
   RollbackResult,
   Clock,
   CodecBitmap,
@@ -358,31 +352,13 @@ export interface SeamOptions {
   readonly rng?: Rng;
 }
 
+/**
+ * What {@link CloudRoaring.segment} takes besides the name. A handle carries no deadline: check one where you read,
+ * or record it with {@link CloudRoaring.setRetention} and run {@link CloudRoaring.retireExpired}. An `expiresAt`
+ * passed here is refused with {@link ValidationError}.
+ */
 export interface SegmentOptions {
   readonly namespace?: string;
-  /**
-   * **When this segment stops being readable** — an absolute epoch-ms instant, declared where the segment is
-   * named instead of in a separate `setRetention` call.
-   *
-   * Every read through this handle checks it first: past the deadline, `has` is `false`, `count` is `0`, and
-   * `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on every backend**.
-   * That is Redis's lazy expiry, and it is what makes an expiry *correct* rather than *eventually correct*: a
-   * deployment whose sweep is late — or which has no sweep at all, like a Lambda-only reader — still stops
-   * serving the data on time.
-   *
-   * **Two things this does NOT do, both deliberate:**
-   *
-   * - It does not reclaim the bytes. That is {@link CloudRoaring.retireExpired}, and until it runs the data is
-   *   still stored and still billed. `count()` reporting 0 while objects exist is the expected state in that
-   *   window, not a bug.
-   * - It does not apply to *other* handles. The deadline lives on this handle; a second handle opened without
-   *   the option reads the segment normally. Record the policy with {@link CloudRoaring.setRetention} to make
-   *   it durable, fleet-visible, and reclaimable.
-   *
-   * Must be **milliseconds** since the epoch and at or after {@link MIN_EXPIRES_AT_MS} — a seconds value would
-   * land in 1970 and make the segment permanently unreadable, so it is refused rather than honoured.
-   */
-  readonly expiresAt?: number;
 }
 
 /** A segment reference in a subject report / erasure ledger. */
@@ -531,10 +507,9 @@ export interface MaterializeManyFeed {
 /** The options of {@link CloudRoaring.materializeMany}. */
 export interface MaterializeManyOptions extends IdRange {
   /**
-   * The operands the expressions name: stored segments, and operands held in memory from {@link CloudRoaring.memory}. A held
-   * operand is accepted here and nowhere else.
+   * The stored segments the expressions name. A set the caller holds in memory arrives as a {@link MaterializeManyOptions.feed}.
    */
-  readonly operands: Record<string, Segment | MemoryOperand>;
+  readonly operands: Record<string, Segment>;
   /** The outputs, in the order their results come back. */
   readonly outputs: ReadonlyArray<MaterializeManyOutput>;
   /**
@@ -578,10 +553,9 @@ export interface MaterializeManyOptions extends IdRange {
    */
   readonly feed?: MaterializeManyFeed;
   /**
-   * Fed and held operand names allowed to hold no id. A declared fed name that appears in no record is refused at the end
-   * of the feed, and a held operand that holds no id is refused before any request, because an operand that is empty is
-   * usually an upstream query that failed quietly. Naming something that is neither a fed nor a held operand is a
-   * {@link ValidationError}.
+   * Fed operand names allowed to hold no id. A declared fed name that appears in no record is refused at the end of the
+   * feed, because an operand that is empty is usually an upstream query that failed quietly. Naming something that is not
+   * a fed operand is a {@link ValidationError}.
    */
   readonly mayBeEmpty?: readonly string[];
 }
@@ -652,11 +626,8 @@ interface DryRunValue extends MaterializeDryRunResult {
 interface HandleView {
   readonly ref: SegmentRef;
   readonly pinnedAt: PinnedAt | undefined;
-  readonly expiresAt: number | undefined;
   /** The lease error a read of the handle must throw now, or `undefined`. */
   readonly leaseError: () => LeaseExpiredError | undefined;
-  /** Whether its deadline has passed. */
-  readonly expired: () => boolean;
 }
 
 /** Set by the `Segment` class, whose private state it reads. */
@@ -1132,26 +1103,20 @@ export class CloudRoaring {
     };
   }
 
-  /** Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). */
+  /**
+   * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). An
+   * `expiresAt` among the options is refused with {@link ValidationError}: a handle carries no deadline, and one
+   * left unread would serve the data past it.
+   */
   segment(name: string, options?: SegmentOptions): Segment {
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);
     refuseReservedNamespace(ref.namespace);
-    const expiresAt = options?.expiresAt;
-    if (expiresAt !== undefined) {
-      // Fail at the handle, not at the first read that silently returns nothing. The floor is the same one
-      // `setRetention` enforces: a seconds-based value would land in 1970 and make the segment permanently
-      // and invisibly empty.
-      if (
-        !Number.isFinite(expiresAt) ||
-        !Number.isInteger(expiresAt) ||
-        expiresAt < MIN_EXPIRES_AT_MS
-      ) {
-        throw new ValidationError(
-          `segment: expiresAt must be an integer epoch-MILLISECONDS >= ${MIN_EXPIRES_AT_MS}; got ${expiresAt}` +
-            ` (a value in seconds lands in 1970 and would make the segment read as permanently empty)`,
-        );
-      }
+    if ((options as { readonly expiresAt?: unknown } | undefined)?.expiresAt !== undefined) {
+      throw new ValidationError(
+        'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
+          '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`',
+      );
     }
     return makeSegment({
       engine: this.engine,
@@ -1159,9 +1124,8 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e, l, at) => this.pinSegment(r, e, l, at),
+      pinned: (r, l, at) => this.pinSegment(r, l, at),
       combineEngine: (handles) => this.engineForCombine(handles),
-      expiresAt,
     });
   }
 
@@ -1287,48 +1251,11 @@ export class CloudRoaring {
   }
 
   /**
-   * **Hold a set of ids in memory**, to be an operand of {@link CloudRoaring.materializeMany} and of no other verb: a
-   * combine or an `*Into` call it is passed to refuses it with a {@link ValidationError}.
-   *
-   * ```ts
-   * const vip = await store.memory([7, 42, 99_001]);
-   * await store.materializeMany({ operands: { vip, engaged: store.segment('cond-engaged') }, outputs: [...], keep: 12 });
-   * vip.release();
-   * ```
-   *
-   * It takes what {@link CloudRoaring.load} takes as input (ids as a sync or async iterable or a typed array, `{ bitmap }`
-   * or `{ serialized }`) and checks it the same way, with the same errors: the size cap, the structure, the safe
-   * deserializer and each id's range. **Only a real `Uint32Array` skips the per-id range check**; any other typed array goes
-   * through it, so `Int32Array([-1])` and `Float64Array([1.5])` throw {@link ValidationError}. An object with an `ascending`
-   * key is refused: ids that arrive in key order are a `feed`. An empty set is accepted here, and refused by
-   * `materializeMany` unless its name is in `mayBeEmpty`.
-   *
-   * The ids are held as the chunks a stored generation would hold, until {@link MemoryOperand.release}; between calls that
-   * memory is the caller's, and during a call it counts against `maxBufferedBytes`. There is no size option: the load's
-   * own cap applies to a serialized input.
-   *
-   * **Erasure.** Only `eraseSubject` moves the store's counter (at its start and at its end). One that started in this store
-   * since the handle began to be made, or is still running, makes a call that reads the handle fail the outputs that read it with
-   * {@link StaleOperandError} (`reason: 'erased'`), before any request and again just before each publish. An erasure in
-   * another store or another process is not seen, nor are `dropSegment`, `eraseNamespace`, `destroySegment` and the free
-   * function `eraseIdFromSegment`, which do not move it: the handle is the caller's copy, so build it from the source of truth at
-   * the start of each refresh and release it at the end.
-   *
-   * @throws {ValidationError} where a load of the same input would.
-   */
-  async memory(input: LoadInput): Promise<MemoryOperand> {
-    // Read before the ids are, so an erasure that lands while they are read marks the handle stale.
-    const epochAt = this.epochNow();
-    const chunks = await prepareHeld(input, roaringCodec, this.clock);
-    return makeMemoryOperand({ store: this, chunks, epochAt });
-  }
-
-  /**
    * **A dry run:** every output computed exactly as the call would compute it, and judged against its `dest` as its
    * publish would be, with nothing written: no object, no pointer, no audit event. Each output's result says how many ids
    * it would hold, what its `dest` holds now, and the bound its publish would be refused for now (`wouldRefuse`). The
    * call reads its operands as a publishing call does, takes its feed if it has one, and fails an output for what would
-   * fail its publish (an expired `dest`, a destroyed one, a moved exclude, an erasure). It reads the operands as
+   * fail its publish (a `dest` whose lease has ended, a destroyed one, a moved exclude, an erasure). It reads the operands as
    * the publishing call does, and for each output the reads a publish's guard makes: one registry read for `dest`'s size,
    * or two where its row has no usable summary. It holds the memory a publish would, so it fails for memory where one
    * would, and reports to the metrics sink as the same `materializeMany` op.
@@ -1386,23 +1313,16 @@ export class CloudRoaring {
    * **Untrusted bytes.** Every operand chunk is decoded through the checks on untrusted tier data. A key an operand's index
    * lists whose bytes are missing is an error for the outputs that read the operand, never an empty chunk.
    *
-   * **Handles.** An expired or released handle anywhere in the call (an operand or a `dest`) is refused before any request,
-   * as on the `*Into` verbs. A leased operand's lease, and an operand's deadline, are checked before each chunk key
-   * is read: a lapse fails only the outputs that read that operand, never reads empty. Each `dest`'s lease and deadline
-   * are checked again just before its publish.
+   * **Handles.** A handle anywhere in the call (an operand or a `dest`) whose lease has ended or was released is refused
+   * before any request, as on the `*Into` verbs. A leased operand's lease is checked before each chunk key is read: a
+   * lapse fails only the outputs that read that operand, never reads empty. Each `dest`'s lease is checked again just
+   * before its publish.
    *
    * **The chunk cache is bypassed:** the pass reads through the storage source and never writes the decoded-chunk cache, so
    * a batch does not evict other readers' hot chunks. Each publish still invalidates its `dest` as an `*Into` does.
    *
    * **A limit of the form.** An output cannot name another output of the same call: a `dest` that is also an operand is
    * refused. Chain two calls.
-   *
-   * **Held operands.** An operand may be a {@link MemoryOperand} from {@link CloudRoaring.memory}: ids the caller holds,
-   * read beside the stored ones and giving the same output byte for byte. It is read from memory (no request, and the
-   * shared chunk cache never sees it), counts against `maxBufferedBytes` while the call runs, and is refused when empty
-   * unless its name is in `mayBeEmpty`. A handle from another store, or a released one, is a {@link ValidationError}. An
-   * erasure in this store since the handle was made fails the outputs that read it with {@link StaleOperandError}
-   * (`reason: 'erased'`).
    *
    * **A feed.** `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order, for conditions
    * too many to hold or store. Each record is checked before the pass sees it (see {@link MaterializeManyFeedRecord}): a bad
@@ -1441,7 +1361,7 @@ export class CloudRoaring {
         'materializeMany needs an options object with `operands`, `outputs` and `keep`',
       );
     }
-    // The erasure counter as the call begins: a fed call is refused once it has moved. A held operand carries its own.
+    // The erasure counter as the call begins: a fed call is refused once it has moved.
     const epochAt = options.feed === undefined ? 0 : this.epochNow();
     const unknown = Object.keys(options).filter(
       (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
@@ -1488,68 +1408,33 @@ export class CloudRoaring {
     }
     const names = Object.keys(operandsIn);
     const handles = new Map<string, Segment>();
-    const heldHandles = new Map<string, HeldView>();
     for (const name of names) {
       const handle = (operandsIn as Record<string, unknown>)[name];
-      if (handle instanceof MemoryOperand) {
-        const view = heldOf(handle) as HeldView | undefined;
-        if (view === undefined) {
-          throw new ValidationError(
-            `materializeMany: operands["${name}"] is not a memory operand from store.memory()`,
-          );
-        }
-        if (view.store !== this) {
-          throw new ValidationError(
-            `materializeMany: operands["${name}"] was made by another store: a memory operand belongs to the store that made it`,
-          );
-        }
-        if (view.chunks.released) {
-          throw new ValidationError(
-            `materializeMany: operands["${name}"] was released: make another with store.memory()`,
-          );
-        }
-        heldHandles.set(name, view);
-        continue;
-      }
       if (!(handle instanceof Segment)) {
         throw new ValidationError(
-          `materializeMany: operands["${name}"] must be a segment from store.segment() or a memory operand from store.memory()`,
+          `materializeMany: operands["${name}"] must be a segment from store.segment()`,
         );
       }
       handles.set(name, handle);
     }
-    // Names of held operands are taken out of `mayBeEmpty`; what is left names fed operands, which the feed checks.
-    const heldMayBeEmpty = new Set<string>();
-    let fedMayBeEmpty: unknown = mayBeEmptyIn;
-    if (mayBeEmptyIn !== undefined) {
-      if (Array.isArray(mayBeEmptyIn)) {
-        const rest: unknown[] = [];
-        for (const name of mayBeEmptyIn as unknown[]) {
-          if (typeof name === 'string' && heldHandles.has(name)) heldMayBeEmpty.add(name);
-          else rest.push(name);
-        }
-        fedMayBeEmpty = rest;
+    // `mayBeEmpty` names fed operands, which the feed checks; without a feed it can name nothing.
+    if (mayBeEmptyIn !== undefined && feedIn === undefined) {
+      if (!Array.isArray(mayBeEmptyIn)) {
+        throw new ValidationError(
+          'materializeMany: mayBeEmpty must be an array of fed operand names',
+        );
       }
-      // An empty list, or one naming only held operands, names nothing a feed must check. With a feed, the feed's own
-      // check names what is wrong with the rest.
-      if (feedIn === undefined) {
-        if (!Array.isArray(fedMayBeEmpty)) {
-          throw new ValidationError(
-            'materializeMany: mayBeEmpty must be an array of held or fed operand names',
-          );
-        }
-        if (fedMayBeEmpty.length > 0) {
-          const first: unknown = fedMayBeEmpty[0];
-          const what =
-            typeof first !== 'string'
-              ? 'something that is not a name'
-              : handles.has(first)
-                ? `"${first}", a stored operand`
-                : `"${first}", which is not an operand of this call`;
-          throw new ValidationError(
-            `materializeMany: mayBeEmpty names ${what}; it names held operands, and fed operands when the call has a feed`,
-          );
-        }
+      if (mayBeEmptyIn.length > 0) {
+        const first: unknown = mayBeEmptyIn[0];
+        const what =
+          typeof first !== 'string'
+            ? 'something that is not a name'
+            : handles.has(first)
+              ? `"${first}", a stored operand`
+              : `"${first}", which is not an operand of this call`;
+        throw new ValidationError(
+          `materializeMany: mayBeEmpty names ${what}; it names fed operands, and this call has no feed`,
+        );
       }
     }
     const operandKeys = new Set([...handles.values()].map((h) => h.key()));
@@ -1596,27 +1481,13 @@ export class CloudRoaring {
     // Every expression and option is checked here, with no operand pinned and no request made.
     const operandSpecs = (pins: ReadonlyMap<string, PinnedAt | undefined>): CombineManyOperand[] =>
       names.map((name) => {
-        const view = heldHandles.get(name);
-        if (view !== undefined) {
-          // A held operand has no row to read and no pin: its chunks are in memory, and its `ref` is never read.
-          return {
-            name,
-            ref: { segment: name },
-            held: {
-              chunks: view.chunks,
-              moved: () => this.epochMoved(view.epochAt),
-              mayBeEmpty: heldMayBeEmpty.has(name),
-            },
-          };
-        }
         const handle = handles.get(name)!;
         const seg = viewOf(handle);
         const pinnedAt = pins.get(handle.key());
-        const guarded = seg.expiresAt !== undefined || handle.lease !== undefined;
         return {
           name,
           ref: seg.ref,
-          ...(guarded ? { check: () => this.assertReadable('materializeMany', handle) } : {}),
+          ...(handle.lease === undefined ? {} : { check: () => this.assertLease(handle) }),
           ...(pinnedAt === undefined
             ? {}
             : {
@@ -1630,14 +1501,14 @@ export class CloudRoaring {
       });
     const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
       operands: operandSpecs(pins),
-      outputs: outputs.map(({ spec, dest }, i) => ({
+      outputs: outputs.map(({ spec, dest }) => ({
         expr: spec.expr,
         ...(spec.exclude === undefined ? {} : { exclude: spec.exclude }),
         ...(spec.allowEmpty === undefined ? {} : { allowEmpty: spec.allowEmpty }),
         ...(spec.guard === undefined ? {} : { guard: spec.guard }),
         ...(spec.metadata === undefined ? {} : { metadata: spec.metadata }),
         ...(spec.keep === undefined ? {} : { keep: spec.keep }),
-        beforePublish: () => this.assertWritable(`outputs[${i}]`, dest),
+        beforePublish: () => this.assertLease(dest),
         // What a settled publish proves it sent: a published one wrote its object and moved the pointer, a refused one
         // wrote its object and deleted it. A dry run's judgement wrote nothing, and read the row and maybe the object.
         requestsOf: (result: MaterializeResult | DryRunValue) =>
@@ -1668,13 +1539,13 @@ export class CloudRoaring {
       concurrency,
       ...(budget === undefined ? {} : { budget }),
       ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
-      ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, fedMayBeEmpty, epochAt) }),
+      ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, mayBeEmptyIn, epochAt) }),
       ...(dryRun ? { dryRun: true } : {}),
     });
     const compiled = compileCombineMany(request(new Map()));
-    // An expired or released handle anywhere is refused before any request, as the `*Into` verbs refuse one.
-    for (const { dest } of outputs) this.assertWritable('materializeMany', dest);
-    for (const handle of handles.values()) this.assertReadable('materializeMany', handle);
+    // A handle anywhere whose lease has ended or was released is refused before any request, as the `*Into` verbs refuse one.
+    for (const { dest } of outputs) this.assertLease(dest);
+    for (const handle of handles.values()) this.assertLease(handle);
     this.lifecycleDeps('materializeMany');
     const crbm = this.crbmSource;
     if (crbm === undefined) {
@@ -1843,22 +1714,10 @@ export class CloudRoaring {
     return row === null ? null : { generation: row.currentGen, token: row.token };
   }
 
-  /** Throw what a read of `handle` must throw now: its lease error, or a refusal for a deadline that has passed. */
-  private assertReadable(op: string, handle: Segment): void {
-    const view = viewOf(handle);
-    const lease = view.leaseError();
+  /** Throw what a read of, or a publish to, `handle` must throw now: its lease error, if it has one. */
+  private assertLease(handle: Segment): void {
+    const lease = viewOf(handle).leaseError();
     if (lease !== undefined) throw lease;
-    if (view.expired()) {
-      throw new ValidationError(
-        `${op}: refusing to read "${view.ref.segment}", whose handle has expired — an expired handle reads as empty, so ` +
-          'a generation built from it would be short. Open the handle without `expiresAt` if you meant to materialise.',
-      );
-    }
-  }
-
-  /** {@link assertReadable} for a destination, named by where it sits in the call. */
-  private assertWritable(where: string, dest: Segment): void {
-    this.assertReadable(where, dest);
   }
 
   /**
@@ -2127,10 +1986,9 @@ export class CloudRoaring {
    * exists. It is `false` for a segment whose row was minted ahead of its first load (by `setRetention`) and
    * for a `destroyed` tombstone, because a read answers empty in both cases.
    *
-   * Two states answer `true` where a read still gives you nothing: a torn restore (a live pointer whose object
+   * One state answers `true` where a read still gives you nothing: a torn restore (a live pointer whose object
    * was deleted) makes reads of the object *throw* rather than answer empty, while a cold `count()` answers the number
-   * its row records — `checkConsistency` is the call for that — and
-   * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
+   * its row records — `checkConsistency` is the call for that.
    *
    * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
    * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a storage backend.
@@ -2531,62 +2389,6 @@ export class CloudRoaring {
   }
 
   /**
-   * **Remove the registry rows that releases before 0.12.0 left as `deleted: true` envelopes.** Those releases never
-   * removed a row they deleted, and no later call removes it either: it is invisible to every read, and every full
-   * listing of the registry still reads it (one GET each). This is the one call that removes them. It is an admin call,
-   * not a sweep, and nothing schedules it: run it once after the last process on a release before 0.12.0 is gone.
-   *
-   * ```ts
-   * const preview = await store.reapRegistryTombstones({ dryRun: true });
-   * console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`);
-   *
-   * const done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true });
-   * if (done.limited) runAgain(); // `limit` (default 1,000) stopped the run with rows unread
-   * ```
-   *
-   * **What it removes.** Only a row that is `deleted: true` and whose token carries no incarnation id, which is what a
-   * release before 0.12.0 left, or a 0.12.0 or later release left by deleting a row born before 0.12.0 (both are safe to
-   * remove), whatever its `status`. It never touches a live row, a `destroyed` row that is not `deleted` (a crypto-shred's
-   * or a `dropSegment`'s tombstone: the attestation of an erasure, which it cannot tell from another), or a deleted row
-   * with an incarnation id, and it never touches a generation. **So it does not clean a bucket completely**: the
-   * `destroyed` tombstones `dropSegment` leaves stay, so do live rows written before 0.12.0, and so does a tombstone a
-   * 0.12.0 or later release wrote while `conditionalDelete` was off (GCS by default, S3 on a custom endpoint): every full
-   * listing still reads it, and this call neither removes it nor runs on such a store.
-   * It also covers the library's own bookkeeping rows when `namespace` is not set, by the same rule. The default
-   * namespace cannot be scoped to: leave `namespace` out to cover it.
-   *
-   * **The two things it asks.** `confirmNoLegacyWriters: true` is required for a real run (without it, a
-   * `ValidationError`, and nothing is requested): your statement that no process on a release before 0.12.0 writes
-   * this registry, since one that did would, re-creating a removed name, issue the removed row's tokens again. And the
-   * registry must apply a delete under a precondition: where its `conditionalDelete` capability is off (GCS by default,
-   * S3 on a custom endpoint) it throws `CapabilityError` before any request, dry run included. A registry that keeps
-   * no such rows (the in-memory and local-filesystem ones) throws `UnsupportedError`.
-   *
-   * **Each removal is fenced** on the version it read, so a `create` that lands over the envelope first wins, the
-   * delete is refused, and the row is counted as `skipped.raced` (which also counts a row already gone). That holds where
-   * the backend applies the precondition, which auto-detection checks (S3 only on an AWS host). On an endpoint that
-   * ignores `If-Match` (MinIO, fake-gcs-server), a `conditionalDelete: true` you set makes this an unfenced delete: run
-   * it with every writer stopped. On a versioned bucket a delete leaves a delete marker and the earlier version, record
-   * included, so the name is not erased from the bucket. A `create` that had already read the envelope and
-   * whose write meets the removal throws `WriteConflictError`, which this library does not retry: retry the create, and
-   * it finds no row and writes one.
-   *
-   * **Cost** over R rows read and E removed: `ceil(R / 1000)` LIST requests, R GETs and E DELETEs (a dry run, no
-   * DELETEs). `limit` bounds the removals, and the run stops listing once it is spent. **A run is not resumable**: each
-   * lists and reads from the start (R GETs whatever the `limit`), a dry run with a `limit` reports the same first rows
-   * every time, so `wouldReap` is a total only when `limited` is `false`, and `limited` is `true` whenever the limit was
-   * spent with keys left, removable or not. An unreadable object stops the run with an error naming its key, and
-   * removes nothing more: it may be a newer release's row. Scope the run with `namespace` to get past one.
-   * @deprecated Leaves the store at 1.0, kept as a one-off script: only a bucket written by a release before 0.12
-   * holds such rows.
-   */
-  async reapRegistryTombstones(
-    options: ReapRegistryTombstonesOptions = {},
-  ): Promise<ReapRegistryTombstonesResult> {
-    return reapRegistryTombstones(this.requireRegistry('reapRegistryTombstones'), options);
-  }
-
-  /**
    * **Forget everything this store has cached about a segment.** Use it after destroying or retiring a segment
    * through a path this store did not perform itself.
    *
@@ -2633,12 +2435,7 @@ export class CloudRoaring {
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
    * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
    */
-  private async pinSegment(
-    ref: SegmentRef,
-    expiresAt?: number,
-    leaseUntil?: number,
-    named?: PinAt,
-  ): Promise<Segment> {
+  private async pinSegment(ref: SegmentRef, leaseUntil?: number, named?: PinAt): Promise<Segment> {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
@@ -2709,9 +2506,8 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e, l, at) => this.pinSegment(r, e, l, at),
+      pinned: (r, l, at) => this.pinSegment(r, l, at),
       combineEngine: (handles) => this.engineForCombine(handles),
-      expiresAt,
       pinnedAt,
       lease: hold,
     });
@@ -2868,8 +2664,8 @@ export class CloudRoaring {
   /**
    * Planning cost estimate — pure, no instance/data needed: sizing, sales, what-if. For a real, grounded report
    * from live segment sizes, use `store.segment(name).costReport()`. See {@link CostReport}.
-   * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
-   * internal. It is a planning tool, and its price list is as old as the release that ships it.
+   * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
+   * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
    */
   static estimateCost(input: EstimateInput): CostReport {
     return estimateCost(input);
@@ -2926,11 +2722,7 @@ export interface BaseCombineOptions extends IdRange {
  * list costs reads proportional to the audience, not to itself.
  */
 export interface CombineOptions extends BaseCombineOptions {
-  /**
-   * Segments whose ids are subtracted from the result. An **expired** handle here is refused, in every combine:
-   * the stream throws {@link ValidationError} naming it, before any request is made, exactly as in
-   * {@link Segment.andNot}.
-   */
+  /** Segments whose ids are subtracted from the result. */
   readonly exclude?: Segment[];
 }
 
@@ -3071,27 +2863,15 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
 
 const NO_SEGMENTS: readonly Segment[] = [];
 
-/** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
-const EMPTY_IDS: IdStream = {
-  async *[Symbol.asyncIterator]() {
-    // deliberately yields nothing
-  },
-  async *batches() {
-    // deliberately yields nothing
-  },
-};
-
 type EngineCombine = Parameters<SegmentEngine['intersect']>[1];
 type EngineAndNot = Parameters<SegmentEngine['andNot']>[2];
 
 /**
  * What a combine is read as: the ids a caller streams, or the chunks an `*Into` writes. The three verbs make the
- * same decisions about expired operands, `exclude`, the engine and the options whichever it is, so each is written
- * once over this, and only the last step differs.
+ * same decisions about `exclude`, the engine and the options whichever it is, so each is written once over this, and
+ * only the last step differs.
  */
 interface CombineOutput<T> {
-  /** What a combine over expired operands is: nothing. */
-  readonly none: T;
   /** A combine that fails when first read, as the engine's own refusals do. */
   readonly failing: (err: unknown) => T;
   /** The same combine, checking a lease each time it reads a chunk. */
@@ -3108,7 +2888,6 @@ interface CombineOutput<T> {
 
 /** Combines read as ids: what `intersect`, `union` and `andNot` return. */
 const AS_IDS: CombineOutput<IdStream> = {
-  none: EMPTY_IDS,
   failing,
   guard: guardIds,
   intersect: (engine, refs, opts) =>
@@ -3122,12 +2901,6 @@ const AS_IDS: CombineOutput<IdStream> = {
 /** A combine's result as the chunks it is made of. */
 type ChunkStream = AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>;
 
-const NO_CHUNKS: ChunkStream = {
-  async *[Symbol.asyncIterator]() {
-    // deliberately yields nothing
-  },
-};
-
 /** A combine's chunks on their way to a load, which writes them as they are. */
 class CombineChunks {
   constructor(readonly chunks: ChunkStream) {}
@@ -3135,7 +2908,6 @@ class CombineChunks {
 
 /** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
-  none: NO_CHUNKS,
   guard: guardChunks,
   failing: (err) => ({
     [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
@@ -3166,12 +2938,7 @@ const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
-type Pin = (
-  ref: SegmentRef,
-  expiresAt?: number,
-  leaseUntil?: number,
-  at?: PinAt,
-) => Promise<Segment>;
+type Pin = (ref: SegmentRef, leaseUntil?: number, at?: PinAt) => Promise<Segment>;
 
 /**
  * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
@@ -3196,7 +2963,6 @@ interface SegmentParts {
   /** Build a pinned twin of this handle — injected so `Segment` stays free of store wiring. */
   pinned: Pin;
   combineEngine: CombineEngine;
-  expiresAt?: number;
   pinnedAt?: PinnedAt;
   /** The lease this handle holds, when it came from `pin({ leaseUntil })`. */
   lease?: LeaseHold;
@@ -3270,64 +3036,6 @@ async function timeOp<T>(
   }
 }
 
-/** What a {@link MemoryOperand} shows the store that it does not show a caller. */
-interface HeldView {
-  readonly store: CloudRoaring;
-  readonly chunks: HeldChunks;
-  /** The store's erasure counter when the operand began to be made. */
-  readonly epochAt: number;
-}
-
-/** Set by the `MemoryOperand` class, whose private state it reads. */
-let heldOf: (operand: MemoryOperand) => HeldView;
-let makeMemoryOperand: (view: HeldView) => MemoryOperand;
-let mintingMemory = false;
-
-/**
- * A set of ids held in memory by {@link CloudRoaring.memory}, to be an operand of {@link CloudRoaring.materializeMany}
- * and of no other verb, which refuses it with a {@link ValidationError}. The bytes are the caller's until
- * {@link MemoryOperand.release}.
- *
- * It belongs to the store that made it. `eraseSubject` in that store, started after the handle began to be made or still
- * running when it was, fails the outputs of a `materializeMany` call that read it with {@link StaleOperandError}
- * (`reason: 'erased'`): the call does not throw, and its outputs that do not read the handle publish. Nothing else is
- * seen: an erasure in another store or process, and
- * `dropSegment`, `eraseNamespace`, `destroySegment` and the free function `eraseIdFromSegment`, do not move the counter.
- */
-export class MemoryOperand {
-  private readonly view: HeldView;
-
-  static {
-    heldOf = (operand) => operand.view as HeldView | undefined as HeldView;
-    makeMemoryOperand = (view) => {
-      mintingMemory = true;
-      try {
-        return new MemoryOperand(view);
-      } finally {
-        mintingMemory = false;
-      }
-    };
-  }
-
-  /** Not constructible: a handle comes from {@link CloudRoaring.memory}. */
-  private constructor(view: HeldView) {
-    if (!mintingMemory) {
-      throw new ValidationError(
-        'a MemoryOperand is not constructed directly; call `await store.memory(ids)`',
-      );
-    }
-    this.view = view;
-  }
-
-  /**
-   * Zero and drop the bytes it holds. Any later use throws {@link ValidationError}; releasing twice does nothing. A call
-   * still reading it fails the outputs that read it.
-   */
-  release(): void {
-    this.view.chunks.release();
-  }
-}
-
 /** The store's one way to mint a {@link Segment}, bound by the class's static block. */
 let makeSegment: (parts: SegmentParts) => Segment;
 /** True only while {@link makeSegment} is constructing, so a `new Segment(...)` from plain JS is refused. */
@@ -3352,8 +3060,6 @@ export class Segment {
   private readonly materialize: Materialize;
   private readonly pinned: Pin;
   private readonly combineEngine: CombineEngine;
-  /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
-  readonly expiresAt?: number;
   /**
    * The generation this handle is held at, when it came from {@link Segment.pin}. Read by the store so a
    * pinned handle passed as an **operand** is still read at its pin rather than live.
@@ -3379,9 +3085,7 @@ export class Segment {
     viewOf = (segment) => ({
       ref: segment.ref,
       pinnedAt: segment.pinnedAt,
-      expiresAt: segment.expiresAt,
       leaseError: () => segment.leaseError(),
-      expired: () => segment.expired(),
     });
   }
 
@@ -3402,7 +3106,6 @@ export class Segment {
     this.materialize = parts.materialize;
     this.pinned = parts.pinned;
     this.combineEngine = parts.combineEngine;
-    this.expiresAt = parts.expiresAt;
     this.pinnedAt = parts.pinnedAt;
     this.leaseHold = parts.lease;
     if (parts.lease !== undefined) {
@@ -3495,13 +3198,13 @@ export class Segment {
     // that is current now, which is not the leased one, and holds no lease of its own unless asked.
     this.assertLeases([this]);
     const leaseUntil = this.leaseUntilOf('pin', options);
-    return this.pinned(this.ref, this.expiresAt, leaseUntil);
+    return this.pinned(this.ref, leaseUntil);
   }
 
   /**
    * Hold what this pin names until `leaseUntil`, or `undefined` for a pin with no lease. Refuses an option it does not
-   * know, a value that is not epoch-milliseconds in the future, one past the longest lease, and one past the handle's own
-   * `expiresAt`, before any request is made.
+   * know, a value that is not epoch-milliseconds in the future, and one past the longest lease, before any request is
+   * made.
    */
   private leaseUntilOf(op: string, options: PinOptions | null | undefined): number | undefined {
     if (options === undefined || options === null) return undefined;
@@ -3535,11 +3238,6 @@ export class Segment {
         `${op}: leaseUntil is more than 14 days away; the longest lease is ${MAX_LEASE_MS} ms. Take a new lease when a job outlasts it`,
       );
     }
-    if (this.expiresAt !== undefined && until > this.expiresAt) {
-      throw new ValidationError(
-        `${op}: leaseUntil outlasts this handle's own expiresAt, which would have it read empty while it still holds the generation`,
-      );
-    }
     return until;
   }
 
@@ -3566,7 +3264,7 @@ export class Segment {
 
   /**
    * The error a read of this handle must throw, or `undefined` when it holds no lease or the lease is live. One property
-   * read on a handle with no lease. It is not {@link Segment.expired}: that rule reads empty, and a lease must never.
+   * read on a handle with no lease. A read past a lease throws; it never reads empty.
    */
   private leaseError(): LeaseExpiredError | undefined {
     const hold = this.leaseHold;
@@ -3592,9 +3290,8 @@ export class Segment {
   }
 
   /**
-   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment: a memory operand, which only
-   * {@link CloudRoaring.materializeMany} takes, or any other value a JavaScript caller passed. It runs first in every
-   * combine, before the lease check reads the handles.
+   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment, a value a JavaScript caller
+   * passed. It runs first in every combine, before the lease check reads the handles.
    */
   private assertSegments(handles: readonly unknown[]): void {
     for (const h of handles) {
@@ -3604,22 +3301,17 @@ export class Segment {
         h instanceof Segment ||
         (typeof h === 'object' &&
           h !== null &&
-          !(h instanceof MemoryOperand) &&
           typeof (h as { leaseError?: unknown }).leaseError === 'function')
       ) {
         continue;
       }
-      throw new ValidationError(
-        h instanceof MemoryOperand
-          ? 'a memory operand from store.memory() is an operand of store.materializeMany() only; this call takes segments from store.segment()'
-          : 'an operand must be a segment from store.segment()',
-      );
+      throw new ValidationError('an operand must be a segment from store.segment()');
     }
   }
 
   /**
    * Throw the first lease error among `handles`: this handle and every operand and exclude of a call. It runs before
-   * any `expiresAt` rule and before the engine, so no operand, exclude or cached reader can answer past a lease.
+   * the engine, so no operand, exclude or cached reader can answer past a lease.
    */
   private assertLeases(handles: readonly Segment[]): void {
     for (const h of handles) {
@@ -3679,7 +3371,7 @@ export class Segment {
     }
     // `at` takes `{ generation, fingerprint }` and nothing else; the lease goes in the options, the second argument.
     const leaseUntil = this.leaseUntilOf('pinAt', options);
-    return this.pinned(this.ref, this.expiresAt, leaseUntil, { generation, fingerprint });
+    return this.pinned(this.ref, leaseUntil, { generation, fingerprint });
   }
 
   /**
@@ -3693,54 +3385,17 @@ export class Segment {
   }
 
   /**
-   * Has this handle's deadline passed? **The lazy half of expiry** — the whole check is one comparison against
-   * the injected clock, so it costs nothing on a handle with no deadline and no I/O on one that has expired.
-   *
-   * Deliberately evaluated per call rather than cached: a long-lived handle created before its deadline must
-   * start reading empty the moment the deadline passes, without the caller re-creating it.
-   */
-  private expired(): boolean {
-    return this.expiresAt !== undefined && this.clock.now() >= this.expiresAt;
-  }
-
-  /**
-   * Refuse a materialisation that involves an **expired** handle. Called by the three `*Into` verbs only.
-   *
-   * On the read verbs an expired handle answers empty, which is the point of lazy expiry. On a *write* the same
-   * rule would be destructive in a way nobody asks for: `a.intersectInto(dest, [b])` where `b`'s deadline has
-   * quietly passed would, unrefused, replace `dest` with an **empty generation** — a wipe, reported as a successful
-   * write, with the cause (a deadline on a handle somewhere) nowhere in the result. Reads degrade to empty; writes must not.
-   *
-   * So every handle in the call is checked, `dest` included: an expired `dest` does not change the bytes written,
-   * but a caller who put a deadline on the thing they are writing into has said something contradictory and is
-   * better told than guessed at. Open a handle without `expiresAt` to write, or drop the deadline.
-   *
-   * (The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
-   * `allowEmpty` override — covers these verbs too: they route through the same guarded write path as
-   * {@link CloudRoaring.load}. The two stay separate because they differ in kind. That one is a REPORTED
-   * refusal a caller may legitimately override; an expired handle is a wiring mistake, so it THROWS, before
-   * any object is written — and `allowEmpty: true` does not reach it.)
+   * Refuse an `*Into` whose handles cannot be read, before any object is written: anything that is not a segment
+   * ({@link ValidationError}), and a handle (this one, `dest` or an operand) whose lease has ended or was released
+   * ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
    * a synchronous throw out of a promise-returning method escapes a caller who attached `.catch()` instead of
    * awaiting.
    */
-  private refuseIfExpired(op: string, dest: Segment, operands: readonly Segment[]): void {
+  private assertIntoHandles(dest: Segment, operands: readonly Segment[]): void {
     this.assertSegments([dest, ...operands]);
-    // A lease first, and as its own error: a past lease is never "expired" in the sense this method refuses.
     this.assertLeases([this, dest, ...operands]);
-    const stale: string[] = [];
-    for (const seg of [this, dest, ...operands]) {
-      if (seg.expired())
-        stale.push(seg.ref.namespace ? `${seg.ref.namespace}/${seg.ref.segment}` : seg.ref.segment);
-    }
-    if (stale.length > 0) {
-      throw new ValidationError(
-        `${op}: refusing to publish a generation while these handles have expired — ${[...new Set(stale)].join(', ')}. ` +
-          `An expired handle reads as empty, so this would write an empty (or short) generation over "${dest.ref.segment}". ` +
-          `Open the handles without \`expiresAt\` if you meant to materialise, or drop the deadline.`,
-      );
-    }
   }
 
   /** `result` as is, or, when a handle of the call holds a lease, checking that lease each time it reads a chunk. */
@@ -3768,7 +3423,6 @@ export class Segment {
   has(id: number): Promise<boolean> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
-    if (this.expired()) return Promise.resolve(false);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
   /**
@@ -3792,15 +3446,14 @@ export class Segment {
   count(): Promise<number> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
-    if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));
   }
   /**
    * What the generation this handle reads is, from one resolution: its number, its id count and the metadata it
    * was loaded with (absent when it has none). It is what answers {@link Segment.count}, so the three describe one
    * generation and cannot straddle a publish. One registry read when cold, none while warm, and none on a pinned
-   * handle, which answers for the generation it pinned. A segment with no generation, and an expired handle,
-   * answer `{ generation: null, cardinality: 0 }`.
+   * handle, which answers for the generation it pinned. A segment with no generation answers
+   * `{ generation: null, cardinality: 0 }`.
    *
    * Trust is as for `count()`: the registry row's word, not confirmed against the object until the object is
    * opened, when a disagreement makes this process stop using that row's summary.
@@ -3811,7 +3464,6 @@ export class Segment {
    */
   async stat(): Promise<SegmentStat> {
     this.assertLeases([this]);
-    if (this.expired()) return { generation: null, cardinality: 0 };
     return this.engine.stat(this.ref);
   }
   /**
@@ -3826,13 +3478,11 @@ export class Segment {
    * ```
    *
    * Each bound is optional and an integer in `0..4294967295`; a bad one throws {@link ValidationError} when the
-   * stream is first read. `after >= through` is an empty range, which reads nothing. An expired handle reads empty
-   * without checking its options, as every read of one does.
+   * stream is first read. `after >= through` is an empty range, which reads nothing.
    */
   iterate(options?: IdRange): IdStream {
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
-    if (this.expired()) return EMPTY_IDS;
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
     const none = range === undefined || (range.after === undefined && range.through === undefined);
@@ -3868,7 +3518,7 @@ export class Segment {
    *
    * A live handle is refused with {@link UnsupportedError} at the first read, because its counts and its chunks could
    * come from two generations and name the wrong id. `n` that is not a positive integer throws
-   * {@link ValidationError} at the first read, as does a bad bound. An expired handle reads empty.
+   * {@link ValidationError} at the first read, as does a bad bound.
    *
    * ```ts
    * const audience = await store.segment('audience').pin();
@@ -3877,10 +3527,9 @@ export class Segment {
    * ```
    */
   everyNth(n: number, options?: IdRange): AsyncIterable<number> {
-    // The lease first, before any `expiresAt` rule: a leased handle past its lease throws, never reads empty.
+    // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
-    if (this.expired()) return EMPTY_IDS;
     if (this.pinnedAt === undefined) {
       return failing(
         new UnsupportedError(
@@ -3932,32 +3581,6 @@ export class Segment {
   }
 
   /**
-   * The refusal for a combine whose **exclusion** has expired, or `undefined` when none has. Unlike an expired
-   * operand, which reads empty, an exclusion is a suppression or opt-out list: left out silently, the result
-   * would include the very ids it was passed to remove. So it is refused with a {@link ValidationError} naming each
-   * expired exclusion, as the `*Into` verbs refuse an expired handle.
-   *
-   * It is judged against the injected clock when the combine is called, before the engine is asked for anything:
-   * no request is made, and an expired exclusion that names a segment that does not exist is refused as expired,
-   * not as an absent operand. It runs ahead of the expired-operand shortcuts, so a combine that would read empty
-   * anyway still refuses a lapsed exclusion. A stream already being read is not re-checked when an exclusion
-   * expires part-way, as an operand expiring part-way does not stop it either.
-   */
-  private expiredExcludes(op: string, excludes: readonly Segment[]): ValidationError | undefined {
-    let stale: string[] | undefined;
-    for (const e of excludes) {
-      if (!e.expired()) continue;
-      (stale ??= []).push(e.ref.namespace ? `${e.ref.namespace}/${e.ref.segment}` : e.ref.segment);
-    }
-    if (stale === undefined) return undefined;
-    return new ValidationError(
-      `${op}: refusing to read while these exclusions have expired — ${[...new Set(stale)].join(', ')}. ` +
-        `An expired exclusion would subtract nothing, so the result would include the ids it was passed to remove. ` +
-        `Renew the exclusion's \`expiresAt\`, open it without one, or leave it out of the call.`,
-    );
-  }
-
-  /**
    * Chunk-skipping intersection: stream the ids in **this** segment AND every segment in `others`, ascending.
    * Fetches only the Storage chunks present in *all* operands (a key absent from any operand contributes nothing
    * and is never downloaded), reading each operand's as coalesced ranges under a bounded in-flight window — so the Storage
@@ -3971,9 +3594,8 @@ export class Segment {
   }
 
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
-    // Order of the checks: the lease check runs first, then the expired-exclusion check. A handle whose lease ended throws
-    // `LeaseExpiredError`, whatever its `expiresAt`; an unleased handle past its `expiresAt` is the expired-exclusion
-    // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
+    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
+    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
     const exclude = this.excludesOf(options);
     const handles = [this, ...others, ...exclude];
     try {
@@ -3982,12 +3604,6 @@ export class Segment {
     } catch (err) {
       return out.failing(err);
     }
-    const refused = this.expiredExcludes('intersect', exclude);
-    if (refused) return out.failing(refused);
-    // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
-    // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
-    // contribute members to an intersection.
-    if (this.expired() || others.some((o) => o.expired())) return out.none;
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
@@ -4017,14 +3633,14 @@ export class Segment {
    * `published`. A lost race is the one outcome that still throws ({@link WriteConflictError}), because a
    * materialisation that silently did not take effect is the one thing a caller cannot detect on its own.
    *
-   * A call involving an **expired handle** is refused before any of this. See {@link refuseIfExpired}.
+   * A call involving a handle whose lease has ended, or anything that is not a segment, is refused before any of this.
    */
   async intersectInto(
     dest: Segment,
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.refuseIfExpired('intersectInto', dest, [...others, ...(options?.exclude ?? [])]);
+    this.assertIntoHandles(dest, [...others, ...(options?.exclude ?? [])]);
     // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
     // broken destination would otherwise answer first, and hide the refusal behind its own error.
     this.combineEngine([this, ...others, ...(options?.exclude ?? [])]);
@@ -4053,9 +3669,8 @@ export class Segment {
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
-    // Order of the checks: the lease check runs first, then the expired-exclusion check. A handle whose lease ended throws
-    // `LeaseExpiredError`, whatever its `expiresAt`; an unleased handle past its `expiresAt` is the expired-exclusion
-    // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
+    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
+    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
     const exclude = this.excludesOf(options);
     const handles = [this, ...others, ...exclude];
     try {
@@ -4064,27 +3679,6 @@ export class Segment {
     } catch (err) {
       return out.failing(err);
     }
-    const refused = this.expiredExcludes('union', exclude);
-    if (refused) return out.failing(refused);
-    // OR: drop the expired operands and union what is left. All expired ⇒ empty.
-    const live = others.filter((o) => !o.expired());
-    if (this.expired()) {
-      if (live.length === 0) return out.none;
-      return (live[0] as Segment).unionAs(out, live.slice(1), options);
-    }
-    if (live.length === 0 && others.length > 0) {
-      // Every operand expired ⇒ just us. But `exclude` is not an operand of the union, it is a subtraction
-      // applied to the result, so it still applies: `(this ∪ nothing) \ exclude` is `this \ exclude`. Returning
-      // a bare `iterate()` here dropped it silently — an opt-out list that does not apply, on a library whose
-      // headline is composable suppression, and reachable from nothing more exotic than a segment handle aging
-      // out. `andNot` reads each exclude only where it overlaps, so this is also the cheap spelling.
-      // With no exclude it is this segment alone, read as a one-operand union rather than as `iterate()`, so the
-      // call's own `budget`, `concurrency` and range apply exactly as they would have to the union.
-      return exclude.length > 0
-        ? this.andNotAs(out, [...exclude], options)
-        : this.unionAs(out, [], options);
-    }
-    if (live.length !== others.length) return this.unionAs(out, live, options);
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
@@ -4102,7 +3696,7 @@ export class Segment {
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.refuseIfExpired('unionInto', dest, [...others, ...(options?.exclude ?? [])]);
+    this.assertIntoHandles(dest, [...others, ...(options?.exclude ?? [])]);
     this.combineEngine([this, ...others, ...(options?.exclude ?? [])]); // as intersectInto: before any read
     return this.timed('unionInto', () =>
       this.materialize(
@@ -4122,10 +3716,6 @@ export class Segment {
    * suppression list: at most one read per surviving key of `this`, so subtracting a 61,000-chunk global
    * opt-out list from a 40-chunk audience costs at most 40 reads, not 61,000.
    *
-   * An expired handle in `excludes` is refused, not skipped: the stream throws {@link ValidationError} naming it,
-   * before any request is made, because a lapsed suppression list would otherwise let through the ids it was
-   * passed to remove. An expired `this` is empty. `exclude` on `intersect` and `union` follows the same rule.
-   *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
    */
@@ -4134,9 +3724,8 @@ export class Segment {
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
-    // Order of the checks: the lease check runs first, then the expired-exclusion check. A handle whose lease ended throws
-    // `LeaseExpiredError`, whatever its `expiresAt`; an unleased handle past its `expiresAt` is the expired-exclusion
-    // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
+    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
+    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
     const handles = [this, ...excludes];
     try {
       this.assertSegments(handles);
@@ -4144,10 +3733,6 @@ export class Segment {
     } catch (err) {
       return out.failing(err);
     }
-    const refused = this.expiredExcludes('andNot', excludes);
-    if (refused) return out.failing(refused);
-    // MINUS: an expired base is empty.
-    if (this.expired()) return out.none;
     let engine: SegmentEngine;
     try {
       engine = this.combineEngine([this, ...excludes]) ?? this.engine;
@@ -4166,7 +3751,7 @@ export class Segment {
     excludes: Segment[],
     options?: AndNotIntoOptions,
   ): Promise<MaterializeResult> {
-    this.refuseIfExpired('andNotInto', dest, excludes);
+    this.assertIntoHandles(dest, excludes);
     this.combineEngine([this, ...excludes]); // as intersectInto: before any read
     return this.timed('andNotInto', () =>
       this.materialize(
@@ -4184,8 +3769,8 @@ export class Segment {
    * storage. The pointer refresh is priced at the store's own `cache.genTtlMs`, or at none when the store never
    * refreshes, unless the workload sets `genTtlMs`. See {@link CostReport} — it always includes a verdict (incl.
    * the lose-zone).
-   * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
-   * internal. It is a planning tool, and its price list is as old as the release that ships it.
+   * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
+   * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
    */
   async costReport(options?: {
     pricing?: PricingProfile;
@@ -4339,8 +3924,6 @@ export type {
   RegistryRecord,
   RegistryStatus,
   RegistrySummary,
-  ReapRegistryTombstonesOptions,
-  ReapRegistryTombstonesResult,
   RegistryWriteOptions,
   LeaseEntry,
   RetentionPolicy,
