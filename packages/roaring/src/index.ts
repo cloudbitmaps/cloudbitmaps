@@ -2863,6 +2863,16 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
 
 const NO_SEGMENTS: readonly Segment[] = [];
 
+/**
+ * `list` when it is an array, else a {@link ValidationError} naming `what`. A combine takes its operands and its
+ * `exclude` as arrays: a `Set` or a lone segment from plain JavaScript would otherwise fail with a raw `TypeError`, or,
+ * as an `exclude`, be read as no exclusion at all.
+ */
+function segmentList(list: unknown, what: string): readonly Segment[] {
+  if (!Array.isArray(list)) throw new ValidationError(`${what} must be an array of segments`);
+  return list as readonly Segment[];
+}
+
 type EngineCombine = Parameters<SegmentEngine['intersect']>[1];
 type EngineAndNot = Parameters<SegmentEngine['andNot']>[2];
 
@@ -3577,7 +3587,8 @@ export class Segment {
    */
   private excludesOf(options: CombineOptions | null | undefined): readonly Segment[] {
     const exclude = options?.exclude;
-    return exclude == null || exclude.length === 0 ? NO_SEGMENTS : exclude;
+    if (exclude == null) return NO_SEGMENTS;
+    return segmentList(exclude, '`exclude`').length === 0 ? NO_SEGMENTS : exclude;
   }
 
   /**
@@ -3594,11 +3605,13 @@ export class Segment {
   }
 
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
-    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
-    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
-    const exclude = this.excludesOf(options);
-    const handles = [this, ...others, ...exclude];
+    // Order of the checks: both lists are arrays, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let exclude: readonly Segment[];
+    let handles: readonly Segment[];
     try {
+      exclude = this.excludesOf(options);
+      handles = [this, ...segmentList(others, 'intersect: `others`'), ...exclude];
       this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
@@ -3640,10 +3653,14 @@ export class Segment {
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.assertIntoHandles(dest, [...others, ...(options?.exclude ?? [])]);
+    const operands = [
+      ...segmentList(others, 'intersectInto: `others`'),
+      ...this.excludesOf(options),
+    ];
+    this.assertIntoHandles(dest, operands);
     // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
     // broken destination would otherwise answer first, and hide the refusal behind its own error.
-    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]);
+    this.combineEngine([this, ...operands]);
     return this.timed('intersectInto', () =>
       this.materialize(
         dest.ref,
@@ -3669,11 +3686,13 @@ export class Segment {
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
-    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
-    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
-    const exclude = this.excludesOf(options);
-    const handles = [this, ...others, ...exclude];
+    // Order of the checks: both lists are arrays, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let exclude: readonly Segment[];
+    let handles: readonly Segment[];
     try {
+      exclude = this.excludesOf(options);
+      handles = [this, ...segmentList(others, 'union: `others`'), ...exclude];
       this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
@@ -3696,8 +3715,9 @@ export class Segment {
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.assertIntoHandles(dest, [...others, ...(options?.exclude ?? [])]);
-    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]); // as intersectInto: before any read
+    const operands = [...segmentList(others, 'unionInto: `others`'), ...this.excludesOf(options)];
+    this.assertIntoHandles(dest, operands);
+    this.combineEngine([this, ...operands]); // as intersectInto: before any read
     return this.timed('unionInto', () =>
       this.materialize(
         dest.ref,
@@ -3724,10 +3744,11 @@ export class Segment {
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
-    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
-    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
-    const handles = [this, ...excludes];
+    // Order of the checks: the list is an array, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let handles: readonly Segment[];
     try {
+      handles = [this, ...segmentList(excludes, 'andNot: `excludes`')];
       this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
@@ -3751,7 +3772,7 @@ export class Segment {
     excludes: Segment[],
     options?: AndNotIntoOptions,
   ): Promise<MaterializeResult> {
-    this.assertIntoHandles(dest, excludes);
+    this.assertIntoHandles(dest, segmentList(excludes, 'andNotInto: `excludes`'));
     this.combineEngine([this, ...excludes]); // as intersectInto: before any read
     return this.timed('andNotInto', () =>
       this.materialize(

@@ -110,3 +110,80 @@ describe('an operand list holds segments only', () => {
     expect((await store.generations({ segment: 'dest' })).length).toBe(1);
   });
 });
+
+describe('an operand list is an array', () => {
+  const drain = async (it: AsyncIterable<number>): Promise<number[]> => {
+    const ids: number[] = [];
+    for await (const id of it) ids.push(id);
+    return ids;
+  };
+
+  async function fixture() {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 'a' }, [1, 2, 3, 4, 5]);
+    await store.load({ segment: 'b' }, [2, 3, 4, 5, 6]);
+    await store.load({ segment: 'opt' }, [3, 4]);
+    await store.load({ segment: 'dest' }, [9]);
+    return {
+      store,
+      a: store.segment('a'),
+      b: store.segment('b'),
+      opt: store.segment('opt'),
+      dest: store.segment('dest'),
+    };
+  }
+
+  it('refuses a list of operands that is not an array, with ValidationError, before reading anything', async () => {
+    const { store, a, b, dest } = await fixture();
+    // A single segment where a list belongs, a Set, a string and nothing: each is a plain-JavaScript slip.
+    for (const bad of [b, new Set([b]), 'b', undefined]) {
+      const list = bad as unknown as Segment[];
+      await expect(drain(a.intersect(list))).rejects.toThrow(
+        'intersect: `others` must be an array of segments',
+      );
+      await expect(drain(a.union(list))).rejects.toThrow(
+        'union: `others` must be an array of segments',
+      );
+      await expect(drain(a.andNot(list))).rejects.toThrow(
+        'andNot: `excludes` must be an array of segments',
+      );
+      await expect(a.intersectInto(dest, list)).rejects.toThrow(
+        'intersectInto: `others` must be an array of segments',
+      );
+      await expect(a.unionInto(dest, list)).rejects.toThrow(
+        'unionInto: `others` must be an array of segments',
+      );
+      await expect(a.andNotInto(dest, list)).rejects.toThrow(
+        'andNotInto: `excludes` must be an array of segments',
+      );
+      await expect(a.intersectInto(dest, list)).rejects.toBeInstanceOf(ValidationError);
+    }
+    expect((await store.generations({ segment: 'dest' })).length).toBe(1);
+  });
+
+  it('refuses an `exclude` that is not an array, rather than dropping it and returning the excluded ids', async () => {
+    const { store, a, b, opt, dest } = await fixture();
+    for (const bad of [new Set([opt]), opt, 'opt']) {
+      const exclude = bad as unknown as Segment[];
+      const message = '`exclude` must be an array of segments';
+      await expect(drain(a.intersect([b], { exclude }))).rejects.toThrow(message);
+      await expect(drain(a.union([b], { exclude }))).rejects.toThrow(message);
+      await expect(a.intersectInto(dest, [b], { exclude, allowEmpty: true })).rejects.toThrow(
+        message,
+      );
+      await expect(a.unionInto(dest, [b], { exclude, allowEmpty: true })).rejects.toThrow(message);
+      await expect(drain(a.intersect([b], { exclude }))).rejects.toBeInstanceOf(ValidationError);
+    }
+    expect(await drain(store.segment('dest').iterate())).toEqual([9]);
+  });
+
+  it('still reads an empty, null or absent `exclude` as none, and an array as the list', async () => {
+    const { a, b, opt } = await fixture();
+    for (const exclude of [[], null, undefined]) {
+      const options = { exclude } as unknown as { exclude?: Segment[] };
+      expect(await drain(a.intersect([b], options))).toEqual([2, 3, 4, 5]);
+    }
+    expect(await drain(a.intersect([b], { exclude: [opt] }))).toEqual([2, 5]);
+    expect(await drain(a.union([b], { exclude: [opt] }))).toEqual([1, 2, 5, 6]);
+  });
+});

@@ -96,10 +96,17 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An `exclude` that is not an array is refused, instead of being read as no exclusion.** A `Set` or a lone segment
+  passed as `exclude` to `intersect`, `union`, `intersectInto` or `unionInto` was taken without an error and applied
+  none of it, so the call streamed or published the ids it was meant to remove. The option's type is an array, so code
+  that typechecks against it was not affected. Each of these calls now refuses such an `exclude` with a
+  `ValidationError` before reading anything, and an operand list that is not an array (`a.intersect(b)` for
+  `a.intersect([b])`) is refused the same way, where it failed with a raw `TypeError`. `store.materializeMany` checks
+  its lists already.
 - **An element of an operand list that is not a segment is refused with a `ValidationError`.** `intersect`, `union`,
   `andNot` and the `*Into` calls failed with a raw `TypeError` (`h.leaseError is not a function`) when an operand, an
   `exclude` or a destination was not a segment. They now refuse it before reading anything. A segment from another copy
-  of the package is accepted, as before. An operand list that is not an array still fails as it did.
+  of the package is accepted, as before.
 - **`store.materializeMany`'s `mayBeEmpty` with no feed says what is wrong with it.** The message was "mayBeEmpty names
   fed operands, and the call has no feed" for every name. It now names the first such
   entry and what it is (`"a", a stored operand`, `"x", which is not an operand of this call`, or something that is not
