@@ -33,8 +33,9 @@ temporary segment and then calling `andNot` makes an intermediate nobody wants, 
 `exclude` included, with a `ValidationError` that names it. Read directly, a segment that was never loaded is empty,
 which is right. As an operand, a mistyped name or a missing `namespace` would contribute nothing and look correct,
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
-operand may legitimately not exist yet. A segment loaded with no ids, or one that only has a retention policy, counts
-as existing.
+operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy or crypto-shredded
+is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
+counts as existing.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
