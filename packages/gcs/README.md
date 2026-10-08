@@ -59,14 +59,17 @@ It builds its own client from Application Default Credentials. Any other key is 
   `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three
   more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure). That holds for every
   caller, including a store built with `retry: false`. The client's listings, deletes, resumable uploads and the
-  metadata read that settles a write keep the SDK's retries; a single-request conditional write (a registry row, a
-  small generation) is sent without them. **A client you pass as `client` keeps its own retries for those requests**:
-  its downloads go through a twin of it, built from its own class with the same credentials object, endpoint, project,
-  user agent, timeout, checksum generator and interceptors and the SDK's retries off.
-  The twin must take those settings. When it does not (a subclass that builds from options of its own, say, or a test
-  double), the client is used as it is if it was built with `retryOptions: { autoRetry: false }`, and is refused when
-  the backend is built otherwise. What is set on the client after it was built, such as a method stubbed on it in a
-  test, is not carried to the twin.
+  metadata read that settles a write keep its retry settings (under which the SDK sends a delete with no precondition
+  once); a single-request conditional write (a registry row, a small generation) is sent without them. **A client you
+  pass as `client` keeps its own retries for those requests**: its downloads go through a twin of it, built from its own
+  class with the same credentials object, endpoint, project, user agent, timeout, checksum generator and interceptors
+  and the SDK's retries off. A `Storage` client is always used through its twin, which must have taken the settings that
+  decide where and how a download goes: the same credentials object, URL and endpoint, and retry settings of its own,
+  which are then turned off over any its class set. A subclass that builds from options of its own, so that its twin
+  would not, is refused when the backend is built, and so is a client whose `bucket` is replaced on the instance, as by
+  a test stub: stub `Storage.prototype.bucket` instead, which reaches the twin too. A test double, an object that is not
+  a `Storage` client, is used as it is when it has `retryOptions: { autoRetry: false }`, and refused without it. What is
+  set on a client after it was built, such as its `timeout`, is not carried to the twin.
 - **A client `timeout` does not bound a download on `@google-cloud/storage` 8.x**, so a read whose server stalls waits
   for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
   **`readTimeoutMs` does, and it is off unless you set it.** It bounds each read as a whole: a generation's tail (with

@@ -50,6 +50,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A test double passed to `GcsStorage` as `client` needs `retryOptions: { autoRetry: false }`.** An object that is not a
+  `Storage` client is used as it is only with it, and refused when the backend is built without it. A real `Storage`
+  whose `bucket` is stubbed on the instance is refused too, since the client its downloads go through (see Fixed) would
+  not carry the stub: stub `Storage.prototype.bucket` instead, which reaches both.
+
 - **Combines on operands of a million to ten million ids, and the `*Into` verbs, are now measured on S3.** The first
   run of the calibration harness's large suite, from AWS CloudShell in `us-east-1` on 2026-10-07 (run
   `2026-10-07-88cd3`, against the published `0.18.3` packages), timed 40 cold reads of each combine at each size on two operands of about
@@ -110,13 +115,11 @@ so, and so do the module headers in the code.
   all that stood in the way, and that advice turned off the SDK's retries of listings and uploads too. Downloads now go
   through a twin of the client, built from its own class with the same credentials object, endpoint and settings and
   the SDK's retries off, and the driver retries them itself, as it does for the client it builds. The client's other
-  requests keep its retries. The twin is built even for a client whose retries read off, since the SDK turns them off
-  while a delete or an upload with no precondition is in flight. A twin that did not take the client's settings (other
-  credentials, the SDK's retries, another endpoint), as from a subclass that builds from options of its own or a test
-  double, is never used: the client is used as it is if it was built with `retryOptions: { autoRetry: false }`, and is
-  refused when the backend is built otherwise. A test double passed as `client` therefore needs
-  `retryOptions: { autoRetry: false }`. The client `GcsStorage` builds shares one credentials object with its download
-  twin, so one token fetch serves both.
+  requests keep its retries. A `Storage` client is always used through its twin, even one whose retries read off, since
+  the SDK turns them off while a delete or an upload with no precondition is in flight. The twin's own retry settings
+  are turned off over any its class set, and a twin that would use other credentials or another endpoint, as from a
+  subclass that builds from options of its own, is refused when the backend is built. The client `GcsStorage` builds
+  shares one credentials object with its download twin, so one token fetch serves both.
 - **`setSegmentRetention` from `@cloudbitmaps/core` shows its documentation again** in editors and the published
   `.d.ts`: its doc comment sat above another declaration, and TypeScript attached it there instead. Eleven more doc comments
   inside the packages had come apart from their declarations the same way, and a test now holds every one to its own.

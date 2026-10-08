@@ -10,26 +10,27 @@
  * ```
  *   the client
  *        │
+ *        ├── not a Storage client (a test double) ──▶ its retries off? yes: used as it is; no: refused
+ *        ├── its `bucket` replaced on the instance (a test stub) ──▶ refused
  *        ▼
  *   a twin, from the client's own class, with:
  *     the same credentials object (one token cache), endpoint, universe, project, user agent, timeout, checksum
  *     generator and retry settings but `autoRetry: false`, and one interceptor that applies the client's own
- *     interceptors as they are when each request is sent (a later one too)
+ *     interceptors as they are when each request is sent (a later one too); then its own retry settings turned off,
+ *     over any its class set
  *        │
  *        ▼
- *   did it take those settings: a `bucket` method, the same     ── yes ──▶ downloads use the twin
- *   credentials object, its retries off, the same endpoint?
+ *   a second client, with a `bucket` method, the same credentials ── yes ──▶ downloads use the twin
+ *   object, retry settings of its own and off, the same URL and endpoint?
  *        │ no, or it could not be built
  *        ▼
- *   the client's own retries off? ── yes ──▶ downloads use the client as it is (a test double, say)
- *        │ no
- *        ▼
- *   refuse at construction, with the fix
+ *   refused at construction, saying what differed
  * ```
  *
- * The twin is built even for a client whose retries read off: the SDK turns a client's `autoRetry` off while a delete or
- * an upload with no precondition is in flight and back on when it ends, so that value, read once, does not say how the
- * client was built. The twin's settings are its own object, which nothing turns back on.
+ * A `Storage` client is never used as it is, even one whose retries read off: the SDK turns a client's `autoRetry` off
+ * while a delete or an upload with no precondition is in flight and back on when it ends, so that value, read once,
+ * does not say how the client was built. The twin's retry settings are its own object, and only reads are sent on it,
+ * which never change them; the SDK reads that object on every request.
  *
  * The twin is built from the client's own class, not this package's import: a caller on another major of the SDK hands
  * in a client whose credentials object is another copy's class, which this package's class would wrap in a second one.
@@ -42,38 +43,51 @@ import { scrubCredentials } from './scrub-error';
 type Intercept = NonNullable<StorageOptions['interceptors_']>[number]['request'];
 
 /**
- * A twin of `client` that sends each download once, else `client` itself when no faithful twin can be built and its
- * own retries are off. `supplied`: the caller handed `client` in, rather than the backend building it.
+ * A twin of `client` that sends each download once, or `client` itself when it is a test double whose retries are off.
+ * `supplied`: the caller handed `client` in, rather than the backend building it.
  */
 export function downloadClient(client: Storage, supplied: boolean): Storage {
-  let twin: Storage | undefined;
-  let why: string | undefined;
-  let cause: unknown;
+  // A `Storage` client sends its own requests; a test double, which does not, has nothing a twin could copy.
+  if (
+    typeof (client as { makeAuthenticatedRequest?: unknown }).makeAuthenticatedRequest !==
+    'function'
+  ) {
+    if (client.retryOptions?.autoRetry === false) return client;
+    throw refusal(
+      supplied,
+      'it is not a `Storage` client (a test double, say)',
+      'Give it `retryOptions: { autoRetry: false }` to have it used as it is',
+    );
+  }
+  if (Object.hasOwn(client, 'bucket')) {
+    throw refusal(
+      supplied,
+      'its `bucket` method is replaced on the instance, as by a test stub, which a client built from its class would ' +
+        'not have',
+      'Stub `Storage.prototype.bucket` instead, which reaches that client too, or pass a test double that is not a ' +
+        '`Storage`, with `retryOptions: { autoRetry: false }`',
+    );
+  }
+  const second = supplied
+    ? 'a second client built from its class with its settings'
+    : 'a second client built from the same settings';
+  const remedy = supplied
+    ? 'Pass a client its class builds from the options it is given, as `Storage` does, or leave out `client`'
+    : undefined;
+  let twin: Storage;
   try {
     twin = twinOf(client);
-    why = unfaithful(client, twin);
   } catch (err) {
-    why = 'could not be built';
-    cause = err;
+    throw refusal(supplied, `${second} could not be built`, remedy, err);
   }
-  if (why === undefined) return twin!;
-  if (client.retryOptions?.autoRetry === false) return client;
-  const err = new ValidationError(
-    supplied
-      ? "GcsStorage cannot send the supplied client's downloads without the SDK's retries: a client built from its " +
-          `class with its settings ${why}. Build the client with \`retryOptions: { autoRetry: false }\`, or leave out ` +
-          '`client`'
-      : "GcsStorage cannot build a client that sends downloads without the SDK's retries: the one built from its " +
-          `settings ${why}. Pass a \`client\` built with \`retryOptions: { autoRetry: false }\``,
-  );
-  // The credential-free copy, never the SDK's error as raised.
-  if (cause !== undefined) err.cause = scrubCredentials(cause);
-  throw err;
+  const why = unfaithful(client, twin);
+  if (why !== undefined) throw refusal(supplied, `${second} ${why}`, remedy);
+  return twin;
 }
 
 function twinOf(client: Storage): Storage {
   const Own = client.constructor as new (options: StorageOptions) => Storage;
-  return new Own({
+  const twin = new Own({
     authClient: client.authClient as StorageOptions['authClient'],
     // The SDK treats an endpoint spelled other than its default as a custom one, whose requests go without credentials,
     // and then stores it with any trailing slash taken off. A client given the default in another spelling is custom
@@ -99,26 +113,55 @@ function twinOf(client: Storage): Storage {
       },
     ],
   });
+  // A subclass may set retry settings of its own over the ones it is given. Turned off here, as the SDK turns them off
+  // for a request it must not retry, on the twin's own settings only: never on an object the client holds too.
+  if (
+    twin !== client &&
+    twin.retryOptions !== undefined &&
+    twin.retryOptions !== client.retryOptions
+  ) {
+    twin.retryOptions.autoRetry = false;
+  }
+  return twin;
 }
 
 /**
- * What the twin did not take of the settings it was given, or `undefined`. A subclass may build from options of its own
- * and a test double is not built from options at all, and either would send downloads with other credentials, with the
- * SDK's retries, or somewhere else.
+ * What a twin did not take of the settings that decide where and how a download is sent, or `undefined`. A subclass may
+ * build from options of its own, and would send downloads with other credentials, with the SDK's retries, or elsewhere.
+ * Interceptors are carried as a view and not checked.
  */
 function unfaithful(client: Storage, twin: Storage): string | undefined {
+  if (twin === client) return 'is the same client';
   if (typeof twin.bucket !== 'function') return 'has no `bucket` method';
   if (twin.authClient === undefined || twin.authClient !== client.authClient) {
     return 'would use other credentials';
   }
+  if (twin.retryOptions === client.retryOptions) return 'would share its retry settings';
   if (twin.retryOptions?.autoRetry !== false) return "keeps the SDK's retries";
   // `baseUrl` prefers STORAGE_EMULATOR_HOST over `apiEndpoint` as each client is built.
   if (twin.baseUrl !== client.baseUrl) {
-    return 'would send to another URL, as when `STORAGE_EMULATOR_HOST` changed after the client was built';
+    return 'would send to another URL, as when `STORAGE_EMULATOR_HOST` changed after the client was built or is not a URL';
   }
   if (twin.apiEndpoint !== client.apiEndpoint) return 'would name another endpoint';
   if (twin.customEndpoint !== client.customEndpoint) {
     return 'would decide otherwise whether requests carry credentials';
   }
   return undefined;
+}
+
+function refusal(
+  supplied: boolean,
+  why: string,
+  remedy: string | undefined,
+  cause?: unknown,
+): ValidationError {
+  const err = new ValidationError(
+    (supplied
+      ? `GcsStorage cannot send the supplied client's downloads without the SDK's retries: ${why}`
+      : `GcsStorage cannot build a client that sends downloads without the SDK's retries: ${why}`) +
+      (remedy === undefined ? '' : `. ${remedy}`),
+  );
+  // The credential-free copy, never the SDK's error as raised.
+  if (cause !== undefined) err.cause = scrubCredentials(cause);
+  return err;
 }

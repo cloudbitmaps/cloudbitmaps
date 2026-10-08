@@ -31,10 +31,11 @@ export interface GcsStorageOptions {
    * its own backoff), and the downloads. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408,
    * 429, 500, 502, 503 or 504 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, so downloads go through a twin of
    * this client, built from its own class with the same credentials object, endpoint and settings and the SDK's retries
-   * off, and the driver retries them itself. A twin that did not take those settings (other credentials, the SDK's
-   * retries, another endpoint) is never used: the client is used as it is if it was built with
-   * `retryOptions: { autoRetry: false }`, and is refused at construction otherwise. What is set on the client after it
-   * was built, such as a method stubbed on it, is not carried to the twin.
+   * off over any its class set, and the driver retries them itself. A client whose twin would use other credentials or
+   * another endpoint (a subclass that builds from options of its own), or whose `bucket` is replaced on the instance (a
+   * test stub; stub `Storage.prototype.bucket` instead), is refused at construction. A test double that is not a
+   * `Storage` client is used as it is when it has `retryOptions: { autoRetry: false }`, and refused without it. What is
+   * set on the client after it was built, such as its `timeout`, is not carried to the twin.
    */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
