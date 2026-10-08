@@ -86,17 +86,23 @@ hand-edited one. That is deliberately not folded into `null`: a malformed policy
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
 
-**A deadline can also sit on a handle.** `store.segment(name, { namespace, expiresAt })` takes the same
-epoch-millisecond instant. Past it, every read through that handle answers empty (`has` is `false`, `count` is `0`,
-`iterate` yields nothing) as one comparison against the store's clock, with no I/O. An expired operand makes an
-`intersect` empty and drops out of a `union`. **An expired exclusion throws, in every shape**: in an
-`andNot`, and as `exclude` on an `intersect` or a `union`, the stream rejects with a `ValidationError` that names it,
-before any request is made, so an opt-out list that has lapsed cannot quietly stop suppressing. An `*Into` that
-involves an expired handle, an exclusion included, throws `ValidationError` too. A handle deadline reclaims
-nothing and binds no other handle, so `count()` answering `0` while the
-objects are still in the bucket is expected: it is one reader's cut-off, not a policy. Record the policy with
-`setRetention` to make the expiry durable, visible to the sweep and reclaimable. A seconds-shaped value is refused at
-the handle, and `seg.expiresAt` reads it back.
+### A deadline on a set
+
+A handle carries no deadline of its own (`expiresAt` among `store.segment`'s options throws
+`ValidationError`). For a set that must stop being served after a deadline, use one of two shapes:
+
+- **Durable, for every reader:** record it with `setRetention` (above) and run `retireExpired` on a schedule. The sweep
+  drops the segment once the instant passes, so every process stops reading it and its bytes are reclaimed.
+- **One reader's cut-off:** check the deadline where you read, against the same clock you would hand the store:
+
+  ```ts
+  const deadline = Date.parse('2026-12-31T18:00:00Z');
+  const promo = store.segment('promo');
+  const served = Date.now() < deadline ? await promo.has(id) : false;
+  ```
+
+  Keep the check beside an exclusion too: an opt-out list that should stop applying is a decision to make where it
+  is used, not a list that quietly reads as empty.
 
 ## Run the sweep: `store.retireExpired()`
 

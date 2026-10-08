@@ -75,9 +75,9 @@ export interface CombineManyOperand {
   readonly name: string;
   readonly ref: SegmentRef;
   /**
-   * Throws the typed error when this operand's handle can no longer be read: a lease that ended or was released, or a
-   * deadline that passed. Called before each chunk key the operand is read at, so a lapse fails the outputs that read
-   * it and never reads empty.
+   * Throws the typed error when this operand's handle can no longer be read: a lease that ended or was released.
+   * Called before each chunk key the operand is read at, so a lapse fails the outputs that read it and never reads
+   * empty.
    */
   readonly check?: () => void;
   /** The generation the operand is pinned to: `null` when pinned to a segment with none, `undefined` when not pinned. */
@@ -111,7 +111,7 @@ export interface CombineManyOutput<R> {
   readonly metadata?: GenerationMetadata;
   /** Overrides the call's `keep`. */
   readonly keep?: number;
-  /** Throws to refuse the publish: the destination's lease or deadline, checked again just before it. */
+  /** Throws to refuse the publish: the destination's lease, checked again just before it. */
   readonly beforePublish?: () => void;
   /**
    * The requests a settled publish made that its value proves, for the call's totals by class; absent, a publish adds

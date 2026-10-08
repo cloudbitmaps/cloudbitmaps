@@ -390,7 +390,7 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
 - `exists` answers `false` for a row minted ahead of the first load (`setRetention` does that) and for a `destroyed`
   tombstone, because a read answers empty in both. Two states answer `true` where a read still gives you nothing, and neither is
   this call's job. A torn restore (a live pointer whose object was deleted) makes reads of the object throw, while a cold `count()` still
-  answers the number the row records, so `checkConsistency` is the call for it. And a handle with an expired `expiresAt` reads empty by a rule that lives on the handle.
+  answers the number the row records, so `checkConsistency` is the call for it.
 - `segments()` yields `destroyed` tombstones and rows whose `currentGen` is `null`, because a filtered enumeration that
   looks complete is worse than an honest one. Filter yourself, or ask `exists` the narrower question. Internal
   bookkeeping rows are the one exclusion, and only on an unscoped scan: they live in the reserved `cbm.due.` namespace,
@@ -635,8 +635,8 @@ otherwise. Five properties follow from "a write is a load":
 A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
 mean nothing was published. The same error covers a pointer that moved, a row rewritten by something that is not a
 supersession at all (a `setRetention`), and a purge. Re-read
-the destination and decide; do not treat it as "the write did not happen". A call that involves an expired handle is
-refused earlier and harder, with `ValidationError`. An `*Into` publishes with the fences a load does: see
+the destination and decide; do not treat it as "the write did not happen". A call that involves a released or lapsed
+lease is refused earlier and harder, with `LeaseExpiredError`. An `*Into` publishes with the fences a load does: see
 [which fence a publish carries](#how-it-stays-correct).
 
 To suppress the result of an intersection, pass `exclude` to `intersectInto` instead of writing a temporary segment and
@@ -785,11 +785,10 @@ chunk cache, so a batch neither evicts another reader's hot chunks nor is served
 through the checks on untrusted bytes. A key an operand's index lists whose bytes are missing is an error for the outputs
 that read that operand, never an empty chunk: an exclude would otherwise subtract nothing.
 
-**Leases and deadlines.** An expired or released handle anywhere in the call, an operand or a `dest`, is refused before
-any request, as the `*Into` verbs refuse one. A leased operand's lease, and an operand's `expiresAt`, are checked before
-each chunk key is read: a lapse fails only the outputs that read that operand (`LeaseExpiredError` for a lease,
-`ValidationError` for a deadline) and never reads empty. Each `dest`'s lease and deadline are checked again just before
-its publish.
+**Leases.** A handle anywhere in the call, an operand or a `dest`, whose lease has lapsed or was released is refused
+before any request, as the `*Into` verbs refuse one. A leased operand's lease is checked before each chunk key is read:
+a lapse fails only the outputs that read that operand, with `LeaseExpiredError`, and never reads empty. Each `dest`'s
+lease is checked again just before its publish.
 
 **Requests of a refresh-shaped call.** Counted in memory by `bench/materialize-many-counts.cjs`, which wraps the storage
 driver and the registry of the in-memory backend and counts every call they are asked, not measured on S3 and with no

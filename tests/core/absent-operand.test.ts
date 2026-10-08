@@ -139,50 +139,23 @@ describe('a combine refuses an operand that names a segment which does not exist
   });
 });
 
-describe('a combine whose other operands have all expired still checks its own segment', () => {
-  // `seg.union([expired])` and `seg.andNot([expired])` read `seg` alone, as a one-operand combine, so they hold `seg`
-  // to the rule every combine holds its operands to. A base that names no segment is refused, as it is when the
-  // other operand is live, rather than read as empty.
-  async function expiring() {
-    const w = await world();
-    const expired = w.store.segment('global-opt-out', {
-      namespace: 'suppression',
-      expiresAt: Date.now() - 86_400_000,
-    });
-    const never = w.store.segment('never-loaded', { namespace: 'audiences' });
-    return { ...w, expired, never };
+describe('a combine checks its own segment as it checks its operands', () => {
+  // A base that names no segment is refused, rather than read as empty.
+  function never(w: Awaited<ReturnType<typeof world>>) {
+    return w.store.segment('never-loaded', { namespace: 'audiences' });
   }
 
   it('refuses a base that does not exist, on union and andNot', async () => {
-    const w = await expiring();
-    for (const read of [
-      () => w.never.union([w.expired]),
-      () => w.never.andNot([w.audience]),
-      // The same base with a live operand, which these must agree with.
-      () => w.never.union([w.audience]),
-    ]) {
+    const w = await world();
+    const base = never(w);
+    for (const read of [() => base.andNot([w.audience]), () => base.union([w.audience])]) {
       await expect(collect(read())).rejects.toThrow(ValidationError);
       await expect(collect(read())).rejects.toThrow(/"audiences\/never-loaded" names a segment/);
     }
   });
 
-  it('refuses an expired exclusion as expired, not as an absent base', async () => {
-    const w = await expiring();
-    await expect(collect(w.never.union([w.audience], { exclude: [w.expired] }))).rejects.toThrow(
-      /exclusions have expired/,
-    );
-  });
-
   it('reads it as empty under `allowAbsentOperands: true`', async () => {
-    const w = await expiring();
-    const options = { allowAbsentOperands: true };
-    expect(await collect(w.never.union([w.expired], options))).toEqual([]);
-    expect(await collect(w.never.andNot([w.audience], options))).toEqual([]);
-  });
-
-  it('reads a base that exists alone past an expired operand, and refuses an expired exclusion', async () => {
-    const w = await expiring();
-    expect(await collect(w.audience.union([w.expired]))).toEqual([1, 2, 3, 4]);
-    await expect(collect(w.audience.andNot([w.expired]))).rejects.toThrow(ValidationError);
+    const w = await world();
+    expect(await collect(never(w).andNot([w.audience], { allowAbsentOperands: true }))).toEqual([]);
   });
 });

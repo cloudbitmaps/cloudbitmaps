@@ -382,10 +382,8 @@ npm audit signatures</code></pre>
             <span class="m">setRetention(ref, { expiresAt })</span> and a <span class="m">retireExpired()</span>
             sweep retires it, on a schedule you own. An individual <em>id</em> cannot, because a bitmap stores ids
             and not <span class="m">(id, timestamp)</span> pairs — an expiry per id costs 4&ndash;8 bytes each
-            and takes the compression with it. Retention is a segment that expires, not a bit that ages. A
-            handle can carry a deadline of its own, too: <span class="m">store.segment(name, { expiresAt })</span>
-            reads empty past it, with no I/O, so the data stops being served on time even when the sweep is
-            late. It reclaims nothing, and it binds that handle alone.
+            and takes the compression with it. Retention is a segment that expires, not a bit that ages. To
+            stop serving a set on time even when the sweep is late, check the deadline where you read it.
           </p>
         </div>
 

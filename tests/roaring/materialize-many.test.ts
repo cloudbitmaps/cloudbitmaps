@@ -363,21 +363,6 @@ describe('store.materializeMany', () => {
       await expect(w.store.materializeMany(options)).rejects.toBeInstanceOf(ValidationError);
       expect(w.calls.storage + w.calls.registry).toBe(0);
     });
-
-    it('refuses an expired handle', async () => {
-      const w = await batchWorld(DATA);
-      const gone = w.store.segment('a', { expiresAt: Date.now() - 1_000_000 + 2 ** 41 - 2 ** 41 });
-      void gone;
-      const past = w.store.segment('a', { expiresAt: 1_000_000_000_000 });
-      await expect(
-        w.store.materializeMany({
-          operands: { a: past },
-          outputs: [{ dest: w.store.segment('d'), expr: 'a' }],
-          keep: 1,
-        }),
-      ).rejects.toThrow(/expired/);
-      expect(w.calls.storage + w.calls.registry).toBe(0);
-    });
   });
 
   it('an operand that names no segment is refused unless allowed', async () => {

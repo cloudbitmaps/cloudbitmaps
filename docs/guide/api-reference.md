@@ -166,26 +166,11 @@ A storage that cannot serve range reads (none of the five backends above is one;
 refused at construction with `CapabilityError`, and so is a keystore or `encryption.required: true` on a store built
 on a bare `IStorageDriver` instead of a backend, which has no registry to hold wrapped keys.
 
-### Get a segment — `store.segment(name, { namespace?, expiresAt? })` → `Segment`
+### Get a segment — `store.segment(name, { namespace? })` → `Segment`
 
-`expiresAt` is an absolute epoch-**milliseconds** deadline, declared where the segment is named. Past it, every
-read through **that handle** answers empty — `has` → `false`, `count` → `0`, `iterate` → nothing — as one integer
-compare against the injected clock, with **no I/O, on every backend**. Set algebra stays coherent with it: an
-expired operand makes an `intersect` empty and is dropped from a `union`. **An expired exclusion throws,
-in every shape** — `andNot`, and `exclude` on `intersect` and `union`, the range read and `.batches()` included: the
-stream rejects with a `ValidationError` that names each expired exclusion (`andNot: refusing to read while these
-exclusions have expired — <name>, …`), before any request is made, because a suppression or opt-out list that is skipped
-would let through the ids it exists to remove. The check is made when the combine is called, against the injected
-clock, and runs ahead of the rules for operands, so an expired exclusion is refused even where the combine would
-read empty, and one that names a segment that does not exist is refused as expired, not as an absent operand. A
-stream already being read is not re-checked if its exclusion expires part-way. An `*Into` that involves an expired
-handle, an exclusion included, throws a `ValidationError` too: it does not publish a generation the exclusion did
-not shape.
-
-It does **not** reclaim the bytes (`retireExpired` does, so `count()` reporting 0 while objects still exist is the
-expected state in that window) and it does **not** apply to other handles — record the policy with
-`setRetention` to make it durable, fleet-visible and reclaimable. A seconds-shaped value is refused at the
-handle rather than silently making the segment permanently empty. `seg.expiresAt` reads it back.
+A handle carries no deadline: `expiresAt` among its options throws `ValidationError`. A set that stops being served
+after a deadline is checked where it is read, or recorded with `setRetention` and retired by `retireExpired`
+([a deadline on a set](retention.md#a-deadline-on-a-set)).
 
 A `Segment` has no public constructor: `store.segment(name)` and `seg.pin()` are the only ways to get one, because a
 handle is wired to the store's engine, caches and write path. The class is exported for `instanceof` and to annotate
@@ -281,8 +266,7 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `IdStream` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
 | *every combine, streamed or `*Into`* | **refuses an operand that names no segment**, `this` and every `exclude` included, with `ValidationError`, unless you pass `allowAbsentOperands: true` ([why](reading.md#combine-segments-intersect-union-andnot)) |
 | `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`**, superseding it ([the `*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs)). `opts` takes the combine's options, a range included, and `keep`, `allowEmpty`, `guard` and `metadata`. An empty result over a non-empty `dest` is refused (`published: false`); a lost race throws `WriteConflictError`. Collects nothing unless you pass `keep`. Needs a backend |
-| `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | **Deprecated:** moves to its own package at 1.0 ([why](cost.md)). A grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
-| `seg.expiresAt` | the handle's deadline, if one was declared |
+| `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). A grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
 | `seg.pinnedAt` | on a handle from `pin()` or `pinAt()`, the `PinnedAt` it is held at; `undefined` on a live handle |
 | `seg.lease` | on a handle from `pin({ leaseUntil })`, the `Lease` it holds, `{ holder, until }` (`until` in epoch milliseconds); `undefined` otherwise |
 | `seg.release()` → `Promise<void>` | end this handle's lease now, so a load's collection may take its generation. Idempotent: a handle with no lease, one already released, and one whose lease has ended make no request; otherwise one registry read and one write. Every read of the handle after it, and after the lease's own end, throws `LeaseExpiredError` |
@@ -324,7 +308,7 @@ segment mid-call and how the timed refresh behaves.
 | `store.checkConsistency({ namespace?, concurrency?, summaries? })` → `Promise<ConsistencyReport>` | DR: verify every registered segment's `currentGen` `.crbm` is present, to catch a torn cross-store restore. With `summaries: true` it also opens each current object (one tail read each) and reports `summary-mismatch` where the row's summary says another count or metadata than the object holds ([details](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)). Holds at most 250,000 rows resident. Needs a backend |
 | `store.invalidate(ref)` → `void` | **drop what this store derived about a segment**, so its next read resolves the current generation afresh. The store's own writes do this for themselves; call it for what they cannot see ([details](reading.md#how-soon-a-reader-sees-a-new-load)). It also drops the segment's open chunk reads: callers already waiting on one still get its answer, and a dropped read is not written to the cache. No I/O |
 | `store.exportSegments(sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `Promise<ExportManifest>` | eject every registered segment's current generation to portable `roaring`/`ndjson` through your sink, each segment pinned for its export, so one file is one generation (one registry read per segment on a warm store). `codec` builds the exported bitmaps for `'roaring'` and defaults to the roaring codec. Needs a backend |
-| `CloudRoaring.estimateCost(input)` → `CostReport` | **Deprecated:** moves to its own package at 1.0 ([why](cost.md)). **static** — plan costs with no instance/data (sizing, what-if) |
+| `CloudRoaring.estimateCost(input)` → `CostReport` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). **static** — plan costs with no instance/data (sizing, what-if) |
 
 ### Standalone functions (imported, called directly)
 
@@ -561,8 +545,8 @@ because the store methods return them; the `*Deps` types (`LoadDeps`, `Generatio
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `Promise<SetRetentionResult>` | the free function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention(ref, { registry })` / `clearSegmentRetention(ref, { registry })` are its read/cancel siblings |
 | `retireExpired({ registry, storage }, { now, … })` → `Promise<RetireExpiredResult>` | the free function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
 | `runExport(reader, registry, sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `Promise<ExportManifest>` | the free function behind `store.exportSegments`; `codec` is required for the `'roaring'` format, and the store binds it. `reader` is a `SegmentReader`: any object with `segment(name, { namespace? })` returning a handle with `pin()`, which resolves to `{ iterate(): AsyncIterable<number> }` (a `CloudRoaring` is one); a reader without that shape throws `ValidationError` before any file is opened. Each segment is pinned for its export, so one file is one generation: a cold store makes one registry read and one tail read per segment, a warm store one registry read |
-| `estimateCost({ segments, workload?, pricing? })` → `CostReport` | **Deprecated:** moves to its own package at 1.0 ([why](cost.md)). The free function behind the static `CloudRoaring.estimateCost` |
-| `groundedReport({ storageBytes, grounded?, workload?, pricing?, extraNotes? })` → `CostReport` | **Deprecated:** moves to its own package at 1.0 ([why](cost.md)). Build a report from a **measured** byte total (backs `segment.costReport()`) |
+| `estimateCost({ segments, workload?, pricing? })` → `CostReport` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). The free function behind the static `CloudRoaring.estimateCost` |
+| `groundedReport({ storageBytes, grounded?, workload?, pricing?, extraNotes? })` → `CostReport` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). Build a report from a **measured** byte total (backs `segment.costReport()`) |
 
 ### Driver kit — what you need to *implement* a driver
 
@@ -925,7 +909,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
 `CrbmReader` · `BufferReader` ·
 `CountingMetricsSink` · `RecordingAuditSink` ·
-`AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` · `ONE_REDIS_HA_CLUSTER` (the price lists; deprecated, leaving for the cost model's own package at 1.0, [why](cost.md)) · `CloudRoaringError` ·
+`AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` · `ONE_REDIS_HA_CLUSTER` (the price lists; deprecated, moving to `@cloudbitmaps/tools`, [why](cost.md)) · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·

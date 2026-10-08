@@ -140,14 +140,6 @@ describe('pinAt reopens a named generation', () => {
       w.reader().segment('s').pinAt({ generation: 0, fingerprint: '1:1' }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
-
-  it('keeps the segment handle options: an expiring handle pins an expiring handle', async () => {
-    const w = world();
-    await w.writer.load(REF, [1, 2, 3]);
-    const first = await w.reader().segment('s').pin();
-    const handle = w.reader().segment('s', { expiresAt: Date.now() + 3_600_000 });
-    expect((await handle.pinAt(atOf(first))).expiresAt).toBe(handle.expiresAt);
-  });
 });
 
 describe('what pinAt costs', () => {

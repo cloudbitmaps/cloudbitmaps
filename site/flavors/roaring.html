@@ -360,10 +360,9 @@
                   <td class="from">
                     Per <em>segment</em>, not per id: the writer records an absolute
                     <span class="m">expiresAt</span> and the sweep is a call you schedule — nothing
-                    here starts a timer. For the lazy half of Redis's expiry, a handle opened with
-                    <span class="m">store.segment(name, { expiresAt })</span> reads empty past it,
-                    with no I/O. Never point an object-lifecycle rule at the bucket on its own; it
-                    deletes bytes the pointer still names.
+                    here starts a timer. For the lazy half of Redis's expiry, check the deadline
+                    where you read. Never point an object-lifecycle rule at the bucket on its own;
+                    it deletes bytes the pointer still names.
                   </td>
                 </tr>
               </tbody>

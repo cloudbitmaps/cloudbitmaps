@@ -155,15 +155,6 @@ describe('what stat() hands back', () => {
     expect(Object.isFrozen(entry.metadata)).toBe(true);
   });
 
-  it('an expired handle answers no generation and a count of 0', async () => {
-    const w = world();
-    await w.writer.load(SEG, [1, 2, 3]);
-    const seg = w.reader().segment('s', { namespace: 'ns', expiresAt: 1_000_000_000_000 });
-    expect(await seg.stat()).toMatchObject({ cardinality: 3 });
-    w.clock.advance(1_000_000_000_001);
-    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0 });
-  });
-
   it('a pin of a segment with no generation keeps answering none after a load', async () => {
     const w = world();
     await w.writer.setRetention(SEG, { expiresAt: 4_102_444_800_000 });

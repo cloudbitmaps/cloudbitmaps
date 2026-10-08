@@ -368,7 +368,7 @@ between here and there:
    Multi-tenant isolation is tracked separately, post-`1.0`.
 10. **The cost model in a package of its own.** `estimateCost`, `costReport`, `groundedReport` and the price lists keep
     working in the library, marked `@deprecated`, and move to `@cloudbitmaps/tools`, a package of offline tools that need
-    nothing internal from a store, in the minor after the next. `stat()` gains the generation's byte size, so a grounded
+    nothing internal from a store, in a coming minor. `stat()` gains the generation's byte size, so a grounded
     report needs nothing internal, and the price lists can be kept current for S3, GCS and Azure without a library
     release.
 

@@ -98,7 +98,7 @@ store is throttling).
 
 ## 2. Cost gauge (costReport → a scheduled sample)
 
-`costReport()` keeps working, and leaves the library at 1.0 for a package of its own ([why](cost.md)).
+`costReport()` keeps working, and moves to `@cloudbitmaps/tools` in a coming minor ([why](cost.md)).
 
 Cost isn't an event stream — it's a *standing figure* you sample on a schedule (a cron, a Lambda) and push as a
 gauge. Because the library owns the objects, the grounded report uses each segment's **real** measured size:

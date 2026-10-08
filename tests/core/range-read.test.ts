@@ -345,57 +345,6 @@ describe('every combine takes the range, on every operand and every exclude', ()
   });
 });
 
-describe('the shortcuts for expired operands keep the range', () => {
-  const DAY = 86_400_000;
-  const T0 = 1_754_000_000_000;
-
-  async function expiring() {
-    let t = T0;
-    const clock = { now: () => t, sleep: () => Promise.resolve() };
-    const backend = new MemoryStorage();
-    const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 }, seams: { clock } });
-    await store.load({ segment: 'a' }, IDS);
-    await store.load({ segment: 'gone' }, [K + 1]);
-    await store.load({ segment: 's' }, [K + 2]);
-    return { store, expire: () => (t += 2 * DAY) };
-  }
-
-  it('a union whose every other operand expired is a range read of this one', async () => {
-    const w = await expiring();
-    const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
-    w.expire();
-    const range = { after: K, through: 2 * K + 1 };
-    expect(await collect(w.store.segment('a').union([gone], range))).toEqual(
-      within(IDS, K, 2 * K + 1),
-    );
-    expect(
-      await collect(
-        w.store.segment('a').union([gone], { ...range, exclude: [w.store.segment('s')] }),
-      ),
-    ).toEqual(within(IDS, K, 2 * K + 1).filter((id) => id !== K + 2));
-  });
-
-  it('a union routed through an andNot whose excludes all expired is refused, range or not', async () => {
-    const w = await expiring();
-    const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
-    const staleOptOut = w.store.segment('s', { expiresAt: T0 + DAY });
-    w.expire();
-    const range = { after: K, through: 2 * K + 1 };
-    await expect(
-      collect(w.store.segment('a').union([gone], { ...range, exclude: [staleOptOut] })),
-    ).rejects.toThrow(ValidationError);
-  });
-
-  it('an andNot whose every exclude expired is refused, range or not', async () => {
-    const w = await expiring();
-    const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
-    w.expire();
-    await expect(
-      collect(w.store.segment('a').andNot([gone], { after: K, through: 2 * K + 1 })),
-    ).rejects.toThrow(ValidationError);
-  });
-});
-
 describe('a range is read from any object that holds it, once, when the read is called', () => {
   class Page {
     get after(): number {
@@ -460,31 +409,6 @@ describe('a range is read from any object that holds it, once, when the read is 
     expect(await collect(a.intersect([b], none))).toEqual(IDS);
     expect(await collect(a.union([b], none))).toEqual(IDS);
     expect(await collect(a.andNot([b], none))).toEqual([]);
-  });
-});
-
-describe("the expired-operand shortcuts keep the call's own budget", () => {
-  const DAY = 86_400_000;
-  const T0 = 1_754_000_000_000;
-
-  it('a per-op budget, tighter or lifted, applies to a union whose other operands expired', async () => {
-    let t = T0;
-    const clock = { now: () => t, sleep: () => Promise.resolve() };
-    const store = new CloudRoaring({
-      storage: new MemoryStorage(),
-      cache: { genTtlMs: 0 },
-      seams: { clock },
-      budget: { maxRequests: 2 },
-    });
-    await store.load({ segment: 'a' }, IDS); // six chunks
-    await store.load({ segment: 'gone' }, [1]);
-    const a = store.segment('a');
-    const gone = store.segment('gone', { expiresAt: T0 + DAY });
-    t += 2 * DAY;
-    // The store's budget of 2 refuses a six-chunk read; `budget: false` on the call lifts it, as on any combine.
-    expect(await collect(a.union([gone], { budget: false }))).toEqual(IDS);
-    // …and a bad `concurrency` is refused there too.
-    await expect(collect(a.union([gone], { concurrency: 0 }))).rejects.toThrow(ValidationError);
   });
 });
 
@@ -606,33 +530,6 @@ describe('one-id ranges, and union edges held only by a later include', () => {
     expect(await collect(s.union([a], { after: 3 * K + 1, through: 4 * K + 5 }))).toEqual(
       within(A, 3 * K + 1, 4 * K + 5),
     );
-  });
-});
-
-describe('the remaining expired-operand shortcuts keep the range', () => {
-  const DAY = 86_400_000;
-  const T0 = 1_754_000_000_000;
-  it('this handle expired; some operands expired', async () => {
-    let t = T0;
-    const clock = { now: () => t, sleep: () => Promise.resolve() };
-    const store = new CloudRoaring({
-      storage: new MemoryStorage(),
-      cache: { genTtlMs: 0 },
-      seams: { clock },
-    });
-    await store.load({ segment: 'a' }, IDS);
-    await store.load({ segment: 'gone' }, [K + 1]);
-    await store.load({ segment: 's' }, [K + 2]);
-    const expiredA = store.segment('a', { expiresAt: T0 + DAY });
-    const gone = store.segment('gone', { expiresAt: T0 + DAY });
-    t += 2 * DAY;
-    const a = store.segment('a');
-    const s = store.segment('s');
-    const range = { after: K, through: 2 * K + 1 };
-    const want = within(IDS, K, 2 * K + 1);
-    expect(await collect(expiredA.union([a], range))).toEqual(want);
-    expect(await collect(a.union([gone, s], range))).toEqual(want);
-    expect(await collect(a.andNot([s], range))).toEqual(want.filter((id) => id !== K + 2));
   });
 });
 

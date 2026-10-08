@@ -120,9 +120,9 @@ for retirement, and retireExpired() is the sweep that acts on it, retiring each 
 dropSegment. The expiry is an absolute instant the writer sets, not a duration derived from anything observed,
 because every load rewrites the basis such a duration would use. The sweep is a function you schedule -- this
 library starts no timer, so the sweep behaves the same in a Lambda and in a long-running server. (An edge
-isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle can also
-carry its own deadline, store.segment(name, { expiresAt }), and reads empty past it with no I/O; that reclaims
-nothing and binds that handle alone. There is no per-id TTL: a bitmap stores ids, not timestamps, and a per-id
+isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle carries no
+deadline of its own; a reader that must stop serving a set on time checks the deadline where it reads. There is no
+per-id TTL: a bitmap stores ids, not timestamps, and a per-id
 timestamp costs more than the compression saves.
 
 ## No background process, and nothing to seed

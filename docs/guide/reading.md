@@ -36,11 +36,6 @@ and as an `exclude` it would suppress nobody and return the whole audience. Pass
 operand may legitimately not exist yet. A segment loaded with no ids, or one that only has a retention policy, counts
 as existing.
 
-**An `exclude` handle past its `expiresAt` is refused.** An expired operand reads empty, but an exclusion that read
-empty would stop suppressing and return the ids it was passed to remove, so `andNot`, and `exclude` on `intersect`
-and `union`, throw a `ValidationError` naming the expired handle, before any request. Renew its `expiresAt`, or open
-the list without one.
-
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
 
@@ -107,7 +102,7 @@ count, and the metadata it was loaded with (absent when it has none). One resolu
 describe one generation and cannot straddle a publish. It is one registry read when cold, none when the store has the
 segment, and none on a pinned handle, which answers for the generation it pinned. The same row read answers a `count()`,
 so a `stat()` then a `count()` is one request. It trusts what `count()` trusts. A segment with no generation answers
-`{ generation: null, cardinality: 0 }`, as does an expired handle.
+`{ generation: null, cardinality: 0 }`.
 
 `store.generations(ref)` carries the same `cardinality` and `metadata` on its current entry, from the row it already
 reads. Only the current entry has them: the other generations are not opened.
@@ -480,4 +475,4 @@ ends.push(4_294_967_295); // the last, partial window yields nothing: close it y
   index that is wrong about one, and still adds up, moves every boundary after it to the wrong rank, with no error. Where
   that matters, `iterate()` the segment and count what it yields.
 - **`n` must be a positive integer**, and each bound an integer in `0..4294967295`, or the stream throws `ValidationError`
-  when first read. An expired handle reads empty.
+  when first read.

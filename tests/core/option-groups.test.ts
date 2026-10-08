@@ -40,18 +40,21 @@ describe('grouped options reach the thing they configure', () => {
       registry: backend.registry,
     });
     // One deadline, two injected clocks either side of it: the ONLY thing deciding the answer is the clock
-    // that reached the store, so a `seams.clock` that never arrived would answer 1 both times.
+    // that reached the store. A lease must end after now, so a store whose clock is past the deadline refuses a
+    // lease that ends at it, where a `seams.clock` that never arrived would take it on the system clock.
     const deadline = 1_800_000_000_000;
     const after = new CloudRoaring({
       storage: backend,
       seams: { clock: { now: () => deadline + 1, sleep: async () => {} } },
     });
-    expect(await after.segment('s', { expiresAt: deadline }).count()).toBe(0);
+    await expect(after.segment('s').pin({ leaseUntil: deadline })).rejects.toThrow(
+      /is not after now/,
+    );
     const before = new CloudRoaring({
       storage: backend,
       seams: { clock: { now: () => deadline - 1, sleep: async () => {} } },
     });
-    expect(await before.segment('s', { expiresAt: deadline }).count()).toBe(1);
+    expect(await (await before.segment('s').pin({ leaseUntil: deadline })).count()).toBe(1);
   });
 
   it('`encryption.keystore` + `encryption.required` reach the read path', async () => {
