@@ -13,17 +13,14 @@ so, and so do the module headers in the code.
 
 ### Added
 
-- **`materializeMany` takes `dryRun` as a `boolean` held in a variable.** The call had a form for `dryRun: true` and
-  one for a publish, so `{ ...options, dryRun: flag }` matched neither and failed to compile. A third form takes a
-  `boolean` and is typed as either result; a literal `true` or `false` is typed exactly as before, and so is a call
-  without `dryRun`.
 - **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
   exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
   object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,
   wouldRefuse? }`, or `{ published: false, error }` for what would fail its publish; `wouldRefuse` is the `reason` a
   publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
   publish would, so it fails for memory where the publish would. A call with `dryRun: true`
-  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
+  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes; and a
+  `dryRun` held in a variable, a `boolean` or an optional one, returns either. Core gains
   `judgeLoad`, which a dry run runs for each output, and `CombineManyRequest.dryRun`, for a flavor built on
   `runCombineMany`. The guide shows how to publish what was reviewed, and recipes over
   a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives

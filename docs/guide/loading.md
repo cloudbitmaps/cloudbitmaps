@@ -1028,8 +1028,10 @@ for (const [i, o] of review.outputs.entries()) {
   `wouldRefuse` is the `reason` a publish would give now, absent when it would publish. `published` is `false`, so code
   that branches on it never takes a dry run for a publish.
 - **Its type.** `dryRun: true` is typed as a dry run's result and `false` or absent as a publish's, so TypeScript knows
-  which it gets. A `boolean` held in a variable is typed as either (`MaterializeManyRun | MaterializeManyDryRun`), and
-  the flag you passed says which: `const run = await store.materializeMany({ ...options, dryRun: flag })`.
+  which it gets. A `dryRun` held in a variable, a `boolean` or an optional one, is typed as either
+  (`MaterializeManyRun | MaterializeManyDryRun`), and the flag you passed says which:
+  `const run = await store.materializeMany({ ...options, dryRun: flag })`. Each output's result tells itself apart:
+  `'dryRun' in outcome` is true only of a dry run's.
 - **What it costs.** The operand reads of the publishing call, and for each output the reads a publish's own guard
   makes: one registry read for its `dest`'s size, or two where the row has no usable summary. No write, so no more than
   the publish. `stats.requests.publishes` is `0`, and `stats.requests.attributed.get` counts the reads of each `dest`. It

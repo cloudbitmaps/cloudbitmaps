@@ -386,6 +386,20 @@ describe('materializeMany({ dryRun: true })', () => {
     expectTypeOf(flagged).returns.resolves.toEqualTypeOf<
       MaterializeManyRun | MaterializeManyDryRun
     >();
+    // An optional switch, as a wrapper's own options hold one: either result too.
+    const forwarded = (store: Store, options: MaterializeManyOptions & { dryRun?: boolean }) =>
+      store.materializeMany(options);
+    expectTypeOf(forwarded).returns.resolves.toEqualTypeOf<
+      MaterializeManyRun | MaterializeManyDryRun
+    >();
+    const maybe = (store: Store, options: MaterializeManyOptions, flag: boolean | undefined) =>
+      store.materializeMany({ ...options, dryRun: flag });
+    expectTypeOf(maybe).returns.resolves.toEqualTypeOf<
+      MaterializeManyRun | MaterializeManyDryRun
+    >();
+    const undefinedFlag = (store: Store, options: MaterializeManyOptions) =>
+      store.materializeMany({ ...options, dryRun: undefined });
+    expectTypeOf(undefinedFlag).returns.resolves.toEqualTypeOf<MaterializeManyRun>();
     // The utility types read the last overload, which is the form without `dryRun`, as they read the one signature before.
     expectTypeOf<ReturnType<Store['materializeMany']>>().toEqualTypeOf<
       Promise<MaterializeManyRun>
