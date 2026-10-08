@@ -103,6 +103,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The driver conformance suites test what a driver could break and still pass.** A storage driver whose keys left
+  out the namespace, folded `a/b` into `a_b`, listed generations by a bare prefix, checked for an object and then wrote
+  it, or kept the bytes of a write whose writer failed passed every case, and a registry keyed by the segment name
+  alone did too: through a store, the first serves one tenant's ids to another and the last publishes over another
+  tenant's row. The suites now hold a driver to keeping every name and namespace apart, to write-once under two
+  concurrent writers, and to storing nothing for a failed write. Every shipped driver passes, on the emulators too.
 - **A refused load is reported as refused when deleting its object fails.** The refusal deleted the object it had
   written before answering, and a fault in that delete (a transient storage error) replaced the refusal, which is an
   answer and not an error, and dropped its `segment.load-refused` event; the same fault replaced a publish's own

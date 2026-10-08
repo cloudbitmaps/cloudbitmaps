@@ -230,8 +230,14 @@ export interface StorageCaps {
  * shipped driver to them:
  *
  * - **`putImmutable` is write-once and reports a collision as {@link WriteConflictError}.** It never overwrites a
- *   stored object. `load` reads that error as a lost race for the generation number (`superseded`), so a driver
- *   that threw anything else for an existing key would surface as a failed load.
+ *   stored object, two concurrent writes of one key included: exactly one lands. `load` reads that error as a lost
+ *   race for the generation number (`superseded`), so a driver that threw anything else for an existing key would
+ *   surface as a failed load. A write whose writer fails stores nothing, and the key can be written after.
+ * - **Keys keep every name apart.** One segment in two namespaces, two names an encoding could fold into one (`a/b`
+ *   and `a_b`), and a name that extends another (`s` and `s.1`) are separate objects, each listed and deleted alone;
+ *   generations are listed and deleted by number, never by a prefix of one.
+ * - **A bucket or container that does not exist is not a missing object**: it fails with an error that is not
+ *   {@link NotFoundError}, which would read as an empty segment.
  * - **A missing object makes `getRange` and `getTail` throw {@link NotFoundError}** — never an empty or short
  *   result. Heal-forward (a read whose generation a sweep collected re-resolves), the erasure's holder probe and
  *   its verify of the rewrite, and a pin's replaced-object check all branch on that one error. (A zero-length
