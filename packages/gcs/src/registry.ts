@@ -46,6 +46,7 @@ import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-k
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
 import { BucketPresence } from './bucket-presence';
+import { crc32cBase64 } from './crc32c';
 import { retryDownload } from './download-retry';
 import { scrubCredentials } from './scrub-error';
 import { downloadFile, readOnce, singleHeader } from './read-once';
@@ -161,6 +162,11 @@ export class GcsRegistryStore implements ObjectRegistryStore {
       // of data over two.
       await saveOnce(this.file(key), body, {
         contentType: 'application/json',
+        // The checksum goes with the upload, for GCS to check before it stores anything. The SDK's own check runs
+        // after the upload instead, and on a mismatch, or an answer that names no checksum, deletes the object by
+        // name with no precondition: for a row, that is the live row, another writer's newer one included.
+        validation: false,
+        metadata: { crc32c: crc32cBase64(body) },
         preconditionOpts: {
           ifGenerationMatch: expect === 'absent' ? 0 : generationFence(expect.version, key),
         },

@@ -91,6 +91,8 @@ class StubGcs {
   readonly deleteFences: Array<string | null> = [];
   /** When set, an upload's answer names a checksum the stored bytes do not have. */
   corruptChecksums = false;
+  /** When set, an upload's bytes arrive altered, as corruption in transit that TLS did not catch would leave them. */
+  corruptUploads = false;
   private seq = 1_000;
   /** Connections the stub has accepted and seen close, to show a refused response does not leak its socket. */
   opened = 0;
@@ -236,8 +238,17 @@ class StubGcs {
           items: [...this.objects.keys()].map((n) => ({ name: n })),
         });
       case 'upload': {
-        const { metadata, bytes } = uploadParts(req, body);
+        const parts = uploadParts(req, body);
+        const { metadata } = parts;
+        const bytes = this.corruptUploads
+          ? Buffer.concat([parts.bytes, Buffer.from('!')])
+          : parts.bytes;
         this.uploads.push({ name, query: Object.fromEntries(query), metadata });
+        // As GCS does: a `crc32c` sent with the upload is checked against the bytes received, and nothing is stored
+        // when they differ.
+        if (typeof metadata.crc32c === 'string' && metadata.crc32c !== crc32c(bytes)) {
+          return error(400, 'invalid');
+        }
         const match = query.get('ifGenerationMatch');
         if (match !== null) {
           const expected = Number(match);
@@ -469,6 +480,31 @@ describe('GCS: the single request carries what file.save() would have sent', () 
       expect(upload.query.uploadType).toBe('multipart');
       expect(upload.metadata.contentType).toBe('application/json');
     }
+  });
+
+  it('a registry write sends its checksum for GCS to check, so a corrupted upload stores nothing', async () => {
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    const body = stub.objects.get('registry/_default/s.reg')!.body;
+    expect(stub.uploads[0]?.metadata.crc32c).toBe(crc32c(body));
+
+    stub.corruptUploads = true;
+    await expect(backend.registry.compareAndSwap(REF, token, { currentGen: 1 })).rejects.toThrow();
+    stub.corruptUploads = false;
+    expect(stub.objects.get('registry/_default/s.reg')?.body).toEqual(body);
+    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 0, token });
+  });
+
+  it('a registry write whose answer names another checksum keeps the row: nothing deletes it', async () => {
+    // The SDK's own check runs after the upload and, on a mismatch or an answer with no checksum, deletes the object
+    // by name with no precondition: for a registry row, the live row, another writer's newer one included.
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    stub.corruptChecksums = true;
+    await backend.registry.compareAndSwap(REF, token, { currentGen: 1 });
+    stub.corruptChecksums = false;
+    expect(stub.count('delete')).toBe(0);
+    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 1 });
   });
 
   it('a write-once upload is one octet-stream upload under `ifGenerationMatch: 0`', async () => {

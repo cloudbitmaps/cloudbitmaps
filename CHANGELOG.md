@@ -103,6 +103,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A GCS registry write can no longer delete the row it meant to replace.** The SDK checks an upload's checksum
+  after the upload, and on a mismatch, or an answer that names no checksum (as some GCS-compatible servers send),
+  deletes the object by name with no precondition. For a registry row that removed the live row, another writer's
+  newer one included, and the segment then read as empty. The GCS registry now sends the row's CRC32C with the upload,
+  so GCS checks it and stores nothing on a mismatch, and turns the SDK's after-the-fact check off. Generation uploads
+  keep the SDK's check: a generation's name is written once, so the object it deletes is the one that write created.
 - **An option held in a getter or inherited from a prototype is the option a call runs with.** `retireExpired` and
   `exportSegments` copied their options with a spread, which keeps only an object's own properties, so a `dryRun` or
   a `namespace` held in a class getter or on a prototype, which TypeScript accepts, was dropped after it was checked:
