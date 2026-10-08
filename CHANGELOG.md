@@ -103,6 +103,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An erasure rewrite that a `dropSegment` overtakes deletes what it wrote.** A drop that lands while `eraseSubject`
+  rewrites a segment usually finishes its sweep before the rewrite's object is written, and that object, a full copy
+  of the dropped segment less one id, in the clear on a cleartext segment, was left in the bucket and reported
+  nowhere. Under a tombstone the rewrite now deletes it, as a refused load already did. A rewrite whose publish the
+  drop refuses reports `'destroyed'`, as the guide says, where it reported `'superseded'`, whose advice to re-run finds
+  nothing.
 - **Whether a `materializeMany` output fits its budget no longer depends on where it sits in the call.** Each group
   keeps its plan, charged, until it starts, and those charges shrank the room every later output was judged against:
   three identical outputs at the budget a refusal named published the first two and refused the third, and later

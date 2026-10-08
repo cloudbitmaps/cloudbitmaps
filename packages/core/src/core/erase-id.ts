@@ -636,19 +636,30 @@ export async function eraseIdFromSegment(
    * has just reported gone, one `rollback({ allowForward: true })` from being served, and the newest superseded
    * generation once a later load raises the pointer past it, which is exactly what that load's `keep` retains.
    *
+   * Under a tombstone it is deleted too, as a refused load deletes its own: every generation under one is garbage
+   * (invariant 4's one exception), and a drop that landed while this rewrite streamed usually finished its sweep
+   * before the object committed, so nothing else would take it. It is a copy of the dropped segment less one id.
+   *
    * Everywhere else the object is left alone, as a refused load leaves its own once the row has changed. At or
    * above `written` the pointer either names it or belongs to a writer that numbered after it and whose
-   * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone, tombstoned or
-   * without a pointer is not one this call can reason about. The position is read from a fresh row, just before
-   * the delete, and the number still names this call's own object: a name re-created since would have had to
-   * lose this object and then write that many generations of its own, and only its pointer landing on `written`
-   * could make the delete unsafe, which the bound excludes.
+   * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone or without a pointer
+   * is not one this call can reason about. The position is read from a fresh row, just before the delete, and the
+   * number still names this call's own object: a name re-created since would have had to lose this object and
+   * then write that many generations of its own, and only its pointer landing on `written` could make the delete
+   * unsafe, which the bound excludes.
+   *
+   * Returns the row it read, so a refused publish reports what that row says.
    */
-  const discardRefused = async (written: number): Promise<void> => {
+  const discardRefused = async (written: number): Promise<RegistryRecord | null> => {
     const row = await deps.registry.get(ref);
-    if (row === null || row.status !== 'active' || row.currentGen === null) return;
-    if (row.currentGen <= from || row.currentGen >= written) return;
+    if (row !== null && row.status === 'destroyed') {
+      await deps.storage.delete({ ...base, generation: written });
+      return row;
+    }
+    if (row === null || row.status !== 'active' || row.currentGen === null) return row;
+    if (row.currentGen <= from || row.currentGen >= written) return row;
     await deps.storage.delete({ ...base, generation: written });
+    return row;
   };
 
   const staged = await stage();
@@ -688,11 +699,13 @@ export async function eraseIdFromSegment(
     rng: deps.rng ?? deps.readRetry?.rng,
   });
   if (!published) {
-    await discardRefused(generation);
+    // The publish refuses on the row's token before it looks at the row's status, so the row read here says why:
+    // a concurrent `dropSegment` is `'destroyed'`, not a race a re-run would win.
+    const now = await discardRefused(generation);
     return {
       ...base,
       erased: false,
-      reason: 'superseded',
+      reason: rowVerdict(now) ?? 'superseded',
       fromGeneration: from,
       generation,
       collected: [],
