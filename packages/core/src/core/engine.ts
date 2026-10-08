@@ -415,7 +415,8 @@ export class SegmentEngine {
       let total = 0;
       for (const [k, n] of cardinalities) {
         assertChunkKeyInRange(k);
-        assertChunkCardinalityInRange(n);
+        // A count of 0 adds nothing and a custom source may report an emptied chunk; anything else must be a count.
+        if (n !== 0) assertChunkCardinalityInRange(n);
         total += n;
       }
       return total;
