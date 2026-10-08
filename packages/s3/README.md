@@ -42,7 +42,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 | `client` | your own `S3Client`; it carries its own region, endpoint and credentials |
 | `region`, `endpoint`, `pathStyle`, `credentials` | build a client for you, such as one for MinIO; refused beside `client` |
 | `maxSockets` | most sockets the client you do not pass opens at once, for `https` and plain `http` alike; a positive integer, default 128 (the SDK's own is 50; if a future SDK changes its handler, the built client keeps the SDK's own limit); refused beside `client` |
-| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB) |
+| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB). A cap above 5 TiB, or a part above S3's 5 GiB part limit, is a `ValidationError` |
 | `readTimeoutMs` | how long one read (a `GetObject` or `HeadObject`, its body included) may take before it throws `TransientError` and the store retries it; `0`, the default, sets no timeout. Writes are not timed |
 | `conditionalDelete` | whether the registry removes a deleted row with a `DeleteObject` under `If-Match` rather than leaving a tombstone. On by default when the host the client resolves is an AWS S3 host, however its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file); off for any other host: set it for an S3-compatible store only once you know it applies the header (MinIO ignores it) |
 

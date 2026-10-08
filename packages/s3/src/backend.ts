@@ -69,7 +69,8 @@ export interface S3StorageOptions {
   /**
    * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
-   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
+   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max, and a
+   * larger cap, or a `partBytes` above S3's 5 GiB part limit, is refused with `ValidationError`.
    * Must be a positive safe integer.
    */
   readonly maxObjectBytes?: number;

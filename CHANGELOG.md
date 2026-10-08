@@ -103,6 +103,10 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **S3 refuses an object cap above 5 TiB and a part above 5 GiB**, S3's own limits, with `ValidationError` when the
+  backend is built. A larger `maxObjectBytes`, such as `Number.MAX_SAFE_INTEGER` for "no limit", grew the part to
+  cover it past S3's part limit, so a write held an object of up to hundreds of GiB in memory whole, copied it once
+  more, and sent it as one `PutObject` that S3 refuses above 5 GiB.
 - **Only an AWS S3 host turns S3 conditional deletes on by default.** Any host under an AWS domain with a label that
   started with `s3-` counted, so a load balancer named `s3-…` in front of MinIO, an API Gateway or an S3 website
   endpoint was taken for AWS S3, and the registry removed rows with a conditional delete the store behind it may

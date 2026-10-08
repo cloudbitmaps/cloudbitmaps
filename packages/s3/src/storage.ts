@@ -83,6 +83,9 @@ import { scrubCredentials } from './scrub-error';
 const S3_PART_BYTES = 8 * 1024 * 1024;
 /** S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the real object ceiling. */
 const S3_MAX_PARTS = 10_000;
+/** S3 hard limits on one object (5 TiB) and one part (5 GiB). */
+const S3_MAX_OBJECT_BYTES = 5 * 1024 ** 4;
+const S3_MAX_PART_BYTES = 5 * 1024 ** 3;
 /** The user-metadata name an object's write id is stored under (`x-amz-meta-cbwid`). Short: every write sends it. */
 const WRITE_ID_KEY = 'cbwid';
 /** How many times a throttled commit is sent again: four sends in all, as many as the SDK's own retry makes. */
@@ -159,6 +162,18 @@ export class S3StorageDriver implements IStorageDriver {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
         throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
       }
+    }
+    // Past S3's own limits a cap is not reachable: the part grown to cover it would pass the part limit, an object up
+    // to that size would be held in memory whole, and one PutObject of it would be refused.
+    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > S3_MAX_OBJECT_BYTES) {
+      throw new ValidationError(
+        `maxObjectBytes must be at most S3's 5 TiB object limit (${S3_MAX_OBJECT_BYTES}); got ${options.maxObjectBytes}`,
+      );
+    }
+    if (options.partBytes !== undefined && options.partBytes > S3_MAX_PART_BYTES) {
+      throw new ValidationError(
+        `partBytes must be at most S3's 5 GiB part limit (${S3_MAX_PART_BYTES}); got ${options.partBytes}`,
+      );
     }
     const requestedPart = Math.max(options.partBytes ?? S3_PART_BYTES, 5 * 1024 * 1024);
     // Default the object cap to what the requested part size can actually cover within S3's 10,000-part limit;
