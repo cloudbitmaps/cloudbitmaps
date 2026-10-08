@@ -56,6 +56,8 @@ import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 const AZURE_BLOCK_BYTES = 8 * 1024 * 1024;
 /** Azure hard limit: a block blob has at most 50,000 committed blocks. This × the block size is the ceiling. */
 const AZURE_MAX_BLOCKS = 50_000;
+/** Azure's limit on one block, 4,000 MiB; with the block limit it bounds a blob at about 190.7 TiB. */
+const AZURE_MAX_BLOCK_BYTES = 4000 * 1024 * 1024;
 
 const OCTET_STREAM = { blobContentType: 'application/octet-stream' } as const;
 /** Write-once precondition shared by both upload paths: create only if the blob is absent. */
@@ -111,6 +113,22 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     ) {
       throw new ValidationError(
         `maxObjectBytes must be a positive safe integer; got ${options.maxObjectBytes}`,
+      );
+    }
+    // Past Azure's own limits a setting is not reachable: a block over 4,000 MiB is refused by the service, and so is a
+    // blob that needs one.
+    if (requestedBlock > AZURE_MAX_BLOCK_BYTES) {
+      throw new ValidationError(
+        `blockBytes must be at most Azure's 4,000 MiB block limit (${AZURE_MAX_BLOCK_BYTES}); got ${requestedBlock}`,
+      );
+    }
+    if (
+      options.maxObjectBytes !== undefined &&
+      options.maxObjectBytes > AZURE_MAX_BLOCK_BYTES * AZURE_MAX_BLOCKS
+    ) {
+      throw new ValidationError(
+        `maxObjectBytes must be at most Azure's limit of ${AZURE_MAX_BLOCKS} blocks of 4,000 MiB ` +
+          `(${AZURE_MAX_BLOCK_BYTES * AZURE_MAX_BLOCKS}); got ${options.maxObjectBytes}`,
       );
     }
     // Default the object cap to what the requested block size can cover within the 50,000-block limit; if a
@@ -196,6 +214,10 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       // tail read needs the size first, and it stays two. This is on the per-*generation* open path, which the
       // reader caches — NOT the per-op cache path (has/count/intersect) — so it's amortized.
       // Each request is timed on its own: the properties, then the ranged download and its body.
+      // `NaN` compares false either way, so the test is "not 0 or less", which it fails.
+      if (!(maxBytes <= 0) && !Number.isSafeInteger(maxBytes)) {
+        throw new ValidationError(`invalid tail length ${maxBytes}`);
+      }
       const props = await timedRead('getProperties', this.readTimeoutMs, (abortSignal) =>
         this.blob(objectName).getProperties({ abortSignal }),
       );
@@ -215,6 +237,13 @@ export class AzureBlobStorageDriver implements IStorageDriver {
           res.contentLength,
         );
       });
+      if (bytes.length !== take) {
+        throw this.badRead(
+          key,
+          'tail',
+          `the response holds ${bytes.length}B of the ${take}B requested`,
+        );
+      }
       return { bytes, size };
     } catch (err) {
       throw this.mapReadError(err, key);

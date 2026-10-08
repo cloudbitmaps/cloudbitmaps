@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The cloud drivers check more of what they are told and what they are answered.** An S3 range answer of the
+  right length from another place in the object, and an S3 listing page that said more followed without saying how to
+  ask for it, were believed; the first is refused and the second is an `IntegrityError`, not a listing ended short.
+  An Azure Blob tail answer short of the bytes asked for, and a tail length of `NaN`, `1.5` or `Infinity`, are
+  refused, and a registry compare-and-swap whose row was deleted since it was read is a lost race on a service that
+  answers it `404`. `S3Storage` and `GcsStorage` refuse a `bucket` that is not a non-empty string and every backend a
+  `now` that is not a function, when built; Azure Blob refuses a `blockBytes` above its 4,000 MiB block limit and a
+  `maxObjectBytes` above 50,000 such blocks, and GCS a `maxObjectBytes` above its 5 TiB object limit.
 - **The S3 and GCS storage drivers copy what they are given to write.** Their upload sinks kept a reference to the
   caller's buffer until the part or the upload was sent, so a writer that reused a buffer once `write()` resolved, as
   the in-memory sink and the Azure Blob driver allow, stored its later contents instead. The library's own writer

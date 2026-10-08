@@ -258,6 +258,10 @@ export class S3RegistryStore implements ObjectRegistryStore {
       for (const obj of res.Contents ?? []) {
         if (obj.Key !== undefined) yield obj.Key;
       }
+      // A page that says more follow and gives no way to ask for them would end the listing short, silently.
+      if (res.IsTruncated === true && res.NextContinuationToken === undefined) {
+        throw new IntegrityError('S3 listing says it is truncated but gives no continuation token');
+      }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);
   }

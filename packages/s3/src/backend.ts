@@ -205,6 +205,14 @@ export class S3Storage implements StorageBackend {
 
   constructor(options: S3StorageOptions) {
     refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
+    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+      throw new ValidationError('S3Storage needs a `bucket`: the name of one, a non-empty string');
+    }
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "S3Storage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its region, endpoint, addressing style and credentials, so a setting
       // beside it is ignored, and ignoring it leaves the store talking to somewhere the caller did not mean:

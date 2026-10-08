@@ -28,6 +28,7 @@
  * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
  */
 import {
+  IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
@@ -67,6 +68,7 @@ import {
   isInvalidRange,
   isNoSuchUpload,
   isNotFound,
+  spanFromContentRange,
   isPreconditionFailed,
   isThrottle,
   isTransient,
@@ -251,6 +253,20 @@ export class S3StorageDriver implements IStorageDriver {
           `range [${offset}, ${offset + length}) out of bounds (got ${bytes.length}B)`,
         );
       }
+      // The bytes must be the ones asked for, not as many from elsewhere: a range answer names its span, and one
+      // without it (a 200, the whole object) is the range only when the range starts at 0.
+      const span = spanFromContentRange(res.ContentRange);
+      const wanted =
+        span === undefined
+          ? offset === 0
+          : span.start === offset && span.end === offset + length - 1;
+      if (!wanted) {
+        throw this.badRead(
+          key,
+          'range',
+          `the response holds ${res.ContentRange === undefined ? 'the object from its start' : `bytes ${res.ContentRange}`}, not [${offset}, ${offset + length})`,
+        );
+      }
       return bytes;
     });
   }
@@ -373,6 +389,10 @@ export class S3StorageDriver implements IStorageDriver {
         if (generation !== null) {
           yield { namespace: ref.namespace, segment: ref.segment, generation };
         }
+      }
+      // A page that says more follow and gives no way to ask for them would end the listing short, silently.
+      if (res.IsTruncated === true && res.NextContinuationToken === undefined) {
+        throw new IntegrityError('S3 listing says it is truncated but gives no continuation token');
       }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);

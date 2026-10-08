@@ -100,6 +100,18 @@ export function isTransient(err: unknown): boolean {
   );
 }
 
+/** The first and last byte a `Content-Range: bytes <start>-<end>/<total>` header names, or `undefined` if unparseable. */
+export function spanFromContentRange(
+  contentRange: string | undefined,
+): { start: number; end: number } | undefined {
+  if (contentRange === undefined) return undefined;
+  const match = /^\s*bytes\s+(\d+)-(\d+)\//.exec(contentRange);
+  if (match === null) return undefined;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) ? { start, end } : undefined;
+}
+
 /**
  * Parse the total object size out of a `Content-Range: bytes <start>-<end>/<total>` header, or `undefined`
  * if absent/unparseable/unsafe. The total is the part after the final `/`.

@@ -149,6 +149,12 @@ export class GcsStorageDriver implements IStorageDriver {
         throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
       }
     }
+    // GCS's own limit on one object: a cap past it is advertised and never reachable.
+    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > 5 * 1024 ** 4) {
+      throw new ValidationError(
+        `maxObjectBytes must be at most GCS's 5 TiB object limit (${5 * 1024 ** 4}); got ${options.maxObjectBytes}`,
+      );
+    }
     this.maxObjectBytes = options.maxObjectBytes ?? DEFAULT_MAX_OBJECT_BYTES;
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
     this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);

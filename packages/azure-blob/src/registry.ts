@@ -126,6 +126,10 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         metadata: writeIdMetadata(writeId),
       });
     } catch (err) {
+      // A compare-and-swap whose row was deleted since it was read is a lost race, as a delete's 404 already is.
+      if (expect !== 'absent' && isNotFound(err)) {
+        throw new WriteConflictError(`registry OCC conflict for ${key}`);
+      }
       if (!isConditionalConflict(err)) throw mapError(err);
       // The client's retry policy may have sent this write again after a lost response, and the replay meets the
       // row it just wrote. The row carries this write's id when that is what happened. The read-back is not
