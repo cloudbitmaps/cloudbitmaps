@@ -306,6 +306,31 @@ export async function dropSegment(
   deps: DropDeps,
   options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
 ): Promise<DropResult> {
+  return (await dropSegmentFor(ref, deps, options, undefined))!;
+}
+
+/**
+ * What the retention sweep adds to a drop. `wanted` is judged on every row the shred is about to replace with a
+ * tombstone, so a row whose expiry was extended or cleared after the sweep looked, or that someone else has already
+ * destroyed or purged, is left as it is rather than retired. `stamp` is the `retention` the tombstone carries, written
+ * in the shred's own write, so only a tombstone a sweep wrote ever carries a sweep's mark, which is what lets a later
+ * sweep purge it and never a crypto-shred's.
+ */
+export interface SweepDrop {
+  readonly wanted: (row: RegistryRecord) => boolean;
+  readonly stamp: (retention: RegistryRecord['retention']) => RegistryRecord['retention'];
+}
+
+/**
+ * {@link dropSegment}, with what a retention sweep adds: `null` when `sweep.wanted` refused the row, with nothing
+ * written or deleted.
+ */
+export async function dropSegmentFor(
+  ref: SegmentRef,
+  deps: DropDeps,
+  options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
+  sweep: SweepDrop | undefined,
+): Promise<DropResult | null> {
   validateUserRef(ref);
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
@@ -338,7 +363,9 @@ export async function dropSegment(
 
   // Step 1, reused wholesale. `allowCleartext` is true because deleting objects does not need a key — the
   // encryption requirement belongs to crypto-shred, not to disposal.
-  let shred = await shredSegment(ref, deps, true, 'dropSegment');
+  const first = await shredSegment(ref, deps, true, 'dropSegment', sweep);
+  if (first === null) return null;
+  let shred = first;
 
   // ── THE ABSENT CASE. ───────────────────────────────────────────────────────────────────────────────────────
   // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and going on to delete
@@ -494,8 +521,22 @@ async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
   allowCleartext: boolean,
+  op?: 'destroySegment' | 'dropSegment',
+): Promise<DestroyResult>;
+async function shredSegment(
+  ref: SegmentRef,
+  deps: EraseDeps,
+  allowCleartext: boolean,
+  op: 'destroySegment' | 'dropSegment',
+  sweep: SweepDrop | undefined,
+): Promise<DestroyResult | null>;
+async function shredSegment(
+  ref: SegmentRef,
+  deps: EraseDeps,
+  allowCleartext: boolean,
   op: 'destroySegment' | 'dropSegment' = 'destroySegment',
-): Promise<DestroyResult> {
+  sweep?: SweepDrop,
+): Promise<DestroyResult | null> {
   const base = { segment: ref.segment, namespace: ref.namespace };
   // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
   // to a lease write is waited out and costs none, up to the churn bound.
@@ -510,6 +551,14 @@ async function shredSegment(
         record = settled.row;
         attempt -= 1;
       }
+    }
+    // A sweep retires only the row it judged expired: one purged or destroyed meanwhile is not its to claim, and one
+    // whose policy changed is not expired any more.
+    if (
+      sweep !== undefined &&
+      (record === null || record.status === 'destroyed' || !sweep.wanted(record))
+    ) {
+      return null;
     }
     if (record === null) {
       // No authoritative row → nothing to crypto-shred.
@@ -532,6 +581,8 @@ async function shredSegment(
         summary: undefined,
         // A tombstone holds nothing: a lease names a generation of a segment that now resolves none.
         leases: undefined,
+        // A sweep's mark, in this same write, so no other tombstone ever carries it.
+        ...(sweep === undefined ? {} : { retention: sweep.stamp(record.retention) }),
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).

@@ -103,6 +103,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`retireExpired` retires only a segment that is still expired when its tombstone is written, and claims only the
+  tombstones it wrote.** The sweep re-read each row before retiring it, but the drop read it again and acted on what it
+  found, so a retention extended or cleared between the two reads, or by a write the drop's own write lost to, was
+  retired anyway, against the guide's promise that cancelling an expiry works on a sweep already in flight. And a
+  tombstone someone else wrote in that window (a crypto-shred, a drop) was counted as retired and stamped as the
+  sweep's, so a later sweep purged the row the shred left as its attestation. The expiry is now judged on every row the
+  drop is about to replace, and the sweep's mark is written in the tombstone's own write; anything else is skipped
+  with `policy-changed`. A retirement makes a read and a write fewer: 7 reads, 2 writes and a delete with
+  `conditionalDelete` on, 6 reads and 2 writes with it off, and `estimateCost` prices it so.
 - **An async metrics or audit sink that rejects no longer ends the process.** An `async onEvent` is assignable to the
   sinks' `onEvent(): void`, and its rejection (a telemetry or audit service that is down) escaped the guard that
   swallows a throwing sink, as an unhandled rejection, which ends a Node process by default: mid-erasure, with no

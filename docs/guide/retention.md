@@ -555,11 +555,11 @@ the default `'fleet'` scan, which reads every row, retires it. An index-only dep
 schedules a fleet scan, which is why the index is the fast half of a pair.
 
 **What it costs.** Per segment, counted with a store that counts requests. Where the registry removes rows, a
-retirement is 9 reads, 3 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
+retirement is 7 reads, 2 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
 which is the one write the removal of the expiry pointer would otherwise have been, and the purge removes the row and
 the pointer where a tombstone would have been written. On S3 a `DeleteObject` is not billed, and a `PutObject` is.
 Where the registry only tombstones (`conditionalDelete: false`, or a backend that does not report it), no purge pointer
-is filed or removed: a retirement is 8 reads and 3 writes, a purge 3 reads and 1 write, and two small objects stay per
+is filed or removed: a retirement is 6 reads and 2 writes, a purge 3 reads and 1 write, and two small objects stay per
 segment, which every full scan reads (100 reads for 50 segments). The registry needs delete permission on its prefix
 (`s3:DeleteObject`, `storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays,
 the ledger entry and `purgeFaults` say why, and the retirements behind it still go on.

@@ -163,10 +163,10 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 
   | Per segment | Reads | Writes | Deletes |
   | --- | --- | --- | --- |
-  | A retirement, `conditionalDelete` on | 9 | 3 | 1 |
+  | A retirement, `conditionalDelete` on | 7 | 2 | 1 |
   | A purge, `conditionalDelete` on | 4 | 0 | 2 |
   | Each later sweep, `conditionalDelete` on | 0 | 0 | 0 |
-  | A retirement, `conditionalDelete` off | 8 | 3 | 0 |
+  | A retirement, `conditionalDelete` off | 6 | 2 | 0 |
   | A purge, `conditionalDelete` off | 3 | 1 | 0 |
   | Each later full sweep, `conditionalDelete` off | 2 | 0 | 0 |
 
@@ -174,9 +174,9 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   it off, a purge rewrites the row as a tombstone, and every later full sweep reads what is left, two objects a purged
   segment; the model prices that last row in prose only, since how often you sweep is yours. Reads are priced at the
   GET rate and writes at the PUT rate; a delete is counted and priced at nothing, because S3 bills none. At the default
-  prices a segment retired and purged costs $20.20 per million with the gate on and $24.40 per million with it off.
-  At fleet scale, a fleet that retires and purges 2,000,000 segments a month pays $40.40 a month with it on and
-  $48.80 with it off, and with it off, once a year's 24,000,000 tombstones are left, each full sweep reads 48,000,000
+  prices a segment retired and purged costs $14.40 per million with the gate on and $18.60 per million with it off.
+  At fleet scale, a fleet that retires and purges 2,000,000 segments a month pays $28.80 a month with it on and
+  $37.20 with it off, and with it off, once a year's 24,000,000 tombstones are left, each full sweep reads 48,000,000
   objects, $19.20, where with it on a sweep reads only the segments that are live or inside their grace.
 - **The pointer refresh**: a long-lived reader re-reads a segment's pointer when it reads the segment after
   `cache.genTtlMs` has passed. So each hot segment costs at most one GET per `genTtlMs`, 1,314,000 a month at the

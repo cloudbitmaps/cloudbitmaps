@@ -420,11 +420,11 @@ interface SweepRequests {
  */
 export const RETENTION_SWEEP_REQUESTS = deepFreeze({
   conditionalDelete: {
-    retirement: { reads: 9, writes: 3, deletes: 1 },
+    retirement: { reads: 7, writes: 2, deletes: 1 },
     purge: { reads: 4, writes: 0, deletes: 2 },
   },
   tombstoning: {
-    retirement: { reads: 8, writes: 3, deletes: 0 },
+    retirement: { reads: 6, writes: 2, deletes: 0 },
     purge: { reads: 3, writes: 1, deletes: 0 },
   },
 }) satisfies Readonly<Record<string, Readonly<Record<string, SweepRequests>>>>;

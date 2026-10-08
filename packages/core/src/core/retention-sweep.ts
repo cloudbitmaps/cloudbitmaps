@@ -49,7 +49,7 @@ import { type IAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
 import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
-import { dropSegment } from './erasure';
+import { dropSegmentFor } from './erasure';
 import type { DropDeps, DropResult } from './erasure';
 import { MIN_EXPIRES_AT_MS, readRetentionPolicy } from './retention';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
@@ -682,11 +682,29 @@ export async function retireExpired(
       // `confirmSegment` is satisfied structurally here — in a loop the guard is the same value twice, which is
       // why `dryRun` is the real preview. The dry run goes through `dropSegment` too, so the preview reports the
       // generations a real sweep would delete rather than a guess.
-      const result = await dropSegment(ref, deps, {
-        confirmSegment: rec.segment,
-        dryRun,
-        audit: options.audit,
-      });
+      //
+      // The re-read above is not the last word: the drop reads the row again, and an extension, a clear, a purge or
+      // someone else's tombstone can land between the two. So the drop is told what this sweep may retire, judged on
+      // every row its shred is about to replace, and writes this sweep's mark in the tombstone's own write.
+      const result = await dropSegmentFor(
+        ref,
+        deps,
+        { confirmSegment: rec.segment, dryRun, audit: options.audit },
+        dryRun
+          ? undefined
+          : {
+              wanted: (row) => {
+                const p = readRetentionPolicy(row.retention);
+                return p !== null && p !== 'invalid' && p.expiresAt <= now;
+              },
+              stamp: (retention) => ({ ...retention, [RETIRED_AT]: now }),
+            },
+      );
+      if (result === null) {
+        attempted -= 1;
+        entries.push({ ...base, action: 'skipped', reason: 'policy-changed' });
+        continue;
+      }
       if (dryRun) {
         wouldRetire += 1;
         entries.push({ ...base, action: 'would-retire', expiresAt: livePolicy.expiresAt, result });
@@ -763,22 +781,21 @@ export async function retireExpired(
           if (deleted) continue;
         }
       }
-      // Stamp the tombstone as OURS, so a later sweep may purge the row (see the attribution note above), and file
-      // the pointer an index scan finds it by on the day its grace ends. A failure here only means the row is never
-      // auto-purged, or only by the fleet scan — never data loss — so it is best-effort.
-      const stamped = await stampRetirement(deps.registry, ref, now).catch(() => false);
-      if (stamped && removesRows) await filePurgePointer(deps.registry, ref, now + grace);
+      // The tombstone carries this sweep's mark from the write that made it, so a later sweep may purge the row (see
+      // the attribution note above). File the pointer an index scan finds it by on the day its grace ends.
+      if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
     } catch (err) {
       // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
       // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
       // settles which side of the tombstone we failed on.
       const after = await deps.registry.get(ref).catch(() => null);
-      if (after?.status === 'destroyed') {
-        // Stamp it here too. Without this a retirement that faulted after the tombstone landed is a row no later
-        // sweep can attribute to itself, so it is never auto-purged — exactly the litter the purge exists to
-        // prevent, and reachable from any transient Storage fault.
-        const stamped = await stampRetirement(deps.registry, ref, now).catch(() => false);
-        if (stamped && removesRows) await filePurgePointer(deps.registry, ref, now + grace);
+      // Only this sweep's own tombstone, the one carrying its mark: a tombstone someone else wrote (a crypto-shred, a
+      // drop) is not a retirement of this sweep, and claiming it would let a later sweep purge an attestation.
+      if (
+        after?.status === 'destroyed' &&
+        (after.retention as Record<string, unknown> | undefined)?.[RETIRED_AT] === now
+      ) {
+        if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
         retired += 1;
         entries.push({
           ...base,
@@ -847,31 +864,6 @@ function retirementStamp(meta: GovernanceMeta | undefined): number | null {
   }
   const raw = (meta as Record<string, unknown>)[RETIRED_AT];
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= MIN_EXPIRES_AT_MS ? raw : null;
-}
-
-/**
- * Mark a freshly written tombstone as this sweep's own work, preserving whatever else the row's `retention`
- * metadata carried, and say whether it did. Retried a couple of times on contention, then given up on: an unstamped
- * tombstone is simply never auto-purged, which is the safe direction.
- */
-async function stampRetirement(
-  registry: DropDeps['registry'],
-  ref: SegmentRef,
-  now: number,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const rec = await registry.get(ref);
-    if (rec === null || rec.status !== 'destroyed') return false; // nothing to stamp
-    try {
-      await registry.compareAndSwap(ref, rec.token, {
-        retention: { ...rec.retention, [RETIRED_AT]: now },
-      });
-      return true;
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-    }
-  }
-  return false;
 }
 
 /**

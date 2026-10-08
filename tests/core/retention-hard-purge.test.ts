@@ -1048,7 +1048,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
     };
   }
 
-  it('gate off: a retirement is 8 reads and 3 writes, a purge 3 and 1, two objects stay, and a sweep reads 100', async () => {
+  it('gate off: a retirement is 6 reads and 2 writes, a purge 3 and 1, two objects stay, and a sweep reads 100', async () => {
     expect(await costs(false)).toEqual({
       ...RETENTION_SWEEP_REQUESTS.tombstoning,
       objectsLeft: 2,
@@ -1056,7 +1056,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
     });
   });
 
-  it('gate on: a retirement is 9 reads, 3 writes and a delete, a purge 4 reads and 2 deletes, and nothing stays', async () => {
+  it('gate on: a retirement is 7 reads, 2 writes and a delete, a purge 4 reads and 2 deletes, and nothing stays', async () => {
     expect(await costs(true)).toEqual({
       ...RETENTION_SWEEP_REQUESTS.conditionalDelete,
       objectsLeft: 0,

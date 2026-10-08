@@ -833,3 +833,111 @@ describe('store.retireExpired', () => {
     expect(await w.store().segment('day').count()).toBe(0);
   });
 });
+
+describe('retireExpired — a policy that changes after the sweep re-read it', () => {
+  /**
+   * A registry that runs `afterGet` after the sweep's re-read of `s` (its first `get` of the row) and `beforeCas` just
+   * before the shred's compare-and-swap of `s` into a tombstone: the two ends of the window in which an operator's
+   * change must still stop the retirement.
+   */
+  function hooked(
+    base: MemoryRegistryDriver,
+    hooks: { afterGet?: () => Promise<void>; beforeCas?: () => Promise<void> },
+  ): IRegistryDriver {
+    let gets = 0;
+    return {
+      capabilities: () => base.capabilities(),
+      get: async (ref) => {
+        const row = await base.get(ref);
+        if (ref.segment === 's' && ++gets === 1) await hooks.afterGet?.();
+        return row;
+      },
+      create: (ref, rec) => base.create(ref, rec),
+      compareAndSwap: async (ref, expected, patch) => {
+        if (ref.segment === 's' && patch.status === 'destroyed') {
+          const run = hooks.beforeCas;
+          hooks.beforeCas = undefined;
+          await run?.();
+        }
+        return base.compareAndSwap(ref, expected, patch);
+      },
+      list: (ns) => base.list(ns),
+      delete: (ref, expected) => base.delete(ref, expected),
+    };
+  }
+
+  async function expired() {
+    const w = world();
+    await w.load('s', [1, 2, 3]);
+    await w.store().setRetention({ segment: 's' }, { expiresAt: EXPIRED });
+    return w;
+  }
+
+  async function expectKept(w: Awaited<ReturnType<typeof expired>>) {
+    expect((await w.registry.get({ segment: 's' }))!.status).toBe('active');
+    expect(await storageGenerations(w.storage, { segment: 's' })).toEqual([0]);
+  }
+
+  it.each([
+    [
+      'cleared',
+      (w: Awaited<ReturnType<typeof expired>>) =>
+        clearSegmentRetention({ segment: 's' }, { registry: w.registry }),
+    ],
+    [
+      'extended',
+      (w: Awaited<ReturnType<typeof expired>>) =>
+        w.store().setRetention({ segment: 's' }, { expiresAt: FUTURE }),
+    ],
+  ] as const)('%s before the shred reads the row: not retired', async (_name, change) => {
+    const w = await expired();
+    const registry = hooked(w.registry, { afterGet: async () => void (await change(w)) });
+    const res = await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    expect(res.retired).toBe(0);
+    expect(bySegment(res.entries).get('s')).toMatchObject({
+      action: 'skipped',
+      reason: 'policy-changed',
+    });
+    await expectKept(w);
+  });
+
+  it("cleared inside the shred's own write: the write loses, and the row read again is not retired", async () => {
+    const w = await expired();
+    const registry = hooked(w.registry, {
+      beforeCas: async () =>
+        void (await clearSegmentRetention({ segment: 's' }, { registry: w.registry })),
+    });
+    const res = await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    expect(res.retired).toBe(0);
+    expect(bySegment(res.entries).get('s')).toMatchObject({
+      action: 'skipped',
+      reason: 'policy-changed',
+    });
+    await expectKept(w);
+  });
+
+  it('a tombstone someone else wrote in the window is not counted, not stamped, and never purged by a sweep', async () => {
+    const w = await expired();
+    const registry = hooked(w.registry, {
+      afterGet: async () =>
+        void (await destroySegment(
+          { segment: 's' },
+          { registry: w.registry },
+          { confirmSegment: 's', allowCleartext: true },
+        )),
+    });
+    const res = await retireExpired({ ...w.dropDeps, registry }, { now: T0 });
+    expect(res.retired).toBe(0);
+    expect(bySegment(res.entries).get('s')).toMatchObject({
+      action: 'skipped',
+      reason: 'policy-changed',
+    });
+    const tombstone = (await w.registry.get({ segment: 's' }))!;
+    expect(tombstone.status).toBe('destroyed');
+    expect(tombstone.retention).not.toHaveProperty('retiredBySweepAt');
+    // A later sweep, long past any grace window, leaves the attestation where it is.
+    const later = await retireExpired(w.dropDeps, { now: T0 + 30 * DAY });
+    expect(later.tombstonesPurged).toBe(0);
+    expect((await w.registry.get({ segment: 's' }))?.status).toBe('destroyed');
+  });
+});
