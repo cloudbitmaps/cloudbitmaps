@@ -84,7 +84,9 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
 - **Do not load the segment while erasing from it.** A load that lands after the rewrite carries whatever its source
   held, and the library cannot know that source was meant to exclude the id. Pause loads of the affected segments for
   the duration, or fix the source first and load after. A writer that lands during the rewrite is caught and
-  reported as `'superseded'`, not as an error.
+  reported as `'superseded'`, not as an error. A load still writing a generation above the pointer, when the id is
+  found only there, is refused: the erasure writes the segment's row before it deletes that generation, so the load's
+  publish meets another writer rather than naming an object that is gone.
 - **Never put a subject's id in a generation's metadata.** An erasure rewrites the ids and carries the metadata over as
   it is, without scanning it: it would copy an id there into the new generation, and the registry row holds a copy of
   the current generation's metadata too. Put a version, a time or a run id in it, and nothing that names a person.
@@ -231,6 +233,10 @@ driver authors) over every registered segment, and each ledger entry is that fun
 - `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
   left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
   holds it) or `'superseded'`.
+- A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too. An
+  object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: its
+  load may still publish it, and no row write can refuse that publish. In `eraseSubject`'s ledger it is an `error: …`
+  entry. Load the segment, which makes the object collectable, or drop it, and re-run.
 - `'superseded'` means another writer moved the pointer off `fromGeneration` while the call was in flight: a load,
   another erasure, or a rollback. It means this call did not erase the id, not that the id is still there. Re-run, and
   if a racing erasure of the same id got there first, the re-run reports `'not-member'`.

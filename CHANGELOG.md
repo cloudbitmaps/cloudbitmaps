@@ -103,6 +103,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An erasure that deletes a generation above the pointer refuses the load that wrote it.** When the id was only in a
+  generation above the pointer, the erasure deleted it after checking the row, but a load that wrote it and had not
+  yet published was fenced on a row nothing had changed, so it published afterwards and the row named a generation
+  that was gone. The erasure now writes the row first (its `keptGens`), which the load's fence counts as another
+  writer, so the load is refused.
+- **An erasure searches the bucket of a segment that has no generation yet.** A row created by `setRetention` before
+  the first load was answered `'no-generation'` without a look, so an object a first load wrote and never published,
+  holding the id, stayed in the bucket and the ledger left the segment out. Its bucket is searched now; such an object
+  is refused with `WriteConflictError` and kept, since its load may still publish it, and shows in `eraseSubject`'s
+  ledger as an `error: …` entry.
 - **An erasure rewrite that a `dropSegment` overtakes deletes what it wrote.** A drop that lands while `eraseSubject`
   rewrites a segment usually finishes its sweep before the rewrite's object is written, and that object, a full copy
   of the dropped segment less one id, in the clear on a cleartext segment, was left in the bucket and reported

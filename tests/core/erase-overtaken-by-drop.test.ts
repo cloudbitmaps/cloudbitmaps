@@ -50,7 +50,7 @@ function dropAt(
 
 describe('an erasure rewrite a drop overtakes deletes its own object', () => {
   for (const when of ['before-commit', 'after-commit'] as const) {
-    it(`a drop ${when === 'before-commit' ? 'whose sweep ends before the rewrite commits' : 'between the rewrite and its publish'}`, async () => {
+    it(`a drop ${when === 'before-commit' ? 'whose sweep ends while the rewrite is still writing' : 'once the rewrite is written and not yet published'}`, async () => {
       const storage = new MemoryStorageDriver();
       const registry = new MemoryRegistryDriver();
       await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3, 9], { registry });
