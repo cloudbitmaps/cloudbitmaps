@@ -103,7 +103,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
    * Time source for the current-generation TTL refresh — the determinism seam; `core/` never reads
    * ambient time. Refresh needs **both** a clock and a `registry`. Without either there is no timed refresh, and
-   * that is the only difference: a segment is still re-resolved when its reader is evicted, when a fetch finds its
+   * then a segment is re-resolved when its reader is evicted (a read in progress included), when a fetch finds its
    * generation swept, and on {@link CrbmStorageChunkSource.invalidate}. What goes is the bound on how long another
    * process's publish takes to arrive. The `CloudRoaring` facade passes its clock automatically, so wiring a
    * `registry` is enough to get the bounded refresh.
@@ -641,11 +641,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * Whether a stream reading from `snap` must resolve its segment again before its next chunk, as a read of one chunk
-   * would: the snapshot's TTL has lapsed, an invalidation has happened since `epoch`, another read installed a newer
-   * snapshot, or the reader cache let the snapshot go on a store with no timed refresh. With a timed refresh the TTL
-   * already bounds what the stream serves, so an eviction alone is not a move: under reader-cache pressure it would
-   * cost a registry read per chunk. Else nothing can have moved it, and the check costs a compare and a lookup.
+   * Whether a stream reading from `snap` must resolve its segment again before its next chunk: the snapshot's TTL has
+   * lapsed, an invalidation has happened since `epoch`, another read installed a newer snapshot, or the reader cache let
+   * the snapshot go on a store with no timed refresh. With a timed refresh the TTL already bounds what the stream serves,
+   * so an eviction alone is not a move (under reader-cache pressure it would cost a registry read per chunk), and an
+   * invalidation, which also removes the snapshot, is seen through `epoch` alone. Else nothing can have moved it, and
+   * the check costs a compare and a lookup.
    */
   private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
     if (this.invalidations !== epoch || this.expired(snap.installedAtMs)) return true;
@@ -1435,14 +1436,18 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         let movedOn = false;
         try {
           while (await pull.advance()) {
-            // Before a chunk is handed out, the segment is resolved as a read of that chunk alone would resolve it: a
-            // `cache.genTtlMs` boundary, the reader cache having let the segment go, an invalidation, and a newer
-            // snapshot another read installed each leave the snapshot this stream was opened on no longer the live
-            // one. If that moved the segment to another generation or incarnation, or to none, nothing more is served
-            // from this stream: its ranges are dropped and the keys not yet yielded are read afresh. The version is
-            // compared from the resolution, the registry's row, so no object is opened to learn it, and a fault in
-            // resolving starts the stream over at the top, where a caller's retry runs the resolution.
+            // Before a chunk is handed out, the stream asks whether its segment may have moved (`mayHaveMoved`): a
+            // `cache.genTtlMs` boundary, an invalidation, a newer snapshot another read installed, and, on a store with
+            // no timed refresh, the reader cache having let the segment go each leave the snapshot this stream was
+            // opened on no longer the one to read from. If that moved the segment to another generation or
+            // incarnation, or to none, nothing more is served from this stream: its ranges are dropped and the keys
+            // not yet yielded are read afresh. The version is compared from the resolution, the registry's row, so no
+            // object is opened to learn it, and a fault in resolving starts the stream over at the top, where a
+            // caller's retry runs the resolution.
             if (this.mayHaveMoved(key, snap, epoch)) {
+              // The epoch this check is good for is the one before the resolution is awaited: an invalidation that
+              // lands while it is answered must still move the stream at its next chunk.
+              const seen = this.invalidations;
               const live = this.liveSnapshot(ref);
               if (live !== snap) {
                 let now: string | null;
@@ -1459,7 +1464,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
                 }
                 snap = live;
               }
-              epoch = this.invalidations;
+              epoch = seen;
             }
             // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
             yield pull.take((chunk) => {

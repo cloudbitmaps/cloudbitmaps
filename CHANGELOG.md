@@ -322,9 +322,13 @@ so, and so do the module headers in the code.
   Before it hands out a chunk, a combine or `iterate` checks that its segment has not moved. Once the reader cache had
   let the segment go, that check opened the generation again (a tail read and an index parse of up to about 1.3 MB)
   only to learn a version the registry row already names, so a read over more segments than `cache.readerMax` or
-  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. The check now reads the row alone, as
-  a read of that chunk on its own would. A transient fault in it is retried through the store's retry, where it failed
-  the read.
+  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. On a store with a timed refresh the
+  reader cache letting the segment go is no longer a move at all, since `genTtlMs` already bounds what the read
+  serves, so the check makes no request; on a store with none (`genTtlMs: 0`, no registry, or no clock) it reads the
+  row alone. A transient fault in it is retried through the store's retry, where it failed the read. This holds for
+  chunks a read fetches from storage. A chunk served from the decoded-chunk cache is checked through the segment's
+  current version, which opens a segment the reader cache let go of again, so a warm read over more segments than the
+  reader cache keeps still pays a registry read and an object open per cached chunk.
 - **`cache.genTtlMs` that is not a finite number of 0 or more is refused.** `NaN` (from an unset environment variable),
   a negative number or a string turned the timed pointer refresh off as `0` does, silently, so another process's load
   or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built. So is
@@ -342,9 +346,7 @@ so, and so do the module headers in the code.
   a lookup and not a request within `genTtlMs`, and one of a generation since replaced is read as the segment is now.
   A point read resolves the version just before it asks, and is unchanged. Measured on a laptop over 2,000 cached
   chunks, the check adds about a microsecond a chunk. A read whose chunks were all cached, and that meets a move, reads
-  the rest as one stream at the version now current, as a cold read does. On a store with a timed refresh, the reader
-  cache letting the segment go mid-read is not a move, since `genTtlMs` already bounds what the read serves, so a read
-  under reader-cache pressure makes no registry read per chunk; with `genTtlMs: 0` it is still one.
+  the rest as one stream at the version now current, as a cold read does.
 - **`store.segment` refuses an option it does not know, and options that are not an object.** A misspelt `namespace`
   (`{ nameSpace: tenant }`), or a namespace passed on its own (`store.segment('a', 'tenant')`), was read as no
   namespace, so the handle addressed the segment of that name in the default namespace: a read of another
