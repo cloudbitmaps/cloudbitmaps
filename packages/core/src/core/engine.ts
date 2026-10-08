@@ -143,8 +143,11 @@ interface Operand {
  */
 interface StreamedChunks {
   readonly seg: SegmentRef;
-  /** The version the read planned under; a chunk is cached under the version it was read from, which may be newer. */
-  readonly gen: string | number | undefined;
+  /**
+   * The version the read looks its cached chunks up under: the one it planned under, until a move carries it on. A chunk
+   * is cached under the version it was read from, which may be newer.
+   */
+  gen: string | number | undefined;
   /**
    * The engine's invalidation count when the read began to resolve its generation. A stream that opens after it has
    * moved is marked `invalidated`, on a source with no `currentVersion`: it may read newer bytes than the generation it
@@ -412,6 +415,8 @@ export class SegmentEngine {
       let total = 0;
       for (const [k, n] of cardinalities) {
         assertChunkKeyInRange(k);
+        // A count of 0 adds nothing and a custom source may report an emptied chunk; anything else must be a count.
+        if (n !== 0) assertChunkCardinalityInRange(n);
         total += n;
       }
       return total;
@@ -466,7 +471,7 @@ export class SegmentEngine {
   ): ChunkWindow<CodecBitmap | null> {
     return new ChunkWindow(
       chunkKeys,
-      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen),
+      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen, true),
       DEFAULT_INTERSECT_CONCURRENCY,
       ramp,
     );
@@ -1095,7 +1100,9 @@ export class SegmentEngine {
     if (relevant.length > 0) {
       const cuts = together
         ? fetched.slice(present.length)
-        : await Promise.all(relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen)));
+        : await Promise.all(
+            relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen, true)),
+          );
       for (const cut of cuts) {
         if (cut === null) continue;
         acc.andNotInPlace(cut);
@@ -1111,7 +1118,7 @@ export class SegmentEngine {
    */
   private operandChunk(op: Operand, chunkKey: number): Promise<CodecBitmap | null> {
     return op.streamed === undefined
-      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen)
+      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen, true)
       : this.streamedChunk(op.streamed, chunkKey);
   }
 
@@ -1204,15 +1211,19 @@ export class SegmentEngine {
     if (!streamed.opened) {
       const cache = this.cache;
       if (cache) {
-        const hit = cache.get(this.chunkCacheKey({ ...streamed.seg, chunkKey }, streamed.gen));
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
-        if (hit) return Promise.resolve(hit);
+        const ref = { ...streamed.seg, chunkKey };
+        const hit = cache.get(this.chunkCacheKey(ref, streamed.gen));
+        if (hit) return this.cachedIfCurrent(ref, streamed.gen, hit, true, streamed);
+        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
       }
       this.startStream(streamed, chunkKey);
     } else if (streamed.inStream !== undefined && !streamed.inStream.has(chunkKey)) {
+      // Counted as a hit when the stream opened, so not counted again here.
       const ref = { ...streamed.seg, chunkKey };
       const hit = this.cache?.get(this.chunkCacheKey(ref, streamed.gen));
-      return hit ? Promise.resolve(hit) : this.storageChunk(ref, streamed.gen);
+      return hit
+        ? this.cachedIfCurrent(ref, streamed.gen, hit, false, streamed)
+        : this.storageChunk(ref, streamed.gen, true, false);
     }
     return streamed.stream!.take(chunkKey).then((read) => {
       if (read.bytes === null) return null;
@@ -1240,6 +1251,32 @@ export class SegmentEngine {
     read: string | null,
   ): string | number | null | undefined {
     return planned === undefined || this.storage.currentVersion === undefined ? planned : read;
+  }
+
+  /**
+   * `hit`, a chunk cached under the version a multi-chunk read planned under, if that is still the segment's version;
+   * else the chunk as it is now. A read resolves the segment again before it serves each chunk, which the source's
+   * stream does for the chunks it delivers; a chunk served from the cache is checked here, or a read whose chunks are
+   * all cached would go on serving the generation it planned under, an erased id included, for as long as it is pulled.
+   * Within `cache.genTtlMs` the source answers from its snapshot, so the check is a lookup, not a request. `report`:
+   * emit the `cache` event for this lookup, which a key counted when its stream opened does not. `streamed`: the read
+   * this chunk belongs to, which a move carries to the version now current, so the rest of it looks there: a read whose
+   * stream is not yet open reads the rest as one stream, not a chunk at a time.
+   */
+  private async cachedIfCurrent(
+    ref: ChunkRef,
+    planned: string | number | null | undefined,
+    hit: CodecBitmap,
+    report: boolean,
+    streamed?: StreamedChunks,
+  ): Promise<CodecBitmap | null> {
+    const now = planned === undefined ? undefined : await this.cacheVersion(ref);
+    if (now === planned) {
+      if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
+      return hit;
+    }
+    if (streamed !== undefined && streamed.gen === planned && now !== null) streamed.gen = now;
+    return this.storageChunk(ref, now, false, report);
   }
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
@@ -1289,7 +1326,7 @@ export class SegmentEngine {
       .map((s) => (s.namespace === undefined ? `"${s.segment}"` : `"${s.namespace}/${s.segment}"`))
       .join(', ');
     throw new ValidationError(
-      `${op}: operand ${named} names a segment that does not exist, so it would contribute nothing — ` +
+      `${op}: operand ${named} names a segment that does not exist or was dropped, so it would contribute nothing — ` +
         `an exclude would suppress no ids and an include would contribute none. Check the name and the ` +
         `namespace (a segment addressed without its \`namespace\` is a DIFFERENT segment). ` +
         `Pass \`allowAbsentOperands: true\` if you meant it.`,
@@ -1357,20 +1394,27 @@ export class SegmentEngine {
    *
    * The returned instance is **shared** (it may be the cached one, and every caller that joined a read gets the same
    * one): callers read it or clone it, never mutate it.
+   *
+   * `recheck`: `gen` was planned for a read of many chunks, so a cached chunk is served only while it is still the
+   * segment's version ({@link cachedIfCurrent}). A point read resolves `gen` just before it asks, and passes none.
+   * `report`: emit the `cache` event for this lookup; a key already counted for this read does not.
    */
   private async storageChunk(
     ref: ChunkRef,
     gen: string | number | null | undefined,
+    recheck = false,
+    report = true,
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
     const cacheKey = this.chunkCacheKey(ref, gen);
     if (this.cache) {
       const cached = this.cache.get(cacheKey);
       if (cached) {
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
+        if (recheck) return this.cachedIfCurrent(ref, gen, cached, report);
+        if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
         return cached;
       }
-      if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
+      if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
     const open = this.openReads.get(cacheKey);
     if (open) return open.read;

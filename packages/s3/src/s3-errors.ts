@@ -48,8 +48,21 @@ export function isNoSuchUpload(err: unknown): boolean {
   return errorName(err) === 'NoSuchUpload';
 }
 
-/** The object / generation does not exist (GetObject → `NoSuchKey`, HeadObject → `NotFound`; both 404). */
+/**
+ * The bucket itself does not exist (`404 NoSuchBucket`): a wiring fault, never an absent object. Read as one, a
+ * misnamed or deleted bucket would answer every read as an empty segment. A HEAD carries no code, so it cannot be told
+ * apart there; every request that reaches a missing bucket with a body says so.
+ */
+export function isMissingBucket(err: unknown): boolean {
+  return errorName(err) === 'NoSuchBucket';
+}
+
+/**
+ * The object / generation does not exist (GetObject → `NoSuchKey`, HeadObject → `NotFound`; both 404), in a bucket
+ * that does: a 404 that says the bucket is missing is not one.
+ */
 export function isNotFound(err: unknown): boolean {
+  if (isMissingBucket(err)) return false;
   const name = errorName(err);
   return name === 'NoSuchKey' || name === 'NotFound' || httpStatus(err) === 404;
 }
@@ -85,6 +98,18 @@ export function isTransient(err: unknown): boolean {
     isSdkRetryable(err) ||
     isClockSkewCorrected(err)
   );
+}
+
+/** The first and last byte a `Content-Range: bytes <start>-<end>/<total>` header names, or `undefined` if unparseable. */
+export function spanFromContentRange(
+  contentRange: string | undefined,
+): { start: number; end: number } | undefined {
+  if (contentRange === undefined) return undefined;
+  const match = /^\s*bytes\s+(\d+)-(\d+)\//.exec(contentRange);
+  if (match === null) return undefined;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) ? { start, end } : undefined;
 }
 
 /**

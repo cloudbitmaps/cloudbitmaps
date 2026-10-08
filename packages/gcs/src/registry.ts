@@ -45,6 +45,8 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
+import { BucketPresence } from './bucket-presence';
+import { crc32cBase64 } from './crc32c';
 import { retryDownload } from './download-retry';
 import { scrubCredentials } from './scrub-error';
 import { downloadFile, readOnce, singleHeader } from './read-once';
@@ -81,6 +83,7 @@ export interface GcsRegistryDriverOptions {
 /** The calls {@link ObjectStoreRegistry} needs, in GCS's dialect. Exported for the tests that drive one directly. */
 export class GcsRegistryStore implements ObjectRegistryStore {
   readonly label = 'GCS';
+  private readonly presence: BucketPresence;
 
   constructor(
     private readonly storage: Storage,
@@ -88,7 +91,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     private readonly bucket: string,
     private readonly readTimeoutMs: number,
     readonly conditionalDelete: boolean,
-  ) {}
+  ) {
+    this.presence = new BucketPresence(storage, bucket);
+  }
 
   /** A handle on one registry object. */
   private file(name: string) {
@@ -124,7 +129,10 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         deadline,
       );
     } catch (err) {
-      if (isNotFound(err)) return null;
+      if (isNotFound(err)) {
+        await this.presence.confirm(); // a missing bucket is an error, not an absent row
+        return null;
+      }
       throw mapReadError(err);
     }
     if (res.status !== 200) {
@@ -154,6 +162,11 @@ export class GcsRegistryStore implements ObjectRegistryStore {
       // of data over two.
       await saveOnce(this.file(key), body, {
         contentType: 'application/json',
+        // The checksum goes with the upload, for GCS to check before it stores anything. The SDK's own check runs
+        // after the upload instead, and on a mismatch, or an answer that names no checksum, deletes the object by
+        // name with no precondition: for a row, that is the live row, another writer's newer one included.
+        validation: false,
+        metadata: { crc32c: crc32cBase64(body) },
         preconditionOpts: {
           ifGenerationMatch: expect === 'absent' ? 0 : generationFence(expect.version, key),
         },
@@ -175,6 +188,7 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     } catch (err) {
       // A 412 (the generation moved on) or a 404 (the object is gone): the version to delete is not there.
       if (isPreconditionFailed(err) || isNotFound(err)) {
+        if (isNotFound(err)) await this.presence.confirm();
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
       throw mapError(err);
@@ -196,6 +210,10 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         throw mapError(err);
       }
       for (const f of files ?? []) yield f.name;
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (next?.pageToken !== undefined && next.pageToken === pageToken) {
+        throw new IntegrityError('GCS listing returned the page token it was given');
+      }
       pageToken = next?.pageToken;
     } while (pageToken !== undefined);
   }

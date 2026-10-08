@@ -12,13 +12,14 @@
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
-import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { type ChurnDeps, leaseChurn } from './leases';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
+import { withoutSweepMark } from './retention';
 
 export interface EraseDeps extends ChurnDeps {
   readonly registry: IRegistryDriver;
@@ -78,6 +79,7 @@ export async function destroySegment(
   options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
 ): Promise<DestroyResult> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'destroySegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `destroySegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental crypto-shred)`,
@@ -120,6 +122,7 @@ export async function eraseNamespace(
     throw new ValidationError('eraseNamespace: namespace must be a non-empty string');
   }
   validateUserNamespace(namespace);
+  checkedAuditSink(options.audit, 'eraseNamespace');
   if (options.confirmNamespace !== namespace) {
     throw new ValidationError(
       `eraseNamespace: confirmNamespace must equal the namespace "${namespace}" (guard against accidental erasure)`,
@@ -283,7 +286,7 @@ export interface DropResult {
  * but the object exists, and it holds the complete set. A single list-then-delete misses it entirely. The re-sweep
  * converges because the tombstone *is* a hard fence on **publishing**, so only loads already under way can write
  * and they are finite. One that writes after the last pass deletes its own object when its publish is refused, as a
- * refused load does under a `destroyed` row; only one whose process stops in between, or whose publish fails without
+ * refused load and a refused erasure rewrite do under a `destroyed` row; only one whose process stops in between, or whose publish fails without
  * a definite answer (a lost response, a timeout), leaves it behind, for a re-run of the drop, and
  * `generationsRemaining` cannot report an object written after this call returned.
  *
@@ -306,7 +309,33 @@ export async function dropSegment(
   deps: DropDeps,
   options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
 ): Promise<DropResult> {
+  return (await dropSegmentFor(ref, deps, options, undefined))!;
+}
+
+/**
+ * What the retention sweep adds to a drop. `wanted` is judged on every row the shred is about to replace with a
+ * tombstone, so a row whose expiry was extended or cleared after the sweep looked, or that someone else has already
+ * destroyed or purged, is left as it is rather than retired. `stamp` is the `retention` the tombstone carries, written
+ * in the shred's own write, so only a tombstone a sweep wrote ever carries a sweep's mark, which is what lets a later
+ * sweep purge it and never a crypto-shred's.
+ */
+export interface SweepDrop {
+  readonly wanted: (row: RegistryRecord) => boolean;
+  readonly stamp: (retention: RegistryRecord['retention']) => RegistryRecord['retention'];
+}
+
+/**
+ * {@link dropSegment}, with what a retention sweep adds: `null` when `sweep.wanted` refused the row, with nothing
+ * written or deleted.
+ */
+export async function dropSegmentFor(
+  ref: SegmentRef,
+  deps: DropDeps,
+  options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
+  sweep: SweepDrop | undefined,
+): Promise<DropResult | null> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'dropSegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,
@@ -338,7 +367,9 @@ export async function dropSegment(
 
   // Step 1, reused wholesale. `allowCleartext` is true because deleting objects does not need a key — the
   // encryption requirement belongs to crypto-shred, not to disposal.
-  let shred = await shredSegment(ref, deps, true, 'dropSegment');
+  const first = await shredSegment(ref, deps, true, 'dropSegment', sweep);
+  if (first === null) return null;
+  let shred = first;
 
   // ── THE ABSENT CASE. ───────────────────────────────────────────────────────────────────────────────────────
   // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and going on to delete
@@ -494,8 +525,22 @@ async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
   allowCleartext: boolean,
+  op?: 'destroySegment' | 'dropSegment',
+): Promise<DestroyResult>;
+async function shredSegment(
+  ref: SegmentRef,
+  deps: EraseDeps,
+  allowCleartext: boolean,
+  op: 'destroySegment' | 'dropSegment',
+  sweep: SweepDrop | undefined,
+): Promise<DestroyResult | null>;
+async function shredSegment(
+  ref: SegmentRef,
+  deps: EraseDeps,
+  allowCleartext: boolean,
   op: 'destroySegment' | 'dropSegment' = 'destroySegment',
-): Promise<DestroyResult> {
+  sweep?: SweepDrop,
+): Promise<DestroyResult | null> {
   const base = { segment: ref.segment, namespace: ref.namespace };
   // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
   // to a lease write is waited out and costs none, up to the churn bound.
@@ -511,6 +556,14 @@ async function shredSegment(
         attempt -= 1;
       }
     }
+    // A sweep retires only the row it judged expired: one purged or destroyed meanwhile is not its to claim, and one
+    // whose policy changed is not expired any more.
+    if (
+      sweep !== undefined &&
+      (record === null || record.status === 'destroyed' || !sweep.wanted(record))
+    ) {
+      return null;
+    }
     if (record === null) {
       // No authoritative row → nothing to crypto-shred.
       return { ...base, destroyed: false, cryptoShredded: false, reason: 'absent' };
@@ -522,6 +575,7 @@ async function shredSegment(
     if (!encrypted && !allowCleartext) {
       return { ...base, destroyed: false, cryptoShredded: false, reason: 'cleartext' };
     }
+    const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
     try {
       await deps.registry.compareAndSwap(ref, record.token, {
         status: 'destroyed',
@@ -532,6 +586,13 @@ async function shredSegment(
         summary: undefined,
         // A tombstone holds nothing: a lease names a generation of a segment that now resolves none.
         leases: undefined,
+        // A sweep's mark, in this same write, so no other tombstone ever carries it: any other tombstone write removes
+        // one a restored or hand-edited row carried.
+        ...(sweep !== undefined
+          ? { retention: sweep.stamp(record.retention) }
+          : unmarked === null
+            ? {}
+            : { retention: unmarked }),
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).

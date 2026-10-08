@@ -657,3 +657,22 @@ describe('rollback — the facade, and the validation the core owes', () => {
     await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(/no generations remain/);
   });
 });
+
+describe('a row with no pointer has every generation above it', () => {
+  it('a rollback onto an object a first load never published needs allowForward', async () => {
+    // A row minted by `setRetention` before the first load, and a first load whose object landed and never published:
+    // that object was never the segment, as an object above a pointer is not.
+    const w = world();
+    await w.registry.create(SEG, { currentGen: null });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: w.registry,
+      publish: false,
+    });
+    await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(
+      /above the current pointer \(none\)/,
+    );
+    expect((await w.registry.get(SEG))!.currentGen).toBeNull();
+    await rollbackSegment(SEG, 0, w.deps, { allowForward: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+  });
+});

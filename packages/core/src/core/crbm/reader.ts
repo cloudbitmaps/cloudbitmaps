@@ -579,8 +579,8 @@ export class CrbmReader {
   /**
    * Range-GET one chunk's payload, verifying its CRC32C before returning. Returns `null` if the chunk is
    * absent. Throws `IntegrityError` on a CRC mismatch (the bytes must never reach the native
-   * deserializer). The returned buffer is a **read-only view** owned by the reader/driver — callers must
-   * not mutate it.
+   * deserializer). The returned bytes may be shared (a small generation's chunks are kept by the reader and handed out
+   * again), so callers must not change them.
    */
   async getChunk(chunkKey: number): Promise<Uint8Array | null> {
     const slot = this.slotOf(chunkKey);
@@ -683,7 +683,8 @@ export class CrbmReader {
    * others; `options.now` times each request for `options.onRequest`, which hears of every range request that was sent, once, when
    * it settles: taken, abandoned after the consumer stopped, or failed (a reader has no clock of its own, so `ms` is 0
    * without one).
-   * A plain chunk is a writable view into the range it was read in: copy a chunk to keep it.
+   * A plain chunk is a view into the range it was read in, so keeping it keeps that whole range: copy a chunk to keep it
+   * alone. Callers must not change it, as with {@link getChunk}.
    *
    * A stream that fails (a range that errors, a chunk that fails its check) raises at once and sends nothing further:
    * the ranges it still had in flight finish in the background, are not retried and never raise. Its `settled()`
@@ -770,7 +771,7 @@ export class CrbmReader {
           moved = bytes.length;
           if (bytes.length !== read.length) {
             throw new IntegrityError(
-              `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
+              `.crbm range [${read.offset}, +${read.length}) answered ${bytes.length} bytes, not the ${read.length} asked for`,
             );
           }
           return { bytes };

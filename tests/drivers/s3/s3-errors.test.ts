@@ -1,6 +1,7 @@
 import {
   isConditionalConflict,
   isInvalidRange,
+  isMissingBucket,
   isNotFound,
   isPreconditionFailed,
   isTransient,
@@ -35,6 +36,14 @@ describe('S3 error classification', () => {
     expect(isNotFound({ $metadata: { httpStatusCode: 404 } })).toBe(true);
     expect(isNotFound({ name: 'PreconditionFailed' })).toBe(false);
     expect(isNotFound(new Error('boom'))).toBe(false);
+  });
+
+  it('a missing bucket is not a missing object, nor a transient', () => {
+    const noBucket = { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } };
+    expect(isMissingBucket(noBucket)).toBe(true);
+    expect(isNotFound(noBucket)).toBe(false);
+    expect(isTransient(noBucket)).toBe(false);
+    expect(isMissingBucket({ name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })).toBe(false);
   });
 
   it('detects an invalid range (416)', () => {

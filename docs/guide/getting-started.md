@@ -407,7 +407,7 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
 | **ref** | The object that names a segment: `{ segment: 'active' }` or `{ namespace, segment }`. |
 | **chunk** | A block of up to 65,536 consecutive ids inside a generation. Reads fetch only the chunks they need. |
 | **cardinality** | How many ids a set holds. |
-| **guard** | The `guard` option of a load, such as `{ minRetained: 0.5 }`: it refuses a result smaller or larger than you allow instead of publishing it. Without one, a load still refuses an empty result over a non-empty segment. |
+| **guard** | The `guard` option of a load, such as `{ minRetained: 0.5 }`, or `{ maxGrowth: 1.5 }` for the other direction: it refuses a result smaller or larger than you allow instead of publishing it. Without one, a load still refuses an empty result over a non-empty segment. |
 | **keep** | How many old generations a load leaves behind for readers still using them. The default, `1`, is right for almost everyone. |
 | **operand** | A segment you combine with another: in `a.intersect([b])`, `b` is an operand. |
 | **exclude** | A segment whose ids are removed from the result of a combine, in the same pass. |
@@ -415,6 +415,7 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
 | **collect** | Delete old generations that a newer one has superseded. A load does it as its last step and leaves `keep` of them. |
 | **`cache.genTtlMs`** | How long a reader may keep serving the generation it has before it checks for a newer one: 2 s by default. See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load). |
 | **sweep** | `store.retireExpired()`, which you schedule: it retires the segments whose recorded expiry has passed. |
+| **dry run** | `dryRun: true` on `materializeMany`, `dropSegment` or `retireExpired`: the call reads what it would read and reports what it would do, and writes nothing. |
 | **pin** | `segment.pin()` returns a handle that keeps reading the generation that was current when you pinned it. |
 | **tombstone** | The row a dropped or crypto-shredded segment leaves behind, marking it as gone. |
 | **token** | An opaque value the registry row carries. Every write to the row changes it, so a write can tell whether the row moved since it read it. |

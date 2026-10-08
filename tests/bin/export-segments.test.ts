@@ -1,5 +1,5 @@
 import { SafeBitmap } from '@/roaring-codec';
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
@@ -105,6 +105,28 @@ describe('export-segments CLI', () => {
       expect((await readdir(out)).some((f) => f.endsWith('.part'))).toBe(false); // no manifest.json.<uuid>.part
     });
 
+    it('refuses a root that does not exist or holds nothing, rather than write an empty manifest and succeed', async () => {
+      // A typo, and an unmounted volume's mount point (there, and empty): each would export nothing and report a finished
+      // run with no data in it.
+      await expect(
+        main({ CR_EXPORT_ROOT: join(root, 'typo'), CR_EXPORT_OUT: out }, () => 0),
+      ).rejects.toThrow(/CR_EXPORT_ROOT/);
+      await mkdir(join(root, 'mnt'));
+      await expect(
+        main({ CR_EXPORT_ROOT: join(root, 'mnt'), CR_EXPORT_OUT: out }, () => 0),
+      ).rejects.toThrow(/CR_EXPORT_ROOT/);
+      await expect(readFile(join(out, 'manifest.json'), 'utf8')).rejects.toThrow();
+    });
+
+    it("a run that fails after it starts leaves no earlier run's manifest to read as finished", async () => {
+      await mkdir(out, { recursive: true });
+      await writeFile(join(out, 'manifest.json'), '{"an":"earlier run"}');
+      // A registry that cannot be listed: the run fails after it has begun writing into the output directory.
+      await writeFile(join(root, 'registry'), 'not a directory');
+      await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0)).rejects.toThrow();
+      await expect(readFile(join(out, 'manifest.json'), 'utf8')).rejects.toThrow();
+    });
+
     it('ndjson format writes newline-delimited ids', async () => {
       const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
@@ -203,5 +225,13 @@ describe('export-segments CLI', () => {
       // Abort deletes the .part and renames nothing into place.
       expect(await readdir(join(out, '_default'))).toEqual([]);
     });
+  });
+});
+
+describe('export-segments: the format and the sink', () => {
+  it('an empty CR_EXPORT_FORMAT, an unset shell variable, is the default, as an empty namespace is', () => {
+    expect(
+      parseConfig({ CR_EXPORT_ROOT: '/r', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: '' }).format,
+    ).toBe('roaring');
   });
 });

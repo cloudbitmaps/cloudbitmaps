@@ -161,7 +161,16 @@ function validateConcurrency(concurrency: number | undefined): void {
  */
 function requireScope(options: { namespace?: string; allNamespaces?: boolean }, op: string): void {
   // A scope names a namespace like a ref does, and these two scans read the registry themselves rather than
-  // through a core function that refuses it.
+  // through a core function that refuses it. `''` or a namespace that is not a string scanned nothing and read as a
+  // clean erasure.
+  if (options.namespace !== undefined) {
+    if (typeof options.namespace !== 'string') {
+      throw new ValidationError(
+        `${op}: namespace must be a string; got ${kindOf(options.namespace)}`,
+      );
+    }
+    validateSegmentRef({ segment: 'x', namespace: options.namespace });
+  }
   refuseReservedNamespace(options.namespace);
   if (options.namespace === undefined && options.allNamespaces !== true) {
     throw new ValidationError(
@@ -169,6 +178,206 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
         `or \`{ allNamespaces: true }\` to intentionally sweep the whole fleet`,
     );
   }
+}
+
+/** A key of `T` that `K` does not list: a key table missing one fails to compile. */
+type Unlisted<T, K extends readonly PropertyKey[]> = Exclude<keyof T, K[number]>;
+
+/** The keys of `T`, every one of them, as a table the options check below reads. */
+const keysOf =
+  <T>() =>
+  <const K extends readonly (keyof T & string)[]>(
+    keys: K & ([Unlisted<T, K>] extends [never] ? unknown : never),
+  ): readonly string[] =>
+    keys;
+
+/**
+ * What each call that takes options takes. Each table is held to the call's options type in both directions: a key the
+ * type does not have, or one it has and the table leaves out, fails to compile.
+ */
+const CALL_KEYS = {
+  range: keysOf<IdRange>()(['after', 'through']),
+  andNot: keysOf<BaseCombineOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+  ]),
+  combine: keysOf<CombineOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'exclude',
+  ]),
+  into: keysOf<MaterializeOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'exclude',
+    'audit',
+    'allowEmpty',
+    'guard',
+    'metadata',
+    'keep',
+  ]),
+  andNotInto: keysOf<AndNotIntoOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'audit',
+    'allowEmpty',
+    'guard',
+    'metadata',
+    'keep',
+  ]),
+  load: keysOf<LoadOptions>()(['allowEmpty', 'guard', 'keep', 'metadata', 'audit']),
+  segments: keysOf<NonNullable<Parameters<CloudRoaring['segments']>[0]>>()(['namespace']),
+  subjectReport: keysOf<NonNullable<Parameters<CloudRoaring['subjectReport']>[1]>>()([
+    'namespace',
+    'allNamespaces',
+    'concurrency',
+    'budget',
+  ]),
+  eraseSubject: keysOf<NonNullable<Parameters<CloudRoaring['eraseSubject']>[1]>>()([
+    'namespace',
+    'allNamespaces',
+    'audit',
+    'concurrency',
+    'budget',
+  ]),
+  rollback: keysOf<NonNullable<Parameters<CloudRoaring['rollback']>[2]>>()([
+    'audit',
+    'allowForward',
+  ]),
+  dropSegment: keysOf<Parameters<CloudRoaring['dropSegment']>[1]>()([
+    'confirmSegment',
+    'dryRun',
+    'audit',
+  ]),
+  retireExpired: keysOf<NonNullable<Parameters<CloudRoaring['retireExpired']>[0]>>()([
+    'namespace',
+    'now',
+    'limit',
+    'dryRun',
+    'audit',
+    'maxScanSegments',
+    'scan',
+    'shards',
+    'totalShards',
+    'lookbackBuckets',
+    'purgeTombstones',
+    'tombstoneGraceMs',
+  ]),
+  checkConsistency: keysOf<NonNullable<Parameters<CloudRoaring['checkConsistency']>[0]>>()([
+    'namespace',
+    'concurrency',
+    'summaries',
+  ]),
+  exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
+  costReport: keysOf<NonNullable<Parameters<Segment['costReport']>[0]>>()(['pricing', 'workload']),
+  workload: keysOf<Workload>()([
+    'readsPerSec',
+    'intersectsPerSec',
+    'cacheHitRate',
+    'chunksPerIntersect',
+    'operandsPerIntersect',
+    'loadsPerMonth',
+    'requestsPerLoad',
+    'hotSegments',
+    'readerProcesses',
+    'genTtlMs',
+    'retirementsPerMonth',
+    'purgesPerMonth',
+    'conditionalDelete',
+  ]),
+} as const;
+
+/** How a value of the wrong kind is named in a message: by its kind, never by its content. */
+const kindOf = (v: unknown): string =>
+  v === null ? 'null' : Array.isArray(v) ? 'an array' : `a ${typeof v}`;
+
+/**
+ * Why `options` cannot be a call's options, or `undefined` when it can. `undefined` and `null` read as none; anything
+ * but an object is refused, and so is a key `known` does not list, unless its value is `undefined`, so a spread of
+ * options keeps working; and each of `booleans` present must be a boolean, `null` included. A bag of the wrong shape, a misspelt key or
+ * a switch given as a string would otherwise read as no option at all, and silently widen what the call does: a scope
+ * passed as a string swept every namespace, and `dryRun: 'true'` deleted.
+ */
+function optionsError(
+  options: unknown,
+  op: string,
+  known: readonly string[],
+  booleans: readonly string[] = [],
+): ValidationError | undefined {
+  if (options === undefined || options === null) return undefined;
+  if (typeof options !== 'object' || Array.isArray(options)) {
+    return new ValidationError(`${op}: options must be an object; got ${kindOf(options)}`);
+  }
+  const bag = options as Record<string, unknown>;
+  const unknown = Object.keys(bag).filter((k) => !known.includes(k) && bag[k] !== undefined);
+  if (unknown.length > 0) {
+    return new ValidationError(
+      `${op}: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+        `it takes { ${known.join(', ')} }`,
+    );
+  }
+  // An `audit` that is not a sink would receive nothing and say nothing: refused here, before the call reads or scans
+  // anything, as the core entries refuse it before they write.
+  const audit = bag.audit;
+  if (
+    audit !== undefined &&
+    audit !== null &&
+    typeof (audit as { onEvent?: unknown }).onEvent !== 'function'
+  ) {
+    return new ValidationError(
+      `${op}: audit must be a sink with an onEvent(event) method, such as a RecordingAuditSink`,
+    );
+  }
+  // A switch is `true` or `false`. `null` is refused with the rest: read as absent, `dryRun: null` dropped for real.
+  for (const name of booleans) {
+    const v = bag[name];
+    if (v !== undefined && typeof v !== 'boolean') {
+      return new ValidationError(`${op}: \`${name}\` must be a boolean; got ${kindOf(v)}`);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The keys of `options` a call takes, each read by name. A spread copies only own enumerable properties, so an option
+ * held in a getter or inherited from a prototype, which TypeScript accepts and {@link optionsError} reads, would pass
+ * the checks and then be dropped: a `dryRun` so held ran a real sweep, and a `namespace` exported every tenant. The
+ * call then reads the copy only, so it runs with exactly what was checked.
+ */
+function picked<T extends object>(
+  options: T | null | undefined,
+  keys: readonly string[],
+): Partial<T> {
+  const out: Record<string, unknown> = {};
+  if (options === undefined || options === null) return out as Partial<T>;
+  for (const key of keys) {
+    const value = (options as Record<string, unknown>)[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out as Partial<T>;
+}
+
+/** {@link optionsError}, thrown: for a call that rejects, rather than one that returns a stream. */
+function checkOptions(
+  options: unknown,
+  op: string,
+  known: readonly string[],
+  booleans?: readonly string[],
+): void {
+  const err = optionsError(options, op, known, booleans);
+  if (err !== undefined) throw err;
 }
 
 /**
@@ -709,7 +918,9 @@ export interface MaterializeResult {
 /**
  * Resolve the `storage` option to a {@link StorageChunkSource} at construction (wiring-time only — no hot-path cost).
  *
- * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two: a raw {@link IStorageDriver} exposes `putImmutable`
+ * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two, never by
+ * `instanceof`, so a backend or driver from a different copy of the package still works (the same reason the error
+ * predicates are brand-based): a raw {@link IStorageDriver} exposes `putImmutable`
  * (the byte-mover seam); a pre-built {@link StorageChunkSource} exposes `getChunk` (the engine's read seam). The
  * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
  * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
@@ -726,12 +937,6 @@ export interface MaterializeResult {
  * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
  * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IStorageDriver` to
  * write through, so its writes throw {@link UnsupportedError}).
- */
-/**
- * Work out what the caller handed us, and build the read path from it.
- *
- * Three accepted shapes. A backend is identified by its brand, the other two structurally — never by `instanceof`, so a backend or driver from a
- * different copy of the package still works (the same reason the error predicates are brand-based).
  */
 function resolveStorageSource(
   options: CloudRoaringOptions,
@@ -979,8 +1184,31 @@ export class CloudRoaring {
     );
   }
 
+  /**
+   * A seam the store calls through must have the methods it calls. Without this a `clock` with no `now`, an `rng` with
+   * no `next` or a keystore with no `createDek` builds a store that throws a raw `TypeError` at its first load or read.
+   */
+  private static rejectHollowSeams(options: CloudRoaringOptions): void {
+    const seams: Array<[unknown, string, readonly string[]]> = [
+      [options.seams?.clock, 'seams.clock', ['now', 'sleep']],
+      [options.seams?.rng, 'seams.rng', ['next']],
+      [options.encryption?.keystore, 'encryption.keystore', ['createDek', 'openDek']],
+    ];
+    for (const [seam, name, needs] of seams) {
+      if (seam === undefined || seam === null) continue;
+      const has = (m: string): boolean =>
+        typeof (seam as Record<string, unknown>)[m] === 'function';
+      if (typeof seam !== 'object' || !needs.every(has)) {
+        throw new ValidationError(
+          `CloudRoaring's \`${name}\` must be an object with ${needs.map((m) => `\`${m}()\``).join(' and ')}`,
+        );
+      }
+    }
+  }
+
   constructor(options: CloudRoaringOptions) {
     CloudRoaring.rejectUnknownOptions(options);
+    CloudRoaring.rejectHollowSeams(options);
     const clock = options.seams?.clock ?? new SystemClock();
     const rng = options.seams?.rng ?? new SystemRng();
     // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).
@@ -1014,6 +1242,9 @@ export class CloudRoaring {
       // A `Partial` policy is what puts this in reach: were a whole `RetryPolicy` required, each would be a compile
       // error.
       const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
+      if (userOnRetry !== undefined && typeof userOnRetry !== 'function') {
+        throw new ValidationError('retry.onRetry must be a function');
+      }
       const policy: RetryPolicy = {
         maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
         baseDelayMs: ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs,
@@ -1104,20 +1335,36 @@ export class CloudRoaring {
   }
 
   /**
-   * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). An
-   * `expiresAt` among the options is refused with {@link ValidationError}: a handle carries no deadline, and one
-   * left unread would serve the data past it.
+   * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). The options
+   * are `{ namespace }` and nothing else: anything else is refused with {@link ValidationError}, by name, since a
+   * misspelt `namespace` would otherwise address the default namespace. An `expiresAt` among them is refused with its own
+   * message: a handle carries no deadline, and one left unread would serve the data past it. A key whose value is
+   * `undefined` is read as absent, so a spread of options keeps working.
    */
   segment(name: string, options?: SegmentOptions): Segment {
+    if (options !== undefined && options !== null) {
+      if (typeof options !== 'object' || Array.isArray(options)) {
+        throw new ValidationError('segment: options must be an object such as { namespace }');
+      }
+      if ((options as { readonly expiresAt?: unknown }).expiresAt !== undefined) {
+        throw new ValidationError(
+          'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
+            '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`',
+        );
+      }
+      const unknown = Object.keys(options).filter(
+        (k) => k !== 'namespace' && (options as Record<string, unknown>)[k] !== undefined,
+      );
+      if (unknown.length > 0) {
+        throw new ValidationError(
+          `segment: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+            'a handle takes { namespace } only',
+        );
+      }
+    }
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);
     refuseReservedNamespace(ref.namespace);
-    if ((options as { readonly expiresAt?: unknown } | undefined)?.expiresAt !== undefined) {
-      throw new ValidationError(
-        'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
-          '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`',
-      );
-    }
     return makeSegment({
       engine: this.engine,
       ref,
@@ -1382,7 +1629,8 @@ export class CloudRoaring {
     const keep = options.keep;
     const after = options.after;
     const through = options.through;
-    const pinOption = options.pin ?? true;
+    // `null` is not the default: a switch is `true` or `false`, as on every call.
+    const pinOption: unknown = options.pin === undefined ? true : options.pin;
     const feedIn: unknown = options.feed;
     const mayBeEmptyIn: unknown = options.mayBeEmpty;
     if (feedIn !== undefined && options.maxBufferedBytes === undefined) {
@@ -1744,6 +1992,8 @@ export class CloudRoaring {
       budget?: BudgetOption;
     } = {},
   ): Promise<SubjectReport> {
+    checkOptions(options, 'subjectReport', CALL_KEYS.subjectReport, ['allNamespaces']);
+    options ??= {};
     const registry = this.requireRegistry('subjectReport');
     requireScope(options, 'subjectReport'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
@@ -1822,8 +2072,9 @@ export class CloudRoaring {
    * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
    * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as an outcome rather than
    * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
-   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger, as a fresh
-   * call would leave it out.
+   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger. A tombstoned
+   * segment is still searched: a cleartext object left under it that holds the id is deleted, with everything under
+   * the tombstone, and the entry reads `erased: true`.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
@@ -1863,6 +2114,8 @@ export class CloudRoaring {
     // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
     // for its options still moves the counter: conservative, so an erasure is never missed.
     this.erasureEpoch++;
+    checkOptions(options, 'eraseSubject', CALL_KEYS.eraseSubject, ['allNamespaces']);
+    options ??= {};
     this.erasuresRunning++;
     try {
       return await this.eraseSubjectRun(id, options);
@@ -1903,7 +2156,6 @@ export class CloudRoaring {
       recs,
       options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
       async (rec): Promise<SubjectErasureEntry | null> => {
-        if (rec.status === 'destroyed') return null; // already crypto-shredded — nothing to erase
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
         try {
           // The rewrite does its own membership check against the CURRENT registry generation — not the
@@ -2032,6 +2284,8 @@ export class CloudRoaring {
    * ```
    */
   segments(options: { namespace?: string } = {}): AsyncIterable<SegmentInfo> {
+    checkOptions(options, 'segments', CALL_KEYS.segments);
+    options ??= {};
     if (options.namespace !== undefined) {
       // Synchronously, at the call, where `listSegments` (an async generator, which refuses the reserved
       // namespace too for a direct caller) would only throw at the first iteration.
@@ -2084,6 +2338,8 @@ export class CloudRoaring {
     options: { audit?: IAuditSink; allowForward?: boolean } = {},
   ): Promise<RollbackResult> {
     validateSegmentRef(ref);
+    checkOptions(options, 'rollback', CALL_KEYS.rollback, ['allowForward']);
+    options ??= {};
     const deps = this.lifecycleDeps('rollback');
     try {
       return await rollbackSegment(ref, toGeneration, deps, options);
@@ -2179,6 +2435,8 @@ export class CloudRoaring {
    */
   async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
+    checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty']);
+    options ??= {};
     const deps = this.lifecycleDeps('load');
     try {
       return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
@@ -2240,6 +2498,10 @@ export class CloudRoaring {
     options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
   ): Promise<DropResult> {
     validateSegmentRef(ref);
+    if (options === undefined || options === null) {
+      throw new ValidationError('dropSegment: options { confirmSegment } are required');
+    }
+    checkOptions(options, 'dropSegment', CALL_KEYS.dropSegment, ['dryRun']);
     const deps = this.lifecycleDeps('dropSegment');
     try {
       return await dropSegment(
@@ -2373,14 +2635,16 @@ export class CloudRoaring {
   async retireExpired(
     options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
   ): Promise<RetireExpiredResult> {
+    checkOptions(options, 'retireExpired', CALL_KEYS.retireExpired, ['dryRun', 'purgeTombstones']);
+    const opts = picked(options, CALL_KEYS.retireExpired);
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
       { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
-      { ...options, now: options.now ?? this.clock.now() },
+      { ...opts, now: opts.now ?? this.clock.now() },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
     // nothing, so it invalidates nothing.
-    if (options.dryRun !== true) {
+    if (opts.dryRun !== true) {
       for (const entry of result.entries) {
         this.engine.invalidate({ segment: entry.segment, namespace: entry.namespace });
       }
@@ -2633,6 +2897,8 @@ export class CloudRoaring {
   async checkConsistency(
     options: { namespace?: string; concurrency?: number; summaries?: boolean } = {},
   ): Promise<ConsistencyReport> {
+    checkOptions(options, 'checkConsistency', CALL_KEYS.checkConsistency, ['summaries']);
+    options ??= {};
     const deps = this.lifecycleDeps('checkConsistency');
     return runConsistencyCheck(
       { storage: deps.storage, registry: deps.registry, keystore: deps.keystore },
@@ -2653,12 +2919,11 @@ export class CloudRoaring {
    * CLI wraps this with a filesystem sink.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
+    checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments);
+    const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
     // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
-    return runExport(this, registry, sink, {
-      ...options,
-      codec: options.codec ?? roaringCodec,
-    });
+    return runExport(this, registry, sink, { ...opts, codec: opts.codec ?? roaringCodec });
   }
 
   /**
@@ -2863,6 +3128,16 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
 
 const NO_SEGMENTS: readonly Segment[] = [];
 
+/**
+ * `list` when it is an array, else a {@link ValidationError} naming `what`. A combine takes its operands and its
+ * `exclude` as arrays: a `Set` or a lone segment from plain JavaScript would otherwise fail with a raw `TypeError`, or,
+ * as an `exclude`, be read as no exclusion at all.
+ */
+function segmentList(list: unknown, what: string): readonly Segment[] {
+  if (!Array.isArray(list)) throw new ValidationError(`${what} must be an array of segments`);
+  return list as readonly Segment[];
+}
+
 type EngineCombine = Parameters<SegmentEngine['intersect']>[1];
 type EngineAndNot = Parameters<SegmentEngine['andNot']>[2];
 
@@ -2936,7 +3211,6 @@ export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
  */
 const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
-/** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
 type Pin = (ref: SegmentRef, leaseUntil?: number, at?: PinAt) => Promise<Segment>;
 
@@ -2946,6 +3220,7 @@ type Pin = (ref: SegmentRef, leaseUntil?: number, at?: PinAt) => Promise<Segment
  */
 type CombineEngine = (handles: readonly Segment[]) => SegmentEngine | undefined;
 
+/** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 type Materialize = (
   dest: SegmentRef,
   ids: LoadInput | CombineChunks,
@@ -3483,6 +3758,8 @@ export class Segment {
   iterate(options?: IdRange): IdStream {
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
+    const bad = optionsError(options, 'iterate', CALL_KEYS.range);
+    if (bad !== undefined) return failing(bad);
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
     const none = range === undefined || (range.after === undefined && range.through === undefined);
@@ -3530,6 +3807,8 @@ export class Segment {
     // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
     if (lease !== undefined) return failing(lease);
+    const bad = optionsError(options, 'everyNth', CALL_KEYS.range);
+    if (bad !== undefined) return failing(bad);
     if (this.pinnedAt === undefined) {
       return failing(
         new UnsupportedError(
@@ -3577,7 +3856,8 @@ export class Segment {
    */
   private excludesOf(options: CombineOptions | null | undefined): readonly Segment[] {
     const exclude = options?.exclude;
-    return exclude == null || exclude.length === 0 ? NO_SEGMENTS : exclude;
+    if (exclude == null) return NO_SEGMENTS;
+    return segmentList(exclude, '`exclude`').length === 0 ? NO_SEGMENTS : exclude;
   }
 
   /**
@@ -3590,15 +3870,19 @@ export class Segment {
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
-    return this.intersectAs(AS_IDS, others, options);
+    const bad = optionsError(options, 'intersect', CALL_KEYS.combine, ['allowAbsentOperands']);
+    if (bad !== undefined) return failing(bad);
+    return this.intersectAs(AS_IDS, others, options ?? undefined);
   }
 
   private intersectAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
-    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
-    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
-    const exclude = this.excludesOf(options);
-    const handles = [this, ...others, ...exclude];
+    // Order of the checks: both lists are arrays, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let exclude: readonly Segment[];
+    let handles: readonly Segment[];
     try {
+      exclude = this.excludesOf(options);
+      handles = [this, ...segmentList(others, 'intersect: `others`'), ...exclude];
       this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
@@ -3640,10 +3924,15 @@ export class Segment {
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.assertIntoHandles(dest, [...others, ...(options?.exclude ?? [])]);
+    checkOptions(options, 'intersectInto', CALL_KEYS.into, ['allowEmpty', 'allowAbsentOperands']);
+    const operands = [
+      ...segmentList(others, 'intersectInto: `others`'),
+      ...this.excludesOf(options),
+    ];
+    this.assertIntoHandles(dest, operands);
     // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
     // broken destination would otherwise answer first, and hide the refusal behind its own error.
-    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]);
+    this.combineEngine([this, ...operands]);
     return this.timed('intersectInto', () =>
       this.materialize(
         dest.ref,
@@ -3665,15 +3954,19 @@ export class Segment {
    * segment once (`unionInto`, or a load) is the cheaper shape.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
-    return this.unionAs(AS_IDS, others, options);
+    const bad = optionsError(options, 'union', CALL_KEYS.combine, ['allowAbsentOperands']);
+    if (bad !== undefined) return failing(bad);
+    return this.unionAs(AS_IDS, others, options ?? undefined);
   }
 
   private unionAs<T>(out: CombineOutput<T>, others: Segment[], options?: CombineOptions): T {
-    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
-    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
-    const exclude = this.excludesOf(options);
-    const handles = [this, ...others, ...exclude];
+    // Order of the checks: both lists are arrays, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let exclude: readonly Segment[];
+    let handles: readonly Segment[];
     try {
+      exclude = this.excludesOf(options);
+      handles = [this, ...segmentList(others, 'union: `others`'), ...exclude];
       this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
@@ -3696,8 +3989,10 @@ export class Segment {
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.assertIntoHandles(dest, [...others, ...(options?.exclude ?? [])]);
-    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]); // as intersectInto: before any read
+    checkOptions(options, 'unionInto', CALL_KEYS.into, ['allowEmpty', 'allowAbsentOperands']);
+    const operands = [...segmentList(others, 'unionInto: `others`'), ...this.excludesOf(options)];
+    this.assertIntoHandles(dest, operands);
+    this.combineEngine([this, ...operands]); // as intersectInto: before any read
     return this.timed('unionInto', () =>
       this.materialize(
         dest.ref,
@@ -3720,14 +4015,17 @@ export class Segment {
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
    */
   andNot(excludes: Segment[], options?: BaseCombineOptions): IdStream {
-    return this.andNotAs(AS_IDS, excludes, options);
+    const bad = optionsError(options, 'andNot', CALL_KEYS.andNot, ['allowAbsentOperands']);
+    if (bad !== undefined) return failing(bad);
+    return this.andNotAs(AS_IDS, excludes, options ?? undefined);
   }
 
   private andNotAs<T>(out: CombineOutput<T>, excludes: Segment[], options?: BaseCombineOptions): T {
-    // Order of the checks: every handle is a segment, then no handle's lease has ended, both before the engine is asked
-    // for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
-    const handles = [this, ...excludes];
+    // Order of the checks: the list is an array, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let handles: readonly Segment[];
     try {
+      handles = [this, ...segmentList(excludes, 'andNot: `excludes`')];
       this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
@@ -3751,7 +4049,11 @@ export class Segment {
     excludes: Segment[],
     options?: AndNotIntoOptions,
   ): Promise<MaterializeResult> {
-    this.assertIntoHandles(dest, excludes);
+    checkOptions(options, 'andNotInto', CALL_KEYS.andNotInto, [
+      'allowEmpty',
+      'allowAbsentOperands',
+    ]);
+    this.assertIntoHandles(dest, segmentList(excludes, 'andNotInto: `excludes`'));
     this.combineEngine([this, ...excludes]); // as intersectInto: before any read
     return this.timed('andNotInto', () =>
       this.materialize(
@@ -3776,14 +4078,27 @@ export class Segment {
     pricing?: PricingProfile;
     workload?: Workload;
   }): Promise<CostReport> {
+    checkOptions(options, 'costReport', CALL_KEYS.costReport);
+    const shape: unknown = options?.workload;
+    if (
+      shape !== undefined &&
+      shape !== null &&
+      (typeof shape !== 'object' || Array.isArray(shape))
+    ) {
+      throw new ValidationError('costReport: workload must be an object');
+    }
     this.assertLeases([this]);
     const canMeasure = this.engine.supportsStorageSize;
     const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
     const refreshMs = this.engine.pointerRefreshMs;
+    const given =
+      options?.workload === undefined || options.workload === null
+        ? undefined
+        : picked(options.workload, CALL_KEYS.workload);
     const workload =
-      refreshMs === undefined || options?.workload?.genTtlMs !== undefined
-        ? options?.workload
-        : { ...options?.workload, genTtlMs: refreshMs };
+      refreshMs === undefined || given?.genTtlMs !== undefined
+        ? given
+        : { ...given, genTtlMs: refreshMs };
     return groundedReport({
       storageBytes: size?.sizeBytes ?? 0,
       grounded: canMeasure,

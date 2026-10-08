@@ -1722,23 +1722,23 @@ describe('retention sweep cost term', () => {
     expect(r.assumptions.notes.some((n) => /Retention sweep/.test(n))).toBe(false);
   });
 
-  it('prices a retirement and a purge with the gate on: 9 reads and 3 writes, 4 reads, deletes unbilled', () => {
+  it('prices a retirement and a purge with the gate on: 7 reads and 2 writes, 4 reads, deletes unbilled', () => {
     expect(RETENTION_SWEEP_REQUESTS.conditionalDelete).toEqual({
-      retirement: { reads: 9, writes: 3, deletes: 1 },
+      retirement: { reads: 7, writes: 2, deletes: 1 },
       purge: { reads: 4, writes: 0, deletes: 2 },
     });
     expect(retention({ retirementsPerMonth: 1000 })).toBeCloseTo(
-      1000 * (9 * getUSD + 3 * putUSD),
+      1000 * (7 * getUSD + 2 * putUSD),
       12,
     );
     expect(retention({ purgesPerMonth: 1000 })).toBeCloseTo(1000 * 4 * getUSD, 12);
-    // $20.20 per million segments retired and purged, at the default prices.
-    expect(1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 })).toBeCloseTo(20.2, 9);
+    // $14.40 per million segments retired and purged, at the default prices.
+    expect(1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 })).toBeCloseTo(14.4, 9);
   });
 
-  it('prices a registry that only tombstones, as before: 8 reads and 3 writes, 3 reads and a write', () => {
+  it('prices a registry that only tombstones, as before: 6 reads and 2 writes, 3 reads and a write', () => {
     expect(RETENTION_SWEEP_REQUESTS.tombstoning).toEqual({
-      retirement: { reads: 8, writes: 3, deletes: 0 },
+      retirement: { reads: 6, writes: 2, deletes: 0 },
       purge: { reads: 3, writes: 1, deletes: 0 },
     });
     const off = retention({
@@ -1746,9 +1746,9 @@ describe('retention sweep cost term', () => {
       purgesPerMonth: 1,
       conditionalDelete: false,
     });
-    expect(off).toBeCloseTo(11 * getUSD + 4 * putUSD, 12);
-    // $24.40 per million segments, and the gate is the cheaper one.
-    expect(1e6 * off).toBeCloseTo(24.4, 9);
+    expect(off).toBeCloseTo(9 * getUSD + 3 * putUSD, 12);
+    // $18.60 per million segments, and the gate is the cheaper one.
+    expect(1e6 * off).toBeCloseTo(18.6, 9);
     expect(1e6 * off).toBeGreaterThan(
       1e6 * retention({ retirementsPerMonth: 1, purgesPerMonth: 1 }),
     );
@@ -1756,8 +1756,8 @@ describe('retention sweep cost term', () => {
 
   it("holds the cost guide's fleet-scale figures", () => {
     const fleet = { retirementsPerMonth: 2_000_000, purgesPerMonth: 2_000_000 };
-    expect(retention(fleet)).toBeCloseTo(40.4, 6);
-    expect(retention({ ...fleet, conditionalDelete: false })).toBeCloseTo(48.8, 6);
+    expect(retention(fleet)).toBeCloseTo(28.8, 6);
+    expect(retention({ ...fleet, conditionalDelete: false })).toBeCloseTo(37.2, 6);
     // A full sweep of a registry that only tombstones reads two objects for each of a year's purged segments.
     expect(24_000_000 * RETENTION_TOMBSTONE_READS * getUSD).toBeCloseTo(19.2, 6);
     // `checkConsistency({ summaries: true })`: one tail read a segment, per million segments.
@@ -1770,13 +1770,13 @@ describe('retention sweep cost term', () => {
       segments: [{ sizeBytes: 0 }],
       workload: { retirementsPerMonth: 5, purgesPerMonth: 5 },
     }).assumptions.notes.find((n) => /Retention sweep modeled/.test(n));
-    expect(on).toContain('9 reads, 3 writes and 1 delete(s)');
+    expect(on).toContain('7 reads, 2 writes and 1 delete(s)');
     expect(on).not.toContain('not priced');
     const off = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { retirementsPerMonth: 5, conditionalDelete: false },
     }).assumptions.notes.find((n) => /Retention sweep modeled/.test(n));
-    expect(off).toContain('8 reads, 3 writes and 0 delete(s)');
+    expect(off).toContain('6 reads, 2 writes and 0 delete(s)');
     expect(off).toContain('which is not priced');
   });
 
@@ -1792,5 +1792,23 @@ describe('retention sweep cost term', () => {
         workload: { retirementsPerMonth: 1, conditionalDelete: 'yes' as unknown as boolean },
       }),
     ).toThrow(ValidationError);
+  });
+});
+
+describe('estimateCost refuses an input of the wrong shape', () => {
+  it('a missing input, segments that are not an array, a null entry, or pricing without storage', () => {
+    for (const input of [
+      null,
+      {},
+      { segments: 5 },
+      { segments: [null] },
+      { segments: [{ sizeBytes: 1 }], pricing: {} },
+      { segments: [{ sizeBytes: 1 }], pricing: null },
+      { segments: new Array(2) },
+      { segments: [{ sizeBytes: 1 }], workload: 'x' },
+      { segments: [{ sizeBytes: 1 }], workload: [] },
+    ]) {
+      expect(() => estimateCost(input as never), JSON.stringify(input)).toThrow(ValidationError);
+    }
   });
 });

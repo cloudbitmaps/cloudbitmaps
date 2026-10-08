@@ -133,7 +133,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 
 > ⚠️ **Run the sweep from one process, or shard it.** N replicas each running the full sweep would contend over the
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
-> disjoint slice with `shards` and `totalShards`. The slice is a stable hash of the segment key, so a worker owns the
+> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
+> without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
 > same slice across restarts.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans
@@ -180,7 +181,8 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 **Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
-one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+one's reason in `firstPurgeFault`. So is a tombstone whose objects are still there after a collection that raised
+nothing, such as a store that acknowledges a delete it did not make. A refused purge is `skipped` in the ledger, with the provider's message, and is not
 charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
 the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
 row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three
@@ -501,8 +503,10 @@ one request per row. That is the case:
   anyway, and two sweepers and a re-create of the name could delete a live row. Set `conditionalDelete: true` on the
   backend only once you know your store applies it. The host is the one the SDK resolves, however the endpoint was set:
   a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file.
-  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, and AWS S3 applies the precondition
-  there;
+  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, as is an access point's, a multi-region
+  access point's, an Object Lambda's, an Outpost's and a directory bucket's, and AWS S3 applies the precondition there.
+  Another AWS service's host whose name starts with `s3`, such as a load balancer, an API Gateway or a website
+  endpoint, is not;
 - on a GCS client, by default, the public endpoint included: whether real GCS applies `ifGenerationMatch` to a delete
   has not been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so
   CI cannot show it. Set `conditionalDelete: true` to remove rows for good;
@@ -555,11 +559,11 @@ the default `'fleet'` scan, which reads every row, retires it. An index-only dep
 schedules a fleet scan, which is why the index is the fast half of a pair.
 
 **What it costs.** Per segment, counted with a store that counts requests. Where the registry removes rows, a
-retirement is 9 reads, 3 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
+retirement is 7 reads, 2 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
 which is the one write the removal of the expiry pointer would otherwise have been, and the purge removes the row and
 the pointer where a tombstone would have been written. On S3 a `DeleteObject` is not billed, and a `PutObject` is.
 Where the registry only tombstones (`conditionalDelete: false`, or a backend that does not report it), no purge pointer
-is filed or removed: a retirement is 8 reads and 3 writes, a purge 3 reads and 1 write, and two small objects stay per
+is filed or removed: a retirement is 6 reads and 2 writes, a purge 3 reads and 1 write, and two small objects stay per
 segment, which every full scan reads (100 reads for 50 segments). The registry needs delete permission on its prefix
 (`s3:DeleteObject`, `storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays,
 the ledger entry and `purgeFaults` say why, and the retirements behind it still go on.

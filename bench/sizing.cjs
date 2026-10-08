@@ -110,6 +110,18 @@ const COALESCE_GAP_BYTES =
 const COALESCED_READ_BYTES = 1024 * 1024;
 const { windowRounds, windowPeak } = require('./lib/calibrate-stages.cjs');
 const calibrationFigures = require('./lib/calibration-figures.cjs');
+
+/**
+ * The newest in-region run's report, as a link from a page two levels below the root. The segment shape the pages
+ * describe, about 2,000 chunks with 100 shared, is the one every calibration run measures, so they cite the newest.
+ */
+function latestRunReport() {
+  const json = calibrationFigures.evidenceFiles(ROOT).at(-1);
+  return `../../${json
+    .replace(/\.json$/, '.md')
+    .split(path.sep)
+    .join('/')}`;
+}
 /**
  * The requests the engine makes of the object store for a cold intersect, by deployment, overlap and layout, counted by
  * running it (`bench/range-counts.cjs`): a combine reads each operand's needed chunks as coalesced ranges, so what an
@@ -830,7 +842,7 @@ function render() {
       `${mib(S3_PART_BYTES)} parts.`,
   );
   const shape =
-    `Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids ` +
+    `Every segment has the shape of the [calibration run's](${latestRunReport()}): its ids ` +
     `spread over about ${int(CHUNKS_PER_SEGMENT)} chunks, and every cold intersect of two segments sharing ` +
     `${int(SHARED_CHUNKS)} of them, side by side in each object, so each reads them from both in a range request of its own. A larger segment is modeled as ` +
     `holding its ids more densely, up to the ${bytes(CHUNKS_PER_SEGMENT * MAX_CHUNK_BYTES)} its chunks can take, ` +
@@ -1218,7 +1230,7 @@ function render() {
   const whyLine =
     "The line is the table's last column. It climbs with the data because the Redis it is measured against does. " +
     'In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the ' +
-    `[calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, about ${int(CHUNKS_PER_SEGMENT)} chunks with ` +
+    `[calibration run](${latestRunReport()})'s shape, about ${int(CHUNKS_PER_SEGMENT)} chunks with ` +
     `${int(SHARED_CHUNKS)} shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing ` +
     'more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three ' +
     'deployments also make point reads and refresh pointers, which ' +

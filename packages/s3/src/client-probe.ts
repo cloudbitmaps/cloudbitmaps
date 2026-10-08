@@ -170,16 +170,50 @@ export async function probeClient(
 /** The domains AWS serves S3 from: the standard partition, and China's. */
 const AWS_DOMAINS = ['.amazonaws.com', '.amazonaws.com.cn'];
 
+/** The labels that name S3 itself in one of its hosts. */
+const S3_LABELS = new Set([
+  's3',
+  's3-fips',
+  's3-accesspoint',
+  's3-accesspoint-fips',
+  's3-global',
+  's3-object-lambda',
+  's3-outposts',
+  's3-external-1',
+]);
+/** The host form that joins the region to the label with a dash, which AWS also serves: `s3-us-west-2`, `s3-fips-us-gov-west-1`. */
+const S3_DASH_REGION_LABEL = /^s3-(fips-)?[a-z]{2}(-gov)?-[a-z]+-\d$/;
+/** A directory bucket's zonal label: `s3express-use1-az4`. */
+const S3_EXPRESS_LABEL = /^s3express-[a-z0-9-]+$/;
+const REGION_LABEL = /^[a-z]{2}(-[a-z]+)+-\d+$/;
+
+const isS3Label = (label: string): boolean =>
+  S3_LABELS.has(label) || S3_DASH_REGION_LABEL.test(label) || S3_EXPRESS_LABEL.test(label);
+
 /**
- * Whether `hostname` is an AWS S3 host: under an AWS domain and naming S3 in one of its labels (`s3`, `s3-fips`,
- * `s3-accesspoint`, `s3express-…`), so the FIPS, dual-stack, access-point and VPC interface forms all count, and another
- * AWS service's host does not. A host of any other domain is not, whatever it speaks: a store behind one has to be
- * vouched for by the caller.
+ * Whether `hostname` is an AWS S3 host, by its structure: under an AWS domain, with a label that names S3 (`s3`,
+ * `s3-fips`, an access point's, a multi-region access point's `s3-global`, Object Lambda's, an Outpost's, a dash-joined
+ * `s3-<region>`, a directory bucket's `s3express-…`), followed only by what S3's hosts put there: `dualstack`, a
+ * region and `vpce`, in that order. Anything may come before it (a bucket, an access point, a VPC endpoint id). So
+ * the FIPS, dual-stack, access-point and VPC interface forms all count, and another AWS service's host whose name
+ * starts with `s3` does not: a load balancer, an API Gateway, a website endpoint. A host of any other domain is not,
+ * whatever it speaks: a store behind one has to be vouched for by the caller.
  */
 export function isAwsS3Host(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '');
-  if (!AWS_DOMAINS.some((domain) => host.endsWith(domain))) return false;
-  return host
-    .split('.')
-    .some((label) => label === 's3' || label.startsWith('s3-') || label.startsWith('s3express-'));
+  const domain = AWS_DOMAINS.find((d) => host.endsWith(d));
+  if (domain === undefined) return false;
+  const labels = host.slice(0, -domain.length).split('.');
+  // The last S3 label is the service's: a bucket's own name may hold one (`my.s3.bucket`).
+  let at = -1;
+  labels.forEach((label, i) => {
+    if (isS3Label(label)) at = i;
+  });
+  if (at === -1) return false;
+  const rest = labels.slice(at + 1);
+  let k = 0;
+  if (rest[k] === 'dualstack') k++;
+  if (k < rest.length && REGION_LABEL.test(rest[k]!)) k++;
+  if (rest[k] === 'vpce') k++;
+  return k === rest.length;
 }

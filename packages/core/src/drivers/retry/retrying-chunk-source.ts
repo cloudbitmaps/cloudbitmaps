@@ -20,7 +20,8 @@
  * Default classifier: {@link isTransientError}.
  */
 import type { Clock, Rng } from '../../core/determinism';
-import { withRetry, DEFAULT_RETRY_POLICY } from '../../core/retry';
+import { checkedRetryPolicy, withRetry, DEFAULT_RETRY_POLICY } from '../../core/retry';
+import { ValidationError } from '../../core/errors';
 import { isTransientError } from '../../core/errors';
 import type { RetryPolicy } from '../../core/retry';
 import type {
@@ -54,8 +55,11 @@ function toRetry(opts: RetryingOptions): {
     onRetry?: RetryingOptions['onRetry'];
   };
 } {
+  if (opts.onRetry !== undefined && typeof opts.onRetry !== 'function') {
+    throw new ValidationError('retry.onRetry must be a function');
+  }
   return {
-    policy: opts.policy ?? DEFAULT_RETRY_POLICY,
+    policy: checkedRetryPolicy(opts.policy ?? DEFAULT_RETRY_POLICY),
     deps: {
       clock: opts.clock,
       rng: opts.rng,

@@ -69,7 +69,8 @@ export interface S3StorageOptions {
   /**
    * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
-   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
+   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max, and a
+   * larger cap, or a `partBytes` above S3's 5 GiB part limit, is refused with `ValidationError`.
    * Must be a positive safe integer.
    */
   readonly maxObjectBytes?: number;
@@ -204,6 +205,14 @@ export class S3Storage implements StorageBackend {
 
   constructor(options: S3StorageOptions) {
     refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
+    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+      throw new ValidationError('S3Storage needs a `bucket`: the name of one, a non-empty string');
+    }
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "S3Storage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its region, endpoint, addressing style and credentials, so a setting
       // beside it is ignored, and ignoring it leaves the store talking to somewhere the caller did not mean:

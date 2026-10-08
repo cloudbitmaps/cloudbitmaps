@@ -263,8 +263,9 @@ root-level project files. What each one is, and when it must be updated:
 2. **API reference** — a new export **cannot** merge undocumented; CI enforces it.
 3. **README** — refresh the status line / "what works today" / quick taste if the surface moved.
 4. **CHANGELOG** — add a bullet at the **top** of its subsection of `[Unreleased]` (newest first): **Breaking**
-   (with what a caller does about it, and the section's opening count kept in step), **Added**, **Changed** or
-   **Fixed**. This is the prose, and it
+   (with what a caller does about it, and the section's opening count kept in step), **Added**, **Changed**,
+   **Deprecated** (with where the replacement is), **Removed** (with what a caller does instead), **Fixed** or
+   **Security**. This is the prose, and it
    is hand-written: `.changeset/` does **not** generate it, deliberately
    ([why](.changeset/README.md)).
 5. **Changeset** — `pnpm changeset`, if the change should move the version. It records the **bump type**

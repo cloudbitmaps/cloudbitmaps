@@ -104,6 +104,11 @@ export class AzureBlobStorage implements StorageBackend {
       AZURE_BLOB_STORAGE_OPTION_KEYS,
       'a container client goes in `containerClient`',
     );
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "AzureBlobStorage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.containerClient !== undefined && options.containerClient !== null) {
       // `containerClient` already names the account AND the container, so anything that also names them is
       // either redundant or a contradiction — and the contradiction loses silently, leaving a store pointed

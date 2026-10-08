@@ -33,9 +33,29 @@ export const DEFAULT_BUDGET: Budget = { maxRequests: 1_000_000 };
 /** A store/per-op budget option: partial overrides, or `false` to disable entirely. */
 export type BudgetOption = Partial<Budget> | false;
 
-/** Resolve a budget option against a fallback to a concrete `Budget`, or `null` when disabled. Validates. */
+/**
+ * Resolve a budget option against a fallback to a concrete `Budget`, or `null` when disabled. Validates: anything but
+ * `false`, an absent value or an object of `{ maxRequests }` is refused, since a cap of the wrong shape (`5`,
+ * `{ maxRequest: 5 }`) would otherwise read as no override and leave the fallback in force. `null` and a key whose value
+ * is `undefined` read as absent.
+ */
 export function resolveBudget(opt: BudgetOption | undefined, fallback: Budget): Budget | null {
   if (opt === false) return null; // explicitly disabled
+  if (opt !== undefined && opt !== null) {
+    if (typeof opt !== 'object' || Array.isArray(opt)) {
+      const got = Array.isArray(opt) ? 'an array' : `a ${typeof opt}`;
+      throw new ValidationError(`budget must be { maxRequests } or false; got ${got}`);
+    }
+    const unknown = Object.keys(opt).filter(
+      (k) => k !== 'maxRequests' && (opt as Record<string, unknown>)[k] !== undefined,
+    );
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `budget: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'it takes { maxRequests } or false',
+      );
+    }
+  }
   const maxRequests = opt?.maxRequests ?? fallback.maxRequests;
   if (!Number.isInteger(maxRequests) || maxRequests < 1) {
     throw new ValidationError(`budget.maxRequests must be a positive integer; got ${maxRequests}`);
@@ -45,7 +65,7 @@ export function resolveBudget(opt: BudgetOption | undefined, fallback: Budget): 
 
 /**
  * Resolve a **per-op** budget override against the store's own resolved budget (never the raw global default):
- * `undefined` inherits the store budget as-is (including a disabled `null`); a partial `{}` / omitted
+ * `undefined` or `null` inherits the store budget as-is (including a disabled `null`); a partial `{}` / omitted
  * `maxRequests` inherits the store's *tightening* (so a per-op passthrough of an absent config value can't
  * silently lift a tight tenant ceiling back to the generous default); `{ maxRequests }` replaces it; `false`
  * disables. Falls back to {@link DEFAULT_BUDGET} only when the store itself has no budget (disabled).
@@ -54,7 +74,7 @@ export function resolvePerOpBudget(
   opt: BudgetOption | undefined,
   storeBudget: Budget | null,
 ): Budget | null {
-  if (opt === undefined) return storeBudget;
+  if (opt === undefined || opt === null) return storeBudget;
   return resolveBudget(opt, storeBudget ?? DEFAULT_BUDGET);
 }
 

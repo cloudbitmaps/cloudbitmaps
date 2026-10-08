@@ -38,6 +38,7 @@ import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { Writable } from 'node:stream';
 import { once } from 'node:events';
 import type { Storage } from '@google-cloud/storage';
+import { BucketPresence } from './bucket-presence';
 import {
   storageObjectName,
   normalizeGcsPrefix,
@@ -130,6 +131,7 @@ export class GcsStorageDriver implements IStorageDriver {
   private readonly threshold: number;
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
+  private readonly presence: BucketPresence;
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
@@ -147,9 +149,16 @@ export class GcsStorageDriver implements IStorageDriver {
         throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
       }
     }
+    // GCS's own limit on one object: a cap past it is advertised and never reachable.
+    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > 5 * 1024 ** 4) {
+      throw new ValidationError(
+        `maxObjectBytes must be at most GCS's 5 TiB object limit (${5 * 1024 ** 4}); got ${options.maxObjectBytes}`,
+      );
+    }
     this.maxObjectBytes = options.maxObjectBytes ?? DEFAULT_MAX_OBJECT_BYTES;
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
     this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
+    this.presence = new BucketPresence(this.storage, this.bucket);
   }
 
   capabilities(): StorageCaps {
@@ -221,7 +230,7 @@ export class GcsStorageDriver implements IStorageDriver {
       this.checkRange(res, key, offset, length);
       return res.bytes;
     } catch (err) {
-      throw this.mapReadError(err, key);
+      throw await this.readFailure(err, key);
     }
   }
 
@@ -308,7 +317,7 @@ export class GcsStorageDriver implements IStorageDriver {
       }
       return { bytes: res.bytes, size: this.tailSize(res, maxBytes, key) };
     } catch (err) {
-      throw this.mapReadError(err, key);
+      throw await this.readFailure(err, key);
     }
   }
 
@@ -366,10 +375,12 @@ export class GcsStorageDriver implements IStorageDriver {
   }
 
   async delete(key: GenKey): Promise<void> {
-    // Idempotent: `ignoreNotFound` so a racing/retried GC sweep of an absent object is a no-op.
+    // Idempotent: a racing/retried GC sweep of an absent object is a no-op. Not the SDK's `ignoreNotFound`, which takes
+    // every 404 and so would report a delete in a missing bucket as done.
     try {
-      await this.file(storageObjectName(this.prefix, key)).delete({ ignoreNotFound: true });
+      await this.file(storageObjectName(this.prefix, key)).delete();
     } catch (err) {
+      if (isNotFound(err)) return this.presence.confirm();
       throw this.mapError(err);
     }
   }
@@ -389,6 +400,12 @@ export class GcsStorageDriver implements IStorageDriver {
         yield { namespace: ref.namespace, segment: ref.segment, generation };
       }
     }
+  }
+
+  /** A read's error, once a 404 is known to be the object's and not the bucket's ({@link BucketPresence}). */
+  private async readFailure(err: unknown, key: GenKey): Promise<unknown> {
+    if (isNotFound(err)) await this.presence.confirm();
+    return this.mapReadError(err, key);
   }
 
   /** Map GCS read errors to the driver vocabulary; pass everything else through {@link mapError}. */
@@ -515,10 +532,12 @@ class GcsUploadSink implements BlobSink {
       // Resumable mode: honor backpressure. `events.once(stream,'drain')` REJECTS if the stream emits 'error'
       // while we wait (that's its documented behavior for any awaited event except 'error'), and auto-removes
       // both listeners on settle — so there's no listener accumulation across drain cycles.
-      if (!this.stream.write(bytes)) await once(this.stream, 'drain');
+      // A copy, here and below: the caller may reuse its buffer once this write resolves, and the stream or the
+      // buffered upload still holds what it was given.
+      if (!this.stream.write(Buffer.from(bytes))) await once(this.stream, 'drain');
       return;
     }
-    this.buffered.push(bytes);
+    this.buffered.push(new Uint8Array(bytes));
     this.bufferedLen += bytes.length;
     if (this.bufferedLen > this.threshold) this.startResumable();
   }

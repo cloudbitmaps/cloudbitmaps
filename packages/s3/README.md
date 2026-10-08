@@ -42,7 +42,7 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 | `client` | your own `S3Client`; it carries its own region, endpoint and credentials |
 | `region`, `endpoint`, `pathStyle`, `credentials` | build a client for you, such as one for MinIO; refused beside `client` |
 | `maxSockets` | most sockets the client you do not pass opens at once, for `https` and plain `http` alike; a positive integer, default 128 (the SDK's own is 50; if a future SDK changes its handler, the built client keeps the SDK's own limit); refused beside `client` |
-| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB) |
+| `partBytes`, `maxObjectBytes` | multipart sizing: part size (default 8 MiB; the upload buffers one part at a time) and the largest object (about 80 GiB by default, up to S3's 5 TiB). A cap above 5 TiB, or a part above S3's 5 GiB part limit, is a `ValidationError` |
 | `readTimeoutMs` | how long one read (a `GetObject` or `HeadObject`, its body included) may take before it throws `TransientError` and the store retries it; `0`, the default, sets no timeout. Writes are not timed |
 | `conditionalDelete` | whether the registry removes a deleted row with a `DeleteObject` under `If-Match` rather than leaving a tombstone. On by default when the host the client resolves is an AWS S3 host, however its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file); off for any other host: set it for an S3-compatible store only once you know it applies the header (MinIO ignores it) |
 
@@ -62,7 +62,9 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 - **Grant `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`.** Without
   `s3:ListBucket`, S3 answers a missing key with `403` instead of `404`.
 - **Add a lifecycle rule that aborts incomplete multipart uploads**, and never one that expires current objects or the
-  `registry/` prefix.
+  `registry/` prefix. An expired registry row takes the segment's pointer with it, and the token every publish is fenced
+  on, so its generations look unreferenced; an expired generation makes a live segment unreadable
+  ([bucket lifecycle](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#bucket-lifecycle)).
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
   is not reported as a conflict. The driver sends each registry write once; a load that gets no answer reads the row and

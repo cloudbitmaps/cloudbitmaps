@@ -188,11 +188,6 @@ function versionOf(generation: number, lineage: unknown): string {
   return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
 }
 
-/**
- * What one resolution of a segment's pointer found: the target, and what its row says of the generation, each
- * computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
- * transient fault in the keystore is asked again.
- */
 /** What a pin that leases its generation does between reading the row and opening the object. */
 export interface PinLease {
   /** Write the lease against the row the pin read: its token, or `'moved'` when the pointer is no longer at the generation. */
@@ -202,6 +197,11 @@ export interface PinLease {
 /** The pointer moved before a lease could be written against it: the pin starts again from a fresh read. */
 class PinMoved extends Error {}
 
+/**
+ * What one resolution of a segment's pointer found: the target, and what its row says of the generation, each
+ * computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
+ * transient fault in the keystore is asked again.
+ */
 interface Live {
   readonly target: Target;
   /** The row this resolution read, when it came from a registry. */
@@ -251,11 +251,22 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
 const readerIsOf = (reader: CrbmReader, live: Live): boolean =>
   reader.generation === live.target.generation && reader.lineage === live.target.lineage;
 
+/**
+ * The version `snap` names, `null` for no generation: from its resolution, so no object is opened to learn it, or from
+ * its reader for a snapshot built around one.
+ */
+async function versionNamed(snap: Snapshot): Promise<string | null> {
+  if (snap.target === undefined) {
+    const reader = await snap.reader;
+    return reader === null ? null : versionOf(reader.generation, reader.lineage);
+  }
+  const live = await snap.target;
+  return live === null ? null : versionOf(live.target.generation, live.target.lineage);
+}
+
 /** What a generation's object says of itself, which is what a summary is held against: its count and metadata. */
 function describe(reader: CrbmReader): GenerationDescription {
-  let cardinality = 0;
-  for (const n of reader.cardinalities().values()) cardinality += n;
-  return { cardinality, metadata: reader.metadata };
+  return { cardinality: reader.count(), metadata: reader.metadata };
 }
 
 /**
@@ -347,6 +358,9 @@ const BULK_FLUSH_IDS = 1 << 20;
  */
 const YIELD_EVERY_IDS = 1 << 14;
 
+/** How many segments' keys {@link CrbmStorageChunkSource} keeps at hand: a few operands of one combine. */
+const RECENT_KEYS = 8;
+
 export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * One resolved reader per segment, re-resolved on a short TTL ({@link CrbmStorageChunkSourceOptions.currentGenTtlMs},
@@ -430,6 +444,24 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.keystore = keystore;
     this.requireEncryption = requireEncryption ?? false;
     this.readerOptions = readerOptions;
+    // `0` turns the timed refresh off on purpose. Anything else that is not a finite, non-negative number (`NaN` from an
+    // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
+    // never reach a long-lived reader: refused instead.
+    if (
+      currentGenTtlMs !== undefined &&
+      currentGenTtlMs !== null &&
+      (typeof currentGenTtlMs !== 'number' ||
+        !Number.isFinite(currentGenTtlMs) ||
+        currentGenTtlMs < 0)
+    ) {
+      throw new ValidationError(
+        `cache.genTtlMs must be a finite number of milliseconds, 0 or more (0: no timed refresh); got ${
+          typeof currentGenTtlMs === 'number'
+            ? String(currentGenTtlMs)
+            : `a ${typeof currentGenTtlMs}`
+        }`,
+      );
+    }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.
     const refreshes =
@@ -464,11 +496,32 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
+   * The last few segments' keys, newest first. A stream asks for its segment's snapshot before every cached chunk it
+   * serves, and a combine alternates between a few operands, so comparing two names beats encoding them again, which
+   * cost about a microsecond a chunk.
+   */
+  private readonly recentKeys: Array<{
+    namespace: string | undefined;
+    segment: string;
+    key: string;
+  }> = [];
+
+  private keyOf(ref: SegmentRef): string {
+    for (const k of this.recentKeys) {
+      if (k.segment === ref.segment && k.namespace === ref.namespace) return k.key;
+    }
+    const key = segmentKey(ref);
+    this.recentKeys.unshift({ namespace: ref.namespace, segment: ref.segment, key });
+    if (this.recentKeys.length > RECENT_KEYS) this.recentKeys.pop();
+    return key;
+  }
+
+  /**
    * The segment's live snapshot, refreshing on the TTL. Cheap within the TTL window. The snapshot holds the resolved
    * target, and its reader once a read has asked for one.
    */
   private liveSnapshot(ref: SegmentRef): Snapshot {
-    const key = segmentKey(ref);
+    const key = this.keyOf(ref);
     const existing = this.snapshots.get(key);
     if (existing === undefined) {
       return this.install(
@@ -587,6 +640,20 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return this.clock !== undefined && this.registry !== undefined ? this.currentGenTtlMs : 0;
   }
 
+  /**
+   * Whether a stream reading from `snap` must resolve its segment again before its next chunk, as a read of one chunk
+   * would: the snapshot's TTL has lapsed, an invalidation has happened since `epoch`, or the snapshot is no longer the
+   * one the reader cache holds for the segment (it let it go, or another read installed a newer one). Else nothing can
+   * have moved it, and the check costs a compare and a lookup.
+   */
+  private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
+    return (
+      this.invalidations !== epoch ||
+      this.expired(snap.installedAtMs) ||
+      this.snapshots.get(key) !== snap
+    );
+  }
+
   private expired(installedAtMs: number): boolean {
     // Refresh needs a clock (the TTL) AND a registry (the *cheap* `currentGen` read the design assumes —
     // without one, re-resolution is a full storage `list`-scan, and a registry-less setup is single-process
@@ -693,6 +760,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     lease?: PinLease,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
+    validateUserRef(ref);
     for (let moved = 0; ; moved++) {
       try {
         try {
@@ -730,6 +798,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     at: { readonly generation: number; readonly fingerprint: string },
     lease?: PinLease,
   ): Promise<{ generation: number } & Required<PinnedObject>> {
+    validateUserRef(ref);
     const { generation, fingerprint } = at;
     const gone = (why: string): NotFoundError =>
       new NotFoundError(
@@ -1139,7 +1208,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * tell apart.
    */
   async exists(ref: SegmentRef): Promise<boolean> {
-    if (this.registry !== undefined) return (await this.registry.get(ref)) !== null;
+    validateUserRef(ref);
+    // A `destroyed` row is a segment that was dropped, retired or shredded: it holds nothing, so a combine that names it
+    // is refused as one naming a segment that never was, rather than read as empty. An exclude read empty suppresses
+    // nobody. A row with no generation yet (a retention policy set first) still exists.
+    if (this.registry !== undefined) {
+      const row = await this.registry.get(ref);
+      return row !== null && row.status !== 'destroyed';
+    }
     for await (const key of this.driver.list(ref)) {
       void key;
       return true;
@@ -1285,7 +1361,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const keystore = this.keystore;
     if (keystore === undefined) {
       throw new KeyUnavailableError(
-        `segment "${ref.segment}" is encrypted but this CrbmStorageChunkSource has no keystore`,
+        `segment "${ref.segment}" is encrypted, and the store reading it was built with no keystore (encryption.keystore)`,
       );
     }
     const aead = await (unwrap ?? (() => keystore.openDek(wrappedDeks)))();
@@ -1315,10 +1391,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
     validateChunkKeyOrder(keys);
     const retry = options?.retry;
+    const key = segmentKey(ref);
     let yielded = 0;
     let healed = false; // a heal since the last chunk yielded
     for (;;) {
       let snap = this.liveSnapshot(ref);
+      let epoch = this.invalidations;
       let pending = snap.reader;
       let chunks: ChunkStream | undefined;
       try {
@@ -1359,18 +1437,30 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         try {
           while (await pull.advance()) {
             // Before a chunk is handed out, the segment is resolved as a read of that chunk alone would resolve it: a
-            // `cache.genTtlMs` boundary, the reader cache having let the segment go, and an invalidation each leave
-            // the snapshot this stream was opened on no longer the live one. If that moved the segment to another
-            // generation or incarnation, or to none, nothing more is served from this stream: its ranges are dropped
-            // and the keys not yet yielded are read afresh.
-            const live = this.liveSnapshot(ref);
-            if (live !== snap) {
-              const now = await live.reader;
-              if (now === null || versionOf(now.generation, now.lineage) !== version) {
-                movedOn = true;
-                break;
+            // `cache.genTtlMs` boundary, the reader cache having let the segment go, an invalidation, and a newer
+            // snapshot another read installed each leave the snapshot this stream was opened on no longer the live
+            // one. If that moved the segment to another generation or incarnation, or to none, nothing more is served
+            // from this stream: its ranges are dropped and the keys not yet yielded are read afresh. The version is
+            // compared from the resolution, the registry's row, so no object is opened to learn it, and a fault in
+            // resolving starts the stream over at the top, where a caller's retry runs the resolution.
+            if (this.mayHaveMoved(key, snap, epoch)) {
+              const live = this.liveSnapshot(ref);
+              if (live !== snap) {
+                let now: string | null;
+                try {
+                  now = await versionNamed(live);
+                } catch (err) {
+                  if (!isTransientError(err)) throw err;
+                  movedOn = true;
+                  break;
+                }
+                if (now !== version) {
+                  movedOn = true;
+                  break;
+                }
+                snap = live;
               }
-              snap = live;
+              epoch = this.invalidations;
             }
             // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
             yield pull.take((chunk) => {
@@ -1399,7 +1489,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
         // window does not open beside them.
         await chunks?.settled();
-        this.dropStale(segmentKey(ref), snap);
+        this.dropStale(key, snap);
         healed = true;
       }
     }
@@ -1922,6 +2012,25 @@ const UNANSWERED_RESENDS = 3;
 const UNANSWERED_RESEND_BASE_MS = 500;
 
 /**
+ * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
+ * (for a caller that deletes every generation below the pointer) none. Ended entries are ignored by every collector
+ * whether or not they are pruned; pruning here costs no request, since the write is made anyway.
+ */
+function leasesPatch(
+  record: RegistryRecord,
+  options: { leasesNow?: () => number; clearLeases?: boolean },
+): { leases?: readonly LeaseEntry[] | undefined } {
+  const held = record.leases;
+  if (held === undefined) return {};
+  if (options.clearLeases === true) return { leases: undefined };
+  if (options.leasesNow === undefined) return {};
+  const now = options.leasesNow();
+  const live = held.filter((e) => isLive(e, now));
+  if (live.length === held.length) return {};
+  return { leases: live.length === 0 ? undefined : live };
+}
+
+/**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
  * if the registry has no row it creates one; if it's already at/ahead of `key.generation` it's a no-op (an
@@ -1983,25 +2092,6 @@ const UNANSWERED_RESEND_BASE_MS = 500;
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
  * keys call for: sealed for an object written with a key, clear for one written without.
  */
-/**
- * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
- * (for a caller that deletes every generation below the pointer) none. Ended entries are ignored by every collector
- * whether or not they are pruned; pruning here costs no request, since the write is made anyway.
- */
-function leasesPatch(
-  record: RegistryRecord,
-  options: { leasesNow?: () => number; clearLeases?: boolean },
-): { leases?: readonly LeaseEntry[] | undefined } {
-  const held = record.leases;
-  if (held === undefined) return {};
-  if (options.clearLeases === true) return { leases: undefined };
-  if (options.leasesNow === undefined) return {};
-  const now = options.leasesNow();
-  const live = held.filter((e) => isLive(e, now));
-  if (live.length === held.length) return {};
-  return { leases: live.length === 0 ? undefined : live };
-}
-
 export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
@@ -2772,12 +2862,6 @@ export async function bulkLoadAhead(
 }
 
 /**
- * Take a combine's chunks as they come, checking each as an id's chunk is checked: the bitmap one the codec made, the
- * key a u16 and above the last, the values 16-bit (`maximum()`, one call per chunk). The bitmaps are the load's to
- * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
- * ids, and the writer checks the cardinality when it adds a chunk.
- */
-/**
  * The chunks a load was handed, each range-checked again as it is written: a caller's bitmap could have been changed
  * after the load collected it.
  */
@@ -2795,6 +2879,12 @@ function* rangeCheckedAtWrite(
   }
 }
 
+/**
+ * Take a combine's chunks as they come, checking each as an id's chunk is checked: the bitmap one the codec made, the
+ * key a u16 and above the last, the values 16-bit (`maximum()`, one call per chunk). The bitmaps are the load's to
+ * consume: encoding may re-encode one in place (representation only), so a caller hands over bitmaps it owns. An empty bitmap is left out where the chunks are encoded, as for
+ * ids, and the writer checks the cardinality when it adds a chunk.
+ */
 async function collectChunks(
   input: ChunkLoadInput,
   codec: CodecInterface,

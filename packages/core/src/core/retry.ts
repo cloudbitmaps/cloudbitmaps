@@ -93,6 +93,36 @@ export function retryRead<T>(op: () => Promise<T>, retry: ReadRetry | undefined)
 }
 
 /**
+ * `policy`, checked when it is wired rather than at the first retry: a delay or factor that is not a finite number, a
+ * negative delay, a factor below 1 or a jitter mode it does not know would make the backoff `NaN`, which a timer reads
+ * as 1 ms, so bounded backoff silently became a hot retry loop.
+ */
+export function checkedRetryPolicy(policy: RetryPolicy): RetryPolicy {
+  const { maxAttempts, baseDelayMs, maxDelayMs, backoffFactor, jitter } = policy;
+  const fail = (field: string, rule: string, v: unknown): never => {
+    throw new ValidationError(
+      `retry.${field} must be ${rule}; got ${typeof v === 'number' ? String(v) : `a ${typeof v}`}`,
+    );
+  };
+  if (typeof maxAttempts !== 'number' || !Number.isFinite(maxAttempts) || maxAttempts < 1) {
+    fail('maxAttempts', 'a finite number >= 1', maxAttempts);
+  }
+  if (typeof baseDelayMs !== 'number' || !Number.isFinite(baseDelayMs) || baseDelayMs < 0) {
+    fail('baseDelayMs', 'a finite number of milliseconds >= 0', baseDelayMs);
+  }
+  if (typeof maxDelayMs !== 'number' || !Number.isFinite(maxDelayMs) || maxDelayMs < 0) {
+    fail('maxDelayMs', 'a finite number of milliseconds >= 0', maxDelayMs);
+  }
+  if (typeof backoffFactor !== 'number' || !Number.isFinite(backoffFactor) || backoffFactor < 1) {
+    fail('backoffFactor', 'a finite number >= 1', backoffFactor);
+  }
+  if (jitter !== 'full' && jitter !== 'none') {
+    throw new ValidationError(`retry.jitter must be 'full' or 'none'`);
+  }
+  return policy;
+}
+
+/**
  * Run `op`, retrying transient failures per `policy`. Resolves with `op`'s result, or rejects with the last
  * error once attempts are exhausted (or immediately for a non-retryable error). The thrown error is always
  * the *operation's* error — never a wrapper — so callers keep their typed-error branching.

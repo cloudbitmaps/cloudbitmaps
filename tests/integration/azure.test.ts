@@ -24,6 +24,10 @@ import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } fr
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import {
+  expectMissingLocationFails,
+  expectMissingObjectIsAbsent,
+} from '../helpers/missing-location';
 
 /**
  * A keyspace unique to THIS run.
@@ -670,5 +674,26 @@ describe('Azure Blob (Azurite): a cold count is one request', () => {
       cardinality: chunks,
     });
     expect(proxy.requests).toEqual([]);
+  });
+});
+
+describe('a container that does not exist', () => {
+  // Never created: the emulator answers as the service does for a container that is not there.
+  const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+
+  it("fails every read and a delete with the service's own error, not as an absent object", async () => {
+    await expectMissingLocationFails(
+      () =>
+        new AzureBlobStorage({
+          containerClient: service.getContainerClient(MISSING),
+          prefix: `${RUN}/missing`,
+        }),
+    );
+  });
+
+  it('control: in the container that exists, a missing object still reads as absent', async () => {
+    await expectMissingObjectIsAbsent(
+      () => new AzureBlobStorage({ containerClient: container, prefix: `${RUN}/missing` }),
+    );
   });
 });

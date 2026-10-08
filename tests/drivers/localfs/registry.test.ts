@@ -96,3 +96,35 @@ describe('LocalFsRegistryDriver corruption + edge handling', () => {
     expect((await d.get({ segment: 's' }))!.currentGen).toBe(0);
   });
 });
+
+describe('a row is read only under the name it was written for', () => {
+  it('refuses a row copied under another name, which an erasure would otherwise miss as a different segment', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const reg = new LocalFsRegistryDriver(root);
+    await reg.create({ segment: 'orig' }, { currentGen: 0 });
+    await writeRaw('copy.reg', await readFile(join(regDir(), 'orig.reg'), 'utf8'));
+    await expect(reg.get({ segment: 'copy' })).rejects.toThrow(
+      /names another segment than the one it is stored for/,
+    );
+    await expect(reg.get({ segment: 'copy' })).rejects.toBeInstanceOf(IntegrityError);
+    // Control: the original reads, and a namespaced row is held to its namespace.
+    expect(await reg.get({ segment: 'orig' })).toMatchObject({ segment: 'orig', currentGen: 0 });
+    await reg.create({ namespace: 'ns', segment: 'n' }, { currentGen: 0 });
+    expect(await reg.get({ namespace: 'ns', segment: 'n' })).toMatchObject({
+      namespace: 'ns',
+      segment: 'n',
+    });
+  });
+
+  it('a listing refuses it too, as it refuses any other corrupt row', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const reg = new LocalFsRegistryDriver(root);
+    await reg.create({ segment: 'orig' }, { currentGen: 0 });
+    await writeRaw('copy.reg', await readFile(join(regDir(), 'orig.reg'), 'utf8'));
+    await expect(
+      (async () => {
+        for await (const _ of reg.list()) void _;
+      })(),
+    ).rejects.toThrow(/names another segment than the one it is stored for/);
+  });
+});

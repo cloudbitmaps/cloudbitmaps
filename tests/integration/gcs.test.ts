@@ -24,6 +24,10 @@ import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import {
+  expectMissingLocationFails,
+  expectMissingObjectIsAbsent,
+} from '../helpers/missing-location';
 import { forwardingProxy } from '../helpers/forwarding-proxy';
 
 /**
@@ -633,5 +637,34 @@ describe('GCS (fake-gcs-server): a registry write made against a held row', () =
     } finally {
       await proxy.close();
     }
+  });
+});
+
+describe('a bucket that does not exist', () => {
+  // Never created: the emulator answers as the service does for a bucket that is not there.
+  const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+
+  it("fails every read and a delete with the service's own error, not as an absent object", async () => {
+    await expectMissingLocationFails(
+      () =>
+        new GcsStorage({
+          bucket: MISSING,
+          apiEndpoint: ENDPOINT,
+          projectId: 'test',
+          prefix: `${RUN}/missing`,
+        }),
+    );
+  });
+
+  it('control: in the bucket that exists, a missing object still reads as absent', async () => {
+    await expectMissingObjectIsAbsent(
+      () =>
+        new GcsStorage({
+          bucket: BUCKET,
+          apiEndpoint: ENDPOINT,
+          projectId: 'test',
+          prefix: `${RUN}/missing`,
+        }),
+    );
   });
 });

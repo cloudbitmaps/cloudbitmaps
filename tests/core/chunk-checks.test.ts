@@ -122,6 +122,36 @@ describe('the engine reaches each check', () => {
     );
   });
 
+  it('count refuses a per-chunk count out of range, rather than add it', async () => {
+    for (const n of [Number.NaN, -5, 1.5, 70_000]) {
+      const storage: StorageChunkSource = {
+        getChunk: never,
+        listChunkKeys: () => Promise.resolve([]),
+        cardinalities: () => Promise.resolve(new Map([[3, n]])),
+      };
+      const engine = new SegmentEngine({ storage, codec: roaringCodec });
+      await expect(engine.count({ segment: 's' })).rejects.toThrow(
+        `chunk cardinality from a tier is out of range: ${n}`,
+      );
+    }
+  });
+
+  it('count adds a per-chunk count of 0 as nothing, and a full chunk in full', async () => {
+    const storage: StorageChunkSource = {
+      getChunk: never,
+      listChunkKeys: () => Promise.resolve([]),
+      cardinalities: () =>
+        Promise.resolve(
+          new Map([
+            [3, 0],
+            [4, 65_536],
+          ]),
+        ),
+    };
+    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    expect(await engine.count({ segment: 's' })).toBe(65_536);
+  });
+
   it('iterate refuses a key listed twice and an out-of-range key', async () => {
     const dup: StorageChunkSource = {
       getChunk: never,

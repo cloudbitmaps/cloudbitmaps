@@ -373,9 +373,13 @@ export class FeedCursor {
 
   // ---- the checks -------------------------------------------------------------------------------------------
 
-  private refuse(key: number | string, operand: string | undefined, why: string): never {
+  /** How many records the feed has handed over, the one being read included: what names a record in an error. */
+  private records = 0;
+
+  /** Refuse the record being read, named by its position in the feed: its key narrows the ids it holds to a range. */
+  private refuse(operand: string | undefined, why: string): never {
     throw new ValidationError(
-      `materializeMany feed: record at key ${String(key)}${operand === undefined ? '' : `, operand "${operand}"`}: ${why}`,
+      `materializeMany feed: record ${this.records}${operand === undefined ? '' : `, operand "${operand}"`}: ${why}`,
     );
   }
 
@@ -395,21 +399,18 @@ export class FeedCursor {
   }
 
   private async convert(record: unknown): Promise<{ key: number; ops: Map<number, Held> | null }> {
+    this.records += 1;
     if (typeof record !== 'object' || record === null) {
-      this.refuse('?', undefined, 'a record is an object with a key and operands');
+      this.refuse(undefined, 'a record is an object with a key and operands');
     }
     // Read once: a getter or a proxy answering twice would be checked as one value and used as another.
     const key: unknown = (record as { key?: unknown }).key;
     const operands: unknown = (record as { operands?: unknown }).operands;
     if (typeof key !== 'number' || !Number.isInteger(key) || key < 0 || key >= KEY_IDS) {
-      this.refuse('?', undefined, 'the key must be an integer from 0 to 65535');
+      this.refuse(undefined, 'the key must be an integer from 0 to 65535');
     }
     if (key < this.prevKey) {
-      this.refuse(
-        key,
-        undefined,
-        `the key is below the previous record's (${this.prevKey}): keys never go back`,
-      );
+      this.refuse(undefined, `the key is below the previous record's: keys never go back`);
     }
     if (key !== this.prevKey) {
       for (const i of this.touched) this.seen[i] = 0;
@@ -418,7 +419,6 @@ export class FeedCursor {
     }
     if (typeof operands !== 'object' || operands === null || !isPlainObject(operands)) {
       this.refuse(
-        key,
         undefined,
         'operands must be a plain object of fed operand name to Uint32Array (not a Map, an array or a class instance)',
       );
@@ -428,31 +428,29 @@ export class FeedCursor {
     const charged: number[] = [];
     try {
       for (const name of Reflect.ownKeys(operands)) {
-        if (typeof name !== 'string') this.refuse(key, undefined, 'operands has a symbol key');
+        if (typeof name !== 'string') this.refuse(undefined, 'operands has a symbol key');
         const at = this.index.get(name);
         if (at === undefined) {
-          this.refuse(key, name, 'not a declared fed operand (it is not in feed.names)');
+          this.refuse(name, 'not a declared fed operand (it is not in feed.names)');
         }
         const value: unknown = (operands as Record<string, unknown>)[name];
         const view = plainUint32(value);
         if (view === undefined) {
           this.refuse(
-            key,
             name,
             'the ids must be a Uint32Array (any other typed array, array or look-alike is refused)',
           );
         }
-        if (view === 'detached') this.refuse(key, name, "the array's buffer is detached");
+        if (view === 'detached') this.refuse(name, "the array's buffer is detached");
         if (view === 'out of bounds') {
           this.refuse(
-            key,
             name,
             'the array is out of bounds of its resizable buffer, which shrank under it',
           );
         }
         if (view.length === 0) continue;
         if (this.seen[at] === 1) {
-          this.refuse(key, name, 'named twice at one key: an operand appears at most once per key');
+          this.refuse(name, 'named twice at one key: an operand appears at most once per key');
         }
         const n = this.scan(view, key, name);
         this.seen[at] = 1;
@@ -487,17 +485,16 @@ export class FeedCursor {
    */
   private scan(view: Uint32Array, key: number, name: string): number {
     const n = view.length;
-    if (n > KEY_IDS) this.refuse(key, name, `${n} ids, more than one chunk key holds`);
+    if (n > KEY_IDS) this.refuse(name, `${n} ids, more than one chunk key holds`);
     const scratch = this.scratch;
     let prev = -1;
     for (let i = 0; i < n; i++) {
       const id = view[i]!;
       if (id >>> 16 !== key) {
-        this.refuse(key, name, `the id at position ${i} is not inside the key`);
+        this.refuse(name, `the id at position ${i} is not inside the key`);
       }
       if (id <= prev) {
         this.refuse(
-          key,
           name,
           `the id at position ${i} is not above the one before it: ids are ascending and unique`,
         );

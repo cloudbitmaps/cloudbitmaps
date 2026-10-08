@@ -466,3 +466,24 @@ describe('`retry` retries reads of segment data, and no write', () => {
     expect(f.retries).toEqual([1]);
   });
 });
+
+describe('cache.genTtlMs is a number of milliseconds', () => {
+  it('refuses one that is not finite and non-negative, which would silently turn the pointer refresh off', () => {
+    // `Number(process.env.X)` with X unset is NaN: read as no refresh, it kept another process's load and erasure
+    // from ever reaching a long-lived reader.
+    for (const bad of [Number.NaN, -1, '2s', Number.POSITIVE_INFINITY]) {
+      expect(
+        () => new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: bad as never } }),
+        String(bad),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  it('takes 0, which turns the timed refresh off on purpose, any finite positive value, and null as absent', () => {
+    for (const ok of [0, 1, 2_000, 0.5, null, undefined]) {
+      expect(
+        () => new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: ok as never } }),
+      ).not.toThrow();
+    }
+  });
+});

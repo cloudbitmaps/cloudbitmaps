@@ -20,15 +20,16 @@ so, and so do the module headers in the code.
   publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
   publish would, so it fails for memory where the publish would. A call with `dryRun: true`
   returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
-  `judgeLoad`, which a dry run runs for each output. The guide shows how to publish what was reviewed, and recipes over
+  `judgeLoad`, which a dry run runs for each output, and `CombineManyRequest.dryRun`, for a flavor built on
+  `runCombineMany`. The guide shows how to publish what was reviewed, and recipes over
   a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives
   recipes for refusing a key shift on a single load and for keeping every generation of the last N hours.
 - **`guard.maxGrowth`: refuse a load that grows a segment more than you allow.** The ceiling to `minRetained`'s floor,
   for a source that lands duplicated or joined on the wrong key: `guard: { maxGrowth: 1.5 }` refuses a generation larger
   than one and a half times the current one, with `published: false` and `reason: 'max-growth'`, and the previous
   generation stays current. It applies to `store.load`, the `*Into` verbs and each output of `materializeMany`. It does
-  not judge a first load or a load onto an empty segment, `0` means no bound, and anything else below `1` is a
-  `ValidationError` before any request. Setting it makes the load read the current size and fence its publish on it,
+  not judge a first load or a load onto an empty segment, `0` means no bound, and anything that is not a finite
+  number of at least `1` is a `ValidationError` before any request. Setting it makes the load read the current size and fence its publish on it,
   with `allowEmpty: true` too. It is judged after the other bounds, so a load that breaks one of those as well keeps
   that reason. `LoadRefusal`, `MaterializeRefusal` and the `segment.load-refused` audit event's `reason` gain
   `'max-growth'`; it appears only when the bound is set, and a caller that switches exhaustively on `reason` adds a
@@ -44,7 +45,8 @@ so, and so do the module headers in the code.
   `CountingMetricsSink`'s `ops` gains its tally: a sink that switches on `name` with an exhaustive `never` check adds a
   case (one with a `default` branch needs no change), and a `Record<MetricOpName, …>` built by hand, a
   `MetricsSnapshot` literal among them, adds the key. The `op` event also fires for a call that throws after its first
-  request, such as a budget refusal.
+  request, such as a budget refusal. Core's `CombineManyDeps` gains an optional `metrics` sink, which receives the
+  `storage.get` events.
 
 ### Changed
 
@@ -88,18 +90,279 @@ so, and so do the module headers in the code.
   `materializeMany` as a feed: the guide's recipe walks the sets by chunk key and yields them in the feed's order
   ([a set you hold](docs/guide/loading.md#a-set-you-hold-feed-it)). `MaterializeManyOptions.operands` takes segments only,
   `mayBeEmpty` names fed operands only, and `StaleOperandError`'s `'erased'` applies to a fed call only.
+  `CombineManyOperand` loses its `held` field.
 - **`store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
   `IRegistryDriver.reapLegacyTombstones`.** Only a bucket a release before 0.12 wrote holds the `deleted: true` rows the
   reaper removed. The guide's recipe runs the reaper the 0.18 releases ship, once, from a scratch directory
   ([retention](docs/guide/retention.md#remove-the-deleted-rows-a-release-before-012-left)). A registry driver that
-  implemented `reapLegacyTombstones` can drop it: nothing calls it.
+  implemented `reapLegacyTombstones` can drop it: nothing calls it. With the reaper go its option and result types
+  (`ReapRegistryTombstonesOptions` and `ReapRegistryTombstonesResult` in both packages, `ReapLegacyTombstonesOptions`
+  and `ReapLegacyTombstonesResult` in core), `ObjectStoreRegistry.reapLegacyTombstones` in `@cloudbitmaps/core/driver-kit`,
+  and `ObjectRegistryStore.resolveCapabilities` there too: the reaper was the one caller of that optional store method,
+  so a driver that implemented it can drop it.
 
 ### Fixed
 
+- **`setSegmentRetention` from `@cloudbitmaps/core` shows its documentation again** in editors and the published
+  `.d.ts`: its doc comment sat above another declaration, and TypeScript attached it there instead. Eleven more doc comments
+  inside the packages had come apart from their declarations the same way, and a test now holds every one to its own.
+- **`estimateCost` and `costReport` refuse an input of the wrong shape** with `ValidationError`: no input, `segments`
+  that are not an array, a `null` entry or a hole in it, or a `pricing` with no storage price list threw a raw
+  `TypeError` from inside the model, and a `workload` that is not an object (a string, an array) was ignored.
+- **`materializeMany({ pin: null })` is refused**, as a `null` switch is on every other call; it ran as the default.
+- **`retireExpired({ scan: 'index' })` holds at most `maxScanSegments` stray pointers a call.** Pointers whose
+  segment is gone, left when removing them failed, were all held and checked in one call however many there were;
+  those past the bound now wait for a later call, as the fleet scan's pointers already did. Every pointer is still
+  read: a live expired segment behind any number of strays is retired in the same call.
+- **Export, listing and feed edges.** `runExport` with a sink that has no `open()` failed every segment, one by one,
+  into `failed`; it is a `ValidationError` before anything is read, and options of `null` read as none. The
+  `export-segments` CLI reads an empty `CR_EXPORT_FORMAT`, an unset shell variable, as the default, as it already read
+  an empty namespace, and its docs say it wires no keystore, so an encrypted segment lands in `failed[]`; the error
+  for that names the store's `encryption.keystore` rather than an internal class. A registry `list('')` read as empty
+  on the in-memory and object-store registries and threw on the local filesystem; every registry refuses it now. A
+  refused `materializeMany` feed record is named by its position in the feed, not by its chunk key, which narrows the
+  ids it holds to a range.
+- **The cloud drivers check more of what they are told and what they are answered.** An S3 range answer of the
+  right length from another place in the object, an S3 tail answer that is not the suffix asked for, and an S3 listing
+  page that said more followed without saying how to ask for it, were believed; the first two are refused and the
+  third is an `IntegrityError`, not a listing ended short. An S3 listing page, or a GCS registry listing page, that hands
+  back the token it was asked with is an `IntegrityError` too, where the driver asked for the same page forever.
+  An Azure Blob tail answer short of the bytes asked for, and a tail length of `NaN`, `1.5` or `Infinity`, are
+  refused, and a registry compare-and-swap whose row was deleted since it was read is a lost race on a service that
+  answers it `404`. `S3Storage` and `GcsStorage` refuse a `bucket` that is not a non-empty string and every backend a
+  `now` that is not a function, when built; Azure Blob refuses a `blockBytes` above its 4,000 MiB block limit and a
+  `maxObjectBytes` above 50,000 such blocks, and GCS a `maxObjectBytes` above its 5 TiB object limit.
+- **The S3 and GCS storage drivers copy what they are given to write.** Their upload sinks kept a reference to the
+  caller's buffer until the part or the upload was sent, so a writer that reused a buffer once `write()` resolved, as
+  the in-memory sink and the Azure Blob driver allow, stored its later contents instead. The library's own writer
+  passes a fresh buffer each time, so its loads were not affected; a custom writer through `putImmutable` was. The
+  rule is now stated on `BlobSink`, and the conformance suite overwrites each buffer once its write resolves.
+- **Three retention and read checks.** A retention `expiresAt` past the latest date a `Date` can hold (`1e300`) was
+  stored, and no due-index bucket ever held it; it is a `ValidationError` now. A tombstone that a manual `dropSegment`
+  or `destroySegment` writes no longer keeps the retention sweep's mark a restored or hand-edited row carried, so a
+  sweep never purges a tombstone it did not write. A core storage source's `pinGeneration`, `pinGenerationAt` and
+  `exists` refuse a name in the library's own bookkeeping namespace, as every other entry does.
+- **Smaller fixes from the pre-release review.** A `KeyUnavailableError` listed every key id the keystore holds, and
+  the message reaches `eraseSubject`'s ledger and logs; it names only the ids the wrappings reference now. A
+  `count()` over a custom source's per-chunk counts added a count that was `NaN`, negative, fractional or past 65,536;
+  it is refused as `IntegrityError`, as the key beside it already was, and a count of 0 still adds nothing. The `.crbm` writer accepted a generation past
+  `Number.MAX_SAFE_INTEGER`, written as another number, and a chunk payload past the 1 MiB cap every reader refuses at
+  open; both are `ValidationError` before anything is written. A range answered with the wrong length says how many
+  bytes came back against how many were asked for, where it said "read short" of a long answer too.
+- **A seam without its methods, and a retention policy that is not an object, are refused up front.** A
+  `seams.clock` without `now()` and `sleep()`, a `seams.rng` without `next()` or an `encryption.keystore` without
+  `createDek()` and `openDek()` built a store that threw a raw `TypeError` at its first load or read; each is now a
+  `ValidationError` when the store is built. `setRetention(ref, null)` threw a raw `TypeError` too.
+- **The driver conformance suites test what a driver could break and still pass.** A storage driver whose keys left
+  out the namespace, folded `a/b` into `a_b`, listed generations by a bare prefix, checked for an object and then wrote
+  it, or kept the bytes of a write whose writer failed passed every case, and a registry keyed by the segment name
+  alone did too: through a store, the first serves one tenant's ids to another and the last publishes over another
+  tenant's row. The suites now hold a driver to keeping every name and namespace apart, to write-once under two
+  concurrent writers, and to storing nothing for a failed write. Every shipped driver passes, on the emulators too.
+- **A refused load is reported as refused when deleting its object fails.** The refusal deleted the object it had
+  written before answering, and a fault in that delete (a transient storage error) replaced the refusal, which is an
+  answer and not an error, and dropped its `segment.load-refused` event; the same fault replaced a publish's own
+  `ValidationError`. The delete is best-effort now: an object it leaves is above the pointer, where the next load
+  collects it.
+- **`rollback` onto a generation of a row with no pointer needs `allowForward`.** A row created by `setRetention`
+  before the first load has nothing published, so an object in its bucket is a first load's that never published, as
+  an object above a pointer is; the guard that asks for `allowForward` there skipped a row with no pointer.
+- **A tombstone whose objects cannot be deleted no longer stops `retireExpired` retiring.** Each such tombstone was
+  charged to `limit` like a purge that happened, so under a role without delete permission, where every retirement
+  becomes one, enough of them past their grace left every new expiry unretired, call after call, and the collection's
+  error was swallowed. It is now a refused purge: not charged, counted in `purgeFaults` with its cause in
+  `firstPurgeFault` (also when the collection raised nothing and the objects stayed), and three in a row stop purging
+  for the call, as a refused row delete already did.
+- **`eraseSubject` searches a tombstoned segment.** A destroyed row was skipped as "already unreadable", but only a
+  crypto-shred makes it so: a cleartext `destroySegment({ allowCleartext: true })`, a drop whose sweep left an object,
+  or a write that landed after it leaves objects anyone can read, and an id in one stayed in the bucket while the
+  ledger left the segment out. A tombstone's bucket is now listed; when a cleartext object holds the id, every object
+  under the tombstone is deleted and the entry reads `erased: true`. An object sealed under the shredded key is not
+  read. One listing per tombstone per call. A segment tombstoned while its rewrite runs is searched the same way.
+- **An erasure that deletes a generation above the pointer refuses the load that wrote it.** When the id was only in a
+  generation above the pointer, the erasure deleted it after checking the row, but a load that wrote it and had not
+  yet published was fenced on a row nothing had changed, so it published afterwards and the row named a generation
+  that was gone. The erasure now writes the row first (its `keptGens`), which the load's fence counts as another
+  writer, so the load is refused. Pins written meanwhile are waited out, as every lease-aware writer waits them out.
+- **An erasure searches the bucket of a segment that has no generation yet.** A row created by `setRetention` before
+  the first load was answered `'no-generation'` without a look, so an object a first load wrote and never published,
+  holding the id, stayed in the bucket and the ledger left the segment out. Its bucket is searched now; such an object
+  is refused with `WriteConflictError` and kept, since its load may still publish it, and shows in `eraseSubject`'s
+  ledger as an `error: …` entry. On an encrypted store the object is sealed under a key its load has not published,
+  so it cannot be searched and is refused the same way; a row with nothing in its bucket is still `'no-generation'`
+  under `requireEncryption`, not refused as cleartext.
+- **An erasure rewrite that a `dropSegment` overtakes deletes what it wrote.** A drop that lands while `eraseSubject`
+  rewrites a segment usually finishes its sweep before the rewrite's object is written, and that object, a full copy
+  of the dropped segment less one id, in the clear on a cleartext segment, was left in the bucket and reported
+  nowhere. Under a tombstone the rewrite now deletes it, as a refused load already did. A rewrite whose publish the
+  drop refuses reports `'destroyed'`, as the guide says, where it reported `'superseded'`, whose advice to re-run finds
+  nothing.
+- **Whether a `materializeMany` output fits its budget no longer depends on where it sits in the call.** Each group
+  keeps its plan, charged, until it starts, and those charges shrank the room every later output was judged against:
+  three identical outputs at the budget a refusal named published the first two and refused the third, and later
+  groups were cut short, re-reading their operands more often. Every output is now judged against the room the call's
+  own plan leaves, and kept plans give way to any charge that needs their room.
+- **`stats.chunks.pruned` counts an operand a group names and never reads.** An `and` with a disjoint side, or an
+  opt-out list with nothing near what it subtracts from, skips every chunk of that operand, and none was counted, so
+  the figure the guide offers for the saving of a long opt-out list reported `0` for the case it describes. Each such
+  operand now adds all its index keys, once a group, and a group refused for memory no longer adds its pruning.
+- **S3 refuses an object cap above 5 TiB and a part above 5 GiB**, S3's own limits, with `ValidationError` when the
+  backend is built. A larger `maxObjectBytes`, such as `Number.MAX_SAFE_INTEGER` for "no limit", grew the part to
+  cover it past S3's part limit, so a write held an object of up to hundreds of GiB in memory whole, copied it once
+  more, and sent it as one `PutObject` that S3 refuses above 5 GiB.
+- **Only an AWS S3 host turns S3 conditional deletes on by default.** Any host under an AWS domain with a label that
+  started with `s3-` counted, so a load balancer named `s3-…` in front of MinIO, an API Gateway or an S3 website
+  endpoint was taken for AWS S3, and the registry removed rows with a conditional delete the store behind it may
+  ignore. A host now counts by its structure: a label that names S3 itself, followed only by `dualstack`, a region and
+  `vpce`. Access-point, multi-region access-point, Object Lambda, Outposts and directory-bucket hosts still count.
+- **Azure Blob reads a `409` or `412` as a lost race only when it is one.** Every `409` and `412` was taken as another
+  writer winning, so a write-once (immutable) container's `BlobImmutableDueToPolicy` turned a load into
+  `published: false, reason: 'superseded'`, and a blob leased in the portal (`LeaseIdMissing`) made a registry write
+  spend its attempts and throw `WriteConflictError` as contention. Only `BlobAlreadyExists` and `ConditionNotMet`, or
+  a `409` or `412` with no code, are a lost race now; any other reaches the caller as Azure's own error.
+- **A GCS write that fails with `ECONNABORTED`, `EHOSTUNREACH`, `ENETUNREACH` or `ERR_STREAM_PREMATURE_CLOSE` is a
+  `TransientError`**, as the same fault already was on a read. It reached the caller raw, so a registry write was not
+  settled by reading what landed, and a caller keyed on `TransientError` did not run it again.
+- **A GCS registry write can no longer delete the row it meant to replace.** The SDK checks an upload's checksum
+  after the upload, and on a mismatch, or an answer that names no checksum (as some GCS-compatible servers send),
+  deletes the object by name with no precondition. For a registry row that removed the live row, another writer's
+  newer one included, and the segment then read as empty. The GCS registry now sends the row's CRC32C with the upload,
+  so GCS checks it and stores nothing on a mismatch, and turns the SDK's after-the-fact check off. Generation uploads
+  keep the SDK's check: a generation's name is written once, so the object it deletes is the one that write created.
+- **An option held in a getter or inherited from a prototype is the option a call runs with.** `retireExpired` and
+  `exportSegments` copied their options with a spread, which keeps only an object's own properties, so a `dryRun` or
+  a `namespace` held in a class getter or on a prototype, which TypeScript accepts, was dropped after it was checked:
+  `retireExpired(new SweepConfig())` with a `dryRun` getter ran a real sweep, and `exportSegments(sink, scope)` with
+  a `namespace` getter exported every namespace. `costReport` dropped a `workload` field held the same way. Each now
+  reads its options by name and runs with exactly what it checked.
+- **A bucket or container that does not exist is an error, not an empty store.** The S3, GCS and Azure Blob drivers
+  read a missing bucket as a missing object, so a misspelt, not yet created or deleted bucket answered `has` with
+  `false`, `count` with `0` and a registry read with no row, with nothing to see. Each call now fails, as a load and
+  a listing already did: S3 and Azure Blob with the service's own `NoSuchBucket` and `ContainerNotFound`. GCS answers
+  a missing bucket and a missing object with the same `404`, so the GCS driver settles its first `404` with one
+  object listing, which only a missing bucket answers with `404`, and remembers the bucket once seen; a missing one
+  fails with `the GCS bucket does not exist: <bucket>`. A listing the identity may not make (`403`) is remembered as
+  saying nothing; any other failed listing is asked again at the next `404`. A GCS generation delete in a missing bucket fails too, where
+  it reported the object gone.
+- **A registry row is read only under the name it was written for.** A row copied or restored to another segment's key
+  or file read as that segment while naming the original, so a sweep that acts on the name a row carries (an
+  erasure, a retention pass, a report) skipped a live, readable segment or acted on the original twice. Such a row
+  is now refused with `IntegrityError`, on every driver.
+- **The LocalFs drivers write every byte, and a refused registry row is named without the host's paths or its whole
+  stored value.** One write to a file can write fewer bytes than asked and not fail (a full disk, a quota), and both
+  drivers took it for the whole: `putImmutable` reported the size and digest of bytes it had not stored, and a registry
+  write replaced a good row with a torn one, which then failed every listing that reached it. Each now writes until
+  every byte is down, and a write that makes no progress fails as a full device; a failed registry write removes its
+  temporary file. A row refused as malformed was named by its absolute path and quoted whatever its bad field held,
+  however long; it is now named by its path under the store's root, and a stored value is shown to 64 characters.
+- **The export CLI refuses a `CR_EXPORT_ROOT` that does not exist or is empty, and a re-run removes the last run's
+  manifest first.** A root that was a typo, or a mount point whose volume was not mounted, exported nothing, wrote a
+  manifest with `totalSegments: 0` and exited 0: a finished dump with no data in it. It now exits non-zero before
+  writing anything. And a re-run into a directory holding an earlier run's `manifest.json` left it in place until the
+  new one replaced it, so a run that stopped part way left a marker of a finished run, with the earlier run's counts.
+- **Six more inputs of the wrong kind are refused where they changed what a call did.** An erasure or subject-report
+  scope of `namespace: ''`, or a namespace that is not a string, scanned nothing and read as a clean erasure. A key
+  given to `InProcessKeystore` or `NodeAead` as text of the right length became a key of printable characters with no
+  key derivation. A retry `baseDelayMs`, `maxDelayMs` or `backoffFactor` of `NaN`, a negative delay, a factor below 1,
+  an unknown `jitter` or an `onRetry` that is not a function made the backoff a hot retry loop; they are now checked
+  when the store is built. `retireExpired`'s `shards` without `totalShards`, or a shard outside `0` to
+  `totalShards - 1`, owned everything or nothing, so replicas numbered from 1 left shard 0 unswept. `exportSegments`'
+  `ndjsonBatchBytes` of `NaN` or `Infinity` never flushed and one below 1 wrote once per id, and a `format` other than
+  `'roaring'` or `'ndjson'` wrote `.ndjson` under the wrong name. `estimateCost`'s `cacheHitRate` above 1 (95 meant as
+  95%) read as every read a hit. Each is now a `ValidationError` naming what is wrong.
+- **A combine refuses an operand whose segment was dropped, retired or crypto-shredded, as it refuses one that never
+  existed.** The check that refuses an operand naming no segment asked the registry whether a row was there, and a
+  tombstone is a row, so an `exclude` that a drop or a retention sweep had retired passed the check, read as empty and
+  suppressed nobody: `audience.andNot([optOut])` returned the opted-out ids once `optOut` was dropped, with no error,
+  while `store.exists(optOut)` already answered `false`. It is now refused with `ValidationError` ("does not exist or
+  was dropped"), on the combines, the `*Into` verbs and `materializeMany`; pass `allowAbsentOperands: true` to read it
+  as empty on purpose. A row with no generation yet still exists.
+- **The library's errors keep their names in an application bundled with a minifier.** Each error took its `name`
+  from its class, which a minifying bundler renames (`WriteConflictError` became a letter or two), and the predicates
+  (`isWriteConflictError`, `isNotFoundError` and the rest) match on that name: so in such a bundle the library's own
+  handling went wrong, as a lost compare-and-swap thrown instead of retried, a read that heals off a collected
+  generation thrown instead of healed, and a load refused under a dropped row leaving its object in the bucket. Each
+  class now carries its name as a string no minifier touches, and a test bundles the library with esbuild's `minify`
+  and holds every error class to its name and its predicate. An application's own subclass keeps its own name.
+- **An audit or metrics sink without an `onEvent` method is refused.** A bare callback passed as `audit`
+  (`audit: (e) => log(e)`), or a sink whose method is named `emit`, was accepted and received nothing: the guard that
+  keeps a throwing sink from breaking an operation swallowed the error of calling it, so an erasure returned
+  `erased: true` with no event delivered. Each is now a `ValidationError` before anything is written, from the store's
+  verbs, core's lifecycle functions and each `materializeMany` output; a `metrics` option of the wrong shape is refused
+  when the store is built.
+- **Every call refuses an option it does not take, options that are not an object, and a switch that is not a
+  boolean.** Only the store's constructor, `materializeMany` and the pins checked their options; every other call read
+  a bag of the wrong shape as no options and ignored an unknown key, and that silently widened what it did:
+  `retireExpired({ dryRun: 'true' })` and `dropSegment(ref, { confirmSegment, dryRun: 'true' })` deleted,
+  `purgeTombstones: 'false'` purged the tombstones `false` keeps, `segments('tenantA')`, `exportSegments(sink,
+  'tenantA')`, `retireExpired('tenantB')` and `checkConsistency('ns1')` reached every namespace, and
+  `load(ref, ids, { minRetained: 0.5 })` (the bound outside `guard`) published the shrink it was meant to refuse. Each
+  is now a `ValidationError` naming the call and the key, before anything is read or written, on the reads, the
+  combines and `*Into` verbs, `load`, `rollback`, `dropSegment`, `retireExpired`, `subjectReport`, `eraseSubject`,
+  `segments`, `checkConsistency`, `exportSegments` and `costReport`, and for an unknown bound inside `guard`.
+  `undefined`, `null` and a key whose value is `undefined` still read as absent, except for a switch, which must be
+  `true` or `false`: `dryRun: null`, read as absent, dropped for real. Code that passed a key a call does not
+  take, such as an `*Into` call's `audit` handed to `intersect`, removes it. TypeScript compiled such a key when the
+  options were a variable rather than a literal written in the call, for one object shared by `intersect` and
+  `iterate`, so typed code can meet this refusal too.
+- **`retireExpired` retires only a segment that is still expired when its tombstone is written, and claims only the
+  tombstones it wrote.** The sweep re-read each row before retiring it, but the drop read it again and acted on what it
+  found, so a retention extended or cleared between the two reads, or by a write the drop's own write lost to, was
+  retired anyway, against the guide's promise that cancelling an expiry works on a sweep already in flight. And a
+  tombstone someone else wrote in that window (a crypto-shred, a drop) was counted as retired and stamped as the
+  sweep's, so a later sweep purged the row the shred left as its attestation. The expiry is now judged on every row the
+  drop is about to replace, and the sweep's mark is written in the tombstone's own write; anything else is skipped
+  with `policy-changed`. A retirement makes a read and a write fewer: 7 reads, 2 writes and a delete with
+  `conditionalDelete` on, 6 reads and 2 writes with it off, and `estimateCost` prices it so.
+- **An async metrics or audit sink that rejects no longer ends the process.** An `async onEvent` is assignable to the
+  sinks' `onEvent(): void`, and its rejection (a telemetry or audit service that is down) escaped the guard that
+  swallows a throwing sink, as an unhandled rejection, which ends a Node process by default: mid-erasure, with no
+  ledger returned. Its rejection is now swallowed like a throw.
+- **A read of ranges over more segments than the reader cache keeps no longer opens each object again per chunk.**
+  Before it hands out a chunk, a combine or `iterate` checks that its segment has not moved. Once the reader cache had
+  let the segment go, that check opened the generation again (a tail read and an index parse of up to about 1.3 MB)
+  only to learn a version the registry row already names, so a read over more segments than `cache.readerMax` or
+  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. The check now reads the row alone, as
+  a read of that chunk on its own would. A transient fault in it is retried through the store's retry, where it failed
+  the read.
+- **`cache.genTtlMs` that is not a finite number of 0 or more is refused.** `NaN` (from an unset environment variable),
+  a negative number or a string turned the timed pointer refresh off as `0` does, silently, so another process's load
+  or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built. So is
+  `Infinity`: a store meant never to refresh on a timer says so with `0`.
+- **A `budget` that is not `{ maxRequests }` or `false` is refused.** A per-call `budget: 5`, `'5'` or
+  `{ maxRequest: 5 }` read as no override, so the store's budget (1,000,000 requests by default) applied instead of the
+  cap the caller wrote; the store's own `budget` was read the same way. Each is now a `ValidationError` naming what is
+  wrong. A per-call `budget: null` now inherits the store's budget, where it put the default back on a store built with
+  `budget: false`.
+- **A read in progress re-resolves the segment before each chunk it serves from the cache, as it does for the rest.** A
+  combine or `iterate` whose chunks were in the store's decoded-chunk cache served the generation it planned under for
+  as long as it was pulled, past `cache.genTtlMs`: another process's load did not reach it, and an id that process
+  erased could still be yielded, so the written bound on what a read in progress yields after an erasure held only
+  for chunks read from storage. Each cached chunk a read serves is now checked against the segment's current version,
+  a lookup and not a request within `genTtlMs`, and one of a generation since replaced is read as the segment is now.
+  A point read resolves the version just before it asks, and is unchanged. Measured on a laptop over 2,000 cached
+  chunks, the check adds about a microsecond a chunk. A read whose chunks were all cached, and that meets a move, reads
+  the rest as one stream at the version now current, as a cold read does.
+- **`store.segment` refuses an option it does not know, and options that are not an object.** A misspelt `namespace`
+  (`{ nameSpace: tenant }`), or a namespace passed on its own (`store.segment('a', 'tenant')`), was read as no
+  namespace, so the handle addressed the segment of that name in the default namespace: a read of another
+  namespace's data, or an `*Into` that wrote outside the tenant's. Each is now a `ValidationError` naming the key; a
+  key whose value is `undefined` is still read as absent, so a spread of options keeps working.
+- **A `guard` that is not an object is refused, instead of being read as no bound.** `{ guard: 0.5 }` meant as
+  `{ guard: { minRetained: 0.5 } }`, or a guard passed as a string or an array, read as no bound at all on
+  `store.load`, the `*Into` verbs and `judgeLoad`, so a load the caller meant to refuse published. Each is now a
+  `ValidationError` before any request. `store.materializeMany` refused it already.
+- **An `exclude` that is not an array is refused, instead of being read as no exclusion.** A `Set` or a lone segment
+  passed as `exclude` to `intersect`, `union`, `intersectInto` or `unionInto` was taken without an error and applied
+  none of it, so the call streamed or published the ids it was meant to remove. The option's type is an array, so code
+  that typechecks against it was not affected. Each of these calls now refuses such an `exclude` with a
+  `ValidationError` before reading anything, and an operand list that is not an array (`a.intersect(b)` for
+  `a.intersect([b])`) is refused the same way, where it failed with a raw `TypeError`. `store.materializeMany` checks
+  its lists already.
 - **An element of an operand list that is not a segment is refused with a `ValidationError`.** `intersect`, `union`,
   `andNot` and the `*Into` calls failed with a raw `TypeError` (`h.leaseError is not a function`) when an operand, an
   `exclude` or a destination was not a segment. They now refuse it before reading anything. A segment from another copy
-  of the package is accepted, as before. An operand list that is not an array still fails as it did.
+  of the package is accepted, as before.
 - **`store.materializeMany`'s `mayBeEmpty` with no feed says what is wrong with it.** The message was "mayBeEmpty names
   fed operands, and the call has no feed" for every name. It now names the first such
   entry and what it is (`"a", a stored operand`, `"x", which is not an operand of this call`, or something that is not

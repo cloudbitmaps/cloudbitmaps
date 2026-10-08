@@ -186,10 +186,14 @@ async function putBytes(
   bytes: Uint8Array,
 ): Promise<{ size: number; sha256: string }> {
   return d.putImmutable(key, async (sink) => {
-    // Two writes, so a driver that keeps only the last `write` (or the first) fails here.
+    // Two writes, so a driver that keeps only the last `write` (or the first) fails here. Each from a buffer the caller
+    // overwrites once the write resolves, as a caller may: a driver that kept a reference to it stores the overwrite.
     const half = Math.floor(bytes.length / 2);
-    await sink.write(bytes.subarray(0, half));
-    await sink.write(bytes.subarray(half));
+    for (const part of [bytes.subarray(0, half), bytes.subarray(half)]) {
+      const scratch = part.slice();
+      await sink.write(scratch);
+      scratch.fill(0xa5);
+    }
   });
 }
 
@@ -249,6 +253,17 @@ export function storageDriverConformance(
       // Write-once means the loser changed nothing: the stored object is still the first.
       expect(await d.getRange(key(0), 0, 300)).toEqual(first);
       expect((await d.getTail(key(0), 10)).size).toBe(300);
+
+      // And under a race: a driver that checks for the object and then writes passes the sequential collision above,
+      // and stores both writers' bytes under one number, one of them lost. Exactly one lands, and the object is its.
+      const racers = [patterned(500), patterned(501)];
+      const settled = await Promise.allSettled(racers.map((b) => putBytes(d, key(1), b)));
+      expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const lost = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+      expect(lost.reason).toBeInstanceOf(WriteConflictError);
+      const winner = racers[settled.findIndex((r) => r.status === 'fulfilled')]!;
+      expect((await d.getTail(key(1), 0)).size).toBe(winner.length);
+      expect(await d.getRange(key(1), 0, winner.length)).toEqual(winner);
     });
 
     if (options.largeBytes !== undefined) {
@@ -349,6 +364,68 @@ export function storageDriverConformance(
       await d.delete(key(2));
       expect(await generationsOf(d, SEG)).toEqual([]);
       expect(await generationsOf(d, other)).toEqual([0]); // another segment's generation is not this one's
+    });
+
+    // A driver whose key leaves out the namespace, folds two names into one spelling, or lists by a bare prefix passes
+    // every case above, and then serves one tenant's ids to another and deletes another segment's objects.
+    it('keeps every name and namespace apart: its own bytes, its own listing, its own delete', async () => {
+      const d = makeDriver();
+      const refs: SegmentRef[] = [
+        { segment: 's' },
+        { namespace: 'n', segment: 's' },
+        { namespace: '_default', segment: 's' },
+        { segment: 's.1' },
+        { segment: 's0' },
+        { segment: 's1' },
+        { segment: 'a/b' },
+        { segment: 'a_b' },
+        { segment: 'a:b' },
+        { segment: 'a%3Ab' },
+        { segment: 'a.' },
+        { segment: 'a' },
+        { namespace: 'a', segment: 'b/c' },
+        { namespace: 'a/b', segment: 'c' },
+        ...NASTY_NAMES.map((namespace) => ({ namespace, segment: 'x' })),
+      ];
+      const sizeOf = (i: number): number => 10 + i;
+      for (const [i, ref] of refs.entries()) {
+        await putBytes(d, { ...ref, generation: 0 }, patterned(sizeOf(i)));
+      }
+      for (const [i, ref] of refs.entries()) {
+        const gen = { ...ref, generation: 0 };
+        expect((await d.getTail(gen, 0)).size, JSON.stringify(ref)).toBe(sizeOf(i));
+        expect(await d.getRange(gen, 0, sizeOf(i))).toEqual(patterned(sizeOf(i)));
+        expect(await generationsOf(d, ref), JSON.stringify(ref)).toEqual([0]);
+      }
+      await d.delete({ ...refs[0]!, generation: 0 });
+      expect(await generationsOf(d, refs[0]!)).toEqual([]);
+      for (const ref of refs.slice(1)) {
+        expect(await generationsOf(d, ref), JSON.stringify(ref)).toEqual([0]);
+      }
+    });
+
+    it('lists and deletes generations by number, not by a prefix of one', async () => {
+      const d = makeDriver();
+      for (const g of [1, 10, 11]) await putBytes(d, key(g), patterned(g));
+      expect(await generationsOf(d, SEG)).toEqual([1, 10, 11]);
+      await d.delete(key(1));
+      expect(await generationsOf(d, SEG)).toEqual([10, 11]);
+      expect((await d.getTail(key(10), 0)).size).toBe(10);
+    });
+
+    // A driver that commits what it was given when the writer fails leaves a truncated generation holding a number.
+    it('a write whose writer fails stores nothing, and the key can be written after', async () => {
+      const d = makeDriver();
+      await expect(
+        d.putImmutable(key(0), async (sink) => {
+          await sink.write(patterned(10));
+          throw new Error('the source failed');
+        }),
+      ).rejects.toThrow('the source failed');
+      expect(await generationsOf(d, SEG)).toEqual([]);
+      await expect(d.getTail(key(0), 0)).rejects.toBeInstanceOf(NotFoundError);
+      await putBytes(d, key(0), patterned(20));
+      expect((await d.getTail(key(0), 0)).size).toBe(20);
     });
   });
 }
@@ -975,6 +1052,12 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await d.get(SEG))!.leases).toBeUndefined();
     });
 
+    it('list of a namespace that is not a valid name is refused, not read as empty', async () => {
+      const d = makeDriver();
+      await d.create({ segment: 'a' }, { currentGen: 0 });
+      await expect(drainSegments(d.list(''))).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
       const d = makeDriver();
       await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });
@@ -983,6 +1066,43 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const seen: string[] = [];
       for await (const rec of d.list('ns')) seen.push(rec.segment);
       expect(seen).toEqual(['a']);
+    });
+
+    // A registry keyed by the segment name alone, keeping the namespace as a column it filters listings on, passes every
+    // case above; through a store, one tenant's first load then publishes over another tenant's row.
+    it('one segment name in several namespaces is several rows, each written and deleted alone', async () => {
+      const d = makeDriver();
+      const refs: SegmentRef[] = [
+        { segment: 's' },
+        { namespace: 'n', segment: 's' },
+        { namespace: '_default', segment: 's' },
+        { namespace: 'a', segment: 'b/c' },
+        { namespace: 'a/b', segment: 'c' },
+        ...NASTY_NAMES.map((namespace) => ({ namespace, segment: 's' })),
+      ];
+      const tokens = new Map<number, string>();
+      for (const [i, ref] of refs.entries()) {
+        tokens.set(i, (await d.create(ref, { currentGen: i })).token);
+      }
+      for (const [i, ref] of refs.entries()) {
+        const rec = await d.get(ref);
+        expect(rec?.currentGen, JSON.stringify(ref)).toBe(i);
+        expect(rec?.namespace).toBe(ref.namespace);
+        expect(rec?.segment).toBe(ref.segment);
+      }
+      // A swap of one and a delete of another touch only themselves.
+      await d.compareAndSwap(refs[1]!, tokens.get(1)!, { currentGen: 100 });
+      await d.delete(refs[2]!);
+      for (const [i, ref] of refs.entries()) {
+        const want = i === 1 ? 100 : i === 2 ? undefined : i;
+        expect((await d.get(ref))?.currentGen, JSON.stringify(ref)).toBe(want);
+      }
+      const live = refs.filter((_ref, i) => i !== 2);
+      for (const namespace of new Set(live.map((ref) => ref.namespace))) {
+        if (namespace === undefined) continue;
+        const want = live.filter((ref) => ref.namespace === namespace).map((ref) => ref.segment);
+        expect((await drainSegments(d.list(namespace))).sort(), namespace).toEqual(want.sort());
+      }
     });
   });
 }

@@ -199,7 +199,7 @@ describe('materializeMany with a feed', () => {
     });
     expect(failure(run.outputs[0])).toBeInstanceOf(ValidationError);
     expect(failure(run.outputs[0]).message).toMatch(
-      /record at key 70, operand "a": the id at position 0 is not inside the key/,
+      /record \d+, operand "a": the id at position 0 is not inside the key/,
     );
     expect(failure(run.outputs[1])).toBeInstanceOf(ValidationError);
     published(run.outputs[2]);

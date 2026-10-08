@@ -132,7 +132,7 @@ The 20 TB cluster's 471 nodes are past ElastiCache's [default quotas](https://do
 <!-- SIZING:WHY_CHART_WHERE:END -->
 
 <!-- SIZING:WHY_LINE:START -->
-The line is the table's last column. It climbs with the data because the Redis it is measured against does. In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the [calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, about 2,000 chunks with 100 shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three deployments also make point reads and refresh pointers, which [the next section](#how-much-room-each-deployment-has) counts in.
+The line is the table's last column. It climbs with the data because the Redis it is measured against does. In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the [calibration run](../../bench/calibration/2026-10-06-9d36b.md)'s shape, about 2,000 chunks with 100 shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three deployments also make point reads and refresh pointers, which [the next section](#how-much-room-each-deployment-has) counts in.
 <!-- SIZING:WHY_LINE:END -->
 
 ## How much room each deployment has

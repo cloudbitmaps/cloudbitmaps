@@ -194,21 +194,76 @@ describe('GcsStorageDriver — what a tail read costs', () => {
 // Collecting by name deletes one generation without knowing whether an object is there, so a delete is one request
 // that asks the SDK to treat a missing object as success.
 describe('GcsStorageDriver — what a delete costs', () => {
-  it('makes one delete call with ignoreNotFound, so an absent object is no error', async () => {
-    const calls: { name: string; options: unknown }[] = [];
+  /** A bucket whose objects answer `deleteAnswer`, and whose listing answers `listAnswer` (absent = an empty page). */
+  const bucketWith = (deleteAnswer: unknown, listAnswer?: unknown) => {
+    const calls: { op: string; name?: string; options?: unknown }[] = [];
     const storage = {
       bucket: () => ({
         file: (name: string) => ({
           delete: async (options: unknown) => {
-            calls.push({ name, options });
+            calls.push({ op: 'delete', name, options });
+            if (deleteAnswer !== undefined) throw deleteAnswer;
           },
         }),
+        getFiles: async (options: unknown) => {
+          calls.push({ op: 'list', options });
+          if (listAnswer !== undefined) throw listAnswer;
+          return [[]];
+        },
       }),
     } as unknown as Storage;
-    const driver = new GcsStorageDriver({ storage, bucket: 'b', prefix: 'p' });
-    await expect(driver.delete({ segment: 's', generation: 3 })).resolves.toBeUndefined();
+    return { calls, driver: new GcsStorageDriver({ storage, bucket: 'b', prefix: 'p' }) };
+  };
+  const gen = { segment: 's', generation: 3 };
+  const notFound = { code: 404, message: 'Not Found', errors: [{ reason: 'notFound' }] };
+
+  it('makes one delete call when the object is there', async () => {
+    const { calls, driver } = bucketWith(undefined);
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
     expect(calls).toHaveLength(1);
     expect(calls[0]?.name).toMatch(/s\.3\.crbm$/);
-    expect(calls[0]?.options).toEqual({ ignoreNotFound: true });
+    // Not the SDK's `ignoreNotFound`, which would take a missing bucket's 404 as well.
+    expect(calls[0]?.options).toBeUndefined();
+  });
+
+  it('an absent object is no error, once one listing shows the bucket is there', async () => {
+    const { calls, driver } = bucketWith(notFound);
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    // The bucket is asked about once for the driver's life.
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete']);
+    expect(calls[1]?.options).toEqual({ maxResults: 1, autoPaginate: false });
+  });
+
+  it('404s that arrive together share one listing', async () => {
+    const { calls, driver } = bucketWith(notFound);
+    await Promise.all([driver.delete(gen), driver.delete(gen), driver.delete(gen)]);
+    expect(calls.filter((c) => c.op === 'list')).toHaveLength(1);
+  });
+
+  it('a 404 in a bucket that does not exist fails the delete', async () => {
+    const { driver } = bucketWith(notFound, notFound);
+    await expect(driver.delete(gen)).rejects.toThrow('the GCS bucket does not exist: b');
+  });
+
+  it('a listing the identity may not make says nothing about the bucket: the 404 is an absent object', async () => {
+    const { calls, driver } = bucketWith(notFound, { code: 403, message: 'Forbidden' });
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete']);
+  });
+
+  it('a listing that fails some other way says nothing, and is asked again', async () => {
+    const { calls, driver } = bucketWith(notFound, { code: 401, message: 'Unauthorized' });
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete', 'list']);
+  });
+
+  it('a listing that fails in transit is transient, and is asked again', async () => {
+    const { calls, driver } = bucketWith(notFound, { code: 503, message: 'backendError' });
+    await expect(driver.delete(gen)).rejects.toBeInstanceOf(TransientError);
+    await expect(driver.delete(gen)).rejects.toBeInstanceOf(TransientError);
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete', 'list']);
   });
 });

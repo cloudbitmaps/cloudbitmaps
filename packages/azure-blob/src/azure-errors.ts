@@ -39,11 +39,16 @@ function networkCode(err: unknown): string | undefined {
  * this as **409 `BlobAlreadyExists`** (verified on both the single-upload and `commitBlockList` paths); we
  * also accept **412 `ConditionNotMet`** defensively (the status a specific-ETag precondition would use, and
  * what a non-Azurite backend might return). Both map to `WriteConflictError` (caller OCC), never a blind retry.
+ *
+ * Only those codes, or a 409 / 412 that carries none: Azure answers other refusals with the same statuses (a
+ * write-once container's `BlobImmutableDueToPolicy`, a lease's `LeaseAlreadyPresent` or `LeaseIdMissing`), and read
+ * as a lost race those would report another writer winning where the write can never succeed.
  */
 export function isConditionalConflict(err: unknown): boolean {
   const status = httpStatus(err);
-  if (status === 409 || status === 412) return true;
   const code = azureCode(err);
+  if (status === 409) return code === undefined || code === 'BlobAlreadyExists';
+  if (status === 412) return code === undefined || code === 'ConditionNotMet';
   return code === 'BlobAlreadyExists' || code === 'ConditionNotMet';
 }
 
@@ -53,7 +58,9 @@ export function isConditionalConflict(err: unknown): boolean {
  * in the way, and treating it as one would retry a delete that can only fail the same way.
  */
 export function isPreconditionFailed(err: unknown): boolean {
-  return httpStatus(err) === 412 || azureCode(err) === 'ConditionNotMet';
+  const code = azureCode(err);
+  if (httpStatus(err) === 412) return code === undefined || code === 'ConditionNotMet';
+  return code === 'ConditionNotMet';
 }
 
 /**
@@ -61,7 +68,17 @@ export function isPreconditionFailed(err: unknown): boolean {
  * HEAD (`getProperties`) since a HEAD has no response body — so the 404 status is the reliable signal.
  */
 export function isNotFound(err: unknown): boolean {
+  if (isMissingContainer(err)) return false;
   return httpStatus(err) === 404 || azureCode(err) === 'BlobNotFound';
+}
+
+/**
+ * The container itself does not exist (`404 ContainerNotFound`): a wiring fault, never an absent blob. Read as one, a
+ * misnamed or deleted container would answer every read as an empty segment. The code arrives on a HEAD too, from
+ * the `x-ms-error-code` header, which {@link azureCode} reads.
+ */
+export function isMissingContainer(err: unknown): boolean {
+  return azureCode(err) === 'ContainerNotFound';
 }
 
 /** A range request started past EOF (HTTP 416 `InvalidRange`). */

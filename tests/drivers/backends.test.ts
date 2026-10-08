@@ -482,3 +482,34 @@ describe('a backend is all the wiring a store needs', () => {
     );
   });
 });
+
+describe('a backend refuses settings it can never honour, when it is built', () => {
+  const TiB = 1024 ** 4;
+  const MiB = 1024 ** 2;
+  const s3 = (o: object) => () => new S3Storage({ region: 'us-east-1', ...o } as never);
+  const gcs = (o: object) => () =>
+    new GcsStorage({ apiEndpoint: 'http://127.0.0.1:4443', ...o } as never);
+  const azure = (o: object) => () =>
+    new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', ...o } as never);
+
+  it('a bucket that is not a non-empty string', () => {
+    for (const bucket of [undefined, '', 5, null]) {
+      expect(s3({ bucket })).toThrow(ValidationError);
+      expect(gcs({ bucket })).toThrow(ValidationError);
+    }
+  });
+
+  it('a `now` that is not a function', () => {
+    expect(s3({ bucket: 'b', now: 5 })).toThrow(/`now` must be a function/);
+    expect(gcs({ bucket: 'b', now: 'today' })).toThrow(/`now` must be a function/);
+    expect(azure({ now: {} })).toThrow(/`now` must be a function/);
+    expect(s3({ bucket: 'b', now: () => 1 })).not.toThrow();
+  });
+
+  it("a size past the service's own limit", () => {
+    expect(gcs({ bucket: 'b', maxObjectBytes: 5 * TiB + 1 })).toThrow(/5 TiB object limit/);
+    expect(azure({ blockBytes: 4000 * MiB + 1 })).toThrow(/4,000 MiB block limit/);
+    expect(azure({ maxObjectBytes: Number.MAX_SAFE_INTEGER })).toThrow(/blocks of 4,000 MiB/);
+    expect(azure({ blockBytes: 4000 * MiB })).not.toThrow();
+  });
+});

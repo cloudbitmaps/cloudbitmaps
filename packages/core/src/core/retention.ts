@@ -88,12 +88,44 @@ export interface SetRetentionResult {
   readonly indexed: boolean;
 }
 
+/**
+ * The key of the retention sweep's mark on a tombstone it wrote, which is what lets a later sweep purge the row. Only the
+ * sweep's own tombstone write sets it, and every other tombstone write removes it ({@link withoutSweepMark}), so a
+ * restored or hand-edited row cannot hand the sweep a tombstone it did not write.
+ */
+export const SWEEP_MARK = 'retiredBySweepAt';
+
+/** `meta` without the sweep's mark, or `undefined` when it carries none, so a write that changes nothing is not made. */
+export function withoutSweepMark(
+  meta: GovernanceMeta | undefined,
+): GovernanceMeta | undefined | null {
+  if (meta === undefined || meta === null || typeof meta !== 'object' || Array.isArray(meta))
+    return null;
+  if (!Object.prototype.hasOwnProperty.call(meta, SWEEP_MARK)) return null;
+  const rest = Object.fromEntries(Object.entries(meta).filter(([key]) => key !== SWEEP_MARK));
+  return Object.keys(rest).length === 0 ? undefined : (rest as GovernanceMeta);
+}
+
+/** The latest epoch millisecond a `Date` can hold. An expiry past it is no date, and no index bucket holds it. */
+const MAX_DATE_MS = 8_640_000_000_000_000;
+
 /** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
 function validateRetentionPolicy(policy: RetentionPolicy): void {
+  if (policy === null || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new ValidationError(
+      `retention policy must be an object such as { expiresAt }; got ${policy === null ? 'null' : Array.isArray(policy) ? 'an array' : `a ${typeof policy}`}`,
+    );
+  }
   const { expiresAt } = policy;
   if (typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)) {
     throw new ValidationError(
       `retention.expiresAt must be an integer epoch-ms; got ${String(expiresAt)}`,
+    );
+  }
+  if (expiresAt > MAX_DATE_MS) {
+    throw new ValidationError(
+      `retention.expiresAt (${expiresAt}) is past the latest time a date can name (${MAX_DATE_MS}); to keep a segment, ` +
+        'leave it without a policy or call clearRetention',
     );
   }
   if (expiresAt < MIN_EXPIRES_AT_MS) {
@@ -143,15 +175,6 @@ export async function getSegmentRetention(
   return readRetentionPolicy(record.retention);
 }
 
-/**
- * Record when a segment becomes eligible for retirement, creating its registry row if it has none.
- *
- * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
- * row's `retention` metadata are preserved — this owns one key, not the whole object.
- *
- * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
- * a sweep repeatedly "retire" bytes that are already gone.
- */
 /** The expiry currently recorded on a row, if any — the input to deciding which old pointer to remove. */
 function readExpiresAt(record: { retention?: GovernanceMeta } | null): number | undefined {
   const parsed = record === null ? null : readRetentionPolicy(record.retention);
@@ -204,6 +227,15 @@ async function reindex(
   return indexed;
 }
 
+/**
+ * Record when a segment becomes eligible for retirement, creating its registry row if it has none.
+ *
+ * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
+ * row's `retention` metadata are preserved — this owns one key, not the whole object.
+ *
+ * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
+ * a sweep repeatedly "retire" bytes that are already gone.
+ */
 export async function setSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,

@@ -352,6 +352,31 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     expect(seen.sort()).toEqual(['s0', 's1', 's2', 's3', 's4', 's5', 's6']);
   });
 
+  it('a page that hands back the token it was asked with is refused, not asked again forever', async () => {
+    const storage = new FakeGcs(1);
+    const d = driverOver(storage);
+    for (let i = 0; i < 3; i++) await d.create({ segment: `s${i}` }, { currentGen: i });
+    const bucket = storage.bucket() as {
+      getFiles: (q: { pageToken?: string }) => Promise<unknown[]>;
+    };
+    const real = bucket.getFiles;
+    let asked = 0;
+    storage.bucket = () => ({
+      ...bucket,
+      getFiles: async (q: { pageToken?: string }) => {
+        asked += 1;
+        const [files] = await real(q);
+        return [files, { pageToken: q.pageToken ?? 'first' }];
+      },
+    });
+    await expect(
+      (async () => {
+        for await (const _ of d.list()) void _;
+      })(),
+    ).rejects.toThrow('returned the page token it was given');
+    expect(asked).toBe(2);
+  });
+
   it('rejects an oversized object on its advertised length, before buffering it', async () => {
     const storage = new FakeGcs();
     const d = driverOver(storage);

@@ -47,6 +47,7 @@ import type { Clock } from './determinism';
 import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
 import type { Budget } from './budget';
 import { checkedGuard } from './load';
+import { checkedAuditSink } from './audit';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -407,9 +408,9 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
       throw new ValidationError(`${where}.allowEmpty must be a boolean`);
     }
-    if (output.guard !== undefined && (typeof output.guard !== 'object' || output.guard === null)) {
-      throw new ValidationError(`${where}.guard must be an object`);
-    }
+    checkedAuditSink(output.audit, where);
+    // `checkedGuard` refuses any other shape; an output's guard is not `null` either.
+    if (output.guard === null) throw new ValidationError(`${where}.guard must be an object`);
     // The checked copy is what each publish judges, however long the call runs.
     const guard = checkedGuard(output.guard, `${where}.`);
     const metadata = copiedMetadata(output.metadata, (message) => {
@@ -634,11 +635,6 @@ interface GroupPlan extends GroupSummary {
 const BYTES_PER_NODE = 320;
 const BYTES_PER_OUTPUT = 3_700;
 
-/**
- * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
- * operands, not to the group's size: its buffered outputs, its operand streams, the chunks being evaluated, the objects
- * being published beside the buffers, and the key lists of its own plan.
- */
 /** What {@link GroupCost} reads of an output. */
 export interface GroupCostItem {
   readonly bound: number;
@@ -653,6 +649,11 @@ export interface GroupCostItem {
  */
 export const combineWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
 
+/**
+ * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
+ * operands, not to the group's size: its buffered outputs, its operand streams, the chunks being evaluated, the objects
+ * being published beside the buffers, and the key lists of its own plan.
+ */
 export class GroupCost {
   private outputs = 0;
   private depth = 0;
@@ -789,6 +790,8 @@ class Run<R> {
   private publishes = 0;
   private opens = 0;
   private planCharge = 0;
+  /** The groups {@link formGroups} made, whose kept plans {@link dropKeptPlans} can release. */
+  private formed: GroupSummary[] = [];
   private attributedGet = 0;
   private attributedPut = 0;
   private planned = 0;
@@ -927,11 +930,13 @@ class Run<R> {
   }
 
   /**
-   * Make room in the ledger. A fed output cannot be run again (the feed is read once), so a fed call gives up its fed
-   * outputs and the feed first, as soon as the ledger passes the budget; only then is a stored-only buffer evicted, to run
-   * again alone.
+   * Make room in the ledger. The plans kept for later groups give way first: they are rebuilt when their group starts,
+   * and the outputs were judged without them. A fed output cannot be run again (the feed is read once), so a fed call
+   * gives up its fed outputs and the feed next, as soon as the ledger passes the budget; only then is a stored-only
+   * buffer evicted, to run again alone.
    */
   private reclaim(): boolean {
+    if (this.dropKeptPlans()) return true;
     if (this.feed !== undefined) {
       let fed = this.feed.heldBytes;
       for (const o of this.running)
@@ -1009,7 +1014,7 @@ class Run<R> {
     const absent = checked.filter((c) => !c.exists).map((c) => c.op.spec.name);
     if (absent.length === 0) return;
     throw new ValidationError(
-      `materializeMany: operand ${absent.map((n) => `"${n}"`).join(', ')} names a segment that does not exist, so it ` +
+      `materializeMany: operand ${absent.map((n) => `"${n}"`).join(', ')} names a segment that does not exist or was dropped, so it ` +
         'would contribute nothing — an exclude would suppress no ids and an include would contribute none. Check ' +
         'the name and the namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
         '`allowAbsentOperands: true` if you meant it.',
@@ -1081,13 +1086,15 @@ class Run<R> {
     }
   }
 
-  /** The bytes a group may take: the budget less what the plan holds. */
-  private get room(): number {
-    return this.req.maxBufferedBytes - this.planCharge;
-  }
-
-  /** Outputs in call order, a group at a time while the ledger has room for the next. */
+  /**
+   * Outputs in call order, a group at a time while the ledger has room for the next. Every output is judged against the
+   * room the call's own plan leaves, `base`: a group's plan kept for its start is released when it starts, or sooner when
+   * a group needs the room ({@link dropKeptPlans}), so it is not resident while a later output runs, and counting it
+   * would refuse an output, or cut a group short, by its position in the call.
+   */
   private formGroups(waiting: readonly OutputState<R>[], single: boolean): GroupSummary[] {
+    const base = this.planCharge;
+    const room = this.req.maxBufferedBytes - base;
     const groups: GroupSummary[] = [];
     const fresh = (): GroupCost =>
       new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency);
@@ -1115,23 +1122,38 @@ class Run<R> {
     };
     for (const o of waiting) {
       const alone = fresh().with(o);
-      if (alone > this.room) {
+      if (alone > room) {
         this.fail(
           o,
           new BudgetExceededError(
             `materializeMany: output ${o.index} needs about ${alone} bytes resident with its operands, and the plan holds ` +
-              `${this.planCharge}, over maxBufferedBytes (${this.req.maxBufferedBytes}) — raise maxBufferedBytes to at least ` +
-              `${alone + this.planCharge}`,
+              `${base}, over maxBufferedBytes (${this.req.maxBufferedBytes}) — raise maxBufferedBytes to at least ` +
+              `${alone + base}`,
           ),
         );
         continue;
       }
-      if (!single && cost.size > 0 && cost.with(o) > this.room) flush();
+      if (!single && cost.size > 0 && cost.with(o) > room) flush();
       current.push(o);
       cost.add(o);
     }
     flush();
+    this.formed = groups;
     return groups;
+  }
+
+  /** Release every group plan still kept for its start; each is built again when its group starts. */
+  private dropKeptPlans(): boolean {
+    let dropped = false;
+    for (const summary of this.formed) {
+      const plan = summary.plan;
+      if (plan === undefined) continue;
+      summary.plan = undefined;
+      this.ledger.release(plan.planBytes);
+      this.planCharge -= plan.planBytes;
+      dropped = true;
+    }
+    return dropped;
   }
 
   /** The keys each operand is fetched at for `members`, and the keys the pass visits. */
@@ -1176,6 +1198,13 @@ class Run<R> {
       reads += set.size;
       pruned += this.operands[operand]!.indexKeys - set.size;
       fixed += this.operands[operand]!.bytes;
+    }
+    // An operand the members name that no output needs at any key (an `and` with a disjoint side, an opt-out list with
+    // nothing near what it subtracts from) is never fetched: every key of its index is skipped. Counted once a group.
+    const named = new Set<number>();
+    for (const o of members) for (const operand of o.compiled.operands) named.add(operand);
+    for (const operand of named) {
+      if (!bits.has(operand)) pruned += this.operands[operand]!.indexKeys;
     }
     const visited = Uint16Array.from(visit.toKeys());
     return {
@@ -1229,8 +1258,8 @@ class Run<R> {
 
   private async runGroup(indices: readonly number[], summary?: GroupSummary): Promise<void> {
     const members = indices.map((i) => this.outputs[i]!).filter((o) => o.status === 'waiting');
-    if (members.length === 0) return;
-    // The plan made when the group was formed, unless an output has left it since or it was not kept.
+    // The plan made when the group was formed, unless an output has left it since or it was not kept. Released before
+    // anything else, so a group with no member left does not keep it charged for the rest of the call.
     const kept = summary?.plan;
     if (summary !== undefined) summary.plan = undefined;
     if (kept !== undefined) {
@@ -1238,6 +1267,7 @@ class Run<R> {
       this.ledger.release(kept.planBytes);
       this.planCharge -= kept.planBytes;
     }
+    if (members.length === 0) return;
     const plan =
       kept !== undefined && members.length === indices.length ? kept : this.buildGroup(members);
     const group = this.groups++;
@@ -1259,14 +1289,15 @@ class Run<R> {
       o.chunkCount = 0;
       o.peak = 0;
     }
-    this.pruned += plan.pruned;
-    // The operand streams' ranges are resident for the whole pass; reserved up front, released with the pass.
+    // The operand streams' ranges are resident for the whole pass; reserved up front, released with the pass. The
+    // plans kept for later groups give way first: the outputs were judged without them.
     const fixed = plan.fixedBytes + plan.planBytes;
-    if (!this.ledger.tryCharge(fixed)) {
+    if (!this.ledger.tryCharge(fixed) && !(this.dropKeptPlans() && this.ledger.tryCharge(fixed))) {
       const error = budgetError(this.req.maxBufferedBytes, 'the operand streams');
       for (const o of members) this.fail(o, error);
       return;
     }
+    this.pruned += plan.pruned;
     this.running = members;
     try {
       await this.pass(plan, members);

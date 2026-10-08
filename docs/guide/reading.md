@@ -33,8 +33,9 @@ temporary segment and then calling `andNot` makes an intermediate nobody wants, 
 `exclude` included, with a `ValidationError` that names it. Read directly, a segment that was never loaded is empty,
 which is right. As an operand, a mistyped name or a missing `namespace` would contribute nothing and look correct,
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
-operand may legitimately not exist yet. A segment loaded with no ids, or one that only has a retention policy, counts
-as existing.
+operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy or crypto-shredded
+is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
+counts as existing.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
@@ -122,6 +123,8 @@ bound is stated; other pages link here.
   loads.
 - **An eviction re-resolves early.** When the reader cache evicts a segment's reader, the next read re-resolves the
   segment even if `cache.genTtlMs` has not elapsed.
+- **The bound is timed on the store's clock**, the system clock unless `seams.clock` replaces it. A system clock
+  stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
   dropped connection) keeps serving the generation the reader holds, and retries 500 ms later (or after the TTL, if
   that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything
@@ -151,7 +154,8 @@ load landing mid-call never tears a chunk. A long call can still re-resolve: a `
 the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
 its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
 `retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
-`iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, exactly where
+`iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, one held in the
+store's chunk cache included, exactly where
 a read of one chunk would, so a range it had already requested of the earlier generation is dropped, not served; an
 `exclude` read after an AND of two or more includes, a point read and every read of a source that reads chunk by chunk
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
@@ -280,7 +284,10 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   shred, a drop, a rollback and a retention write are fenced on. None of them is refused by it: a row that differs from the
   one the writer read only in its leases does not refuse the writer, which goes on against the row it finds, after a
   jittered wait and without redoing its work ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one
-  write per job, not per read.
+  write per job, not per read, and its release is one more. Each of those writes, like every write of the row (a load's
+  publish, a `setRetention`), moves the version every store keys its cached reader and chunks on: each store reading
+  the segment opens it again at its next pointer refresh, one tail read, and fetches again the chunks it reads next.
+  On a segment many processes read, a leased job costs each of them that re-open twice, so lease per job, not per read.
 - **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
   with no current generation. A failed pin releases the lease it took. A store built with no clock cannot judge a lease,
   and its loads read none: `CloudRoaring` always has one, and a core `loadSegment` is given one in `deps.clock`.

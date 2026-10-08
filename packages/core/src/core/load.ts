@@ -19,7 +19,7 @@
  * or `destroyed`. Once another write has changed the row, the object's number may name a re-created segment's live
  * object, so it stays, and collection takes it like any other generation once one above it is current.
  */
-import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadAhead,
@@ -37,9 +37,7 @@ import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
   KeyUnavailableError,
   ValidationError,
-  isIntegrityError,
   isNotFoundError,
-  isTransientError,
   isValidationError,
   isWriteConflictError,
 } from './errors';
@@ -133,7 +131,28 @@ export interface LoadGuard {
 export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadGuard | undefined {
   if (guard === undefined || guard === null) return undefined;
   // A value that is not a number is named by its type: `'2'` printed as "got 2" would read as a valid bound.
-  const shown = (v: unknown): string => (typeof v === 'number' ? String(v) : `a ${typeof v}`);
+  const shown = (v: unknown): string =>
+    typeof v === 'number' ? String(v) : Array.isArray(v) ? 'an array' : `a ${typeof v}`;
+  // A guard of the wrong shape would destructure to no bounds at all, so `{ guard: 0.5 }` meant as a floor would publish
+  // a load it was written to refuse.
+  if (typeof guard !== 'object' || Array.isArray(guard)) {
+    throw new ValidationError(
+      `${where}guard must be an object of bounds, such as { minRetained: 0.5 }; got ${shown(guard)}`,
+    );
+  }
+  // A misspelt bound (`minRetain`) would otherwise be no bound at all. A key whose value is `undefined` reads as absent,
+  // so a spread of bounds keeps working.
+  const bounds = guard as Record<string, unknown>;
+  const unknown = Object.keys(bounds).filter(
+    (k) =>
+      k !== 'minCardinality' && k !== 'minRetained' && k !== 'maxGrowth' && bounds[k] !== undefined,
+  );
+  if (unknown.length > 0) {
+    throw new ValidationError(
+      `${where}guard: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+        'it takes { minCardinality, minRetained, maxGrowth }',
+    );
+  }
   const { minCardinality, minRetained, maxGrowth } = guard;
   if (minCardinality !== undefined && (!Number.isInteger(minCardinality) || minCardinality < 0)) {
     throw new ValidationError(
@@ -246,7 +265,10 @@ export function guardRefusal(
 
 /** What a dry run learns about one write: the size it would replace, and the bound that would refuse it. */
 export interface LoadJudgement {
-  /** The current generation's size, `null` when there is none or its object is gone. Always read. */
+  /**
+   * The current generation's size: `null` when there is none or its object is gone, and, where no bound needs the size,
+   * when its object could not be read, as the load would not read it. Always asked for.
+   */
   readonly cardinalityBefore: number | null;
   /** The bound a load of this size would be refused for now, absent when it would publish. */
   readonly wouldRefuse?: GuardRefusal;
@@ -286,13 +308,26 @@ export async function judgeLoad(
   if (deps.requireEncryption === true && row !== null && row.currentGen !== null && cleartext) {
     throw cleartextUnderRequiredEncryption(ref, row.currentGen);
   }
-  // A load that no bound needs the size for never reads the current object, so a damaged one does not stop it: the
-  // judgement reports the size it could not read as `null` instead of failing where the load would publish.
+  // The segment's key, asked for as the load asks for it: the load needs it to write, so a key it cannot have refuses
+  // the judgement too, whether or not a bound reads the current object with it.
+  const wrapped = row?.wrappedDeks;
+  let aead: PromiseLike<Aead> | undefined;
+  if (row !== null && wrapped !== undefined && wrapped.length > 0) {
+    if (deps.keystore === undefined) {
+      throw new KeyUnavailableError(
+        `segment "${ref.segment}" is encrypted but load was given no keystore`,
+      );
+    }
+    aead = Promise.resolve(await deps.keystore.openDek(wrapped));
+  }
+  // A load that no bound needs the size for never reads the current object, so nothing wrong with that object stops it
+  // (damaged, gone, a newer format, a read that failed): the judgement reports the size it could not read as `null`
+  // instead of failing where the load would publish.
   let current: CurrentSize;
   try {
-    current = await currentCardinality(ref, deps, row, undefined);
+    current = await currentCardinality(ref, deps, row, aead);
   } catch (err) {
-    if (sizeNeeded(guard, options.allowEmpty) || !isUnreadableObject(err)) throw err;
+    if (sizeNeeded(guard, options.allowEmpty)) throw err;
     current = { cardinality: null, fromSummary: false };
   }
   const wouldRefuse = guardRefusal(cardinality, current.cardinality, guard, options.allowEmpty);
@@ -307,11 +342,6 @@ export async function judgeLoad(
 /** Whether a load reads the current generation's size: for the empty refusal, or a ratio bound. */
 function sizeNeeded(guard: LoadGuard | undefined, allowEmpty: boolean | undefined): boolean {
   return guard?.minRetained !== undefined || guard?.maxGrowth !== undefined || allowEmpty !== true;
-}
-
-/** A failure to read the current object that a load which never reads it would not meet. */
-function isUnreadableObject(err: unknown): boolean {
-  return isIntegrityError(err) || isTransientError(err) || isNotFoundError(err);
 }
 
 /** Why a load did not become current. */
@@ -506,6 +536,7 @@ async function runLoad(
   options: LoadOptions,
 ): Promise<LoadResult> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'load');
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');
   const keep = options.keep ?? 1;
@@ -666,8 +697,13 @@ async function runLoad(
   // the write landed first.
   let unanswered = false;
 
+  // Best-effort, where it is called: the refusal or the publish's own error is the answer, and a fault in the cleanup
+  // must not replace it. An object left behind is above the pointer, where the next load that numbers past it
+  // collects it.
+  const tidy = (): Promise<void> => reclaim().catch(() => undefined);
+
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
-    await reclaim();
+    await tidy();
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,
@@ -696,7 +732,8 @@ async function runLoad(
   const refusal = guardRefusal(written.cardinality, before, guard, options.allowEmpty);
   if (refusal !== undefined) return refuse(refusal);
 
-  // What judges a lease: the load's clock, when it has one. Without one a collection holds every lease.
+  // What judges a lease: the load's clock, when it has one. Without one it cannot tell a live lease from an ended
+  // one, so it reads none, and its collection spares no leased generation.
   const leasesNow =
     deps.clock === undefined ? undefined : (): number => (deps.clock as Clock).now();
 
@@ -750,7 +787,7 @@ async function runLoad(
     // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
     // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
     // `TransientError` of a registry write the publish could not settle by reading the row back.
-    if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
+    if (isValidationError(err) || err instanceof KeyUnavailableError) await tidy();
     throw err;
   }
   if (!published.published) return refuse('superseded');

@@ -8,7 +8,10 @@
  */
 import { ValidationError } from './errors';
 
-/** Streaming append target for a single object being written. */
+/**
+ * Streaming append target for a single object being written. A caller may reuse the buffer it passed to `write` once
+ * the write resolves, so a sink that holds bytes past that copies them.
+ */
 export interface BlobSink {
   write(bytes: Uint8Array): Promise<void>;
 }

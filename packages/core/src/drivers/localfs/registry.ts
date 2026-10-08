@@ -12,8 +12,9 @@
  */
 import { constants as FS } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir, open, opendir, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import type { Dir } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import type {
@@ -46,7 +47,7 @@ import {
   parseRegistryRow,
 } from './paths';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -116,7 +117,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
-    const env = await this.readRow(registryRowPath(this.root, ref));
+    const env = await this.readRow(registryRowPath(this.root, ref), ref);
     return env && !env.deleted ? env.record : null;
   }
 
@@ -125,7 +126,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (current !== null && !current.deleted) {
         throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
       }
@@ -149,7 +150,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
@@ -167,17 +168,20 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     for (const ns of await this.namespaceDirs(namespace)) {
       const dir = registryDir(this.root, ns);
       if (await this.exactCase.differs(dir)) continue; // another case's directory is not this one
-      let names: string[];
+      let entries: Dir;
       try {
-        names = await readdir(dir);
+        entries = await opendir(dir);
       } catch (err) {
         if (isAbsent(err)) continue; // no registry rows in this namespace yet
         throw mapFsError(err);
       }
-      for (const name of names) {
-        const segment = parseRegistryRow(name);
+      // Streamed a batch of names at a time, so a namespace of many rows is never held as one list; the directory is
+      // closed when the loop ends, the consumer's stopping early included.
+      for await (const entry of entries) {
+        const segment = parseRegistryRow(entry.name);
         if (segment === null) continue;
-        const env = await this.readRow(registryRowPath(this.root, { namespace: ns, segment }));
+        const ref = { namespace: ns, segment };
+        const env = await this.readRow(registryRowPath(this.root, ref), ref);
         if (env && !env.deleted) yield env.record;
       }
     }
@@ -186,7 +190,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (expected !== undefined) {
         if (current === null || current.deleted || current.record.token !== expected) {
           throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
@@ -238,7 +242,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     return namespaces;
   }
 
-  private async readRow(path: string): Promise<RegistryEnvelope | null> {
+  /** Read the row at `path`, which must be the row of `ref`: one that names another segment is refused. */
+  private async readRow(path: string, ref: SegmentRef): Promise<RegistryEnvelope | null> {
     let handle;
     try {
       if (await this.exactCase.differs(path)) return null; // another case's row is not this one
@@ -253,7 +258,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         throw new IntegrityError(`registry row ${size}B exceeds cap ${DEFAULT_MAX_ROW_BYTES}B`);
       }
       const text = (await handle.readFile()).toString('utf8');
-      return parseRegistryEnvelope(text, path);
+      // Named by its path under the root, which says which file to look at without putting the host's layout in a log.
+      return parseRegistryEnvelope(text, relative(this.root, path), ref);
     } finally {
       await handle.close();
     }
@@ -279,11 +285,15 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       throw mapFsError(err);
     }
     try {
-      await handle.write(out);
+      await writeAll(handle, out);
       await handle.sync();
-    } finally {
-      await handle.close();
+    } catch (err) {
+      // The temp file goes with the failed write, rather than accumulate beside the row.
+      await handle.close().catch(() => {});
+      await unlink(tmp).catch(() => {});
+      throw mapFsError(err);
     }
+    await handle.close();
     await rename(tmp, path).catch(async (err) => {
       await unlink(tmp).catch(() => {});
       throw mapFsError(err);

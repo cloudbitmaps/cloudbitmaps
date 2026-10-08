@@ -163,3 +163,22 @@ describe('a combine checks its own segment as it checks its operands', () => {
     );
   });
 });
+
+describe('an operand that was dropped or retired is refused like one that never existed', () => {
+  it('an exclude whose segment was dropped does not quietly suppress nobody', async () => {
+    const w = await world();
+    const optout = w.store.segment('global-opt-out', { namespace: 'suppression' });
+    // Control: while it exists, it suppresses.
+    expect(await collect(w.audience.andNot([optout]))).toEqual([1, 4]);
+    await w.store.dropSegment(OPTOUT, { confirmSegment: OPTOUT.segment });
+    expect(await w.store.exists(OPTOUT)).toBe(false);
+    await expect(collect(w.audience.andNot([optout]))).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      collect(w.audience.intersect([w.audience], { exclude: [optout] })),
+    ).rejects.toThrow(/does not exist or was dropped/);
+    // And a caller that means it says so.
+    expect(await collect(w.audience.andNot([optout], { allowAbsentOperands: true }))).toEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+});

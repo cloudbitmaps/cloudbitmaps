@@ -1031,3 +1031,66 @@ describe('runCombineMany: what it reports to a metrics sink', () => {
     expect(ok(run.outputs[0]!).ids).toEqual(ids([1, 2]));
   });
 });
+
+describe('whether an output fits does not depend on where it sits in the call', () => {
+  // Each group formed keeps its plan for its start, charged while held. Those charges once shrank the room every later
+  // output was judged against, so an output refused or published by its position, and the budget an error named was
+  // not enough for a call of several.
+  const sets = {
+    a: ids(
+      Array.from({ length: 2_000 }, (_, i) => i),
+      1,
+    ),
+    b: ids(
+      Array.from({ length: 2_000 }, (_, i) => i + 1_000),
+      1,
+    ),
+  };
+  const spec = { expr: { or: ['a', 'b'] } as CombineExpr };
+
+  it('the budget a refusal names publishes every copy of the output, wherever it sits', async () => {
+    for (const copies of [1, 2, 3, 5]) {
+      const specs = Array.from({ length: copies }, () => spec);
+      // The smallest doubling of a budget that holds this call's plan but not one output: the refusal names what an
+      // output needs with the call's plan, which grows with each output the call holds.
+      let message: string | undefined;
+      for (let budget = 8_192; message === undefined && budget < 256 * 1024 * 1024; budget *= 2) {
+        const r = await runBatch(sets, specs, { maxBufferedBytes: budget }).catch(() => undefined);
+        const out = r?.run.outputs[0];
+        if (out === undefined) continue; // the plan alone does not fit yet
+        expect(out.ok).toBe(false);
+        message = String((out as { error?: unknown }).error);
+      }
+      const needed = Number(/at least (\d+)/.exec(message ?? '')?.[1]);
+      expect(needed).toBeGreaterThan(0);
+      const r = await runBatch(sets, specs, { maxBufferedBytes: needed });
+      expect(r.run.outputs.map((o) => o.ok)).toEqual(specs.map(() => true));
+      expect(r.run.stats.memory.highWaterBytes).toBeLessThanOrEqual(needed);
+    }
+  });
+});
+
+describe('pruning counts an operand a group names and never reads', () => {
+  const sets = { a: ids([1, 2, 3]), b: ids([5]), opt: ids([1, 2, 3, 4]) };
+
+  it('every index key of an operand skipped whole is pruned', async () => {
+    // Disjoint sides of an `and`: neither is read, so all 3 + 1 keys are pruned.
+    let r = await runBatch(sets, [{ expr: { and: ['a', 'b'] } }]);
+    expect(r.run.stats.chunks.pruned).toBe(4);
+    // An opt-out list with nothing near the left side: read at none of its 4 keys.
+    r = await runBatch(sets, [{ expr: { andNot: ['b', 'opt'] } }]);
+    expect(r.run.stats.chunks.pruned).toBe(4);
+    // Read at 3 of its 4 keys: 1 pruned.
+    r = await runBatch(sets, [{ expr: { andNot: ['a', 'opt'] } }]);
+    expect(r.run.stats.chunks.pruned).toBe(1);
+  });
+
+  it('an operand two outputs of one group name is counted once', async () => {
+    const r = await runBatch(sets, [
+      { expr: { andNot: ['b', 'opt'] } },
+      { expr: { and: ['b', 'opt'] } },
+    ]);
+    expect(r.run.stats.groups).toBe(1);
+    expect(r.run.stats.chunks.pruned).toBe(4);
+  });
+});

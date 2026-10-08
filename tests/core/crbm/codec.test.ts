@@ -300,3 +300,21 @@ describe('what the writer writes always opens', () => {
     30_000,
   );
 });
+
+describe('the writer refuses what no reader opens', () => {
+  it('a generation past the safe-integer range, which would be written as another number', () => {
+    for (const generation of [1e300, 2 ** 53, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(() => new CrbmWriter(new BufferSink(), { generation })).toThrow(ValidationError);
+    }
+    expect(
+      () => new CrbmWriter(new BufferSink(), { generation: Number.MAX_SAFE_INTEGER }),
+    ).not.toThrow();
+  });
+
+  it('a chunk payload past the decode cap, which every reader refuses at open', async () => {
+    const writer = new CrbmWriter(new BufferSink(), { generation: 1 });
+    await expect(writer.addChunk(0, new Uint8Array((1 << 20) + 1), 1)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+  });
+});

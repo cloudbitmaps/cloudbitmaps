@@ -129,6 +129,14 @@ export class GcsStorage implements StorageBackend {
       GCS_STORAGE_OPTION_KEYS,
       'a @google-cloud/storage client goes in `client`',
     );
+    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+      throw new ValidationError('GcsStorage needs a `bucket`: the name of one, a non-empty string');
+    }
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "GcsStorage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its project and endpoint, so a setting beside it is ignored, and
       // ignoring it leaves the store talking to somewhere the caller did not mean: an `apiEndpoint` meant for an

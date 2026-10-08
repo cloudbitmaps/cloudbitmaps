@@ -77,8 +77,7 @@ export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver):
  * disagree with the registry it reports on — a filtered enumeration that looks complete is how a retention
  * sweep ends up permanently skipping rows nobody can see. Filter on `status`/`currentGen` yourself, or use
  * {@link segmentExists} for the "does the pointer resolve" question. Internal bookkeeping rows are the one
- * exclusion, and only on an unscoped scan: they are not segments, and a caller naming their namespace still
- * sees them.
+ * exclusion: they are not segments, an unscoped scan skips them, and their namespace is one a caller cannot name.
  */
 export async function* listSegments(
   registry: IRegistryDriver,

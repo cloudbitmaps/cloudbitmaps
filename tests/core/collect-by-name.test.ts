@@ -836,11 +836,11 @@ describe('a load that repairs a segment whose current object is gone lists, and 
     expect((await w.registry.get(SEG))!.keptGens).toEqual([4]);
   });
 
-  it("after a subject erasure deleted an in-flight load's object above the pointer: the repair keeps 5", async () => {
+  it("a subject erasure that deletes an in-flight load's object above the pointer refuses that load", async () => {
     const w = await atFive();
     // A load writes generation 6 holding id 99, and before its publish an erasure of 99, which the current
-    // generation does not hold, deletes the object it finds above the pointer. The load's publish then lands on a
-    // missing object.
+    // generation does not hold, deletes the object it finds above the pointer. The erasure writes the row first, so
+    // the load's publish meets another writer and is refused, rather than landing on a missing object.
     const racing = hookAfter(w.deps.storage, 'putImmutable', async () => {
       const erased = await eraseIdFromSegment(SEG, 99, {
         storage: w.memory,
@@ -850,14 +850,13 @@ describe('a load that repairs a segment whose current object is gone lists, and 
       expect(erased).toMatchObject({ erased: true });
     });
     const racer = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 99], { ...w.deps, storage: racing });
-    expect(racer).toMatchObject({ generation: 6, published: true });
-    expect((await w.registry.get(SEG))?.currentGen).toBe(6);
-    expect(await generations(w.memory)).toEqual([5]); // 6 is gone: the pointer names a missing object
+    expect(racer).toMatchObject({ published: false, reason: 'superseded' });
+    expect((await w.registry.get(SEG))?.currentGen).toBe(5);
+    expect(await generations(w.memory)).toContain(5); // the pointer names an object that is there
+    expect(await generations(w.memory)).not.toContain(6);
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
-    expect(r).toMatchObject({ generation: 7, published: true, cardinalityBefore: 7 });
-    expect(w.storageCalls.list).toBe(1);
-    expect(await generations(w.memory)).toEqual([5, 7]);
+    expect(r).toMatchObject({ published: true, cardinalityBefore: 6 });
   });
 
   it('a load with no guard reads nothing of the current object, cannot tell, and collects by name: the documented limit', async () => {

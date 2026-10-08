@@ -248,3 +248,96 @@ describe("another store's publish, once cache.genTtlMs has lapsed, while a read 
     expect(got.after.every((id) => genOf(id) === 0)).toBe(true);
   }, 60_000);
 });
+
+/**
+ * The same, from a store whose decoded-chunk cache holds every chunk when the read opens: no chunk of the read needs a
+ * request, so nothing but the read's own re-resolve can stop it serving the generation it planned under.
+ */
+describe('a warm cache, and another store writes while a read is open, once cache.genTtlMs has lapsed', () => {
+  async function warmed(w: Awaited<ReturnType<typeof world>>, verb: 'iterate' | 'intersect') {
+    for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
+    if (verb === 'intersect') {
+      for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
+    }
+  }
+
+  it.each(['iterate', 'intersect'] as const)(
+    '%s: a publish reaches the running read, and the old generation is served no further than the window',
+    async (verb) => {
+      for (const mode of MODES) {
+        inMode(mode);
+        const w = await world({ ttl: TTL });
+        await addMirror(w);
+        await warmed(w, verb);
+        const got = await reach(w.store, verb, async () => {
+          await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, gen(1), {
+            registry: w.registry,
+          });
+          w.clock.advance(TTL + 1);
+        });
+        expect(got.error).toBeNull();
+        expect(
+          got.after.some((id) => genOf(id) === 1),
+          mode,
+        ).toBe(true);
+        // the written bound: up to 32 chunks for `iterate`, and up to `concurrency` (32) keys for a combine
+        expect(got.after.filter((id) => genOf(id) === 0).length, mode).toBeLessThanOrEqual(
+          32 * PER,
+        );
+      }
+    },
+    60_000,
+  );
+
+  it.each(['iterate', 'intersect'] as const)(
+    '%s: an erasure by another store stops the read serving the erased id',
+    async (verb) => {
+      for (const mode of MODES) {
+        inMode(mode);
+        const w = await world({ ttl: TTL });
+        await addMirror(w);
+        await warmed(w, verb);
+        const victim = 60 * CHUNK + 1; // past the window: chunk 60 of 120
+        const got = await reach(w.store, verb, async () => {
+          const ledger = await w.open().eraseSubject(victim, { namespace: 'ns' });
+          expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
+          w.clock.advance(TTL + 1);
+        });
+        expect(got.error).toBeNull();
+        expect(got.after.includes(victim), mode).toBe(false);
+        // control: the read went on past the victim's chunk
+        expect(
+          got.after.some((id) => id > victim),
+          mode,
+        ).toBe(true);
+      }
+    },
+    60_000,
+  );
+});
+
+describe('a warm read that crosses a move reads the rest as one stream, not a chunk at a time', () => {
+  it('iterate: after the lapse, the remaining chunks cost a range or two, not one request each', async () => {
+    inMode('stream');
+    const w = await world({ ttl: TTL });
+    for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
+    let ranges = 0;
+    const getRange = w.storage.getRange.bind(w.storage);
+    w.storage.getRange = (key, offset, length) => {
+      ranges++;
+      return getRange(key, offset, length);
+    };
+    const got = await reach(w.store, 'iterate', async () => {
+      await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, gen(1), {
+        registry: w.registry,
+      });
+      w.clock.advance(TTL + 1);
+      ranges = 0;
+    });
+    expect(got.error).toBeNull();
+    expect(got.after.some((id) => genOf(id) === 1)).toBe(true);
+    // Generation 1's 120 chunks are one object of about 150 KB: one range covers them, plus the chunk the read was
+    // checking when it saw the move.
+    expect(ranges).toBeLessThanOrEqual(3);
+  }, 60_000);
+});

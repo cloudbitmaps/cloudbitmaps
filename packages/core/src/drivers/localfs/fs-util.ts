@@ -4,6 +4,7 @@
  */
 import { constants as FS } from 'node:fs';
 import { open } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { TransientError } from '@/core/errors';
 
 interface NodeError extends Error {
@@ -64,5 +65,23 @@ export async function fsyncDir(dir: string): Promise<void> {
     }
   } catch {
     // Some platforms reject directory fsync; durability of the entry is then best-effort.
+  }
+}
+
+/**
+ * Write every byte of `bytes` at the handle's position. One `write` can write fewer bytes than it was asked to and not
+ * fail (a full disk, a quota, some network filesystems), and a caller that took it for the whole would store a torn row
+ * or object as a whole one. A write that makes no progress is a full device.
+ */
+export async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+    if (bytesWritten <= 0) {
+      throw Object.assign(new Error('a write made no progress: the device is full'), {
+        code: 'ENOSPC',
+      });
+    }
+    offset += bytesWritten;
   }
 }

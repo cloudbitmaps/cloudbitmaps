@@ -20,6 +20,9 @@
  * **export to a fresh directory** for a clean dump. It writes only into directories it made (or an earlier run's,
  * owner-only): a symlink, a directory of another user, or one open to group or others in its place is refused. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
+ * It wires no keystore, so an encrypted segment lands in `failed[]`: export an encrypted store with
+ * `store.exportSegments` from a store built with its keystore.
+ *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
  * short script that builds the backend for the storage you have and calls `store.exportSegments(sink,
  * { format })` with your own sink — the binary stays SDK-free:
@@ -37,7 +40,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
@@ -61,7 +64,7 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
   if (out === undefined || out === '') {
     throw new Error('CR_EXPORT_OUT is required (the output directory for the dump)');
   }
-  const format = env.CR_EXPORT_FORMAT ?? 'roaring';
+  const format = env.CR_EXPORT_FORMAT || 'roaring'; // '' (an unset shell var) is the default, as the namespace's is
   if (format !== 'roaring' && format !== 'ndjson') {
     throw new Error(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
   }
@@ -149,6 +152,24 @@ export function fsSink(out: string): ExportSink {
   };
 }
 
+/**
+ * Refuse a root that is not a store's: one that does not exist (a typo) or holds nothing (a mount point whose volume is
+ * not mounted) would export nothing and report a finished run with no data in it.
+ */
+async function requireStoreRoot(root: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch {
+    throw new ValidationError('CR_EXPORT_ROOT does not name a directory that can be read');
+  }
+  if (entries.length === 0) {
+    throw new ValidationError(
+      'CR_EXPORT_ROOT is empty: it holds no store (an unmounted volume, or the wrong directory)',
+    );
+  }
+}
+
 const log = (obj: unknown): void => {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 };
@@ -159,9 +180,13 @@ export async function main(
   now: () => number = () => Date.now(),
 ): Promise<ExportManifest> {
   const config = parseConfig(env);
+  await requireStoreRoot(config.root);
   const storage = new LocalFsStorage(config.root);
   const store = new CloudRoaring({ storage });
 
+  // An earlier run's manifest goes before anything of this run is written: its presence marks a finished run, and one
+  // left in place would mark this run finished, with the earlier run's counts, if this one stopped part way.
+  await rm(join(config.out, 'manifest.json'), { force: true });
   const manifest = await store.exportSegments(fsSink(config.out), {
     format: config.format,
     namespace: config.namespace,

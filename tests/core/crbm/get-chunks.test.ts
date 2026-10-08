@@ -174,7 +174,9 @@ describe.each(variants)('CrbmReader.readChunks ($name)', ({ encrypted, crypto })
       bytes,
       new Spy(new BufferReader(bytes), (b) => b.subarray(0, b.length - 1)),
     );
-    await expect(getChunks(reader, [0, 1])).rejects.toThrow(/read short/);
+    await expect(getChunks(reader, [0, 1])).rejects.toThrow(
+      /answered \d+ bytes, not the \d+ asked for/,
+    );
   });
 
   it('never reads outside the chunk region, even for every chunk', async () => {
@@ -217,13 +219,10 @@ describe.each(variants)('CrbmReader.readChunks ($name)', ({ encrypted, crypto })
 });
 
 describe('CrbmReader.readChunks: payload cap and associated data', () => {
-  it('still refuses an index entry over the payload cap when the object is opened', async () => {
-    const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1 });
-    await writer.addChunk(0, new Uint8Array(1024 * KIB + 1), 1);
-    await writer.finish();
-    await expect(CrbmReader.open(new BufferReader(sink.bytes()))).rejects.toBeInstanceOf(
-      IntegrityError,
+  it('a chunk over the payload cap is refused by the writer; one forged past it, at open (crafted.test.ts)', async () => {
+    const writer = new CrbmWriter(new BufferSink(), { generation: 1 });
+    await expect(writer.addChunk(0, new Uint8Array(1024 * KIB + 1), 1)).rejects.toBeInstanceOf(
+      ValidationError,
     );
   });
 

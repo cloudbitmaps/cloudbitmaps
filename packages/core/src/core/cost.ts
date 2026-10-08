@@ -275,8 +275,8 @@ export interface Workload {
    */
   readonly genTtlMs?: number;
   /**
-   * Segments the retention sweep (`retireExpired`) retires a month. Each costs 9 registry reads, 3 writes and a
-   * delete with {@link Workload.conditionalDelete} on, and 8 reads and 3 writes with it off, priced at the GET and PUT
+   * Segments the retention sweep (`retireExpired`) retires a month. Each costs 7 registry reads, 2 writes and a
+   * delete with {@link Workload.conditionalDelete} on, and 6 reads and 2 writes with it off, priced at the GET and PUT
    * rates, a delete unbilled, as S3 leaves it. Default
    * **0**.
    */
@@ -420,11 +420,11 @@ interface SweepRequests {
  */
 export const RETENTION_SWEEP_REQUESTS = deepFreeze({
   conditionalDelete: {
-    retirement: { reads: 9, writes: 3, deletes: 1 },
+    retirement: { reads: 7, writes: 2, deletes: 1 },
     purge: { reads: 4, writes: 0, deletes: 2 },
   },
   tombstoning: {
-    retirement: { reads: 8, writes: 3, deletes: 0 },
+    retirement: { reads: 6, writes: 2, deletes: 0 },
     purge: { reads: 3, writes: 1, deletes: 0 },
   },
 }) satisfies Readonly<Record<string, Readonly<Record<string, SweepRequests>>>>;
@@ -683,6 +683,12 @@ function buildReport(input: {
   const baseline = resolveBaseline(redis, storedGiB);
   const baselineUSD = baseline.monthlyUSD;
 
+  // A fraction: 95 meant as 95% would otherwise read as 1, every read a hit.
+  if ((input.workload.cacheHitRate ?? 0) > 1) {
+    throw new ValidationError(
+      `cacheHitRate must be a fraction from 0 to 1; got ${String(input.workload.cacheHitRate)}`,
+    );
+  }
   const cacheHitRate = clamp01(
     requireFiniteNonNeg(input.workload.cacheHitRate ?? 0, 'cacheHitRate'),
   );
@@ -923,6 +929,27 @@ function buildReport(input: {
 }
 
 /**
+ * Refuses a `pricing` that is not a profile with a storage price list, and a `workload` that is not an object (`null`
+ * reads as none), as a `ValidationError` naming the call rather than a raw `TypeError` from inside the model.
+ */
+function checkModelInputs(op: string, pricing: unknown, workload: unknown): void {
+  const storage: unknown =
+    pricing !== null && typeof pricing === 'object'
+      ? (pricing as PricingProfile).storage
+      : undefined;
+  if (pricing !== undefined && (storage === null || typeof storage !== 'object')) {
+    throw new ValidationError(`${op}: pricing must be a profile with a storage price list`);
+  }
+  if (
+    workload !== undefined &&
+    workload !== null &&
+    (typeof workload !== 'object' || Array.isArray(workload))
+  ) {
+    throw new ValidationError(`${op}: workload must be an object`);
+  }
+}
+
+/**
  * **Planning** cost estimate — pure, no instance or live data needed (sizing, sales, what-if). Segment sizes
  * are taken as given (or roughly derived from cardinality); use the grounded `segment.costReport()` for
  * exact, real sizes. See {@link CostReport}.
@@ -930,6 +957,23 @@ function buildReport(input: {
  * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export function estimateCost(input: EstimateInput): CostReport {
+  // Shapes a plain-JavaScript caller can get wrong, refused as such rather than as a raw TypeError from deep inside.
+  if (input === null || typeof input !== 'object') {
+    throw new ValidationError('estimateCost: input must be an object such as { segments }');
+  }
+  if (!Array.isArray(input.segments)) {
+    throw new ValidationError(
+      'estimateCost: segments must be an array of { sizeBytes } or { cardinality }',
+    );
+  }
+  // An index loop, so a hole in a sparse array is refused as an entry too.
+  for (let i = 0; i < input.segments.length; i++) {
+    const spec: unknown = input.segments[i];
+    if (spec === null || typeof spec !== 'object') {
+      throw new ValidationError(`estimateCost: segments[${i}] must be an object`);
+    }
+  }
+  checkModelInputs('estimateCost', input.pricing, input.workload);
   const pricing = input.pricing ?? AWS_US_EAST_1_ONDEMAND;
   const workload = input.workload ?? {};
   let storageBytes = 0;
@@ -962,6 +1006,7 @@ export function groundedReport(input: {
   readonly pricing?: PricingProfile;
   readonly extraNotes?: readonly string[];
 }): CostReport {
+  checkModelInputs('costReport', input.pricing, input.workload);
   return buildReport({
     storageBytes: input.storageBytes,
     workload: input.workload ?? {},

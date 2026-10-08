@@ -28,6 +28,7 @@
  * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
  */
 import {
+  IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
@@ -67,6 +68,7 @@ import {
   isInvalidRange,
   isNoSuchUpload,
   isNotFound,
+  spanFromContentRange,
   isPreconditionFailed,
   isThrottle,
   isTransient,
@@ -83,6 +85,9 @@ import { scrubCredentials } from './scrub-error';
 const S3_PART_BYTES = 8 * 1024 * 1024;
 /** S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the real object ceiling. */
 const S3_MAX_PARTS = 10_000;
+/** S3 hard limits on one object (5 TiB) and one part (5 GiB). */
+const S3_MAX_OBJECT_BYTES = 5 * 1024 ** 4;
+const S3_MAX_PART_BYTES = 5 * 1024 ** 3;
 /** The user-metadata name an object's write id is stored under (`x-amz-meta-cbwid`). Short: every write sends it. */
 const WRITE_ID_KEY = 'cbwid';
 /** How many times a throttled commit is sent again: four sends in all, as many as the SDK's own retry makes. */
@@ -160,6 +165,18 @@ export class S3StorageDriver implements IStorageDriver {
         throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
       }
     }
+    // Past S3's own limits a cap is not reachable: the part grown to cover it would pass the part limit, an object up
+    // to that size would be held in memory whole, and one PutObject of it would be refused.
+    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > S3_MAX_OBJECT_BYTES) {
+      throw new ValidationError(
+        `maxObjectBytes must be at most S3's 5 TiB object limit (${S3_MAX_OBJECT_BYTES}); got ${options.maxObjectBytes}`,
+      );
+    }
+    if (options.partBytes !== undefined && options.partBytes > S3_MAX_PART_BYTES) {
+      throw new ValidationError(
+        `partBytes must be at most S3's 5 GiB part limit (${S3_MAX_PART_BYTES}); got ${options.partBytes}`,
+      );
+    }
     const requestedPart = Math.max(options.partBytes ?? S3_PART_BYTES, 5 * 1024 * 1024);
     // Default the object cap to what the requested part size can actually cover within S3's 10,000-part limit;
     // if a larger cap is requested, grow the part size to keep it reachable (so the advertised cap is honest).
@@ -236,6 +253,20 @@ export class S3StorageDriver implements IStorageDriver {
           `range [${offset}, ${offset + length}) out of bounds (got ${bytes.length}B)`,
         );
       }
+      // The bytes must be the ones asked for, not as many from elsewhere: a range answer names its span, and one
+      // without it (a 200, the whole object) is the range only when the range starts at 0.
+      const span = spanFromContentRange(res.ContentRange);
+      const wanted =
+        span === undefined
+          ? offset === 0
+          : span.start === offset && span.end === offset + length - 1;
+      if (!wanted) {
+        throw this.badRead(
+          key,
+          'range',
+          `the response holds ${res.ContentRange === undefined ? 'the object from its start' : `bytes ${res.ContentRange}`}, not [${offset}, ${offset + length})`,
+        );
+      }
       return bytes;
     });
   }
@@ -276,6 +307,23 @@ export class S3StorageDriver implements IStorageDriver {
     }
     const { bytes, contentRange } = read;
     let size = totalFromContentRange(contentRange);
+    if (contentRange !== undefined && !(size === 0 && bytes.length === 0)) {
+      // A ranged answer must be the suffix asked for and hold exactly its bytes, as a range read's must. An empty
+      // object has no suffix: a server may answer it with `bytes 0--1/0`.
+      const span = spanFromContentRange(contentRange);
+      const suffix =
+        span !== undefined &&
+        span.end - span.start + 1 === bytes.length &&
+        (size === undefined ||
+          (span.end === size - 1 && span.start === Math.max(0, size - maxBytes)));
+      if (!suffix) {
+        throw this.badRead(
+          key,
+          'tail',
+          `the response holds ${contentRange} in ${bytes.length}B, not the last ${maxBytes}B of the object`,
+        );
+      }
+    }
     if (size === undefined) {
       // A spec-compliant backend omits Content-Range only on a 200 (whole object), where bytes.length
       // IS the size. If the body is exactly maxBytes we can't rule out a clamped partial from a
@@ -358,6 +406,14 @@ export class S3StorageDriver implements IStorageDriver {
         if (generation !== null) {
           yield { namespace: ref.namespace, segment: ref.segment, generation };
         }
+      }
+      // A page that says more follow and gives no way to ask for them would end the listing short, silently.
+      if (res.IsTruncated === true && res.NextContinuationToken === undefined) {
+        throw new IntegrityError('S3 listing says it is truncated but gives no continuation token');
+      }
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (res.IsTruncated === true && res.NextContinuationToken === token) {
+        throw new IntegrityError('S3 listing returned the continuation token it was given');
       }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);
@@ -444,7 +500,8 @@ class S3MultipartSink implements BlobSink {
       throw new ValidationError(`object exceeds maxObjectBytes ${this.maxObjectBytes}`);
     }
     this.hash.update(bytes);
-    this.pending.push(bytes);
+    // A copy: the caller may reuse its buffer once this write resolves, and the part is sent later.
+    this.pending.push(new Uint8Array(bytes));
     this.pendingLen += bytes.length;
     if (this.pendingLen >= this.partBytes) await this.flushPart();
   }

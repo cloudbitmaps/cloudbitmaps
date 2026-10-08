@@ -1,6 +1,7 @@
 import {
   isDownloadRetryable,
   isInvalidRange,
+  isMissingBucket,
   isNotFound,
   isPreconditionFailed,
   isTransient,
@@ -22,6 +23,55 @@ describe('GCS error classification', () => {
   it('404 = not found (never a transient)', () => {
     expect(isNotFound(apiErr(404))).toBe(true);
     expect(isTransient(apiErr(404))).toBe(false);
+  });
+
+  it('every connection fault a download retries is transient on a write too', () => {
+    // A registry write or an upload that failed with one of these reached the caller raw, so a write was not settled
+    // by reading what landed, and a caller keyed on TransientError did not run it again.
+    for (const code of [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ECONNABORTED',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'EPIPE',
+      'ERR_STREAM_PREMATURE_CLOSE',
+    ]) {
+      expect(isTransient({ code })).toBe(true);
+      expect(isTransportFault({ code })).toBe(true);
+    }
+    expect(isTransient({ code: 'ENOENT' })).toBe(false);
+    expect(isTransient({ code: 'EPROTO' })).toBe(false);
+  });
+
+  it('a 404 that says the bucket does not exist is not a missing object, in any shape GCS sends it', () => {
+    const says = 'The specified bucket does not exist.';
+    const shapes = [
+      { code: 404, message: says, errors: [{ reason: 'notFound', message: says }] }, // JSON API
+      { code: 404, message: `{"error":{"code":404,"message":"${says}"}}`, errors: [] }, // download, JSON body
+      { code: 404, message: says, errors: [] }, // download, text body
+      {
+        code: 404,
+        message: 'Multiple errors occurred',
+        errors: [{ message: 'x' }, { message: says }],
+      },
+    ];
+    for (const err of shapes) {
+      expect(isMissingBucket(err)).toBe(true);
+      expect(isNotFound(err)).toBe(false);
+      expect(isTransient(err)).toBe(false);
+    }
+    const noObject = {
+      code: 404,
+      message: 'No such object: b/o',
+      errors: [{ reason: 'notFound' }],
+    };
+    expect(isMissingBucket(noObject)).toBe(false);
+    expect(isNotFound(noObject)).toBe(true);
+    expect(isMissingBucket({ code: 403, message: says })).toBe(false);
   });
 
   it('416 = out-of-range (never a transient)', () => {

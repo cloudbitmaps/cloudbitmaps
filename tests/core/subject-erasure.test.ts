@@ -240,7 +240,7 @@ describe('eraseSubject', () => {
     expect(await members(w.reader(), 'a', 'other')).toEqual([1]); // untouched
   });
 
-  it('skips a destroyed segment — already unreadable, never listed', async () => {
+  it('erases a cleartext object a tombstone left readable, and skips a tombstone with nothing readable', async () => {
     const w = await world();
     await w.seed('dead', [1]);
     await w.seed('live', [1]);
@@ -251,8 +251,15 @@ describe('eraseSubject', () => {
     );
 
     const res = await w.reader().eraseSubject(1, { namespace: NS });
-    expect(res.scannedSegments).toBe(2); // scanned, but…
-    expect(res.erasedFrom.map((e) => e.segment)).toEqual(['live']); // …a tombstone holds nothing to erase
+    expect(res.scannedSegments).toBe(2);
+    // A cleartext destroy leaves its object readable in the bucket, so the id is erased there too.
+    expect(res.erasedFrom.map((e) => [e.segment, e.erased]).sort()).toEqual([
+      ['dead', true],
+      ['live', true],
+    ]);
+    // Searched again, the tombstone has nothing left to erase.
+    const again = await w.reader().eraseSubject(1, { namespace: NS });
+    expect(again.erasedFrom.map((e) => e.segment)).toEqual([]);
   });
 
   it('emits segment.rewrite with fromGeneration/generation for each rewritten segment', async () => {
