@@ -136,6 +136,8 @@ export interface RedisSizing {
  * because an `m6g` or `r6g` with the same memory costs less. It is the cheapest cluster of THIS kind; Redis bought
  * another way costs less — one replica a shard a third less, ElastiCache for Valkey 20% less a node, reserved nodes
  * less again — so against those the saving the verdict reports is smaller. Pass their prices to compare with them.
+ * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+ * internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export const ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: RedisSizing = deepFreeze({
   source: 'ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list 20260914063714',
@@ -169,11 +171,17 @@ export const ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: RedisSizing = deepFreeze({
  * with it. It is not the cheapest cluster for any size of data: three cache.m6g.large hold the same memory for less.
  */
 // The trailing comment below is parsed by scripts/site-figures.cjs, and the literal by bench/lib/calibration-figures.cjs.
+/**
+ * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+ * internal. It is a planning tool, and its price list is as old as the release that ships it.
+ */
 export const ONE_REDIS_HA_CLUSTER = deepFreeze({ monthlyUSD: 346 }); // ElastiCache HA: 1 primary + 2 replicas (cache.m7g.large); ~$115 single-node
 
 /**
  * Default profile — **AWS us-east-1, on-demand**, mid-2026, from the fact-checked published pricing rather than
  * copied from a blog post, with Redis sized to the data. Override it for your region, cloud, or committed term.
+ * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+ * internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export const AWS_US_EAST_1_ONDEMAND: PricingProfile = deepFreeze({
   name: 'aws-us-east-1-ondemand',
@@ -919,6 +927,8 @@ function buildReport(input: {
  * **Planning** cost estimate — pure, no instance or live data needed (sizing, sales, what-if). Segment sizes
  * are taken as given (or roughly derived from cardinality); use the grounded `segment.costReport()` for
  * exact, real sizes. See {@link CostReport}.
+ * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+ * internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export function estimateCost(input: EstimateInput): CostReport {
   const pricing = input.pricing ?? AWS_US_EAST_1_ONDEMAND;
@@ -943,6 +953,8 @@ export function estimateCost(input: EstimateInput): CostReport {
  * **Grounded** report from a real segment byte total (from the `.crbm` index) + a supplied workload. Used by
  * `Segment.costReport()` in the facade. `grounded` defaults to true (the size is exact, not estimated); the
  * caller passes `grounded: false` + a note when the Storage source can't measure size.
+ * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+ * internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export function groundedReport(input: {
   readonly storageBytes: number;

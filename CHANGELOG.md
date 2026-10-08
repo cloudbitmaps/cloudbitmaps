@@ -41,6 +41,19 @@ so, and so do the module headers in the code.
   comparable either; it is one client with 128 sockets and 2 CPUs. `materializeMany` on S3 is still counted, not
   measured. The benchmarks page, the roadmap and the calibration READMEs quote it. No library code changes.
 
+### Deprecated
+
+- **The cost model, and `store.reapRegistryTombstones`, each marked `@deprecated` for 1.0.** Both keep working
+  unchanged until then.
+  - `CloudRoaring.estimateCost`, `segment.costReport`, core's `estimateCost` and `groundedReport`, and the price lists
+    `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER` move to their own
+    package at 1.0. They are a planning tool, not part of reading or writing a set, and the price list ships as old as
+    the release that carries it. `stat()` gains the generation's byte size then, so a grounded report needs nothing
+    internal.
+  - `store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional `IRegistryDriver.reapLegacyTombstones`
+    leave the store at 1.0. Only a bucket written by a release before 0.12 holds the rows it removes, so it becomes a
+    one-off script; run it before upgrading.
+
 ### Fixed
 
 - **A memory operand passed to a combine or an `*Into` call is refused with a `ValidationError`.** `intersect`, `union`,

@@ -61,6 +61,8 @@ export type ReapRegistryTombstonesResult = ReapLegacyTombstonesResult;
  * Remove the `deleted: true` rows with no incarnation id from `registry`, or count them (`dryRun`).
  *
  * Cost over R rows read and E removed: `ceil(R / 1000)` LIST requests, R GETs and E DELETEs.
+ * @deprecated Removed from the store at 1.0, and kept as a one-off script: only a bucket written by a release before
+ * 0.12.0 holds such rows.
  */
 export async function reapRegistryTombstones(
   registry: IRegistryDriver,

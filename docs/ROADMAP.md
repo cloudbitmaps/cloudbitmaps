@@ -364,6 +364,10 @@ between here and there:
      index and metadata before it moves the pointer, and refuses one that does not open.)
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
+10. **A smaller surface.** Deprecated on `main`, unreleased, for `0.19.0`, and changed at `1.0`:
+    - the cost model (`estimateCost`, `costReport`, `groundedReport` and the price lists) moves to its own package,
+      with the generation's byte size on `stat()` so a grounded report needs nothing internal;
+    - `reapRegistryTombstones` leaves the store, as a one-off script for a bucket written before 0.12.
 
 ## Planned / exploring
 

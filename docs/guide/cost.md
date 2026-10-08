@@ -6,6 +6,11 @@ The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats o
 size, drawn from this same estimator and turned into build-breaking CI assertions, so the numbers cannot drift ahead
 of reality.
 
+> **The estimator leaves the library at 1.0, for a package of its own.** It is a planning tool, not part
+> of reading or writing a set, and the price list it carries is as old as the release that ships it. Everything on
+> this page keeps working until then. At 1.0 `stat()` gains the generation's byte size, so a grounded report needs
+> nothing internal, and the estimator, its price lists and these pages move to the new package.
+
 ## Cost: estimate it, then ground it
 
 CloudBitmaps can tell you what a workload will cost, and what your real segments are costing, because the library owns
