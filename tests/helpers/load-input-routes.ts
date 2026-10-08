@@ -86,6 +86,7 @@ export const ROUTED: readonly string[] = [
   'tests/roaring/pin-lease.races.test.ts',
   'tests/roaring/pin-lease.test.ts',
   'tests/roaring/segment-handle.test.ts',
+  'tests/roaring/segment-other-copy.test.ts',
   'tests/roaring/store-load-binding.test.ts',
 ];
 

@@ -8,7 +8,7 @@ import {
   WriteConflictError,
   isStaleOperandError,
 } from '@/index';
-import type { MaterializeManyOutput, MaterializeResult } from '@/index';
+import type { MaterializeManyOutput, MaterializeResult, MetricEvent } from '@/index';
 import { batchWorld, bitmapOf, range } from '../helpers/batch-world';
 
 const DATA = {
@@ -427,6 +427,89 @@ describe('store.materializeMany', () => {
     expect(w.calls.ranges).toBe(0);
     expect(await s('b').has(31_000)).toBe(true);
     expect(w.calls.ranges).toBeGreaterThan(0);
+  });
+
+  it('reports one op event and a storage.get per range request, as a combine does, and no cache or intersect event', async () => {
+    const events: MetricEvent[] = [];
+    const w = await batchWorld(DATA, { metrics: { onEvent: (e) => events.push(e) } });
+    const s = (n: string) => w.store.segment(n);
+    const run = await w.store.materializeMany({
+      operands: { a: s('a'), b: s('b'), c: s('c') },
+      outputs: [
+        { dest: s('d1'), expr: { and: ['a', 'b'] } },
+        { dest: s('d2'), expr: { or: ['a', 'c'] }, exclude: ['b'] },
+      ],
+      keep: 1,
+    });
+    published(run.outputs[0]);
+    published(run.outputs[1]);
+    expect(events.filter((e) => e.kind === 'op')).toEqual([
+      { kind: 'op', name: 'materializeMany', ms: expect.any(Number) as number },
+    ]);
+    const gets = events.filter(
+      (e): e is Extract<MetricEvent, { kind: 'storage.get' }> => e.kind === 'storage.get',
+    );
+    // One per range request the call sent, the same count and bytes its own stats report, each naming its operand.
+    expect(gets.length).toBeGreaterThan(0);
+    expect(gets.length).toBe(run.stats.requests.rangeReads);
+    expect(gets.reduce((n, e) => n + e.bytes, 0)).toBe(run.stats.requests.rangeBytes);
+    expect(new Set(gets.map((e) => e.segment))).toEqual(new Set(['a', 'b', 'c']));
+    expect(gets.every((e) => e.namespace === undefined && e.ms >= 0)).toBe(true);
+    expect(events.filter((e) => e.kind === 'cache' || e.kind === 'intersect')).toEqual([]);
+
+    // A held operand sends no request, so it reports none.
+    events.length = 0;
+    const vip = await w.store.memory([5, 31_000]);
+    const held = await w.store.materializeMany({
+      operands: { a: s('a'), vip },
+      outputs: [{ dest: s('d3'), expr: { and: ['a', 'vip'] } }],
+      keep: 1,
+    });
+    published(held.outputs[0]);
+    expect(new Set(events.filter((e) => e.kind === 'storage.get').map((e) => e.segment))).toEqual(
+      new Set(['a']),
+    );
+    expect(events.filter((e) => e.kind === 'op')).toHaveLength(1);
+
+    // A call that throws after its first request reports its time, and the reads it never sent are not reported.
+    events.length = 0;
+    await expect(
+      w.store.materializeMany({
+        operands: { a: s('a'), b: s('b') },
+        outputs: [{ dest: s('d5'), expr: { and: ['a', 'b'] } }],
+        keep: 1,
+        budget: { maxRequests: 1 },
+      }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(events.filter((e) => e.kind === 'op')).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'storage.get')).toEqual([]);
+
+    // A call its input checks refuse sends nothing and reports nothing.
+    events.length = 0;
+    await expect(
+      w.store.materializeMany({
+        operands: { a: s('a') },
+        outputs: [{ dest: s('d4'), expr: 'nope' }],
+        keep: 1,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(events).toEqual([]);
+  });
+
+  it('sends the same requests with a metrics sink as with none', async () => {
+    const call = async (w: Awaited<ReturnType<typeof batchWorld>>) => {
+      const run = await w.store.materializeMany({
+        operands: { a: w.store.segment('a'), b: w.store.segment('b') },
+        outputs: [{ dest: w.store.segment('d'), expr: { and: ['a', 'b'] } }],
+        keep: 1,
+      });
+      published(run.outputs[0]);
+      return run.stats.requests;
+    };
+    const none = await call(await batchWorld(DATA));
+    const watched = await call(await batchWorld(DATA, { metrics: { onEvent: () => undefined } }));
+    expect(none.rangeReads).toBeGreaterThan(0);
+    expect(watched).toEqual(none);
   });
 
   it('an id erased before a chunk was read fails the outputs reading the deleted object, loudly', async () => {

@@ -125,8 +125,18 @@ describe('materializeMany with a feed', () => {
       keep: 1,
       maxBufferedBytes: 64 * 1024 * 1024,
     };
+    // With no feed, a name in mayBeEmpty is a held operand's or nothing the call can empty, and the message says which.
     await expect(w.store.materializeMany({ ...base, mayBeEmpty: ['a'] })).rejects.toThrow(
-      /mayBeEmpty names fed operands, and the call has no feed/,
+      'materializeMany: mayBeEmpty names "a", which is not an operand of this call; it names held operands, and fed operands when the call has a feed',
+    );
+    await expect(w.store.materializeMany({ ...base, mayBeEmpty: ['optout'] })).rejects.toThrow(
+      /mayBeEmpty names "optout", a stored operand;/,
+    );
+    await expect(w.store.materializeMany({ ...base, mayBeEmpty: [7] as never })).rejects.toThrow(
+      /mayBeEmpty names something that is not a name;/,
+    );
+    await expect(w.store.materializeMany({ ...base, mayBeEmpty: 'a' as never })).rejects.toThrow(
+      'materializeMany: mayBeEmpty must be an array of held or fed operand names',
     );
     for (const mayBeEmpty of [['optout'], ['nobody']]) {
       await expect(w.store.materializeMany({ ...base, feed, mayBeEmpty })).rejects.toThrow(

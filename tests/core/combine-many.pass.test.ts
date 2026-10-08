@@ -18,6 +18,7 @@ import {
   LeaseExpiredError,
   ValidationError,
 } from '@/core/errors';
+import type { MetricEvent } from '@/core/metrics';
 import type { ChunkRead, ReadChunksOptions, SegmentRef, StorageChunkSource } from '@/core/ports';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
@@ -961,5 +962,72 @@ describe('the identity of a pinned operand', () => {
         { source: setup.source, codec: roaringCodec, clock },
       ),
     ).rejects.toThrow(/takes the result of compileCombineMany/);
+  });
+});
+
+describe('runCombineMany: what it reports to a metrics sink', () => {
+  const gets = (events: MetricEvent[]) =>
+    events.filter(
+      (e): e is Extract<MetricEvent, { kind: 'storage.get' }> => e.kind === 'storage.get',
+    );
+
+  it('a storage.get per range request in every group, a re-read included, and nothing else', async () => {
+    const sets = { a: ids([1, 2, 3]), b: ids([1, 2, 3]) };
+    const setup = seed(sets);
+    const events: MetricEvent[] = [];
+    const specs = Array.from({ length: 40 }, () => collecting({ expr: { and: ['a', 'b'] } }));
+    const run = await runCombineMany(
+      compileCombineMany(request(setup, specs, { maxBufferedBytes: 420_000 })),
+      {
+        source: setup.source,
+        codec: roaringCodec,
+        clock: { now: () => 0, sleep: async () => {} },
+        metrics: { onEvent: (e) => events.push(e) },
+      },
+    );
+    expect(run.stats.groups).toBeGreaterThan(1);
+    expect(gets(events)).toHaveLength(run.stats.requests.rangeReads);
+    expect(gets(events).reduce((n, e) => n + e.bytes, 0)).toBe(run.stats.requests.rangeBytes);
+    expect(new Set(gets(events).map((e) => e.segment))).toEqual(new Set(['a', 'b']));
+    expect(events.every((e) => e.kind === 'storage.get')).toBe(true);
+  });
+
+  it('times each chunk it reads one by one from a source with no getChunks', async () => {
+    const setup = seed({ a: ids([1, 2, 3]), b: ids([2, 3]) });
+    (setup.source as { getChunks?: unknown }).getChunks = undefined;
+    let t = 0;
+    const events: MetricEvent[] = [];
+    const run = await runCombineMany(
+      compileCombineMany(request(setup, [collecting({ expr: { and: ['a', 'b'] } })])),
+      {
+        source: setup.source,
+        codec: roaringCodec,
+        // Each read of the clock moves it on, so a request that reads it before and after takes some time.
+        clock: { now: () => (t += 5), sleep: async () => {} },
+        metrics: { onEvent: (e) => events.push(e) },
+      },
+    );
+    expect(ok(run.outputs[0]!).ids).toEqual(ids([2, 3]));
+    expect(gets(events).length).toBeGreaterThan(0);
+    expect(gets(events)).toHaveLength(run.stats.requests.rangeReads);
+    expect(gets(events).every((e) => e.ms > 0)).toBe(true);
+  });
+
+  it('runs to the end with a sink that throws', async () => {
+    const setup = seed({ a: ids([1, 2]), b: ids([2]) });
+    const run = await runCombineMany(
+      compileCombineMany(request(setup, [collecting({ expr: { or: ['a', 'b'] } })])),
+      {
+        source: setup.source,
+        codec: roaringCodec,
+        clock: { now: () => 0, sleep: async () => {} },
+        metrics: {
+          onEvent: () => {
+            throw new Error('a broken sink');
+          },
+        },
+      },
+    );
+    expect(ok(run.outputs[0]!).ids).toEqual(ids([1, 2]));
   });
 });

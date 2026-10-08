@@ -1242,7 +1242,8 @@ export class CloudRoaring {
   }
 
   /**
-   * **Hold a set of ids in memory**, to be an operand of {@link CloudRoaring.materializeMany} and of no other verb.
+   * **Hold a set of ids in memory**, to be an operand of {@link CloudRoaring.materializeMany} and of no other verb: a
+   * combine or an `*Into` call it is passed to refuses it with a {@link ValidationError}.
    *
    * ```ts
    * const vip = await store.memory([7, 42, 99_001]);
@@ -1458,11 +1459,26 @@ export class CloudRoaring {
         }
         fedMayBeEmpty = rest;
       }
-      // An empty list, or one naming only held operands, names nothing a feed must check.
-      if (feedIn === undefined && (!Array.isArray(fedMayBeEmpty) || fedMayBeEmpty.length > 0)) {
-        throw new ValidationError(
-          'materializeMany: mayBeEmpty names fed operands, and the call has no feed',
-        );
+      // An empty list, or one naming only held operands, names nothing a feed must check. With a feed, the feed's own
+      // check names what is wrong with the rest.
+      if (feedIn === undefined) {
+        if (!Array.isArray(fedMayBeEmpty)) {
+          throw new ValidationError(
+            'materializeMany: mayBeEmpty must be an array of held or fed operand names',
+          );
+        }
+        if (fedMayBeEmpty.length > 0) {
+          const first: unknown = fedMayBeEmpty[0];
+          const what =
+            typeof first !== 'string'
+              ? 'something that is not a name'
+              : handles.has(first)
+                ? `"${first}", a stored operand`
+                : `"${first}", which is not an operand of this call`;
+          throw new ValidationError(
+            `materializeMany: mayBeEmpty names ${what}; it names held operands, and fed operands when the call has a feed`,
+          );
+        }
       }
     }
     const operandKeys = new Set([...handles.values()].map((h) => h.key()));
@@ -1619,20 +1635,32 @@ export class CloudRoaring {
       else if (pinOption) toPin.push([key, handle]);
       else pins.set(key, undefined);
     }
-    const taken = await mapWithConcurrency(
-      toPin,
-      PIN_PARALLELISM,
-      async ([key, handle]) => [key, (await handle.pin()).pinnedAt] as const,
-    );
-    for (const [key, at] of taken) pins.set(key, at);
-    const live = new Map([...pins].filter((e): e is [string, PinnedAt] => e[1] !== undefined));
-    const pinnedSource = new PinnedStorageChunkSource(crbm, live);
-    const source =
-      this.retryOptions === undefined
-        ? pinnedSource
-        : new RetryingStorageChunkSource(pinnedSource, this.retryOptions);
-    const final = rebindCombineMany(compiled, operandSpecs(pins));
-    const run = await runCombineMany(final, { source, codec: roaringCodec, clock: this.clock });
+    // Timed from the first request, the pins, to the last publish, as an `*Into` call is timed around its read and write.
+    const metricsOn = this.metrics !== NOOP_METRICS;
+    const work = async () => {
+      const taken = await mapWithConcurrency(
+        toPin,
+        PIN_PARALLELISM,
+        async ([key, handle]) => [key, (await handle.pin()).pinnedAt] as const,
+      );
+      for (const [key, at] of taken) pins.set(key, at);
+      const live = new Map([...pins].filter((e): e is [string, PinnedAt] => e[1] !== undefined));
+      const pinnedSource = new PinnedStorageChunkSource(crbm, live);
+      const source =
+        this.retryOptions === undefined
+          ? pinnedSource
+          : new RetryingStorageChunkSource(pinnedSource, this.retryOptions);
+      const final = rebindCombineMany(compiled, operandSpecs(pins));
+      return runCombineMany(final, {
+        source,
+        codec: roaringCodec,
+        clock: this.clock,
+        ...(metricsOn ? { metrics: this.metrics } : {}),
+      });
+    };
+    const run = metricsOn
+      ? await timeOp(this.metrics, this.clock, 'materializeMany', work)
+      : await work();
     return {
       outputs: run.outputs.map((o) =>
         o.ok
@@ -3108,6 +3136,24 @@ export interface SegmentStat {
   readonly metadata?: GenerationMetadata;
 }
 
+/**
+ * Time `fn` with `clock` and emit an `op` metric to `metrics` when it settles, on success or throw: the store's timing,
+ * as a segment's `timed` does its own inline, which keeps a promise off the path of `has` and `count`.
+ */
+async function timeOp<T>(
+  metrics: IMetricsSink,
+  clock: Clock,
+  name: MetricOpName,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const startedAt = clock.now();
+  try {
+    return await fn();
+  } finally {
+    metrics.onEvent({ kind: 'op', name, ms: Math.max(0, clock.now() - startedAt) });
+  }
+}
+
 /** What a {@link MemoryOperand} shows the store that it does not show a caller. */
 interface HeldView {
   readonly store: CloudRoaring;
@@ -3123,7 +3169,8 @@ let mintingMemory = false;
 
 /**
  * A set of ids held in memory by {@link CloudRoaring.memory}, to be an operand of {@link CloudRoaring.materializeMany}
- * and of no other verb. The bytes are the caller's until {@link MemoryOperand.release}.
+ * and of no other verb, which refuses it with a {@link ValidationError}. The bytes are the caller's until
+ * {@link MemoryOperand.release}.
  *
  * It belongs to the store that made it. `eraseSubject` in that store, started after the handle began to be made or still
  * running when it was, fails the outputs of a `materializeMany` call that read it with {@link StaleOperandError}
@@ -3429,6 +3476,32 @@ export class Segment {
   }
 
   /**
+   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment: a memory operand, which only
+   * {@link CloudRoaring.materializeMany} takes, or any other value a JavaScript caller passed. It runs first in every
+   * combine, before the lease check reads the handles.
+   */
+  private assertSegments(handles: readonly unknown[]): void {
+    for (const h of handles) {
+      // A segment of another copy of this package (a second install) is not an instance of this one's class, and a
+      // combine has always taken it: what it has, a lease check, is what the call reads first.
+      if (
+        h instanceof Segment ||
+        (typeof h === 'object' &&
+          h !== null &&
+          !(h instanceof MemoryOperand) &&
+          typeof (h as { leaseError?: unknown }).leaseError === 'function')
+      ) {
+        continue;
+      }
+      throw new ValidationError(
+        h instanceof MemoryOperand
+          ? 'a memory operand from store.memory() is an operand of store.materializeMany() only; this call takes segments from store.segment()'
+          : 'an operand must be a segment from store.segment()',
+      );
+    }
+  }
+
+  /**
    * Throw the first lease error among `handles`: this handle and every operand and exclude of a call. It runs before
    * any `expiresAt` rule and before the engine, so no operand, exclude or cached reader can answer past a lease.
    */
@@ -3537,6 +3610,7 @@ export class Segment {
    * awaiting.
    */
   private refuseIfExpired(op: string, dest: Segment, operands: readonly Segment[]): void {
+    this.assertSegments([dest, ...operands]);
     // A lease first, and as its own error: a past lease is never "expired" in the sense this method refuses.
     this.assertLeases([this, dest, ...operands]);
     const stale: string[] = [];
@@ -3787,6 +3861,7 @@ export class Segment {
     const exclude = this.excludesOf(options);
     const handles = [this, ...others, ...exclude];
     try {
+      this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
       return out.failing(err);
@@ -3868,6 +3943,7 @@ export class Segment {
     const exclude = this.excludesOf(options);
     const handles = [this, ...others, ...exclude];
     try {
+      this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
       return out.failing(err);
@@ -3947,6 +4023,7 @@ export class Segment {
     // check's to answer. Both run before any operand shortcut, so an operand that has expired cannot hide either.
     const handles = [this, ...excludes];
     try {
+      this.assertSegments(handles);
       this.assertLeases(handles);
     } catch (err) {
       return out.failing(err);
