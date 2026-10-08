@@ -17,6 +17,8 @@
  * add a `kek.rotate` variant; until then, audit key changes at your keystore-config layer.
  */
 
+import { ValidationError } from './errors';
+
 /** A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor. */
 export type AuditEvent =
   | {
@@ -151,6 +153,20 @@ export function safeAudit(sink: IAuditSink): IAuditSink {
       }
     },
   };
+}
+
+/**
+ * Refuse an `audit` that is not a sink. One without an `onEvent` method (a bare callback, a method named `emit`) would
+ * receive nothing and say nothing, since {@link safeAudit} swallows what calling it throws. Called at the top of each
+ * entry that takes one, before anything irreversible; `undefined` and `null` read as none.
+ */
+export function checkedAuditSink(sink: unknown, op: string): void {
+  if (sink === undefined || sink === null) return;
+  if (typeof (sink as { onEvent?: unknown }).onEvent !== 'function') {
+    throw new ValidationError(
+      `${op}: audit must be a sink with an onEvent(event) method, such as a RecordingAuditSink`,
+    );
+  }
 }
 
 /** Observe the rejection of what a sink's `onEvent` returned, when it returned a promise, so it is never unhandled. */

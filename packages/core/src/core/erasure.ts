@@ -12,7 +12,7 @@
  * a `destroyed` row, so a load racing an erasure cannot resurrect the segment. A single id's erasure is a different
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
-import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { type ChurnDeps, leaseChurn } from './leases';
@@ -78,6 +78,7 @@ export async function destroySegment(
   options: { confirmSegment: string; allowCleartext?: boolean; audit?: IAuditSink },
 ): Promise<DestroyResult> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'destroySegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `destroySegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental crypto-shred)`,
@@ -120,6 +121,7 @@ export async function eraseNamespace(
     throw new ValidationError('eraseNamespace: namespace must be a non-empty string');
   }
   validateUserNamespace(namespace);
+  checkedAuditSink(options.audit, 'eraseNamespace');
   if (options.confirmNamespace !== namespace) {
     throw new ValidationError(
       `eraseNamespace: confirmNamespace must equal the namespace "${namespace}" (guard against accidental erasure)`,
@@ -332,6 +334,7 @@ export async function dropSegmentFor(
   sweep: SweepDrop | undefined,
 ): Promise<DropResult | null> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'dropSegment');
   if (options.confirmSegment !== ref.segment) {
     throw new ValidationError(
       `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,

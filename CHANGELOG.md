@@ -103,6 +103,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An audit or metrics sink without an `onEvent` method is refused.** A bare callback passed as `audit`
+  (`audit: (e) => log(e)`), or a sink whose method is named `emit`, was accepted and received nothing: the guard that
+  keeps a throwing sink from breaking an operation swallowed the error of calling it, so an erasure returned
+  `erased: true` with no event delivered. Each is now a `ValidationError` before anything is written, from the store's
+  verbs, core's lifecycle functions and each `materializeMany` output; a `metrics` option of the wrong shape is refused
+  when the store is built.
 - **Every call refuses an option it does not take, options that are not an object, and a switch that is not a
   boolean.** Only the store's constructor, `materializeMany` and the pins checked their options; every other call read
   a bag of the wrong shape as no options and ignored an unknown key, and that silently widened what it did:

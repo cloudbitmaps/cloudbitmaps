@@ -45,7 +45,7 @@
  * delete only rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would
  * only add a row for every scan to read.
  */
-import { type IAuditSink } from './audit';
+import { type IAuditSink, checkedAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
 import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
@@ -478,6 +478,7 @@ export async function retireExpired(
   deps: DropDeps,
   options: RetireExpiredOptions,
 ): Promise<RetireExpiredResult> {
+  checkedAuditSink(options.audit, 'retireExpired');
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
   if (!Number.isFinite(now)) {

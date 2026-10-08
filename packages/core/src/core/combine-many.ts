@@ -47,6 +47,7 @@ import type { Clock } from './determinism';
 import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
 import type { Budget } from './budget';
 import { checkedGuard } from './load';
+import { checkedAuditSink } from './audit';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -407,6 +408,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
       throw new ValidationError(`${where}.allowEmpty must be a boolean`);
     }
+    checkedAuditSink(output.audit, where);
     // `checkedGuard` refuses any other shape; an output's guard is not `null` either.
     if (output.guard === null) throw new ValidationError(`${where}.guard must be an object`);
     // The checked copy is what each publish judges, however long the call runs.

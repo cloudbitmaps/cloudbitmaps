@@ -304,6 +304,18 @@ function optionsError(
         `it takes { ${known.join(', ')} }`,
     );
   }
+  // An `audit` that is not a sink would receive nothing and say nothing: refused here, before the call reads or scans
+  // anything, as the core entries refuse it before they write.
+  const audit = bag.audit;
+  if (
+    audit !== undefined &&
+    audit !== null &&
+    typeof (audit as { onEvent?: unknown }).onEvent !== 'function'
+  ) {
+    return new ValidationError(
+      `${op}: audit must be a sink with an onEvent(event) method, such as a RecordingAuditSink`,
+    );
+  }
   for (const name of booleans) {
     const v = bag[name];
     if (v !== undefined && v !== null && typeof v !== 'boolean') {

@@ -16,6 +16,7 @@
  */
 
 import { ignoreRejection } from './audit';
+import { ValidationError } from './errors';
 
 /**
  * The operations that emit an `op` latency event (timed with the injected clock, at the facade). `materializeMany` is
@@ -158,6 +159,12 @@ export const NOOP_METRICS: IMetricsSink = {
  */
 export function safeMetrics(sink: IMetricsSink): IMetricsSink {
   if (sink === NOOP_METRICS) return sink;
+  // One without an `onEvent` method would receive nothing and say nothing: the swallow below hides the throw.
+  if (typeof (sink as { onEvent?: unknown } | null)?.onEvent !== 'function') {
+    throw new ValidationError(
+      'metrics must be a sink with an onEvent(event) method, such as a CountingMetricsSink',
+    );
+  }
   return {
     onEvent(event: MetricEvent): void {
       try {

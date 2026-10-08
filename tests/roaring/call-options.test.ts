@@ -113,3 +113,32 @@ describe('absent options still read as none', () => {
     expect(r.wouldRetire).toBe(1);
   });
 });
+
+describe('an audit or metrics sink without onEvent is refused, where it would have received nothing', () => {
+  it('a bare callback passed as audit is a ValidationError before anything is written', async () => {
+    const { store } = await world();
+    const callback = ((e: unknown) => void e) as never;
+    await expect(store.load({ segment: 'a' }, [1, 2, 3, 4], { audit: callback })).rejects.toThrow(
+      'load: audit must be a sink with an onEvent(event) method',
+    );
+    await expect(
+      store.eraseSubject(2, { allNamespaces: true, audit: callback }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      store.dropSegment({ segment: 'a' }, { confirmSegment: 'a', audit: callback }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(store.rollback({ segment: 'a' }, 0, { audit: callback })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(store.retireExpired({ audit: callback })).rejects.toBeInstanceOf(ValidationError);
+    expect(await drain(store.segment('a').iterate())).toEqual([1, 2, 3]);
+  });
+
+  it('a metrics option without onEvent is refused when the store is built', () => {
+    for (const bad of [5, {}, (e: unknown) => void e]) {
+      expect(
+        () => new CloudRoaring({ storage: new MemoryStorage(), metrics: bad as never }),
+      ).toThrow('metrics must be a sink with an onEvent(event) method');
+    }
+  });
+});

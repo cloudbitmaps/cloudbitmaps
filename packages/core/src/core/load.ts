@@ -19,7 +19,7 @@
  * or `destroyed`. Once another write has changed the row, the object's number may name a re-created segment's live
  * object, so it stays, and collection takes it like any other generation once one above it is current.
  */
-import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadAhead,
@@ -536,6 +536,7 @@ async function runLoad(
   options: LoadOptions,
 ): Promise<LoadResult> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'load');
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');
   const keep = options.keep ?? 1;

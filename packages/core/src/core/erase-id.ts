@@ -72,7 +72,7 @@
  * erasure that finds the id in that object deletes it as it does any holder there, so a load that then publishes
  * leaves the pointer naming a missing object.
  */
-import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
@@ -238,6 +238,7 @@ export async function eraseIdFromSegment(
   options: { audit?: IAuditSink } = {},
 ): Promise<EraseIdResult> {
   validateUserRef(ref);
+  checkedAuditSink(options.audit, 'eraseIdFromSegment');
   const { chunkKey, remainder } = splitId(id); // validates the u32 range
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
