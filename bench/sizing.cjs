@@ -117,7 +117,10 @@ const calibrationFigures = require('./lib/calibration-figures.cjs');
  */
 function latestRunReport() {
   const json = calibrationFigures.evidenceFiles(ROOT).at(-1);
-  return `../../${json.replace(/\.json$/, '.md').split(path.sep).join('/')}`;
+  return `../../${json
+    .replace(/\.json$/, '.md')
+    .split(path.sep)
+    .join('/')}`;
 }
 /**
  * The requests the engine makes of the object store for a cold intersect, by deployment, overlap and layout, counted by
