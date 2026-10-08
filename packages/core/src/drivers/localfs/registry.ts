@@ -13,7 +13,7 @@
 import { constants as FS } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import type {
@@ -46,7 +46,7 @@ import {
   parseRegistryRow,
 } from './paths';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -253,7 +253,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         throw new IntegrityError(`registry row ${size}B exceeds cap ${DEFAULT_MAX_ROW_BYTES}B`);
       }
       const text = (await handle.readFile()).toString('utf8');
-      return parseRegistryEnvelope(text, path);
+      // Named by its path under the root, which says which file to look at without putting the host's layout in a log.
+      return parseRegistryEnvelope(text, relative(this.root, path));
     } finally {
       await handle.close();
     }
@@ -279,11 +280,15 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       throw mapFsError(err);
     }
     try {
-      await handle.write(out);
+      await writeAll(handle, out);
       await handle.sync();
-    } finally {
-      await handle.close();
+    } catch (err) {
+      // The temp file goes with the failed write, rather than accumulate beside the row.
+      await handle.close().catch(() => {});
+      await unlink(tmp).catch(() => {});
+      throw mapFsError(err);
     }
+    await handle.close();
     await rename(tmp, path).catch(async (err) => {
       await unlink(tmp).catch(() => {});
       throw mapFsError(err);

@@ -103,6 +103,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The LocalFs drivers write every byte, and a refused registry row is named without the host's paths or its whole
+  stored value.** One write to a file can write fewer bytes than asked and not fail (a full disk, a quota), and both
+  drivers took it for the whole: `putImmutable` reported the size and digest of bytes it had not stored, and a registry
+  write replaced a good row with a torn one, which then failed every listing that reached it. Each now writes until
+  every byte is down, and a write that makes no progress fails as a full device; a failed registry write removes its
+  temporary file. A row refused as malformed was named by its absolute path and quoted whatever its bad field held,
+  however long; it is now named by its path under the store's root, and a stored value is shown to 64 characters.
 - **The export CLI refuses a `CR_EXPORT_ROOT` that does not exist or is empty, and a re-run removes the last run's
   manifest first.** A root that was a typo, or a mount point whose volume was not mounted, exported nothing, wrote a
   manifest with `totalSegments: 0` and exited 0: a finished dump with no data in it. It now exits non-zero before

@@ -509,7 +509,7 @@ export function assertRegistrySchemaVersion(raw: unknown, ctx: string): number {
     throw new IntegrityError(`registry row has no schemaVersion: ${ctx}`);
   }
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < OLDEST_REGISTRY_SCHEMA_VERSION) {
-    throw new IntegrityError(`registry row has a malformed schemaVersion (${String(raw)}): ${ctx}`);
+    throw new IntegrityError(`registry row has a malformed schemaVersion (${shown(raw)}): ${ctx}`);
   }
   if (raw > REGISTRY_SCHEMA_VERSION) {
     throw new UnsupportedError(
@@ -574,7 +574,7 @@ function tokenParts(token: string, schemaVersion: number | undefined, ctx: strin
   if (match === null) {
     throw new IntegrityError(
       `registry row token is not one a schema-${schemaVersion ?? REGISTRY_SCHEMA_VERSION} row holds ` +
-        `(${JSON.stringify(token)}): ${ctx}`,
+        `(${shown(JSON.stringify(token))}): ${ctx}`,
     );
   }
   const born = match.length === 4; // the incarnation form has three groups
@@ -638,6 +638,12 @@ export function newIncarnationToken(
   return `${drawIncarnation(entropy)}.${counter}.${drawWrite(entropy)}`;
 }
 
+/** A stored value as a message shows it: at most 64 characters, so a hostile row cannot fill every log line it reaches. */
+function shown(v: unknown): string {
+  const text = String(v);
+  return text.length > 64 ? `${text.slice(0, 64)}…` : text;
+}
+
 /**
  * Parse + structurally validate a persisted `{ deleted, record }` envelope from stored bytes. A published row
  * is always whole (atomic write), so a parse failure or a missing/mistyped field means corruption/tampering —
@@ -660,7 +666,7 @@ export function parseRegistryEnvelope(text: string, ctx: string): RegistryEnvelo
   const extra = Object.keys(env).filter((k) => !ENVELOPE_FIELDS.includes(k));
   if (extra.length > 0) {
     throw new IntegrityError(
-      `registry row has fields its envelope does not declare (${extra.join(', ')}): ${ctx}`,
+      `registry row has fields its envelope does not declare (${shown(extra.join(', '))}): ${ctx}`,
     );
   }
   if (typeof env.deleted !== 'boolean' || env.record === null || typeof env.record !== 'object') {
@@ -725,16 +731,18 @@ export function assertStoredRecordShape(
   // Enforce the same value invariants the write path checks, so corrupt/tampered bytes are rejected at the
   // read boundary (invariant 5) rather than leaking a bad currentGen/status downstream.
   if (r.currentGen !== null && (!Number.isSafeInteger(r.currentGen) || r.currentGen < 0)) {
-    throw new IntegrityError(`registry record has an invalid currentGen (${r.currentGen}): ${ctx}`);
+    throw new IntegrityError(
+      `registry record has an invalid currentGen (${shown(r.currentGen)}): ${ctx}`,
+    );
   }
   if (!STATUSES.includes(r.status)) {
-    throw new IntegrityError(`registry record has an unknown status (${r.status}): ${ctx}`);
+    throw new IntegrityError(`registry record has an unknown status (${shown(r.status)}): ${ctx}`);
   }
   const declared = fieldsOf(schemaVersion);
   const extra = Object.keys(r).filter((k) => !declared.includes(k));
   if (extra.length > 0) {
     throw new IntegrityError(
-      `registry record has fields a schema-${schemaVersion} row does not declare (${extra.join(', ')}): ${ctx}`,
+      `registry record has fields a schema-${schemaVersion} row does not declare (${shown(extra.join(', '))}): ${ctx}`,
     );
   }
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {

@@ -16,7 +16,7 @@ import type { BlobSink } from '@/core/blob';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError } from './fs-util';
+import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
 
 export class LocalFsStorageDriver implements IStorageDriver {
   private readonly exactCase: ExactCase;
@@ -45,7 +45,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     let size = 0;
     const sink: BlobSink = {
       async write(bytes) {
-        await handle.write(bytes);
+        await writeAll(handle, bytes);
         hash.update(bytes);
         size += bytes.length;
       },
