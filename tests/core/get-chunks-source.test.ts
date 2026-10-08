@@ -303,9 +303,9 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     expect(storage.ranges).toHaveLength(2);
   });
 
-  it('a segment the reader cache let go of is resolved again, and a stream whose generation is the same goes on', async () => {
-    const { source, storage } = await world();
-    const it = source.getChunks!(REF, [0, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+  it('a segment the reader cache let go of is resolved again, from its row alone, and a stream whose generation is the same goes on', async () => {
+    const { source, storage, clock, publishGen1 } = await world();
+    const it = source.getChunks!(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
     await it.next();
     const tails = storage.tails;
     // The reader cache's own eviction, as `invalidate` is the one way to reach it from outside.
@@ -315,9 +315,79 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     cache.deleteWhere((k) => k.endsWith('s'));
     const second = await it.next();
     expect(parityOf(second.value.bytes)).toBe(0);
-    expect(storage.ranges).toHaveLength(2);
-    expect(storage.tails).toBeGreaterThan(tails); // it was resolved, and opened, again
+    expect(storage.tails).toBe(tails); // resolved again, and nothing opened to learn its version
+    // The TTL moves it on too: a publish, a lapse, and the next chunk is the generation now current.
+    await publishGen1();
+    clock.advance(TTL + 1);
+    const third = await it.next();
+    expect(parityOf(third.value.bytes)).toBe(1);
     await it.return!(undefined);
+  });
+
+  it('a read over more segments than the reader cache keeps opens no object per chunk to check them', async () => {
+    const storage = new CountingStorage();
+    const registry = new MemoryRegistryDriver();
+    const segments = ['a', 'b', 'c'].map((segment) => ({ segment }));
+    for (const ref of segments) {
+      await bulkLoadCrbmGeneration(storage, { ...ref, generation: 0 }, idsOf(0), { registry });
+    }
+    let gets = 0;
+    const counting = new Proxy(registry, {
+      get(target, p, rx) {
+        const value: unknown = Reflect.get(target, p, rx);
+        if (p !== 'get') return typeof value === 'function' ? value.bind(target) : value;
+        return (...args: Parameters<MemoryRegistryDriver['get']>) => {
+          gets++;
+          return target.get(...args);
+        };
+      },
+    });
+    const source = new CrbmStorageChunkSource(storage, {
+      registry: counting,
+      clock: manualClock(),
+      currentGenTtlMs: TTL,
+      maxOpenSegments: 2,
+    });
+    const keys = Array.from({ length: CHUNKS }, (_, i) => i);
+    const streams = segments.map((ref) =>
+      source.getChunks!(ref, keys, { concurrency: 1 })[Symbol.asyncIterator](),
+    );
+    // Interleaved, so each stream's segment is let go of by the reader cache between two of its chunks.
+    for (let i = 0; i < CHUNKS; i++)
+      for (const s of streams) expect((await s.next()).done).toBe(false);
+    for (const s of streams) await s.return!(undefined);
+    // Each check after the cache let a segment go reads its row, as a read of that chunk alone would; none opens an
+    // object (a tail read and an index parse) to learn a version the row already names.
+    expect(storage.tails).toBeLessThanOrEqual(segments.length);
+    expect(gets).toBeGreaterThan(0);
+  });
+
+  it("retries a transient fault in opening the generation it moves to mid-stream, through the caller's retry", async () => {
+    const { source, storage, clock, publishGen1 } = await world();
+    const retrying = new RetryingStorageChunkSource(source, {
+      clock: manualClock(),
+      rng: { next: () => 0.5 },
+    });
+    let failures = 0;
+    storage.beforeRange = async (n) => {
+      if (n !== 1) return;
+      storage.beforeRange = undefined;
+      await publishGen1();
+      clock.advance(TTL + 1);
+      // The next tail read is the open of generation 1, where the stream moves.
+      storage.beforeTail = async () => {
+        storage.beforeTail = undefined;
+        failures++;
+        throw new TransientError('throttled');
+      };
+    };
+    const got = await read(
+      retrying,
+      REF,
+      Array.from({ length: CHUNKS }, (_, i) => i),
+    );
+    expect(failures).toBe(1);
+    expect(got.chunks.map(parityOf)).toContain(1);
   });
 
   it('retries a transient fault in the check that the object was replaced', async () => {

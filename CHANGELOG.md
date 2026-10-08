@@ -103,6 +103,21 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A read of ranges over more segments than the reader cache keeps no longer opens each object again per chunk.**
+  Before it hands out a chunk, a combine or `iterate` checks that its segment has not moved. Once the reader cache had
+  let the segment go, that check opened the generation again (a tail read and an index parse of up to about 1.3 MB)
+  only to learn a version the registry row already names, so a read over more segments than `cache.readerMax` or
+  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. The check now reads the row alone, as
+  a read of that chunk on its own would. A transient fault in it is retried through the store's retry, where it failed
+  the read.
+- **`cache.genTtlMs` that is not a finite number of 0 or more is refused.** `NaN` (from an unset environment variable),
+  a negative number or a string turned the timed pointer refresh off as `0` does, silently, so another process's load
+  or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built.
+- **A `budget` that is not `{ maxRequests }` or `false` is refused.** A per-call `budget: 5`, `'5'` or
+  `{ maxRequest: 5 }` read as no override, so the store's budget (1,000,000 requests by default) applied instead of the
+  cap the caller wrote; the store's own `budget` was read the same way. Each is now a `ValidationError` naming what is
+  wrong. A per-call `budget: null` now inherits the store's budget, where it put the default back on a store built with
+  `budget: false`.
 - **A read in progress re-resolves the segment before each chunk it serves from the cache, as it does for the rest.** A
   combine or `iterate` whose chunks were in the store's decoded-chunk cache served the generation it planned under for
   as long as it was pulled, past `cache.genTtlMs`: another process's load did not reach it, and an id that process

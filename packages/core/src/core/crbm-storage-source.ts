@@ -251,6 +251,19 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
 const readerIsOf = (reader: CrbmReader, live: Live): boolean =>
   reader.generation === live.target.generation && reader.lineage === live.target.lineage;
 
+/**
+ * The version `snap` names, `null` for no generation: from its resolution, so no object is opened to learn it, or from
+ * its reader for a snapshot built around one.
+ */
+async function versionNamed(snap: Snapshot): Promise<string | null> {
+  if (snap.target === undefined) {
+    const reader = await snap.reader;
+    return reader === null ? null : versionOf(reader.generation, reader.lineage);
+  }
+  const live = await snap.target;
+  return live === null ? null : versionOf(live.target.generation, live.target.lineage);
+}
+
 /** What a generation's object says of itself, which is what a summary is held against: its count and metadata. */
 function describe(reader: CrbmReader): GenerationDescription {
   let cardinality = 0;
@@ -430,6 +443,24 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.keystore = keystore;
     this.requireEncryption = requireEncryption ?? false;
     this.readerOptions = readerOptions;
+    // `0` turns the timed refresh off on purpose. Anything else that is not a finite, non-negative number (`NaN` from an
+    // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
+    // never reach a long-lived reader: refused instead.
+    if (
+      currentGenTtlMs !== undefined &&
+      currentGenTtlMs !== null &&
+      (typeof currentGenTtlMs !== 'number' ||
+        !Number.isFinite(currentGenTtlMs) ||
+        currentGenTtlMs < 0)
+    ) {
+      throw new ValidationError(
+        `cache.genTtlMs must be a finite number of milliseconds, 0 or more (0: no timed refresh); got ${
+          typeof currentGenTtlMs === 'number'
+            ? String(currentGenTtlMs)
+            : `a ${typeof currentGenTtlMs}`
+        }`,
+      );
+    }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.
     const refreshes =
@@ -585,6 +616,20 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   get pointerRefreshMs(): number {
     return this.clock !== undefined && this.registry !== undefined ? this.currentGenTtlMs : 0;
+  }
+
+  /**
+   * Whether a stream reading from `snap` must resolve its segment again before its next chunk, as a read of one chunk
+   * would: the snapshot's TTL has lapsed, an invalidation has happened since `epoch`, or the snapshot is no longer the
+   * one the reader cache holds for the segment (it let it go, or another read installed a newer one). Else nothing can
+   * have moved it, and the check costs a compare and a lookup.
+   */
+  private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
+    return (
+      this.invalidations !== epoch ||
+      this.expired(snap.installedAtMs) ||
+      this.snapshots.get(key) !== snap
+    );
   }
 
   private expired(installedAtMs: number): boolean {
@@ -1315,10 +1360,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
     validateChunkKeyOrder(keys);
     const retry = options?.retry;
+    const key = segmentKey(ref);
     let yielded = 0;
     let healed = false; // a heal since the last chunk yielded
     for (;;) {
       let snap = this.liveSnapshot(ref);
+      let epoch = this.invalidations;
       let pending = snap.reader;
       let chunks: ChunkStream | undefined;
       try {
@@ -1359,18 +1406,30 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         try {
           while (await pull.advance()) {
             // Before a chunk is handed out, the segment is resolved as a read of that chunk alone would resolve it: a
-            // `cache.genTtlMs` boundary, the reader cache having let the segment go, and an invalidation each leave
-            // the snapshot this stream was opened on no longer the live one. If that moved the segment to another
-            // generation or incarnation, or to none, nothing more is served from this stream: its ranges are dropped
-            // and the keys not yet yielded are read afresh.
-            const live = this.liveSnapshot(ref);
-            if (live !== snap) {
-              const now = await live.reader;
-              if (now === null || versionOf(now.generation, now.lineage) !== version) {
-                movedOn = true;
-                break;
+            // `cache.genTtlMs` boundary, the reader cache having let the segment go, an invalidation, and a newer
+            // snapshot another read installed each leave the snapshot this stream was opened on no longer the live
+            // one. If that moved the segment to another generation or incarnation, or to none, nothing more is served
+            // from this stream: its ranges are dropped and the keys not yet yielded are read afresh. The version is
+            // compared from the resolution, the registry's row, so no object is opened to learn it, and a fault in
+            // resolving starts the stream over at the top, where a caller's retry runs the resolution.
+            if (this.mayHaveMoved(key, snap, epoch)) {
+              const live = this.liveSnapshot(ref);
+              if (live !== snap) {
+                let now: string | null;
+                try {
+                  now = await versionNamed(live);
+                } catch (err) {
+                  if (!isTransientError(err)) throw err;
+                  movedOn = true;
+                  break;
+                }
+                if (now !== version) {
+                  movedOn = true;
+                  break;
+                }
+                snap = live;
               }
-              snap = live;
+              epoch = this.invalidations;
             }
             // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
             yield pull.take((chunk) => {
@@ -1399,7 +1458,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
         // window does not open beside them.
         await chunks?.settled();
-        this.dropStale(segmentKey(ref), snap);
+        this.dropStale(key, snap);
         healed = true;
       }
     }
