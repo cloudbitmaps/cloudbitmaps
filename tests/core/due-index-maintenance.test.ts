@@ -192,4 +192,20 @@ describe('due index — an index scan holds a bounded number of stray pointers',
     await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
     expect(await pointersIn(registry, dueBucket(expiresAt))).toHaveLength(0);
   });
+
+  it('a live expired segment behind more strays than the bound is still retired', async () => {
+    const { store, registry, advance } = await harness();
+    const expiresAt = T0 + DAY;
+    // Pointers are read in name order, so the strays come first.
+    for (let i = 0; i < 3; i++) {
+      const ref = { namespace: 'active', segment: `a-gone-${i}` };
+      await store.setRetention(ref, { expiresAt });
+      await registry.delete(ref);
+    }
+    const live = { namespace: 'active', segment: 'z-live' };
+    await store.setRetention(live, { expiresAt });
+    advance(2 * DAY);
+    const res = await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
+    expect(res).toMatchObject({ retired: 1, eligible: 1 });
+  });
 });

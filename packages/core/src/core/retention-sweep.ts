@@ -332,12 +332,12 @@ async function rowsFromDueIndex(
         continue;
       }
       // Strays are held up to the same bound as rows, as the fleet scan holds its pointers: removing one decides nothing
-      // irreversible, and those past it are left for a later scan.
+      // irreversible, and those past it are left for a later scan. The bound never skips a pointer unread: a live
+      // segment behind any number of strays is still found.
       if (gone.has(key)) {
         if (litter.length < options.maxScanSegments) litter.push(found);
         continue;
       }
-      if (gone.size >= options.maxScanSegments) continue;
       if (rows.length >= options.maxScanSegments) {
         throw new BudgetExceededError(
           `retireExpired: the due index yielded more than ${options.maxScanSegments} segments — the scan was ` +
@@ -347,8 +347,10 @@ async function rowsFromDueIndex(
       }
       const live = await registry.get(ref);
       if (live === null) {
-        gone.add(key);
-        litter.push(found); // the segment is gone; nothing will read this pointer usefully again
+        // The segment is gone; nothing will read this pointer usefully again. Past the bound, a second pointer to it
+        // costs one more read rather than a place in memory.
+        if (gone.size < options.maxScanSegments) gone.add(key);
+        if (litter.length < options.maxScanSegments) litter.push(found);
         continue;
       }
       rows.push(live);

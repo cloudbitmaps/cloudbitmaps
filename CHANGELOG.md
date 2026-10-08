@@ -107,7 +107,8 @@ so, and so do the module headers in the code.
   array, a `null` entry, or a `pricing` with no storage price list threw a raw `TypeError` from inside the model.
 - **`retireExpired({ scan: 'index' })` holds at most `maxScanSegments` stray pointers a call.** Pointers whose
   segment is gone, left when removing them failed, were all held and checked in one call however many there were;
-  those past the bound now wait for a later call, as the fleet scan's pointers already did.
+  those past the bound now wait for a later call, as the fleet scan's pointers already did. Every pointer is still
+  read: a live expired segment behind any number of strays is retired in the same call.
 - **Export, listing and feed edges.** `runExport` with a sink that has no `open()` failed every segment, one by one,
   into `failed`; it is a `ValidationError` before anything is read, and options of `null` read as none. The
   `export-segments` CLI reads an empty `CR_EXPORT_FORMAT`, an unset shell variable, as the default, as it already read
