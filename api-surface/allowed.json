@@ -1,5 +1,9 @@
 [
   {
+    "entry": "@cloudbitmaps/core/driver-kit ObjectRegistryStore.resolveCapabilities",
+    "reason": "removed with the tombstone reaper, its only caller: the sweep and delete settle conditionalDelete through their first read or listing, so a store that implemented it can drop it; agreed with the maintainer"
+  },
+  {
     "entry": "@cloudbitmaps/core CombineManyHeld*",
     "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
   },

@@ -40,6 +40,12 @@ A load that is refused returns `published: false` and a `reason`. It does not th
 current, and the result still carries the numbers (`cardinality`, `cardinalityBefore`) so you can log what was
 refused.
 
+**A bound is judged after the write, before the publish.** The load writes the new generation's object first, unpublished,
+then judges it, and only then moves the pointer. A refused load has written its object and deletes it, one write and one
+delete, unless another write changed the segment's row meanwhile, in which case collection takes it. Nothing a reader sees
+changes. To judge the outputs of a `materializeMany` call without writing anything, use a
+[dry run](#look-before-you-publish-a-dry-run).
+
 | `reason` | Means | What to do |
 |---|---|---|
 | `'empty'` | The ids produced nothing, and the segment is not empty. | Usually an upstream query that failed quietly. Fix it and re-run, or pass `allowEmpty: true` if emptying the segment is the point. |
@@ -984,6 +990,7 @@ await store.materializeMany({
     counts: Object.fromEntries(Object.entries(held).map(([n, bm]) => [n, bm.size])),
   },
   maxBufferedBytes: 256 * 1024 * 1024,
+  mayBeEmpty: ['lapsed'], // a set that may hold no id is named here, at the call's top level
   outputs: [{ dest: store.segment('send-1'), expr: { and: ['vip', 'engaged'] }, exclude: ['lapsed'] }],
   keep: 12,
 });
@@ -993,6 +1000,12 @@ The outputs are byte for byte what the same sets stored would publish. Everythin
 is checked, a fed call runs as one group and needs `maxBufferedBytes`, a set that holds no id is refused unless its name is
 in `mayBeEmpty`, and an erasure that this store runs while the call runs refuses it. The sets are your copy, which no
 erasure reaches: build them from the source after any erasure.
+
+**A small set that narrows a large stored one: load it instead.** A fed operand names no chunk keys before the pass, so
+an `and` of a fed set with a stored segment reads every chunk of the stored one, even where the fed set holds no id.
+When a set you hold is small and the stored operand it narrows is large, load the set as a segment of its own and name
+it as a stored operand: the call then reads only the chunks the two share, at the cost of that load. Drop it with
+`dropSegment` when the refresh is done.
 
 ### Look before you publish: a dry run
 

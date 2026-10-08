@@ -829,7 +829,6 @@
     "@cloudbitmaps/core/driver-kit ObjectRegistryStore.label": "readonly label: string;",
     "@cloudbitmaps/core/driver-kit ObjectRegistryStore.listKeys": "listKeys(prefix: string): AsyncIterable<string>;",
     "@cloudbitmaps/core/driver-kit ObjectRegistryStore.read": "read(key: string): Promise<ObjectRow | null>;",
-    "@cloudbitmaps/core/driver-kit ObjectRegistryStore.resolveCapabilities": "resolveCapabilities?(): Promise<void>;",
     "@cloudbitmaps/core/driver-kit ObjectRegistryStore.write": "write(key: string, body: Uint8Array, expect: 'absent' | { version: string; }): Promise<void>;",
     "@cloudbitmaps/core/driver-kit ObjectRow": "interface ObjectRow",
     "@cloudbitmaps/core/driver-kit ObjectRow.bytes": "readonly bytes: Uint8Array;",

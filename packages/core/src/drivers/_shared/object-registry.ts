@@ -185,11 +185,6 @@ export interface ObjectRegistryStore {
    * a live one included. Absent or `false`, the registry never calls `delete` and tombstones every row instead.
    */
   readonly conditionalDelete?: boolean;
-  /**
-   * Optional: settle {@link conditionalDelete} without a request to the backend, for a store that learns it from its
-   * client rather than knowing it at construction. A caller that must refuse before its first request awaits it first.
-   */
-  resolveCapabilities?(): Promise<void>;
 }
 
 /** A row as read: its envelope, the bytes it was parsed from, and the version that fences a write to it. */

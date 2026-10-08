@@ -92,7 +92,9 @@ A handle carries no deadline of its own (`expiresAt` among `store.segment`'s opt
 `ValidationError`). For a set that must stop being served after a deadline, use one of two shapes:
 
 - **Durable, for every reader:** record it with `setRetention` (above) and run `retireExpired` on a schedule. The sweep
-  drops the segment once the instant passes, so every process stops reading it and its bytes are reclaimed.
+  drops the segment once the instant passes, so every process stops reading it and its bytes are reclaimed. Reads go on
+  until the sweep has run and each reader has re-resolved the segment (within its `cache.genTtlMs`, or longer for a
+  pinned handle), so the cut-off is as exact as the schedule.
 - **One reader's cut-off:** check the deadline where you read, against the same clock you would hand the store:
 
   ```ts
@@ -101,7 +103,7 @@ A handle carries no deadline of its own (`expiresAt` among `store.segment`'s opt
   const served = Date.now() < deadline ? await promo.has(id) : false;
   ```
 
-  Keep the check beside an exclusion too: an opt-out list that should stop applying is a decision to make where it
+  Use this where the cut-off must be exact. Keep the check beside an exclusion too: an opt-out list that should stop applying is a decision to make where it
   is used, not a list that quietly reads as empty.
 
 ## Run the sweep: `store.retireExpired()`
@@ -338,11 +340,12 @@ mkdir reap && cd reap && npm init -y && npm install @cloudbitmaps/roaring@0.18 @
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';
 
-const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bucket' }) });
-const preview = await store.reapRegistryTombstones({ dryRun: true });
-console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`, preview.skipped);
+// The same storage options as your store: the bucket, and the prefix and region it uses.
+const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'my-bucket', prefix: 'cloudbitmaps' }) });
+const preview = await store.reapRegistryTombstones({ dryRun: true, limit: 100_000 });
+console.log(`would remove ${preview.wouldReap} of ${preview.examined} rows read`, preview.skipped, { limited: preview.limited });
 let done;
-do done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true });
+do done = await store.reapRegistryTombstones({ confirmNoLegacyWriters: true, limit: 100_000 });
 while (done.limited);
 ```
 
@@ -357,7 +360,16 @@ Use the driver package of your storage (`@cloudbitmaps/gcs`, `@cloudbitmaps/azur
 - **`confirmNoLegacyWriters: true` is your statement** that no process on a release before 0.12 writes the registry. One
   that did, re-creating a removed name, would issue the removed row's tokens again.
 - **A run is not resumable:** each lists and reads from the start, so a run costs a listing and one GET per row, plus a
-  DELETE per removal.
+  DELETE per removal, and every turn of the loop pays the reads again. `limit` bounds the removals of one run (default
+  1,000); a large one keeps the loop to a turn or two. A dry run's `wouldReap` is a total only when `limited` is `false`.
+- **Where the fence does not hold:** on an endpoint that ignores the condition (MinIO, fake-gcs-server), a
+  `conditionalDelete: true` you set makes each delete unfenced, so run it with every writer stopped. On a versioned
+  bucket a delete leaves a delete marker and the earlier version, record included, so a name that was personal data is
+  not erased from the bucket by this.
+- **What stops it:** an object it cannot read stops the run with an error naming its key, and removes nothing more,
+  since it may be a newer release's row; scope the run with `namespace` to get past it. A `create` that had already read
+  an envelope and meets its removal throws `WriteConflictError`: retry the create. A tombstone a 0.12 or later release
+  wrote while `conditionalDelete` was off carries an incarnation id, so it stays, and the call refuses such a registry.
 
 ## There is no per-id TTL
 

@@ -1418,7 +1418,6 @@ export class CloudRoaring {
       handles.set(name, handle);
     }
     // `mayBeEmpty` names fed operands, which the feed checks; without a feed it can name nothing.
-    const fedMayBeEmpty: unknown = mayBeEmptyIn;
     if (mayBeEmptyIn !== undefined && feedIn === undefined) {
       if (!Array.isArray(mayBeEmptyIn)) {
         throw new ValidationError(
@@ -1540,7 +1539,7 @@ export class CloudRoaring {
       concurrency,
       ...(budget === undefined ? {} : { budget }),
       ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
-      ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, fedMayBeEmpty, epochAt) }),
+      ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, mayBeEmptyIn, epochAt) }),
       ...(dryRun ? { dryRun: true } : {}),
     });
     const compiled = compileCombineMany(request(new Map()));
@@ -2665,8 +2664,8 @@ export class CloudRoaring {
   /**
    * Planning cost estimate — pure, no instance/data needed: sizing, sales, what-if. For a real, grounded report
    * from live segment sizes, use `store.segment(name).costReport()`. See {@link CostReport}.
-   * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
-   * internal. It is a planning tool, and its price list is as old as the release that ships it.
+   * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
+   * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
    */
   static estimateCost(input: EstimateInput): CostReport {
     return estimateCost(input);
@@ -3770,8 +3769,8 @@ export class Segment {
    * storage. The pointer refresh is priced at the store's own `cache.genTtlMs`, or at none when the store never
    * refreshes, unless the workload sets `genTtlMs`. See {@link CostReport} — it always includes a verdict (incl.
    * the lose-zone).
-   * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
-   * internal. It is a planning tool, and its price list is as old as the release that ships it.
+   * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
+   * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
    */
   async costReport(options?: {
     pricing?: PricingProfile;

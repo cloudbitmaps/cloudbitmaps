@@ -157,5 +157,9 @@ describe('a combine checks its own segment as it checks its operands', () => {
   it('reads it as empty under `allowAbsentOperands: true`', async () => {
     const w = await world();
     expect(await collect(never(w).andNot([w.audience], { allowAbsentOperands: true }))).toEqual([]);
+    // A union reads the absent base as empty, and so holds what its operand holds.
+    expect(await collect(never(w).union([w.audience], { allowAbsentOperands: true }))).toEqual(
+      await collect(w.audience.iterate()),
+    );
   });
 });

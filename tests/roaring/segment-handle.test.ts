@@ -78,3 +78,35 @@ describe('a handle takes no deadline', () => {
     expect(await store.segment('s', {}).count()).toBe(3);
   });
 });
+
+describe('an operand list holds segments only', () => {
+  const NOT_SEGMENTS: readonly unknown[] = [null, 5, {}, 'a'];
+  const message = 'an operand must be a segment from store.segment()';
+
+  it('every combine and *Into refuses a value that is not a segment, before reading anything', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    await store.load({ segment: 'dest' }, [9]);
+    const a = store.segment('a');
+    const dest = store.segment('dest');
+    for (const bad of NOT_SEGMENTS) {
+      const x = bad as Segment;
+      const drain = async (it: AsyncIterable<number>) => {
+        for await (const _ of it) void _;
+      };
+      await expect(drain(a.intersect([x]))).rejects.toThrow(message);
+      await expect(drain(a.union([x]))).rejects.toThrow(message);
+      await expect(drain(a.andNot([x]))).rejects.toThrow(message);
+      await expect(drain(a.intersect([a], { exclude: [x] }))).rejects.toThrow(message);
+      await expect(drain(a.union([a], { exclude: [x] }))).rejects.toThrow(message);
+      await expect(a.intersectInto(dest, [x])).rejects.toThrow(message);
+      await expect(a.unionInto(dest, [x])).rejects.toThrow(message);
+      await expect(a.andNotInto(dest, [x])).rejects.toThrow(message);
+      await expect(a.intersectInto(x, [a])).rejects.toThrow(message);
+      await expect(a.intersectInto(dest, [x])).rejects.toBeInstanceOf(ValidationError);
+    }
+    // No refused call wrote the destination.
+    expect((await store.generations({ segment: 'dest' })).length).toBe(1);
+  });
+});

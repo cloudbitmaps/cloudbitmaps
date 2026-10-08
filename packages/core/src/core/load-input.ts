@@ -119,7 +119,6 @@ function overCap(what: string, length: number): ValidationError {
  * Check a load's input and decode a bitmap input, before the load makes any request.
  *
  * @returns ids unchanged, to be consumed lazily by the write, or the decoded bitmap.
- * @param subject names what takes the input in a refusal's message.
  * @throws {ValidationError} for a byte array passed as ids; bytes that are malformed, over the cap, or followed by
  * more bytes; a `{ bitmap }` with no `serialize` method, or whose `serialize('portable')` returns no `Uint8Array`;
  * and anything that is none of the three inputs. An error the caller's own `serialize` throws propagates as it is.
@@ -127,15 +126,14 @@ function overCap(what: string, length: number): ValidationError {
 export function prepareLoadInput(
   input: LoadInput,
   codec: CodecInterface,
-  subject = 'a load',
 ): Iterable<number> | AsyncIterable<number> | DecodedLoadInput {
   if (typeof input !== 'object' || input === null) {
-    throw new ValidationError(`${subject} takes ids, { serialized } or { bitmap }`);
+    throw new ValidationError('a load takes ids, { serialized } or { bitmap }');
   }
   const tag = tagOf(input);
   if (tag === 'Uint8Array' || tag === 'Uint8ClampedArray') {
     throw new ValidationError(
-      `${subject}'s ids cannot be a ${tag} or Buffer: each byte would be loaded as an id. Pass portable Roaring ` +
+      `a load's ids cannot be a ${tag} or Buffer: each byte would be loaded as an id. Pass portable Roaring ` +
         `bytes as { serialized }, and ids as a Uint32Array or an array of numbers.`,
     );
   }
@@ -159,8 +157,8 @@ export function prepareLoadInput(
     return new DecodedLoadInput(decodeSerialized(bitmap.serialize('portable'), codec, what));
   }
   throw new ValidationError(
-    `${subject} takes ids (an iterable of integers), { serialized } or { bitmap }, as the only key; got an object ` +
-      `with keys [${keys.join(', ')}].${subject === 'a load' ? ' Load options go in the next argument.' : ''}`,
+    `a load takes ids (an iterable of integers), { serialized } or { bitmap }, as the only key; got an object ` +
+      `with keys [${keys.join(', ')}]. Load options go in the next argument.`,
   );
 }
 

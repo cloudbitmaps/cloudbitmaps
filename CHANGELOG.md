@@ -79,7 +79,10 @@ so, and so do the module headers in the code.
   its rules. `expiresAt` among `store.segment`'s options now throws `ValidationError`, so a deadline is never silently
   dropped. For a set that must stop being served after a deadline, record it with `setRetention` and run
   `retireExpired`, or check the deadline where you read ([a deadline on a set](docs/guide/retention.md#a-deadline-on-a-set)).
-  Retention's own `expiresAt` is unchanged.
+  Retention's own `expiresAt` is unchanged. An older copy of `@cloudbitmaps/roaring` installed beside this one asks each
+  handle whether it has expired, so a handle of this release passed to that copy's combine throws a `TypeError` there,
+  and a handle of that copy carrying `expiresAt`, passed to this release, reads its data: keep one version of the package
+  in an application.
 - **Held operands: `store.memory`, `MemoryOperand`, and core's `prepareHeld`, `CombineManyHeld` and `HeldChunks`.** A held
   operand did what a feed does, with the whole set resident instead of one chunk key at a time. A set you hold goes into
   `materializeMany` as a feed: the guide's recipe walks the sets by chunk key and yields them in the feed's order
