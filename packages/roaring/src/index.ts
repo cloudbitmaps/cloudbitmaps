@@ -161,7 +161,16 @@ function validateConcurrency(concurrency: number | undefined): void {
  */
 function requireScope(options: { namespace?: string; allNamespaces?: boolean }, op: string): void {
   // A scope names a namespace like a ref does, and these two scans read the registry themselves rather than
-  // through a core function that refuses it.
+  // through a core function that refuses it. `''` or a namespace that is not a string scanned nothing and read as a
+  // clean erasure.
+  if (options.namespace !== undefined) {
+    if (typeof options.namespace !== 'string') {
+      throw new ValidationError(
+        `${op}: namespace must be a string; got ${kindOf(options.namespace)}`,
+      );
+    }
+    validateSegmentRef({ segment: 'x', namespace: options.namespace });
+  }
   refuseReservedNamespace(options.namespace);
   if (options.namespace === undefined && options.allNamespaces !== true) {
     throw new ValidationError(
@@ -1179,6 +1188,9 @@ export class CloudRoaring {
       // A `Partial` policy is what puts this in reach: were a whole `RetryPolicy` required, each would be a compile
       // error.
       const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
+      if (userOnRetry !== undefined && typeof userOnRetry !== 'function') {
+        throw new ValidationError('retry.onRetry must be a function');
+      }
       const policy: RetryPolicy = {
         maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
         baseDelayMs: ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs,

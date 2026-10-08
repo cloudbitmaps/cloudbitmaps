@@ -479,6 +479,24 @@ export async function retireExpired(
   options: RetireExpiredOptions,
 ): Promise<RetireExpiredResult> {
   checkedAuditSink(options.audit, 'retireExpired');
+  // Shards are numbered from 0, below `totalShards`. Without `totalShards`, or with a number outside that range, a
+  // replica owned everything or nothing, silently: replicas numbered from 1 left shard 0 unswept for good.
+  if (options.shards !== undefined) {
+    const total = options.totalShards;
+    if (typeof total !== 'number' || !Number.isInteger(total) || total < 1) {
+      throw new ValidationError('retireExpired: shards needs totalShards, an integer of 1 or more');
+    }
+    if (!Array.isArray(options.shards)) {
+      throw new ValidationError('retireExpired: shards must be an array of shard numbers');
+    }
+    for (const shard of options.shards as readonly unknown[]) {
+      if (typeof shard !== 'number' || !Number.isInteger(shard) || shard < 0 || shard >= total) {
+        throw new ValidationError(
+          `retireExpired: a shard is an integer from 0 to totalShards - 1 (${total - 1}); got ${String(shard)}`,
+        );
+      }
+    }
+  }
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
   if (!Number.isFinite(now)) {

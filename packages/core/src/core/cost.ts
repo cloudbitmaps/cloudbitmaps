@@ -683,6 +683,12 @@ function buildReport(input: {
   const baseline = resolveBaseline(redis, storedGiB);
   const baselineUSD = baseline.monthlyUSD;
 
+  // A fraction: 95 meant as 95% would otherwise read as 1, every read a hit.
+  if ((input.workload.cacheHitRate ?? 0) > 1) {
+    throw new ValidationError(
+      `cacheHitRate must be a fraction from 0 to 1; got ${String(input.workload.cacheHitRate)}`,
+    );
+  }
   const cacheHitRate = clamp01(
     requireFiniteNonNeg(input.workload.cacheHitRate ?? 0, 'cacheHitRate'),
   );

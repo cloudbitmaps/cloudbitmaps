@@ -151,6 +151,19 @@ export async function runExport(
   options: ExportOptions = {},
 ): Promise<ExportManifest> {
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
+  if (options.format !== undefined && options.format !== 'roaring' && options.format !== 'ndjson') {
+    throw new ValidationError(`runExport: format must be 'roaring' or 'ndjson'`);
+  }
+  const batch = options.ndjsonBatchBytes;
+  // `NaN` or `Infinity` never flushed, so a segment became one string; 0 or a negative wrote once per id.
+  if (
+    batch !== undefined &&
+    (typeof batch !== 'number' || !Number.isSafeInteger(batch) || batch < 1)
+  ) {
+    throw new ValidationError(
+      'runExport: ndjsonBatchBytes must be a whole number of bytes, 1 or more',
+    );
+  }
   const format = options.format ?? 'roaring';
   const ext = format === 'roaring' ? '.roaring' : '.ndjson';
   const batchCap = options.ndjsonBatchBytes ?? DEFAULT_NDJSON_BATCH_BYTES;

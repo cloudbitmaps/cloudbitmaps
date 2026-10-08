@@ -103,6 +103,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Six more inputs of the wrong kind are refused where they changed what a call did.** An erasure or subject-report
+  scope of `namespace: ''`, or a namespace that is not a string, scanned nothing and read as a clean erasure. A key
+  given to `InProcessKeystore` or `NodeAead` as text of the right length became a key of printable characters with no
+  key derivation. A retry `baseDelayMs`, `maxDelayMs` or `backoffFactor` of `NaN`, a negative delay, a factor below 1,
+  an unknown `jitter` or an `onRetry` that is not a function made the backoff a hot retry loop; they are now checked
+  when the store is built. `retireExpired`'s `shards` without `totalShards`, or a shard outside `0` to
+  `totalShards - 1`, owned everything or nothing, so replicas numbered from 1 left shard 0 unswept. `exportSegments`'
+  `ndjsonBatchBytes` of `NaN` or `Infinity` never flushed and one below 1 wrote once per id, and a `format` other than
+  `'roaring'` or `'ndjson'` wrote `.ndjson` under the wrong name. `estimateCost`'s `cacheHitRate` above 1 (95 meant as
+  95%) read as every read a hit. Each is now a `ValidationError` naming what is wrong.
 - **A combine refuses an operand whose segment was dropped, retired or crypto-shredded, as it refuses one that never
   existed.** The check that refuses an operand naming no segment asked the registry whether a row was there, and a
   tombstone is a row, so an `exclude` that a drop or a retention sweep had retired passed the check, read as empty and

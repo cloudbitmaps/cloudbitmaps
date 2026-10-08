@@ -133,7 +133,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 
 > ⚠️ **Run the sweep from one process, or shard it.** N replicas each running the full sweep would contend over the
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
-> disjoint slice with `shards` and `totalShards`. The slice is a stable hash of the segment key, so a worker owns the
+> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
+> without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
 > same slice across restarts.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans

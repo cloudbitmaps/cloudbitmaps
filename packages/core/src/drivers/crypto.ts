@@ -16,6 +16,10 @@ const KEY_BYTES = 32; // AES-256
 const NONCE_BYTES = 12; // GCM standard nonce
 const TAG_BYTES = 16; // GCM tag
 
+/** A `Uint8Array`, a `Buffer` among them, from this realm or another. */
+const isBytes = (v: unknown): v is Uint8Array =>
+  Object.prototype.toString.call(v) === '[object Uint8Array]';
+
 /** AES-256-GCM AEAD bound to one 32-byte key. A fresh CSPRNG 96-bit nonce per `seal`; `aad` is authenticated,
  * never stored. Nonce-reuse safety: the random-96-bit birthday bound is ~q²/2⁹⁷, negligible below ~2³² seals
  * under one key. A per-segment DEK is **reused across all generations** (every load and rewrite encrypts under it), so
@@ -25,6 +29,8 @@ export class NodeAead implements Aead {
   private readonly key: Buffer;
 
   constructor(key: Uint8Array) {
+    if (!isBytes(key))
+      throw new ValidationError('AEAD key must be a Uint8Array of key bytes, not text');
     if (key.length !== KEY_BYTES)
       throw new ValidationError(`AEAD key must be ${KEY_BYTES} bytes, got ${key.length}`);
     this.key = Buffer.from(key);
@@ -97,6 +103,10 @@ export class InProcessKeystore implements IKeystore {
     const entries = Object.entries(options.keys);
     if (entries.length === 0) throw new ValidationError('keystore needs at least one KEK');
     for (const [id, k] of entries) {
+      // Text of the right length would pass the length check and become a key of printable characters, with no key
+      // derivation: an environment variable passed as it is.
+      if (!isBytes(k))
+        throw new ValidationError(`KEK "${id}" must be a Uint8Array of key bytes, not text`);
       if (k.length !== KEY_BYTES)
         throw new ValidationError(`KEK "${id}" must be ${KEY_BYTES} bytes, got ${k.length}`);
     }
