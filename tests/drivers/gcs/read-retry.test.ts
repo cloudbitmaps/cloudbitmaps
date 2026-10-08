@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { GcsStorage } from '@/gcs/backend';
-import type { Storage } from '@google-cloud/storage';
+import { Storage } from '@google-cloud/storage';
 
 /**
  * A GCS download is sent once by the SDK and retried by the driver, and a retried read cannot crash the process.
@@ -181,6 +181,22 @@ describe('a GCS download', () => {
       20_000,
     );
 
+    it.concurrent.each([503, 'reset', 'cut'] as const)(
+      "through the caller's own client, with the SDK's retries on, a first fault (%s) is retried once with no crash",
+      async (fault) => {
+        const stub = await startStub({ fault });
+        try {
+          const run = await runChild(stub.endpoint, call, ['own-client']);
+          expect(run.code).toBe(0);
+          expect(run.outcome).toHaveProperty('ok');
+          expect(stub.seen.filter((s) => s === 'media')).toHaveLength(2);
+        } finally {
+          await stub.close();
+        }
+      },
+      20_000,
+    );
+
     it.concurrent(
       'a persistent 503 is a TransientError after the bounded attempts, with no crash',
       async () => {
@@ -272,16 +288,71 @@ describe('a GCS download', () => {
       expect(backend.client.retryOptions.autoRetry).toBe(true);
     });
 
-    it('never touch a client the caller supplies', () => {
-      const own = new GcsStorage({
+    it("send a caller's client's downloads through a twin of it that does not retry, and leave the client as it was", () => {
+      const own = new Storage({
+        apiEndpoint: 'http://127.0.0.1:1',
+        projectId: 'p',
+        userAgent: 'app/1',
+        timeout: 4_321,
+      });
+      const backend = new GcsStorage({ bucket: 'b', client: own });
+      const twin = readClientOf(backend);
+      expect(backend.client).toBe(own);
+      expect(twin).not.toBe(own);
+      expect(own.retryOptions.autoRetry).toBe(true);
+      expect(twin.retryOptions.autoRetry).toBe(false);
+      // The same credentials object, so one token cache, and the same place, project, agent and timeout.
+      expect(twin.authClient).toBe(own.authClient);
+      expect(twin.constructor).toBe(own.constructor);
+      expect([twin.baseUrl, twin.apiEndpoint, twin.projectId]).toEqual([
+        own.baseUrl,
+        own.apiEndpoint,
+        own.projectId,
+      ]);
+      expect(twin.providedUserAgent).toBe('app/1');
+      expect(twin.timeout).toBe(4_321);
+      // An interceptor the caller adds afterwards applies to the twin's requests too.
+      type Hook = (o: { uri: string; headers?: Record<string, string> }) => {
+        uri: string;
+        headers?: Record<string, string>;
+      };
+      const later: Hook = (o) => ({ ...o, headers: { ...o.headers, 'x-later': '1' } });
+      own.interceptors.push({ request: later as never });
+      const sent = (twin.getRequestInterceptors() as Hook[]).reduce<ReturnType<Hook>>(
+        (r, f) => f(r),
+        { uri: '/' },
+      );
+      expect(sent.headers?.['x-later']).toBe('1');
+    });
+
+    it('use a client that already sends downloads once as it is', () => {
+      const own = new Storage({
+        apiEndpoint: 'http://127.0.0.1:1',
+        projectId: 'p',
+        retryOptions: { autoRetry: false },
+      });
+      expect(readClientOf(new GcsStorage({ bucket: 'b', client: own }))).toBe(own);
+    });
+
+    it('refuse, at construction, a client no twin can be built from', () => {
+      class Wrapped extends Storage {
+        constructor(endpoint: string) {
+          super({ apiEndpoint: endpoint, projectId: 'p' });
+        }
+      }
+      // A subclass whose constructor takes other arguments builds a twin that addresses another place.
+      expect(
+        () => new GcsStorage({ bucket: 'b', client: new Wrapped('http://127.0.0.1:1') }),
+      ).toThrow(/autoRetry: false/);
+    });
+
+    it('built for the caller, share one set of credentials between the two clients', () => {
+      const backend = new GcsStorage({
         bucket: 'b',
         apiEndpoint: 'http://127.0.0.1:1',
         projectId: 'p',
-      }).client;
-      const backend = new GcsStorage({ bucket: 'b', client: own });
-      expect(backend.client).toBe(own);
-      expect(readClientOf(backend)).toBe(own);
-      expect(own.retryOptions.autoRetry).toBe(true);
+      });
+      expect(readClientOf(backend).authClient).toBe(backend.client.authClient);
     });
   });
 });

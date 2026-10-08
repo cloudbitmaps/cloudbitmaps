@@ -39,7 +39,7 @@ It builds its own client from Application Default Credentials. Any other key is 
 |---|---|
 | `bucket` (required) | the bucket |
 | `prefix` | a key prefix for everything this store writes |
-| `client` | your own `Storage` client. Pass it as `client`; `storage` is refused, since in `CloudRoaring` that word means the backend. Build it with `retryOptions: { autoRetry: false }` (see below) |
+| `client` | your own `Storage` client. Pass it as `client`; `storage` is refused, since in `CloudRoaring` that word means the backend. Its downloads are sent without the SDK's retries (see below); everything else keeps them |
 | `projectId`, `apiEndpoint` | build a client for you, such as one for fake-gcs-server; refused beside `client` |
 | `simpleUploadThresholdBytes`, `maxObjectBytes` | the size up to which an object is one simple request (default 8 MiB) and the largest object (default 5 TiB, GCS's maximum) |
 | `readTimeoutMs` | cut off a read that has run this long, in milliseconds (see below); `0`, the default, sets no timeout |
@@ -59,9 +59,11 @@ It builds its own client from Application Default Credentials. Any other key is 
   `GcsStorage` builds therefore sends each download once, and the driver runs a download again itself, up to three
   more times with backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure). That holds for every
   caller, including a store built with `retry: false`. The client's other requests (uploads, listings, metadata reads)
-  keep the SDK's retries. **A client you pass as `client` is used as it is, so build it with
-  `retryOptions: { autoRetry: false }`.** That also turns off the SDK's retries of listings, metadata reads and
-  resumable uploads on that client, which the library does not retry; the client `GcsStorage` builds keeps them.
+  keep the SDK's retries. **A client you pass as `client` keeps its own retries for everything else**: its downloads go
+  through a twin of it, built from its own class with the same credentials object, endpoint, project, user agent,
+  timeout and interceptors and the SDK's retries off. A client already built with `retryOptions: { autoRetry: false }`
+  is used as it is, and one no twin can be built from, or whose twin would address another endpoint, is refused when the
+  backend is built.
 - **A client `timeout` does not bound a download on `@google-cloud/storage` 8.x**, so a read whose server stalls waits
   for it. Measured against a local server that never answers: still pending after 12 s with `timeout: 2000`.
   **`readTimeoutMs` does, and it is off unless you set it.** It bounds each read as a whole: a generation's tail (with

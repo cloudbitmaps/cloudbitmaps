@@ -1023,9 +1023,11 @@ The client the backend builds sends each download once, because in `@google-clou
 and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
 `ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after
 a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its other requests keep
-the SDK's retries. A `client` you pass is used as given, so build it with `retryOptions: { autoRetry: false }`, which also
-turns off the SDK's retries of listings, metadata reads and resumable uploads on that client
-([why](production.md#reliability-retries-backoff--timeouts)).
+the SDK's retries. A client you pass as `client` keeps its own retries for everything else: its downloads go through a
+twin of it, built from its own class with the same credentials object, endpoint, project, user agent, timeout and
+interceptors and the SDK's retries off. A client already built with `retryOptions: { autoRetry: false }` is used as it
+is, and one no twin can be built from, or whose twin would address another endpoint, is refused when the backend is
+built. ([why](production.md#reliability-retries-backoff--timeouts)).
 
 A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. It bounds
 one read as a whole (a tail with the metadata read it falls back on for an empty object, a range, a registry row): one

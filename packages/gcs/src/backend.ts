@@ -17,6 +17,7 @@ import type {
 import { Storage as GcsClient } from '@google-cloud/storage';
 import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
+import { downloadClient } from './read-client';
 
 export interface GcsStorageOptions {
   /** Target bucket (must already exist). */
@@ -26,11 +27,12 @@ export interface GcsStorageOptions {
   /**
    * A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. Its retry
    * options apply to every request except the single-request conditional writes, which the driver sends without
-   * that retry whatever they say: a registry row once, and a generation's object again only after a throttle, under
-   * its own backoff. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408, 429, 500, 502, 503 or 504 can crash the process
-   * with `ERR_STREAM_UNABLE_TO_PIPE`, so build it with `retryOptions: { autoRetry: false }`; the driver retries
-   * downloads itself. That also turns off the SDK's retries of listings, metadata reads and resumable uploads on
-   * this client, which the store does not retry. The client built here needs none of this: only its downloads are sent once.
+   * that retry whatever they say (a registry row once, and a generation's object again only after a throttle, under
+   * its own backoff), and the downloads. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408,
+   * 429, 500, 502, 503 or 504 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, so downloads go through a twin of
+   * this client, built from its own class with the same credentials object, endpoint and settings and the SDK's retries
+   * off, and the driver retries them itself. A client built with `retryOptions: { autoRetry: false }` is used as it is.
+   * One no twin can be built from, or whose twin would address another endpoint, is refused at construction.
    */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
@@ -151,20 +153,16 @@ export class GcsStorage implements StorageBackend {
         );
       }
       this.client = options.client;
-      readClient = options.client;
+      readClient = downloadClient(options.client);
     } else {
       const settings = {
         ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
         ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
       };
       this.client = new GcsClient(settings);
-      // A second client, for downloads only. `@google-cloud/storage` 7.x and 8.x retry a failed download by default, and
-      // when the retried request succeeds they throw `ERR_STREAM_UNABLE_TO_PIPE` outside any promise, which ends the
-      // process whatever the caller wrote around the call. A download is sent once instead, and the driver retries it
-      // itself (`download-retry.ts`). Everything else keeps the default retries: a resumable upload's session, a
-      // listing, a metadata read, none of which the store retries on its own. Two clients mean two `GoogleAuth`
-      // instances: lazy, so the first download makes a second token fetch, and a second hourly refresh follows.
-      readClient = new GcsClient({ ...settings, retryOptions: { autoRetry: false } });
+      // Downloads go through a twin that sends each once (see `read-client.ts`); it shares this client's credentials
+      // object, so one token fetch and one hourly refresh serve both.
+      readClient = downloadClient(this.client);
     }
     const shared = {
       storage: this.client,

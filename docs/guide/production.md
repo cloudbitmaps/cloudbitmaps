@@ -174,16 +174,18 @@ const store = new CloudRoaring({
 });
 ```
 
-**On GCS the driver retries downloads, and the SDK should not.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
+**On GCS the driver retries downloads, and the SDK does not.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
 and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
 `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
 `GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
 backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure), so a download is retried whichever
 call made it and whether or not the store's own `retry` is on. What still fails after those attempts is a
 `TransientError`, which the store's read retry, above, can run again. The client's other requests keep the SDK's
-retries. A `client` you pass is used as it is: build it with `retryOptions: { autoRetry: false }`. That also turns off
-the SDK's retries of listings, metadata reads and resumable uploads on that client, which the library does not
-retry; the client `GcsStorage` builds keeps them and needs nothing.
+retries. A client you pass as `client` keeps its own retries for everything else: its downloads go through a twin of it,
+built from its own class with the same credentials object, endpoint, project, user agent, timeout and interceptors and
+the SDK's retries off. A client already built with `retryOptions: { autoRetry: false }` is used as it is, and one no
+twin can be built from, or whose twin would address another endpoint, is refused when the backend is built. The two
+clients share one credentials object, so one token fetch serves both.
 
 **A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
 client that has no such option. Measured against a local server that accepts a read and never answers, a read through
