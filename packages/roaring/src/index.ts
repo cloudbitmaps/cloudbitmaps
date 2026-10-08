@@ -1633,7 +1633,8 @@ export class CloudRoaring {
     const keep = options.keep;
     const after = options.after;
     const through = options.through;
-    const pinOption = options.pin ?? true;
+    // `null` is not the default: a switch is `true` or `false`, as on every call.
+    const pinOption: unknown = options.pin === undefined ? true : options.pin;
     const feedIn: unknown = options.feed;
     const mayBeEmptyIn: unknown = options.mayBeEmpty;
     if (feedIn !== undefined && options.maxBufferedBytes === undefined) {
@@ -4082,6 +4083,14 @@ export class Segment {
     workload?: Workload;
   }): Promise<CostReport> {
     checkOptions(options, 'costReport', CALL_KEYS.costReport);
+    const shape: unknown = options?.workload;
+    if (
+      shape !== undefined &&
+      shape !== null &&
+      (typeof shape !== 'object' || Array.isArray(shape))
+    ) {
+      throw new ValidationError('costReport: workload must be an object');
+    }
     this.assertLeases([this]);
     const canMeasure = this.engine.supportsStorageSize;
     const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;

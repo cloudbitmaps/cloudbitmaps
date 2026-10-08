@@ -55,6 +55,14 @@ describe('a destructive call refuses a switch that is not a boolean', () => {
     await expect(store.retireExpired({ dryRun: null as never })).rejects.toBeInstanceOf(
       ValidationError,
     );
+    await expect(
+      store.materializeMany({
+        operands: { a: store.segment('a') },
+        outputs: [{ dest: store.segment('out'), expr: 'a' }],
+        keep: 1,
+        pin: null as never,
+      }),
+    ).rejects.toThrow('materializeMany: pin must be a boolean');
     expect(await store.segment('a').count()).toBe(3);
     expect(await store.segment('old', { namespace: 'tenantB' }).count()).toBe(1);
   });
@@ -217,6 +225,16 @@ describe('an option held in a getter or on a prototype is the option the call ru
     });
     expect(inherited).toEqual(own);
     expect(inherited).not.toEqual(await a.costReport());
+  });
+
+  it('costReport refuses a pricing or workload of the wrong shape, rather than ignoring it or throwing a TypeError', async () => {
+    const { a } = await world();
+    for (const options of [{ pricing: {} }, { pricing: 5 }, { workload: 'x' }, { workload: [] }]) {
+      await expect(a.costReport(options as never), JSON.stringify(options)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+    await expect(a.costReport({ workload: null as never })).resolves.toBeDefined();
   });
 });
 

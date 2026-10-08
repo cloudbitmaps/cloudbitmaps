@@ -1804,6 +1804,9 @@ describe('estimateCost refuses an input of the wrong shape', () => {
       { segments: [null] },
       { segments: [{ sizeBytes: 1 }], pricing: {} },
       { segments: [{ sizeBytes: 1 }], pricing: null },
+      { segments: new Array(2) },
+      { segments: [{ sizeBytes: 1 }], workload: 'x' },
+      { segments: [{ sizeBytes: 1 }], workload: [] },
     ]) {
       expect(() => estimateCost(input as never), JSON.stringify(input)).toThrow(ValidationError);
     }

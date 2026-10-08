@@ -103,8 +103,10 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **`estimateCost` refuses an input of the wrong shape** with `ValidationError`: no input, `segments` that are not an
-  array, a `null` entry, or a `pricing` with no storage price list threw a raw `TypeError` from inside the model.
+- **`estimateCost` and `costReport` refuse an input of the wrong shape** with `ValidationError`: no input, `segments`
+  that are not an array, a `null` entry or a hole in it, or a `pricing` with no storage price list threw a raw
+  `TypeError` from inside the model, and a `workload` that is not an object (a string, an array) was ignored.
+- **`materializeMany({ pin: null })` is refused**, as a `null` switch is on every other call; it ran as the default.
 - **`retireExpired({ scan: 'index' })` holds at most `maxScanSegments` stray pointers a call.** Pointers whose
   segment is gone, left when removing them failed, were all held and checked in one call however many there were;
   those past the bound now wait for a later call, as the fleet scan's pointers already did. Every pointer is still
@@ -137,8 +139,8 @@ so, and so do the module headers in the code.
   `exists` refuse a name in the library's own bookkeeping namespace, as every other entry does.
 - **Smaller fixes from the pre-release review.** A `KeyUnavailableError` listed every key id the keystore holds, and
   the message reaches `eraseSubject`'s ledger and logs; it names only the ids the wrappings reference now. A
-  `count()` over a custom source's per-chunk counts added a count that was `NaN`, negative or past 65,536; it is
-  refused as `IntegrityError`, as the key beside it already was. The `.crbm` writer accepted a generation past
+  `count()` over a custom source's per-chunk counts added a count that was `NaN`, negative, fractional or past 65,536;
+  it is refused as `IntegrityError`, as the key beside it already was, and a count of 0 still adds nothing. The `.crbm` writer accepted a generation past
   `Number.MAX_SAFE_INTEGER`, written as another number, and a chunk payload past the 1 MiB cap every reader refuses at
   open; both are `ValidationError` before anything is written. A range answered with the wrong length says how many
   bytes came back against how many were asked for, where it said "read short" of a long answer too.
