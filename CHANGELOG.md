@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A bucket or container that does not exist is an error, not an empty store.** The S3, GCS and Azure Blob drivers
+  read a missing bucket as a missing object, so a misspelt, not yet created or deleted bucket answered `has` with
+  `false`, `count` with `0` and a registry read with no row, with nothing to see. Each call now fails, as a load and
+  a listing already did: S3 and Azure Blob with the service's own `NoSuchBucket` and `ContainerNotFound`. GCS answers
+  a missing bucket and a missing object with the same `404`, so the GCS driver settles its first `404` with one
+  object listing, which only a missing bucket answers with `404`, and remembers the bucket once seen; a missing one
+  fails with `the GCS bucket does not exist: <bucket>`. A GCS generation delete in a missing bucket fails too, where
+  it reported the object gone.
 - **A registry row is read only under the name it was written for.** A row copied or restored to another segment's key
   or file read as that segment while naming the original, so a sweep that acts on the name a row carries (an
   erasure, a retention pass, a report) skipped a live, readable segment or acted on the original twice. Such a row

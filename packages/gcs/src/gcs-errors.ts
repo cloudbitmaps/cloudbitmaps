@@ -40,9 +40,26 @@ export function isThrottle(err: unknown): boolean {
   return status === 429 || status === 503;
 }
 
-/** The object / generation does not exist (GCS returns 404). */
+/** The object / generation does not exist (GCS returns 404), in a bucket that does. */
 export function isNotFound(err: unknown): boolean {
-  return httpStatus(err) === 404;
+  return httpStatus(err) === 404 && !isMissingBucket(err);
+}
+
+/**
+ * The bucket itself does not exist: a wiring fault, never an absent object. Read as one, a misnamed or deleted bucket
+ * would answer every read as an empty segment. GCS gives both the same status and reason (`404 notFound`), so only its
+ * message tells them apart: on a download the message is the response body as it came, JSON or text, and elsewhere
+ * the message and each `errors[].message` are GCS's own. A wording this does not match reads as an absent object.
+ */
+export function isMissingBucket(err: unknown): boolean {
+  if (httpStatus(err) !== 404) return false;
+  const e = err as { message?: unknown; errors?: unknown };
+  const says = (m: unknown): boolean => typeof m === 'string' && /bucket does not exist/i.test(m);
+  if (says(e.message)) return true;
+  return (
+    Array.isArray(e.errors) &&
+    e.errors.some((inner) => says((inner as { message?: unknown } | null)?.message))
+  );
 }
 
 /** A range request started past EOF (HTTP 416 Requested Range Not Satisfiable). */

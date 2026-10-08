@@ -45,6 +45,7 @@ import {
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
 import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
+import { BucketPresence } from './bucket-presence';
 import { retryDownload } from './download-retry';
 import { scrubCredentials } from './scrub-error';
 import { downloadFile, readOnce, singleHeader } from './read-once';
@@ -81,6 +82,7 @@ export interface GcsRegistryDriverOptions {
 /** The calls {@link ObjectStoreRegistry} needs, in GCS's dialect. Exported for the tests that drive one directly. */
 export class GcsRegistryStore implements ObjectRegistryStore {
   readonly label = 'GCS';
+  private readonly presence: BucketPresence;
 
   constructor(
     private readonly storage: Storage,
@@ -88,7 +90,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     private readonly bucket: string,
     private readonly readTimeoutMs: number,
     readonly conditionalDelete: boolean,
-  ) {}
+  ) {
+    this.presence = new BucketPresence(storage, bucket);
+  }
 
   /** A handle on one registry object. */
   private file(name: string) {
@@ -124,7 +128,10 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         deadline,
       );
     } catch (err) {
-      if (isNotFound(err)) return null;
+      if (isNotFound(err)) {
+        await this.presence.confirm(); // a missing bucket is an error, not an absent row
+        return null;
+      }
       throw mapReadError(err);
     }
     if (res.status !== 200) {
@@ -175,6 +182,7 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     } catch (err) {
       // A 412 (the generation moved on) or a 404 (the object is gone): the version to delete is not there.
       if (isPreconditionFailed(err) || isNotFound(err)) {
+        if (isNotFound(err)) await this.presence.confirm();
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
       throw mapError(err);

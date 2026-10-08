@@ -27,7 +27,7 @@ import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
 
 const BUCKET = 'b';
 
-type Operation = 'upload' | 'metadata' | 'media' | 'delete';
+type Operation = 'upload' | 'list' | 'metadata' | 'media' | 'delete';
 
 interface StoredObject {
   readonly body: Buffer;
@@ -161,13 +161,16 @@ class StubGcs {
     const name = upload
       ? (url.searchParams.get('name') ?? '')
       : decodeURIComponent(url.pathname.slice(objectPrefix.length));
+    const list = req.method === 'GET' && url.pathname === objectPrefix.slice(0, -1);
     const op: Operation = upload
       ? 'upload'
-      : req.method === 'DELETE'
-        ? 'delete'
-        : url.searchParams.get('alt') === 'media'
-          ? 'media'
-          : 'metadata';
+      : list
+        ? 'list'
+        : req.method === 'DELETE'
+          ? 'delete'
+          : url.searchParams.get('alt') === 'media'
+            ? 'media'
+            : 'metadata';
     this.sent.push(op);
     const fault = this.fault?.op === op ? this.fault : undefined;
     if (fault !== undefined) this.fault = undefined;
@@ -227,6 +230,11 @@ class StubGcs {
     });
     const current = this.objects.get(name);
     switch (op) {
+      case 'list':
+        return json(200, {
+          kind: 'storage#objects',
+          items: [...this.objects.keys()].map((n) => ({ name: n })),
+        });
       case 'upload': {
         const { metadata, bytes } = uploadParts(req, body);
         this.uploads.push({ name, query: Object.fromEntries(query), metadata });

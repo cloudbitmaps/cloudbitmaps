@@ -1,6 +1,7 @@
 import {
   isConditionalConflict,
   isInvalidRange,
+  isMissingContainer,
   isNotFound,
   isTransient,
 } from '@/azure-blob/azure-errors';
@@ -30,6 +31,15 @@ describe('Azure error classification', () => {
     expect(isNotFound(statusErr(404))).toBe(true); // getProperties: no body, no code
     expect(isNotFound(detailsErr('BlobNotFound'))).toBe(true); // GET: details.errorCode present
     expect(isNotFound(codeErr('BlobNotFound'))).toBe(true);
+    // A missing container is not a missing blob, on a GET (code) or a HEAD (the header's code only).
+    const noContainer = { statusCode: 404, code: 'ContainerNotFound' };
+    const noContainerHead = { statusCode: 404, details: { errorCode: 'ContainerNotFound' } };
+    expect(isMissingContainer(noContainer)).toBe(true);
+    expect(isMissingContainer(noContainerHead)).toBe(true);
+    expect(isNotFound(noContainer)).toBe(false);
+    expect(isNotFound(noContainerHead)).toBe(false);
+    expect(isTransient(noContainer)).toBe(false);
+    expect(isMissingContainer(detailsErr('BlobNotFound'))).toBe(false);
     expect(isTransient(statusErr(404))).toBe(false);
   });
 

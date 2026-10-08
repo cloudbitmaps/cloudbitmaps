@@ -61,7 +61,17 @@ export function isPreconditionFailed(err: unknown): boolean {
  * HEAD (`getProperties`) since a HEAD has no response body — so the 404 status is the reliable signal.
  */
 export function isNotFound(err: unknown): boolean {
+  if (isMissingContainer(err)) return false;
   return httpStatus(err) === 404 || azureCode(err) === 'BlobNotFound';
+}
+
+/**
+ * The container itself does not exist (`404 ContainerNotFound`): a wiring fault, never an absent blob. Read as one, a
+ * misnamed or deleted container would answer every read as an empty segment. The code arrives on a HEAD too, from
+ * the `x-ms-error-code` header, which {@link azureCode} reads.
+ */
+export function isMissingContainer(err: unknown): boolean {
+  return azureCode(err) === 'ContainerNotFound';
 }
 
 /** A range request started past EOF (HTTP 416 `InvalidRange`). */
