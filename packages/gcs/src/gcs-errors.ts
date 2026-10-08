@@ -141,13 +141,7 @@ export function isTransient(err: unknown): boolean {
   const status = httpStatus(err);
   if (status === 408 || status === 429 || (status !== undefined && status >= 500 && status < 600))
     return true;
+  // The same connection faults a download is retried on: one list, so a write and a read cannot disagree on one.
   const net = networkCode(err);
-  return (
-    net === 'ECONNRESET' ||
-    net === 'ETIMEDOUT' ||
-    net === 'ECONNREFUSED' ||
-    net === 'EPIPE' ||
-    net === 'EAI_AGAIN' ||
-    net === 'ENOTFOUND'
-  );
+  return net !== undefined && TRANSPORT_CODES.has(net);
 }

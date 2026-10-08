@@ -25,6 +25,28 @@ describe('GCS error classification', () => {
     expect(isTransient(apiErr(404))).toBe(false);
   });
 
+  it('every connection fault a download retries is transient on a write too', () => {
+    // A registry write or an upload that failed with one of these reached the caller raw, so a write was not settled
+    // by reading what landed, and a caller keyed on TransientError did not run it again.
+    for (const code of [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ECONNABORTED',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'EPIPE',
+      'ERR_STREAM_PREMATURE_CLOSE',
+    ]) {
+      expect(isTransient({ code })).toBe(true);
+      expect(isTransportFault({ code })).toBe(true);
+    }
+    expect(isTransient({ code: 'ENOENT' })).toBe(false);
+    expect(isTransient({ code: 'EPROTO' })).toBe(false);
+  });
+
   it('a 404 that says the bucket does not exist is not a missing object, in any shape GCS sends it', () => {
     const says = 'The specified bucket does not exist.';
     const shapes = [

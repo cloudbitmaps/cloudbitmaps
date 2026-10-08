@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Azure Blob reads a `409` or `412` as a lost race only when it is one.** Every `409` and `412` was taken as another
+  writer winning, so a write-once (immutable) container's `BlobImmutableDueToPolicy` turned a load into
+  `published: false, reason: 'superseded'`, and a blob leased in the portal (`LeaseIdMissing`) made a registry write
+  spend its attempts and throw `WriteConflictError` as contention. Only `BlobAlreadyExists` and `ConditionNotMet`, or
+  a `409` or `412` with no code, are a lost race now; any other reaches the caller as Azure's own error.
+- **A GCS write that fails with `ECONNABORTED`, `EHOSTUNREACH`, `ENETUNREACH` or `ERR_STREAM_PREMATURE_CLOSE` is a
+  `TransientError`**, as the same fault already was on a read. It reached the caller raw, so a registry write was not
+  settled by reading what landed, and a caller keyed on `TransientError` did not run it again.
 - **A GCS registry write can no longer delete the row it meant to replace.** The SDK checks an upload's checksum
   after the upload, and on a mismatch, or an answer that names no checksum (as some GCS-compatible servers send),
   deletes the object by name with no precondition. For a registry row that removed the live row, another writer's

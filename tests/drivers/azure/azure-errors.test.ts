@@ -3,6 +3,7 @@ import {
   isInvalidRange,
   isMissingContainer,
   isNotFound,
+  isPreconditionFailed,
   isTransient,
 } from '@/azure-blob/azure-errors';
 
@@ -25,6 +26,30 @@ describe('Azure error classification', () => {
     expect(isConditionalConflict(statusErr(412))).toBe(true);
     expect(isConditionalConflict(codeErr('ConditionNotMet'))).toBe(true);
     expect(isTransient(statusErr(412))).toBe(false);
+  });
+
+  it('a 409 or 412 that names another cause is not a lost race', () => {
+    // A write-once (WORM) container refuses every overwrite with 409 BlobImmutableDueToPolicy, and a blob leased in
+    // the portal answers 412 LeaseIdMissing: read as a lost race, a load reported another loader winning and a
+    // registry write spent its attempts as "contention".
+    for (const [status, code] of [
+      [409, 'BlobImmutableDueToPolicy'],
+      [409, 'LeaseAlreadyPresent'],
+      [409, 'BlobArchived'],
+      [412, 'LeaseIdMissing'],
+      [412, 'LeaseNotPresentWithBlobOperation'],
+    ] as const) {
+      expect(isConditionalConflict({ statusCode: status, code })).toBe(false);
+      expect(isConditionalConflict({ statusCode: status, details: { errorCode: code } })).toBe(
+        false,
+      );
+      expect(isPreconditionFailed({ statusCode: status, code })).toBe(false);
+      expect(isTransient({ statusCode: status, code })).toBe(false);
+    }
+    expect(isPreconditionFailed({ statusCode: 412, code: 'ConditionNotMet' })).toBe(true);
+    expect(isPreconditionFailed(statusErr(412))).toBe(true);
+    expect(isConditionalConflict({ statusCode: 409, code: 'BlobAlreadyExists' })).toBe(true);
+    expect(isConditionalConflict({ statusCode: 412, code: 'ConditionNotMet' })).toBe(true);
   });
 
   it('404 = not found — keyed off status (code is undefined on a HEAD/getProperties)', () => {
