@@ -1,5 +1,7 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { dropSegment } from '@/core/erasure';
+import { loadSegment } from '@/core/load';
+import { rollbackSegment } from '@/core/rollback';
 import { roaringCodec } from '@/roaring-codec';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -130,5 +132,43 @@ describe('a segment tombstoned while its rewrite runs is searched as a fresh cal
     expect((await registry.get(REF))?.status).toBe('destroyed');
     expect(res).toMatchObject({ erased: true });
     expect(await generations(storage)).toEqual([]);
+  });
+
+  it('what both passes deleted is reported, and the newest holder', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const deps = { storage, registry, codec: roaringCodec };
+    // Generations 0 and 2 hold the id; the pointer is rolled back to 1, which does not.
+    await loadSegment(REF, [1, 9], deps, { keep: 5 });
+    await loadSegment(REF, [1], deps, { keep: 5 });
+    await loadSegment(REF, [1, 9], deps, { keep: 5 });
+    await rollbackSegment(REF, 1, deps);
+    const denied: IStorageDriver = {
+      capabilities: () => storage.capabilities(),
+      getTail: (k, m) => storage.getTail(k, m),
+      getRange: (k, o, l) => storage.getRange(k, o, l),
+      list: (r) => storage.list(r),
+      putImmutable: (k, w) => storage.putImmutable(k, w),
+      delete: () => Promise.reject(new Error('AccessDenied')),
+    };
+    // A drop whose deletes fail lands as the erasure writes its fence over generation 2.
+    let fired = false;
+    const racing = Object.create(registry) as MemoryRegistryDriver;
+    racing.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
+      if (!fired && 'keptGens' in patch) {
+        fired = true;
+        await dropSegment(REF, { storage: denied, registry }, { confirmSegment: 's' }).catch(
+          () => undefined,
+        );
+      }
+      return registry.compareAndSwap(ref, expected, patch);
+    };
+
+    const res = await eraseIdFromSegment(REF, 9, { ...deps, registry: racing });
+
+    expect(fired).toBe(true);
+    expect(await generations(storage)).toEqual([]);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 2 });
+    expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 1, 2]);
   });
 });

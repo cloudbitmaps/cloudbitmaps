@@ -247,7 +247,12 @@ export async function eraseIdFromSegment(
   if (result.reason === 'destroyed' && first.tombstoned === false) {
     const again = await eraseOnce(ref, id, deps, options, {});
     // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
-    return again.reason === 'destroyed' ? result : again;
+    if (again.reason === 'destroyed') return result;
+    if (!again.erased) return again;
+    // Erased under the tombstone: the report covers both passes, what each deleted and the newest holder either read.
+    const collected = [...new Set([...result.collected, ...again.collected])].sort((a, b) => a - b);
+    const newest = Math.max(result.fromGeneration ?? -1, again.fromGeneration ?? -1);
+    return { ...again, collected, ...(newest >= 0 ? { fromGeneration: newest } : {}) };
   }
   return result;
 }
@@ -468,53 +473,6 @@ async function eraseOnce(
     );
 
   /**
-   * The id is not in the current generation — which is **not** the same as not being in the bucket.
-   *
-   * A re-seed that simply stops including someone leaves their bit in the generation it dropped them from, and
-   * the collection a load runs after it publishes (default `keep: 1`) *retains* exactly that
-   * generation as the reader grace window. So the ordinary lifecycle of a rotating audience leaves an ex-member's
-   * bit sitting in a retained object. Answering `'not-member'` there would filter the segment out of the
-   * `eraseSubject` ledger entirely: a clean Art. 17 receipt over bytes still in the bucket, for the one
-   * population most likely to be asking, people who already left.
-   *
-   * And the generations **above** the pointer count too. After a rollback they include the ones it rolled back
-   * from, which `rollbackSegment` with `allowForward` makes current again, so a holder there is one ordinary
-   * operator action from being served. There can be several: every generation loaded after the one the pointer
-   * was rolled back to.
-   *
-   * So look, at all of them. A holder cannot be rewritten — a rewrite of a non-current generation would regress
-   * the pointer — so the only remedy is to delete it:
-   *
-   *  - **Below the pointer**, `gcOrphanGenerations` with `keep: 0` takes every generation at once, re-proving the
-   *    row before each delete. It costs the segment its grace window and its older rollback targets, which is
-   *    proportionate: only a segment that genuinely held the subject pays it.
-   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders: a
-   *    generation up there without the id is still an operator's rollback target and stays. This is the one place
-   *    the library deletes an above-pointer object that it did not write, and it costs `rollbackSegment` a
-   *    target, deliberately: a rollback point that still contains data we were required to erase is not a
-   *    rollback point, and keeping it would make the erasure undoable by an ordinary operator action. Each delete
-   *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
-   *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
-   *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
-   *    exactly as in collection's own loop: a rollback that lands inside it onto the generation being deleted
-   *    leaves the pointer naming a missing object. The rollback's own move-then-verify catches every such landing
-   *    except one whose check runs before the delete, and no storage port offers a conditional delete to close it.
-   *
-   * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
-   * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection
-   * takes them. If something still holds it and the pointer moved, the row says why, as it does everywhere else in
-   * this function. If something holds it and the pointer did not move, the delete that should have taken it did
-   * not, and that throws.
-   *
-   * **The cost is paid only where it is owed.** The cheap filter comes first: one `list`, and if the segment has no
-   * other generations at all — true of any store that collects with `keep: 0`, and of a segment loaded once —
-   * nothing else is read. Then per generation, the index is opened and the chunk is fetched only if the index
-   * says that chunk exists: every generation above the pointer, since each holder there must be found; and below
-   * it only until the first holder, since `keep: 0` takes the rest regardless (a few reads already in flight when it
-   * is found may land past it, fewer than the scan's bound) — and not at all once a holder was found above. `eraseSubject` fans this out across every registered segment, so the filter is what keeps a
-   * fleet-wide subject scan from doubling its reads on segments that never held the id.
-   */
-  /**
    * Write the row before deleting a holder above the pointer, so a publish already in flight is refused rather than
    * landing on the object this call is about to delete.
    *
@@ -595,6 +553,53 @@ async function eraseOnce(
     return { ...base, erased: true, fromGeneration: holder.generation, collected };
   };
 
+  /**
+   * The id is not in the current generation — which is **not** the same as not being in the bucket.
+   *
+   * A re-seed that simply stops including someone leaves their bit in the generation it dropped them from, and
+   * the collection a load runs after it publishes (default `keep: 1`) *retains* exactly that
+   * generation as the reader grace window. So the ordinary lifecycle of a rotating audience leaves an ex-member's
+   * bit sitting in a retained object. Answering `'not-member'` there would filter the segment out of the
+   * `eraseSubject` ledger entirely: a clean Art. 17 receipt over bytes still in the bucket, for the one
+   * population most likely to be asking, people who already left.
+   *
+   * And the generations **above** the pointer count too. After a rollback they include the ones it rolled back
+   * from, which `rollbackSegment` with `allowForward` makes current again, so a holder there is one ordinary
+   * operator action from being served. There can be several: every generation loaded after the one the pointer
+   * was rolled back to.
+   *
+   * So look, at all of them. A holder cannot be rewritten — a rewrite of a non-current generation would regress
+   * the pointer — so the only remedy is to delete it:
+   *
+   *  - **Below the pointer**, `gcOrphanGenerations` with `keep: 0` takes every generation at once, re-proving the
+   *    row before each delete. It costs the segment its grace window and its older rollback targets, which is
+   *    proportionate: only a segment that genuinely held the subject pays it.
+   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders: a
+   *    generation up there without the id is still an operator's rollback target and stays. This is the one place
+   *    the library deletes an above-pointer object that it did not write, and it costs `rollbackSegment` a
+   *    target, deliberately: a rollback point that still contains data we were required to erase is not a
+   *    rollback point, and keeping it would make the erasure undoable by an ordinary operator action. Each delete
+   *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
+   *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
+   *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
+   *    exactly as in collection's own loop: a rollback that lands inside it onto the generation being deleted
+   *    leaves the pointer naming a missing object. The rollback's own move-then-verify catches every such landing
+   *    except one whose check runs before the delete, and no storage port offers a conditional delete to close it.
+   *
+   * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
+   * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection
+   * takes them. If something still holds it and the pointer moved, the row says why, as it does everywhere else in
+   * this function. If something holds it and the pointer did not move, the delete that should have taken it did
+   * not, and that throws.
+   *
+   * **The cost is paid only where it is owed.** The cheap filter comes first: one `list`, and if the segment has no
+   * other generations at all — true of any store that collects with `keep: 0`, and of a segment loaded once —
+   * nothing else is read. Then per generation, the index is opened and the chunk is fetched only if the index
+   * says that chunk exists: every generation above the pointer, since each holder there must be found; and below
+   * it only until the first holder, since `keep: 0` takes the rest regardless (a few reads already in flight when it
+   * is found may land past it, fewer than the scan's bound) — and not at all once a holder was found above. `eraseSubject` fans this out across every registered segment, so the filter is what keeps a
+   * fleet-wide subject scan from doubling its reads on segments that never held the id.
+   */
   const notInCurrent = async (): Promise<EraseIdResult> => {
     const notMember: EraseIdResult = {
       ...base,
