@@ -15,7 +15,7 @@ so, and so do the module headers in the code.
 
 - **`GuardRefusal` is exported from `@cloudbitmaps/core`**: the type of `judgeLoad`'s `wouldRefuse`, every
   `LoadRefusal` but `'superseded'`, which a caller could read but not name. `@cloudbitmaps/roaring`'s dry-run results
-  name the same type `MaterializeRefusal`, as before.
+  keep their own name for the same set of refusals, `MaterializeRefusal`.
 - **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
   exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
   object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,
