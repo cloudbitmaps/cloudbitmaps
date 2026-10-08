@@ -103,6 +103,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A tombstone whose objects cannot be deleted no longer stops `retireExpired` retiring.** Each such tombstone was
+  charged to `limit` like a purge that happened, so under a role without delete permission, where every retirement
+  becomes one, enough of them past their grace left every new expiry unretired, call after call, and the collection's
+  error was swallowed. It is now a refused purge: not charged, counted in `purgeFaults` with its cause in
+  `firstPurgeFault`, and three in a row stop purging for the call, as a refused row delete already did.
 - **`eraseSubject` searches a tombstoned segment.** A destroyed row was skipped as "already unreadable", but only a
   crypto-shred makes it so: a cleartext `destroySegment({ allowCleartext: true })`, a drop whose sweep left an object,
   or a write that landed after it leaves objects anyone can read, and an id in one stayed in the bucket while the

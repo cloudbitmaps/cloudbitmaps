@@ -204,7 +204,8 @@ export type RetireEntry =
        * expiring is the silence that costs a retention commitment.
        * `'limit'` — eligible, but this cycle's `limit` was already spent. Re-run to continue.
        * `'tombstone-not-empty'` — a tombstone whose Storage generations are not gone even after a GC
-       * attempt, so its row is kept: the row is what keeps the segment reachable by the generation collection and
+       * attempt, so its row is kept, and, unless the collection lost a race to a write of the row, a refused purge
+       * (see {@link RetireExpiredResult.purgeFaults}): the row is what keeps the segment reachable by the generation collection and
        * refused by every writer. Several causes, all self-healing: the storage really could not be reclaimed,
        * the collection *declined* because the row changed underneath it (`WriteConflictError`, which this
        * sweep swallows deliberately), or this was a `dryRun`, which reports the reason without attempting the
@@ -617,8 +618,25 @@ export async function retireExpired(
           // row, and nothing else will ever call it for this segment (no load publishes onto a tombstone, and the
           // erasure rewrite refuses one). Without this the row is stuck forever, the
           // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
-          if (!dryRun) await gcOrphanGenerations(ref, deps).catch(() => undefined);
+          let collectFault: { error: unknown } | undefined;
+          if (!dryRun) {
+            await gcOrphanGenerations(ref, deps).catch((error: unknown) => {
+              collectFault = { error };
+            });
+          }
           if (!(await isFullyReclaimed(deps, ref))) {
+            // A refused purge, as a refused row delete is below: not charged to `limit`, so the retirements behind it
+            // still get their turn (a role without delete permission makes every retirement a stuck tombstone, and
+            // charged, enough of them stopped every new one), and after enough in a row no more purges are tried this
+            // call. The collection's error, when it raised one, names the cause; a collection that lost a race to a
+            // write of the row is not a refusal, as a row delete's is not.
+            const lostRace = collectFault !== undefined && isWriteConflictError(collectFault.error);
+            if (!dryRun && !lostRace) {
+              attempted -= 1;
+              purgeRun += 1;
+              if (purgeRun >= MAX_CONSECUTIVE_PURGE_FAULTS) purging = false;
+              if (collectFault !== undefined) noteFault(collectFault.error);
+            }
             entries.push({ ...base, action: 'skipped', reason: 'tombstone-not-empty' });
             continue;
           }

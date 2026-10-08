@@ -744,6 +744,34 @@ describe('retireExpired — tombstone purge', () => {
     expect(await storageGenerations(w.storage, { segment: 'day' })).toEqual([7]); // still there, still reported
   });
 
+  it('a tombstone whose objects cannot be deleted is a refused purge: not charged, its cause reported', async () => {
+    // A role without delete permission makes every retirement a stuck tombstone. Charged to `limit` like a purge that
+    // happened, enough of them stopped every new retirement, and the collection's error was swallowed.
+    const w = world();
+    for (const s of ['a', 'b', 'c']) {
+      await w.load(s, [1]);
+      await w.store().setRetention({ segment: s }, { expiresAt: EXPIRED });
+    }
+    await retireExpired(w.dropDeps, { now: T0 });
+    for (const s of ['a', 'b', 'c']) {
+      await bulkLoadCrbmGeneration(w.storage, { segment: s, generation: 7 }, [1]); // a straggler object
+    }
+    await w.load('z', [1]);
+    await w.store().setRetention({ segment: 'z' }, { expiresAt: T0 + DAY });
+    const storage = faultyStorage(w.storage, {
+      delete: () => Promise.reject(new Error('AccessDenied')),
+    });
+
+    const res = await retireExpired({ ...w.dropDeps, storage }, { now: T0 + 2 * DAY, limit: 3 });
+    expect(
+      res.entries.filter((e) => 'reason' in e && e.reason === 'tombstone-not-empty'),
+    ).toHaveLength(3);
+    expect(res.retired).toBe(1);
+    expect((await w.registry.get({ segment: 'z' }))!.status).toBe('destroyed');
+    expect(res.purgeFaults).toBeGreaterThan(0);
+    expect(res.firstPurgeFault).toMatch(/AccessDenied/);
+  });
+
   it('charges tombstone purges against the same per-cycle limit', async () => {
     // A purge branch outside the cap would let a sweep advertised as "one bounded batch" delete thousands of
     // rows and issue two list calls for each.
