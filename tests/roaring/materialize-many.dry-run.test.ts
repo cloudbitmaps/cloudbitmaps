@@ -16,7 +16,13 @@ import type {
 import { judgeLoad, loadSegment } from '@/core/load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { IntegrityError } from '@/core/errors';
+import {
+  IntegrityError,
+  KeyUnavailableError,
+  TransientError,
+  UnsupportedError,
+  ValidationError as CoreValidationError,
+} from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { batchWorld, range } from '../helpers/batch-world';
@@ -438,5 +444,68 @@ describe('judgeLoad', () => {
       reads: 2,
     });
     await expect(judgeLoad(SEG, 4, damaged)).rejects.toBeInstanceOf(IntegrityError);
+  });
+
+  it('reports null for any failure to read the object where no bound needs it, as the load publishes there', async () => {
+    // A newer format the reader does not know, or an encrypted object it has no key for: the load never opens the
+    // object when no bound needs its size, so it publishes, and the judgement must not fail where the load would not.
+    for (const fault of [
+      new UnsupportedError('a newer .crbm major version'),
+      new CoreValidationError('.crbm is encrypted but no decryption key'),
+      new TransientError('a throttled read'),
+    ]) {
+      const d = deps();
+      await loadSegment(SEG, range(0, 4), d);
+      const bare: IRegistryDriver = new Proxy(d.registry, {
+        get(target, p, rx) {
+          const value: unknown = Reflect.get(target, p, rx);
+          if (p !== 'get') return typeof value === 'function' ? value.bind(target) : value;
+          return async (...args: Parameters<IRegistryDriver['get']>) => {
+            const row = await d.registry.get(...args);
+            return row === null ? null : { ...row, summary: undefined };
+          };
+        },
+      });
+      const broken: IStorageDriver = new Proxy(d.storage, {
+        get(target, p, rx) {
+          const value: unknown = Reflect.get(target, p, rx);
+          if (p !== 'getTail') return typeof value === 'function' ? value.bind(target) : value;
+          return () => Promise.reject(fault);
+        },
+      });
+      const damaged = { ...d, registry: bare, storage: broken };
+      expect(await judgeLoad(SEG, 4, damaged, { allowEmpty: true }), fault.name).toEqual({
+        cardinalityBefore: null,
+        reads: 2,
+      });
+      expect((await loadSegment(SEG, range(0, 4), damaged, { allowEmpty: true })).published).toBe(
+        true,
+      );
+      await expect(judgeLoad(SEG, 4, damaged)).rejects.toBe(fault);
+    }
+  });
+
+  it('fails where the load fails on the segment key, whether or not a bound reads the object', async () => {
+    const d = deps();
+    const keystore = new InProcessKeystore({
+      keys: { k1: new Uint8Array(32).fill(7) },
+      activeKeyId: 'k1',
+    });
+    await loadSegment(SEG, range(0, 4), { ...d, keystore });
+    const failing = {
+      ...keystore,
+      createDek: keystore.createDek.bind(keystore),
+      openDek: () => Promise.reject(new TransientError('the key service is throttling')),
+    } as unknown as InProcessKeystore;
+    const down = { ...d, keystore: failing };
+    await expect(judgeLoad(SEG, 4, down, { allowEmpty: true })).rejects.toBeInstanceOf(
+      TransientError,
+    );
+    await expect(loadSegment(SEG, range(0, 4), down, { allowEmpty: true })).rejects.toBeInstanceOf(
+      TransientError,
+    );
+    await expect(judgeLoad(SEG, 4, d, { allowEmpty: true })).rejects.toBeInstanceOf(
+      KeyUnavailableError,
+    );
   });
 });

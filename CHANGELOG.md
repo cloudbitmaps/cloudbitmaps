@@ -103,6 +103,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`store.segment` refuses an option it does not know, and options that are not an object.** A misspelt `namespace`
+  (`{ nameSpace: tenant }`), or a namespace passed on its own (`store.segment('a', 'tenant')`), was read as no
+  namespace, so the handle addressed the segment of that name in the default namespace: a read of another
+  namespace's data, or an `*Into` that wrote outside the tenant's. Each is now a `ValidationError` naming the key; a
+  key whose value is `undefined` is still read as absent, so a spread of options keeps working.
+- **A `guard` that is not an object is refused, instead of being read as no bound.** `{ guard: 0.5 }` meant as
+  `{ guard: { minRetained: 0.5 } }`, or a guard passed as a string or an array, read as no bound at all on
+  `store.load`, the `*Into` verbs and `judgeLoad`, so a load the caller meant to refuse published. Each is now a
+  `ValidationError` before any request. `store.materializeMany` refused it already.
 - **An `exclude` that is not an array is refused, instead of being read as no exclusion.** A `Set` or a lone segment
   passed as `exclude` to `intersect`, `union`, `intersectInto` or `unionInto` was taken without an error and applied
   none of it, so the call streamed or published the ids it was meant to remove. The option's type is an array, so code

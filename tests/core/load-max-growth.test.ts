@@ -300,3 +300,45 @@ describe('guard.maxGrowth on the write verbs that route through load', () => {
     expect(await store.exists({ segment: 'd1' })).toBe(false);
   });
 });
+
+describe('a guard is an object of bounds', () => {
+  it('refuses a guard that is not an object before any request, so a wipe guard is never silently off', async () => {
+    const w = world();
+    await loadSegment(SEG, ids(100), w.deps);
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 'a' }, ids(100));
+    await store.load({ segment: 'dest' }, ids(100));
+    const a = store.segment('a');
+    const dest = store.segment('dest');
+    // What plain JavaScript lets through where `{ minRetained: 0.5 }` was meant: each read as no bound at all.
+    for (const bad of [0.5, 'minRetained', [0.5], true]) {
+      const guard = bad as never;
+      await expect(loadSegment(SEG, ids(10), w.deps, { guard })).rejects.toThrow(
+        /^guard must be an object of bounds/,
+      );
+      await expect(store.load({ segment: 'a' }, ids(10), { guard })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      await expect(a.intersectInto(dest, [a], { guard })).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        store.materializeMany({
+          operands: { a },
+          outputs: [{ dest, expr: 'a', guard }],
+          keep: 1,
+        }),
+      ).rejects.toThrow(/outputs\[0\]\.guard must be an object/);
+    }
+    expect(await store.segment('a').count()).toBe(100);
+    expect(await store.segment('dest').count()).toBe(100);
+    expect((await w.registry.get(SEG))?.currentGen).toBe(0);
+  });
+
+  it('still reads an absent or null guard as none', async () => {
+    const w = world();
+    await loadSegment(SEG, ids(100), w.deps);
+    for (const guard of [undefined, null]) {
+      const r = await loadSegment(SEG, ids(10), w.deps, { guard: guard as never });
+      expect(r.published).toBe(true);
+    }
+  });
+});

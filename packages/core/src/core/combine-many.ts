@@ -407,9 +407,8 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
       throw new ValidationError(`${where}.allowEmpty must be a boolean`);
     }
-    if (output.guard !== undefined && (typeof output.guard !== 'object' || output.guard === null)) {
-      throw new ValidationError(`${where}.guard must be an object`);
-    }
+    // `checkedGuard` refuses any other shape; an output's guard is not `null` either.
+    if (output.guard === null) throw new ValidationError(`${where}.guard must be an object`);
     // The checked copy is what each publish judges, however long the call runs.
     const guard = checkedGuard(output.guard, `${where}.`);
     const metadata = copiedMetadata(output.metadata, (message) => {

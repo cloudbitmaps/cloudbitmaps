@@ -168,7 +168,9 @@ on a bare `IStorageDriver` instead of a backend, which has no registry to hold w
 
 ### Get a segment — `store.segment(name, { namespace? })` → `Segment`
 
-A handle carries no deadline: `expiresAt` among its options throws `ValidationError`. A set that stops being served
+The options are `{ namespace }` alone: any other key with a value, and options that are not an object, throw
+`ValidationError` naming what is wrong, so a misspelt `namespace` never addresses the default namespace. A handle
+carries no deadline: `expiresAt` among its options throws `ValidationError`. A set that stops being served
 after a deadline is checked where it is read, or recorded with `setRetention` and retired by `retireExpired`
 ([a deadline on a set](retention.md#a-deadline-on-a-set)).
 

@@ -1104,20 +1104,36 @@ export class CloudRoaring {
   }
 
   /**
-   * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). An
-   * `expiresAt` among the options is refused with {@link ValidationError}: a handle carries no deadline, and one
-   * left unread would serve the data past it.
+   * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). The options
+   * are `{ namespace }` and nothing else: anything else is refused with {@link ValidationError}, by name, since a
+   * misspelt `namespace` would otherwise address the default namespace. An `expiresAt` among them is refused with its own
+   * message: a handle carries no deadline, and one left unread would serve the data past it. A key whose value is
+   * `undefined` is read as absent, so a spread of options keeps working.
    */
   segment(name: string, options?: SegmentOptions): Segment {
+    if (options !== undefined && options !== null) {
+      if (typeof options !== 'object' || Array.isArray(options)) {
+        throw new ValidationError('segment: options must be an object such as { namespace }');
+      }
+      if ((options as { readonly expiresAt?: unknown }).expiresAt !== undefined) {
+        throw new ValidationError(
+          'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
+            '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`',
+        );
+      }
+      const unknown = Object.keys(options).filter(
+        (k) => k !== 'namespace' && (options as Record<string, unknown>)[k] !== undefined,
+      );
+      if (unknown.length > 0) {
+        throw new ValidationError(
+          `segment: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+            'a handle takes { namespace } only',
+        );
+      }
+    }
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);
     refuseReservedNamespace(ref.namespace);
-    if ((options as { readonly expiresAt?: unknown } | undefined)?.expiresAt !== undefined) {
-      throw new ValidationError(
-        'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
-          '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`',
-      );
-    }
     return makeSegment({
       engine: this.engine,
       ref,

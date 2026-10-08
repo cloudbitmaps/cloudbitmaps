@@ -79,6 +79,39 @@ describe('a handle takes no deadline', () => {
   });
 });
 
+describe('a handle takes { namespace } only', () => {
+  it('refuses a misspelt option by name, rather than address the default namespace', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 'x' }, [1, 2, 3]);
+    const options = { nameSpace: 'tenant' } as unknown as { namespace?: string };
+    expect(() => store.segment('x', options)).toThrow(ValidationError);
+    expect(() => store.segment('x', options)).toThrow(
+      'segment: unknown option "nameSpace"; a handle takes { namespace } only',
+    );
+  });
+
+  it('refuses options that are not an object, such as a namespace passed on its own', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    await store.load({ namespace: 'tenant', segment: 'a' }, [1]);
+    for (const bad of ['tenant', 5, ['tenant']]) {
+      expect(() => store.segment('a', bad as never)).toThrow(
+        'segment: options must be an object such as { namespace }',
+      );
+    }
+    expect(await store.segment('a', { namespace: 'tenant' }).count()).toBe(1);
+  });
+
+  it('still takes absent, null and undefined-valued options, so a spread of options keeps working', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    const spread = { namespace: undefined, other: undefined } as unknown as { namespace?: string };
+    expect(await store.segment('a').count()).toBe(3);
+    expect(await store.segment('a', null as never).count()).toBe(3);
+    expect(await store.segment('a', spread).count()).toBe(3);
+  });
+});
+
 describe('an operand list holds segments only', () => {
   const NOT_SEGMENTS: readonly unknown[] = [null, 5, {}, 'a'];
   const message = 'an operand must be a segment from store.segment()';
