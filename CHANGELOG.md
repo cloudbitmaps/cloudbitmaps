@@ -166,18 +166,19 @@ so, and so do the module headers in the code.
   charged to `limit` like a purge that happened, so under a role without delete permission, where every retirement
   becomes one, enough of them past their grace left every new expiry unretired, call after call, and the collection's
   error was swallowed. It is now a refused purge: not charged, counted in `purgeFaults` with its cause in
-  `firstPurgeFault`, and three in a row stop purging for the call, as a refused row delete already did.
+  `firstPurgeFault` (also when the collection raised nothing and the objects stayed), and three in a row stop purging
+  for the call, as a refused row delete already did.
 - **`eraseSubject` searches a tombstoned segment.** A destroyed row was skipped as "already unreadable", but only a
   crypto-shred makes it so: a cleartext `destroySegment({ allowCleartext: true })`, a drop whose sweep left an object,
   or a write that landed after it leaves objects anyone can read, and an id in one stayed in the bucket while the
   ledger left the segment out. A tombstone's bucket is now listed; when a cleartext object holds the id, every object
   under the tombstone is deleted and the entry reads `erased: true`. An object sealed under the shredded key is not
-  read. One listing per tombstone per call.
+  read. One listing per tombstone per call. A segment tombstoned while its rewrite runs is searched the same way.
 - **An erasure that deletes a generation above the pointer refuses the load that wrote it.** When the id was only in a
   generation above the pointer, the erasure deleted it after checking the row, but a load that wrote it and had not
   yet published was fenced on a row nothing had changed, so it published afterwards and the row named a generation
   that was gone. The erasure now writes the row first (its `keptGens`), which the load's fence counts as another
-  writer, so the load is refused.
+  writer, so the load is refused. Pins written meanwhile are waited out, as every lease-aware writer waits them out.
 - **An erasure searches the bucket of a segment that has no generation yet.** A row created by `setRetention` before
   the first load was answered `'no-generation'` without a look, so an object a first load wrote and never published,
   holding the id, stayed in the bucket and the ledger left the segment out. Its bucket is searched now; such an object

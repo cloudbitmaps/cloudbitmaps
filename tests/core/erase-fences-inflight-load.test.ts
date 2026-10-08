@@ -59,6 +59,50 @@ describe('an erasure fences a load in flight before deleting its object', () => 
     expect(await generations(storage)).toEqual([0]);
   });
 
+  it('pins written while the fence is written are waited out, not reported as another writer', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const deps = { storage, registry, codec: roaringCodec };
+    await loadSegment(REF, [1, 2, 3], deps);
+    let reach!: () => void;
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let held = false;
+    const gated = Object.create(registry) as MemoryRegistryDriver;
+    gated.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
+      if (!held && 'currentGen' in patch) {
+        held = true;
+        reach();
+        await gate;
+      }
+      return registry.compareAndSwap(ref, expected, patch);
+    };
+    const load = loadSegment(REF, [1, 2, 3, 9], { ...deps, registry: gated });
+    await reached;
+
+    // Before each of the erasure's first eight fence writes, a reader pins generation 0: a lease-only change.
+    let pins = 0;
+    const pinned = Object.create(registry) as MemoryRegistryDriver;
+    pinned.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
+      if ('keptGens' in patch && pins < 8) {
+        pins += 1;
+        const row = (await registry.get(ref))!;
+        await registry.compareAndSwap(ref, row.token, {
+          leases: [{ holder: pins.toString(16).padStart(16, '0'), generation: 0, until: 1e15 }],
+        });
+      }
+      return registry.compareAndSwap(ref, expected, patch);
+    };
+    const erased = await eraseIdFromSegment(REF, 9, { ...deps, registry: pinned });
+    open();
+    const loaded = await load;
+
+    expect(pins).toBe(8);
+    expect(erased).toMatchObject({ erased: true });
+    expect(loaded.published).toBe(false);
+  });
+
   it('the erasure that loses to the publish reports it, and a re-run erases from the new generation', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();

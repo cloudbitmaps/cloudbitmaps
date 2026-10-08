@@ -181,7 +181,8 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 **Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
-one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+one's reason in `firstPurgeFault`. So is a tombstone whose objects are still there after a collection that raised
+nothing, such as a store that acknowledges a delete it did not make. A refused purge is `skipped` in the ledger, with the provider's message, and is not
 charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
 the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
 row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three

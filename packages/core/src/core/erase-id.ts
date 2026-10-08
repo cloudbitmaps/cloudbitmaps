@@ -102,7 +102,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
-import { onlyLeasesDiffer } from './leases';
+import { leaseChurn, onlyLeasesDiffer } from './leases';
 import { assertRegistryCanWrite } from './ports';
 import type {
   GenKey,
@@ -178,8 +178,9 @@ export interface EraseIdResult {
    * re-run settles it, which is why it is the documented action for this reason and for no other.
    *
    * The first three reasons are also returned when the row changes *underneath* a call already in flight, not
-   * only when it is read up front — a concurrent `dropSegment` gives `'destroyed'`, a retention sweep that purges
-   * the row gives `'absent'`. A caller branching on `reason` never has to care which it was.
+   * only when it is read up front — a concurrent `dropSegment` gives `'destroyed'`, once the tombstone's objects have
+   * been searched as a fresh call searches them, and a retention sweep that purges the row gives `'absent'`. A caller
+   * branching on `reason` never has to care which it was.
    */
   readonly reason?: 'absent' | 'destroyed' | 'no-generation' | 'not-member' | 'superseded';
   /**
@@ -239,6 +240,26 @@ export async function eraseIdFromSegment(
   deps: EraseIdDeps,
   options: { audit?: IAuditSink } = {},
 ): Promise<EraseIdResult> {
+  const first: { tombstoned?: boolean } = {};
+  const result = await eraseOnce(ref, id, deps, options, first);
+  // A row tombstoned while this call ran is searched as a fresh call searches one: a cleartext destroy, or a drop whose
+  // sweep left an object, leaves objects that can still hold the id. Once: the second pass starts on the tombstone.
+  if (result.reason === 'destroyed' && first.tombstoned === false) {
+    const again = await eraseOnce(ref, id, deps, options, {});
+    // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
+    return again.reason === 'destroyed' ? result : again;
+  }
+  return result;
+}
+
+/** One pass of {@link eraseIdFromSegment}. It records in `seen` whether the row it read first was a tombstone. */
+async function eraseOnce(
+  ref: SegmentRef,
+  id: number,
+  deps: EraseIdDeps,
+  options: { audit?: IAuditSink },
+  seen: { tombstoned?: boolean },
+): Promise<EraseIdResult> {
   validateUserRef(ref);
   checkedAuditSink(options.audit, 'eraseIdFromSegment');
   const { chunkKey, remainder } = splitId(id); // validates the u32 range
@@ -253,6 +274,7 @@ export async function eraseIdFromSegment(
   // A tombstone is no proof nothing readable is left (see `underTombstone`), nor a row with no pointer that nothing
   // was written (see `unpublished`): both are searched.
   const tombstoned = record.status === 'destroyed';
+  seen.tombstoned = tombstoned;
   const pointerless = !tombstoned && record.currentGen === null;
   const from = record.currentGen ?? -1;
   /**
@@ -502,11 +524,12 @@ export async function eraseIdFromSegment(
    * this call changes a field the load's fence compares: `keptGens`, to `[]`, which is true once the `keep: 0` pass
    * has run, or, when it already is `[]`, to absent, which says the row does not know and is always valid. Either way
    * the load sees another writer and is refused. If the load published first, this write loses and the row says why.
-   * A write of leases alone that lands in between is read again and written over, a few times at most.
+   * A write of leases alone that lands in between is waited out and written over, within the lease writers' bound.
    */
   const fenceInFlight = async (): Promise<ReturnType<typeof rowVerdict>> => {
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const row = await deps.registry.get(ref);
+    const churn = leaseChurn({ clock: deps.clock, rng: deps.rng ?? deps.readRetry?.rng });
+    let row = await deps.registry.get(ref);
+    for (;;) {
       const verdict = rowVerdict(row);
       if (verdict !== null) return verdict;
       const current = row!;
@@ -520,8 +543,13 @@ export async function eraseIdFromSegment(
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
       }
+      // A write of leases alone is waited out, as every lease-aware writer waits it out; any other write is read for
+      // what it says, and one that leaves the premise standing past the wait's bound is reported as a race.
+      const now = await deps.registry.get(ref);
+      const settled = await churn.settle(current, now, () => deps.registry.get(ref));
+      if (settled === undefined) return rowVerdict(now) ?? 'superseded';
+      row = settled.row;
     }
-    return rowVerdict(await deps.registry.get(ref)) ?? 'superseded';
   };
 
   /**

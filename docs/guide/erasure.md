@@ -25,7 +25,10 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 
 `ledger.erasedFrom` is your **erasure ledger**, the proof of deletion. It is a return value only, so persist it or
 route it to your audit sink. When you pass `audit`, the store also emits a `segment.rewrite` event per rewrite.
-Segments the id is not in are not listed.
+Segments the id is not in are not listed. The two calls look in different places: `subjectReport` reads what a reader
+reads, each segment's current generation, while `eraseSubject` also searches older generations, a tombstoned
+segment's objects and a first load's object that never published. So the ledger can name a segment the report did
+not.
 
 `eraseSubject` needs a store built on a backend, because it writes generations. `subjectReport` needs one too, for
 the registry it lists. A store missing what a call needs throws `UnsupportedError`: a store built on a bare storage
@@ -213,8 +216,9 @@ pointer or below.
 another erasure, or an operator's `rollback`. Another erasure collects with `keep: 0`, so it can delete the generation
 this rewrite was still streaming, or the object it had just written. Two erasures of different ids racing on one
 segment are safe: the loser's rewrite still holds the winner's id, and when it sits above the winner's pointer the
-loser deletes it before returning. The outcome is read off the registry row, so a segment whose row is tombstoned or
-purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
+loser deletes it before returning. The outcome is read off the registry row. A segment whose row is tombstoned
+mid-rewrite is searched as a fresh call searches a tombstone, so a cleartext object a drop left that still holds the
+id is deleted; one whose row is purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
 not forward-only, for the reason given in [which fence a publish carries](loading.md#how-it-stays-correct).
 
 **A rollback during an erasure.** What the call reports depends on where the rollback lands:

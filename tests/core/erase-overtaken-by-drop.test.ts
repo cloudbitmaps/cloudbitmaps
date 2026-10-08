@@ -100,3 +100,35 @@ describe('a rewrite whose publish a drop refuses reports the row, not a race', (
     expect(await generations(storage)).toEqual([]);
   });
 });
+
+describe('a segment tombstoned while its rewrite runs is searched as a fresh call searches one', () => {
+  it('a drop whose sweep left a cleartext generation holding the id: the erasure deletes it', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3, 9], { registry });
+    // The drop's own deletes fail, so its tombstone lands and generation 0 stays in the bucket, readable.
+    const denied: IStorageDriver = {
+      capabilities: () => storage.capabilities(),
+      getTail: (k, m) => storage.getTail(k, m),
+      getRange: (k, o, l) => storage.getRange(k, o, l),
+      list: (r) => storage.list(r),
+      putImmutable: (k, w) => storage.putImmutable(k, w),
+      delete: () => Promise.reject(new Error('AccessDenied')),
+    };
+    const wrapped = dropAt(storage, 'after-commit', async () => {
+      await dropSegment(REF, { storage: denied, registry }, { confirmSegment: 's' }).catch(
+        () => undefined,
+      );
+    });
+
+    const res = await eraseIdFromSegment(REF, 9, {
+      storage: wrapped,
+      registry,
+      codec: roaringCodec,
+    });
+
+    expect((await registry.get(REF))?.status).toBe('destroyed');
+    expect(res).toMatchObject({ erased: true });
+    expect(await generations(storage)).toEqual([]);
+  });
+});

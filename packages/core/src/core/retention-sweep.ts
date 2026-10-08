@@ -241,8 +241,9 @@ export interface RetireExpiredResult {
   /** True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. */
   readonly limited: boolean;
   /**
-   * Deletes this sweep attempted that the registry **refused for a reason other than a lost race**: a tombstone's
-   * purge, or the removal of a due-index pointer. A policy that denies delete, an Azure blob with a snapshot, or any
+   * Deletes this sweep attempted that were **refused for a reason other than a lost race**: a tombstone's purge
+   * (including one whose objects were still there after a collection that raised nothing), or the removal of a
+   * due-index pointer. A policy that denies delete, an Azure blob with a snapshot, or any
    * raw provider error is one; a write that landed between the sweep's read and its fenced delete is not (that is
    * `failed: contended` in the ledger). Each leaves its row or pointer in place, so a purge that keeps failing never
    * frees the name.
@@ -644,6 +645,13 @@ export async function retireExpired(
               purgeRun += 1;
               if (purgeRun >= MAX_CONSECUTIVE_PURGE_FAULTS) purging = false;
               if (collectFault !== undefined) noteFault(collectFault.error);
+              else {
+                // The collection answered and the objects are still there: a store that acknowledges a delete it did not
+                // make, or a write that landed after its listing. Counted all the same, with what was seen as its cause.
+                purgeFaults += 1;
+                firstPurgeFault ??=
+                  "failed: the tombstone's objects were still there after its collection";
+              }
             }
             entries.push({ ...base, action: 'skipped', reason: 'tombstone-not-empty' });
             continue;

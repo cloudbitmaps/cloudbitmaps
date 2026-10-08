@@ -790,6 +790,27 @@ describe('retireExpired — tombstone purge', () => {
     expect((await w.registry.get({ segment: 'day' }))!.status).toBe('destroyed');
   });
 
+  it('a tombstone whose collection deleted nothing, and raised nothing, is a refused purge too', async () => {
+    const w = world();
+    for (const s of ['a', 'b', 'c']) {
+      await w.load(s, [1]);
+      await w.store().setRetention({ segment: s }, { expiresAt: EXPIRED });
+    }
+    await retireExpired(w.dropDeps, { now: T0 });
+    for (const s of ['a', 'b', 'c']) {
+      await bulkLoadCrbmGeneration(w.storage, { segment: s, generation: 7 }, [1]);
+    }
+    // A store that answers a delete and keeps the object.
+    const storage = faultyStorage(w.storage, { delete: () => Promise.resolve() });
+
+    const res = await retireExpired({ ...w.dropDeps, storage }, { now: T0 + 2 * DAY });
+    expect(
+      res.entries.filter((e) => 'reason' in e && e.reason === 'tombstone-not-empty'),
+    ).toHaveLength(3);
+    expect(res.purgeFaults).toBe(3);
+    expect(res.firstPurgeFault).toMatch(/still there after/);
+  });
+
   it('charges tombstone purges against the same per-cycle limit', async () => {
     // A purge branch outside the cap would let a sweep advertised as "one bounded batch" delete thousands of
     // rows and issue two list calls for each.
