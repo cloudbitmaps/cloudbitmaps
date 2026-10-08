@@ -182,6 +182,70 @@ guide's medium and large deployments, whose chunks are larger, the requests are 
 layout](guide/sizing.md#how-much-the-overlap-matters). The layouts are the calibration's, of about 500-byte chunks;
 real ids are often denser, and the guide counts larger chunks.
 
+## Large operands — run `2026-10-07-88cd3`
+
+> **Measured** against real S3 in `us-east-1` on 2026-10-07 (UTC), from AWS CloudShell in the same region (2 CPUs, a
+> round-trip floor of 4.7 ms to the region, so in-region), through the published `0.18.3` packages. This is the first run of
+> the harness's [large suite](../bench/README.md#the-large-suite): combines on operands of about a million, five million
+> and ten million ids, about 1,500 chunks each, 20 % of their ids shared. The evidence is
+> [`bench/calibration/large/2026-10-07-88cd3.json`](../bench/calibration/large/2026-10-07-88cd3.json). It has no report
+> file; this section and the evidence's own gate (`tests/bench/calibrate-large.test.ts`) are its record.
+
+**Cold combines.** Each row is 40 uncached reads on a fresh store. Every read returned exactly the ids the layout says,
+and every median GET count is the one the engine was expected to make (**measured**).
+
+| Ids an operand | Combine | Median | 95th percentile | 99th percentile | Median GETs | As expected |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,000,000 | `intersect` | 108.8 ms | 140.9 ms | 143.9 ms | 6 | yes, exact |
+| 1,000,000 | `union` | 203.5 ms | 240.7 ms | 248.4 ms | 8 | yes, exact |
+| 1,000,000 | `andNot` | 144.9 ms | 189.8 ms | 200.4 ms | 7 | yes, exact |
+| 5,000,000 | `intersect` | 140.0 ms | 217.7 ms | 233.1 ms | 8 | yes, exact |
+| 5,000,000 | `union` | 532.3 ms | 733.8 ms | 795.8 ms | 24 | yes, exact |
+| 5,000,000 | `andNot` | 323.0 ms | 414.8 ms | 417.5 ms | 16 | yes, exact |
+| 10,000,000 | `intersect` | 158.0 ms | 264.8 ms | 278.9 ms | 10 | yes, exact |
+| 10,000,000 | `union` | 682.7 ms | 889.3 ms | 1,005.2 ms | 26 | yes, exact |
+| 10,000,000 | `andNot` | 392.4 ms | 500.0 ms | 590.3 ms | 18 | yes, exact |
+
+**The `*Into` verbs.** Each verb ran 5 calls a size onto a destination segment of its own, on a fresh store, and each
+published exactly the cardinality the layout says. An output of more than one part is written as a multipart
+upload. The median is of the 5 calls; the first call makes one GET more than the repeats (**measured**).
+
+| Ids an operand | Verb | Median | Output | Written as | PUT-class a call | GETs a call (first, repeat) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,000,000 | `intersectInto` | 259.8 ms | 0.41 MB | one PUT | 2 | 9, 8 |
+| 1,000,000 | `unionInto` | 479.7 ms | 3.67 MB | one PUT | 2 | 11, 10 |
+| 1,000,000 | `andNotInto` | 345.9 ms | 1.63 MB | one PUT | 2 | 10, 9 |
+| 5,000,000 | `intersectInto` | 352.3 ms | 2.01 MB | one PUT | 2 | 11, 10 |
+| 5,000,000 | `unionInto` | 1,392.4 ms | 18.07 MB | 3 parts | 6 | 27, 26 |
+| 5,000,000 | `andNotInto` | 605.5 ms | 8.03 MB | one PUT | 2 | 19, 18 |
+| 10,000,000 | `intersectInto` | 340.9 ms | 2.26 MB | one PUT | 2 | 13, 12 |
+| 10,000,000 | `unionInto` | 1,337.6 ms | 20.32 MB | 3 parts | 6 | 29, 28 |
+| 10,000,000 | `andNotInto` | 857.9 ms | 9.03 MB | 2 parts | 5 | 21, 20 |
+
+**Loads.** The six operands went through `store.load()`: a single-part load (the 1,000,000-id operands, 2 loads) at a
+median of 3.84 million ids a second, and a multipart load (the 5,000,000 and 10,000,000-id operands, 4 loads) at 5.67
+million ids a second (**measured**).
+
+**The run's requests.** Each stage made exactly the requests it was expected to, and none more, with no discarded
+sample (**measured**):
+
+| Stage | PUT-class | GET-class |
+| --- | --- | --- |
+| loads | 24 | 18 |
+| intersects | 0 | 960 |
+| unions | 0 | 2,320 |
+| `andNot`s | 0 | 1,640 |
+| `*Into` calls | 145 | 714 |
+| the whole run, the bucket's own requests included | 173 | 5,663 |
+
+The evidence records the run's bill, by request class, at the `aws-us-east-1-ondemand` list prices (`cost` in the file).
+
+**What these figures are not.** The large suite drains each read a chunk at a time with `.batches()`; the default suite
+drains one id at a time, so the latencies above are **not comparable** with the in-region run's. Latencies of runs from
+different CloudShell sessions are not comparable either, and this is one session. It is one client, with 128 sockets and
+2 CPUs, one storage class in one region, cold reads on fresh stores, and operands of array and bitset containers, none of
+them run-encoded.
+
 ## At scale — measured (1K → 10K → 100K segments)
 
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
@@ -326,11 +390,9 @@ throughput on S3. These are not published yet:
   1 MiB; the latency of the larger chunks of a medium or large deployment, and the cost of the bytes a range reads
   outside the region, are not.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
-- **The `*Into` verbs, `materializeMany`, and combines at larger sizes** — materialising a combine's result back into a
-  segment, and `intersect`, `union`, `andNot` and the `*Into` verbs on operands of about a million, five million and ten million
-  ids. The harness's [large suite](../bench/README.md#the-large-suite) measures them; it has been rehearsed on MinIO only
-  and has not run against a real object store, so no figure is published. The request counts of a `materializeMany` call are
-  counted in memory and not measured on S3.
+- **`materializeMany` on S3.** Its request counts are counted in memory, not measured. The `*Into` verbs and combines on
+  operands of about a million, five million and ten million ids are [measured](#large-operands--run-2026-10-07-88cd3), with
+  operands of 1,374 to 1,497 chunks, 20 % shared; operands that are run-encoded, or with other overlaps, are not.
 - **Other combine shapes** — more than two operands, and other overlaps than the sweep's, against a real object store.
 - **A steady `store.load()` at another `keep`.** The run above measured `keep: 12`; the requests at a `keep` of 1, or of 64, are counted by the engine and not measured on S3.
 - **GCS and Azure Blob in-region runs** — the run measured S3 only.
@@ -354,8 +416,8 @@ fails the run. Every run records its own round-trip floor to the
 region and labels its latency in-region only below 30 ms — a line that keeps another continent out, not a
 neighbouring region, so the raw floor is recorded with it for a reader who wants a stricter one, and so is the region the shell ran in. A page states a run's latency as in-region only when that region is the bucket's too. Each cold intersect also records how many requests were in flight at once and how many it waited for one after another, and every run records the AWS SDK and handler versions and the handler's socket cap. Its run
 `2026-10-06-9d36b`, from AWS CloudShell in `us-east-1`, paid the in-region rows: intersect and point-read latency,
-load throughput, `andNot` with a large `exclude`, the sweep, and what `store.load()` costs on S3. The `*Into` verbs and
-the Lambda figure are not in it yet.
+load throughput, `andNot` with a large `exclude`, the sweep, and what `store.load()` costs on S3. The `*Into` verbs are measured by the
+[large suite's run](#large-operands--run-2026-10-07-88cd3), and the Lambda figure is not measured yet.
 How it guards against spending more than it says, and how to run it from inside the region:
 [`bench/README.md`](../bench/README.md#real-cloud-calibration).
 

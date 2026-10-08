@@ -18,11 +18,10 @@ This directory is separate from `bench/calibration/` on purpose. The default sui
 site's single-bucket figures list that directory without descending into it, so a run of the large suite is never
 their latest run and cannot move them. `tests/bench/calibrate-large.test.ts` holds that, and holds each file here to
 being a finished, exact run of the large suite: every stage kept the requests it was expected to make, none was
-exceeded, and the bill is recorded. With no run committed it checks nothing.
-
-No run has been committed yet, so this directory holds no figure.
+exceeded, and the bill is recorded.
 
 ## Runs
 
 | report · evidence | when, and from where | what it established |
 |---|---|---|
+| no report file · [`2026-10-07-88cd3.json`](2026-10-07-88cd3.json) | 2026-10-07 (UTC), `us-east-1`, from AWS CloudShell in `us-east-1`, against the published `0.18.3` packages | The first run of the large suite: cold intersects, unions and `andNot`s and the `*Into` verbs on operands of about a million, five million and ten million ids, with the loads. Every stage exact, every request count as expected, no discarded sample, and the bill recorded in the evidence. Its figures are on [the benchmarks page](../../../docs/benchmarks.md#large-operands--run-2026-10-07-88cd3). Its reads are drained with `.batches()`, so its latencies are not comparable with the default suite's, nor with another CloudShell session's. |
