@@ -103,6 +103,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The S3 and GCS storage drivers copy what they are given to write.** Their upload sinks kept a reference to the
+  caller's buffer until the part or the upload was sent, so a writer that reused a buffer once `write()` resolved, as
+  the in-memory sink and the Azure Blob driver allow, stored its later contents instead. The library's own writer
+  passes a fresh buffer each time, so its loads were not affected; a custom writer through `putImmutable` was. The
+  rule is now stated on `BlobSink`, and the conformance suite overwrites each buffer once its write resolves.
 - **Three retention and read checks.** A retention `expiresAt` past the latest date a `Date` can hold (`1e300`) was
   stored, and no due-index bucket ever held it; it is a `ValidationError` now. A tombstone that a manual `dropSegment`
   or `destroySegment` writes no longer keeps the retention sweep's mark a restored or hand-edited row carried, so a

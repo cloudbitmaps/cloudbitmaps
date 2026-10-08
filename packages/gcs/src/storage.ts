@@ -526,10 +526,12 @@ class GcsUploadSink implements BlobSink {
       // Resumable mode: honor backpressure. `events.once(stream,'drain')` REJECTS if the stream emits 'error'
       // while we wait (that's its documented behavior for any awaited event except 'error'), and auto-removes
       // both listeners on settle — so there's no listener accumulation across drain cycles.
-      if (!this.stream.write(bytes)) await once(this.stream, 'drain');
+      // A copy, here and below: the caller may reuse its buffer once this write resolves, and the stream or the
+      // buffered upload still holds what it was given.
+      if (!this.stream.write(Buffer.from(bytes))) await once(this.stream, 'drain');
       return;
     }
-    this.buffered.push(bytes);
+    this.buffered.push(new Uint8Array(bytes));
     this.bufferedLen += bytes.length;
     if (this.bufferedLen > this.threshold) this.startResumable();
   }

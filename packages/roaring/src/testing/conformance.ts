@@ -186,10 +186,14 @@ async function putBytes(
   bytes: Uint8Array,
 ): Promise<{ size: number; sha256: string }> {
   return d.putImmutable(key, async (sink) => {
-    // Two writes, so a driver that keeps only the last `write` (or the first) fails here.
+    // Two writes, so a driver that keeps only the last `write` (or the first) fails here. Each from a buffer the caller
+    // overwrites once the write resolves, as a caller may: a driver that kept a reference to it stores the overwrite.
     const half = Math.floor(bytes.length / 2);
-    await sink.write(bytes.subarray(0, half));
-    await sink.write(bytes.subarray(half));
+    for (const part of [bytes.subarray(0, half), bytes.subarray(half)]) {
+      const scratch = part.slice();
+      await sink.write(scratch);
+      scratch.fill(0xa5);
+    }
   });
 }
 

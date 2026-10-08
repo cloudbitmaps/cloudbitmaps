@@ -459,7 +459,8 @@ class S3MultipartSink implements BlobSink {
       throw new ValidationError(`object exceeds maxObjectBytes ${this.maxObjectBytes}`);
     }
     this.hash.update(bytes);
-    this.pending.push(bytes);
+    // A copy: the caller may reuse its buffer once this write resolves, and the part is sent later.
+    this.pending.push(new Uint8Array(bytes));
     this.pendingLen += bytes.length;
     if (this.pendingLen >= this.partBytes) await this.flushPart();
   }
