@@ -111,7 +111,9 @@ not a segment any more and `eraseSubject` does not scan it at all — anything l
 which neither `store.checkConsistency()` (it visits registry rows only) nor the collection a load and the retention
 sweep run (it collects nothing without a row) reaches. List those objects with `store.generations(ref)` and delete them with
 `store.dropSegment(ref, { confirmSegment: ref.segment })`, which leaves a tombstone row fencing the name. An empty
-ledger is not by itself proof the id is gone. A segment whose row names no generation yet (a retention policy set before its first load) is
+ledger is not by itself proof the id is gone. A tombstoned segment is searched too: a
+cleartext object left under it that holds the id is deleted with everything under the tombstone, and the entry reads
+`erased: true`. A segment whose row names no generation yet (a retention policy set before its first load) is
 searched too: an object a first load wrote and never published that holds the id is reported as an `error: …` note
 and not deleted, because that load may still publish it. Load the segment, which makes the object collectable, or drop
 it, and re-run.

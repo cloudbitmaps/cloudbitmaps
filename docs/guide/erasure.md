@@ -233,6 +233,10 @@ driver authors) over every registered segment, and each ledger entry is that fun
 - `erased: true` means no generation of the segment holds the id, checked by listing the bucket and reading what is
   left. Otherwise `reason` is `'absent'`, `'destroyed'`, `'no-generation'`, `'not-member'` (no generation in the bucket
   holds it) or `'superseded'`.
+- A tombstoned row has its bucket searched too. A crypto-shred leaves objects no key opens, but a cleartext destroy, a
+  drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
+  id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is
+  `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
 - A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too. An
   object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: its
   load may still publish it, and no row write can refuse that publish. In `eraseSubject`'s ledger it is an `error: …`

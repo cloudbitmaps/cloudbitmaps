@@ -2051,8 +2051,9 @@ export class CloudRoaring {
    * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
    * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as an outcome rather than
    * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
-   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger, as a fresh
-   * call would leave it out.
+   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger. A tombstoned
+   * segment is still searched: a cleartext object left under it that holds the id is deleted, with everything under
+   * the tombstone, and the entry reads `erased: true`.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
@@ -2134,7 +2135,6 @@ export class CloudRoaring {
       recs,
       options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
       async (rec): Promise<SubjectErasureEntry | null> => {
-        if (rec.status === 'destroyed') return null; // already crypto-shredded — nothing to erase
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
         try {
           // The rewrite does its own membership check against the CURRENT registry generation — not the

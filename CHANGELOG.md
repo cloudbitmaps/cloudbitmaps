@@ -103,6 +103,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **`eraseSubject` searches a tombstoned segment.** A destroyed row was skipped as "already unreadable", but only a
+  crypto-shred makes it so: a cleartext `destroySegment({ allowCleartext: true })`, a drop whose sweep left an object,
+  or a write that landed after it leaves objects anyone can read, and an id in one stayed in the bucket while the
+  ledger left the segment out. A tombstone's bucket is now listed; when a cleartext object holds the id, every object
+  under the tombstone is deleted and the entry reads `erased: true`. An object sealed under the shredded key is not
+  read. One listing per tombstone per call.
 - **An erasure that deletes a generation above the pointer refuses the load that wrote it.** When the id was only in a
   generation above the pointer, the erasure deleted it after checking the row, but a load that wrote it and had not
   yet published was fenced on a row nothing had changed, so it published afterwards and the row named a generation

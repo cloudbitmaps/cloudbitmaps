@@ -249,10 +249,10 @@ export async function eraseIdFromSegment(
 
   const record = await deps.registry.get(ref);
   if (record === null) return { ...base, erased: false, reason: 'absent', collected: [] };
-  if (record.status === 'destroyed')
-    return { ...base, erased: false, reason: 'destroyed', collected: [] };
-  // A row with no pointer names no generation, but a first load's object may be in the bucket: see `unpublished`.
-  const pointerless = record.currentGen === null;
+  // A tombstone is no proof nothing readable is left (see `underTombstone`), nor a row with no pointer that nothing
+  // was written (see `unpublished`): both are searched.
+  const tombstoned = record.status === 'destroyed';
+  const pointerless = !tombstoned && record.currentGen === null;
   const from = record.currentGen ?? -1;
   /**
    * The row this rewrite derives its content from, not just the number it points at. `nextGeneration` restarts
@@ -270,8 +270,11 @@ export async function eraseIdFromSegment(
 
   // The segment's DEK, reused across generations. Resolved before any object I/O so a slow keystore/KMS call
   // sits outside the read-write window; an encrypted row with no keystore is a lost key, not a cleartext segment.
+  // Under a tombstone no key is held: its objects are searched in the clear, and one sealed under its key is skipped.
   let aead: Aead | undefined;
-  if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
+  if (tombstoned) {
+    // nothing to resolve
+  } else if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
     if (deps.keystore === undefined) {
       throw new KeyUnavailableError(
         `segment "${ref.segment}" is encrypted but eraseIdFromSegment has no keystore`,
@@ -340,11 +343,13 @@ export async function eraseIdFromSegment(
         // A cleartext object under an encrypted segment was never one of its generations, so no read believes it.
         // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
         // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
-        if (
-          !isIntegrityError(err) ||
-          cryptoAt(generation) === undefined ||
-          (await read(() => objectIsEncrypted(deps.storage, key)))
-        ) {
+        if (cryptoAt(generation) === undefined) {
+          // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no read
+          // through the library finds anything in it.
+          if (tombstoned && (await read(() => objectIsEncrypted(deps.storage, key)))) return false;
+          throw err;
+        }
+        if (!isIntegrityError(err) || (await read(() => objectIsEncrypted(deps.storage, key)))) {
           throw err;
         }
         bytes = await chunkIn(undefined);
@@ -526,6 +531,25 @@ export async function eraseIdFromSegment(
         `never published (generation ${holder.generation}) holds the id. It cannot be deleted while that load may still ` +
         'publish it: re-run once the segment is loaded, which makes the object collectable, or drop the segment',
     );
+  };
+
+  /**
+   * The row is a tombstone, so no generation is the segment's any more and every object left is garbage (invariant 4's
+   * one exception). A crypto-shred leaves objects no key opens, but a cleartext destroy, a drop whose sweep left
+   * something, or a write that landed after it leaves objects anyone can read. Each is searched; when one holds the id,
+   * the collection's tombstone pass deletes them all, re-proving the row's token before each delete, and what is left
+   * is read again. One listing for a tombstone with nothing left.
+   */
+  const underTombstone = async (): Promise<EraseIdResult> => {
+    const generations: number[] = [];
+    for await (const key of deps.storage.list(ref)) generations.push(key.generation);
+    const newestFirst = generations.sort((a, b) => b - a);
+    const holder = (await holdsEach(newestFirst, true)).find((h) => h.held === true);
+    if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
+    const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+    const left = await holderLeft(new Set());
+    if (left !== undefined) throw cannotRemove(left);
+    return { ...base, erased: true, fromGeneration: holder.generation, collected };
   };
 
   const notInCurrent = async (): Promise<EraseIdResult> => {
@@ -724,6 +748,7 @@ export async function eraseIdFromSegment(
     return row;
   };
 
+  if (tombstoned) return await underTombstone();
   if (pointerless) return await unpublished();
   const staged = await stage();
   if ('erased' in staged) {
