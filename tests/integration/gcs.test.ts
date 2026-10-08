@@ -97,9 +97,10 @@ const ticking = (): (() => number) => {
 };
 // Never created: the emulator answers as the service does for a bucket that is not there.
 const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
-// The registry asks for 1,000 rows a page, so its listing must follow a token here. A generation listing is paged by the
-// SDK's own auto-pagination, which sends no page size, and the emulator may answer it in one page: there this holds the
-// count, and the paging rests on the SDK.
+// fake-gcs-server 1.52.2 does not page a listing: it truncates at `maxResults` and sends no `nextPageToken`, so a listing
+// past one page cannot be held here. The registry, which asks for 1,000 rows a page, is held to paging by its unit fake
+// (three rows a page). A generation listing is paged by the SDK's auto-pagination, which sends no page size, so the
+// emulator answers it in one page: there the case holds the count, and the paging rests on the SDK.
 const PAST_ONE_PAGE = 1_001;
 registryConformance(
   'GcsRegistryDriver (fake-gcs-server)',
@@ -113,7 +114,6 @@ registryConformance(
   {
     missingLocation: () =>
       new GcsRegistryDriver({ storage, bucket: MISSING, prefix: `${RUN}/missing`, now: ticking() }),
-    pagedListSize: PAST_ONE_PAGE,
   },
 );
 
