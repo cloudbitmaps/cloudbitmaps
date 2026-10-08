@@ -90,4 +90,55 @@ describe('a streaming source that names generations and not versions', () => {
     );
     expect(cache.size).toBe(0);
   });
+
+  it('caches a chunk a stream delivers after the read moved under the generation it was asked for at', async () => {
+    // Generation 7 of `a` holds remainder 1 in each chunk and generation 8 remainder 2. The read moves to 8 while range
+    // reads of 7 are still in flight; what they deliver must not be cached as 8's, or a later read at 8 serves 7.
+    const KEYS = Array.from({ length: 40 }, (_, i) => i);
+    const at7 = new StreamChunkSource();
+    const at8 = new StreamChunkSource();
+    seedSegment(
+      at7,
+      'a',
+      KEYS.map((c) => joinId(c, 1)),
+    );
+    seedSegment(
+      at8,
+      'a',
+      KEYS.map((c) => joinId(c, 2)),
+    );
+    for (const source of [at7, at8]) {
+      seedSegment(
+        source,
+        'b',
+        KEYS.flatMap((c) => [joinId(c, 1), joinId(c, 2)]),
+      );
+    }
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    at7.beforeYield = () => sleep(10);
+    let gen = 7;
+    const live = () => (gen === 7 ? at7 : at8);
+    const storage: StorageChunkSource = {
+      getChunk: (r) => live().getChunk(r),
+      listChunkKeys: (r) => live().listChunkKeys(r),
+      getChunks: (r, keys, options) => live().getChunks(r, keys, options),
+      currentGeneration: async () => {
+        if (gen === 8) await sleep(5);
+        return gen;
+      },
+    };
+    const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
+    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+    for (const c of KEYS)
+      if (c % 2 === 0) expect(await engine.has(ref('a'), joinId(c, 1))).toBe(true);
+    let first = true;
+    for await (const id of engine.intersect([ref('a'), ref('b')])) {
+      void id;
+      if (first) gen = 8;
+      first = false;
+    }
+    const later = await collect(engine.iterate(ref('a')));
+    expect(later.filter((id) => id % 65_536 === 1)).toEqual([]);
+    expect(later).toHaveLength(KEYS.length);
+  });
 });

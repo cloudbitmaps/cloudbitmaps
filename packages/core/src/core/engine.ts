@@ -161,6 +161,11 @@ interface StreamedChunks {
   readonly rampStart: number;
   /** Whether the stream has been opened, by the first chunk the cache did not hold. */
   opened: boolean;
+  /**
+   * The version the stream was opened under. A chunk it delivers is cached under this one on a source that does not
+   * name the version of each chunk, never under `gen`, which a move found on a cached chunk carries on.
+   */
+  openedAt: string | number | undefined;
   /** The keys the stream carries; `undefined` when it carries every key from where it opened (nothing was cached). */
   inStream: ReadonlySet<number> | undefined;
   stream: ChunkStream | undefined;
@@ -1144,6 +1149,7 @@ export class SegmentEngine {
       concurrency,
       rampStart,
       opened: false,
+      openedAt: undefined,
       inStream: undefined,
       stream: undefined,
       invalidated: false,
@@ -1190,6 +1196,7 @@ export class SegmentEngine {
       }),
     );
     streamed.opened = true;
+    streamed.openedAt = gen;
     // Only a source with no `currentVersion` caches a chunk under the planned key, so only there can an invalidation
     // since the read began put newer bytes under an older key; elsewhere a chunk is cached under the version it read.
     streamed.invalidated =
@@ -1225,6 +1232,8 @@ export class SegmentEngine {
         ? this.cachedIfCurrent(ref, streamed.gen, hit, false, streamed)
         : this.storageChunk(ref, streamed.gen, true, false);
     }
+    // The stream answers from the generation it was opened on, whatever the read has moved to since.
+    const openedAt = streamed.openedAt;
     return streamed.stream!.take(chunkKey).then((read) => {
       if (read.bytes === null) return null;
       const bitmap = decodeChunkBytes(this.codec, read.bytes, chunkKey, this.maxBitmapBytes);
@@ -1232,7 +1241,7 @@ export class SegmentEngine {
       // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
       // segment was invalidated while the read ran.
       if (this.cache && !streamed.invalidated) {
-        const version = this.streamedVersion(streamed.gen, read.version);
+        const version = this.streamedVersion(openedAt, read.version);
         if (version !== null) {
           this.cache.set(this.chunkCacheKey({ ...streamed.seg, chunkKey }, version), bitmap);
         }
