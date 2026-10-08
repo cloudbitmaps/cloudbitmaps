@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused load is reported as refused when deleting its object fails.** The refusal deleted the object it had
+  written before answering, and a fault in that delete (a transient storage error) replaced the refusal, which is an
+  answer and not an error, and dropped its `segment.load-refused` event; the same fault replaced a publish's own
+  `ValidationError`. The delete is best-effort now: an object it leaves is above the pointer, where the next load
+  collects it.
+- **`rollback` onto a generation of a row with no pointer needs `allowForward`.** A row created by `setRetention`
+  before the first load has nothing published, so an object in its bucket is a first load's that never published, as
+  an object above a pointer is; the guard that asks for `allowForward` there skipped a row with no pointer.
 - **A tombstone whose objects cannot be deleted no longer stops `retireExpired` retiring.** Each such tombstone was
   charged to `limit` like a purge that happened, so under a role without delete permission, where every retirement
   becomes one, enough of them past their grace left every new expiry unretired, call after call, and the collection's
@@ -258,7 +266,8 @@ so, and so do the module headers in the code.
   the read.
 - **`cache.genTtlMs` that is not a finite number of 0 or more is refused.** `NaN` (from an unset environment variable),
   a negative number or a string turned the timed pointer refresh off as `0` does, silently, so another process's load
-  or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built.
+  or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built. So is
+  `Infinity`: a store meant never to refresh on a timer says so with `0`.
 - **A `budget` that is not `{ maxRequests }` or `false` is refused.** A per-call `budget: 5`, `'5'` or
   `{ maxRequest: 5 }` read as no override, so the store's budget (1,000,000 requests by default) applied instead of the
   cap the caller wrote; the store's own `budget` was read the same way. Each is now a `ValidationError` naming what is

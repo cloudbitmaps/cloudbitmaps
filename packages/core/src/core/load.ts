@@ -697,8 +697,13 @@ async function runLoad(
   // the write landed first.
   let unanswered = false;
 
+  // Best-effort, where it is called: the refusal or the publish's own error is the answer, and a fault in the cleanup
+  // must not replace it. An object left behind is above the pointer, where the next load that numbers past it
+  // collects it.
+  const tidy = (): Promise<void> => reclaim().catch(() => undefined);
+
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
-    await reclaim();
+    await tidy();
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,
@@ -781,7 +786,7 @@ async function runLoad(
     // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
     // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
     // `TransientError` of a registry write the publish could not settle by reading the row back.
-    if (isValidationError(err) || err instanceof KeyUnavailableError) await reclaim();
+    if (isValidationError(err) || err instanceof KeyUnavailableError) await tidy();
     throw err;
   }
   if (!published.published) return refuse('superseded');

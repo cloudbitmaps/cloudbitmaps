@@ -211,9 +211,9 @@ export async function rollbackSegment(
           : ` — present: ${available.join(', ')}`),
     );
   }
+  // A row with no pointer has every generation above it: none was ever published.
   if (
-    record.currentGen !== null &&
-    toGeneration > record.currentGen &&
+    (record.currentGen === null || toGeneration > record.currentGen) &&
     options.allowForward !== true
   ) {
     // Above the pointer is not "a later version of this segment". It is where objects live that were never
@@ -223,7 +223,7 @@ export async function rollbackSegment(
     // rollback, which is what the opt-in is for.
     throw new ValidationError(
       `rollback: generation ${toGeneration} of "${ref.segment}" is above the current pointer ` +
-        `(${record.currentGen}) — it may never have been published. Pass { allowForward: true } if you are ` +
+        `(${record.currentGen ?? 'none'}) — it may never have been published. Pass { allowForward: true } if you are ` +
         `undoing an earlier rollback.`,
     );
   }
