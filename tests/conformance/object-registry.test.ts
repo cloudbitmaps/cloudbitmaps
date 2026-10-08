@@ -623,4 +623,17 @@ describe('a row is read only under the name it was written for', () => {
     );
     expect(await reg.get({ segment: 'orig' })).toMatchObject({ segment: 'orig' });
   });
+
+  it('a listing refuses it too, as it refuses any other corrupt row', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    await reg.create({ segment: 'orig' }, { currentGen: 0 });
+    const row = await store.read(registryObjectKey('conf', { segment: 'orig' }));
+    store.plant(registryObjectKey('conf', { namespace: 'ns', segment: 'orig' }), row!.bytes);
+    await expect(
+      (async () => {
+        for await (const _ of reg.list('ns')) void _;
+      })(),
+    ).rejects.toThrow(/names another segment than the one it is stored for/);
+  });
 });

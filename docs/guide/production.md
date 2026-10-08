@@ -52,7 +52,8 @@ the first time a GCS request answers `404` the driver lists one object in the bu
 answer with `404`, and remembers the bucket once it has seen it: one listing per driver for the life of the process.
 A missing bucket then fails with `the GCS bucket does not exist: <bucket>`. An identity without
 `storage.objects.list` is refused that listing, which says nothing about the bucket: for it, a `404` reads as a
-missing object unless GCS's message says the bucket does not exist.
+missing object unless GCS's message says the bucket does not exist. A bucket deleted after the driver has seen it
+reads as empty for the rest of the process, while every write to it fails.
 
 ## Bucket lifecycle
 

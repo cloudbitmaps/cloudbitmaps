@@ -120,8 +120,10 @@ so, and so do the module headers in the code.
   refused `materializeMany` feed record is named by its position in the feed, not by its chunk key, which narrows the
   ids it holds to a range.
 - **The cloud drivers check more of what they are told and what they are answered.** An S3 range answer of the
-  right length from another place in the object, and an S3 listing page that said more followed without saying how to
-  ask for it, were believed; the first is refused and the second is an `IntegrityError`, not a listing ended short.
+  right length from another place in the object, an S3 tail answer that is not the suffix asked for, and an S3 listing
+  page that said more followed without saying how to ask for it, were believed; the first two are refused and the
+  third is an `IntegrityError`, not a listing ended short. A listing page, S3 or GCS, that hands back the token it was
+  asked with is an `IntegrityError` too, where the driver asked for the same page forever.
   An Azure Blob tail answer short of the bytes asked for, and a tail length of `NaN`, `1.5` or `Infinity`, are
   refused, and a registry compare-and-swap whose row was deleted since it was read is a lost race on a service that
   answers it `404`. `S3Storage` and `GcsStorage` refuse a `bucket` that is not a non-empty string and every backend a
@@ -236,7 +238,8 @@ so, and so do the module headers in the code.
   a listing already did: S3 and Azure Blob with the service's own `NoSuchBucket` and `ContainerNotFound`. GCS answers
   a missing bucket and a missing object with the same `404`, so the GCS driver settles its first `404` with one
   object listing, which only a missing bucket answers with `404`, and remembers the bucket once seen; a missing one
-  fails with `the GCS bucket does not exist: <bucket>`. A GCS generation delete in a missing bucket fails too, where
+  fails with `the GCS bucket does not exist: <bucket>`. A listing the identity may not make (`403`) is remembered as
+  saying nothing; any other failed listing is asked again at the next `404`. A GCS generation delete in a missing bucket fails too, where
   it reported the object gone.
 - **A registry row is read only under the name it was written for.** A row copied or restored to another segment's key
   or file read as that segment while naming the original, so a sweep that acts on the name a row carries (an

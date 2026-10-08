@@ -210,6 +210,10 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         throw mapError(err);
       }
       for (const f of files ?? []) yield f.name;
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (next?.pageToken !== undefined && next.pageToken === pageToken) {
+        throw new IntegrityError('GCS listing returned the page token it was given');
+      }
       pageToken = next?.pageToken;
     } while (pageToken !== undefined);
   }

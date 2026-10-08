@@ -253,6 +253,13 @@ describe('GcsStorageDriver — what a delete costs', () => {
     expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete']);
   });
 
+  it('a listing that fails some other way says nothing, and is asked again', async () => {
+    const { calls, driver } = bucketWith(notFound, { code: 401, message: 'Unauthorized' });
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    await expect(driver.delete(gen)).resolves.toBeUndefined();
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete', 'list']);
+  });
+
   it('a listing that fails in transit is transient, and is asked again', async () => {
     const { calls, driver } = bucketWith(notFound, { code: 503, message: 'backendError' });
     await expect(driver.delete(gen)).rejects.toBeInstanceOf(TransientError);

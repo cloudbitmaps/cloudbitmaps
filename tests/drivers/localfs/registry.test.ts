@@ -115,4 +115,16 @@ describe('a row is read only under the name it was written for', () => {
       segment: 'n',
     });
   });
+
+  it('a listing refuses it too, as it refuses any other corrupt row', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const reg = new LocalFsRegistryDriver(root);
+    await reg.create({ segment: 'orig' }, { currentGen: 0 });
+    await writeRaw('copy.reg', await readFile(join(regDir(), 'orig.reg'), 'utf8'));
+    await expect(
+      (async () => {
+        for await (const _ of reg.list()) void _;
+      })(),
+    ).rejects.toThrow(/names another segment than the one it is stored for/);
+  });
 });

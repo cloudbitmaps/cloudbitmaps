@@ -307,6 +307,23 @@ export class S3StorageDriver implements IStorageDriver {
     }
     const { bytes, contentRange } = read;
     let size = totalFromContentRange(contentRange);
+    if (contentRange !== undefined && !(size === 0 && bytes.length === 0)) {
+      // A ranged answer must be the suffix asked for and hold exactly its bytes, as a range read's must. An empty
+      // object has no suffix: a server may answer it with `bytes 0--1/0`.
+      const span = spanFromContentRange(contentRange);
+      const suffix =
+        span !== undefined &&
+        span.end - span.start + 1 === bytes.length &&
+        (size === undefined ||
+          (span.end === size - 1 && span.start === Math.max(0, size - maxBytes)));
+      if (!suffix) {
+        throw this.badRead(
+          key,
+          'tail',
+          `the response holds ${contentRange} in ${bytes.length}B, not the last ${maxBytes}B of the object`,
+        );
+      }
+    }
     if (size === undefined) {
       // A spec-compliant backend omits Content-Range only on a 200 (whole object), where bytes.length
       // IS the size. If the body is exactly maxBytes we can't rule out a clamped partial from a
@@ -393,6 +410,10 @@ export class S3StorageDriver implements IStorageDriver {
       // A page that says more follow and gives no way to ask for them would end the listing short, silently.
       if (res.IsTruncated === true && res.NextContinuationToken === undefined) {
         throw new IntegrityError('S3 listing says it is truncated but gives no continuation token');
+      }
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (res.IsTruncated === true && res.NextContinuationToken === token) {
+        throw new IntegrityError('S3 listing returned the continuation token it was given');
       }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);

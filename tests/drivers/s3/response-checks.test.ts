@@ -63,12 +63,59 @@ describe('S3: an answer is checked against the request', LIMIT, () => {
     await expect(driver.getRange(GEN, 2, 4)).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it('a tail answer that is not the suffix asked for is refused', async () => {
+    const driver = new S3StorageDriver({ client, bucket: 'b' });
+    // Four bytes from the middle of a 100-byte object, for the last four asked.
+    answer = ranged('bytes 10-13/100');
+    await expect(driver.getTail(GEN, 4)).rejects.toBeInstanceOf(ValidationError);
+    // The last four bytes, but a header that says it holds five.
+    answer = ranged('bytes 95-99/100');
+    await expect(driver.getTail(GEN, 4)).rejects.toBeInstanceOf(ValidationError);
+    // The suffix asked for.
+    answer = ranged('bytes 96-99/100');
+    expect(await driver.getTail(GEN, 4)).toEqual({
+      bytes: Uint8Array.from([1, 2, 3, 4]),
+      size: 100,
+    });
+    // An empty object, as MinIO answers it.
+    answer = (_req, res) => {
+      res.writeHead(206, { 'content-length': '0', 'content-range': 'bytes 0--1/0' });
+      res.end();
+    };
+    expect(await driver.getTail(GEN, 8)).toEqual({ bytes: new Uint8Array(0), size: 0 });
+    // A whole object shorter than the tail asked for.
+    answer = ranged('bytes 0-3/4');
+    expect(await driver.getTail(GEN, 8)).toEqual({ bytes: Uint8Array.from([1, 2, 3, 4]), size: 4 });
+  });
+
   it('control: the bytes asked for are returned', async () => {
     const driver = new S3StorageDriver({ client, bucket: 'b' });
     answer = ranged('bytes 10-13/100');
     expect([...(await driver.getRange(GEN, 10, 4))]).toEqual([1, 2, 3, 4]);
     answer = ranged(undefined);
     expect([...(await driver.getRange(GEN, 0, 4))]).toEqual([1, 2, 3, 4]);
+  });
+
+  it('a listing that hands back the token it was asked with is refused, not asked again forever', async () => {
+    let asked = 0;
+    answer = (_req, res) => {
+      asked += 1;
+      res.writeHead(200, { 'content-type': 'application/xml' });
+      res.end(
+        '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name><IsTruncated>true</IsTruncated>' +
+          '<NextContinuationToken>same</NextContinuationToken></ListBucketResult>',
+      );
+    };
+    const drain = async (it: AsyncIterable<unknown>) => {
+      for await (const _ of it) void _;
+    };
+    await expect(
+      drain(new S3StorageDriver({ client, bucket: 'b' }).list({ segment: 's' })),
+    ).rejects.toThrow('returned the continuation token it was given');
+    await expect(drain(new S3RegistryDriver({ client, bucket: 'b' }).list())).rejects.toThrow(
+      'returned the continuation token it was given',
+    );
+    expect(asked).toBe(4);
   });
 
   it('a listing that says it is truncated and gives no token is refused, not ended short', async () => {

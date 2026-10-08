@@ -14,11 +14,15 @@
  *                               ├─ answered ──────────▶ remember the bucket; the 404 is an object's
  *                               ├─ 404 ───────────────▶ reject: the bucket does not exist
  *                               ├─ transient ─────────▶ reject: TransientError (asked again next time)
- *                               └─ anything else (403) ▶ remember it as unknowable; the 404 is an object's
+ *                               ├─ 403 ───────────────▶ remember it as unknowable; the 404 is an object's
+ *                               └─ anything else ─────▶ the 404 is an object's (asked again next time)
  * ```
  *
  * A process pays one listing at most while its bucket exists, and concurrent 404s share it. An identity without
  * `storage.objects.list` is answered `403`, which says nothing about the bucket, so its 404s read as they always did.
+ * Any other failure (a credential that could not be fetched, a 401) says nothing either, but may not last, so it is
+ * not remembered. Once seen, the bucket is not asked about again: one deleted later in the process's life reads as an
+ * empty store, as it did before this check, while every write to it fails.
  */
 
 import { TransientError } from '@cloudbitmaps/core/driver-kit';
@@ -66,8 +70,9 @@ export class BucketPresence {
           },
         );
       }
-      // Refused (no list permission) or otherwise unanswerable: nothing is known about the bucket, and asking again
-      // would get the same answer, so a 404 reads as an object's as it did before this check.
+      // Refused or otherwise unanswerable: nothing is known about the bucket, so a 404 reads as an object's as it did
+      // before this check. Only a refusal (no list permission) is sure to answer the same again, so only it is kept.
+      if (status !== 403) return;
     }
     this.settled = true;
   }
