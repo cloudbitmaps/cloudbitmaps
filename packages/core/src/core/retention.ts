@@ -90,6 +90,11 @@ export interface SetRetentionResult {
 
 /** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
 function validateRetentionPolicy(policy: RetentionPolicy): void {
+  if (policy === null || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new ValidationError(
+      `retention policy must be an object such as { expiresAt }; got ${policy === null ? 'null' : Array.isArray(policy) ? 'an array' : `a ${typeof policy}`}`,
+    );
+  }
   const { expiresAt } = policy;
   if (typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)) {
     throw new ValidationError(

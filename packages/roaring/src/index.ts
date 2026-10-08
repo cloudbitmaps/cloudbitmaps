@@ -306,7 +306,7 @@ const kindOf = (v: unknown): string =>
 /**
  * Why `options` cannot be a call's options, or `undefined` when it can. `undefined` and `null` read as none; anything
  * but an object is refused, and so is a key `known` does not list, unless its value is `undefined`, so a spread of
- * options keeps working; and each of `booleans` present must be a boolean. A bag of the wrong shape, a misspelt key or
+ * options keeps working; and each of `booleans` present must be a boolean, `null` included. A bag of the wrong shape, a misspelt key or
  * a switch given as a string would otherwise read as no option at all, and silently widen what the call does: a scope
  * passed as a string swept every namespace, and `dryRun: 'true'` deleted.
  */
@@ -340,9 +340,10 @@ function optionsError(
       `${op}: audit must be a sink with an onEvent(event) method, such as a RecordingAuditSink`,
     );
   }
+  // A switch is `true` or `false`. `null` is refused with the rest: read as absent, `dryRun: null` dropped for real.
   for (const name of booleans) {
     const v = bag[name];
-    if (v !== undefined && v !== null && typeof v !== 'boolean') {
+    if (v !== undefined && typeof v !== 'boolean') {
       return new ValidationError(`${op}: \`${name}\` must be a boolean; got ${kindOf(v)}`);
     }
   }
@@ -1187,8 +1188,31 @@ export class CloudRoaring {
     );
   }
 
+  /**
+   * A seam the store calls through must have the methods it calls. Without this a `clock` with no `now`, an `rng` with
+   * no `next` or a keystore with no `createDek` builds a store that throws a raw `TypeError` at its first load or read.
+   */
+  private static rejectHollowSeams(options: CloudRoaringOptions): void {
+    const seams: Array<[unknown, string, readonly string[]]> = [
+      [options.seams?.clock, 'seams.clock', ['now', 'sleep']],
+      [options.seams?.rng, 'seams.rng', ['next']],
+      [options.encryption?.keystore, 'encryption.keystore', ['createDek', 'openDek']],
+    ];
+    for (const [seam, name, needs] of seams) {
+      if (seam === undefined || seam === null) continue;
+      const has = (m: string): boolean =>
+        typeof (seam as Record<string, unknown>)[m] === 'function';
+      if (typeof seam !== 'object' || !needs.every(has)) {
+        throw new ValidationError(
+          `CloudRoaring's \`${name}\` must be an object with ${needs.map((m) => `\`${m}()\``).join(' and ')}`,
+        );
+      }
+    }
+  }
+
   constructor(options: CloudRoaringOptions) {
     CloudRoaring.rejectUnknownOptions(options);
+    CloudRoaring.rejectHollowSeams(options);
     const clock = options.seams?.clock ?? new SystemClock();
     const rng = options.seams?.rng ?? new SystemRng();
     // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).

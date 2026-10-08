@@ -44,6 +44,31 @@ describe('a destructive call refuses a switch that is not a boolean', () => {
     expect(await store.segment('old', { namespace: 'tenantB' }).count()).toBe(1);
   });
 
+  it('a switch given as null is refused: it read as absent, and dryRun: null dropped for real', async () => {
+    const { store } = await world();
+    await expect(
+      store.dropSegment({ segment: 'a' }, { confirmSegment: 'a', dryRun: null as never }),
+    ).rejects.toThrow('dropSegment: `dryRun` must be a boolean; got null');
+    await expect(store.retireExpired({ purgeTombstones: null as never })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(store.retireExpired({ dryRun: null as never })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await store.segment('a').count()).toBe(3);
+    expect(await store.segment('old', { namespace: 'tenantB' }).count()).toBe(1);
+  });
+
+  it('setRetention without a policy object is a ValidationError, not a TypeError', async () => {
+    const { store } = await world();
+    for (const policy of [null, undefined, 5, 'x', [T0]]) {
+      await expect(store.setRetention({ segment: 'a' }, policy as never)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+    expect(await store.getRetention({ segment: 'a' })).toBeNull();
+  });
+
   it('dropSegment without its options is a ValidationError, not a TypeError', async () => {
     const { store } = await world();
     await expect(store.dropSegment({ segment: 'a' }, undefined as never)).rejects.toBeInstanceOf(
@@ -192,5 +217,44 @@ describe('an option held in a getter or on a prototype is the option the call ru
     });
     expect(inherited).toEqual(own);
     expect(inherited).not.toEqual(await a.costReport());
+  });
+});
+
+describe('a seam the store calls through must have the methods it calls', () => {
+  it('a clock, an rng or a keystore without its methods is refused when the store is built', () => {
+    const build = (extra: object) => () =>
+      new CloudRoaring({ storage: new MemoryStorage(), ...extra });
+    expect(build({ seams: { clock: {} } })).toThrow(
+      '`seams.clock` must be an object with `now()` and `sleep()`',
+    );
+    expect(build({ seams: { clock: { now: () => T0 } } })).toThrow(ValidationError);
+    expect(build({ seams: { rng: {} } })).toThrow('`seams.rng` must be an object with `next()`');
+    expect(build({ seams: { rng: () => 0.5 } })).toThrow(ValidationError);
+    expect(build({ encryption: { keystore: {} } })).toThrow(
+      '`encryption.keystore` must be an object with `createDek()` and `openDek()`',
+    );
+  });
+
+  it('a class whose methods are on its prototype is accepted', () => {
+    class Clock {
+      now(): number {
+        return T0;
+      }
+      sleep(): Promise<void> {
+        return Promise.resolve();
+      }
+    }
+    class Rng {
+      next(): number {
+        return 0.5;
+      }
+    }
+    expect(
+      () =>
+        new CloudRoaring({
+          storage: new MemoryStorage(),
+          seams: { clock: new Clock(), rng: new Rng() },
+        }),
+    ).not.toThrow();
   });
 });

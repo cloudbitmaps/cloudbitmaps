@@ -103,6 +103,10 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A seam without its methods, and a retention policy that is not an object, are refused up front.** A
+  `seams.clock` without `now()` and `sleep()`, a `seams.rng` without `next()` or an `encryption.keystore` without
+  `createDek()` and `openDek()` built a store that threw a raw `TypeError` at its first load or read; each is now a
+  `ValidationError` when the store is built. `setRetention(ref, null)` threw a raw `TypeError` too.
 - **The driver conformance suites test what a driver could break and still pass.** A storage driver whose keys left
   out the namespace, folded `a/b` into `a_b`, listed generations by a bare prefix, checked for an object and then wrote
   it, or kept the bytes of a write whose writer failed passed every case, and a registry keyed by the segment name
@@ -246,7 +250,8 @@ so, and so do the module headers in the code.
   is now a `ValidationError` naming the call and the key, before anything is read or written, on the reads, the
   combines and `*Into` verbs, `load`, `rollback`, `dropSegment`, `retireExpired`, `subjectReport`, `eraseSubject`,
   `segments`, `checkConsistency`, `exportSegments` and `costReport`, and for an unknown bound inside `guard`.
-  `undefined`, `null` and a key whose value is `undefined` still read as absent. Code that passed a key a call does not
+  `undefined`, `null` and a key whose value is `undefined` still read as absent, except for a switch, which must be
+  `true` or `false`: `dryRun: null`, read as absent, dropped for real. Code that passed a key a call does not
   take, such as an `*Into` call's `audit` handed to `intersect`, removes it. TypeScript compiled such a key when the
   options were a variable rather than a literal written in the call, for one object shared by `intersect` and
   `iterate`, so typed code can meet this refusal too.
