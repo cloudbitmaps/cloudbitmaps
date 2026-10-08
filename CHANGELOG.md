@@ -103,6 +103,10 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An async metrics or audit sink that rejects no longer ends the process.** An `async onEvent` is assignable to the
+  sinks' `onEvent(): void`, and its rejection (a telemetry or audit service that is down) escaped the guard that
+  swallows a throwing sink, as an unhandled rejection, which ends a Node process by default: mid-erasure, with no
+  ledger returned. Its rejection is now swallowed like a throw.
 - **A read of ranges over more segments than the reader cache keeps no longer opens each object again per chunk.**
   Before it hands out a chunk, a combine or `iterate` checks that its segment has not moved. Once the reader cache had
   let the segment go, that check opened the generation again (a tail read and an index parse of up to about 1.3 MB)

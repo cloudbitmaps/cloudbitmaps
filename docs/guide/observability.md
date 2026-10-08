@@ -88,7 +88,8 @@ Events carry raw observations (bytes, counts, ms). Two things to keep in mind:
 A sink that switches on `kind` with a `never` check in its default branch, as `CountingMetricsSink` does, stops
 compiling at `advisory` until it has a case for it: ignoring the event is fine. A sink with an ordinary default branch needs no change.
 
-A sink that throws can never break a read: its exceptions are swallowed.
+A sink that throws can never break a read: its exceptions are swallowed, and so is the rejection of an `async onEvent`,
+which would otherwise be an unhandled rejection that ends a Node process.
 
 ## Audit trail: security & compliance events
 
@@ -96,7 +97,8 @@ Metrics report volume (bytes, latency, hit rate). The **audit sink** records the
 changes an auditor cares about: when a segment's data was published or a load of it refused, when its pointer was
 rolled back, and when it was rewritten, erased or disposed of. It is the natural feed for an append-only audit log or
 SIEM, and doubles as your GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it is an injected
-`IAuditSink`, it is off by default (a no-op), and a throwing sink can never break the operation it observes.
+`IAuditSink`, it is off by default (a no-op), and a throwing sink, or an async one that rejects, can never break the
+operation it observes.
 
 Unlike metrics, audit is not a store option. The events fire from the operations that write, which are separate entry
 points, so you pass `audit` to each: a load (`store.load`), an `*Into` materialization, a rollback (`store.rollback`),

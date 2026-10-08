@@ -15,6 +15,8 @@
  * guide.
  */
 
+import { ignoreRejection } from './audit';
+
 /**
  * The operations that emit an `op` latency event (timed with the injected clock, at the facade). `materializeMany` is
  * timed from its first request, the pins, to its last publish: a call its input checks refuse emits none.
@@ -159,9 +161,9 @@ export function safeMetrics(sink: IMetricsSink): IMetricsSink {
   return {
     onEvent(event: MetricEvent): void {
       try {
-        sink.onEvent(event);
+        ignoreRejection(sink.onEvent(event) as unknown);
       } catch {
-        /* swallow — a metrics sink must never break a read */
+        /* swallow — a metrics sink must never break a read, an async one's rejection included */
       }
     },
   };

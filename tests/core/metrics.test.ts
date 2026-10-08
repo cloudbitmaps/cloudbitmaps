@@ -122,6 +122,24 @@ describe('safeMetrics', () => {
     expect(c.snapshot().cache.hits).toBe(1);
   });
 
+  it('swallows the rejection of an async sink, which would otherwise end a Node process as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const rejects: IMetricsSink = {
+        onEvent: async () => {
+          throw new Error('the metrics backend is down');
+        },
+      };
+      safeMetrics(rejects).onEvent({ kind: 'cache', hit: true });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('returns the no-op sink unchanged (no needless wrapper)', () => {
     expect(safeMetrics(NOOP_METRICS)).toBe(NOOP_METRICS);
   });

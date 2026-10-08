@@ -136,19 +136,30 @@ export const NOOP_AUDIT: IAuditSink = {
 
 /**
  * Wrap a sink so a throwing/buggy `onEvent` can never break the lifecycle operation it observes — audit is
- * strictly observation. Returns {@link NOOP_AUDIT} unchanged (so the no-op case skips even the try/catch alloc).
+ * strictly observation. That covers an `async onEvent` that rejects, whose rejection would otherwise surface as an
+ * unhandled one, which ends a Node process by default. Returns {@link NOOP_AUDIT} unchanged (so the no-op case
+ * skips even the try/catch alloc).
  */
 export function safeAudit(sink: IAuditSink): IAuditSink {
   if (sink === NOOP_AUDIT) return sink;
   return {
     onEvent(event: AuditEvent): void {
       try {
-        sink.onEvent(event);
+        ignoreRejection(sink.onEvent(event) as unknown);
       } catch {
         /* swallow — an audit sink must never break the operation it observes */
       }
     },
   };
+}
+
+/** Observe the rejection of what a sink's `onEvent` returned, when it returned a promise, so it is never unhandled. */
+export function ignoreRejection(returned: unknown): void {
+  if (typeof (returned as { then?: unknown } | null | undefined)?.then === 'function') {
+    (returned as PromiseLike<unknown>).then(undefined, () => {
+      /* swallow — a sink must never break the operation it observes, later included */
+    });
+  }
 }
 
 /** A ready-made sink that records events into an in-memory list — handy for tests + simple audit trails. */

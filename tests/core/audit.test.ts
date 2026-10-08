@@ -88,6 +88,36 @@ describe('safeAudit', () => {
     expect(() => boom.onEvent({ kind: 'segment.erase', segment: 's' })).not.toThrow();
   });
 
+  it('swallows the rejection of an async sink, which would otherwise end a Node process as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // An `async onEvent` is assignable to `onEvent(): void`, and an audit service that is down rejects.
+      const rejects: IAuditSinkLike = {
+        onEvent: async () => {
+          throw new Error('the audit service is down');
+        },
+      };
+      safeAudit(rejects).onEvent({ kind: 'segment.erase', segment: 's' });
+      const w = world();
+      const published = await bulkLoadCrbmGeneration(
+        w.storage,
+        { ...SEG, generation: 0 },
+        [1, 2, 3],
+        {
+          registry: w.registry,
+          audit: rejects,
+        },
+      );
+      expect(published).toBeDefined();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('returns NOOP_AUDIT unchanged (identity fast-path)', () => {
     expect(safeAudit(NOOP_AUDIT)).toBe(NOOP_AUDIT);
   });
