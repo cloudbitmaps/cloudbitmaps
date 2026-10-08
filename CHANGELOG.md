@@ -13,6 +13,16 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`guard.maxGrowth`: refuse a load that grows a segment more than you allow.** The ceiling to `minRetained`'s floor,
+  for a source that lands duplicated or joined on the wrong key: `guard: { maxGrowth: 1.5 }` refuses a generation larger
+  than one and a half times the current one, with `published: false` and `reason: 'max-growth'`, and the previous
+  generation stays current. It applies to `store.load`, the `*Into` verbs and each output of `materializeMany`. It does
+  not judge a first load or a load onto an empty segment, `0` means no bound, and anything else below `1` is a
+  `ValidationError` before any request. Setting it makes the load read the current size and fence its publish on it,
+  with `allowEmpty: true` too. It is judged after the other bounds, so a load that breaks one of those as well keeps
+  that reason. `LoadRefusal`, `MaterializeRefusal` and the `segment.load-refused` audit event's `reason` gain
+  `'max-growth'`; it appears only when the bound is set, and a caller that switches exhaustively on `reason` adds a
+  case.
 - **`store.materializeMany` reports to the store's metrics sink, as the `*Into` calls do.** One `op` event per call,
   with `name: 'materializeMany'`, timed from its first request (the pins) to its last publish; a call its input checks
   refuse sends nothing and reports nothing. And one `storage.get` event per range request it sends, naming the operand's

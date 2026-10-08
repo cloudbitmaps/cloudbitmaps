@@ -30,7 +30,7 @@ end-to-end check of your own.
 **Branch on `published`.** A load replaces: whatever the stream contains is what the segment contains afterwards. An
 upstream query that returns fewer rows than usual is a shrink nobody asked for, and an empty one is a wipe. At the
 storage layer both are an ordinary successful write, which is why a load checks its result before it publishes.
-`guard: { minCardinality, minRetained }` says what counts as implausible, and an empty result over a non-empty
+`guard: { minCardinality, minRetained, maxGrowth }` says what counts as implausible, and an empty result over a non-empty
 segment is refused even with no guard. A refusal is reported rather than thrown, so a discarded result is a load that
 silently did nothing.
 
@@ -45,9 +45,26 @@ refused.
 | `'empty'` | The ids produced nothing, and the segment is not empty. | Usually an upstream query that failed quietly. Fix it and re-run, or pass `allowEmpty: true` if emptying the segment is the point. |
 | `'min-cardinality'` | The set has fewer ids than `guard.minCardinality`. | Check the source. Lower the guard if the smaller set is real. |
 | `'min-retained'` | The set is smaller than `guard.minRetained` times the current segment. | The same: a shrink bigger than you allowed. |
+| `'max-growth'` | The set is larger than `guard.maxGrowth` times the current segment. | A growth bigger than you allowed: often a source that landed twice, or a join on the wrong key. Check the source. Raise the guard if the larger set is real. |
 | `'superseded'` | Another writer got there first: another load took the same generation number, or the segment's row changed while this load was writing. | Re-run the load. |
 
 A refused load also emits `segment.load-refused` to the `audit` sink you pass.
+
+**The two ratio bounds.** `minRetained` is a floor and `maxGrowth` a ceiling on the new size as a multiple of the
+current one: `{ minRetained: 0.5, maxGrowth: 2 }` accepts anything from half to twice what the segment holds. Neither
+judges a first load, and `maxGrowth` does not judge a load onto an empty segment either, since no ceiling is a multiple
+of zero; `0` means no bound, on both. The bounds are checked in the order of the table, so a load that breaks an older
+bound as well keeps that reason. Each compares in floating point, so do not rely on the exact boundary
+(`100 × 1.15` is `114.99999999999999`). Setting either one makes the load read the current size, `allowEmpty: true` or
+not, and fence its publish on what it read ([below](#where-the-guard-reads-the-size-of-the-current-generation)).
+
+A ratio judges a small segment harshly: 40 ids growing to 70 is 1.75 times. To refuse a growth only when it is also
+larger than an absolute number of ids, set each load's `maxGrowth` from the segment's current size `before`:
+`maxGrowth: before ? Math.max(1.5, 1 + 1000 / before) : 0` refuses only above both `before × 1.5` and
+`before + 1000`, since `new > max(f × b, b + d)` is the same as `new > b × max(f, 1 + d / b)`. With no current size
+(a first load, or an empty segment) it passes `0`, no bound, as the bound itself would judge nothing there. `before` is
+`await segment.count()`, or what your last load left: its `cardinality` if it published, its `cardinalityBefore` if it
+was refused. The rule is exact while nothing else writes the segment in between.
 
 **What throws instead.** A refusal is an outcome. A throw is a fault:
 
@@ -294,9 +311,9 @@ that does not open. The first load onto such a row writes a summary, and the nex
 
 One behaviour follows from reading the row. A row that names an object that is gone (a lifecycle rule, a partial
 restore) still remembers the size, so a repair load is judged against it: a repair smaller than `guard.minRetained`
-allows is refused. A guard that has to open the object, because the row has no usable summary, meets an object it cannot
-read and judges against nothing. Leave `minRetained` out to repair a segment whose row
-remembers a size: `allowEmpty: true` does not lift a `minRetained` refusal. See [disaster recovery](disaster-recovery.md).
+allows, or larger than `guard.maxGrowth` allows, is refused. A guard that has to open the object, because the row has
+no usable summary, meets an object it cannot read and judges against nothing. Leave `minRetained` and `maxGrowth` out to
+repair a segment whose row remembers a size: `allowEmpty: true` lifts neither refusal. See [disaster recovery](disaster-recovery.md).
 
 **Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
 billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
@@ -573,13 +590,13 @@ otherwise. Five properties follow from "a write is a load":
   ```ts
   const res = await audience.intersectInto(dest, [eligible]);
   if (!res.published) {
-    // res.reason: 'empty' | 'min-cardinality' | 'min-retained'
+    // res.reason: 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth'
     // res.cardinalityBefore: what dest still holds
   }
   ```
 
   An empty result into a destination that was never loaded still publishes: there is nothing to protect. Pass
-  `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained }` for the
+  `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained, maxGrowth }` for the
   same bounds `load()` takes, judged against what the destination held. A refusal is reported, not thrown; a lost race
   still throws `WriteConflictError`. A refused call also emits `segment.load-refused` to `audit`, since a
   materialization is a load.
@@ -970,8 +987,9 @@ load is simply a newer identical generation. Run two loads of one segment at onc
 other reports `published: false` with `reason: 'superseded'`. If both took the same generation number, the second to
 write it is refused by the write-once put and writes nothing. If not, the publish that lands second finds the row
 changed since its load read it, or finds a row where its load read none, and is refused. A load that won the number can
-still be refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and no
-`guard.minRetained`: neither load read anything to fence on, so each is a forward-only publish. If the lower
+still be refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and
+neither `guard.minRetained` nor `guard.maxGrowth`: neither load read anything to fence on, so each is a forward-only
+publish. If the lower
 generation number lands first, both land and the higher stays current. If the higher lands first, the lower is
 refused as `superseded`, because a publish never moves the pointer back. Publishing the generation that is already current is a
 no-op that reports success, unless the publish is fenced (below), in which case it is refused.
@@ -1053,7 +1071,7 @@ deletes is below the one it published and below the pointer it just read, so it 
 A load whose check of the previous current object finds it gone, the state a lifecycle rule or a partial restore leaves
 and `checkConsistency` reports, lists instead, and keeps the newest `keep` generations a listing finds, and records
 them: the check is the guard's read of the object, or, for a guard that took the size from the row's summary, one
-zero-byte read before the pass takes a name. A load that makes no such check, one with `allowEmpty` and no `minRetained`,
+zero-byte read before the pass takes a name. A load that makes no such check, one with `allowEmpty` and neither `minRetained` nor `maxGrowth`,
 cannot tell, and deletes the names its list pushed out.
 
 The listing pass a load runs on a row that records a list (every 16th generation, a check that met an object, a caller

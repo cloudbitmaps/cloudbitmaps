@@ -47,6 +47,7 @@ import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import type { Clock } from './determinism';
 import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
 import type { Budget } from './budget';
+import { validateGuardBounds } from './load';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -434,18 +435,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
       if (typeof guard !== 'object' || guard === null) {
         throw new ValidationError(`${where}.guard must be an object`);
       }
-      const min = guard.minCardinality;
-      if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
-        throw new ValidationError(
-          `${where}.guard.minCardinality must be a non-negative integer; got ${String(min)}`,
-        );
-      }
-      const retained = guard.minRetained;
-      if (retained !== undefined && (!Number.isFinite(retained) || retained < 0 || retained > 1)) {
-        throw new ValidationError(
-          `${where}.guard.minRetained must be a fraction in 0..1; got ${String(retained)}`,
-        );
-      }
+      validateGuardBounds(guard, `${where}.`);
     }
     const metadata = copiedMetadata(output.metadata, (message) => {
       throw new ValidationError(`${where}.metadata: ${message}`);
