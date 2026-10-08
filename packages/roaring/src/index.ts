@@ -51,6 +51,7 @@ import {
   eraseIdFromSegment,
   estimateCost,
   groundedReport,
+  judgeLoad,
   loadSegment,
   loadSegmentChunks,
   compileCombineMany,
@@ -604,6 +605,49 @@ export interface MaterializeManyRun {
   readonly stats: MaterializeManyStats;
 }
 
+/**
+ * {@link MaterializeManyOptions} for a **dry run**: every output is computed exactly as the call would compute it, and
+ * judged against its `dest` as its publish would be, and nothing is written. See {@link CloudRoaring.materializeMany}.
+ */
+export interface MaterializeManyDryRunOptions extends MaterializeManyOptions {
+  readonly dryRun: true;
+}
+
+/**
+ * What one output of a dry run would come to, with nothing written: its size, what its `dest` holds now, and the bound
+ * its publish would be refused for now. `published` is always `false`, so code that branches on it never takes a dry
+ * run for a publish.
+ */
+export interface MaterializeDryRunResult {
+  readonly dryRun: true;
+  readonly published: false;
+  /** Distinct ids the output would hold. */
+  readonly cardinality: number;
+  /** What `dest` holds now: `null` when it has no current generation, or its object is gone. Always read. */
+  readonly cardinalityBefore: number | null;
+  /** The bound a publish of the output would be refused for, judged now; absent when it would publish. */
+  readonly wouldRefuse?: MaterializeRefusal;
+}
+
+/**
+ * What one output of a dry run came to: a {@link MaterializeDryRunResult}, or `{ published: false, error }` for what its
+ * publish would have thrown or what stopped it, as on a call that publishes.
+ */
+export type MaterializeManyDryRunOutcome =
+  MaterializeDryRunResult | { readonly published: false; readonly error: Error };
+
+/** The result of {@link CloudRoaring.materializeMany} with `dryRun: true`. */
+export interface MaterializeManyDryRun {
+  /** One per output, in the order given. */
+  readonly outputs: MaterializeManyDryRunOutcome[];
+  readonly stats: MaterializeManyStats;
+}
+
+/** A dry run's value inside the call, with the requests its judgement made. */
+interface DryRunValue extends MaterializeDryRunResult {
+  readonly reads: number;
+}
+
 /** What a handle shows the store that it does not show a caller. */
 interface HandleView {
   readonly ref: SegmentRef;
@@ -620,6 +664,7 @@ let viewOf: (segment: Segment) => HandleView;
 
 const MATERIALIZE_MANY_KEYS = [
   'operands',
+  'dryRun',
   'outputs',
   'keep',
   'pin',
@@ -1279,6 +1324,21 @@ export class CloudRoaring {
   }
 
   /**
+   * **A dry run:** every output computed exactly as the call would compute it, and judged against its `dest` as its
+   * publish would be, with nothing written: no object, no pointer, no audit event. Each output's result says how many ids
+   * it would hold, what its `dest` holds now, and the bound its publish would be refused for now (`wouldRefuse`). The
+   * call reads its operands as a publishing call does, takes its feed if it has one, and fails an output for what would
+   * fail its publish (an expired `dest`, a destroyed one, a moved exclude, an erasure). It reads the operands as
+   * the publishing call does, and for each output the reads a publish's guard makes: one registry read for `dest`'s size,
+   * or two where its row has no usable summary. It holds the memory a publish would, so it fails for memory where one
+   * would, and reports to the metrics sink as the same `materializeMany` op.
+   *
+   * What it reports holds for now only: a publish made later reads the operands and judges each `dest` as they are then.
+   * To publish what was reviewed, call again without `dryRun`, on the same pinned handles or with the same feed (the
+   * guide's recipe).
+   */
+  materializeMany(options: MaterializeManyDryRunOptions): Promise<MaterializeManyDryRun>;
+  /**
    * **Many outputs, each operand read once per group.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
    * to depth 64) published as a new generation of its own `dest`, exactly as an `*Into` would publish it, but computed
    * together: each operand's chunks are read once for all the outputs that use them, instead of once per output and
@@ -1369,7 +1429,13 @@ export class CloudRoaring {
    * });
    * ```
    */
-  async materializeMany(options: MaterializeManyOptions): Promise<MaterializeManyRun> {
+  materializeMany(
+    options: MaterializeManyOptions & { readonly dryRun?: false },
+  ): Promise<MaterializeManyRun>;
+  /** The one body of the two forms above. */
+  async materializeMany(
+    options: MaterializeManyOptions & { readonly dryRun?: boolean },
+  ): Promise<MaterializeManyRun | MaterializeManyDryRun> {
     if (typeof options !== 'object' || options === null) {
       throw new ValidationError(
         'materializeMany needs an options object with `operands`, `outputs` and `keep`',
@@ -1386,6 +1452,11 @@ export class CloudRoaring {
       );
     }
     // Read once, here: a getter or a proxy answering twice would be checked as one value and used as another.
+    const dryRunIn: unknown = options.dryRun;
+    if (dryRunIn !== undefined && typeof dryRunIn !== 'boolean') {
+      throw new ValidationError('materializeMany: dryRun must be a boolean');
+    }
+    const dryRun = dryRunIn === true;
     const operandsIn: unknown = options.operands;
     const outputsIn: unknown = options.outputs;
     const keep = options.keep;
@@ -1568,8 +1639,11 @@ export class CloudRoaring {
         ...(spec.keep === undefined ? {} : { keep: spec.keep }),
         beforePublish: () => this.assertWritable(`outputs[${i}]`, dest),
         // What a settled publish proves it sent: a published one wrote its object and moved the pointer, a refused one
-        // wrote its object and deleted it.
-        requestsOf: (result: MaterializeResult) => ({ get: 0, put: result.published ? 2 : 1 }),
+        // wrote its object and deleted it. A dry run's judgement wrote nothing, and read the row and maybe the object.
+        requestsOf: (result: MaterializeResult | DryRunValue) =>
+          'dryRun' in result
+            ? { get: result.reads, put: 0 }
+            : { get: 0, put: result.published ? 2 : 1 },
         publish: (
           chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
           write: {
@@ -1578,11 +1652,13 @@ export class CloudRoaring {
             readonly guard?: LoadGuard;
             readonly metadata?: GenerationMetadata;
           },
-        ): Promise<MaterializeResult> =>
-          this.materialize(viewOf(dest).ref, new CombineChunks(chunks), 'materializeMany', {
-            ...write,
-            ...(spec.audit === undefined ? {} : { audit: spec.audit }),
-          }),
+        ): Promise<MaterializeResult | DryRunValue> =>
+          dryRun
+            ? this.judgeOutput(viewOf(dest).ref, chunks, write)
+            : this.materialize(viewOf(dest).ref, new CombineChunks(chunks), 'materializeMany', {
+                ...write,
+                ...(spec.audit === undefined ? {} : { audit: spec.audit }),
+              }),
       })),
       keep: keep as number,
       ...(after === undefined ? {} : { after }),
@@ -1593,6 +1669,7 @@ export class CloudRoaring {
       ...(budget === undefined ? {} : { budget }),
       ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
       ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, fedMayBeEmpty, epochAt) }),
+      ...(dryRun ? { dryRun: true } : {}),
     });
     const compiled = compileCombineMany(request(new Map()));
     // An expired or released handle anywhere is refused before any request, as the `*Into` verbs refuse one.
@@ -1661,16 +1738,51 @@ export class CloudRoaring {
     const run = metricsOn
       ? await timeOp(this.metrics, this.clock, 'materializeMany', work)
       : await work();
+    const results = run.outputs.map((o) => {
+      if (!o.ok) {
+        return {
+          published: false as const,
+          error: o.error instanceof Error ? o.error : new Error(String(o.error)),
+        };
+      }
+      if (!('dryRun' in o.value)) return o.value;
+      const v = o.value;
+      const judged: MaterializeDryRunResult = {
+        dryRun: true,
+        published: false,
+        cardinality: v.cardinality,
+        cardinalityBefore: v.cardinalityBefore,
+        ...(v.wouldRefuse === undefined ? {} : { wouldRefuse: v.wouldRefuse }),
+      };
+      return judged;
+    });
+    return dryRun
+      ? { outputs: results as MaterializeManyDryRunOutcome[], stats: run.stats }
+      : { outputs: results as MaterializeManyOutcome[], stats: run.stats };
+  }
+
+  /**
+   * A dry run's publish of one output: count what the finished chunks hold, and judge that size against `dest` as a
+   * load would, writing nothing.
+   */
+  private async judgeOutput(
+    dest: SegmentRef,
+    chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
+    write: { readonly allowEmpty?: boolean; readonly guard?: LoadGuard },
+  ): Promise<DryRunValue> {
+    let cardinality = 0;
+    for await (const chunk of chunks) cardinality += chunk.bitmap.size;
+    const judged = await judgeLoad(dest, cardinality, this.lifecycleDeps('materializeMany'), {
+      ...(write.allowEmpty === undefined ? {} : { allowEmpty: write.allowEmpty }),
+      ...(write.guard === undefined ? {} : { guard: write.guard }),
+    });
     return {
-      outputs: run.outputs.map((o) =>
-        o.ok
-          ? o.value
-          : {
-              published: false as const,
-              error: o.error instanceof Error ? o.error : new Error(String(o.error)),
-            },
-      ),
-      stats: run.stats,
+      dryRun: true,
+      published: false,
+      cardinality,
+      cardinalityBefore: judged.cardinalityBefore,
+      ...(judged.wouldRefuse === undefined ? {} : { wouldRefuse: judged.wouldRefuse }),
+      reads: judged.reads,
     };
   }
 
