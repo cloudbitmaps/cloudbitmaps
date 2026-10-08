@@ -103,6 +103,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An option held in a getter or inherited from a prototype is the option a call runs with.** `retireExpired` and
+  `exportSegments` copied their options with a spread, which keeps only an object's own properties, so a `dryRun` or
+  a `namespace` held in a class getter or on a prototype, which TypeScript accepts, was dropped after it was checked:
+  `retireExpired(new SweepConfig())` with a `dryRun` getter ran a real sweep, and `exportSegments(sink, scope)` with
+  a `namespace` getter exported every namespace. `costReport` dropped a `workload` field held the same way. Each now
+  reads its options by name and runs with exactly what it checked.
 - **A bucket or container that does not exist is an error, not an empty store.** The S3, GCS and Azure Blob drivers
   read a missing bucket as a missing object, so a misspelt, not yet created or deleted bucket answered `has` with
   `false`, `count` with `0` and a registry read with no row, with nothing to see. Each call now fails, as a load and
@@ -168,7 +174,9 @@ so, and so do the module headers in the code.
   combines and `*Into` verbs, `load`, `rollback`, `dropSegment`, `retireExpired`, `subjectReport`, `eraseSubject`,
   `segments`, `checkConsistency`, `exportSegments` and `costReport`, and for an unknown bound inside `guard`.
   `undefined`, `null` and a key whose value is `undefined` still read as absent. Code that passed a key a call does not
-  take, such as an `*Into` call's `audit` handed to `intersect`, removes it.
+  take, such as an `*Into` call's `audit` handed to `intersect`, removes it. TypeScript compiled such a key when the
+  options were a variable rather than a literal written in the call, for one object shared by `intersect` and
+  `iterate`, so typed code can meet this refusal too.
 - **`retireExpired` retires only a segment that is still expired when its tombstone is written, and claims only the
   tombstones it wrote.** The sweep re-read each row before retiring it, but the drop read it again and acted on what it
   found, so a retention extended or cleared between the two reads, or by a write the drop's own write lost to, was

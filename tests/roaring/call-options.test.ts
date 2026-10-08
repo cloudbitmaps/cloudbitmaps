@@ -142,3 +142,55 @@ describe('an audit or metrics sink without onEvent is refused, where it would ha
     }
   });
 });
+
+describe('an option held in a getter or on a prototype is the option the call runs with', () => {
+  // TypeScript accepts both shapes for `dryRun?: boolean` and `namespace?: string`; a copy of the bag by spread keeps
+  // only own enumerable properties, so these were checked and then dropped.
+  class DryRun {
+    get dryRun(): boolean {
+      return true;
+    }
+  }
+  class TenantB {
+    get namespace(): string {
+      return 'tenantB';
+    }
+  }
+
+  it('retireExpired with dryRun in a getter or on a prototype retires nothing', async () => {
+    for (const options of [new DryRun(), Object.create({ dryRun: true }) as { dryRun: boolean }]) {
+      const { store } = await world();
+      const r = await store.retireExpired(options);
+      expect(r).toMatchObject({ dryRun: true, retired: 0, wouldRetire: 1 });
+      expect(await store.segment('old', { namespace: 'tenantB' }).count()).toBe(1);
+    }
+  });
+
+  it('exportSegments with namespace in a getter or on a prototype exports that namespace only', async () => {
+    for (const options of [
+      new TenantB(),
+      Object.create({ namespace: 'tenantB' }) as { namespace: string },
+    ]) {
+      const { store } = await world();
+      const opened: string[] = [];
+      const sink: ExportSink = {
+        open: (ref) => {
+          opened.push(`${ref.namespace ?? ''}/${ref.segment}`);
+          return { write: () => {}, close: () => {}, abort: () => {} };
+        },
+      };
+      await store.exportSegments(sink, options);
+      expect(opened).toEqual(['tenantB/old']);
+    }
+  });
+
+  it('costReport reads a workload held on a prototype', async () => {
+    const { a } = await world();
+    const own = await a.costReport({ workload: { readsPerSec: 500 } });
+    const inherited = await a.costReport({
+      workload: Object.create({ readsPerSec: 500 }) as object,
+    });
+    expect(inherited).toEqual(own);
+    expect(inherited).not.toEqual(await a.costReport());
+  });
+});

@@ -282,6 +282,21 @@ const CALL_KEYS = {
   ]),
   exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
   costReport: keysOf<NonNullable<Parameters<Segment['costReport']>[0]>>()(['pricing', 'workload']),
+  workload: keysOf<Workload>()([
+    'readsPerSec',
+    'intersectsPerSec',
+    'cacheHitRate',
+    'chunksPerIntersect',
+    'operandsPerIntersect',
+    'loadsPerMonth',
+    'requestsPerLoad',
+    'hotSegments',
+    'readerProcesses',
+    'genTtlMs',
+    'retirementsPerMonth',
+    'purgesPerMonth',
+    'conditionalDelete',
+  ]),
 } as const;
 
 /** How a value of the wrong kind is named in a message: by its kind, never by its content. */
@@ -332,6 +347,25 @@ function optionsError(
     }
   }
   return undefined;
+}
+
+/**
+ * The keys of `options` a call takes, each read by name. A spread copies only own enumerable properties, so an option
+ * held in a getter or inherited from a prototype, which TypeScript accepts and {@link optionsError} reads, would pass
+ * the checks and then be dropped: a `dryRun` so held ran a real sweep, and a `namespace` exported every tenant. The
+ * call then reads the copy only, so it runs with exactly what was checked.
+ */
+function picked<T extends object>(
+  options: T | null | undefined,
+  keys: readonly string[],
+): Partial<T> {
+  const out: Record<string, unknown> = {};
+  if (options === undefined || options === null) return out as Partial<T>;
+  for (const key of keys) {
+    const value = (options as Record<string, unknown>)[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out as Partial<T>;
 }
 
 /** {@link optionsError}, thrown: for a call that rejects, rather than one that returns a stream. */
@@ -2581,15 +2615,15 @@ export class CloudRoaring {
     options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
   ): Promise<RetireExpiredResult> {
     checkOptions(options, 'retireExpired', CALL_KEYS.retireExpired, ['dryRun', 'purgeTombstones']);
-    options ??= {};
+    const opts = picked(options, CALL_KEYS.retireExpired);
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
       { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
-      { ...options, now: options.now ?? this.clock.now() },
+      { ...opts, now: opts.now ?? this.clock.now() },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
     // nothing, so it invalidates nothing.
-    if (options.dryRun !== true) {
+    if (opts.dryRun !== true) {
       for (const entry of result.entries) {
         this.engine.invalidate({ segment: entry.segment, namespace: entry.namespace });
       }
@@ -2865,13 +2899,10 @@ export class CloudRoaring {
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
     checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments);
-    options ??= {};
+    const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
     // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
-    return runExport(this, registry, sink, {
-      ...options,
-      codec: options.codec ?? roaringCodec,
-    });
+    return runExport(this, registry, sink, { ...opts, codec: opts.codec ?? roaringCodec });
   }
 
   /**
@@ -4031,10 +4062,14 @@ export class Segment {
     const canMeasure = this.engine.supportsStorageSize;
     const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
     const refreshMs = this.engine.pointerRefreshMs;
+    const given =
+      options?.workload === undefined || options.workload === null
+        ? undefined
+        : picked(options.workload, CALL_KEYS.workload);
     const workload =
-      refreshMs === undefined || options?.workload?.genTtlMs !== undefined
-        ? options?.workload
-        : { ...options?.workload, genTtlMs: refreshMs };
+      refreshMs === undefined || given?.genTtlMs !== undefined
+        ? given
+        : { ...given, genTtlMs: refreshMs };
     return groundedReport({
       storageBytes: size?.sizeBytes ?? 0,
       grounded: canMeasure,
