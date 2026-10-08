@@ -64,16 +64,20 @@ so, and so do the module headers in the code.
 
 ### Deprecated
 
-- **The cost model, and `store.reapRegistryTombstones`, each marked `@deprecated` for 1.0.** Both keep working
-  unchanged until then.
-  - `CloudRoaring.estimateCost`, `segment.costReport`, core's `estimateCost` and `groundedReport`, and the price lists
-    `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER` move to their own
-    package at 1.0. They are a planning tool, not part of reading or writing a set, and the price list ships as old as
-    the release that carries it. `stat()` gains the generation's byte size then, so a grounded report needs nothing
-    internal.
-  - `store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
-    `IRegistryDriver.reapLegacyTombstones` leave the store at 1.0, where the reaper is kept as a one-off script. Only a
-    bucket written by a release before 0.12 holds the rows it removes.
+- **The cost model, marked `@deprecated`: it moves to a package of its own, `@cloudbitmaps/tools`, in the minor after
+  this one.** `CloudRoaring.estimateCost`, `segment.costReport`, core's `estimateCost` and `groundedReport`, and the
+  price lists `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER` keep working
+  unchanged until then. They are a planning tool, not part of reading or writing a set, and a price list in the library
+  is as old as the release that carries it. `stat()` gains the generation's byte size with the move, so a grounded report
+  needs nothing internal.
+
+### Removed
+
+- **`store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
+  `IRegistryDriver.reapLegacyTombstones`.** Only a bucket a release before 0.12 wrote holds the `deleted: true` rows the
+  reaper removed. The guide's recipe runs the reaper the 0.18 releases ship, once, from a scratch directory
+  ([retention](docs/guide/retention.md#remove-the-deleted-rows-a-release-before-012-left)). A registry driver that
+  implemented `reapLegacyTombstones` can drop it: nothing calls it.
 
 ### Fixed
 

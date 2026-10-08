@@ -134,8 +134,6 @@ export type {
   RegistrySummary,
   RegistryWriteOptions,
   LeaseEntry,
-  ReapLegacyTombstonesOptions,
-  ReapLegacyTombstonesResult,
   ClearRegistrySummary,
   SealedRegistrySummary,
   GenerationMetadata,
@@ -219,14 +217,6 @@ export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/
 // runs it.
 export { retireExpired } from './core/retention-sweep';
 
-// The tombstone reaper: an admin call that removes the `deleted: true` rows a release before 0.12 left in an
-// object-store registry. Opt-in, `dryRun` first, and it refuses without the caller's word that no such release
-// still writes the registry.
-export { reapRegistryTombstones } from './core/registry-reap';
-export type {
-  ReapRegistryTombstonesOptions,
-  ReapRegistryTombstonesResult,
-} from './core/registry-reap';
 // `excludingReservedRows` is the filter a fleet-wide pass must apply — the due index stores its state AS
 // registry rows, so an unscoped `registry.list()` returns bookkeeping rows alongside real segments and a
 // caller that forgets to skip them reports phantom segments. The bounded drain itself (`drainRegistry`) and

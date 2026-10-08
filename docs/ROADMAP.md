@@ -71,7 +71,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **shipped** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
-| The tombstone reaper — `store.reapRegistryTombstones` removes the `deleted: true` rows a release before 0.12 left in an object-store registry | **shipped** — admin call, `dryRun` first, each delete fenced on the version read, refused with `CapabilityError` where `conditionalDelete` is off; it cannot remove the `destroyed` tombstones `dropSegment` leaves, or one written while `conditionalDelete` was off, so it does not clean a bucket completely; see the [guide](guide/retention.md#remove-the-deleted-rows-a-release-before-012-left-storereapregistrytombstones) |
+| Rows a release before 0.12 left as `deleted: true` envelopes | **on `main`, unreleased, to ship in `0.19.0`: removed from the library** — only a bucket a release before 0.12 wrote holds them; the guide's recipe runs the reaper the 0.18 releases ship, once ([the recipe](guide/retention.md#remove-the-deleted-rows-a-release-before-012-left)) |
 | Deferred past `0.18.3` | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
@@ -366,10 +366,11 @@ between here and there:
      index and metadata before it moves the pointer, and refuses one that does not open.)
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
-10. **A smaller surface.** Deprecated on `main`, unreleased, for `0.19.0`, and changed at `1.0`:
-    - the cost model (`estimateCost`, `costReport`, `groundedReport` and the price lists) moves to its own package,
-      with the generation's byte size on `stat()` so a grounded report needs nothing internal;
-    - `reapRegistryTombstones` leaves the store, as a one-off script for a bucket written before 0.12.
+10. **The cost model in a package of its own.** `estimateCost`, `costReport`, `groundedReport` and the price lists keep
+    working in the library, marked `@deprecated`, and move to `@cloudbitmaps/tools`, a package of offline tools that need
+    nothing internal from a store, in the minor after the next. `stat()` gains the generation's byte size, so a grounded
+    report needs nothing internal, and the price lists can be kept current for S3, GCS and Azure without a library
+    release.
 
 ## Planned / exploring
 
