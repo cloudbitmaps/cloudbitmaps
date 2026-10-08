@@ -266,9 +266,7 @@ async function versionNamed(snap: Snapshot): Promise<string | null> {
 
 /** What a generation's object says of itself, which is what a summary is held against: its count and metadata. */
 function describe(reader: CrbmReader): GenerationDescription {
-  let cardinality = 0;
-  for (const n of reader.cardinalities().values()) cardinality += n;
-  return { cardinality, metadata: reader.metadata };
+  return { cardinality: reader.count(), metadata: reader.metadata };
 }
 
 /**

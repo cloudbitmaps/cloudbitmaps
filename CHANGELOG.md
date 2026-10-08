@@ -103,6 +103,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Smaller fixes from the pre-release review.** A `KeyUnavailableError` listed every key id the keystore holds, and
+  the message reaches `eraseSubject`'s ledger and logs; it names only the ids the wrappings reference now. A
+  `count()` over a custom source's per-chunk counts added a count that was `NaN`, negative or past 65,536; it is
+  refused as `IntegrityError`, as the key beside it already was. The `.crbm` writer accepted a generation past
+  `Number.MAX_SAFE_INTEGER`, written as another number, and a chunk payload past the 1 MiB cap every reader refuses at
+  open; both are `ValidationError` before anything is written. A range answered with the wrong length says how many
+  bytes came back against how many were asked for, where it said "read short" of a long answer too.
 - **A seam without its methods, and a retention policy that is not an object, are refused up front.** A
   `seams.clock` without `now()` and `sleep()`, a `seams.rng` without `next()` or an `encryption.keystore` without
   `createDek()` and `openDek()` built a store that threw a raw `TypeError` at its first load or read; each is now a

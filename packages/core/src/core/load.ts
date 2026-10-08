@@ -732,7 +732,8 @@ async function runLoad(
   const refusal = guardRefusal(written.cardinality, before, guard, options.allowEmpty);
   if (refusal !== undefined) return refuse(refusal);
 
-  // What judges a lease: the load's clock, when it has one. Without one a collection holds every lease.
+  // What judges a lease: the load's clock, when it has one. Without one it cannot tell a live lease from an ended
+  // one, so it reads none, and its collection spares no leased generation.
   const leasesNow =
     deps.clock === undefined ? undefined : (): number => (deps.clock as Clock).now();
 

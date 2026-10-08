@@ -155,10 +155,11 @@ export class InProcessKeystore implements IKeystore {
     // A KEK WAS held but every held wrapping failed to unwrap → the wrapping(s) are corrupt/tampered, not
     // missing. Surface that integrity failure in its original type rather than masking it as "no held KEK".
     if (anyKekHeld) throw lastUnwrapError;
-    const have = [...this.keys.keys()].join(', ') || '(none)';
+    // The ids the wrappings name, not the ids this keystore holds: the message reaches ledgers and logs, and the held
+    // keys are not the reader's to see.
     const need = wrapped.map((w) => w.keyId).join(', ') || '(none)';
     throw new KeyUnavailableError(
-      `no held KEK can unwrap this DEK — have [${have}], wrappings reference [${need}]. ` +
+      `no held KEK can unwrap this DEK — the wrappings reference [${need}]. ` +
         `Restore the missing KEK (or its recovery KEK), or rebuild the segment from source.`,
     );
   }

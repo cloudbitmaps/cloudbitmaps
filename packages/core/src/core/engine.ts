@@ -415,6 +415,7 @@ export class SegmentEngine {
       let total = 0;
       for (const [k, n] of cardinalities) {
         assertChunkKeyInRange(k);
+        assertChunkCardinalityInRange(n);
         total += n;
       }
       return total;

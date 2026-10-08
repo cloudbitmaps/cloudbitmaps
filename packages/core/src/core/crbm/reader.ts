@@ -770,7 +770,7 @@ export class CrbmReader {
           moved = bytes.length;
           if (bytes.length !== read.length) {
             throw new IntegrityError(
-              `.crbm range [${read.offset}, +${read.length}) read short (${bytes.length} bytes)`,
+              `.crbm range [${read.offset}, +${read.length}) answered ${bytes.length} bytes, not the ${read.length} asked for`,
             );
           }
           return { bytes };

@@ -23,6 +23,7 @@ import { crc32c } from './crc32c';
 import { writeVarint } from './varint';
 import type { BlobSink } from '../blob';
 import {
+  DEFAULT_MAX_BITMAP_BYTES,
   CONTAINER_CODEC_NONE,
   ELEMENT_WIDTH_32,
   EXT_MAGIC,
@@ -91,7 +92,7 @@ export class CrbmWriter {
     private readonly sink: BlobSink,
     private readonly options: CrbmWriterOptions,
   ) {
-    if (!Number.isInteger(options.generation) || options.generation < 0) {
+    if (!Number.isSafeInteger(options.generation) || options.generation < 0) {
       throw new ValidationError(
         `generation must be a non-negative integer; got ${options.generation}`,
       );
@@ -121,6 +122,12 @@ export class CrbmWriter {
       );
     }
     if (payload.length === 0) throw new ValidationError('chunk payload must be non-empty');
+    // Past the decode cap every reader refuses the object at open: refused here, before anything is written.
+    if (payload.length > DEFAULT_MAX_BITMAP_BYTES) {
+      throw new ValidationError(
+        `chunk payload of ${payload.length} bytes is over the ${DEFAULT_MAX_BITMAP_BYTES}-byte cap a reader opens`,
+      );
+    }
 
     await this.ensurePreamble();
     // Encrypt (if configured) to the on-disk bytes; the CRC + index length cover what actually lands on disk.
