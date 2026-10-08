@@ -103,6 +103,10 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A registry row is read only under the name it was written for.** A row copied or restored to another segment's key
+  or file read as that segment while naming the original, so a sweep that acts on the name a row carries (an
+  erasure, a retention pass, a report) skipped a live, readable segment or acted on the original twice. Such a row
+  is now refused with `IntegrityError`, on every driver.
 - **The LocalFs drivers write every byte, and a refused registry row is named without the host's paths or its whole
   stored value.** One write to a file can write fewer bytes than asked and not fail (a full disk, a quota), and both
   drivers took it for the whole: `putImmutable` reported the size and digest of bytes it had not stored, and a registry

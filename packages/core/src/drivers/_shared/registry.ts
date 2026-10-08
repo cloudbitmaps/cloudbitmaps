@@ -648,8 +648,13 @@ function shown(v: unknown): string {
  * Parse + structurally validate a persisted `{ deleted, record }` envelope from stored bytes. A published row
  * is always whole (atomic write), so a parse failure or a missing/mistyped field means corruption/tampering —
  * fail fast (invariant 5), never silently report "absent". `ctx` names the source (path/key) for the message.
+ * `expected` is the segment the row was read under; a row that names another is refused.
  */
-export function parseRegistryEnvelope(text: string, ctx: string): RegistryEnvelope {
+export function parseRegistryEnvelope(
+  text: string,
+  ctx: string,
+  expected?: SegmentRef,
+): RegistryEnvelope {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -678,6 +683,18 @@ export function parseRegistryEnvelope(text: string, ctx: string): RegistryEnvelo
     throw new IntegrityError(`registry row is missing its token: ${ctx}`);
   }
   tokenParts(r.token, schemaVersion, ctx);
+  // A row is the row of the name it is stored under. One copied or restored under another name would read as that
+  // segment while naming this one, and every sweep that acts on the name it carries (an erasure, a report, a retention
+  // pass) would act on the wrong segment, or on this one twice.
+  if (
+    expected !== undefined &&
+    (r.segment !== expected.segment ||
+      (r.namespace ?? undefined) !== (expected.namespace ?? undefined))
+  ) {
+    throw new IntegrityError(
+      `registry row names another segment than the one it is stored for: ${ctx}`,
+    );
+  }
   return { deleted: env.deleted, record: env.record as RegistryRecord };
 }
 

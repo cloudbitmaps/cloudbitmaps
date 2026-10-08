@@ -411,7 +411,9 @@ export class ObjectStoreRegistry implements IRegistryDriver {
         `registry object has no version fence (needed for compare-and-swap): ${objectKey}`,
       );
     }
-    const env = parseRegistryEnvelope(new TextDecoder().decode(row.bytes), objectKey);
+    // The name the key spells is the name the row must carry: a key outside the layout has none to hold it to.
+    const stored = parseRegistryKey(this.prefix, objectKey) ?? undefined;
+    const env = parseRegistryEnvelope(new TextDecoder().decode(row.bytes), objectKey, stored);
     return { env, bytes: row.bytes, version: row.version };
   }
 

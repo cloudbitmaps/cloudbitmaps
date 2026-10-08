@@ -116,7 +116,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   }
 
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
-    const env = await this.readRow(registryRowPath(this.root, ref));
+    const env = await this.readRow(registryRowPath(this.root, ref), ref);
     return env && !env.deleted ? env.record : null;
   }
 
@@ -125,7 +125,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (current !== null && !current.deleted) {
         throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
       }
@@ -149,7 +149,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
@@ -177,7 +177,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       for (const name of names) {
         const segment = parseRegistryRow(name);
         if (segment === null) continue;
-        const env = await this.readRow(registryRowPath(this.root, { namespace: ns, segment }));
+        const ref = { namespace: ns, segment };
+        const env = await this.readRow(registryRowPath(this.root, ref), ref);
         if (env && !env.deleted) yield env.record;
       }
     }
@@ -186,7 +187,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (expected !== undefined) {
         if (current === null || current.deleted || current.record.token !== expected) {
           throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
@@ -238,7 +239,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     return namespaces;
   }
 
-  private async readRow(path: string): Promise<RegistryEnvelope | null> {
+  /** Read the row at `path`, which must be the row of `ref`: one that names another segment is refused. */
+  private async readRow(path: string, ref: SegmentRef): Promise<RegistryEnvelope | null> {
     let handle;
     try {
       if (await this.exactCase.differs(path)) return null; // another case's row is not this one
@@ -254,7 +256,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       }
       const text = (await handle.readFile()).toString('utf8');
       // Named by its path under the root, which says which file to look at without putting the host's layout in a log.
-      return parseRegistryEnvelope(text, relative(this.root, path));
+      return parseRegistryEnvelope(text, relative(this.root, path), ref);
     } finally {
       await handle.close();
     }
