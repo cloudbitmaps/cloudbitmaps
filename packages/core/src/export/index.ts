@@ -150,6 +150,13 @@ export async function runExport(
   sink: ExportSink,
   options: ExportOptions = {},
 ): Promise<ExportManifest> {
+  // A sink without `open` would fail every segment, one by one, into `failed`: refused before anything is read.
+  if (sink === null || typeof sink !== 'object' || typeof sink.open !== 'function') {
+    throw new ValidationError(
+      'runExport: the sink must be an object with an open(ref, ext) method',
+    );
+  }
+  options ??= {};
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   if (options.format !== undefined && options.format !== 'roaring' && options.format !== 'ndjson') {
     throw new ValidationError(`runExport: format must be 'roaring' or 'ndjson'`);

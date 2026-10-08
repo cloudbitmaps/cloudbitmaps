@@ -1052,6 +1052,12 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await d.get(SEG))!.leases).toBeUndefined();
     });
 
+    it('list of a namespace that is not a valid name is refused, not read as empty', async () => {
+      const d = makeDriver();
+      await d.create({ segment: 'a' }, { currentGen: 0 });
+      await expect(drainSegments(d.list(''))).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
       const d = makeDriver();
       await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });

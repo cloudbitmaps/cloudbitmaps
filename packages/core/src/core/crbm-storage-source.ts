@@ -1337,7 +1337,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const keystore = this.keystore;
     if (keystore === undefined) {
       throw new KeyUnavailableError(
-        `segment "${ref.segment}" is encrypted but this CrbmStorageChunkSource has no keystore`,
+        `segment "${ref.segment}" is encrypted, and the store reading it was built with no keystore (encryption.keystore)`,
       );
     }
     const aead = await (unwrap ?? (() => keystore.openDek(wrappedDeks)))();

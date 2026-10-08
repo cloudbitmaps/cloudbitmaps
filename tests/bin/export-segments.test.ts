@@ -227,3 +227,11 @@ describe('export-segments CLI', () => {
     });
   });
 });
+
+describe('export-segments: the format and the sink', () => {
+  it('an empty CR_EXPORT_FORMAT, an unset shell variable, is the default, as an empty namespace is', () => {
+    expect(
+      parseConfig({ CR_EXPORT_ROOT: '/r', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: '' }).format,
+    ).toBe('roaring');
+  });
+});

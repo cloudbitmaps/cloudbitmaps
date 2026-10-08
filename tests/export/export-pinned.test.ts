@@ -242,3 +242,26 @@ describe('runExport pins each segment', () => {
     expect(opened).toBe(0);
   });
 });
+
+describe('runExport refuses a sink it cannot open, before it reads', () => {
+  it('a sink without open() is a ValidationError, not a failure per segment', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend });
+    for (const sink of [{}, null, { open: 5 }] as never[]) {
+      await expect(runExport(store, backend.registry, sink)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+  });
+
+  it('options of null read as none', async () => {
+    const backend = new MemoryStorage();
+    const store = new CloudRoaring({ storage: backend });
+    const sink: ExportSink = {
+      open: () => ({ write: () => {}, close: () => {}, abort: () => {} }),
+    };
+    await expect(runExport(store, backend.registry, sink, null as never)).resolves.toMatchObject({
+      failed: [],
+    });
+  });
+});

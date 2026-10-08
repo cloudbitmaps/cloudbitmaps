@@ -113,6 +113,8 @@ export class MemoryRegistryDriver implements IRegistryDriver {
   }
 
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
+    // A namespace that is given is checked as every other name is: `''` names none, and reads as an error, not as empty.
+    if (namespace !== undefined) validateSegmentRef({ segment: 'x', namespace });
     for (const row of this.rows.values()) {
       if (namespace === undefined || row.namespace === namespace) yield structuredClone(row);
     }

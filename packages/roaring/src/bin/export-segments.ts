@@ -20,6 +20,9 @@
  * **export to a fresh directory** for a clean dump. It writes only into directories it made (or an earlier run's,
  * owner-only): a symlink, a directory of another user, or one open to group or others in its place is refused. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
+ * It wires no keystore, so an encrypted segment lands in `failed[]`: export an encrypted store with
+ * `store.exportSegments` from a store built with its keystore.
+ *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
  * short script that builds the backend for the storage you have and calls `store.exportSegments(sink,
  * { format })` with your own sink — the binary stays SDK-free:
@@ -61,7 +64,7 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
   if (out === undefined || out === '') {
     throw new Error('CR_EXPORT_OUT is required (the output directory for the dump)');
   }
-  const format = env.CR_EXPORT_FORMAT ?? 'roaring';
+  const format = env.CR_EXPORT_FORMAT || 'roaring'; // '' (an unset shell var) is the default, as the namespace's is
   if (format !== 'roaring' && format !== 'ndjson') {
     throw new Error(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
   }

@@ -97,6 +97,7 @@ import {
 } from './registry';
 import { entropyIsAvailable, webCryptoEntropy } from './entropy';
 import { parseRegistryKey, registryListPrefix, registryObjectKey } from './object-registry-keys';
+import { validateSegmentRef } from '@/core/validate';
 
 /** Defensive cap on a single registry object read from storage, before allocation (rows are tiny; ~1 KB). */
 export const MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -319,6 +320,8 @@ export class ObjectStoreRegistry implements IRegistryDriver {
   }
 
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
+    // A namespace that is given is checked as every other name is: `''` names none, and reads as an error, not as empty.
+    if (namespace !== undefined) validateSegmentRef({ segment: 'x', namespace });
     const prefix = registryListPrefix(this.prefix, namespace);
     // One list plus bounded parallel reads. A serial await-in-loop made this O(N) sequential round trips.
     let page: string[] = [];

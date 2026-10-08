@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Export, listing and feed edges.** `runExport` with a sink that has no `open()` failed every segment, one by one,
+  into `failed`; it is a `ValidationError` before anything is read, and options of `null` read as none. The
+  `export-segments` CLI reads an empty `CR_EXPORT_FORMAT`, an unset shell variable, as the default, as it already read
+  an empty namespace, and its docs say it wires no keystore, so an encrypted segment lands in `failed[]`; the error
+  for that names the store's `encryption.keystore` rather than an internal class. A registry `list('')` read as empty
+  on the in-memory and object-store registries and threw on the local filesystem; every registry refuses it now. A
+  refused `materializeMany` feed record is named by its position in the feed, not by its chunk key, which narrows the
+  ids it holds to a range.
 - **The cloud drivers check more of what they are told and what they are answered.** An S3 range answer of the
   right length from another place in the object, and an S3 listing page that said more followed without saying how to
   ask for it, were believed; the first is refused and the second is an `IntegrityError`, not a listing ended short.

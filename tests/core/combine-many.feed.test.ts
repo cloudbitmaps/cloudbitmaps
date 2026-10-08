@@ -87,7 +87,7 @@ describe('a record is checked before the pass sees it', () => {
         { key: 3, operands: { a: u32(3 * K + 1) } },
         { key: 2, operands: { a: u32(2 * K + 1) } },
       ],
-      /key 2: the key is below the previous record's \(3\)/,
+      /record \d+: the key is below the previous record's: keys never go back/,
     );
     await expectAccepted(
       [
@@ -105,7 +105,7 @@ describe('a record is checked before the pass sees it', () => {
     }
     await expectRefused(
       [{ key: 1, operands: { b: u32(K + 1) } }],
-      /key 1, operand "b": not a declared fed operand/,
+      /record \d+, operand "b": not a declared fed operand/,
     );
     await expectRefused(
       [{ key: 1, operands: { a: u32(K + 1), b: u32(K + 2) } }],
@@ -144,7 +144,7 @@ describe('a record is checked before the pass sees it', () => {
     for (const [what, value] of values) {
       await expectRefused(
         [{ key: 1, operands: { a: value } }],
-        /key 1, operand "a": the ids must be a Uint32Array/,
+        /record \d+, operand "a": the ids must be a Uint32Array/,
       );
       void what;
     }
