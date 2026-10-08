@@ -59,7 +59,7 @@ not hold what its header says with `IntegrityError`, before anything is publishe
 are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
 written.
 
-**A caller must not modify an input buffer while a load or `store.memory` call reads it.** The checks above hold for
+**A caller must not modify an input buffer while a load reads it.** The checks above hold for
 a buffer that stays as it was handed in. A buffer another thread, an unfinished `fs.read` or an asynchronous addon call
 is still writing can differ between the structural check and the decode, and the load's re-check of each container
 catches a difference only after the native code has read it. Hand in a buffer that nothing else writes, or a copy of it.

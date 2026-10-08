@@ -55,7 +55,6 @@ import {
   loadSegment,
   loadSegmentChunks,
   compileCombineMany,
-  prepareHeld,
   rebindCombineMany,
   runCombineMany,
   mapWithConcurrency,
@@ -77,7 +76,6 @@ import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
   BudgetOption,
-  HeldChunks,
   GenerationEntry,
   GenerationMetadata,
   LoadGuard,
@@ -528,10 +526,9 @@ export interface MaterializeManyFeed {
 /** The options of {@link CloudRoaring.materializeMany}. */
 export interface MaterializeManyOptions extends IdRange {
   /**
-   * The operands the expressions name: stored segments, and operands held in memory from {@link CloudRoaring.memory}. A held
-   * operand is accepted here and nowhere else.
+   * The stored segments the expressions name. A set the caller holds in memory arrives as a {@link MaterializeManyOptions.feed}.
    */
-  readonly operands: Record<string, Segment | MemoryOperand>;
+  readonly operands: Record<string, Segment>;
   /** The outputs, in the order their results come back. */
   readonly outputs: ReadonlyArray<MaterializeManyOutput>;
   /**
@@ -575,10 +572,9 @@ export interface MaterializeManyOptions extends IdRange {
    */
   readonly feed?: MaterializeManyFeed;
   /**
-   * Fed and held operand names allowed to hold no id. A declared fed name that appears in no record is refused at the end
-   * of the feed, and a held operand that holds no id is refused before any request, because an operand that is empty is
-   * usually an upstream query that failed quietly. Naming something that is neither a fed nor a held operand is a
-   * {@link ValidationError}.
+   * Fed operand names allowed to hold no id. A declared fed name that appears in no record is refused at the end of the
+   * feed, because an operand that is empty is usually an upstream query that failed quietly. Naming something that is not
+   * a fed operand is a {@link ValidationError}.
    */
   readonly mayBeEmpty?: readonly string[];
 }
@@ -1284,43 +1280,6 @@ export class CloudRoaring {
   }
 
   /**
-   * **Hold a set of ids in memory**, to be an operand of {@link CloudRoaring.materializeMany} and of no other verb: a
-   * combine or an `*Into` call it is passed to refuses it with a {@link ValidationError}.
-   *
-   * ```ts
-   * const vip = await store.memory([7, 42, 99_001]);
-   * await store.materializeMany({ operands: { vip, engaged: store.segment('cond-engaged') }, outputs: [...], keep: 12 });
-   * vip.release();
-   * ```
-   *
-   * It takes what {@link CloudRoaring.load} takes as input (ids as a sync or async iterable or a typed array, `{ bitmap }`
-   * or `{ serialized }`) and checks it the same way, with the same errors: the size cap, the structure, the safe
-   * deserializer and each id's range. **Only a real `Uint32Array` skips the per-id range check**; any other typed array goes
-   * through it, so `Int32Array([-1])` and `Float64Array([1.5])` throw {@link ValidationError}. An object with an `ascending`
-   * key is refused: ids that arrive in key order are a `feed`. An empty set is accepted here, and refused by
-   * `materializeMany` unless its name is in `mayBeEmpty`.
-   *
-   * The ids are held as the chunks a stored generation would hold, until {@link MemoryOperand.release}; between calls that
-   * memory is the caller's, and during a call it counts against `maxBufferedBytes`. There is no size option: the load's
-   * own cap applies to a serialized input.
-   *
-   * **Erasure.** Only `eraseSubject` moves the store's counter (at its start and at its end). One that started in this store
-   * since the handle began to be made, or is still running, makes a call that reads the handle fail the outputs that read it with
-   * {@link StaleOperandError} (`reason: 'erased'`), before any request and again just before each publish. An erasure in
-   * another store or another process is not seen, nor are `dropSegment`, `eraseNamespace`, `destroySegment` and the free
-   * function `eraseIdFromSegment`, which do not move it: the handle is the caller's copy, so build it from the source of truth at
-   * the start of each refresh and release it at the end.
-   *
-   * @throws {ValidationError} where a load of the same input would.
-   */
-  async memory(input: LoadInput): Promise<MemoryOperand> {
-    // Read before the ids are, so an erasure that lands while they are read marks the handle stale.
-    const epochAt = this.epochNow();
-    const chunks = await prepareHeld(input, roaringCodec, this.clock);
-    return makeMemoryOperand({ store: this, chunks, epochAt });
-  }
-
-  /**
    * **A dry run:** every output computed exactly as the call would compute it, and judged against its `dest` as its
    * publish would be, with nothing written: no object, no pointer, no audit event. Each output's result says how many ids
    * it would hold, what its `dest` holds now, and the bound its publish would be refused for now (`wouldRefuse`). The
@@ -1394,13 +1353,6 @@ export class CloudRoaring {
    * **A limit of the form.** An output cannot name another output of the same call: a `dest` that is also an operand is
    * refused. Chain two calls.
    *
-   * **Held operands.** An operand may be a {@link MemoryOperand} from {@link CloudRoaring.memory}: ids the caller holds,
-   * read beside the stored ones and giving the same output byte for byte. It is read from memory (no request, and the
-   * shared chunk cache never sees it), counts against `maxBufferedBytes` while the call runs, and is refused when empty
-   * unless its name is in `mayBeEmpty`. A handle from another store, or a released one, is a {@link ValidationError}. An
-   * erasure in this store since the handle was made fails the outputs that read it with {@link StaleOperandError}
-   * (`reason: 'erased'`).
-   *
    * **A feed.** `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order, for conditions
    * too many to hold or store. Each record is checked before the pass sees it (see {@link MaterializeManyFeedRecord}): a bad
    * feed is refused, never read as fewer members, and **a fed output is published only after the whole feed was read and every
@@ -1438,7 +1390,7 @@ export class CloudRoaring {
         'materializeMany needs an options object with `operands`, `outputs` and `keep`',
       );
     }
-    // The erasure counter as the call begins: a fed call is refused once it has moved. A held operand carries its own.
+    // The erasure counter as the call begins: a fed call is refused once it has moved.
     const epochAt = options.feed === undefined ? 0 : this.epochNow();
     const unknown = Object.keys(options).filter(
       (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
@@ -1485,68 +1437,34 @@ export class CloudRoaring {
     }
     const names = Object.keys(operandsIn);
     const handles = new Map<string, Segment>();
-    const heldHandles = new Map<string, HeldView>();
     for (const name of names) {
       const handle = (operandsIn as Record<string, unknown>)[name];
-      if (handle instanceof MemoryOperand) {
-        const view = heldOf(handle) as HeldView | undefined;
-        if (view === undefined) {
-          throw new ValidationError(
-            `materializeMany: operands["${name}"] is not a memory operand from store.memory()`,
-          );
-        }
-        if (view.store !== this) {
-          throw new ValidationError(
-            `materializeMany: operands["${name}"] was made by another store: a memory operand belongs to the store that made it`,
-          );
-        }
-        if (view.chunks.released) {
-          throw new ValidationError(
-            `materializeMany: operands["${name}"] was released: make another with store.memory()`,
-          );
-        }
-        heldHandles.set(name, view);
-        continue;
-      }
       if (!(handle instanceof Segment)) {
         throw new ValidationError(
-          `materializeMany: operands["${name}"] must be a segment from store.segment() or a memory operand from store.memory()`,
+          `materializeMany: operands["${name}"] must be a segment from store.segment()`,
         );
       }
       handles.set(name, handle);
     }
-    // Names of held operands are taken out of `mayBeEmpty`; what is left names fed operands, which the feed checks.
-    const heldMayBeEmpty = new Set<string>();
-    let fedMayBeEmpty: unknown = mayBeEmptyIn;
-    if (mayBeEmptyIn !== undefined) {
-      if (Array.isArray(mayBeEmptyIn)) {
-        const rest: unknown[] = [];
-        for (const name of mayBeEmptyIn as unknown[]) {
-          if (typeof name === 'string' && heldHandles.has(name)) heldMayBeEmpty.add(name);
-          else rest.push(name);
-        }
-        fedMayBeEmpty = rest;
+    // `mayBeEmpty` names fed operands, which the feed checks; without a feed it can name nothing.
+    const fedMayBeEmpty: unknown = mayBeEmptyIn;
+    if (mayBeEmptyIn !== undefined && feedIn === undefined) {
+      if (!Array.isArray(mayBeEmptyIn)) {
+        throw new ValidationError(
+          'materializeMany: mayBeEmpty must be an array of fed operand names',
+        );
       }
-      // An empty list, or one naming only held operands, names nothing a feed must check. With a feed, the feed's own
-      // check names what is wrong with the rest.
-      if (feedIn === undefined) {
-        if (!Array.isArray(fedMayBeEmpty)) {
-          throw new ValidationError(
-            'materializeMany: mayBeEmpty must be an array of held or fed operand names',
-          );
-        }
-        if (fedMayBeEmpty.length > 0) {
-          const first: unknown = fedMayBeEmpty[0];
-          const what =
-            typeof first !== 'string'
-              ? 'something that is not a name'
-              : handles.has(first)
-                ? `"${first}", a stored operand`
-                : `"${first}", which is not an operand of this call`;
-          throw new ValidationError(
-            `materializeMany: mayBeEmpty names ${what}; it names held operands, and fed operands when the call has a feed`,
-          );
-        }
+      if (mayBeEmptyIn.length > 0) {
+        const first: unknown = mayBeEmptyIn[0];
+        const what =
+          typeof first !== 'string'
+            ? 'something that is not a name'
+            : handles.has(first)
+              ? `"${first}", a stored operand`
+              : `"${first}", which is not an operand of this call`;
+        throw new ValidationError(
+          `materializeMany: mayBeEmpty names ${what}; it names fed operands, and this call has no feed`,
+        );
       }
     }
     const operandKeys = new Set([...handles.values()].map((h) => h.key()));
@@ -1593,19 +1511,6 @@ export class CloudRoaring {
     // Every expression and option is checked here, with no operand pinned and no request made.
     const operandSpecs = (pins: ReadonlyMap<string, PinnedAt | undefined>): CombineManyOperand[] =>
       names.map((name) => {
-        const view = heldHandles.get(name);
-        if (view !== undefined) {
-          // A held operand has no row to read and no pin: its chunks are in memory, and its `ref` is never read.
-          return {
-            name,
-            ref: { segment: name },
-            held: {
-              chunks: view.chunks,
-              moved: () => this.epochMoved(view.epochAt),
-              mayBeEmpty: heldMayBeEmpty.has(name),
-            },
-          };
-        }
         const handle = handles.get(name)!;
         const seg = viewOf(handle);
         const pinnedAt = pins.get(handle.key());
@@ -3211,64 +3116,6 @@ async function timeOp<T>(
   }
 }
 
-/** What a {@link MemoryOperand} shows the store that it does not show a caller. */
-interface HeldView {
-  readonly store: CloudRoaring;
-  readonly chunks: HeldChunks;
-  /** The store's erasure counter when the operand began to be made. */
-  readonly epochAt: number;
-}
-
-/** Set by the `MemoryOperand` class, whose private state it reads. */
-let heldOf: (operand: MemoryOperand) => HeldView;
-let makeMemoryOperand: (view: HeldView) => MemoryOperand;
-let mintingMemory = false;
-
-/**
- * A set of ids held in memory by {@link CloudRoaring.memory}, to be an operand of {@link CloudRoaring.materializeMany}
- * and of no other verb, which refuses it with a {@link ValidationError}. The bytes are the caller's until
- * {@link MemoryOperand.release}.
- *
- * It belongs to the store that made it. `eraseSubject` in that store, started after the handle began to be made or still
- * running when it was, fails the outputs of a `materializeMany` call that read it with {@link StaleOperandError}
- * (`reason: 'erased'`): the call does not throw, and its outputs that do not read the handle publish. Nothing else is
- * seen: an erasure in another store or process, and
- * `dropSegment`, `eraseNamespace`, `destroySegment` and the free function `eraseIdFromSegment`, do not move the counter.
- */
-export class MemoryOperand {
-  private readonly view: HeldView;
-
-  static {
-    heldOf = (operand) => operand.view as HeldView | undefined as HeldView;
-    makeMemoryOperand = (view) => {
-      mintingMemory = true;
-      try {
-        return new MemoryOperand(view);
-      } finally {
-        mintingMemory = false;
-      }
-    };
-  }
-
-  /** Not constructible: a handle comes from {@link CloudRoaring.memory}. */
-  private constructor(view: HeldView) {
-    if (!mintingMemory) {
-      throw new ValidationError(
-        'a MemoryOperand is not constructed directly; call `await store.memory(ids)`',
-      );
-    }
-    this.view = view;
-  }
-
-  /**
-   * Zero and drop the bytes it holds. Any later use throws {@link ValidationError}; releasing twice does nothing. A call
-   * still reading it fails the outputs that read it.
-   */
-  release(): void {
-    this.view.chunks.release();
-  }
-}
-
 /** The store's one way to mint a {@link Segment}, bound by the class's static block. */
 let makeSegment: (parts: SegmentParts) => Segment;
 /** True only while {@link makeSegment} is constructing, so a `new Segment(...)` from plain JS is refused. */
@@ -3533,9 +3380,8 @@ export class Segment {
   }
 
   /**
-   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment: a memory operand, which only
-   * {@link CloudRoaring.materializeMany} takes, or any other value a JavaScript caller passed. It runs first in every
-   * combine, before the lease check reads the handles.
+   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment, a value a JavaScript caller
+   * passed. It runs first in every combine, before the lease check reads the handles.
    */
   private assertSegments(handles: readonly unknown[]): void {
     for (const h of handles) {
@@ -3545,16 +3391,11 @@ export class Segment {
         h instanceof Segment ||
         (typeof h === 'object' &&
           h !== null &&
-          !(h instanceof MemoryOperand) &&
           typeof (h as { leaseError?: unknown }).leaseError === 'function')
       ) {
         continue;
       }
-      throw new ValidationError(
-        h instanceof MemoryOperand
-          ? 'a memory operand from store.memory() is an operand of store.materializeMany() only; this call takes segments from store.segment()'
-          : 'an operand must be a segment from store.segment()',
-      );
+      throw new ValidationError('an operand must be a segment from store.segment()');
     }
   }
 

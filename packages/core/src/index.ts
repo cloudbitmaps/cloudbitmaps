@@ -82,7 +82,6 @@ export type {
   CombineManyDeps,
   CombineManyFeed,
   CombineManyFeedRecord,
-  CombineManyHeld,
   CombineManyOperand,
   CombineManyOperandStats,
   CombineManyOutcome,
@@ -94,9 +93,6 @@ export type {
   CombineManyWrite,
   CompiledCombineMany,
 } from './core/combine-many';
-// Operands held in memory for a batch: checked as a load checks its input, and kept as chunks.
-export { prepareHeld } from './core/combine-held';
-export type { HeldChunks } from './core/combine-held';
 export type {
   LoadDeps,
   LoadOptions,

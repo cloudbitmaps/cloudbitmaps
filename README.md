@@ -206,7 +206,6 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │  materializeMany() ← many *Into    intersectInto() unionInto()        │
   │  exists()  segments()              andNotInto()                       │
   │  generations() rollback()                                             │
-  │  memory(ids)         ← held operand of materializeMany                │
   │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
   │  setRetention() getRetention()     costReport()                       │
   │  clearRetention()                                                     │

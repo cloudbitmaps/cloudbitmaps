@@ -64,8 +64,9 @@ or implausible combine over a non-empty destination is refused (`published: fals
 wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
 target survives a materialization. `store.materializeMany` publishes many such outputs (each an `and` / `or` / `andNot`
 expression over named operands) from one chunk-ordered pass that reads each operand once, instead of once per `*Into`
-call; its operands can be stored segments, records that arrive as a feed, or sets you hold in memory with
-`store.memory(ids)`. It needs `keep`, reports `stats` on its result, and emits no `storage.get`, `cache`, `intersect` or `op` metrics event.
+call; its operands are stored segments, and sets you hold arrive as a feed of records in chunk-key order. It needs
+`keep`, reports `stats` on its result, and reports an `op` event and a `storage.get` per range request to the metrics
+sink; with `dryRun: true` it writes nothing and reports what each publish would do.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
 fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,

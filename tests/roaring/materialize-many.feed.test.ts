@@ -10,7 +10,8 @@ import {
   isStaleOperandError,
 } from '@/index';
 import type { MaterializeManyFeed, MaterializeResult } from '@/index';
-import { batchWorld, range } from '../helpers/batch-world';
+import type { RoaringBitmap32 } from 'roaring';
+import { batchWorld, bitmapOf, range } from '../helpers/batch-world';
 import type { BatchWorld } from '../helpers/batch-world';
 import { feedOf, lcg, recordsOf } from '../helpers/combine-feed';
 
@@ -125,9 +126,9 @@ describe('materializeMany with a feed', () => {
       keep: 1,
       maxBufferedBytes: 64 * 1024 * 1024,
     };
-    // With no feed, a name in mayBeEmpty is a held operand's or nothing the call can empty, and the message says which.
+    // With no feed, a name in mayBeEmpty is nothing the call can empty, and the message says what it is.
     await expect(w.store.materializeMany({ ...base, mayBeEmpty: ['a'] })).rejects.toThrow(
-      'materializeMany: mayBeEmpty names "a", which is not an operand of this call; it names held operands, and fed operands when the call has a feed',
+      'materializeMany: mayBeEmpty names "a", which is not an operand of this call; it names fed operands, and this call has no feed',
     );
     await expect(w.store.materializeMany({ ...base, mayBeEmpty: ['optout'] })).rejects.toThrow(
       /mayBeEmpty names "optout", a stored operand;/,
@@ -136,7 +137,7 @@ describe('materializeMany with a feed', () => {
       /mayBeEmpty names something that is not a name;/,
     );
     await expect(w.store.materializeMany({ ...base, mayBeEmpty: 'a' as never })).rejects.toThrow(
-      'materializeMany: mayBeEmpty must be an array of held or fed operand names',
+      'materializeMany: mayBeEmpty must be an array of fed operand names',
     );
     for (const mayBeEmpty of [['optout'], ['nobody']]) {
       await expect(w.store.materializeMany({ ...base, feed, mayBeEmpty })).rejects.toThrow(
@@ -417,5 +418,67 @@ describe('an erasure in the store while a fed call runs', () => {
     await w.store.retireExpired({ namespace: 'x' });
     await w.store.dropSegment({ segment: 'optout' }, { confirmSegment: 'optout' });
     expect(probe.erasureEpoch).toBe(mid);
+  });
+});
+
+describe("the guide's recipe: sets you hold, fed", () => {
+  // Copied from docs/guide/loading.md, "A set you hold: feed it".
+  function* chunksOf(bm: RoaringBitmap32): Generator<{ key: number; ids: Uint32Array }> {
+    let key = -1;
+    let ids: number[] = [];
+    for (const id of bm) {
+      if (id >>> 16 !== key && ids.length > 0) {
+        yield { key, ids: Uint32Array.from(ids) };
+        ids = [];
+      }
+      key = id >>> 16;
+      ids.push(id);
+    }
+    if (ids.length > 0) yield { key, ids: Uint32Array.from(ids) };
+  }
+
+  async function* feedOf(sets: Record<string, RoaringBitmap32>) {
+    const heads = Object.entries(sets).map(([name, bm]) => {
+      const it = chunksOf(bm);
+      return { name, it, next: it.next() };
+    });
+    for (;;) {
+      const live = heads.filter((h) => !h.next.done);
+      if (live.length === 0) return;
+      const key = Math.min(...live.map((h) => (h.next.value as { key: number }).key));
+      for (const h of live) {
+        const chunk = h.next.value as { key: number; ids: Uint32Array };
+        if (chunk.key !== key) continue;
+        yield { key, operands: { [h.name]: chunk.ids } };
+        h.next = h.it.next();
+      }
+    }
+  }
+
+  it('publishes byte for byte what the same sets stored would', async () => {
+    const vipIds = [...range(0, 70_000, 3), ...range(200_000, 260_000, 7), 4_000_000];
+    const lapsedIds = [...range(1_000, 140_000, 5), ...range(250_000, 330_000, 2)];
+    const w = await batchWorld({ engaged: range(0, 400_000, 2), vip: vipIds, lapsed: lapsedIds });
+    const s = (n: string) => w.store.segment(n);
+    const held = { vip: bitmapOf(vipIds), lapsed: bitmapOf(lapsedIds) };
+    const fed = await w.store.materializeMany({
+      operands: { engaged: s('engaged') },
+      feed: {
+        names: Object.keys(held),
+        records: feedOf(held),
+        counts: Object.fromEntries(Object.entries(held).map(([n, bm]) => [n, bm.size])),
+      },
+      maxBufferedBytes: 256 * 1024 * 1024,
+      outputs: [{ dest: s('send-fed'), expr: { and: ['vip', 'engaged'] }, exclude: ['lapsed'] }],
+      keep: 1,
+    });
+    const stored = await w.store.materializeMany({
+      operands: { engaged: s('engaged'), vip: s('vip'), lapsed: s('lapsed') },
+      outputs: [{ dest: s('send-stored'), expr: { and: ['vip', 'engaged'] }, exclude: ['lapsed'] }],
+      keep: 1,
+    });
+    expect((fed.outputs[0] as MaterializeResult).published).toBe(true);
+    expect((stored.outputs[0] as MaterializeResult).published).toBe(true);
+    expect(await w.hex('send-fed', 0)).toBe(await w.hex('send-stored', 0));
   });
 });

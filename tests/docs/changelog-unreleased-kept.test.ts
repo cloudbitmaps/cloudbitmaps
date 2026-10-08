@@ -36,7 +36,21 @@ interface Dropped {
  * here in the change that does it. A row excuses only a drop the branch makes; once that change has merged the row
  * excuses nothing and is ignored, so `main` stays green, and it can be removed in a later change.
  */
-export const DROPPED_ON_PURPOSE: readonly Dropped[] = [];
+export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
+  {
+    title: 'The cost model, and `store.reapRegistryTombstones`, each marked `@deprecated` for 1.0.',
+    reason:
+      'the reaper is removed in the same unreleased minor, under Removed, and the cost model has an entry of its own ' +
+      'that names where it moves',
+  },
+  {
+    title:
+      'A memory operand passed to a combine or an `*Into` call is refused with a `ValidationError`.',
+    reason:
+      'held operands are removed in the same unreleased minor; what stays true of the fix, a non-segment operand ' +
+      'refused with a ValidationError, is an entry of its own',
+  },
+];
 
 const FETCH = `fetch the history and the base branch (\`git fetch --unshallow origin main\`, or check out with \`fetch-depth: 0\`)`;
 

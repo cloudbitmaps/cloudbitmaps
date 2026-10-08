@@ -118,10 +118,6 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
     'its loads seed the stored operands and the reference generations a fed call is compared against byte for byte, from ' +
     'bitmaps; the behaviour under test is the feed, so a second run under the serialized input would repeat it and exercise ' +
     'no part of the load path',
-  'tests/roaring/materialize-many.held.test.ts':
-    'its loads seed the stored operands and a destination a publish races, and the input forms under test are the ones ' +
-    '`store.memory` takes, which the file runs each of; a second run of its loads under the serialized input would repeat it ' +
-    'and exercise no part of the load path',
   'tests/core/erase-coalesced-reads.test.ts':
     'its loads only seed fixtures for the erasure read path, whose range requests it counts; a second run under ' +
     'the serialized input would repeat those counts and exercise no part of the load path',
