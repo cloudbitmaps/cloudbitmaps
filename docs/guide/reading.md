@@ -123,6 +123,8 @@ bound is stated; other pages link here.
   loads.
 - **An eviction re-resolves early.** When the reader cache evicts a segment's reader, the next read re-resolves the
   segment even if `cache.genTtlMs` has not elapsed.
+- **The bound is timed on the store's clock**, the system clock unless `seams.clock` replaces it. A system clock
+  stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
   dropped connection) keeps serving the generation the reader holds, and retries 500 ms later (or after the TTL, if
   that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything

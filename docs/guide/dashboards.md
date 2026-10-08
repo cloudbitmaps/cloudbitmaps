@@ -31,7 +31,8 @@ The metrics sink pushes raw observations on the I/O path. There are six event ki
 
 `store.materializeMany` emits an `op` event per call and a `storage.get` per range request, so its latency and reads
 appear in those panels. It emits no `cache` event (it never looks up the cache) and no `intersect` event (an output
-is an expression, not one combine); the chunks it pruned are in the `stats` on its result.
+is an expression, not one combine); the chunks it pruned are in the `stats` on its result. A dry run (`dryRun: true`)
+reports the same `op` event and the same `storage.get` per range request, and emits no audit event.
 
 Map the handful you chart to counters/histograms:
 

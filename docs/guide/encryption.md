@@ -147,6 +147,11 @@ Three things follow:
 
 ## How it stays correct
 
+**A key is never sealed under past its safe use.** Each chunk is sealed with a fresh random 96-bit nonce, and two
+seals under one key sharing a nonce stays negligibly likely below about 2³² seals. A segment keeps its key for its
+whole life, so every load and every erasure rewrite (which seals every chunk again) counts toward that. It is far past
+any realistic workload; a segment that might approach it is created again, which draws a new key.
+
 **A segment is never half-encrypted.** A segment's encryption is decided at its first generation. Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
 with `encryption: { required: true }` it is refused with a `ValidationError` instead of silently downgraded. The
