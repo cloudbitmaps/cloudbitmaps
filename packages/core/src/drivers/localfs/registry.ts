@@ -12,7 +12,8 @@
  */
 import { constants as FS } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, opendir, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import type { Dir } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
@@ -167,15 +168,17 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     for (const ns of await this.namespaceDirs(namespace)) {
       const dir = registryDir(this.root, ns);
       if (await this.exactCase.differs(dir)) continue; // another case's directory is not this one
-      let names: string[];
+      let entries: Dir;
       try {
-        names = await readdir(dir);
+        entries = await opendir(dir);
       } catch (err) {
         if (isAbsent(err)) continue; // no registry rows in this namespace yet
         throw mapFsError(err);
       }
-      for (const name of names) {
-        const segment = parseRegistryRow(name);
+      // Streamed a batch of names at a time, so a namespace of many rows is never held as one list; the directory is
+      // closed when the loop ends, the consumer's stopping early included.
+      for await (const entry of entries) {
+        const segment = parseRegistryRow(entry.name);
         if (segment === null) continue;
         const ref = { namespace: ns, segment };
         const env = await this.readRow(registryRowPath(this.root, ref), ref);
