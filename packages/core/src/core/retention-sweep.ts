@@ -331,10 +331,13 @@ async function rowsFromDueIndex(
         known.push(found);
         continue;
       }
+      // Strays are held up to the same bound as rows, as the fleet scan holds its pointers: removing one decides nothing
+      // irreversible, and those past it are left for a later scan.
       if (gone.has(key)) {
-        litter.push(found);
+        if (litter.length < options.maxScanSegments) litter.push(found);
         continue;
       }
+      if (gone.size >= options.maxScanSegments) continue;
       if (rows.length >= options.maxScanSegments) {
         throw new BudgetExceededError(
           `retireExpired: the due index yielded more than ${options.maxScanSegments} segments — the scan was ` +
