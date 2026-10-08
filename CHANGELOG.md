@@ -103,6 +103,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Only an AWS S3 host turns S3 conditional deletes on by default.** Any host under an AWS domain with a label that
+  started with `s3-` counted, so a load balancer named `s3-…` in front of MinIO, an API Gateway or an S3 website
+  endpoint was taken for AWS S3, and the registry removed rows with a conditional delete the store behind it may
+  ignore. A host now counts by its structure: a label that names S3 itself, followed only by `dualstack`, a region and
+  `vpce`. Access-point, multi-region access-point, Object Lambda, Outposts and directory-bucket hosts still count.
 - **Azure Blob reads a `409` or `412` as a lost race only when it is one.** Every `409` and `412` was taken as another
   writer winning, so a write-once (immutable) container's `BlobImmutableDueToPolicy` turned a load into
   `published: false, reason: 'superseded'`, and a blob leased in the portal (`LeaseIdMissing`) made a registry write

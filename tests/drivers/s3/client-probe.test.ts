@@ -368,6 +368,16 @@ describe('which hosts are AWS S3', () => {
     `my-ap-${account}.s3-accesspoint.us-east-1.amazonaws.com`,
     'S3.US-EAST-1.AMAZONAWS.COM',
     's3.us-east-1.amazonaws.com.',
+    's3-external-1.amazonaws.com',
+    's3-fips-us-gov-west-1.amazonaws.com',
+    'bucket.s3-eu-west-1.amazonaws.com',
+    `my-ap-${account}.s3-accesspoint-fips.us-east-1.amazonaws.com`,
+    `my-ap-${account}.s3-accesspoint.dualstack.us-east-1.amazonaws.com`,
+    'mfzwi23gnjvgw.mrap.accesspoint.s3-global.amazonaws.com',
+    `my-ol-${account}.s3-object-lambda.us-east-1.amazonaws.com`,
+    `my-op-${account}.op-01ac5d28a6a2.s3-outposts.us-west-2.amazonaws.com`,
+    'bucket--use1-az4--x-s3.s3express-use1-az4.us-east-1.amazonaws.com',
+    'my.s3.bucket.s3.us-east-1.amazonaws.com',
   ])('%s is', (host) => {
     expect(isAwsS3Host(host)).toBe(true);
   });
@@ -383,6 +393,16 @@ describe('which hosts are AWS S3', () => {
     'evilamazonaws.com',
     'evil-s3.amazonaws.com.attacker.test',
     'abc123.execute-api.us-east-1.amazonaws.com',
+    // Another AWS service's host whose name merely starts with `s3`: a load balancer, an API Gateway, a website
+    // endpoint (which does not serve the S3 API), and an EC2 host.
+    's3-minio-123.us-east-1.elb.amazonaws.com',
+    's3-123456.us-east-1.elb.amazonaws.com',
+    's3.us-east-1.elb.amazonaws.com',
+    's3-proxy.abc123.execute-api.us-east-1.amazonaws.com',
+    'bucket.s3-website-us-east-1.amazonaws.com',
+    'bucket.s3-website.us-east-1.amazonaws.com',
+    'my-s3-gw-1234.us-east-1.elb.amazonaws.com',
+    'ec2-1-2-3-4.compute-1.amazonaws.com',
     'bucket.s3.stub.test',
     '',
   ])('%s is not', (host) => {

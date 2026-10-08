@@ -502,8 +502,10 @@ one request per row. That is the case:
   anyway, and two sweepers and a re-create of the name could delete a live row. Set `conditionalDelete: true` on the
   backend only once you know your store applies it. The host is the one the SDK resolves, however the endpoint was set:
   a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file.
-  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, and AWS S3 applies the precondition
-  there;
+  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, as is an access point's, a multi-region
+  access point's, an Object Lambda's, an Outpost's and a directory bucket's, and AWS S3 applies the precondition there.
+  Another AWS service's host whose name starts with `s3`, such as a load balancer, an API Gateway or a website
+  endpoint, is not;
 - on a GCS client, by default, the public endpoint included: whether real GCS applies `ifGenerationMatch` to a delete
   has not been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so
   CI cannot show it. Set `conditionalDelete: true` to remove rows for good;
