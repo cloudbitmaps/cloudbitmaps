@@ -11,6 +11,22 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **Combines on operands of a million to ten million ids, and the `*Into` verbs, are now measured on S3.** The first
+  run of the calibration harness's large suite, from AWS CloudShell in `us-east-1` on 2026-10-07 (run
+  `2026-10-07-88cd3`, against the published `0.18.3` packages), timed 40 cold reads of each combine at each size on two operands of about
+  1,500 chunks each, 20 % shared. A cold `intersect` took 108.8 ms at the median in 6 GETs at about a million ids an
+  operand, 140.0 ms in 8 at five million and 158.0 ms in 10 at ten million. A cold `union` took 203.5 ms in 8 GETs, 532.3 ms in 24
+  and 682.7 ms in 26, and an `andNot` 144.9 ms in 7, 323.0 ms in 16 and 392.4 ms in 18. Five `intersectInto`, `unionInto`
+  and `andNotInto` calls a size took between 259.8 ms and 1,392.4 ms at the median: a `unionInto` of 18.07 and 20.32 MB
+  is written in 3 parts. A single-part load ran at 3.84 million ids a second at the median and a multipart load at 5.67
+  million. Every stage made exactly the requests it was expected to, with no discarded sample: 173 PUT-class and 5,663
+  GET-class requests in all, $0.0031302 at the default prices. The large suite drains each read with `.batches()`, so
+  its latencies are not comparable with the default suite's, and latencies of different CloudShell sessions are not
+  comparable either; it is one client with 128 sockets and 2 CPUs. `materializeMany` on S3 is still counted, not
+  measured. The benchmarks page, the roadmap and the calibration READMEs quote it. No library code changes.
+
 ## [0.18.3] — 2026-10-07
 
 ### Security

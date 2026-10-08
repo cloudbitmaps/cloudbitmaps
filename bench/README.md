@@ -422,8 +422,7 @@ in-memory backend before anything is created (`lib/large-counts.cjs`), as the de
 is held to its exact count in both classes, PUT-class and GET-class, and a stage that differs is recorded under
 `expectedMissed`. A rehearsal against MinIO runs the same loads and reads through the S3 driver, so a wrong table fails
 it. At the default plan the stages are expected to make 169 PUT-class and 5,652 GET-class requests: $0.0031 at
-`us-east-1` on-demand prices, with the bucket's own requests left out (**derived** from the counts; nothing of this suite
-has run on a cloud).
+`us-east-1` on-demand prices, with the bucket's own requests left out (**derived** from the counts; the suite's first run on S3, [`2026-10-07-88cd3`](calibration/large/2026-10-07-88cd3.json), made them exactly).
 
 **The bound.** The ceiling is checked against the most the suite can request, which for a cold read is the pointer, the
 tail and one more request an operand, and the range requests of the chunks it needs. A range is bounded by bytes, not
@@ -457,7 +456,7 @@ platform with no figure for the memory available (macOS), the machine's total st
 **Evidence** goes under `calibration/large/`, one file a finished run, partials and rehearsals ignored by git as the
 default suite's are. `evidenceFiles` and the report gates list `calibration/` without descending into it, so a large run
 is never the default suite's latest evidence, and `tests/bench/calibrate-large.test.ts` holds that, and the large
-evidence's own gate, which passes with no run committed and is proven on a rehearsal's file.
+evidence's own gate, which is proven on a rehearsal's file and holds each committed run, the first of which is [`2026-10-07-88cd3`](calibration/large/2026-10-07-88cd3.json).
 
 **What it will not show.** One storage class in one region (`us-east-1`), one client, cold reads on fresh stores, and the
 harness's own socket limit; array-only and bitset-only containers; one task at a time, and `keep` left at its default for

@@ -514,10 +514,10 @@
           </li>
           <li>
             <span class="rl-mark">04</span>
-            <span class="rl-what">The <span class="m">*Into</span> verbs, <span class="m">materializeMany</span>, and combines at larger sizes</span>
+            <span class="rl-what"><span class="m">materializeMany</span> on S3</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              Materialising a combine's result back into a segment, and <span class="m">intersect</span>, <span class="m">union</span>, <span class="m">andNot</span> and the <span class="m">*Into</span> verbs on operands of about a million, five million and ten million ids, against a real object store. The request counts of a <span class="m">materializeMany</span> call are counted in memory and not measured on S3.
+              Its request counts are counted in memory and not measured on S3. The <span class="m">*Into</span> verbs and combines on operands of about a million, five million and ten million ids are measured, and operands that are run-encoded, or with other overlaps, are not.
             </span>
           </li>
           <li>

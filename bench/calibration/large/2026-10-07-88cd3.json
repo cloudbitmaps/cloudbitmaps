@@ -1,0 +1,1724 @@
+{
+  "note": "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
+  "runId": "2026-10-07-88cd3",
+  "startedAt": "2026-10-07T20:52:29.728Z",
+  "mode": "run",
+  "target": "aws",
+  "region": "us-east-1",
+  "measured": {
+    "packageVersion": "0.18.3",
+    "harness": "70c4bc2",
+    "node": "v22.23.3",
+    "sdk": {
+      "clientS3": "3.1147.0",
+      "nodeHttpHandler": "4.12.1"
+    },
+    "maxSockets": 128,
+    "maxSocketsSource": "set by the harness to match the library's own client, read back from the client's agents after the run"
+  },
+  "pricing": "aws-us-east-1-ondemand",
+  "suite": "large",
+  "resources": {
+    "memoryMB": 2536,
+    "memoryKind": "available",
+    "diskMB": 545,
+    "totalMemoryMB": 3771,
+    "cpus": 2
+  },
+  "workload": {
+    "reads": 40,
+    "intos": 5,
+    "sizes": [
+      {
+        "idsPerSegment": 1000000,
+        "stride": 98,
+        "chunksPerSegment": 1497,
+        "sharedChunks": 300,
+        "operandBytes": [
+          2039032,
+          2039033
+        ],
+        "rangeCap": 9,
+        "counts": {
+          "operandBytes": [
+            2039032,
+            2039033
+          ],
+          "reads": {
+            "intersect": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 2,
+              "rangeBytes": 809600,
+              "gets": 6,
+              "ids": 200000
+            },
+            "union": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 4,
+              "rangeBytes": 4047904,
+              "gets": 8,
+              "ids": 1800000
+            },
+            "andNot": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 3,
+              "rangeBytes": 2428752,
+              "gets": 7,
+              "ids": 800000
+            }
+          },
+          "into": {
+            "intersectInto": [
+              {
+                "ids": 200000,
+                "objectBytes": 407910,
+                "parts": 0,
+                "put": 2,
+                "get": 9,
+                "first": true
+              },
+              {
+                "ids": 200000,
+                "objectBytes": 407910,
+                "parts": 0,
+                "put": 2,
+                "get": 8,
+                "first": false
+              },
+              {
+                "ids": 200000,
+                "objectBytes": 407910,
+                "parts": 0,
+                "put": 2,
+                "get": 8,
+                "first": false
+              },
+              {
+                "ids": 200000,
+                "objectBytes": 407910,
+                "parts": 0,
+                "put": 2,
+                "get": 8,
+                "first": false
+              },
+              {
+                "ids": 200000,
+                "objectBytes": 407910,
+                "parts": 0,
+                "put": 2,
+                "get": 8,
+                "first": false
+              }
+            ],
+            "unionInto": [
+              {
+                "ids": 1800000,
+                "objectBytes": 3670154,
+                "parts": 0,
+                "put": 2,
+                "get": 11,
+                "first": true
+              },
+              {
+                "ids": 1800000,
+                "objectBytes": 3670154,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              },
+              {
+                "ids": 1800000,
+                "objectBytes": 3670154,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              },
+              {
+                "ids": 1800000,
+                "objectBytes": 3670154,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              },
+              {
+                "ids": 1800000,
+                "objectBytes": 3670154,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              }
+            ],
+            "andNotInto": [
+              {
+                "ids": 800000,
+                "objectBytes": 1631235,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": true
+              },
+              {
+                "ids": 800000,
+                "objectBytes": 1631235,
+                "parts": 0,
+                "put": 2,
+                "get": 9,
+                "first": false
+              },
+              {
+                "ids": 800000,
+                "objectBytes": 1631235,
+                "parts": 0,
+                "put": 2,
+                "get": 9,
+                "first": false
+              },
+              {
+                "ids": 800000,
+                "objectBytes": 1631235,
+                "parts": 0,
+                "put": 2,
+                "get": 9,
+                "first": false
+              },
+              {
+                "ids": 800000,
+                "objectBytes": 1631235,
+                "parts": 0,
+                "put": 2,
+                "get": 9,
+                "first": false
+              }
+            ]
+          }
+        }
+      },
+      {
+        "idsPerSegment": 5000000,
+        "stride": 19,
+        "chunksPerSegment": 1450,
+        "sharedChunks": 290,
+        "operandBytes": [
+          10037812,
+          10037813
+        ],
+        "rangeCap": 40,
+        "counts": {
+          "operandBytes": [
+            10037812,
+            10037813
+          ],
+          "reads": {
+            "intersect": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 4,
+              "rangeBytes": 4009280,
+              "gets": 8,
+              "ids": 1000000
+            },
+            "union": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 20,
+              "rangeBytes": 20046400,
+              "gets": 24,
+              "ids": 9000000
+            },
+            "andNot": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 12,
+              "rangeBytes": 12027840,
+              "gets": 16,
+              "ids": 4000000
+            }
+          },
+          "into": {
+            "intersectInto": [
+              {
+                "ids": 1000000,
+                "objectBytes": 2007652,
+                "parts": 0,
+                "put": 2,
+                "get": 11,
+                "first": true
+              },
+              {
+                "ids": 1000000,
+                "objectBytes": 2007652,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              },
+              {
+                "ids": 1000000,
+                "objectBytes": 2007652,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              },
+              {
+                "ids": 1000000,
+                "objectBytes": 2007652,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              },
+              {
+                "ids": 1000000,
+                "objectBytes": 2007652,
+                "parts": 0,
+                "put": 2,
+                "get": 10,
+                "first": false
+              }
+            ],
+            "unionInto": [
+              {
+                "ids": 9000000,
+                "objectBytes": 18067972,
+                "parts": 3,
+                "put": 6,
+                "get": 27,
+                "first": true
+              },
+              {
+                "ids": 9000000,
+                "objectBytes": 18067972,
+                "parts": 3,
+                "put": 6,
+                "get": 26,
+                "first": false
+              },
+              {
+                "ids": 9000000,
+                "objectBytes": 18067972,
+                "parts": 3,
+                "put": 6,
+                "get": 26,
+                "first": false
+              },
+              {
+                "ids": 9000000,
+                "objectBytes": 18067972,
+                "parts": 3,
+                "put": 6,
+                "get": 26,
+                "first": false
+              },
+              {
+                "ids": 9000000,
+                "objectBytes": 18067972,
+                "parts": 3,
+                "put": 6,
+                "get": 26,
+                "first": false
+              }
+            ],
+            "andNotInto": [
+              {
+                "ids": 4000000,
+                "objectBytes": 8030273,
+                "parts": 0,
+                "put": 2,
+                "get": 19,
+                "first": true
+              },
+              {
+                "ids": 4000000,
+                "objectBytes": 8030273,
+                "parts": 0,
+                "put": 2,
+                "get": 18,
+                "first": false
+              },
+              {
+                "ids": 4000000,
+                "objectBytes": 8030273,
+                "parts": 0,
+                "put": 2,
+                "get": 18,
+                "first": false
+              },
+              {
+                "ids": 4000000,
+                "objectBytes": 8030273,
+                "parts": 0,
+                "put": 2,
+                "get": 18,
+                "first": false
+              },
+              {
+                "ids": 4000000,
+                "objectBytes": 8030273,
+                "parts": 0,
+                "put": 2,
+                "get": 18,
+                "first": false
+              }
+            ]
+          }
+        }
+      },
+      {
+        "idsPerSegment": 10000000,
+        "stride": 9,
+        "chunksPerSegment": 1374,
+        "sharedChunks": 275,
+        "operandBytes": [
+          11291644,
+          11291645
+        ],
+        "rangeCap": 45,
+        "counts": {
+          "operandBytes": [
+            11291644,
+            11291645
+          ],
+          "reads": {
+            "intersect": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 6,
+              "rangeBytes": 4514400,
+              "gets": 10,
+              "ids": 2000000
+            },
+            "union": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 22,
+              "rangeBytes": 22555584,
+              "gets": 26,
+              "ids": 18000000
+            },
+            "andNot": {
+              "pointer": 2,
+              "tail": 2,
+              "range": 14,
+              "rangeBytes": 13534992,
+              "gets": 18,
+              "ids": 8000000
+            }
+          },
+          "into": {
+            "intersectInto": [
+              {
+                "ids": 2000000,
+                "objectBytes": 2260062,
+                "parts": 0,
+                "put": 2,
+                "get": 13,
+                "first": true
+              },
+              {
+                "ids": 2000000,
+                "objectBytes": 2260062,
+                "parts": 0,
+                "put": 2,
+                "get": 12,
+                "first": false
+              },
+              {
+                "ids": 2000000,
+                "objectBytes": 2260062,
+                "parts": 0,
+                "put": 2,
+                "get": 12,
+                "first": false
+              },
+              {
+                "ids": 2000000,
+                "objectBytes": 2260062,
+                "parts": 0,
+                "put": 2,
+                "get": 12,
+                "first": false
+              },
+              {
+                "ids": 2000000,
+                "objectBytes": 2260062,
+                "parts": 0,
+                "put": 2,
+                "get": 12,
+                "first": false
+              }
+            ],
+            "unionInto": [
+              {
+                "ids": 18000000,
+                "objectBytes": 20323226,
+                "parts": 3,
+                "put": 6,
+                "get": 29,
+                "first": true
+              },
+              {
+                "ids": 18000000,
+                "objectBytes": 20323226,
+                "parts": 3,
+                "put": 6,
+                "get": 28,
+                "first": false
+              },
+              {
+                "ids": 18000000,
+                "objectBytes": 20323226,
+                "parts": 3,
+                "put": 6,
+                "get": 28,
+                "first": false
+              },
+              {
+                "ids": 18000000,
+                "objectBytes": 20323226,
+                "parts": 3,
+                "put": 6,
+                "get": 28,
+                "first": false
+              },
+              {
+                "ids": 18000000,
+                "objectBytes": 20323226,
+                "parts": 3,
+                "put": 6,
+                "get": 28,
+                "first": false
+              }
+            ],
+            "andNotInto": [
+              {
+                "ids": 8000000,
+                "objectBytes": 9031695,
+                "parts": 2,
+                "put": 5,
+                "get": 21,
+                "first": true
+              },
+              {
+                "ids": 8000000,
+                "objectBytes": 9031695,
+                "parts": 2,
+                "put": 5,
+                "get": 20,
+                "first": false
+              },
+              {
+                "ids": 8000000,
+                "objectBytes": 9031695,
+                "parts": 2,
+                "put": 5,
+                "get": 20,
+                "first": false
+              },
+              {
+                "ids": 8000000,
+                "objectBytes": 9031695,
+                "parts": 2,
+                "put": 5,
+                "get": 20,
+                "first": false
+              },
+              {
+                "ids": 8000000,
+                "objectBytes": 9031695,
+                "parts": 2,
+                "put": 5,
+                "get": 20,
+                "first": false
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "expected": {
+      "largeLoad": {
+        "put": 24,
+        "get": 18
+      },
+      "largeIntersect": {
+        "put": 0,
+        "get": 960
+      },
+      "largeUnion": {
+        "put": 0,
+        "get": 2320
+      },
+      "largeAndNot": {
+        "put": 0,
+        "get": 1640
+      },
+      "largeInto": {
+        "put": 145,
+        "get": 714
+      }
+    }
+  },
+  "projected": {
+    "put": 663,
+    "get": 28919
+  },
+  "projectedStages": {
+    "largeLoad": {
+      "put": 70,
+      "get": 90
+    },
+    "largeIntersect": {
+      "put": 0,
+      "get": 8240
+    },
+    "largeUnion": {
+      "put": 0,
+      "get": 8240
+    },
+    "largeAndNot": {
+      "put": 0,
+      "get": 8240
+    },
+    "largeInto": {
+      "put": 535,
+      "get": 3765
+    }
+  },
+  "projectedDiscards": {
+    "put": 42,
+    "get": 333,
+    "costliestSample": 111
+  },
+  "partial": false,
+  "phases": {
+    "largeLoad": {
+      "via": "store.load()",
+      "singlePart": {
+        "runs": 2,
+        "medianIdsPerSec": 3842443.68598107,
+        "medianBytesPerSec": 7835960.730363857,
+        "medianObjectBytes": 2039033,
+        "medianUploadBytes": 2039317
+      },
+      "multipart": {
+        "runs": 4,
+        "medianIdsPerSec": 5666260.385408889,
+        "medianBytesPerSec": 9207796.2169477,
+        "medianObjectBytes": 11291644,
+        "medianUploadBytes": 11291930
+      },
+      "perLoad": [
+        {
+          "segment": "large-1000000-0",
+          "kind": "single",
+          "put": 2,
+          "get": 3,
+          "parts": 0,
+          "objectBytes": 2039032,
+          "uploadBytes": 2039316
+        },
+        {
+          "segment": "large-1000000-1",
+          "kind": "single",
+          "put": 2,
+          "get": 3,
+          "parts": 0,
+          "objectBytes": 2039033,
+          "uploadBytes": 2039317
+        },
+        {
+          "segment": "large-5000000-0",
+          "kind": "multipart",
+          "put": 5,
+          "get": 3,
+          "parts": 2,
+          "objectBytes": 10037812,
+          "uploadBytes": 10038096
+        },
+        {
+          "segment": "large-5000000-1",
+          "kind": "multipart",
+          "put": 5,
+          "get": 3,
+          "parts": 2,
+          "objectBytes": 10037813,
+          "uploadBytes": 10038097
+        },
+        {
+          "segment": "large-10000000-0",
+          "kind": "multipart",
+          "put": 5,
+          "get": 3,
+          "parts": 2,
+          "objectBytes": 11291644,
+          "uploadBytes": 11291930
+        },
+        {
+          "segment": "large-10000000-1",
+          "kind": "multipart",
+          "put": 5,
+          "get": 3,
+          "parts": 2,
+          "objectBytes": 11291645,
+          "uploadBytes": 11291931
+        }
+      ],
+      "expected": {
+        "put": 24,
+        "get": 18
+      },
+      "requests": {
+        "put": 24,
+        "get": 18,
+        "bytesUp": 46738687,
+        "bytesDown": 0,
+        "parts": 8,
+        "reads": {
+          "whole": {
+            "n": 0,
+            "bytes": 0
+          },
+          "suffix": {
+            "n": 0,
+            "bytes": 0
+          },
+          "range": {
+            "n": 0,
+            "bytes": 0
+          }
+        }
+      },
+      "discarded": [],
+      "expectedPuts": 24,
+      "expectedGets": 18
+    },
+    "largeIntersect": {
+      "sizes": [
+        {
+          "n": 40,
+          "chunksPerSegment": 1497,
+          "sharedChunks": 300,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 108.843825,
+          "p95ms": 140.870341,
+          "p99ms": 143.924447,
+          "medianGets": 6,
+          "expectedGets": 6,
+          "offExpected": 0,
+          "chunkReadsPerCall": 2,
+          "chunkBytesPerCall": 809600,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 2,
+          "medianMeanInFlight": 1.499184118,
+          "medianRounds": 4.004683224
+        },
+        {
+          "n": 40,
+          "chunksPerSegment": 1450,
+          "sharedChunks": 290,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 140.011877,
+          "p95ms": 217.732705,
+          "p99ms": 233.130571,
+          "medianGets": 8,
+          "expectedGets": 8,
+          "offExpected": 0,
+          "chunkReadsPerCall": 4,
+          "chunkBytesPerCall": 4009280,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 4,
+          "medianMeanInFlight": 1.724466787,
+          "medianRounds": 4.644236921
+        },
+        {
+          "n": 40,
+          "chunksPerSegment": 1374,
+          "sharedChunks": 275,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 157.998376,
+          "p95ms": 264.839552,
+          "p99ms": 278.939648,
+          "medianGets": 10,
+          "expectedGets": 10,
+          "offExpected": 0,
+          "chunkReadsPerCall": 6,
+          "chunkBytesPerCall": 4514400,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 6,
+          "medianMeanInFlight": 2.118758026,
+          "medianRounds": 4.760044036
+        }
+      ],
+      "requests": {
+        "put": 0,
+        "get": 960,
+        "bytesUp": 0,
+        "bytesDown": 436314080,
+        "parts": 0,
+        "reads": {
+          "whole": {
+            "n": 240,
+            "bytes": 68320
+          },
+          "suffix": {
+            "n": 240,
+            "bytes": 62914560
+          },
+          "range": {
+            "n": 480,
+            "bytes": 373331200
+          }
+        }
+      },
+      "discarded": [],
+      "expectedPuts": 0,
+      "expectedGets": 960
+    },
+    "largeUnion": {
+      "sizes": [
+        {
+          "n": 40,
+          "chunksPerSegment": 1497,
+          "sharedChunks": 300,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 203.539554,
+          "p95ms": 240.655523,
+          "p99ms": 248.385661,
+          "medianGets": 8,
+          "expectedGets": 8,
+          "offExpected": 0,
+          "chunkReadsPerCall": 4,
+          "chunkBytesPerCall": 4047904,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 4,
+          "medianMeanInFlight": 1.330485877,
+          "medianRounds": 6.089814358
+        },
+        {
+          "n": 40,
+          "chunksPerSegment": 1450,
+          "sharedChunks": 290,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 532.347659,
+          "p95ms": 733.788921,
+          "p99ms": 795.790727,
+          "medianGets": 24,
+          "expectedGets": 24,
+          "offExpected": 0,
+          "chunkReadsPerCall": 20,
+          "chunkBytesPerCall": 20046400,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 8,
+          "medianMeanInFlight": 2.99765296,
+          "medianRounds": 8.094205475
+        },
+        {
+          "n": 40,
+          "chunksPerSegment": 1374,
+          "sharedChunks": 275,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 682.731185,
+          "p95ms": 889.282721,
+          "p99ms": 1005.233426,
+          "medianGets": 26,
+          "expectedGets": 26,
+          "offExpected": 0,
+          "chunkReadsPerCall": 22,
+          "chunkBytesPerCall": 22555584,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 9,
+          "medianMeanInFlight": 2.982205214,
+          "medianRounds": 8.847653991
+        }
+      ],
+      "requests": {
+        "put": 0,
+        "get": 2320,
+        "bytesUp": 0,
+        "bytesDown": 1928978400,
+        "parts": 0,
+        "reads": {
+          "whole": {
+            "n": 240,
+            "bytes": 68320
+          },
+          "suffix": {
+            "n": 240,
+            "bytes": 62914560
+          },
+          "range": {
+            "n": 1840,
+            "bytes": 1865995520
+          }
+        }
+      },
+      "discarded": [],
+      "expectedPuts": 0,
+      "expectedGets": 2320
+    },
+    "largeAndNot": {
+      "sizes": [
+        {
+          "n": 40,
+          "chunksPerSegment": 1497,
+          "sharedChunks": 300,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 144.864542,
+          "p95ms": 189.782769,
+          "p99ms": 200.442263,
+          "medianGets": 7,
+          "expectedGets": 7,
+          "offExpected": 0,
+          "chunkReadsPerCall": 3,
+          "chunkBytesPerCall": 2428752,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 3,
+          "medianMeanInFlight": 1.353916119,
+          "medianRounds": 5.26434839
+        },
+        {
+          "n": 40,
+          "chunksPerSegment": 1450,
+          "sharedChunks": 290,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 323.040563,
+          "p95ms": 414.838169,
+          "p99ms": 417.483947,
+          "medianGets": 16,
+          "expectedGets": 16,
+          "offExpected": 0,
+          "chunkReadsPerCall": 12,
+          "chunkBytesPerCall": 12027840,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 6,
+          "medianMeanInFlight": 2.403070259,
+          "medianRounds": 6.665722908
+        },
+        {
+          "n": 40,
+          "chunksPerSegment": 1374,
+          "sharedChunks": 275,
+          "runs": 40,
+          "cold": true,
+          "exact": true,
+          "p50ms": 392.435754,
+          "p95ms": 499.982469,
+          "p99ms": 590.289614,
+          "medianGets": 18,
+          "expectedGets": 18,
+          "offExpected": 0,
+          "chunkReadsPerCall": 14,
+          "chunkBytesPerCall": 13534992,
+          "tailReadsPerCall": 2,
+          "pointerReadsPerCall": 2,
+          "medianPeakInFlight": 7,
+          "medianMeanInFlight": 2.907531848,
+          "medianRounds": 6.23899479
+        }
+      ],
+      "requests": {
+        "put": 0,
+        "get": 1640,
+        "bytesUp": 0,
+        "bytesDown": 1182646240,
+        "parts": 0,
+        "reads": {
+          "whole": {
+            "n": 240,
+            "bytes": 68320
+          },
+          "suffix": {
+            "n": 240,
+            "bytes": 62914560
+          },
+          "range": {
+            "n": 1160,
+            "bytes": 1119663360
+          }
+        }
+      },
+      "discarded": [],
+      "expectedPuts": 0,
+      "expectedGets": 1640
+    },
+    "largeInto": {
+      "sizes": [
+        {
+          "n": 1000000,
+          "verbs": {
+            "intersectInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 259.843246,
+              "p95ms": 282.923183,
+              "p99ms": 282.923183,
+              "medianPeakInFlight": 3,
+              "medianMeanInFlight": 1.225383743,
+              "medianRounds": 6.528567108,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 282.923183,
+                  "generation": 0,
+                  "objectBytes": 407910,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 9,
+                  "expectedPut": 2,
+                  "expectedGet": 9
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 230.889116,
+                  "generation": 1,
+                  "objectBytes": 407910,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 8,
+                  "expectedPut": 2,
+                  "expectedGet": 8
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 272.362053,
+                  "generation": 2,
+                  "objectBytes": 407910,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 8,
+                  "expectedPut": 2,
+                  "expectedGet": 8
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 245.272267,
+                  "generation": 3,
+                  "objectBytes": 407910,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 8,
+                  "expectedPut": 2,
+                  "expectedGet": 8
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 259.843246,
+                  "generation": 4,
+                  "objectBytes": 407910,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 8,
+                  "expectedPut": 2,
+                  "expectedGet": 8
+                }
+              ]
+            },
+            "unionInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 479.728851,
+              "p95ms": 495.327811,
+              "p99ms": 495.327811,
+              "medianPeakInFlight": 4,
+              "medianMeanInFlight": 1.028794311,
+              "medianRounds": 9.806600549,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 413.958225,
+                  "generation": 0,
+                  "objectBytes": 3670154,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 11,
+                  "expectedPut": 2,
+                  "expectedGet": 11
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 485.081648,
+                  "generation": 1,
+                  "objectBytes": 3670154,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 495.327811,
+                  "generation": 2,
+                  "objectBytes": 3670154,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 438.224162,
+                  "generation": 3,
+                  "objectBytes": 3670154,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 479.728851,
+                  "generation": 4,
+                  "objectBytes": 3670154,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                }
+              ]
+            },
+            "andNotInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 345.929447,
+              "p95ms": 393.552764,
+              "p99ms": 393.552764,
+              "medianPeakInFlight": 3,
+              "medianMeanInFlight": 1.172015235,
+              "medianRounds": 8.154437883,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 281.69756,
+                  "generation": 0,
+                  "objectBytes": 1631235,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 393.552764,
+                  "generation": 1,
+                  "objectBytes": 1631235,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 9,
+                  "expectedPut": 2,
+                  "expectedGet": 9
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 345.929447,
+                  "generation": 2,
+                  "objectBytes": 1631235,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 9,
+                  "expectedPut": 2,
+                  "expectedGet": 9
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 347.98044,
+                  "generation": 3,
+                  "objectBytes": 1631235,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 9,
+                  "expectedPut": 2,
+                  "expectedGet": 9
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 302.001627,
+                  "generation": 4,
+                  "objectBytes": 1631235,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 9,
+                  "expectedPut": 2,
+                  "expectedGet": 9
+                }
+              ]
+            }
+          }
+        },
+        {
+          "n": 5000000,
+          "verbs": {
+            "intersectInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 352.278881,
+              "p95ms": 398.095797,
+              "p99ms": 398.095797,
+              "medianPeakInFlight": 4,
+              "medianMeanInFlight": 1.259789775,
+              "medianRounds": 7.937832325,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 398.095797,
+                  "generation": 0,
+                  "objectBytes": 2007652,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 11,
+                  "expectedPut": 2,
+                  "expectedGet": 11
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 307.346538,
+                  "generation": 1,
+                  "objectBytes": 2007652,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 379.586215,
+                  "generation": 2,
+                  "objectBytes": 2007652,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 301.919151,
+                  "generation": 3,
+                  "objectBytes": 2007652,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 352.278881,
+                  "generation": 4,
+                  "objectBytes": 2007652,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 10,
+                  "expectedPut": 2,
+                  "expectedGet": 10
+                }
+              ]
+            },
+            "unionInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 1392.391781,
+              "p95ms": 1519.03843,
+              "p99ms": 1519.03843,
+              "medianPeakInFlight": 8,
+              "medianMeanInFlight": 1.538297773,
+              "medianRounds": 16.901799159,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 1392.391781,
+                  "generation": 0,
+                  "objectBytes": 18067972,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 27,
+                  "expectedPut": 6,
+                  "expectedGet": 27
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 1519.03843,
+                  "generation": 1,
+                  "objectBytes": 18067972,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 26,
+                  "expectedPut": 6,
+                  "expectedGet": 26
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 1250.623685,
+                  "generation": 2,
+                  "objectBytes": 18067972,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 26,
+                  "expectedPut": 6,
+                  "expectedGet": 26
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 1430.468111,
+                  "generation": 3,
+                  "objectBytes": 18067972,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 26,
+                  "expectedPut": 6,
+                  "expectedGet": 26
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 1211.018388,
+                  "generation": 4,
+                  "objectBytes": 18067972,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 26,
+                  "expectedPut": 6,
+                  "expectedGet": 26
+                }
+              ]
+            },
+            "andNotInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 605.53244,
+              "p95ms": 635.223975,
+              "p99ms": 635.223975,
+              "medianPeakInFlight": 6,
+              "medianMeanInFlight": 1.666490625,
+              "medianRounds": 10.801140871,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 598.13361,
+                  "generation": 0,
+                  "objectBytes": 8030273,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 19,
+                  "expectedPut": 2,
+                  "expectedGet": 19
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 543.891469,
+                  "generation": 1,
+                  "objectBytes": 8030273,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 18,
+                  "expectedPut": 2,
+                  "expectedGet": 18
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 609.33825,
+                  "generation": 2,
+                  "objectBytes": 8030273,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 18,
+                  "expectedPut": 2,
+                  "expectedGet": 18
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 635.223975,
+                  "generation": 3,
+                  "objectBytes": 8030273,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 18,
+                  "expectedPut": 2,
+                  "expectedGet": 18
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 605.53244,
+                  "generation": 4,
+                  "objectBytes": 8030273,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 18,
+                  "expectedPut": 2,
+                  "expectedGet": 18
+                }
+              ]
+            }
+          }
+        },
+        {
+          "n": 10000000,
+          "verbs": {
+            "intersectInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 340.857185,
+              "p95ms": 355.224642,
+              "p99ms": 355.224642,
+              "medianPeakInFlight": 6,
+              "medianMeanInFlight": 1.529736396,
+              "medianRounds": 7.844488784,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 355.224642,
+                  "generation": 0,
+                  "objectBytes": 2260062,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 13,
+                  "expectedPut": 2,
+                  "expectedGet": 13
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 329.575197,
+                  "generation": 1,
+                  "objectBytes": 2260062,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 12,
+                  "expectedPut": 2,
+                  "expectedGet": 12
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 331.331421,
+                  "generation": 2,
+                  "objectBytes": 2260062,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 12,
+                  "expectedPut": 2,
+                  "expectedGet": 12
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 345.173653,
+                  "generation": 3,
+                  "objectBytes": 2260062,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 12,
+                  "expectedPut": 2,
+                  "expectedGet": 12
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 340.857185,
+                  "generation": 4,
+                  "objectBytes": 2260062,
+                  "parts": 0,
+                  "put": 2,
+                  "get": 12,
+                  "expectedPut": 2,
+                  "expectedGet": 12
+                }
+              ]
+            },
+            "unionInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 1337.577414,
+              "p95ms": 1450.38467,
+              "p99ms": 1450.38467,
+              "medianPeakInFlight": 9,
+              "medianMeanInFlight": 1.823565448,
+              "medianRounds": 15.354535274,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 1373.953981,
+                  "generation": 0,
+                  "objectBytes": 20323226,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 29,
+                  "expectedPut": 6,
+                  "expectedGet": 29
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 1235.888304,
+                  "generation": 1,
+                  "objectBytes": 20323226,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 28,
+                  "expectedPut": 6,
+                  "expectedGet": 28
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 1450.38467,
+                  "generation": 2,
+                  "objectBytes": 20323226,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 28,
+                  "expectedPut": 6,
+                  "expectedGet": 28
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 1325.935928,
+                  "generation": 3,
+                  "objectBytes": 20323226,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 28,
+                  "expectedPut": 6,
+                  "expectedGet": 28
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 1337.577414,
+                  "generation": 4,
+                  "objectBytes": 20323226,
+                  "parts": 3,
+                  "put": 6,
+                  "get": 28,
+                  "expectedPut": 6,
+                  "expectedGet": 28
+                }
+              ]
+            },
+            "andNotInto": {
+              "runs": 5,
+              "n": 5,
+              "p50ms": 857.945896,
+              "p95ms": 878.954036,
+              "p99ms": 878.954036,
+              "medianPeakInFlight": 7,
+              "medianMeanInFlight": 1.532969435,
+              "medianRounds": 13.06035836,
+              "perCall": [
+                {
+                  "call": 0,
+                  "kind": "first",
+                  "ms": 817.675937,
+                  "generation": 0,
+                  "objectBytes": 9031695,
+                  "parts": 2,
+                  "put": 5,
+                  "get": 21,
+                  "expectedPut": 5,
+                  "expectedGet": 21
+                },
+                {
+                  "call": 1,
+                  "kind": "repeat",
+                  "ms": 878.954036,
+                  "generation": 1,
+                  "objectBytes": 9031695,
+                  "parts": 2,
+                  "put": 5,
+                  "get": 20,
+                  "expectedPut": 5,
+                  "expectedGet": 20
+                },
+                {
+                  "call": 2,
+                  "kind": "repeat",
+                  "ms": 865.288352,
+                  "generation": 2,
+                  "objectBytes": 9031695,
+                  "parts": 2,
+                  "put": 5,
+                  "get": 20,
+                  "expectedPut": 5,
+                  "expectedGet": 20
+                },
+                {
+                  "call": 3,
+                  "kind": "repeat",
+                  "ms": 844.386824,
+                  "generation": 3,
+                  "objectBytes": 9031695,
+                  "parts": 2,
+                  "put": 5,
+                  "get": 20,
+                  "expectedPut": 5,
+                  "expectedGet": 20
+                },
+                {
+                  "call": 4,
+                  "kind": "repeat",
+                  "ms": 857.945896,
+                  "generation": 4,
+                  "objectBytes": 9031695,
+                  "parts": 2,
+                  "put": 5,
+                  "get": 20,
+                  "expectedPut": 5,
+                  "expectedGet": 20
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "requests": {
+        "put": 145,
+        "get": 714,
+        "bytesUp": 327163490,
+        "bytesDown": 443502416,
+        "parts": 40,
+        "reads": {
+          "whole": {
+            "n": 126,
+            "bytes": 35696
+          },
+          "suffix": {
+            "n": 90,
+            "bytes": 23592960
+          },
+          "range": {
+            "n": 435,
+            "bytes": 419873760
+          }
+        }
+      },
+      "discarded": [],
+      "expectedPuts": 145,
+      "expectedGets": 714
+    }
+  },
+  "network": {
+    "rttFloorMs": 4.710958,
+    "rttMedianMs": 6.926665,
+    "client": "in-region",
+    "inRegionThresholdMs": 30,
+    "clientRegion": "us-east-1"
+  },
+  "cost": {
+    "putUSD": 0.000865,
+    "getUSD": 0.0022652,
+    "totalUSD": 0.0031302,
+    "ops": {
+      "put": 173,
+      "get": 5663,
+      "free": 2,
+      "bytesUp": 373902177,
+      "bytesDown": 3991441136,
+      "byCommand": {
+        "HeadBucketCommand": 11,
+        "CreateBucketCommand": 1,
+        "GetObjectCommand": 5601,
+        "HeadObjectCommand": 51,
+        "PutObjectCommand": 83,
+        "CreateMultipartUploadCommand": 19,
+        "UploadPartCommand": 48,
+        "CompleteMultipartUploadCommand": 19,
+        "ListMultipartUploadsCommand": 1,
+        "ListObjectVersionsCommand": 2,
+        "DeleteObjectsCommand": 1,
+        "DeleteBucketCommand": 1
+      },
+      "inFlight": 0,
+      "peakInFlight": 8,
+      "requestMs": 322706.934186998,
+      "reads": {
+        "whole": {
+          "n": 846,
+          "bytes": 240656
+        },
+        "suffix": {
+          "n": 810,
+          "bytes": 212336640
+        },
+        "range": {
+          "n": 3915,
+          "bytes": 3778863840
+        }
+      }
+    }
+  },
+  "discards": {
+    "count": 0,
+    "perRun": 3,
+    "perStage": 2
+  },
+  "elapsedMs": 146732
+}
