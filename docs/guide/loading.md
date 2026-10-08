@@ -30,7 +30,7 @@ end-to-end check of your own.
 **Branch on `published`.** A load replaces: whatever the stream contains is what the segment contains afterwards. An
 upstream query that returns fewer rows than usual is a shrink nobody asked for, and an empty one is a wipe. At the
 storage layer both are an ordinary successful write, which is why a load checks its result before it publishes.
-`guard: { minCardinality, minRetained }` says what counts as implausible, and an empty result over a non-empty
+`guard: { minCardinality, minRetained, maxGrowth }` says what counts as implausible, and an empty result over a non-empty
 segment is refused even with no guard. A refusal is reported rather than thrown, so a discarded result is a load that
 silently did nothing.
 
@@ -45,9 +45,45 @@ refused.
 | `'empty'` | The ids produced nothing, and the segment is not empty. | Usually an upstream query that failed quietly. Fix it and re-run, or pass `allowEmpty: true` if emptying the segment is the point. |
 | `'min-cardinality'` | The set has fewer ids than `guard.minCardinality`. | Check the source. Lower the guard if the smaller set is real. |
 | `'min-retained'` | The set is smaller than `guard.minRetained` times the current segment. | The same: a shrink bigger than you allowed. |
+| `'max-growth'` | The set is larger than `guard.maxGrowth` times the current segment. | A growth bigger than you allowed: often a source that landed twice, or a join on the wrong key. Check the source. Raise the guard if the larger set is real. |
 | `'superseded'` | Another writer got there first: another load took the same generation number, or the segment's row changed while this load was writing. | Re-run the load. |
 
 A refused load also emits `segment.load-refused` to the `audit` sink you pass.
+
+**The two ratio bounds.** `minRetained` is a floor and `maxGrowth` a ceiling on the new size as a multiple of the
+current one: `{ minRetained: 0.5, maxGrowth: 2 }` accepts anything from half to twice what the segment holds. Neither
+judges a first load, and `maxGrowth` does not judge a load onto an empty segment either, since no ceiling is a multiple
+of zero; `0` means no bound, on both. The bounds are checked in the order of the table, so a load that breaks an older
+bound as well keeps that reason. Each compares in floating point, so do not rely on the exact boundary
+(`100 × 1.15` is `114.99999999999999`). Setting either one makes the load read the current size, `allowEmpty: true` or
+not, and fence its publish on what it read ([below](#where-the-guard-reads-the-size-of-the-current-generation)).
+
+A ratio judges a small segment harshly: 40 ids growing to 70 is 1.75 times. To refuse a growth only when it is also
+larger than an absolute number of ids, set each load's `maxGrowth` from the segment's current size `before`:
+`maxGrowth: before ? Math.max(1.5, 1 + 1000 / before) : 0` refuses only above both `before × 1.5` and
+`before + 1000`, since `new > max(f × b, b + d)` is the same as `new > b × max(f, 1 + d / b)`. With no current size
+(a first load, or an empty segment) it passes `0`, no bound, as the bound itself would judge nothing there. `before` is
+`await segment.count()`, what your last load left (its `cardinality` if it published, its `cardinalityBefore` if it
+was refused), or a `materializeMany` dry run's `cardinalityBefore` ([below](#look-before-you-publish-a-dry-run)). The rule
+is exact while nothing else writes the segment in between.
+
+A key shift keeps the size: a join on the wrong key can replace a segment's members with as many others, which no ratio
+sees. To refuse one, count how many of the current ids the new set keeps before you load it, reading the segment a chunk
+at a time:
+
+```ts
+// next: the RoaringBitmap32 you are about to load
+const before = await store.segment('active-us').count();
+let kept = 0;
+for await (const batch of store.segment('active-us').iterate().batches()) {
+  for (const id of batch) if (next.has(id)) kept++;
+}
+if (before > 0 && kept < 0.8 * before) throw new Error('refusing a load that keeps under 80% of the segment');
+await store.load({ segment: 'active-us' }, { bitmap: next }, { guard: { maxGrowth: 1.5 } });
+```
+
+It reads the current generation once, and nothing fences it against another writer between the count and the load. For
+the outputs of a `materializeMany` call, count it with a dry run ([below](#recipes-over-a-dry-run)).
 
 **What throws instead.** A refusal is an outcome. A throw is a fault:
 
@@ -148,8 +184,9 @@ await store.load({ segment: 'audience:retained' }, { bitmap: retained });
 await store.load({ segment: 'audience:imported' }, { serialized: bytes });
 ```
 
-- **It is the same load.** The generation is byte for byte the one the same ids write, and everything above holds
-  unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
+- **It is the same load.** The generation is byte for byte the one the same ids write (on an encrypted segment, chunk
+  for chunk: each write seals its chunks with a fresh nonce, so two writes of one set are never the same bytes), and
+  everything above holds unchanged: the guard and the empty refusal, `keep`, the fenced publish, encryption and the result.
 - **It is checked first.** The bytes are size-capped at 537,403,396 bytes, more than any canonical 32-bit bitmap
   serializes to (call `runOptimize()` before serializing a bitmap that is over it), checked structurally the way
   every stored chunk is, and decoded by the safe deserializer, all before the load's first request. Bytes that fail
@@ -294,9 +331,9 @@ that does not open. The first load onto such a row writes a summary, and the nex
 
 One behaviour follows from reading the row. A row that names an object that is gone (a lifecycle rule, a partial
 restore) still remembers the size, so a repair load is judged against it: a repair smaller than `guard.minRetained`
-allows is refused. A guard that has to open the object, because the row has no usable summary, meets an object it cannot
-read and judges against nothing. Leave `minRetained` out to repair a segment whose row
-remembers a size: `allowEmpty: true` does not lift a `minRetained` refusal. See [disaster recovery](disaster-recovery.md).
+allows, or larger than `guard.maxGrowth` allows, is refused. A guard that has to open the object, because the row has
+no usable summary, meets an object it cannot read and judges against nothing. Leave `minRetained` and `maxGrowth` out to
+repair a segment whose row remembers a size: `allowEmpty: true` lifts neither refusal. See [disaster recovery](disaster-recovery.md).
 
 **Memory is bounded by the distinct set, not by the input.** A load holds one compressed bitmap per non-empty chunk, so a
 billion duplicate-heavy ids stream through holding only the distinct result. The buffer between the input and the
@@ -460,6 +497,17 @@ const { collected } = await store
   .intersectInto(store.segment('campaign-final'), [store.segment('opted-in')], { keep: 1 });
 ```
 
+**Keep every generation of the last N hours.** `keep` counts generations, so how far back you can roll a segment depends
+on how often it refreshes: hourly at `keep: 12` is 12 hours, and a bad landing at 19:00 found at 09:00 the next day can
+no longer be rolled back to 18:00. Two ways to hold a time window, both with what the library has:
+
+- **Size `keep` from the cadence.** Hourly for 72 hours is `keep: 72`. The row records the newest 64 kept generations,
+  so a `keep` above 64 makes each load list the segment to collect, one listing per load.
+- **Lease each generation as it lands.** Right after a publish, `await store.segment(name).pin({ leaseUntil: Date.now()
+  + 72 * 3_600_000 })` holds the generation current when the pin lands for 72 hours, however `keep` collects (a lease is
+  at most 14 days, and a segment holds at most 64 at once, so hourly for 72 hours needs the first way). It costs one row
+  write per lease, and suits a segment that refreshes rarely, where `keep` would hold more than the window. An erasure still deletes a leased generation that held the erased id.
+
 ## Roll back a segment
 
 `store.generations(ref)` lists what the bucket holds for a segment, and
@@ -573,13 +621,13 @@ otherwise. Five properties follow from "a write is a load":
   ```ts
   const res = await audience.intersectInto(dest, [eligible]);
   if (!res.published) {
-    // res.reason: 'empty' | 'min-cardinality' | 'min-retained'
+    // res.reason: 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth'
     // res.cardinalityBefore: what dest still holds
   }
   ```
 
   An empty result into a destination that was never loaded still publishes: there is nothing to protect. Pass
-  `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained }` for the
+  `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained, maxGrowth }` for the
   same bounds `load()` takes, judged against what the destination held. A refusal is reported, not thrown; a lost race
   still throws `WriteConflictError`. A refused call also emits `segment.load-refused` to `audit`, since a
   materialization is a load.
@@ -648,7 +696,8 @@ pinned exclude that moved (`StaleOperandError`), the memory budget (`BudgetExcee
 never stops another. The call throws only for bad input (`ValidationError` naming the output index and the path in the
 expression, before any request), an operand that names no segment unless `allowAbsentOperands`, and a `budget` its own
 plan exceeds, the last two before any chunk is read. Each output's generation is byte for byte what the same ids would
-load, since every chunk goes through the codec's canonical encoding before it is written.
+load (chunk for chunk on an encrypted segment), since every chunk goes through the codec's canonical encoding before it is
+written.
 
 **`keep` is required.** An `*Into` keeps every generation unless told otherwise, and a thousand outputs would leave a
 thousand uncollected destinations on every refresh. The call's `keep` applies to every output, and an output's own
@@ -936,7 +985,78 @@ and is not published; outputs that do not read it publish. A handle made after t
 `eraseNamespace`, `destroySegment` or the free function `eraseIdFromSegment`) is not seen. The handle is the caller's copy, so
 build it from the source of truth at the start of each refresh and release it at the end. See [a batch of materializations](erasure.md#a-batch-of-materializations).
 
+### Look before you publish: a dry run
+
+`dryRun: true` computes every output exactly as the call would, judges each against its `dest` as its publish would be,
+and writes nothing: no object, no pointer, no audit event. Use it to look at a whole refresh before any of it is live,
+for instance to hold a landing in which a third of the segments moved more than usual.
+
+```ts
+const review = await store.materializeMany({ operands, outputs, keep: 12, dryRun: true });
+for (const [i, o] of review.outputs.entries()) {
+  if ('error' in o) continue; // what would fail its publish
+  // o.cardinality: the ids it would hold · o.cardinalityBefore: what dest holds now · o.wouldRefuse: the bound that would refuse it
+}
+```
+
+- **What it reports.** Each output is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }`,
+  or `{ published: false, error }` for what would fail its publish: an expired or destroyed `dest`, a moved exclude, an
+  erasure, a damaged operand. `cardinalityBefore` is always read, `null` when `dest` has no current generation, and
+  `wouldRefuse` is the `reason` a publish would give now, absent when it would publish. `published` is `false`, so code
+  that branches on it never takes a dry run for a publish.
+- **What it costs.** The operand reads of the publishing call, and for each output the reads a publish's own guard
+  makes: one registry read for its `dest`'s size, or two where the row has no usable summary. No write, so no more than
+  the publish. `stats.requests.publishes` is `0`, and `stats.requests.attributed.get` counts the reads of each `dest`. It
+  holds the memory the publish would, so it is admitted, deferred and refused for memory where the publish would be, and
+  it reports to the metrics sink as the same `materializeMany` op.
+- **What it holds for.** Now only: a publish made later reads its operands and judges each `dest` as they are then.
+
+#### Publish what you reviewed
+
+A dry run decides nothing by itself. Publish the outputs you accept by calling again without `dryRun`. The second call
+is an ordinary one: every guard and every race check runs, judged against each `dest` as it is then.
+
+- **Stored operands:** pass both calls the same handles, pinned with a lease (`pin({ leaseUntil })`), so both read the
+  same generations and the publish writes the ids the dry run counted, whatever loads land between the calls. An erasure
+  between the calls deletes every generation that held the erased id, a leased one included, so each output that reads
+  it fails with `NotFoundError` and publishes nothing, while the others publish. Without a pin, an operand that moved
+  between the calls is read as it is at the publish; each call's `stats.operands` says which generation it read.
+- **A feed:** replay the same records. **A replayed feed is your memory, which no erasure reaches**: a fed call is
+  refused only for an erasure this store runs while that call runs. If an erasure has run since the records were made,
+  rebuild them from the source rather than replay them. Or publish through candidates: write each accepted output to a
+  scratch segment of its own, which `eraseSubject` sweeps like any other, then publish each candidate to its `dest` in a
+  second call whose output is `expr: '<candidate>'`, and drop the candidates.
+- **The same ids give the same chunks.** On an encrypted segment each write seals with a fresh nonce, so the objects of
+  the two calls are not the same bytes.
+
+#### Recipes over a dry run
+
+- **A growth ceiling with an absolute floor.** Set each output's `guard.maxGrowth` in the publishing call from the dry
+  run's `cardinalityBefore`: `before ? Math.max(1.5, 1 + 1000 / before) : 0` refuses only above both `before × 1.5` and
+  `before + 1000` ([the two ratio bounds](#when-a-load-is-refused)).
+- **The overlap with what is live.** A key shift keeps the size, so compare members. One call cannot read its own
+  destination, so count the overlap in a second dry run that reads each `dest` as an operand:
+
+  ```ts
+  const overlap = await store.materializeMany({
+    operands: { ...operands, ...Object.fromEntries(outputs.map((o, i) => [`live-${i}`, o.dest])) },
+    outputs: outputs.map((o, i) => ({
+      dest: store.segment(`overlap-${i}`), // judged, never written
+      expr: { and: [o.expr, `live-${i}`] },
+      allowEmpty: true,
+    })),
+    allowAbsentOperands: true, // a dest with no generation yet reads as empty: its overlap is 0
+    keep: 1,
+    dryRun: true,
+  });
+  // overlap.outputs[i].cardinality: how many of dest i's current ids output i keeps
+  ```
+
+  Hold the publish of an output whose overlap is under your share of its `cardinalityBefore`. It reads the operands a
+  second time, and replays a feed.
+
 ## How it stays correct
+
 
 This section is the mechanism. You do not need it to use a load, and it is here so you can check the guarantees.
 
@@ -970,8 +1090,9 @@ load is simply a newer identical generation. Run two loads of one segment at onc
 other reports `published: false` with `reason: 'superseded'`. If both took the same generation number, the second to
 write it is refused by the write-once put and writes nothing. If not, the publish that lands second finds the row
 changed since its load read it, or finds a row where its load read none, and is refused. A load that won the number can
-still be refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and no
-`guard.minRetained`: neither load read anything to fence on, so each is a forward-only publish. If the lower
+still be refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and
+neither `guard.minRetained` nor `guard.maxGrowth`: neither load read anything to fence on, so each is a forward-only
+publish. If the lower
 generation number lands first, both land and the higher stays current. If the higher lands first, the lower is
 refused as `superseded`, because a publish never moves the pointer back. Publishing the generation that is already current is a
 no-op that reports success, unless the publish is fenced (below), in which case it is refused.
@@ -1053,7 +1174,7 @@ deletes is below the one it published and below the pointer it just read, so it 
 A load whose check of the previous current object finds it gone, the state a lifecycle rule or a partial restore leaves
 and `checkConsistency` reports, lists instead, and keeps the newest `keep` generations a listing finds, and records
 them: the check is the guard's read of the object, or, for a guard that took the size from the row's summary, one
-zero-byte read before the pass takes a name. A load that makes no such check, one with `allowEmpty` and no `minRetained`,
+zero-byte read before the pass takes a name. A load that makes no such check, one with `allowEmpty` and neither `minRetained` nor `maxGrowth`,
 cannot tell, and deletes the names its list pushed out.
 
 The listing pass a load runs on a row that records a list (every 16th generation, a check that met an object, a caller

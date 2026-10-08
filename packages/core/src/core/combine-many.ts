@@ -47,6 +47,7 @@ import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import type { Clock } from './determinism';
 import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
 import type { Budget } from './budget';
+import { checkedGuard } from './load';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -172,6 +173,12 @@ export interface CombineManyRequest<R> {
    * outputs as one group; a fed output publishes only after the whole feed was read and checked.
    */
   readonly feed?: CombineManyFeed;
+  /**
+   * The outputs' publish callbacks judge their finished chunks and must write nothing. Each is still charged the object
+   * a write would hold, so a dry run admits, defers and refuses for memory exactly where a publish would, and none
+   * counts as a publish in the stats.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface CombineManyDeps {
@@ -429,24 +436,11 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
       throw new ValidationError(`${where}.allowEmpty must be a boolean`);
     }
-    const guard = output.guard;
-    if (guard !== undefined) {
-      if (typeof guard !== 'object' || guard === null) {
-        throw new ValidationError(`${where}.guard must be an object`);
-      }
-      const min = guard.minCardinality;
-      if (min !== undefined && (!Number.isInteger(min) || min < 0)) {
-        throw new ValidationError(
-          `${where}.guard.minCardinality must be a non-negative integer; got ${String(min)}`,
-        );
-      }
-      const retained = guard.minRetained;
-      if (retained !== undefined && (!Number.isFinite(retained) || retained < 0 || retained > 1)) {
-        throw new ValidationError(
-          `${where}.guard.minRetained must be a fraction in 0..1; got ${String(retained)}`,
-        );
-      }
+    if (output.guard !== undefined && (typeof output.guard !== 'object' || output.guard === null)) {
+      throw new ValidationError(`${where}.guard must be an object`);
     }
+    // The checked copy is what each publish judges, however long the call runs.
+    const guard = checkedGuard(output.guard, `${where}.`);
     const metadata = copiedMetadata(output.metadata, (message) => {
       throw new ValidationError(`${where}.metadata: ${message}`);
     });
@@ -1825,7 +1819,7 @@ class Run<R> {
           continue;
         }
         inFlight++;
-        this.publishes++;
+        if (this.req.dryRun !== true) this.publishes++;
         const chunks = o.chunks;
         try {
           const value = await o.spec.publish(

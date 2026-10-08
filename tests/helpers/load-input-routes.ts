@@ -43,6 +43,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/intersect.test.ts',
   'tests/core/live-read-reused-number.test.ts',
   'tests/core/load-guard-summary.test.ts',
+  'tests/core/load-max-growth.test.ts',
   'tests/core/load-routing.test.ts',
   'tests/core/load.test.ts',
   'tests/core/materialize-expiry-guard.test.ts',
@@ -110,6 +111,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/roaring/materialize-many.property.test.ts':
     'its loads seed the operands and the reference generations a batch is compared against byte for byte, from bitmaps; a ' +
     'second run under the serialized input would repeat the comparison and exercise no part of the load path',
+  'tests/roaring/materialize-many.dry-run.test.ts':
+    'its loads seed the operands and the destinations a dry run judges, from ids; the behaviour under test is the dry run, ' +
+    'which writes nothing, so a second run under the serialized input would repeat it and exercise no part of the load path',
   'tests/roaring/materialize-many.feed.test.ts':
     'its loads seed the stored operands and the reference generations a fed call is compared against byte for byte, from ' +
     'bitmaps; the behaviour under test is the feed, so a second run under the serialized input would repeat it and exercise ' +

@@ -13,6 +13,27 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
+  exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
+  object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,
+  wouldRefuse? }`, or `{ published: false, error }` for what would fail its publish; `wouldRefuse` is the `reason` a
+  publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
+  publish would, so it fails for memory where the publish would. A call with `dryRun: true`
+  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
+  `judgeLoad`, which a dry run runs for each output. The guide shows how to publish what was reviewed, and recipes over
+  a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives
+  recipes for refusing a key shift on a single load and for keeping every generation of the last N hours.
+- **`guard.maxGrowth`: refuse a load that grows a segment more than you allow.** The ceiling to `minRetained`'s floor,
+  for a source that lands duplicated or joined on the wrong key: `guard: { maxGrowth: 1.5 }` refuses a generation larger
+  than one and a half times the current one, with `published: false` and `reason: 'max-growth'`, and the previous
+  generation stays current. It applies to `store.load`, the `*Into` verbs and each output of `materializeMany`. It does
+  not judge a first load or a load onto an empty segment, `0` means no bound, and anything else below `1` is a
+  `ValidationError` before any request. Setting it makes the load read the current size and fence its publish on it,
+  with `allowEmpty: true` too. It is judged after the other bounds, so a load that breaks one of those as well keeps
+  that reason. `LoadRefusal`, `MaterializeRefusal` and the `segment.load-refused` audit event's `reason` gain
+  `'max-growth'`; it appears only when the bound is set, and a caller that switches exhaustively on `reason` adds a
+  case. Every bound of a guard is now copied when the call begins, so a guard object changed while a load runs no
+  longer changes what it is judged by, and a bound that is not a number is named by its type in the `ValidationError`.
 - **`store.materializeMany` reports to the store's metrics sink, as the `*Into` calls do.** One `op` event per call,
   with `name: 'materializeMany'`, timed from its first request (the pins) to its last publish; a call its input checks
   refuse sends nothing and reports nothing. And one `storage.get` event per range request it sends, naming the operand's

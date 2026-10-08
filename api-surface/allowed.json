@@ -1,5 +1,25 @@
 [
   {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.materializeMany",
+    "reason": "overloaded for dryRun: the first signature is now the dry-run form (dryRun: true returns a MaterializeManyDryRun), and the plain form follows it as the last signature, so a call without dryRun (or with dryRun: false) resolves to the same parameter type and the same Promise<MaterializeManyRun> as before, and ReturnType and Parameters, which read the last signature, are unchanged; no caller's code or types change; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core LoadRefusal",
+    "reason": "widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; it is returned only to a load or an *Into that sets that bound, so an existing call's reasons are unchanged, while a caller that switches exhaustively on reason adds a case (MaterializeRefusal, derived from it, widens with it); agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LoadRefusal",
+    "reason": "widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; it is returned only to a load or an *Into that sets that bound, so an existing call's reasons are unchanged, while a caller that switches exhaustively on reason adds a case (MaterializeRefusal, derived from it, widens with it); agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "the segment.load-refused event's reason widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; emitted only for a load or an *Into that sets that bound, so an existing sink receives what it did, while a sink that switches exhaustively on reason adds a case; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "the segment.load-refused event's reason widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; emitted only for a load or an *Into that sets that bound, so an existing sink receives what it did, while a sink that switches exhaustively on reason adds a case; agreed with the maintainer"
+  },
+  {
     "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
     "reason": "widened to accept a held MemoryOperand beside a Segment before any release carried materializeMany, so no published code reads the narrower type; options built with segments compile and behave as before, and code that reads a member of operands back as a Segment narrows it first; agreed with the maintainer"
   },
