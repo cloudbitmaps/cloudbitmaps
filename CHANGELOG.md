@@ -20,15 +20,16 @@ so, and so do the module headers in the code.
   publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
   publish would, so it fails for memory where the publish would. A call with `dryRun: true`
   returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
-  `judgeLoad`, which a dry run runs for each output. The guide shows how to publish what was reviewed, and recipes over
+  `judgeLoad`, which a dry run runs for each output, and `CombineManyRequest.dryRun`, for a flavor built on
+  `runCombineMany`. The guide shows how to publish what was reviewed, and recipes over
   a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives
   recipes for refusing a key shift on a single load and for keeping every generation of the last N hours.
 - **`guard.maxGrowth`: refuse a load that grows a segment more than you allow.** The ceiling to `minRetained`'s floor,
   for a source that lands duplicated or joined on the wrong key: `guard: { maxGrowth: 1.5 }` refuses a generation larger
   than one and a half times the current one, with `published: false` and `reason: 'max-growth'`, and the previous
   generation stays current. It applies to `store.load`, the `*Into` verbs and each output of `materializeMany`. It does
-  not judge a first load or a load onto an empty segment, `0` means no bound, and anything else below `1` is a
-  `ValidationError` before any request. Setting it makes the load read the current size and fence its publish on it,
+  not judge a first load or a load onto an empty segment, `0` means no bound, and anything that is not a finite
+  number of at least `1` is a `ValidationError` before any request. Setting it makes the load read the current size and fence its publish on it,
   with `allowEmpty: true` too. It is judged after the other bounds, so a load that breaks one of those as well keeps
   that reason. `LoadRefusal`, `MaterializeRefusal` and the `segment.load-refused` audit event's `reason` gain
   `'max-growth'`; it appears only when the bound is set, and a caller that switches exhaustively on `reason` adds a
@@ -44,7 +45,8 @@ so, and so do the module headers in the code.
   `CountingMetricsSink`'s `ops` gains its tally: a sink that switches on `name` with an exhaustive `never` check adds a
   case (one with a `default` branch needs no change), and a `Record<MetricOpName, …>` built by hand, a
   `MetricsSnapshot` literal among them, adds the key. The `op` event also fires for a call that throws after its first
-  request, such as a budget refusal.
+  request, such as a budget refusal. Core's `CombineManyDeps` gains an optional `metrics` sink, which receives the
+  `storage.get` events.
 
 ### Changed
 
@@ -88,11 +90,16 @@ so, and so do the module headers in the code.
   `materializeMany` as a feed: the guide's recipe walks the sets by chunk key and yields them in the feed's order
   ([a set you hold](docs/guide/loading.md#a-set-you-hold-feed-it)). `MaterializeManyOptions.operands` takes segments only,
   `mayBeEmpty` names fed operands only, and `StaleOperandError`'s `'erased'` applies to a fed call only.
+  `CombineManyOperand` loses its `held` field.
 - **`store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
   `IRegistryDriver.reapLegacyTombstones`.** Only a bucket a release before 0.12 wrote holds the `deleted: true` rows the
   reaper removed. The guide's recipe runs the reaper the 0.18 releases ship, once, from a scratch directory
   ([retention](docs/guide/retention.md#remove-the-deleted-rows-a-release-before-012-left)). A registry driver that
-  implemented `reapLegacyTombstones` can drop it: nothing calls it.
+  implemented `reapLegacyTombstones` can drop it: nothing calls it. With the reaper go its option and result types
+  (`ReapRegistryTombstonesOptions` and `ReapRegistryTombstonesResult` in both packages, `ReapLegacyTombstonesOptions`
+  and `ReapLegacyTombstonesResult` in core), `ObjectStoreRegistry.reapLegacyTombstones` in `@cloudbitmaps/core/driver-kit`,
+  and `ObjectRegistryStore.resolveCapabilities` there too: the reaper was the one caller of that optional store method,
+  so a driver that implemented it can drop it.
 
 ### Fixed
 

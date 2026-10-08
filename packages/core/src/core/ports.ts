@@ -13,7 +13,10 @@ import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
 import type { IMetricsSink } from './metrics';
 
-/** Opaque optimistic-concurrency token — unique per write, compared by equality only. */
+/**
+ * Opaque optimistic-concurrency token — unique per write with overwhelming probability, since it carries random parts
+ * (see {@link RegistryRecord.token}), and compared by equality only.
+ */
 export type Token = string;
 
 /**
@@ -674,8 +677,8 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
 
 /**
  * Per-segment registry — the authoritative source of `currentGen`, the discovery index, and the wrapped-DEK
- * holder. One row per segment under OCC: a never-reused, equality-compared {@link Token} (ABA-safe across
- * delete→recreate).
+ * holder. One row per segment under OCC: an equality-compared {@link Token} that is never reused, with overwhelming
+ * probability (ABA-safe across delete→recreate).
  *
  * **What a driver must do** — callers rely on each of these, and the registry conformance suite holds every
  * shipped driver to them:

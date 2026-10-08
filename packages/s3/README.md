@@ -62,7 +62,9 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 - **Grant `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`.** Without
   `s3:ListBucket`, S3 answers a missing key with `403` instead of `404`.
 - **Add a lifecycle rule that aborts incomplete multipart uploads**, and never one that expires current objects or the
-  `registry/` prefix.
+  `registry/` prefix. An expired registry row takes the segment's pointer with it, and the token every publish is fenced
+  on, so its generations look unreferenced; an expired generation makes a live segment unreadable
+  ([bucket lifecycle](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md#bucket-lifecycle)).
 - **A transient failure of a write throws `TransientError`, and the write may or may not have landed.** Re-run the
   call, or check `store.generations(ref)`. The SDK's own retry is off for conditional writes, so a write that landed
   is not reported as a conflict. The driver sends each registry write once; a load that gets no answer reads the row and

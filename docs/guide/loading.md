@@ -78,7 +78,7 @@ sees. To refuse one, count how many of the current ids the new set keeps before 
 at a time:
 
 ```ts
-// next: the RoaringBitmap32 you are about to load
+declare const next: InstanceType<typeof RoaringBitmap32>; // the set you are about to load
 const before = await store.segment('active-us').count();
 let kept = 0;
 for await (const batch of store.segment('active-us').iterate().batches()) {
@@ -1022,10 +1022,13 @@ for (const [i, o] of review.outputs.entries()) {
 ```
 
 - **What it reports.** Each output is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }`,
-  or `{ published: false, error }` for what would fail its publish: an expired or destroyed `dest`, a moved exclude, an
-  erasure, a damaged operand. `cardinalityBefore` is always read, `null` when `dest` has no current generation, and
+  or `{ published: false, error }` for what would fail its publish: a `dest` whose lease has ended, a destroyed one, a
+  moved exclude, an erasure, a damaged operand. `cardinalityBefore` is always read, `null` when `dest` has no current generation, and
   `wouldRefuse` is the `reason` a publish would give now, absent when it would publish. `published` is `false`, so code
   that branches on it never takes a dry run for a publish.
+- **Its type.** The call has one form for `dryRun: true` and one for a publish (`dryRun` `false` or absent), so
+  TypeScript knows which result it gets. A `boolean` held in a variable matches neither: branch on it,
+  `flag ? await store.materializeMany({ ...options, dryRun: true }) : await store.materializeMany(options)`.
 - **What it costs.** The operand reads of the publishing call, and for each output the reads a publish's own guard
   makes: one registry read for its `dest`'s size, or two where the row has no usable summary. No write, so no more than
   the publish. `stats.requests.publishes` is `0`, and `stats.requests.attributed.get` counts the reads of each `dest`. It
@@ -1075,7 +1078,8 @@ is an ordinary one: every guard and every race check runs, judged against each `
   ```
 
   Hold the publish of an output whose overlap is under your share of its `cardinalityBefore`. It reads the operands a
-  second time, and replays a feed.
+  second time. An output over fed operands needs the feed in this call too: pass its records again, with the
+  `feed`, `maxBufferedBytes` and `mayBeEmpty` the first call had.
 
 ## How it stays correct
 

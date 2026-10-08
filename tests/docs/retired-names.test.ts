@@ -35,6 +35,14 @@ const GENERATION_INSTEAD =
   '`store.load()` (or `loadSegment()` with your own drivers), which numbers, writes, publishes and collects; ' +
   '`keep` on it and on the `*Into` verbs for the collection; `store.dropSegment()` or the retention sweep to retire a segment';
 
+/** What a reader who wanted to hold a set in memory as an operand uses instead. */
+const HELD_INSTEAD =
+  "a feed: `store.materializeMany`'s `feed`, which the loading guide's recipe uses for a set you hold";
+
+/** What a reader who wanted the tombstone reaper uses instead. */
+const REAPER_INSTEAD =
+  "the retention guide's recipe, which runs the reaper the 0.18 releases ship, once, for a bucket a release before 0.12 wrote";
+
 /** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
 const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
 
@@ -106,6 +114,15 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'isSdkRetryable', instead: DRIVER_INTERNAL_INSTEAD },
   { name: 'isNetworkOrTimeout', instead: DRIVER_INTERNAL_INSTEAD },
   { name: 'isServerSide', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'MemoryOperand', instead: HELD_INSTEAD, code: true },
+  { name: 'prepareHeld', instead: HELD_INSTEAD, code: true },
+  { name: 'CombineManyHeld', instead: HELD_INSTEAD, code: true },
+  { name: 'HeldChunks', instead: HELD_INSTEAD, code: true },
+  { name: 'reapLegacyTombstones', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapRegistryTombstonesOptions', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapRegistryTombstonesResult', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapLegacyTombstonesOptions', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapLegacyTombstonesResult', instead: REAPER_INSTEAD, code: true },
   ...Object.values(HALVES)
     .flat()
     .map((name) => ({ name, instead: HALVES_INSTEAD })),
@@ -113,11 +130,13 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
 
 /**
  * Names that left a public entry but are still what a page or a sample legitimately names: `VERSION` is a word
- * the release docs use for other things, and these three live on the `driver-kit` subpath now, where the API
- * reference lists them. They are held to the runtime surface only: off both main entries.
+ * the release docs use for other things, `reapRegistryTombstones` is what the retention guide's recipe calls on the
+ * 0.18 releases, and the other three live on the `driver-kit` subpath now, where the API reference lists them. They
+ * are held to the runtime surface only: off both main entries.
  */
 const OFF_THE_MAIN_ENTRIES = [
   'VERSION',
+  'reapRegistryTombstones',
   'validateSegmentRef',
   'encodeNameForPath',
   'namespacePathPart',

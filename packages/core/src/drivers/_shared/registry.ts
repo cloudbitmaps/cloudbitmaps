@@ -466,7 +466,9 @@ export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
 /**
  * The persisted envelope for a registry row: the record plus a tombstone flag. A **deleted** row keeps its
  * record (with an advanced counter) rather than being removed, so a re-create carries the counter on and the two
- * incarnations' tokens are apart by construction, as well as by their random parts — ABA-safety. Shared by the
+ * incarnations' tokens are apart by construction, as well as by their random parts — ABA-safety. A row removed by a
+ * conditional delete leaves no counter to carry on, so a re-create starts at 0 and only the random parts keep its
+ * tokens apart from the old ones. Shared by the
  * persistent drivers (LocalFs file, S3 object).
  *
  * `schemaVersion` is a wire-only concern — it stamps the persisted bytes, not the in-memory domain object —

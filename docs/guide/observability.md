@@ -21,7 +21,7 @@ await store.load({ segment: 'users' }, [42]);
 await store.segment('users').has(42);
 console.log(metrics.snapshot());
 // { storage: { gets, bytes, totalMs }, cache: { hits, misses }, retries: { transient },
-//   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto } }
+//   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto, materializeMany } }
 ```
 
 The library emits six kinds of vendor-neutral events, so it is not coupled to any telemetry system. You map the
@@ -42,7 +42,8 @@ ends, also when it throws after its first request (a budget refusal, a failed pi
 refuse it; a fed call's time includes the time spent waiting on the feed. A range serves every output of its group,
 so the events count the call's requests, not requests per output. It emits no `cache`
 event, since it never looks up the chunk cache, and no `intersect` event, since an output is an expression over
-several operators. So an `*Into` call that moves into a batch leaves its own name's op series and the chunk-skipping
+several operators. A dry run (`dryRun: true`) emits the same `op` event and the same `storage.get` events, and no
+audit event, since it publishes nothing. So an `*Into` call that moves into a batch leaves its own name's op series and the chunk-skipping
 and cache-hit series: the batch's latency is one series for the whole call, not comparable with a per-output `*Into`
 one, and its reads stay in the request series. The `stats` on its result carry the rest (bytes, chunks pruned, memory
 high-water mark), and its `audit` sink fires per output.
@@ -131,7 +132,7 @@ The events are vendor-neutral. There are seven kinds, each carrying the segment'
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
 | `segment.publish` | a load — `store.load`, an `*Into` verb or an output of `store.materializeMany` — makes a generation the current one | `generation` |
-| `segment.load-refused` | a load did not publish: a guard refused its result, the segment's row changed while it wrote, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal that follows a registry write that got no answer: that write may have landed first, so the generation may have been current for a while before it was replaced | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
+| `segment.load-refused` | a load did not publish (a `materializeMany` dry run emits none, nor any other audit event): a guard refused its result, the segment's row changed while it wrote, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal that follows a registry write that got no answer: that write may have landed first, so the generation may have been current for a while before it was replaced | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
 | `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |

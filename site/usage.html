@@ -410,7 +410,7 @@ npm audit signatures</code></pre>
 <span class="k">const</span> r = <span class="k">await</span> store.load(ref, athenaCursor());
 
 <span class="k">if</span> (r.published) console.log(r.cardinality); <span class="c">// now current</span>
-<span class="k">else</span> console.warn(r.reason); <span class="c">// 'empty' or 'superseded'</span></code></pre>
+<span class="k">else</span> console.warn(r.reason); <span class="c">// 'empty', 'superseded' or a guard bound you set</span></code></pre>
           </div>
           <div class="tpanel">
             <div class="tpanel-head">

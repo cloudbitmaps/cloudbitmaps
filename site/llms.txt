@@ -61,7 +61,9 @@ Nothing mutates a stored bitmap, so a crash before the publish leaves the previo
 no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than
-wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
+wiping it, with `allowEmpty`/`guard` to override. `guard` is `{ minCardinality, minRetained, maxGrowth }`, and a
+refusal's `reason` is `'empty'`, `'min-cardinality'`, `'min-retained'`, `'max-growth'` or, for a lost race on a load,
+`'superseded'`. Unlike `load` they collect nothing by default, so a rollback
 target survives a materialization. `store.materializeMany` publishes many such outputs (each an `and` / `or` / `andNot`
 expression over named operands) from one chunk-ordered pass that reads each operand once, instead of once per `*Into`
 call; its operands are stored segments, and sets you hold arrive as a feed of records in chunk-key order. It needs

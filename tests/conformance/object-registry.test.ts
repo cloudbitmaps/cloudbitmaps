@@ -398,7 +398,7 @@ describe('ObjectStoreRegistry: what the shared protocol guarantees', () => {
   const build = (): ObjectStoreRegistry =>
     new ObjectStoreRegistry(new FakeObjectStore(), undefined, ticking());
 
-  it('never re-issues a token across delete-and-recreate (ABA safety)', async () => {
+  it('a tombstoning store never re-issues a token across delete-and-recreate (ABA safety)', async () => {
     // The reason `delete` tombstones instead of removing. If a recreate restarted the counter at 0, a stale
     // holder of the old token could win a compare-and-swap against a segment that is no longer the one it
     // read — which is invariant 1's "identity is the token, never the generation number".
