@@ -668,7 +668,8 @@ costs a lot as `*Into` calls: each one reads its operands again, and a nested ex
 inner group, a published generation each. `store.materializeMany` computes the outputs together. It reads each
 operand's chunks once per group of outputs, for every output of the group that uses them (one group when the outputs fit the
 memory budget, more when they do not), evaluates every output chunk by chunk, and publishes each as the
-`*Into` it replaces would, to a `dest` of its own.
+`*Into` it replaces would, to a `dest` of its own. An operand is a name: one segment given under two names is read
+twice, so name each segment once and use that name in every output.
 
 ```ts
 const run = await store.materializeMany({
