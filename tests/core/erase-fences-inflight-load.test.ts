@@ -1,9 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { roaringCodec } from '@/roaring-codec';
 import type { SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { WriteConflictError } from '@/core/errors';
+import { InProcessKeystore } from '@/drivers/crypto';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
@@ -99,5 +101,60 @@ describe('a row with no pointer, over an object a first load wrote and never pub
       erased: false,
       reason: 'no-generation',
     });
+  });
+});
+
+describe('a row with no pointer, on a store that requires encryption', () => {
+  // A row `setRetention` minted before the first load holds no key and no data, so it is not a cleartext segment: the
+  // erasure reports it as holding nothing, as on any store, rather than refusing it as cleartext.
+  function world() {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
+    const deps = { storage, registry, codec: roaringCodec, keystore, requireEncryption: true };
+    return { storage, registry, deps };
+  }
+
+  it("an empty row is 'no-generation'", async () => {
+    const w = world();
+    await w.registry.create(REF, { currentGen: null });
+    expect(await eraseIdFromSegment(REF, 7, w.deps)).toMatchObject({
+      erased: false,
+      reason: 'no-generation',
+    });
+  });
+
+  it('a first load held at its publish is refused as a holder: its object cannot be searched yet', async () => {
+    const w = world();
+    await w.registry.create(REF, { currentGen: null });
+    let reach!: () => void;
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let held = false;
+    const gated = Object.create(w.registry) as MemoryRegistryDriver;
+    gated.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
+      if (!held && 'currentGen' in patch) {
+        held = true;
+        reach();
+        await gate;
+      }
+      return w.registry.compareAndSwap(ref, expected, patch);
+    };
+    const load = loadSegment(REF, [1, 2, 9], { ...w.deps, registry: gated });
+    await reached;
+    expect(await generations(w.storage)).toEqual([0]);
+
+    const erased = eraseIdFromSegment(REF, 9, w.deps).then(
+      (r) => r,
+      (e: unknown) => e,
+    );
+    const outcome = await erased;
+    open();
+    await load;
+    expect(outcome).toBeInstanceOf(WriteConflictError);
+    expect(String(outcome)).toMatch(
+      /generation 0\) is sealed under a key that load has not published/,
+    );
   });
 });

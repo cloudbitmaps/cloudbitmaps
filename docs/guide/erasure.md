@@ -54,7 +54,7 @@ there", and `note` says why:
 | `error: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
-| `error: <message>`, a `WriteConflictError` saying the segment has no published generation | A first load's object that never published holds the id, and its load may still publish it, so it is not deleted. | Load the segment, which makes the object collectable, or drop it, and re-run. |
+| `error: <message>`, a `WriteConflictError` saying the segment has no published generation | A first load's object that never published holds the id, or, on an encrypted store, is sealed under a key that load has not published and cannot be searched; its load may still publish it, so it is not deleted. | Load the segment, which makes the object collectable, or drop it, and re-run. |
 | `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all. | See what a re-run reports instead of assuming the job finished. |
 
@@ -241,7 +241,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
   `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
 - A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too. An
   object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: its
-  load may still publish it, and no row write can refuse that publish. In `eraseSubject`'s ledger it is an `error: …`
+  load may still publish it, and no row write can refuse that publish. On an encrypted store such an object is sealed
+  under a key its load has not published yet, so it cannot be searched and is refused the same way. A row with nothing
+  in its bucket is `'no-generation'`, under `requireEncryption` too. In `eraseSubject`'s ledger it is an `error: …`
   entry. Load the segment, which makes the object collectable, or drop it, and re-run.
 - `'superseded'` means another writer moved the pointer off `fromGeneration` while the call was in flight: a load,
   another erasure, or a rollback. It means this call did not erase the id, not that the id is still there. Re-run, and

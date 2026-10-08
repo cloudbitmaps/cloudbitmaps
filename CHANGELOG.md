@@ -179,7 +179,9 @@ so, and so do the module headers in the code.
   the first load was answered `'no-generation'` without a look, so an object a first load wrote and never published,
   holding the id, stayed in the bucket and the ledger left the segment out. Its bucket is searched now; such an object
   is refused with `WriteConflictError` and kept, since its load may still publish it, and shows in `eraseSubject`'s
-  ledger as an `error: …` entry.
+  ledger as an `error: …` entry. On an encrypted store the object is sealed under a key its load has not published,
+  so it cannot be searched and is refused the same way; a row with nothing in its bucket is still `'no-generation'`
+  under `requireEncryption`, not refused as cleartext.
 - **An erasure rewrite that a `dropSegment` overtakes deletes what it wrote.** A drop that lands while `eraseSubject`
   rewrites a segment usually finishes its sweep before the rewrite's object is written, and that object, a full copy
   of the dropped segment less one id, in the clear on a cleartext segment, was left in the bucket and reported

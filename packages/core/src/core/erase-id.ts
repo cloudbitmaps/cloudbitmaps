@@ -68,9 +68,10 @@
  * A live read still fetching from the collected generation heals forward to the rewrite, and a pin of it fails with
  * `NotFoundError` for any chunk it has yet to read: that is the documented cost of physical deletion on return. **Do not re-load the id while erasing it**: a load that lands after this rewrite
  * carries whatever its source held, and the library cannot know that source was meant to exclude the id.
- * A load already in flight is the same case: it writes its object above the pointer before it publishes, and an
- * erasure that finds the id in that object deletes it as it does any holder there, so a load that then publishes
- * leaves the pointer naming a missing object.
+ * A load already in flight writes its object above the pointer before it publishes. An erasure that finds the id in that
+ * object writes the row before deleting it, so the load's publish, fenced on the row it read, is refused
+ * (`published: false`) and the pointer never names a missing object (see `fenceInFlight`). A first load onto a row with
+ * no pointer has nothing to be fenced on, so an erasure that finds the id in its object refuses instead.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { MAX_REMAINDER, splitId } from './bit-route';
@@ -281,7 +282,8 @@ export async function eraseIdFromSegment(
       );
     }
     aead = await deps.keystore.openDek(record.wrappedDeks);
-  } else if (deps.requireEncryption === true) {
+  } else if (!pointerless && deps.requireEncryption === true) {
+    // A row with no pointer holds no key because it holds no data yet, so it is not a cleartext segment.
     throw new ValidationError(`requireEncryption: segment "${ref.segment}" is cleartext`);
   }
   // The AAD binds each chunk/index to (segment, generation), so reading gen g and writing gen g' use distinct
@@ -326,6 +328,8 @@ export async function eraseIdFromSegment(
       : 'superseded';
   };
 
+  /** Unpublished generations `holds` could not search, because their first load has not published the key yet. */
+  const sealedUnpublished = new Set<number>();
   /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
@@ -344,9 +348,17 @@ export async function eraseIdFromSegment(
         // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
         // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
         if (cryptoAt(generation) === undefined) {
-          // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no read
-          // through the library finds anything in it.
-          if (tombstoned && (await read(() => objectIsEncrypted(deps.storage, key)))) return false;
+          if (
+            (tombstoned || pointerless) &&
+            (await read(() => objectIsEncrypted(deps.storage, key)))
+          ) {
+            // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no
+            // read through the library finds anything in it. Under a row with no pointer it is a first load's, sealed
+            // under a key that load has not published yet: it cannot be searched, so it counts as a holder.
+            if (tombstoned) return false;
+            sealedUnpublished.add(generation);
+            return true;
+          }
           throw err;
         }
         if (!isIntegrityError(err) || (await read(() => objectIsEncrypted(deps.storage, key)))) {
@@ -526,9 +538,12 @@ export async function eraseIdFromSegment(
     const holder = (await holdsEach(newestFirst, true)).find((h) => h.held === true);
     if (holder === undefined)
       return { ...base, erased: false, reason: 'no-generation', collected: [] };
+    const what = sealedUnpublished.has(holder.generation)
+      ? 'is sealed under a key that load has not published, so it cannot be searched'
+      : 'holds the id';
     throw new WriteConflictError(
       `eraseIdFromSegment: segment "${ref.segment}" has no published generation, and an object a first load wrote and ` +
-        `never published (generation ${holder.generation}) holds the id. It cannot be deleted while that load may still ` +
+        `never published (generation ${holder.generation}) ${what}. It cannot be deleted while that load may still ` +
         'publish it: re-run once the segment is loaded, which makes the object collectable, or drop the segment',
     );
   };
