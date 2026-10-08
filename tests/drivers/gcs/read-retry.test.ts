@@ -420,11 +420,13 @@ describe('a GCS download', () => {
           });
         }
       }
+      /** What a request's credential header would hold, built as the scrubber's own tests build it. */
+      const SIGNED = `Bearer ${'SECRET'}`;
       class Throws extends Storage {
         constructor(options?: StorageOptions) {
           if (options?.authClient !== undefined) {
             throw Object.assign(new Error('cannot build'), {
-              config: { headers: { Authorization: 'Bearer t0ken' } },
+              config: { headers: { Authorization: SIGNED } },
             });
           }
           super({ apiEndpoint: 'http://127.0.0.1:1', projectId: 'p' });
@@ -476,7 +478,7 @@ describe('a GCS download', () => {
         const cause = (caught as Error).cause as Error & { config?: unknown };
         expect(cause.message).toBe('cannot build');
         expect(cause.config).toBeUndefined();
-        expect(JSON.stringify(cause)).not.toContain('t0ken');
+        expect(JSON.stringify(cause)).not.toContain(SIGNED);
       });
 
       it('a plain-object double, which no twin can be built from', () => {
