@@ -103,6 +103,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Whether a `materializeMany` output fits its budget no longer depends on where it sits in the call.** Each group
+  keeps its plan, charged, until it starts, and those charges shrank the room every later output was judged against:
+  three identical outputs at the budget a refusal named published the first two and refused the third, and later
+  groups were cut short, re-reading their operands more often. Every output is now judged against the room the call's
+  own plan leaves, and kept plans give way to any charge that needs their room.
+- **`stats.chunks.pruned` counts an operand a group names and never reads.** An `and` with a disjoint side, or an
+  opt-out list with nothing near what it subtracts from, skips every chunk of that operand, and none was counted, so
+  the figure the guide offers for the saving of a long opt-out list reported `0` for the case it describes. Each such
+  operand now adds all its index keys, once a group, and a group refused for memory no longer adds its pruning.
 - **S3 refuses an object cap above 5 TiB and a part above 5 GiB**, S3's own limits, with `ValidationError` when the
   backend is built. A larger `maxObjectBytes`, such as `Number.MAX_SAFE_INTEGER` for "no limit", grew the part to
   cover it past S3's part limit, so a write held an object of up to hundreds of GiB in memory whole, copied it once
