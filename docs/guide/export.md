@@ -64,7 +64,10 @@ CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 
 Each file is written to a unique `.part` temp file and then renamed atomically, and artifacts are owner-only (`0o600`).
 The command writes a self-describing `manifest.json` last, also atomically, so a directory with a `manifest.json`
-means the run finished. A crash leaves none, so re-run. The command exits non-zero if any segment could not be read.
+means the run finished. A re-run removes the last run's `manifest.json` before it writes anything, so a crash leaves
+none, and you re-run. The command exits non-zero if any segment could not be read, and before it writes anything if
+`CR_EXPORT_ROOT` does not exist or is empty (a typo, or a volume that is not mounted), which would otherwise export
+nothing and report a finished run.
 The manifest of a command run also carries a `generatedAt` timestamp.
 
 ## Read an export back

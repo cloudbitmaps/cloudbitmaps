@@ -103,6 +103,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The export CLI refuses a `CR_EXPORT_ROOT` that does not exist or is empty, and a re-run removes the last run's
+  manifest first.** A root that was a typo, or a mount point whose volume was not mounted, exported nothing, wrote a
+  manifest with `totalSegments: 0` and exited 0: a finished dump with no data in it. It now exits non-zero before
+  writing anything. And a re-run into a directory holding an earlier run's `manifest.json` left it in place until the
+  new one replaced it, so a run that stopped part way left a marker of a finished run, with the earlier run's counts.
 - **Six more inputs of the wrong kind are refused where they changed what a call did.** An erasure or subject-report
   scope of `namespace: ''`, or a namespace that is not a string, scanned nothing and read as a clean erasure. A key
   given to `InProcessKeystore` or `NodeAead` as text of the right length became a key of printable characters with no
