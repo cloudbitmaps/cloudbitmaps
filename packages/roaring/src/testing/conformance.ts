@@ -25,7 +25,13 @@ import type {
   RegistrySummary,
   SegmentRef,
 } from '@cloudbitmaps/core';
-import { NotFoundError, ValidationError, WriteConflictError } from '@cloudbitmaps/core';
+import {
+  NotFoundError,
+  ValidationError,
+  WriteConflictError,
+  isNotFoundError,
+  isTransientError,
+} from '@cloudbitmaps/core';
 
 // The fixtures deliberately carry a colon. A name may contain one, and the character is only safe because
 // each driver maps it onto its physical key correctly — a filesystem driver has to encode it, an object
@@ -162,7 +168,12 @@ export type StorageDriverCase =
   | 'tail size'
   | 'idempotent delete'
   | 'delete of an absent key beside its neighbours'
-  | 'list read-after-delete';
+  | 'list read-after-delete'
+  | 'names and namespaces kept apart'
+  | 'generations by number'
+  | 'failed write'
+  | 'missing location'
+  | 'list across pages';
 
 /** `n` bytes that differ at every offset, so a read from the wrong offset cannot match by accident. */
 function patterned(n: number): Uint8Array {
@@ -197,6 +208,46 @@ async function putBytes(
   });
 }
 
+/**
+ * That `run` fails as a missing bucket or container must: with an error that is neither an absent object or row
+ * (`NotFoundError`, or `null` from a registry read) nor a fault worth retrying (`TransientError`). Read as an absence, a
+ * misnamed or deleted bucket answers every read of the store as an empty segment.
+ */
+async function failsAsMissingLocation(what: string, run: () => Promise<unknown>): Promise<void> {
+  let failed: { readonly error: unknown } | undefined;
+  try {
+    await run();
+  } catch (error) {
+    failed = { error };
+  }
+  expect(failed, `${what} succeeded against a location that does not exist`).toBeDefined();
+  const { error } = failed!;
+  expect(isNotFoundError(error), `${what} read a missing location as an absent object`).toBe(false);
+  expect(isTransientError(error), `${what} read a missing location as a fault worth retrying`).toBe(
+    false,
+  );
+}
+
+/** Runs `work` over `0 … n - 1`, a few at a time, so a large count costs seconds rather than minutes. */
+async function eachIndex(n: number, work: (i: number) => Promise<unknown>): Promise<void> {
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < n) await work(next++);
+  };
+  await Promise.all(Array.from({ length: Math.min(16, n) }, lane));
+}
+
+/** A page count must be a whole number above one, so the case it sizes lists more than a single entry. */
+function pagedListSizeOf(size: number | undefined): number | undefined {
+  if (size === undefined) return undefined;
+  if (!Number.isSafeInteger(size) || size < 2) {
+    throw new ValidationError(
+      `pagedListSize must be a whole number of at least 2, not ${String(size)}`,
+    );
+  }
+  return size;
+}
+
 async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const out: number[] = [];
   for await (const k of d.list(ref)) out.push(k.generation);
@@ -224,11 +275,25 @@ export function storageDriverConformance(
      * sent on a different request than a small object's. Omitted, the case does not run.
      */
     readonly largeBytes?: number;
+    /**
+     * A driver over a bucket or container that does not exist, built fresh on each call. The `missing location` case
+     * holds it to failing a range read, a tail read, a delete and a listing with an error that is neither
+     * `NotFoundError` nor `TransientError`: read as an absence, a misnamed or deleted bucket answers every read of the
+     * store as an empty segment. Omitted, the case does not run.
+     */
+    readonly missingLocation?: () => IStorageDriver;
+    /**
+     * How many generations the `list across pages` case writes and lists back. Pass more than one listing page of the
+     * driver under test (S3 and GCS list 1,000 a page, Azure Blob 5,000, a test double what it is built with), so a
+     * driver that drops its continuation token fails. Omitted, the case does not run.
+     */
+    readonly pagedListSize?: number;
   } = {},
 ): void {
   const skipped = new Set<StorageDriverCase>(options.skip ?? []);
-  const test = (name: StorageDriverCase, fn: () => Promise<void>): void => {
-    (skipped.has(name) ? it.skip : it)(name, fn);
+  const pagedListSize = pagedListSizeOf(options.pagedListSize);
+  const test = (name: StorageDriverCase, fn: () => Promise<void>, timeout?: number): void => {
+    (skipped.has(name) ? it.skip : it)(name, fn, timeout);
   };
   const key = (generation: number): GenKey => ({ segment: CONFORMANCE_SEGMENT, generation });
 
@@ -366,9 +431,34 @@ export function storageDriverConformance(
       expect(await generationsOf(d, other)).toEqual([0]); // another segment's generation is not this one's
     });
 
+    const missingLocation = options.missingLocation;
+    if (missingLocation !== undefined) {
+      test('missing location', async () => {
+        const d = missingLocation();
+        await failsAsMissingLocation('getRange', () => d.getRange(key(0), 0, 10));
+        await failsAsMissingLocation('getTail', () => d.getTail(key(0), 10));
+        await failsAsMissingLocation('delete', () => d.delete(key(0)));
+        await failsAsMissingLocation('list', () => generationsOf(d, SEG));
+      });
+    }
+
+    if (pagedListSize !== undefined) {
+      test(
+        'list across pages',
+        async () => {
+          const d = makeDriver();
+          await eachIndex(pagedListSize, (g) => putBytes(d, key(g), patterned(2)));
+          const listed = await generationsOf(d, SEG);
+          expect(listed.length).toBe(pagedListSize);
+          expect(listed).toEqual(Array.from({ length: pagedListSize }, (_v, g) => g));
+        },
+        Math.max(30_000, pagedListSize * 60),
+      );
+    }
+
     // A driver whose key leaves out the namespace, folds two names into one spelling, or lists by a bare prefix passes
     // every case above, and then serves one tenant's ids to another and deletes another segment's objects.
-    it('keeps every name and namespace apart: its own bytes, its own listing, its own delete', async () => {
+    test('names and namespaces kept apart', async () => {
       const d = makeDriver();
       const refs: SegmentRef[] = [
         { segment: 's' },
@@ -404,7 +494,7 @@ export function storageDriverConformance(
       }
     });
 
-    it('lists and deletes generations by number, not by a prefix of one', async () => {
+    test('generations by number', async () => {
       const d = makeDriver();
       for (const g of [1, 10, 11]) await putBytes(d, key(g), patterned(g));
       expect(await generationsOf(d, SEG)).toEqual([1, 10, 11]);
@@ -414,7 +504,7 @@ export function storageDriverConformance(
     });
 
     // A driver that commits what it was given when the writer fails leaves a truncated generation holding a number.
-    it('a write whose writer fails stores nothing, and the key can be written after', async () => {
+    test('failed write', async () => {
       const d = makeDriver();
       await expect(
         d.putImmutable(key(0), async (sink) => {
@@ -448,7 +538,26 @@ async function drainRecords(it: AsyncIterable<RegistryRecord>): Promise<Registry
  * each call. The OCC contract (create / token-fenced CAS / ABA) plus the registry's record semantics (forward
  * currentGen, status, clearable keyId, discovery).
  */
-export function registryConformance(label: string, makeDriver: () => IRegistryDriver): void {
+export function registryConformance(
+  label: string,
+  makeDriver: () => IRegistryDriver,
+  options: {
+    /**
+     * A driver over a bucket or container that does not exist, built fresh on each call. The `missing location` case
+     * holds it to failing a read, a listing and a create with an error that is neither `NotFoundError` nor
+     * `TransientError`, and never answering a read with `null`: read as an absent row, a misnamed or deleted bucket
+     * answers every segment as one with no generation. Omitted, the case does not run.
+     */
+    readonly missingLocation?: () => IRegistryDriver;
+    /**
+     * How many rows the `list across pages` case creates and lists back. Pass more than one listing page of the driver
+     * under test (S3 and GCS list 1,000 a page, Azure Blob 5,000, a test double what it is built with), so a driver
+     * that drops its continuation token fails. Omitted, the case does not run.
+     */
+    readonly pagedListSize?: number;
+  } = {},
+): void {
+  const pagedListSize = pagedListSizeOf(options.pagedListSize);
   describe(`IRegistryDriver conformance: ${label}`, () => {
     it('advertises strongRead', () => {
       expect(makeDriver().capabilities().strongRead).toBe(true);
@@ -1067,6 +1176,34 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       for await (const rec of d.list('ns')) seen.push(rec.segment);
       expect(seen).toEqual(['a']);
     });
+
+    const missingLocation = options.missingLocation;
+    if (missingLocation !== undefined) {
+      it('missing location', async () => {
+        const d = missingLocation();
+        await failsAsMissingLocation('get', () => d.get(SEG));
+        await failsAsMissingLocation('list', () => drainRecords(d.list()));
+        await failsAsMissingLocation('create', () => d.create(SEG, { currentGen: 0 }));
+      });
+    }
+
+    if (pagedListSize !== undefined) {
+      it(
+        'list across pages',
+        async () => {
+          const d = makeDriver();
+          const name = (i: number): string => `page-${String(i).padStart(6, '0')}`;
+          await eachIndex(pagedListSize, (i) => d.create({ segment: name(i) }, { currentGen: i }));
+          const listed = (await drainRecords(d.list())).map((r) => r.segment);
+          expect(listed.length).toBe(pagedListSize);
+          expect(new Set(listed).size).toBe(pagedListSize);
+          expect([...listed].sort()).toEqual(
+            Array.from({ length: pagedListSize }, (_v, i) => name(i)),
+          );
+        },
+        Math.max(30_000, pagedListSize * 60),
+      );
+    }
 
     // A registry keyed by the segment name alone, keeping the namespace as a column it filters listings on, passes every
     // case above; through a store, one tenant's first load then publishes over another tenant's row.
