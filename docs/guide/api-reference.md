@@ -667,8 +667,9 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - Keys keep every name apart: one segment in two namespaces, two names an encoding could fold into one (`a/b` and
   `a_b`, `a:b` and `a%3Ab`), and a name that extends another (`s` and `s.1`) are separate objects, each listed and
   deleted alone. Generations are listed and deleted by number, never by a prefix of one (`1` is not `10`).
-- A bucket or container that does not exist fails with an error that is not `NotFoundError`. Read as one, it answers
-  every read as an empty segment.
+- A bucket or container that does not exist fails with an error that is neither `NotFoundError` nor a
+  `TransientError`. Read as the first, it answers every read as an empty segment; as the second, it is retried for
+  nothing.
 - A missing object makes `getRange` and `getTail` throw `NotFoundError`, never an empty or short result. Heal-forward,
   the erasure's holder probe and verify, and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
   reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
@@ -693,7 +694,7 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 reads are strongly consistent; a row is keyed by its namespace and segment together, so one segment name in two
 namespaces is two rows; `list` yields every existing row, `destroyed` tombstones included, with every field, however many
 pages the service splits the listing into; a bucket or container that does not exist fails a read, a listing and a
-write with an error that is not `NotFoundError`, never a `null` read;
+write with an error that is neither `NotFoundError` nor a `TransientError`, never a `null` read;
 the replay rule above applies to `create` and `compareAndSwap`, which a driver never sends again on a throttle. The
 store's publish reads the row after one that ended without an answer and recognises its own landed write by its
 effect; when the row is unchanged it sends a **fresh** compare-and-swap from the version it read (at most three, after a

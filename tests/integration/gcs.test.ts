@@ -97,7 +97,9 @@ const ticking = (): (() => number) => {
 };
 // Never created: the emulator answers as the service does for a bucket that is not there.
 const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
-// The registry pages its listing at 1,000 rows, and a generation listing pages as the SDK does.
+// The registry asks for 1,000 rows a page, so its listing must follow a token here. A generation listing is paged by the
+// SDK's own auto-pagination, which sends no page size, and the emulator may answer it in one page: there this holds the
+// count, and the paging rests on the SDK.
 const PAST_ONE_PAGE = 1_001;
 registryConformance(
   'GcsRegistryDriver (fake-gcs-server)',

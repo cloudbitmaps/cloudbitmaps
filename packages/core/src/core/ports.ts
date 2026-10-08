@@ -236,8 +236,8 @@ export interface StorageCaps {
  * - **Keys keep every name apart.** One segment in two namespaces, two names an encoding could fold into one (`a/b`
  *   and `a_b`), and a name that extends another (`s` and `s.1`) are separate objects, each listed and deleted alone;
  *   generations are listed and deleted by number, never by a prefix of one.
- * - **A bucket or container that does not exist is not a missing object**: it fails with an error that is not
- *   {@link NotFoundError}, which would read as an empty segment.
+ * - **A bucket or container that does not exist is not a missing object**: it fails with an error that is neither
+ *   {@link NotFoundError}, which would read as an empty segment, nor a {@link TransientError}, which a retry cannot fix.
  * - **A missing object makes `getRange` and `getTail` throw {@link NotFoundError}** — never an empty or short
  *   result. Heal-forward (a read whose generation a sweep collected re-resolves), the erasure's holder probe and
  *   its verify of the rewrite, and a pin's replaced-object check all branch on that one error. (A zero-length
@@ -708,8 +708,8 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   `destroyed` tombstones included, with every field (see {@link IRegistryDriver.list}), however many pages the
  *   service splits the listing into.
  * - **A bucket or container that does not exist is not an absent row**: a read, a listing and a write fail with an
- *   error that is not {@link NotFoundError}, and a read never answers `null`, which would read as a segment with no
- *   generation.
+ *   error that is neither {@link NotFoundError} nor a {@link TransientError}, and a read never answers `null`, which would
+ *   read as a segment with no generation.
  * - **Never replay a conditional write without telling the replay apart.** A `create` or `compareAndSwap`
  *   that lands and then loses its response, sent again, finds its own write and would report a conflict.
  *   Either send each write once, with the backend client's retry off for that request, or recognise your own
