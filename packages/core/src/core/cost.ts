@@ -169,12 +169,11 @@ export const ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: RedisSizing = deepFreeze({
  * at $0.158 an hour each: 3 × 730 h × $0.158 = $346.02, published to the dollar. The per-request crossovers on the
  * benchmarks page are drawn against this one cluster, whatever the data size; pass it as `pricing.redis` to compare
  * with it. It is not the cheapest cluster for any size of data: three cache.m6g.large hold the same memory for less.
- */
-// The trailing comment below is parsed by scripts/site-figures.cjs, and the literal by bench/lib/calibration-figures.cjs.
-/**
+ *
  * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
  * internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
+// The trailing comment below is parsed by scripts/site-figures.cjs, and the literal by bench/lib/calibration-figures.cjs.
 export const ONE_REDIS_HA_CLUSTER = deepFreeze({ monthlyUSD: 346 }); // ElastiCache HA: 1 primary + 2 replicas (cache.m7g.large); ~$115 single-node
 
 /**

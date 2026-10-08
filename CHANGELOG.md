@@ -50,9 +50,9 @@ so, and so do the module headers in the code.
     package at 1.0. They are a planning tool, not part of reading or writing a set, and the price list ships as old as
     the release that carries it. `stat()` gains the generation's byte size then, so a grounded report needs nothing
     internal.
-  - `store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional `IRegistryDriver.reapLegacyTombstones`
-    leave the store at 1.0. Only a bucket written by a release before 0.12 holds the rows it removes, so it becomes a
-    one-off script; run it before upgrading.
+  - `store.reapRegistryTombstones`, core's `reapRegistryTombstones` and the optional
+    `IRegistryDriver.reapLegacyTombstones` leave the store at 1.0, where the reaper is kept as a one-off script. Only a
+    bucket written by a release before 0.12 holds the rows it removes.
 
 ### Fixed
 

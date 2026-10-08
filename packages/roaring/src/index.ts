@@ -2465,8 +2465,8 @@ export class CloudRoaring {
    * every time, so `wouldReap` is a total only when `limited` is `false`, and `limited` is `true` whenever the limit was
    * spent with keys left, removable or not. An unreadable object stops the run with an error naming its key, and
    * removes nothing more: it may be a newer release's row. Scope the run with `namespace` to get past one.
-   * @deprecated Removed from the store at 1.0, and kept as a one-off script: only a bucket written by a release before
-   * 0.12.0 holds such rows.
+   * @deprecated Leaves the store at 1.0, kept as a one-off script: only a bucket written by a release before 0.12
+   * holds such rows.
    */
   async reapRegistryTombstones(
     options: ReapRegistryTombstonesOptions = {},

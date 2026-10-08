@@ -321,8 +321,8 @@ still reads it, one GET apiece, though no read of a segment ever returns it. A s
 survives in it, in the row's record. This call removes them. It is an admin call, run once by hand after the last
 process on a release before 0.12 is gone, and nothing schedules it.
 
-**Deprecated, and leaving the store at 1.0.** Only a bucket written by a release before 0.12 holds such rows, so a
-one-off script built on the driver kit is the better home for it. Run it before you upgrade to 1.0.
+**Deprecated, and leaving the store at 1.0, where it is kept as a one-off script.** Only a bucket written by a release
+before 0.12 holds such rows. Until then it is this store call.
 
 ```ts
 const preview = await store.reapRegistryTombstones({ dryRun: true });

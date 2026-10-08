@@ -9,7 +9,7 @@ of reality.
 > **The estimator leaves the library at 1.0, for a package of its own.** It is a planning tool, not part
 > of reading or writing a set, and the price list it carries is as old as the release that ships it. Everything on
 > this page keeps working until then. At 1.0 `stat()` gains the generation's byte size, so a grounded report needs
-> nothing internal, and the estimator, its price lists and these pages move to the new package.
+> nothing internal, and the estimator and its price lists move to the new package.
 
 ## Cost: estimate it, then ground it
 

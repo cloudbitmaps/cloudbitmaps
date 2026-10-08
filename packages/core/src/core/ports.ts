@@ -813,7 +813,7 @@ export interface IRegistryDriver {
    * precondition, the delete is unfenced.
    *
    * Not resumable: every call lists and reads from the start (R reads for R rows, whatever the `limit`).
-   * @deprecated Dropped at 1.0 with `reapRegistryTombstones`, which is its only caller.
+   * @deprecated Leaves the driver port at 1.0 with `reapRegistryTombstones`, its only caller, which is kept as a one-off script.
    */
   reapLegacyTombstones?(options: ReapLegacyTombstonesOptions): Promise<ReapLegacyTombstonesResult>;
 }
