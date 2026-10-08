@@ -143,8 +143,11 @@ interface Operand {
  */
 interface StreamedChunks {
   readonly seg: SegmentRef;
-  /** The version the read planned under; a chunk is cached under the version it was read from, which may be newer. */
-  readonly gen: string | number | undefined;
+  /**
+   * The version the read looks its cached chunks up under: the one it planned under, until a move carries it on. A chunk
+   * is cached under the version it was read from, which may be newer.
+   */
+  gen: string | number | undefined;
   /**
    * The engine's invalidation count when the read began to resolve its generation. A stream that opens after it has
    * moved is marked `invalidated`, on a source with no `currentVersion`: it may read newer bytes than the generation it
@@ -1208,7 +1211,7 @@ export class SegmentEngine {
       if (cache) {
         const ref = { ...streamed.seg, chunkKey };
         const hit = cache.get(this.chunkCacheKey(ref, streamed.gen));
-        if (hit) return this.cachedIfCurrent(ref, streamed.gen, hit, true);
+        if (hit) return this.cachedIfCurrent(ref, streamed.gen, hit, true, streamed);
         if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
       }
       this.startStream(streamed, chunkKey);
@@ -1217,8 +1220,8 @@ export class SegmentEngine {
       const ref = { ...streamed.seg, chunkKey };
       const hit = this.cache?.get(this.chunkCacheKey(ref, streamed.gen));
       return hit
-        ? this.cachedIfCurrent(ref, streamed.gen, hit, false)
-        : this.storageChunk(ref, streamed.gen, true);
+        ? this.cachedIfCurrent(ref, streamed.gen, hit, false, streamed)
+        : this.storageChunk(ref, streamed.gen, true, false);
     }
     return streamed.stream!.take(chunkKey).then((read) => {
       if (read.bytes === null) return null;
@@ -1254,20 +1257,24 @@ export class SegmentEngine {
    * stream does for the chunks it delivers; a chunk served from the cache is checked here, or a read whose chunks are
    * all cached would go on serving the generation it planned under, an erased id included, for as long as it is pulled.
    * Within `cache.genTtlMs` the source answers from its snapshot, so the check is a lookup, not a request. `report`:
-   * emit the `cache` event for this lookup, which a key counted when its stream opened does not.
+   * emit the `cache` event for this lookup, which a key counted when its stream opened does not. `streamed`: the read
+   * this chunk belongs to, which a move carries to the version now current, so the rest of it looks there: a read whose
+   * stream is not yet open reads the rest as one stream, not a chunk at a time.
    */
   private async cachedIfCurrent(
     ref: ChunkRef,
     planned: string | number | null | undefined,
     hit: CodecBitmap,
     report: boolean,
+    streamed?: StreamedChunks,
   ): Promise<CodecBitmap | null> {
     const now = planned === undefined ? undefined : await this.cacheVersion(ref);
     if (now === planned) {
       if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
       return hit;
     }
-    return this.storageChunk(ref, now);
+    if (streamed !== undefined && streamed.gen === planned && now !== null) streamed.gen = now;
+    return this.storageChunk(ref, now, false, report);
   }
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
@@ -1388,22 +1395,24 @@ export class SegmentEngine {
    *
    * `recheck`: `gen` was planned for a read of many chunks, so a cached chunk is served only while it is still the
    * segment's version ({@link cachedIfCurrent}). A point read resolves `gen` just before it asks, and passes none.
+   * `report`: emit the `cache` event for this lookup; a key already counted for this read does not.
    */
   private async storageChunk(
     ref: ChunkRef,
     gen: string | number | null | undefined,
     recheck = false,
+    report = true,
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
     const cacheKey = this.chunkCacheKey(ref, gen);
     if (this.cache) {
       const cached = this.cache.get(cacheKey);
       if (cached) {
-        if (recheck) return this.cachedIfCurrent(ref, gen, cached, true);
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
+        if (recheck) return this.cachedIfCurrent(ref, gen, cached, report);
+        if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
         return cached;
       }
-      if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
+      if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
     const open = this.openReads.get(cacheKey);
     if (open) return open.read;

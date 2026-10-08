@@ -315,3 +315,29 @@ describe('a warm cache, and another store writes while a read is open, once cach
     60_000,
   );
 });
+
+describe('a warm read that crosses a move reads the rest as one stream, not a chunk at a time', () => {
+  it('iterate: after the lapse, the remaining chunks cost a range or two, not one request each', async () => {
+    inMode('stream');
+    const w = await world({ ttl: TTL });
+    for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
+    let ranges = 0;
+    const getRange = w.storage.getRange.bind(w.storage);
+    w.storage.getRange = (key, offset, length) => {
+      ranges++;
+      return getRange(key, offset, length);
+    };
+    const got = await reach(w.store, 'iterate', async () => {
+      await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, gen(1), {
+        registry: w.registry,
+      });
+      w.clock.advance(TTL + 1);
+      ranges = 0;
+    });
+    expect(got.error).toBeNull();
+    expect(got.after.some((id) => genOf(id) === 1)).toBe(true);
+    // Generation 1's 120 chunks are one object of about 150 KB: one range covers them, plus the chunk the read was
+    // checking when it saw the move.
+    expect(ranges).toBeLessThanOrEqual(3);
+  }, 60_000);
+});
