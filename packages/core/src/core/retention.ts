@@ -88,7 +88,6 @@ export interface SetRetentionResult {
   readonly indexed: boolean;
 }
 
-/** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
 /**
  * The key of the retention sweep's mark on a tombstone it wrote, which is what lets a later sweep purge the row. Only the
  * sweep's own tombstone write sets it, and every other tombstone write removes it ({@link withoutSweepMark}), so a
@@ -110,6 +109,7 @@ export function withoutSweepMark(
 /** The latest epoch millisecond a `Date` can hold. An expiry past it is no date, and no index bucket holds it. */
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
+/** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
 function validateRetentionPolicy(policy: RetentionPolicy): void {
   if (policy === null || typeof policy !== 'object' || Array.isArray(policy)) {
     throw new ValidationError(

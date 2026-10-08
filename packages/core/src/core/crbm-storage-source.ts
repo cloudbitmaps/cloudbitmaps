@@ -496,10 +496,6 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The segment's live snapshot, refreshing on the TTL. Cheap within the TTL window. The snapshot holds the resolved
-   * target, and its reader once a read has asked for one.
-   */
-  /**
    * The last few segments' keys, newest first. A stream asks for its segment's snapshot before every cached chunk it
    * serves, and a combine alternates between a few operands, so comparing two names beats encoding them again, which
    * cost about a microsecond a chunk.
@@ -520,6 +516,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return key;
   }
 
+  /**
+   * The segment's live snapshot, refreshing on the TTL. Cheap within the TTL window. The snapshot holds the resolved
+   * target, and its reader once a read has asked for one.
+   */
   private liveSnapshot(ref: SegmentRef): Snapshot {
     const key = this.keyOf(ref);
     const existing = this.snapshots.get(key);

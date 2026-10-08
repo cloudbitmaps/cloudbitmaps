@@ -144,6 +144,11 @@ describe('InProcessKeystore (envelope BYOK)', () => {
     }).createDek();
     const other = new InProcessKeystore({ keys: { k2: key() }, activeKeyId: 'k2' });
     await expect(other.openDek(wrapped)).rejects.toBeInstanceOf(KeyUnavailableError);
+    // The message names the ids the wrappings reference, never the ids of the keys this process holds: it reaches the
+    // erasure ledger and logs.
+    const message = String(await other.openDek(wrapped).catch((e: unknown) => e));
+    expect(message).toContain('k1');
+    expect(message).not.toContain('k2');
     // An empty wrapping list (a shredded segment) is likewise unrecoverable.
     await expect(other.openDek([])).rejects.toBeInstanceOf(KeyUnavailableError);
   });
