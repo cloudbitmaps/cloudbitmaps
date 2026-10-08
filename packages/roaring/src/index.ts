@@ -2577,6 +2577,8 @@ export class CloudRoaring {
    * every time, so `wouldReap` is a total only when `limited` is `false`, and `limited` is `true` whenever the limit was
    * spent with keys left, removable or not. An unreadable object stops the run with an error naming its key, and
    * removes nothing more: it may be a newer release's row. Scope the run with `namespace` to get past one.
+   * @deprecated Leaves the store at 1.0, kept as a one-off script: only a bucket written by a release before 0.12
+   * holds such rows.
    */
   async reapRegistryTombstones(
     options: ReapRegistryTombstonesOptions = {},
@@ -2866,6 +2868,8 @@ export class CloudRoaring {
   /**
    * Planning cost estimate — pure, no instance/data needed: sizing, sales, what-if. For a real, grounded report
    * from live segment sizes, use `store.segment(name).costReport()`. See {@link CostReport}.
+   * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+   * internal. It is a planning tool, and its price list is as old as the release that ships it.
    */
   static estimateCost(input: EstimateInput): CostReport {
     return estimateCost(input);
@@ -4180,6 +4184,8 @@ export class Segment {
    * storage. The pointer refresh is priced at the store's own `cache.genTtlMs`, or at none when the store never
    * refreshes, unless the workload sets `genTtlMs`. See {@link CostReport} — it always includes a verdict (incl.
    * the lose-zone).
+   * @deprecated Moves to its own package at 1.0, with a `size` on `stat()` so a grounded report needs nothing
+   * internal. It is a planning tool, and its price list is as old as the release that ships it.
    */
   async costReport(options?: {
     pricing?: PricingProfile;
