@@ -8,7 +8,7 @@
  * These counts are the engine's own; they are not measured on S3. They are what the published cost figures for this
  * engine are derived from (`bench/`), and what a calibration run is expected to count.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { estimateCost } from '@cloudbitmaps/tools';
@@ -81,6 +81,10 @@ const modelGets = (operands: number, chunkRequests: number): number =>
 const reads = chunkReads();
 beforeEach(reads.start);
 afterEach(reads.stop);
+
+// These count requests, not time, but each case first loads thousands of chunks: under a second alone, several times
+// that under the load of the whole suite.
+vi.setConfig({ testTimeout: 60_000 });
 
 describe('a cold intersect of two segments of about 2,000 chunks sharing k chunks', () => {
   /** `shared` chunks both hold, at the keys given, and each its own private chunks to make 1,999 chunks. */
