@@ -532,7 +532,8 @@ if (report.errored.length > 0) {
 - **`summaries: true` also checks what a count answers from.** The default check lists, and reads no object. With the
   option it opens each segment's current object (one tail read each, a second for an index longer than that) and holds
   the row's summary against it: the object its fingerprint names, the same id count and the same metadata. A segment
-  whose summary disagrees is reported as `summary-mismatch` in `inconsistent`. A sealed summary needs the store's keystore; a segment whose
+  whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is a clear summary whose
+  fingerprint names no object, which no read uses. A sealed summary needs the store's keystore; a segment whose
   summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row with no summary
   has nothing to check.
 - **A segment with no Storage generation is healthy, not torn.** A registry row whose `currentGen` is `null` says

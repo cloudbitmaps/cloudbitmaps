@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { IStorageDriver, SegmentRef } from '@/core/ports';
+import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { runConsistencyCheck } from '@/core/consistency';
 import { openSummary, sealSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -74,6 +74,44 @@ describe('checkConsistency with summaries', () => {
     // Without asking, the check does not look.
     expect((await w.store.checkConsistency()).inconsistent).toEqual([]);
   });
+
+  // A registry of your own can hand over a clear summary whose fingerprint names no object. No read uses it, so the
+  // object is opened unchecked: that is a row the check reports, not one it passes.
+  it.each([['abc'], [5], ['0:1']])(
+    'a clear summary whose fingerprint is %j, from a registry of your own, is a summary-mismatch',
+    async (fingerprint) => {
+      const w = world(false);
+      await w.store.load(SEG, [1, 2, 3]);
+      const registry: IRegistryDriver = {
+        capabilities: () => w.registry.capabilities(),
+        get: async (ref) => {
+          const row = await w.registry.get(ref);
+          return row === null
+            ? row
+            : ({ ...row, summary: { ...row.summary!, fingerprint } } as unknown as RegistryRecord);
+        },
+        create: (ref, rec, o) => w.registry.create(ref, rec, o),
+        compareAndSwap: (ref, t, patch, o) => w.registry.compareAndSwap(ref, t, patch, o),
+        list: async function* (ns) {
+          for await (const row of w.registry.list(ns)) {
+            yield {
+              ...row,
+              summary: { ...row.summary!, fingerprint },
+            } as unknown as RegistryRecord;
+          }
+        },
+        delete: (ref, t) => w.registry.delete(ref, t),
+      };
+      const report = await runConsistencyCheck(
+        { storage: w.storage, registry },
+        { summaries: true },
+      );
+      expect(report.inconsistent).toEqual([
+        { segment: 's', namespace: 'ns', currentGen: 0, issue: 'summary-mismatch' },
+      ]);
+      expect(report.summariesUnchecked).toBe(0);
+    },
+  );
 
   it('a torn restore is still the missing generation, and is not also a mismatch', async () => {
     const w = world(false);

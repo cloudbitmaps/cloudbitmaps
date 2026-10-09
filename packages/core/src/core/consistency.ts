@@ -22,6 +22,7 @@ import { ValidationError, isIntegrityError, isKeyUnavailableError } from './erro
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { openNamedGeneration } from './crbm-storage-source';
+import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
 import { summaryAgrees, usableSummary } from './summary';
@@ -119,8 +120,29 @@ async function checkSummary(
       throw err;
     }
   }
+  const mismatch: Outcome = {
+    kind: 'issue',
+    issue: {
+      segment: ref.segment,
+      namespace: ref.namespace,
+      currentGen: generation,
+      issue: 'summary-mismatch',
+    },
+  };
   const described = usableSummary(ref, live, aead);
-  if (described === undefined) return { kind: 'ok', unchecked: keyed };
+  if (described === undefined) {
+    // A clear summary of this generation whose fingerprint names no object (a registry of your own can hand one over)
+    // is not used by any read, so the object is opened unchecked: a row to report, not one that passes.
+    const summary = live.summary;
+    const unnamed =
+      !keyed &&
+      live.status === 'active' &&
+      summary !== undefined &&
+      !('sealed' in summary) &&
+      summary.generation === generation &&
+      fingerprintParts(summary.fingerprint) === undefined;
+    return unnamed ? mismatch : { kind: 'ok', unchecked: keyed };
+  }
   // The object must be the one the summary names, as well as hold what it says: another object under the number (a
   // restore that put back an object the row does not name) is what every read of the segment refuses. Its footer says
   // which, before its index is opened, so an object sealed under another key is found too.
@@ -138,15 +160,7 @@ async function checkSummary(
   ) {
     return { kind: 'ok' };
   }
-  return {
-    kind: 'issue',
-    issue: {
-      segment: ref.segment,
-      namespace: ref.namespace,
-      currentGen: generation,
-      issue: 'summary-mismatch',
-    },
-  };
+  return mismatch;
 }
 
 /**
@@ -157,7 +171,8 @@ async function checkSummary(
  *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
  * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata it
- * says, reporting `summary-mismatch` where they disagree. A sealed summary
+ * says, reporting `summary-mismatch` where they disagree, and for a clear summary whose fingerprint names no object,
+ * which no read uses. A sealed summary
  * needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by default, since the
  * default check only lists.
  */
