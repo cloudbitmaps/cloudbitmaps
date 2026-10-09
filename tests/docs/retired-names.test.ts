@@ -47,7 +47,7 @@ const REAPER_INSTEAD =
 
 /** What a reader who wanted a segment's cost report uses instead. */
 const COST_REPORT_INSTEAD =
-  '`groundedReport` from `@cloudbitmaps/tools`, given the size `seg.stat()` reports: `groundedReport({ storageBytes: (await seg.stat()).size })`';
+  '`groundedReport` from `@cloudbitmaps/tools`, given the size `seg.stat()` reports: `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`';
 
 /** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
 const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
