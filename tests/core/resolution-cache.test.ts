@@ -550,6 +550,23 @@ describe('what forgets a resolution', () => {
     expect(await x.source.getChunk({ ...A, chunkKey: 0 })).toBeNull();
   });
 
+  it("another store's crypto-shred, then a registry outage: a segment resolved with no reader open rides it out, and a read that needs the key unwraps it from the row it resolved", async () => {
+    const x = await world({ encrypted: true });
+    expect(await x.source.currentGeneration(A)).toBe(0); // resolved, with no reader opened and no key unwrapped
+    expect(x.unwraps()).toBe(0);
+    await destroySegment(A, { registry: x.base }, { confirmSegment: 'a' });
+    x.clock.advance(TTL);
+    x.rows.state.down = new TransientError('throttled');
+    x.reset();
+    expect(remainder0(await x.source.getChunk({ ...A, chunkKey: 0 }))).toBe(1);
+    expect(x.unwraps()).toBe(1);
+    expect(x.sent()).toMatchObject({ rows: 1, tails: 1 });
+    // Once the registry answers, after the retry interval, the segment reads empty.
+    x.rows.state.down = undefined;
+    x.clock.advance(REFRESH_RETRY_MS);
+    expect(await x.source.getChunk({ ...A, chunkKey: 0 })).toBeNull();
+  });
+
   it("a crypto-shred, then a refresh in flight when the reader cache lets the segment go: the read that comes after it does not join the refresh's ride-out", async () => {
     const x = await world({ encrypted: true });
     expect(await x.source.listChunkKeys(A)).toEqual([0, 1]);

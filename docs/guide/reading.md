@@ -164,8 +164,9 @@ bound is stated; other pages link here.
   stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
   dropped connection) keeps serving the generation of a segment still in the reader cache (its reader open, or its row
-  resolved for a count), and retries 500 ms later (or after the TTL, if that is shorter). The store converges within
-  one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL:
+  resolved for a count), and retries 500 ms later (or after the TTL, if that is shorter). A read during the outage
+  that needs the key, where none was unwrapped before it, unwraps it from that row's wrapped keys. The store converges
+  within one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL:
   once that lapses, a read of it fails with the fault, as a cold read does. One let go while it rode the outage out
   fails at its next read, and at the next chunk of a stream already reading it. A refresh that fails with anything
   else, such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that
