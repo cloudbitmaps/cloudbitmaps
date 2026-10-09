@@ -805,6 +805,23 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: 'every load that found no row fences its publish on that absence, guarded or not: a row that appeared meanwhile (another first load, a `setRetention`, a drop) refuses it as `superseded`, and of two loads of one segment at once at most one lands',
   },
+  // An erasure that finds a holder on a row with no pointer renews the row's `pointerId` before it deletes any, so a
+  // first load fenced on the row it read is refused at its publish, and the holder is deleted. No page may say such an
+  // object is refused and kept, or that its load may still publish it.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bload(?: that wrote (?:the|that|its) object)? may still publish it\b` +
+          String.raw`|\brefused with \`?WriteConflictError\`?,? and kept\b` +
+          String.raw`|\bnote,? and not deleted\b` +
+          String.raw`|\brefuses?\b[^.]{0,40}?\binstead of deleting it\b` +
+          String.raw`|\bon a row with no pointer,? the erasure writes nothing\b` +
+          String.raw`|\bthe erasure writes nothing to (?:such a|the) row\b`,
+      ),
+      'i',
+    ),
+    why: "an erasure that finds a holder on a row with no pointer renews the row's `pointerId` and deletes it: the first load that wrote it is refused at its publish. Only an erasure that finds no holder writes nothing",
+  },
 ];
 
 /**
@@ -1347,6 +1364,14 @@ describe('no document claims behaviour this library does not have', () => {
     'Two first loads of a segment with no row both publish.',
     'Two first loads race, and each one lands.',
     'Both succeed, and the higher stays current.',
+    // An unpublished holder on a row with no pointer, said to be refused and kept.
+    "On a row with no pointer\n * the erasure writes nothing to the row, so a first load's object there may still be published; an erasure that finds the\n * id in it refuses instead of deleting it.",
+    'One that holds the id is not deleted: this path writes nothing to the row, so the load that wrote the object may still publish it',
+    'It cannot be deleted while that load may still publish it: re-run once the segment is loaded',
+    "| A first load's object that never published holds the id; its load may still publish it, so it is not deleted. |",
+    'An object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: the\n  erasure writes nothing to such a row',
+    'is reported as an `error: …` note and not deleted: the erasure writes nothing to such a row, so the load that wrote the object may still publish it.',
+    'The erasure refuses an unpublished holder instead of deleting it.',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1529,6 +1554,13 @@ describe('no document claims behaviour this library does not have', () => {
     'Every load is fenced, so of two loads of one segment at most one of them lands.',
     'Forward-only is right for an unguarded load: its ids come from upstream.',
     'A guarded load also fences on the pointer it judged; an unguarded one does not.',
+    // The erasure on a row with no pointer, said as it is, and a write that may still land.
+    'An erasure that finds no holder writes nothing, so a first load in flight still publishes.',
+    'The erasure renews the row before it deletes the object, so the load that wrote it can no longer publish it.',
+    'A load that read the row after the renewal publishes its own object.',
+    'A publish that may still land must not find its object gone.',
+    'Its object is kept, since the write may still land; re-run the write, which numbers past it.',
+    'A refused load keeps its object when the row has changed, and the next erasure deletes it.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

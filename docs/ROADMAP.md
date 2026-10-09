@@ -196,7 +196,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
   one's current generation without the id (read through the coalesced chunk stream, at most 4 ranges ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
-  and deletes every generation that held the bit before returning, above the pointer as well as below it —
+  and deletes every generation that held the bit before returning, above the pointer as well as below it, and a
+  first load's object on a segment with no generation yet —
   **physical deletion on return**, with a
   per-segment ledger and an audit event per segment: `segment.rewrite`, or `segment.collect` where only other
   generations held the id. `subjectReport` is the read side (access). What a

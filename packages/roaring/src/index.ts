@@ -2077,7 +2077,12 @@ export class CloudRoaring {
    * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
    * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger. A tombstoned
    * segment is still searched: a cleartext object left under it that holds the id is deleted, with everything under
-   * the tombstone, and the entry reads `erased: true`.
+   * the tombstone, and the entry reads `erased: true`. So is a segment whose row names no generation yet (a retention
+   * policy set before its first load): a first load's object that holds the id is deleted, once the row's `pointerId`
+   * is renewed so that the load, if still running, is refused at its publish, and the entry reads `erased: true`. An
+   * encrypted first load's object there cannot be searched, so it is deleted whatever the id: on an encrypted store,
+   * an erasure of any id refuses an encrypted first load in flight that has written its object onto a segment made
+   * ahead of its data.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not

@@ -117,10 +117,12 @@ sweep run (it collects nothing without a row) reaches. List those objects with `
 ledger is not by itself proof the id is gone. A tombstoned segment is searched too: a
 cleartext object left under it that holds the id is deleted with everything under the tombstone, and the entry reads
 `erased: true`. A segment whose row names no generation yet (a retention policy set before its first load) is
-searched too: an object a first load wrote and never published that holds the id, or on an encrypted store cannot
-be searched until its load publishes the key, is reported as an `error: …` note and not deleted: the erasure writes
-nothing to such a row, so the load that wrote the object may still publish it. Load the segment, which makes the
-object collectable, or drop it, and re-run.
+searched too: an object a first load wrote and never published that holds the id is deleted, and the entry reads
+`erased: true`. Before it deletes anything the erasure renews the row's `pointerId`, so a load still running that
+wrote such an object is refused at its publish and never names an object that is gone. On an encrypted store such an
+object cannot be searched until its load publishes the key, so it is deleted whatever id is erased: an erasure of any
+id refuses an encrypted first load in flight that has written its object onto a segment whose row was made ahead of
+its data, and that load is re-run ([the erasure guide](docs/guide/erasure.md#two-rules-while-you-erase)).
 
 **Do not roll a segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto a
 generation the erasure did not rewrite, so the id can be current again. Roll back before the erasure starts or

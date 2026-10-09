@@ -103,6 +103,17 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An erasure deletes a first load's object on a segment with no generation yet, and refuses the load that wrote
+  it.** On a row with no pointer (one `setRetention` made before the first load), an erasure that finds an object
+  holding the id first renews the row's `pointerId`, as it does before it deletes a generation above the pointer, so a
+  first load still in flight that wrote the object is refused `superseded` at its publish. Then it deletes each holder,
+  reading the row before each delete, and reports `erased: true` with them in `collected`, where it threw
+  `WriteConflictError` and kept them; a crashed first load's object is erased like any other holder. An object sealed
+  under a key no row holds, an encrypted first load's, cannot be searched, so it is deleted whatever the id; with only
+  such objects the result is `erased: false`, `reason: 'no-generation'`, with them in `collected`. **So on an encrypted
+  store, `eraseSubject` of any id refuses each encrypted first load in flight that has written its object onto a
+  segment whose row was made ahead of its data, in the namespaces it scans**: re-run those loads, or pause loads while
+  you erase. An erasure that finds no holder writes nothing ([erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **The row write an erasure makes before it deletes a generation above the pointer renews the row's `pointerId`, and
   one that gets no answer is settled by reading the row.** The write names the pointer at the value it has, where it
   rewrote the row's kept window. A load in flight that wrote that generation is refused at its publish, as it was; a

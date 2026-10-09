@@ -7,7 +7,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import type { IRegistryDriver, SegmentRef } from '@/index';
 import { collect } from '../helpers/loaded';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import { TransientError, WriteConflictError } from '@/core/errors';
+import { TransientError } from '@/core/errors';
 import { rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -346,8 +346,8 @@ describe('an erasure and a first load that found no row', () => {
 
 describe('a row with no pointer, over an object a first load wrote and never published', () => {
   // A row minted by `setRetention` before the first load names no generation, and the first load's object is in the
-  // bucket until that load publishes. The erasure writes nothing to such a row, so that load may still publish the
-  // object, and deleting it is not safe; the erasure refuses, rather than report the segment as holding nothing.
+  // bucket until that load publishes. The erasure renews the row's pointerId before it deletes the object, so that load
+  // can no longer publish it. `erase-pointerless-first-load.test.ts` holds the races.
   async function world() {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
@@ -359,19 +359,32 @@ describe('a row with no pointer, over an object a first load wrote and never pub
     return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
   }
 
-  it('an id the unpublished object holds is refused, and the object is kept', async () => {
+  it('an id the unpublished object holds is erased, and the object is deleted', async () => {
     const w = await world();
-    await expect(eraseIdFromSegment(REF, 2, w.deps)).rejects.toBeInstanceOf(WriteConflictError);
-    await expect(eraseIdFromSegment(REF, 2, w.deps)).rejects.toThrow(/never published/);
-    expect(await generations(w.storage)).toEqual([0]);
+    const before = (await w.registry.get(REF))!;
+    expect(await eraseIdFromSegment(REF, 2, w.deps)).toEqual({
+      segment: 's',
+      namespace: undefined,
+      erased: true,
+      fromGeneration: 0,
+      collected: [0],
+    });
+    expect(await generations(w.storage)).toEqual([]);
+    const row = (await w.registry.get(REF))!;
+    expect(row.currentGen).toBeNull();
+    expect(row.pointerId).not.toBe(before.pointerId);
   });
 
-  it("an id it does not hold is 'no-generation', as with an empty bucket", async () => {
+  it("an id it does not hold is 'no-generation', as with an empty bucket, and nothing is written or deleted", async () => {
     const w = await world();
+    const before = (await w.registry.get(REF))!;
     expect(await eraseIdFromSegment(REF, 7, w.deps)).toMatchObject({
       erased: false,
       reason: 'no-generation',
+      collected: [],
     });
+    expect((await w.registry.get(REF))!.token).toBe(before.token);
+    expect(await generations(w.storage)).toEqual([0]);
   });
 });
 
@@ -395,7 +408,7 @@ describe('a row with no pointer, on a store that requires encryption', () => {
     });
   });
 
-  it('a first load held at its publish is refused as a holder: its object cannot be searched yet', async () => {
+  it('a first load held at its publish is a holder, since its object cannot be searched: it is deleted, and the load refused', async () => {
     const w = world();
     await w.registry.create(REF, { currentGen: null });
     let reach!: () => void;
@@ -416,16 +429,17 @@ describe('a row with no pointer, on a store that requires encryption', () => {
     await reached;
     expect(await generations(w.storage)).toEqual([0]);
 
-    const erased = eraseIdFromSegment(REF, 9, w.deps).then(
-      (r) => r,
-      (e: unknown) => e,
-    );
-    const outcome = await erased;
+    const outcome = await eraseIdFromSegment(REF, 9, w.deps);
     open();
-    await load;
-    expect(outcome).toBeInstanceOf(WriteConflictError);
-    expect(String(outcome)).toMatch(
-      /generation 0\) is sealed under a key that load has not published/,
-    );
+    expect(outcome).toEqual({
+      segment: 's',
+      namespace: undefined,
+      erased: false,
+      reason: 'no-generation',
+      collected: [0],
+    });
+    expect(await load).toMatchObject({ generation: 0, published: false, reason: 'superseded' });
+    expect(await generations(w.storage)).toEqual([]);
+    expect((await w.registry.get(REF))!.currentGen).toBeNull();
   });
 });
