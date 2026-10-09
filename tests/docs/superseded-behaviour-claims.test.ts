@@ -788,6 +788,17 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: "the next load of a destination deletes the one generation its own publish pushes out of the window by name; an `*Into` with `keep` collects every generation below its own pointer at once, and a load's listing, on every sixteenth generation, takes the rest",
   },
+  // A load that found no row fences its publish on that absence, guarded or not, so no page may say such a load
+  // publishes forward-only over a row that appeared, fences on nothing, or lands beside another first load.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bno row,?(?: [\w'(),.:-]+){0,3}? (?:publishes|publish|is|are|lands?|stays)(?: (?:a|the one|one))?(?: bare| plain)? forward-only\b|\bfences? on nothing\b|\b(?:reads?|found|finds?|has) (?:anything|nothing) to fence on\b|\bboth (?:loads? )?land\b`,
+      ),
+      'i',
+    ),
+    why: 'every load that found no row fences its publish on that absence, guarded or not: a row that appeared meanwhile (another first load, a `setRetention`, a drop) refuses it as `superseded`, and of two loads of one segment at once at most one lands',
+  },
 ];
 
 /**
@@ -1309,6 +1320,16 @@ describe('no document claims behaviour this library does not have', () => {
     'The next load of the destination collects everything below its own pointer beyond its `keep`.',
     'and the next load of its destination collects its predecessors',
     "the next store.load of that destination collects everything it didn't",
+    // A load that found no row, said to publish unfenced.
+    'only an unguarded load onto a segment with no row publishes bare forward-only.',
+    'Only an unguarded load (`allowEmpty: true`, with neither `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row\n * publishes bare forward-only.',
+    'only an unguarded load (`allowEmpty: true`, with neither\n  `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row is bare forward-only',
+    '(an unguarded load onto a segment with no row publishes forward-only instead)',
+    '`allowEmpty: true` onto a segment with no row is the one bare forward-only publish.',
+    'An unguarded load of a segment with no row fences on nothing, and publishes over the row that appeared',
+    'neither load read anything to fence on, so each is a forward-only publish',
+    'If the lower generation number lands first, both land and the higher stays current.',
+    'a load that found no row\n * publishes forward-only',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1479,6 +1500,13 @@ describe('no document claims behaviour this library does not have', () => {
     '`store.load()` collects by name and lists every sixteenth generation.',
     'An `*Into` that passes `keep` lists the destination and collects every generation below its own beyond it.',
     'The next load of the destination deletes the generation its own publish pushed out of the window, by name.',
+    // The absence fence, said as it is, and the forward-only rule it sits beside.
+    'Every load that found no row fences its publish on that absence, so a row that appeared meanwhile refuses it.',
+    'A load onto a segment with no row is refused when a row appears before its publish.',
+    'with no row both are omitted, leaving the publish a bare forward-only advance that lands over anything',
+    'A publish is forward-only: it never moves the pointer back.',
+    'Of two loads of one segment at once, at most one lands.',
+    'A segment with no row is created by its first load, whose publish is a create-only write.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
