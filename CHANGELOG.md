@@ -18,15 +18,19 @@ so, and so do the module headers in the code.
   1, 2 or 3 is refused with `UnsupportedError`, naming its key and saying what to do, by every read and write of it and
   by every `list()` that reaches it, so one such row stops each fleet-wide call that lists its namespace. A 0.19 process
   refuses a schema-4 row the same way. There is no upgrade in place and no downgrade: the rows of one prefix are all of
-  one release. A token in any form but `<incarnation>.<counter>.<write>` is an `IntegrityError`, and a deleted row is
-  removed wherever the registry reports `conditionalDelete`, whenever it was created. Move each store:
+  one release. The library cannot delete, retire, drop or list a row stamped 1, 2 or 3, nor any namespace that holds
+  one: `delete`, `dropSegment`, `retireExpired` and every sweep read the row first. Remove such rows with your storage's
+  own tools, or point the store at a new prefix, as below. A token in any form but `<incarnation>.<counter>.<write>`
+  is an `IntegrityError`, and a deleted row is removed wherever the registry reports `conditionalDelete`, whenever it
+  was created. Move each store:
   1. With 0.19, export every segment (`store.exportSegments`, [the export guide](docs/guide/export.md)), and save beside
      each file the segment's row's whole `retention` and `residency` objects, read from `backend.registry` (`get`, or
      `list` for a namespace), keys of your own included, and its generation's `metadata` from `seg.stat()` if you load
      with metadata.
-  2. With 0.20, on a new prefix and with the same `encryption` options, load each file (`store.load(ref, { serialized })`
-     for a `roaring` file, its ids for an `ndjson` one) with its metadata. Then restore each row's retention and
-     residency exactly: read the row the load created with `backend.registry.get(ref)`, and write
+  2. With 0.20, on a new prefix and with the same `encryption` options, load each file
+     (`store.load(ref, { serialized })` for a `roaring` file, its ids for an `ndjson` one) with its metadata. Then
+     restore each row's retention and residency exactly: read the row the load created with
+     `backend.registry.get(ref)`, and write
      `backend.registry.compareAndSwap(ref, row.token, { retention, residency })`, naming only the ones the old row had
      (`setRetention` writes `expiresAt` alone).
   3. Re-run, against the new prefix, every erasure (`eraseSubject`, `eraseNamespace`, a crypto-shred) processed since
@@ -44,13 +48,15 @@ so, and so do the module headers in the code.
   required `pointerId`: the token of the row's create, renewed to the token of every compare-and-swap whose patch names
   `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary`, at any value, the one the row already has included, and
   kept by a write that names only `leases`, `retention`, `residency` or `keptGens`. `renewsPointer(patch)` and
-  `RESOLVED_FIELDS` in `@cloudbitmaps/core/driver-kit` give the rule. A reader refuses a row with no `pointerId` with
-  `UnsupportedError`. A clear `RegistrySummary` carries `fingerprint`, the `<size>:<crc>` of the object it describes, and
-  a sealed one seals the count, the size and the checksum before the metadata, so it is at least 48 bytes. The shipped
-  registries refuse with `ValidationError` a write of a summary without it, and a `create` or a compare-and-swap that
-  names `token` or `pointerId`; a stored summary without it is an `IntegrityError`. The conformance suite holds a driver to each: a create, a renewal by each resolved field, the
-  fields that do not renew, a same-value `currentGen` that keeps the summary, `keptGens` and `leases`, a lost
-  compare-and-swap, and a write that names `pointerId`.
+  `RESOLVED_FIELDS` in `@cloudbitmaps/core/driver-kit` give the rule. A row a registry of your own returns without
+  `pointerId` fails every read of its segment with `UnsupportedError`; a shipped registry reads a stored row without one
+  as an `IntegrityError`. A clear `RegistrySummary` carries `fingerprint`, the `<size>:<crc>` of the object it
+  describes, and a sealed one seals the count, the size and the checksum before the metadata, so it is at least 48
+  bytes. The shipped registries refuse with `ValidationError` a write of a summary without it, and a `create` or a
+  compare-and-swap that names `token` or `pointerId`; a stored summary without it is an `IntegrityError`. The
+  conformance suite holds a driver to each: a create, a renewal by each resolved field, at a new value and at the one it
+  has, the fields that do not renew, a same-value `currentGen` that keeps the summary, `keptGens` and `leases`, a lost
+  compare-and-swap, and a write that names `pointerId`, beside a resolved field or as a value the row has had.
 
 ### Added
 
