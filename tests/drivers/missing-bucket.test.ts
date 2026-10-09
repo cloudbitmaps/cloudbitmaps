@@ -36,6 +36,7 @@ const OTHER_CASES: readonly StorageDriverCase[] = [
   'names and namespaces kept apart',
   'generations by number',
   'failed write',
+  'conditional delete',
 ];
 
 type Mode = 'bucket' | 'object';

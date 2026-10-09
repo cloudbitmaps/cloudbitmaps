@@ -4226,6 +4226,8 @@ export type {
   StorageBackend,
   StorageCaps,
   StorageChunkSource,
+  StorageDeleteOptions,
+  TailRead,
   Token,
   WrappedDek,
 } from '@cloudbitmaps/core';

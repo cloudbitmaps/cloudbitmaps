@@ -6,6 +6,13 @@
  * already exists — so a generation can never be silently overwritten (hard invariant 2), and a crash
  * leaves only an orphan temp file, never a torn object. Drivers do filesystem I/O and may use `node:crypto`; only `core/`
  * is bound by the determinism lint.
+ *
+ * **It has no conditional delete (`conditionalDelete: false`), and `delete` ignores `ifVersion`.** A filesystem offers
+ * no unlink conditioned on which file is under the path: a check by `stat` and then an `unlink` is two steps, and another
+ * writer can replace the file between them. Nor does `stat` name a file across a delete and a re-create: inode numbers
+ * are reused once a file is unlinked, and timestamps are coarser than two writes in a row, so a version built from them
+ * could match a file put under the path since. A lock in this process would close the gap between the two steps, but
+ * there would still be no identity to compare, so the driver does not claim the capability. `getTail` reports no version.
  */
 import { constants as FS } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,7 +20,7 @@ import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
-import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef, TailRead } from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { ExactCase } from './exact-case';
 import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
@@ -26,7 +33,12 @@ export class LocalFsStorageDriver implements IStorageDriver {
   }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: false };
+    return {
+      rangeRead: true,
+      maxObjectBytes: Number.MAX_SAFE_INTEGER,
+      conditionalPut: false,
+      conditionalDelete: false,
+    };
   }
 
   async putImmutable(
@@ -100,7 +112,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     }
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();
@@ -113,6 +125,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     }
   }
 
+  /** Idempotent. Takes no `ifVersion`: see the note on the class for why it cannot apply one. */
   async delete(key: GenKey): Promise<void> {
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
     const path = storageObjectPath(this.root, key);

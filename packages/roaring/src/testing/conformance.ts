@@ -176,7 +176,8 @@ export type StorageDriverCase =
   | 'generations by number'
   | 'failed write'
   | 'missing location'
-  | 'list across pages';
+  | 'list across pages'
+  | 'conditional delete';
 
 /** `n` bytes that differ at every offset, so a read from the wrong offset cannot match by accident. */
 function patterned(n: number): Uint8Array {
@@ -260,9 +261,9 @@ async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number
 /**
  * Contract tests for an {@link IStorageDriver} — the contract its doc comment lists: write-once with
  * `WriteConflictError` on a collision, `NotFoundError` for a missing object, `ValidationError` for an out-of-range
- * read, `getTail`'s true total size, idempotent `delete` (of an absent key too, with neighbours present), and a `list`
- * that is read-after-delete. `makeDriver` MUST
- * return a driver over an empty, isolated keyspace on each call.
+ * read, `getTail`'s true total size, idempotent `delete` (of an absent key too, with neighbours present), a `list`
+ * that is read-after-delete, and a `delete` given `ifVersion` that does what `conditionalDelete` says. `makeDriver`
+ * MUST return a driver over an empty, isolated keyspace on each call.
  *
  * `skip` names the cases a backend cannot exercise (a local emulator that does not model a contract), so each
  * skip is visible at the call site, with the reason beside it, rather than hidden in a weakened assertion.
@@ -291,6 +292,13 @@ export function storageDriverConformance(
      * driver that drops its continuation token fails. Omitted, the case does not run.
      */
     readonly pagedListSize?: number;
+    /**
+     * What the driver under test reports as `capabilities().conditionalDelete` once it has made a delete given
+     * `ifVersion`, which is when a driver that resolves it lazily has resolved it. Stated at the call site, so a driver
+     * that stops applying the condition fails here rather than being exempted by its own report. Omitted, the case
+     * holds the driver to whatever it reports.
+     */
+    readonly conditionalDelete?: boolean;
   } = {},
 ): void {
   const skipped = new Set<StorageDriverCase>(options.skip ?? []);
@@ -504,6 +512,52 @@ export function storageDriverConformance(
       await d.delete(key(1));
       expect(await generationsOf(d, SEG)).toEqual([10, 11]);
       expect((await d.getTail(key(10), 0)).size).toBe(10);
+    });
+
+    // A number can be taken again once its object is deleted, so a delete decided from a read of one object can meet
+    // another under the same key. `ifVersion` is what tells them apart, where the driver says it can.
+    test('conditional delete', async () => {
+      const d = makeDriver();
+      const first = patterned(40);
+      await putBytes(d, key(0), first);
+      const read = await d.getTail(key(0), 10);
+      // The version a delete is conditioned on: the one the read reported.
+      await d.delete(key(0), { ifVersion: read.version });
+      expect(await generationsOf(d, SEG)).toEqual([]);
+      const applies = d.capabilities().conditionalDelete === true;
+      if (options.conditionalDelete !== undefined) expect(applies).toBe(options.conditionalDelete);
+
+      // The number taken again: another object under the same key, with other bytes.
+      await putBytes(d, key(0), patterned(41));
+      if (!applies) {
+        // A driver that does not apply the condition ignores it, and deletes what is there.
+        await d.delete(key(0), { ifVersion: read.version });
+        expect(await generationsOf(d, SEG)).toEqual([]);
+        return;
+      }
+      // Every read of an object reports its version, the zero-byte existence check included, and two objects stored
+      // one after the other under one key with different bytes do not share one.
+      expect(read.version).toEqual(expect.any(String));
+      const again = await d.getTail(key(0), 10);
+      expect(again.version).toEqual(expect.any(String));
+      expect(again.version).not.toBe(read.version);
+      expect((await d.getTail(key(0), 0)).version).toBe(again.version);
+      expect((await d.getTail(key(0), 1000)).version).toBe(again.version);
+
+      // A version that names an object no longer there: refused, and the object stored since is left as it was.
+      await expect(d.delete(key(0), { ifVersion: read.version })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+      expect(await d.getRange(key(0), 0, 41)).toEqual(patterned(41));
+      expect(await generationsOf(d, SEG)).toEqual([0]);
+
+      // The version it holds: deleted, and a delete of the absent key, with either version, is a no-op.
+      await d.delete(key(0), { ifVersion: again.version });
+      expect(await generationsOf(d, SEG)).toEqual([]);
+      await d.delete(key(0), { ifVersion: again.version });
+      await d.delete(key(0), { ifVersion: read.version });
+      await d.delete(key(1), { ifVersion: read.version }); // never written
+      expect(await generationsOf(d, SEG)).toEqual([]);
     });
 
     // A driver that commits what it was given when the writer fails leaves a truncated generation holding a number.

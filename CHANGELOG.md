@@ -60,6 +60,19 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A storage driver can delete an object only while it is the one that was read: `StorageCaps.conditionalDelete`,
+  `IStorageDriver.delete(key, { ifVersion })` and `getTail`'s `version`.** A tail read reports the object's version
+  (`TailRead.version`: an S3 or Azure Blob ETag, a GCS object generation), and a driver that reports
+  `conditionalDelete: true` deletes, given that version, only the object it names, by a precondition the backend
+  applies (`If-Match`, `ifGenerationMatch`, `ifMatch`), refuses another object under the key with
+  `WriteConflictError`, and treats an absent one as a no-op. A driver that reports `false`, or omits it, ignores the
+  version. The in-memory driver reports `true`; the local-filesystem driver `false`, since a filesystem has no delete
+  conditioned on which file is under a path; S3, GCS and Azure Blob as the backend's existing `conditionalDelete` option
+  says, which now covers the storage half as well as the registry: on by default for S3 when its client sends to an AWS
+  S3 host and for Azure Blob, off by default for GCS. All three parts are optional, so a driver of your own keeps
+  compiling and deleting unconditionally until it implements them; the in-repo conformance suite's `conditional delete`
+  case is the test ([driver kit](docs/guide/api-reference.md#driver-kit--what-you-need-to-implement-a-driver)). New
+  types `TailRead` and `StorageDeleteOptions`, from `@cloudbitmaps/core`, its driver kit and `@cloudbitmaps/roaring`.
 - **`@cloudbitmaps/core/driver-kit` exports `RESOLVED_FIELDS`, `renewsPointer`, `renewPointer` and `pointerIdOf`**: the
   fields a read resolves through, whether a patch renews a row's `pointerId`, the patch that renews it and changes
   nothing a read resolves (the pointer, named at the value it has), and a row's `pointerId`, refusing a row with none
