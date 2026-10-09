@@ -185,7 +185,7 @@ real ids are often denser, and the guide counts larger chunks.
 ## Large operands — run `2026-10-07-88cd3`
 
 > **Measured** against real S3 in `us-east-1` on 2026-10-07 (UTC), from AWS CloudShell in the same region (2 CPUs, a
-> round-trip floor of 4.7 ms to the region, so in-region), through the published `0.18.3` packages. This is the first run of
+> round-trip floor of 4.7 ms to the region, so in-region), through the packages then published (the evidence names the version, as `packageVersion`). This is the first run of
 > the harness's [large suite](../bench/README.md#the-large-suite): combines on operands of about a million, five million
 > and ten million ids, about 1,500 chunks each, 20 % of their ids shared. The evidence is
 > [`bench/calibration/large/2026-10-07-88cd3.json`](../bench/calibration/large/2026-10-07-88cd3.json). It has no report

@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-08
+
 ### Added
 
 - **A predicate for every error class: `isUnsupportedError`, `isCapabilityError`, `isBudgetExceededError` and
