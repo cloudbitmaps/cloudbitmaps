@@ -325,15 +325,12 @@ so, and so do the module headers in the code.
   Before it hands out a chunk, a combine or `iterate` checks that its segment has not moved. Once the reader cache had
   let the segment go, that check opened the generation again (a tail read and an index parse of up to about 1.3 MB)
   only to learn a version the registry row already names, so a read over more segments than `cache.readerMax` or
-  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. On a store with a timed refresh the
-  reader cache letting the segment go no longer moves the read's stream, since `genTtlMs` already bounds what it
-  serves, so the check makes no request. On a store with none it still does, and learns the version from the
-  registry row alone (`genTtlMs: 0`, or a source with no clock), or by listing the bucket on a store with no registry,
-  one LIST per chunk. A transient fault in it is retried through the store's retry, where it failed the read. A chunk
-  served from the decoded-chunk cache is still checked through the segment's current version, which opens a segment
-  the reader cache let go of again: a warm read over more segments than the reader cache keeps still pays a registry
-  read and an object open per cached chunk, and when that check finds the segment has moved, the rest of the read
-  moves with it, its stream included.
+  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. The check now learns the version from
+  the registry row alone (on a store with no registry, a listing of the bucket), as a read of that chunk on its own
+  would. A transient fault in it is retried through the store's retry, where it failed the read. A chunk served from
+  the decoded-chunk cache is still checked through the segment's current version, which opens a segment the reader
+  cache let go of again, so a warm read under reader-cache pressure still pays a registry read and an object open per
+  cached chunk.
 - **`cache.genTtlMs` that is not a finite number of 0 or more is refused.** `NaN` (from an unset environment variable),
   a negative number or a string turned the timed pointer refresh off as `0` does, silently, so another process's load
   or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built. So is

@@ -432,9 +432,10 @@ survives an erasure, which collects every generation below its new pointer, and 
 [Reading in depth](reading.md#read-one-fixed-point-in-time) covers pins and
 [leases](reading.md#hold-a-generation-for-a-job-a-lease).
 
-**What no value of `keep` gives you is a single instant.** A read whose TTL elapses, whose reader is evicted, or whose store
-is invalidated can move to another generation whether or not the old one still exists. A job that needs one instant, such as an export, a reconciliation, or a send that must match the count you
-reported, needs a pinned handle. See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load).
+**What no value of `keep` gives you is a single instant.** A read whose TTL elapses, whose reader is evicted, or whose
+store is invalidated moves to another generation whether or not the old one still exists. A job that needs one
+instant, such as an export, a reconciliation, or a send that must match the count you reported, needs a pinned handle.
+See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load).
 
 There is deliberately no time-based floor on collection ("keep nothing younger than 24 h"). It would read as a
 durability guarantee and would not be one: an ordinary read is already covered by a re-read, and a window wide enough to

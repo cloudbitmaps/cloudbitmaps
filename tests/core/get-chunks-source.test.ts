@@ -336,8 +336,8 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     await it.return!(undefined);
   });
 
-  it('with a timed refresh, the reader cache letting a segment go is not a move: the stream goes on until the TTL moves it', async () => {
-    const { source, storage, registry, clock, publishGen1 } = await world();
+  it('a segment the reader cache let go of is resolved again, from its row alone, and a stream whose generation is the same goes on', async () => {
+    const { source, storage, clock, publishGen1 } = await world();
     const it = source.getChunks!(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
     await it.next();
     const tails = storage.tails;
@@ -345,17 +345,10 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     const cache = (
       source as unknown as { snapshots: { deleteWhere(p: (k: string) => boolean): void } }
     ).snapshots;
-    const realGet = registry.get.bind(registry);
-    let rows = 0;
-    registry.get = (ref) => {
-      rows++;
-      return realGet(ref);
-    };
     cache.deleteWhere((k) => k.endsWith('s'));
     const second = await it.next();
     expect(parityOf(second.value.bytes)).toBe(0);
-    expect(storage.tails).toBe(tails); // nothing opened to learn its version
-    expect(rows).toBe(0); // and the row not read again
+    expect(storage.tails).toBe(tails); // resolved again, and nothing opened to learn its version
     // The TTL moves it on too: a publish, a lapse, and the next chunk is the generation now current.
     await publishGen1();
     clock.advance(TTL + 1);
@@ -420,10 +413,10 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     for (let i = 0; i < CHUNKS; i++)
       for (const s of streams) expect((await s.next()).done).toBe(false);
     for (const s of streams) await s.return!(undefined);
-    // With a timed refresh the TTL bounds what a stream serves, so the cache letting a segment go is not a move: no
-    // chunk reads the row again, and none opens an object (a tail read and an index parse).
+    // Each check after the cache let a segment go reads its row, as a read of that chunk alone would; none opens an
+    // object (a tail read and an index parse) to learn a version the row already names.
     expect(storage.tails).toBeLessThanOrEqual(segments.length);
-    expect(gets).toBeLessThanOrEqual(segments.length);
+    expect(gets).toBeGreaterThan(0);
   });
 
   it("retries a transient fault in opening the generation it moves to mid-stream, through the caller's retry", async () => {

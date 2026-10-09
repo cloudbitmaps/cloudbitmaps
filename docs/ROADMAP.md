@@ -327,7 +327,7 @@ between here and there:
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
    describes a single instant rather than whichever generations happened to be current as it went. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded, and, unless leased, holds nothing alive. Generation
-   GC's grace window (`keep`) never provided this: of the four things that can move a long read to another
+   GC's grace window (`keep`) never provided this: of the four things that move a long read to another
    generation, a larger `keep` removes one, the sweep's heal, except after an erasure, whose rewrite collects the
    erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
    Size `keep` past your longest pinned job, or lease the pin (`pin({ leaseUntil })`, up to 14 days) — a pinned read
@@ -375,6 +375,13 @@ between here and there:
     nothing internal from a store, in a coming minor. `stat()` gains the generation's byte size, so a grounded
     report needs nothing internal, and the price lists can be kept current for S3, GCS and Azure without a library
     release.
+11. **A segment's resolution kept apart from its reader.** The reader cache is a store's only memory of which
+    generation a segment resolved to. A store reading more segments at once than `cache.readerMax` or
+    `cache.readerMaxBytes` keeps (as on a small Lambda) therefore asks the registry again, and opens the object again,
+    for each chunk of a segment whose reader was let go, and a long read moves to the current generation whenever that
+    happens. Keeping each segment's resolution, a few bytes, for `cache.genTtlMs` whether or not its reader is still
+    open removes both: every chunk of a read agrees on one generation until the refresh, and an eviction costs only the
+    reopen a chunk actually needs. In a coming minor.
 
 ## Planned / exploring
 

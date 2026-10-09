@@ -2088,7 +2088,7 @@ describe('what a pin found out about its object, and how it forgets', () => {
   });
 });
 
-describe('a stream of coalesced ranges moves to the current generation on a TTL lapse, an invalidation and an eviction with no timed refresh, and a pin is never handed its chunks', () => {
+describe('a stream of coalesced ranges moves to the current generation where a read of one chunk would, and a pin is never handed its chunks', () => {
   beforeEach(perKey.restore); // the library's own sources read ranges again
 
   it('iterate: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {

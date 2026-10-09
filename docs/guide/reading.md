@@ -122,8 +122,7 @@ bound is stated; other pages link here.
   load then reaches it with no bound at all. Use `0` only for a store that never needs to see another process's
   loads.
 - **An eviction re-resolves early.** When the reader cache evicts a segment's reader, the next read re-resolves the
-  segment even if `cache.genTtlMs` has not elapsed. A read already running moves with it on a store with no timed
-  refresh, and on any store once it serves a chunk of that segment from the chunk cache.
+  segment even if `cache.genTtlMs` has not elapsed.
 - **The bound is timed on the store's clock**, the system clock unless `seams.clock` replaces it. A system clock
   stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
@@ -152,13 +151,12 @@ bound is stated; other pages link here.
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
 load landing mid-call never tears a chunk. A long call can still re-resolve: a `cache.genTtlMs` boundary after a publish,
-the reader cache evicting the segment (on a store with a timed refresh, only once the read serves a chunk of it from
-the chunk cache, which is checked against the segment as it is now), a sweep that collects the generation it was
-reading or an object replaced under its number, and an invalidation (the store's own `load`, `rollback`,
-`eraseSubject` and `*Into` writes, `dropSegment`, `retireExpired`, and `invalidate()`) each move the rest of it to the
-generation that is current then. A combine or `iterate` reads each operand's chunks as ranges of the object, and a
-move it finds before it serves a chunk, one held in the store's chunk cache included, drops the ranges it had already
-requested of the earlier generation rather than serving them; an
+the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
+its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
+`retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
+`iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, one held in the
+store's chunk cache included, exactly where
+a read of one chunk would, so a range it had already requested of the earlier generation is dropped, not served; an
 `exclude` read after an AND of two or more includes, a point read and every read of a source that reads chunk by chunk
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
 taken: up to `concurrency` keys per operand (32 by default) for a combine, up to 32 chunks for `iterate`, and up to 32
