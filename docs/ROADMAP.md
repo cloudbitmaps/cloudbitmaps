@@ -139,9 +139,9 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **A one-request cold `count()`, and `stat()`**. A cold `count()` is the pointer read and nothing else: the row records
   the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
   from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
-  returns the generation's number, count and metadata from one opened generation, and (on `main`, unreleased, to ship
-  in `0.20.0`) its object's size beside them, so a cold `stat()` adds a tail read of the object to the pointer read and
-  costs nothing while the generation is open or pinned; the current entry of `store.generations()` carries the number,
+  returns the generation's number, count and metadata from one opened generation, and
+  (on `main`, unreleased, to ship in `0.20.0`) its object's size beside them, so a cold `stat()` adds a tail read of the
+  object to the pointer read and costs nothing while the generation is open or pinned; the current entry of `store.generations()` carries the number,
   count and metadata from the row it already reads. A snapshot is a
   resolved target with a reader opened on first use, so a `count` and the `has` after it read one generation. The row's
   summary is used only for the generation it names, in the shape the keys call for, and is held against the object
