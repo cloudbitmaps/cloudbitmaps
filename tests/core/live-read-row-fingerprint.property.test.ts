@@ -151,6 +151,11 @@ async function run(ops: readonly Op[]): Promise<void> {
             `${where}: an id no published generation held`,
           ).toBe(true);
           expect(ids, `${where}: ascending`).toEqual([...ids].sort((x, y) => x - y));
+          // Every generation holds one id per chunk, so two ids in one chunk would be a chunk merged from two.
+          expect(
+            new Set(ids.map((id) => Math.floor(id / HI))).size,
+            `${where}: one id per chunk`,
+          ).toBe(ids.length);
         }
         break;
       }

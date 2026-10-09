@@ -55,9 +55,12 @@ export interface ConsistencyIssue {
   /**
    * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
    * `summary-mismatch` (only when asked for): the generation is there, but its row's summary names another object
-   * than the one under its number, or says a different id count or metadata than the object holds (a row restored from
-   * another point than its bucket, or an object put back from outside the library). A count and a `stat()` answer from
-   * that summary, and every read of the object refuses it, so it is what a restore leaves wrong.
+   * than the one under its number, says a different id count or metadata than the object holds (a row restored from
+   * another point than its bucket, or an object put back from outside the library), or records a fingerprint that
+   * names no object. A summary that names another object is what a count and a `stat()` answer from while every read
+   * that opens the object refuses it; one whose count or metadata disagrees is answered from until a read opens the
+   * object, which stops that store using it; one whose fingerprint names no object is not used, so every read opens the
+   * object unchecked.
    */
   readonly issue: 'missing-storage-generation' | 'summary-mismatch';
 }
