@@ -44,6 +44,19 @@ pays for every one. The per-op budget is charged for them. The scan runs at a bo
 `{ concurrency }`), so it is quick over a large fleet without stampeding your backend. A fault on one segment never
 aborts the ledger.
 
+An erasure that deletes an object a load may still publish (one above the pointer, a first load's object on a segment
+with no generation yet, or one no read of the segment can open) writes the segment's registry row first, to renew its
+`pointerId`, and reads the row again before each such delete. On a segment with no generation yet, with `n` objects to
+delete, that is `3 + n` registry reads and 1 write where an erasure that deletes nothing reads the row once (counted
+at the registry the S3, GCS and Azure Blob drivers share, which reads a row's version before it writes it). The cost
+is paid once per affected segment: the objects are gone, so the next run reads the row once and writes nothing. A
+segment whose objects no read can open is affected whatever id is erased, so the first `eraseSubject` over a fleet
+pays one renewal and the deletes for each such segment, and the next pays nothing for them. A renewal that gets no
+answer waits before each fresh write, under 500 ms, then 1 s, then 2 s, so up to 3.5 s in all, one wait after another
+within a segment; `eraseSubject` erases `concurrency` segments at once (8 by default), so up to 8 segments can wait
+side by side. A renewal on a segment with a generation moves its row's `pointerId`, so every store reading that
+segment opens its current generation again once, at its next refresh: one more tail read each.
+
 ## Reading the ledger
 
 `erased: true` means the call listed the segment's bucket and read what is left, and **no generation of the segment

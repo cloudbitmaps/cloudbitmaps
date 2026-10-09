@@ -215,6 +215,17 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   read and a tail read, which the model does not price, and the report says so when `hotSegments` is past 1,024.
   Nor does it price the index each reader opens again after every load. Size the caches to keep the hot set open.
 
+**An erasure is not in the model.** Beside the reads that search a segment's generations, an erasure that deletes an
+object a load may still publish (above the pointer, a first load's object on a segment with no generation yet, or one
+no read of the segment can open) renews the segment's registry row before it deletes it and reads the row again before
+each such delete: on a segment with no generation yet, `3 + n` registry reads and 1 write for `n` objects, where an
+erasure that deletes nothing reads the row once (counted at the registry the S3, GCS and Azure Blob drivers share).
+That is paid once per affected segment, since the next run finds nothing to delete. A renewal that gets no answer
+waits up to 3.5 s in all before it gives up, within one segment, and `eraseSubject` erases 8 segments at once by
+default. A renewal on a segment with a generation moves its `pointerId`, so each store reading it opens its current
+generation again once, one tail read, at its next refresh. See [what an erasure
+costs](erasure.md#find-an-id-and-erase-it).
+
 **`checkConsistency({ summaries: true })` costs one tail read per segment**, on top of the listing the default check
 makes: it opens each current object to compare the row's summary with it. The model does not price it, since a
 consistency check is a run of your own, not a rate; at the default prices a million segments cost $0.40 on S3 and GCS
