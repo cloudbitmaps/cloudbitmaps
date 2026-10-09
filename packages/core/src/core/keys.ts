@@ -39,6 +39,54 @@ export function segmentPrefix(ref: SegmentRef): string {
   return `${segmentKey(ref)}${FIELD}`;
 }
 
+/**
+ * How many segments' encoded keys a {@link KeptSegmentKeys} holds before it empties: the reader cache's default
+ * segment count, a working set a long-lived reader keeps open. With 30-character names that is about 150 KB.
+ */
+export const KEPT_SEGMENT_KEYS = 1024;
+
+/**
+ * Segments' encoded keys ({@link segmentKey}, or {@link segmentPrefix}: whichever `encode` gives), kept so a read that
+ * looks up chunk after chunk compares names rather than encoding them again, which costs about a third of a warm
+ * `has()`. Held by namespace and then by segment, so segments of one name in several namespaces sit side by side, and
+ * no number of segments read in turn makes every lookup encode again. Bounded: at `max` entries it empties and fills
+ * again. An encoding is the names' and nothing else, so a kept one is the one an encoding would give now.
+ */
+export class KeptSegmentKeys {
+  private readonly byNamespace = new Map<string | undefined, Map<string, string>>();
+  private kept = 0;
+
+  constructor(
+    private readonly encode: (ref: SegmentRef) => string,
+    private readonly max: number = KEPT_SEGMENT_KEYS,
+  ) {}
+
+  /** The segment's encoded key. */
+  of(ref: SegmentRef): string {
+    let names = this.byNamespace.get(ref.namespace);
+    const found = names?.get(ref.segment);
+    if (found !== undefined) return found;
+    const encoded = this.encode(ref);
+    if (this.kept >= this.max) {
+      this.byNamespace.clear();
+      this.kept = 0;
+      names = undefined;
+    }
+    if (names === undefined) {
+      names = new Map();
+      this.byNamespace.set(ref.namespace, names);
+    }
+    names.set(ref.segment, encoded);
+    this.kept += 1;
+    return encoded;
+  }
+
+  /** How many encoded keys are kept. */
+  get size(): number {
+    return this.kept;
+  }
+}
+
 export function chunkRefKey(ref: ChunkRef): string {
   return chunkKeyUnder(segmentPrefix(ref), ref.chunkKey);
 }

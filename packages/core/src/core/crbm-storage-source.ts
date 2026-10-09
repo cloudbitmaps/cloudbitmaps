@@ -39,7 +39,7 @@ import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
 import { MAX_REMAINDER, splitId } from './bit-route';
-import { segmentKey } from './keys';
+import { KeptSegmentKeys, segmentKey } from './keys';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { validateChunkKeyOrder, validateChunkRef, validateUserRef } from './validate';
@@ -216,9 +216,9 @@ const OBJECT_SUFFIX = /#[0-9a-z]+\.[0-9a-z]+$/;
  * What a live version's resolution named, without the object's fingerprint: `<generation>:<row token>`, or
  * `<generation>` with no registry. For a caller that compares a live version, from
  * {@link CrbmStorageChunkSource.currentVersion} or a chunk of its `getChunks`, with a row it read, which names no
- * object; a pin's version has no suffix and is not passed here. Known limit: a version from another source, or one
- * whose row token, from another registry, itself ends in `#<base 36>.<base 36>`, loses that end too. A shipped
- * registry's tokens never hold a `#`.
+ * object. A live version always ends with the suffix, which holds no `#`, so the match starts at its last `#` and a row
+ * token holding `#` of its own is kept whole. Known limit: a string with no suffix, such as a pin's version or one
+ * from another source, loses its end when its row token itself ends in `#<base 36>.<base 36>`; no caller passes one.
  */
 export function rowVersionOf(version: string): string {
   return version.replace(OBJECT_SUFFIX, '');
@@ -291,13 +291,12 @@ const readerIsOf = (reader: CrbmReader, live: Live): boolean =>
  * Whether `snap` reads the object `reader` opened. Once the snapshot's reader has opened, its version says, which names
  * the object. Until then, while none has been asked for and while another read's open of it is under way, its
  * resolution says, by generation and row token, so nothing is opened, and nothing waited on, to learn it; the
- * snapshot's reader can still turn out to be another object under that name, which the caller checks once it settles.
- * An open that failed is another read's failure, not a reason to fail the caller: it says the snapshot is not one the
- * caller can go on with, and the caller resolves the segment again, meeting the error itself only if it persists.
+ * snapshot's reader can still turn out to be another object under that name, which the caller checks once it opens.
+ * An open that failed is another read's failure, and never the caller's: the reader cache forgets a snapshot whose open
+ * failed as the failure lands, so the caller meets a new snapshot next and resolves the segment through it.
  */
 async function readsObjectOf(snap: Snapshot, reader: CrbmReader): Promise<boolean> {
   const settled = snap.settled;
-  if (settled === 'failed') return false;
   if (settled !== undefined) {
     const other = settled.reader;
     return (
@@ -332,7 +331,7 @@ class Snapshot {
   /** Set by the cache, to hear of a reader as it is opened. */
   onReader: ((reader: Promise<CrbmReader | null>) => void) | undefined;
   private opened: Promise<CrbmReader | null> | undefined;
-  private outcome: { readonly reader: CrbmReader | null } | 'failed' | undefined;
+  private outcome: { readonly reader: CrbmReader | null } | undefined;
 
   private constructor(
     /** What the pointer resolved to; absent on a pinned snapshot. */
@@ -374,16 +373,17 @@ class Snapshot {
     return this.opened;
   }
 
-  /** Take `reader` as this snapshot's, and note what it comes to once it settles. */
+  /**
+   * Take `reader` as this snapshot's, and note the reader once it has opened. A failed open is not noted: the reader
+   * cache forgets the snapshot as the failure lands, and whoever awaits the reader meets the error.
+   */
   private hold(reader: Promise<CrbmReader | null>): Promise<CrbmReader | null> {
     this.opened = reader;
     reader.then(
       (r) => {
         this.outcome = { reader: r };
       },
-      () => {
-        this.outcome = 'failed';
-      },
+      () => undefined,
     );
     return reader;
   }
@@ -394,10 +394,10 @@ class Snapshot {
   }
 
   /**
-   * What the open came to, once it has settled: the reader (`null` for no generation), or `'failed'`. Undefined while
-   * no reader has been asked for, and while the open is under way.
+   * The reader once it has opened (`null` for no generation). Undefined while no reader has been asked for, while the
+   * open is under way, and after an open that failed.
    */
-  get settled(): { readonly reader: CrbmReader | null } | 'failed' | undefined {
+  get settled(): { readonly reader: CrbmReader | null } | undefined {
     return this.outcome;
   }
 
@@ -433,9 +433,6 @@ const BULK_FLUSH_IDS = 1 << 20;
  * ~220 ns/id, so the resulting stretch stays a few ms there and well under 1 ms on a plain array.
  */
 const YIELD_EVERY_IDS = 1 << 14;
-
-/** How many segments' keys {@link CrbmStorageChunkSource} keeps at hand: a few operands of one combine. */
-const RECENT_KEYS = 8;
 
 export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
@@ -579,24 +576,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The last few segments' keys, newest first. A stream asks for its segment's snapshot before every cached chunk it
-   * serves, and a combine alternates between a few operands, so comparing two names beats encoding them again, which
-   * cost about a microsecond a chunk.
+   * The keys of the segments this source reads, kept rather than encoded again: a read asks for its segment's snapshot
+   * once per operand, and a stream before every cached chunk it serves, and encoding the names cost about a
+   * microsecond each time.
    */
-  private readonly recentKeys: Array<{
-    namespace: string | undefined;
-    segment: string;
-    key: string;
-  }> = [];
+  private readonly keys = new KeptSegmentKeys(segmentKey);
 
   private keyOf(ref: SegmentRef): string {
-    for (const k of this.recentKeys) {
-      if (k.segment === ref.segment && k.namespace === ref.namespace) return k.key;
-    }
-    const key = segmentKey(ref);
-    this.recentKeys.unshift({ namespace: ref.namespace, segment: ref.segment, key });
-    if (this.recentKeys.length > RECENT_KEYS) this.recentKeys.pop();
-    return key;
+    return this.keys.of(ref);
   }
 
   /**
@@ -1502,7 +1489,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // the same number and token, read after a heal, carry another version than the ones read before it.
         const version = versionOfReader(reader);
         // What the open of the snapshot this stream last compared itself with had come to: when that snapshot's
-        // reader settles later, the stream compares again, since it can be another object under the same name.
+        // reader opens later, the stream compares again, since it can be another object under the same name.
         let seen = snap.settled;
         chunks = reader.readChunks(keys.slice(yielded), {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
@@ -1525,14 +1512,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             // is compared by its reader where one has opened, which names the object, and otherwise by its resolution
             // (the registry's row, or a listing of the bucket with no registry), so the stream neither opens an object
             // nor waits on another read's open to learn it. A snapshot taken on by its resolution is compared again
-            // once its reader settles: a reader opened after its row read can be another object under the same name,
-            // which the rest of the read, a chunk served from the cache among it, reads from then on, and an open that
-            // failed sends the stream back to resolve the segment itself. A fault in resolving starts the stream over
-            // at the top, where a caller's retry runs the resolution.
+            // once its reader opens: a reader opened after its row read can be another object under the same name,
+            // which the rest of the read, a chunk served from the cache among it, reads from then on. An open that
+            // failed is forgotten by the reader cache, so the stream meets a new snapshot. A fault in resolving starts
+            // the stream over at the top, where a caller's retry runs the resolution.
             if (this.mayHaveMoved(key, snap, epoch) || snap.settled !== seen) {
               const live = this.liveSnapshot(ref);
               if (live !== snap || live.settled !== seen) {
-                // What is compared is the open as it stands now: one that settles while the comparison waits is
+                // What is compared is the open as it stands now: a reader that opens while the comparison waits is
                 // compared at the next chunk.
                 const looked = live.settled;
                 let same: boolean;

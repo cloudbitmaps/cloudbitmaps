@@ -431,6 +431,44 @@ describe('a running stream and another read opening its segment', () => {
     expect(await rest(stream)).toEqual([1, 2, 3]);
   });
 
+  it('after it takes on a newer snapshot, a chunk costs the stream what a chunk cost it before', async () => {
+    // A clock that counts its readings: the stream reads it, through the reader cache, as often as it compares.
+    let readings = 0;
+    const clock = {
+      now: (): number => {
+        readings += 1;
+        return 0;
+      },
+    };
+    const backend = new MemoryStorage();
+    const writer = new CloudRoaring({ storage: backend, retry: false });
+    const keys = [0, 1, 2, 3, 4, 5, 6, 7];
+    await writer.load(
+      A,
+      keys.map((k) => k * HI + 1),
+    );
+    await writer.load(B, [1]);
+    const source = new CrbmStorageChunkSource(backend.storage, {
+      registry: backend.registry,
+      clock,
+      currentGenTtlMs: TTL,
+      maxOpenSegments: 1,
+    });
+    const stream = source.getChunks!(A, keys, { concurrency: 1 });
+    const cost = async (): Promise<number> => {
+      const before = readings;
+      expect((await stream.next()).done).toBe(false);
+      return readings - before;
+    };
+    await cost(); // chunk 0: the open
+    const steady = await cost();
+    expect(await cost()).toBe(steady);
+    await source.listChunkKeys(B); // the reader cache lets `a` go
+    expect((await source.summary(A))?.cardinality).toBe(keys.length); // a newer snapshot, not opened
+    await cost(); // the stream compares it with its own and takes it on
+    for (let i = 0; i < 3; i++) expect(await cost()).toBe(steady);
+  });
+
   describe('when the object now under the number cannot be read', () => {
     // The stream took on the count's snapshot, the number was taken again, and the new object is then gone or
     // corrupt: the stream moves to what the row names now and meets that object's own typed error.
@@ -483,6 +521,9 @@ describe('the version’s spelling', () => {
     expect(rowVersionOf('1:tok#5h.1b8gqkl')).toBe('1:tok');
     expect(rowVersionOf('0#5h.1b8gqkl')).toBe('0');
     expect(rowVersionOf('1:a#b#5h.1b8gqkl')).toBe('1:a#b');
+    // A row token that itself ends like a suffix is kept: only the version's end is the object.
+    expect(rowVersionOf('1:a#b.c#5h.1b8gqkl')).toBe('1:a#b.c');
+    expect(rowVersionOf('1:x#5h.1b8gqkl#7.9')).toBe('1:x#5h.1b8gqkl');
   });
 
   it('tokenOfVersion reads the token of a row version; a live one is read through rowVersionOf', () => {
