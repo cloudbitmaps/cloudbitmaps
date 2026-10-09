@@ -323,13 +323,16 @@ Two limits to know before you automate it:
 > A lifecycle rule is still a fine backstop for orphans left by a failed `dropSegment`. Set its expiry window
 > comfortably longer than your retention window, so it can never get there first.
 
-## Remove the deleted rows a release before 0.12 left
+<a id="remove-the-deleted-rows-a-release-before-012-left"></a>
 
-A release before 0.12 kept a row it deleted as a `{ deleted: true }` envelope, and a segment name that was personal data
-survives in its record. This release reads no row a release before 0.20 wrote, a deleted one included: each is refused
-with `UnsupportedError`, by every read and write of its segment and by every listing that reaches it. Moving a store to
-this release removes them with the rest of its old prefix: its segments are exported and loaded into a new prefix, and
-the old prefix is deleted, its noncurrent versions included, as the [changelog](../../CHANGELOG.md) says.
+## Registry rows an earlier schema wrote
+
+This release reads no row an earlier registry schema wrote, a deleted one included: each is refused with
+`UnsupportedError`, by every read and write of its segment and by every listing that reaches it, so the library can
+neither delete, drop nor retire one, and a sweep of a namespace that holds one fails. A deleted row from before 0.12
+is kept as a `{ deleted: true }` envelope, and a segment name that was personal data survives in its record. Remove
+such rows with your storage's own tools, or move the store to a new prefix and delete the old one, its noncurrent
+versions included, as the [changelog](../../CHANGELOG.md) says.
 
 ## There is no per-id TTL
 
