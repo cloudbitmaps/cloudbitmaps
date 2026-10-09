@@ -1094,9 +1094,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * **And the object is checked**, when the caller says which one it pinned. A generation number is not an
    * identity (invariant 1): once a name is purged and loaded again, its new segment starts again at generation 0,
    * so a pin of the old one would open the new one's object as its own, and read it beside the chunks it had
-   * already cached from the old one. The row's token cannot tell them apart, since it moves on every write, a
-   * publish included; the object's fingerprint can, and a pin whose object has been replaced fails, as one whose
-   * generation has been swept does. The memo is keyed so that two pins of one generation number in two
+   * already cached from the old one. The row's `pointerId` cannot tell them apart, since it moves with every write
+   * that changes what the row resolves to, a publish included, while the pinned object stays what it was; the
+   * object's fingerprint can, and a pin whose object has been replaced fails, as one whose generation has been swept
+   * does. The memo is keyed so that two pins of one generation number in two
    * incarnations never share a reader, with a registry or without one ({@link pinnedKey}).
    */
   private async readerAt(
@@ -2678,7 +2679,11 @@ async function landedHere(
   return holdsOwnObject();
 }
 
-/** Whether two reads of a row saw it unwritten in between: the same token, or no row both times. */
+/**
+ * Whether two reads of a row saw it unwritten in between: the same token, or no row both times. The settling never
+ * compares `pointerId`: an unchanged token already proves that no write landed, and a write that did land is proved by
+ * the object it names, through the caller's `holdsOwnObject` ({@link landedHere}).
+ */
 function sameRow(a: RegistryRecord | null, b: RegistryRecord | null): boolean {
   return a === null ? b === null : b !== null && a.token === b.token;
 }
