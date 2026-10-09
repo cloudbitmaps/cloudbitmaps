@@ -2271,6 +2271,19 @@ export async function provenObject(
 }
 
 /**
+ * Whether the object under `key` is still the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one read
+ * of its footer. Unlike {@link provenObject}, a fault is not an answer: `NotFoundError` when the key holds no object,
+ * and any other failure of the read, thrown as it is.
+ */
+export function sameObjectUnder(
+  storage: IStorageDriver,
+  key: GenKey,
+  fingerprint: string,
+): Promise<boolean> {
+  return CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
+}
+
+/**
  * Whether the object under `key` says it is encrypted, from one read of its footer, with no key. `noteVersion` is shown
  * the version the driver reported on that read, when it reported one: a caller that deletes the object for what its
  * footer says passes it as the delete's `ifVersion`.

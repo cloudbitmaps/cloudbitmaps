@@ -3,7 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { brandAsBackend } from '@/core/ports';
+import { PAYLOAD_START } from '@/core/crbm/format';
 import { eraseIdFromSegment, type EraseIdResult } from '@/core/erase-id';
+import { IntegrityError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
@@ -209,5 +211,94 @@ describe('the same race over a storage driver that reports no conditionalDelete'
     // The residual: the row names generation 0, the load's, and the first erasure's delete took it.
     expect((await r.registry.get(REF))?.currentGen).toBe(0);
     expect(await generations(r.storage)).toEqual([]);
+  });
+});
+
+describe('an object replaced under its number while an erasure searches it', () => {
+  /**
+   * `storage`, with the object at `generation` replaced by `replace` just before the first range read of it: what
+   * another erasure's delete and a load's write of the freed number do between this one's open and its chunk read.
+   */
+  function replacedAtFirstRange(
+    storage: MemoryStorageDriver,
+    generation: number,
+    replace: (bytes: Uint8Array) => Promise<void>,
+  ): MemoryStorageDriver {
+    let replaced = false;
+    const driver = Object.create(storage) as MemoryStorageDriver;
+    driver.getRange = async (key, offset, length) => {
+      if (!replaced && key.generation === generation) {
+        replaced = true;
+        await replace((await storage.getTail(key, 1 << 30)).bytes);
+      }
+      return storage.getRange(key, offset, length);
+    };
+    return driver;
+  }
+
+  /** Another first load's object under the number: `ids`, cleartext, never published. */
+  const anotherObject =
+    (storage: MemoryStorageDriver, ids: number[]) => async (): Promise<void> => {
+      await storage.delete({ ...REF, generation: 0 });
+      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, ids, {
+        registry: new MemoryRegistryDriver(),
+        publish: false,
+      });
+    };
+
+  it.each([
+    ['of the same size, whose chunk then fails its checks', [1, 2, X + 1]],
+    ['of another size, which has no such range', [1, 2, 3, 4, 5, 6, 7, 8, 70_000]],
+  ])(
+    'one %s: the object it searched is gone, and the call answers as for a bucket with no holder',
+    async (_, ids) => {
+      const storage = new MemoryStorageDriver();
+      const registry = new MemoryRegistryDriver();
+      await pointerless(storage, registry);
+      const before = (await registry.get(REF))!;
+
+      const result = await eraseIdFromSegment(REF, X, {
+        storage: replacedAtFirstRange(storage, 0, anotherObject(storage, ids)),
+        registry,
+        codec: roaringCodec,
+        clock,
+      });
+
+      expect(result).toEqual({
+        segment: 's',
+        namespace: undefined,
+        erased: false,
+        reason: 'no-generation',
+        collected: [],
+      });
+      // Nothing was written or deleted: the object there now is another first load's, and it does not hold the id.
+      expect((await registry.get(REF))!.token).toBe(before.token);
+      expect(await generations(storage)).toEqual([0]);
+    },
+  );
+
+  it('the same object with a chunk byte flipped is corruption still: IntegrityError, and nothing is deleted', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await pointerless(storage, registry);
+    // The chunk's payload starts after the preamble; its byte flipped leaves the footer, so the object is the same one.
+    const flipped = async (bytes: Uint8Array): Promise<void> => {
+      const changed = Uint8Array.from(bytes);
+      changed[PAYLOAD_START]! ^= 0x01;
+      await storage.delete({ ...REF, generation: 0 });
+      await storage.putImmutable({ ...REF, generation: 0 }, async (out) => out.write(changed));
+    };
+
+    await expect(
+      eraseIdFromSegment(REF, X, {
+        storage: replacedAtFirstRange(storage, 0, flipped),
+        registry,
+        codec: roaringCodec,
+        clock,
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof IntegrityError && /payload CRC/.test(e.message),
+    );
+    expect(await generations(storage)).toEqual([0]);
   });
 });

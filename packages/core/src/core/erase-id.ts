@@ -97,6 +97,7 @@ import {
   objectIsEncrypted,
   objectVersionOf,
   openGenerationReaderNoting,
+  sameObjectUnder,
   openGenerationReader,
   provesOwnObject,
   publishGeneration,
@@ -451,9 +452,10 @@ async function eraseOnce(
   /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
-   * but the outcome it wants. `true`, and the generation noted in `sealed`, for an object sealed under a key the row
-   * does not hold: it cannot be searched, so it is treated as one that may hold the id. Any other fault propagates: it
-   * must never be swallowed into a clean receipt.
+   * but the outcome it wants — and when the chunk's read fails because another object is under the number by then:
+   * the object listed is gone in that case too. `true`, and the generation noted in `sealed`, for an object sealed
+   * under a key the row does not hold: it cannot be searched, so it is treated as one that may hold the id. Any other
+   * fault propagates: it must never be swallowed into a clean receipt.
    *
    * Which key an object is sealed under is read from where its open fails, since its footer names none. Every check
    * before the index's authentication passes for an object sealed under another key, and that authentication fails:
@@ -521,7 +523,22 @@ async function eraseOnce(
         reader = await read(() => openGenerationReader(deps.storage, key, undefined));
       }
       versions.set(generation, objectVersionOf(reader));
-      const bytes = await read(() => reader.getChunk(chunkKey));
+      let bytes: Uint8Array | null;
+      try {
+        bytes = await read(() => reader.getChunk(chunkKey));
+      } catch (err) {
+        // A chunk that fails its checks, or a range the object does not have, is corruption only in the object its
+        // index was read from. One stored under the number since (that object deleted, by another erasure as a
+        // holder, say, and the number taken again by a load) answers the range read with its own bytes, and then the
+        // object this call searched is gone, as the generation it listed is.
+        if (
+          !isTransientError(err) &&
+          !(await read(() => sameObjectUnder(deps.storage, key, reader.fingerprint)))
+        ) {
+          return null;
+        }
+        throw err;
+      }
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
       if (isNotFoundError(err)) return null;
