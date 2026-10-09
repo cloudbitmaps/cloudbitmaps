@@ -190,6 +190,7 @@ interface Resolution {
   /**
    * Set when the read failed transiently and this answers what the resolution `from` found instead: only the snapshot
    * that replaces one on `from` is served it, and any other fails with the read's `fault`, as a cold resolve does.
+   * Cleared when the next refresh rides out from this one, so an outage holds one link of it, however long.
    */
   rodeOut?: { readonly from: Resolution; readonly fault: unknown };
 }
@@ -758,6 +759,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         const key = this.keyOf(ref);
         if (this.resolutions?.peek(key) === resolution) this.resolutions.delete(key);
         resolution.rodeOut = { from: prior, fault: err };
+        // `prior` has settled and is no longer the segment's resolution, so what it rode out from is needed no more:
+        // kept, each retry of a long outage would hold the one before it, and its fault.
+        prior.rodeOut = undefined;
         return before;
       }),
     };

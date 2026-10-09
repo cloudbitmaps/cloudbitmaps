@@ -657,6 +657,28 @@ describe('a refresh keeps nothing of what it replaced alive', () => {
     expect(await alive(readers)).toBe(1);
     expect(readers.at(-1)!.deref()).toBe(held(x).settled!.reader); // control: the reader the cache holds
   });
+
+  it('a long outage ridden out by a resident segment keeps one ride-out behind the current one, not one per retry', async () => {
+    const x = await world();
+    await x.open(A);
+    x.rows.state.down = new TransientError('throttled');
+    const resolutions: WeakRef<object>[] = [];
+    for (let i = 0; i < 1_000; i++) {
+      x.clock.advance(TTL);
+      expect(await x.source.listChunkKeys(A)).toEqual([0, 1]);
+      resolutions.push(new WeakRef(held(x).resolution));
+    }
+    let chain = 0;
+    for (
+      let r: Followed | undefined = held(x).resolution;
+      r?.rodeOut !== undefined;
+      r = r.rodeOut.from
+    )
+      chain++;
+    expect(chain).toBe(1);
+    expect(await alive(resolutions)).toBeLessThanOrEqual(2);
+    expect(resolutions.at(-1)!.deref()).toBe(held(x).resolution); // control: the current one
+  });
 });
 
 describe('the TTL counts from the instant the registry read is sent', () => {
