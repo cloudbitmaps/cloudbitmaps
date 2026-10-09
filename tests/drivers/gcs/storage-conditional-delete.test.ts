@@ -29,6 +29,8 @@ class FakeBucket {
   nextDelete: Error | undefined;
   /** Apply the next delete, then lose its answer: the SDK's retry sends it again. */
   loseNextDeleteAnswer = false;
+  /** What a metadata read meets, in place of an answer. */
+  metadataFault: Error | undefined;
   bucketMissing = false;
   /** The `x-goog-generation` a read of an object of this generation is answered with. */
   generationHeader = (generation: number): string => String(generation);
@@ -65,6 +67,7 @@ class FakeBucket {
         return out;
       },
       getMetadata: async () => {
+        if (this.metadataFault !== undefined) throw this.metadataFault;
         const stored = this.objects.get(name);
         if (stored === undefined) throw httpError(404, 'notFound');
         return [{ size: String(stored.bytes.length), generation: String(stored.generation) }];
@@ -240,5 +243,21 @@ describe('GcsStorageDriver: without conditionalDelete the version is not sent', 
     const off = new GcsStorage(where);
     expect(off.storage.capabilities().conditionalDelete).toBe(false);
     expect(off.registry.capabilities().conditionalDelete).toBe(false);
+  });
+});
+
+describe('GcsStorageDriver: the look after a failed precondition', () => {
+  it.each([
+    ['a 503', httpError(503, 'backendError')],
+    ['a dropped connection', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+  ])('that meets %s is a TransientError, not a conflict and not a no-op', async (_, fault) => {
+    const fake = new FakeBucket();
+    const driver = over(fake, true);
+    const first = fake.put('one');
+    await driver.delete(KEY);
+    fake.put('two');
+    fake.metadataFault = fault;
+    await expect(driver.delete(KEY, { ifVersion: first })).rejects.toBeInstanceOf(TransientError);
+    expect(fake.objects.has(NAME)).toBe(true);
   });
 });

@@ -217,3 +217,37 @@ describe('S3StorageDriver: where the condition is not relied on, it is not sent'
     );
   });
 });
+
+describe('S3StorageDriver: the look after a failed precondition', () => {
+  /** A client whose conditional delete fails its precondition and whose HeadObject then meets `fault`. */
+  const failingLook = (fault: unknown): S3Client =>
+    ({
+      send: async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'DeleteObjectCommand') {
+          throw Object.assign(new Error('PreconditionFailed'), {
+            name: 'PreconditionFailed',
+            $metadata: { httpStatusCode: 412 },
+          });
+        }
+        throw fault;
+      },
+    }) as unknown as S3Client;
+
+  it.each([
+    [
+      'a 503',
+      Object.assign(new Error('ServiceUnavailable'), {
+        name: 'ServiceUnavailable',
+        $metadata: { httpStatusCode: 503 },
+      }),
+    ],
+    ['a dropped connection', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+  ])('that meets %s is a TransientError, not a conflict and not a no-op', async (_, fault) => {
+    const driver = new S3StorageDriver({
+      client: failingLook(fault),
+      bucket: BUCKET,
+      conditionalDelete: true,
+    });
+    await expect(driver.delete(KEY, { ifVersion: '"e1"' })).rejects.toBeInstanceOf(TransientError);
+  });
+});

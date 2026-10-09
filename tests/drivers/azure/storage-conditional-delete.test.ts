@@ -24,6 +24,10 @@ class FakeContainer {
   containerMissing = false;
   /** The ETag the next ranged download answers with, in place of the blob's: a blob replaced between the two requests. */
   downloadEtag: string | undefined;
+  /** What a properties read meets, in place of an answer. */
+  propertiesFault: Error | undefined;
+  /** Apply the next delete, then lose its answer: the client's retry policy sends it again. */
+  loseNextDeleteAnswer = false;
   private seq = 0;
 
   /** Store `text` under every name; returns its ETag. */
@@ -40,6 +44,7 @@ class FakeContainer {
     const blob = {
       getProperties: async () => {
         this.calls.push({ op: 'getProperties' });
+        if (this.propertiesFault !== undefined) throw this.propertiesFault;
         const stored = this.blobs.get('only');
         if (stored === undefined || this.containerMissing) throw missing();
         return { contentLength: stored.bytes.length, etag: stored.etag };
@@ -61,18 +66,25 @@ class FakeContainer {
       },
       delete: async (options?: { conditions?: { ifMatch?: string } }) => {
         const ifMatch = options?.conditions?.ifMatch;
-        this.calls.push({ op: 'delete', ifMatch });
-        if (this.containerMissing) throw missing();
-        const stored = this.blobs.get('only');
-        if (stored === undefined) {
-          throw ifMatch !== undefined && this.absentAnswer === 412
-            ? restError(412, 'ConditionNotMet')
-            : missing();
+        const once = (): void => {
+          this.calls.push({ op: 'delete', ifMatch });
+          if (this.containerMissing) throw missing();
+          const stored = this.blobs.get('only');
+          if (stored === undefined) {
+            throw ifMatch !== undefined && this.absentAnswer === 412
+              ? restError(412, 'ConditionNotMet')
+              : missing();
+          }
+          if (ifMatch !== undefined && stored.etag !== ifMatch) {
+            throw restError(412, 'ConditionNotMet');
+          }
+          this.blobs.delete('only');
+        };
+        if (this.loseNextDeleteAnswer) {
+          this.loseNextDeleteAnswer = false;
+          once();
         }
-        if (ifMatch !== undefined && stored.etag !== ifMatch) {
-          throw restError(412, 'ConditionNotMet');
-        }
-        this.blobs.delete('only');
+        once();
       },
       deleteIfExists: async () => {
         this.calls.push({ op: 'deleteIfExists' });
@@ -206,4 +218,37 @@ describe('AzureBlobStorageDriver: with conditionalDelete off the version is not 
     expect(on.storage.capabilities().conditionalDelete).toBe(true);
     expect(on.registry.capabilities().conditionalDelete).toBe(true);
   });
+});
+
+describe('AzureBlobStorageDriver: a delete sent again, and the look after a failed condition', () => {
+  it.each([404, 412] as const)(
+    'a copy the client sends again after a lost response meets its own landed delete (%s): success',
+    async (answer) => {
+      const fake = new FakeContainer();
+      fake.absentAnswer = answer;
+      const driver = over(fake);
+      const etag = fake.put('one');
+      fake.loseNextDeleteAnswer = true;
+      await expect(driver.delete(KEY, { ifVersion: etag })).resolves.toBeUndefined();
+      expect(fake.calls.filter((c) => c.op === 'delete')).toHaveLength(2);
+      expect(fake.blobs.size).toBe(0);
+    },
+  );
+
+  it.each([
+    ['a 503', restError(503, 'ServerBusy')],
+    ['a dropped connection', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+  ])(
+    'a look that meets %s is a TransientError, not a conflict and not a no-op',
+    async (_, fault) => {
+      const fake = new FakeContainer();
+      const driver = over(fake);
+      const first = fake.put('one');
+      await driver.delete(KEY);
+      fake.put('two');
+      fake.propertiesFault = fault;
+      await expect(driver.delete(KEY, { ifVersion: first })).rejects.toBeInstanceOf(TransientError);
+      expect(fake.blobs.size).toBe(1);
+    },
+  );
 });
