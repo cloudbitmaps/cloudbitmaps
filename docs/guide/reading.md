@@ -47,8 +47,8 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
   index, encrypted or not. A reader that already has the segment re-reads only the pointer, at most once each
   `cache.genTtlMs`, and a refresh that finds the same generation under a changed row (a `setRetention`) costs the count
   no re-open. So counting a ten-million-id segment makes the same requests as counting a thousand. A row with no
-  summary it can use (one written before rows carried it, one that names another generation, one that does not open)
-  sends the count to the `.crbm` index, which costs a tail read more. The row's word is what the count trusts: see
+  summary it can use (one written without it, one that names another generation, one that does not open) sends the
+  count to the `.crbm` index, which costs a tail read more. The row's word is what the count trusts: see
   [What `count()` trusts](#what-count-trusts).
 - **`has()` comes from memory once warm.** A `has()` whose chunk is in the cache makes no request, beyond at most one
   pointer read per segment each `cache.genTtlMs` (2 s by default) for as long as the reader cache keeps the segment
@@ -100,21 +100,25 @@ segment and count what it yields.
 
 `seg.stat()` returns `{ generation, cardinality, metadata?, sizeBytes }`: the number of the generation the handle reads, its
 id count, the metadata it was loaded with (absent when it has none), and `sizeBytes`, the bytes of the generation's object
-in storage. All four come from that one generation, opened once: its footer and index, with no payload read, so they
-cannot straddle a publish and the size is never another generation's. It is one registry read and one tail read of the
-object when cold (and a range read for an index longer than the tail read, on a segment of tens of thousands of
-chunks), and none while the generation is open (a read of the segment opens it, and so does a `stat()`). Like a read, a
-cold `stat()` keeps the generation open in the reader cache, so a `stat()` of many segments the process does not
-otherwise read takes cache room from the ones it does. A pinned handle answers for the generation it pinned, and reads
-nothing while that generation is open. After it, a `count()` reads nothing. A segment with no generation answers
-`{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size answers
-`sizeBytes: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second resolution that a
-publish between the two can make another generation's. A pointer that names a missing object (a torn restore) throws `NotFoundError`, as a read of the object
-does, where `count()` answers the row's number.
+in storage. All four come from one resolution of the segment, so they cannot straddle a publish and the size is never
+another generation's: from the row's summary of its generation, as a `count()` answers, whose fingerprint of the object
+carries its size. It is one registry read when cold, as a `count()` is, and none while the segment is resolved (inside
+`cache.genTtlMs`, or after any read of it); no read of the object. On an encrypted segment the summary is sealed, and
+the key is unwrapped to open it, as for a count. A row with no summary it can use (a rollback whose target is
+encrypted and whose key was not at hand writes none) is answered from the object's footer and index instead, with no
+payload read: a tail read more when cold, and a range read for an index longer than the tail read, on a segment of
+tens of thousands of chunks; that `stat()` keeps the generation open in the reader cache, as a read does. A pinned
+handle answers for the generation it pinned, and reads nothing while that generation is open. A segment with no
+generation answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a
+size answers `sizeBytes: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second
+resolution that a publish between the two can make another generation's. Answered from the row, a `stat()` reports
+the row's figures even after a torn restore, when the object under the generation's number is missing or is another
+object: every read of the object refuses it, with `NotFoundError`, and
+[`checkConsistency`](disaster-recovery.md) is what finds such a row.
 
 The count is the index's sum, checked for internal consistency when the object is opened, and the opened object is
-held against the row's summary: a disagreement makes the store stop using that summary, so `count()` then answers what
-`stat()` does. `sizeBytes` is what [`groundedReport()`](cost.md) prices a segment's storage from.
+held against the row's summary: a disagreement makes the store stop using that summary, so `count()` and `stat()` then
+answer from the object. `sizeBytes` is what [`groundedReport()`](cost.md) prices a segment's storage from.
 
 `store.generations(ref)` carries `cardinality` and `metadata` on its current entry from the row it already reads, with
 no read of the object. Only the current entry has them: the other generations are not opened.
@@ -178,17 +182,22 @@ encrypted segment, the key it unwrapped) until it moves on or ends, outside the 
 when that matters.
 
 **A cached chunk is one object's.** The store caches each decoded chunk, and keeps each open reader, under the
-generation's number and its registry row's token, and checks that against the object itself whenever it opens one: the
-object's size and footer checksum, which the open reads anyway, so the check costs no request. The check is needed
-because a number can be taken again once its object is deleted, as after a `rollback`, an `eraseSubject` that deletes
-the generation above the pointer holding the id, and a load, and because the store can open a generation some time
-after it read the row: a `count()` answered from the row opens nothing, and the read after it opens whatever object is
-under the number by then. A chunk cached from one object is never served for another, as far as their sizes and footer
-checksums tell them apart, so a read does not mix the two. Inside `cache.genTtlMs` such a read serves the object under
-the number when it opened, which no row need name: a load that was refused, or whose publish
-[got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), can leave its object there while the row names
-an earlier generation. The store's next read of the row moves it to what the row names. A segment reopened after the
-reader cache let it go is the same object, and its cached chunks still answer.
+generation's number and its registry row's `pointerId`: the token of the last write that changed what the row
+resolves to (a load's publish, a rollback, an erasure's rewrite, a shred), which a lease or a policy write leaves as
+it was. So a `setRetention`, or a lease taken or released, costs a store reading the segment nothing more than the
+pointer read its refresh makes anyway: it keeps its open reader and its cached chunks. It checks the object itself
+whenever it opens one, against the fingerprint the row's summary names: the object's size and footer checksum, which
+the open reads anyway, so the check costs no request. The check is needed because a number can be taken again once
+its object is deleted, as after a `rollback`, an `eraseSubject` that deletes the generation above the pointer holding
+the id, and a load, and because the store can open a generation some time after it read the row: a `count()` answered
+from the row opens nothing, and the read after it opens whatever object is under the number by then. An object that is
+not the one the row named is a move: the read resolves the row again and reads what it names now, and never serves
+the other object, so a load that was refused, or whose publish
+[got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
+earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
+checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
+same object, and its cached chunks still answer. A row with no summary names no object, and its generation's object is
+opened as it is.
 
 ## Read one fixed point in time
 
@@ -238,7 +247,8 @@ const again = await store.segment('active-30d').pinAt({ generation, fingerprint 
   moves the pointer past it, a generation it rolled back from can be reopened while its object is still stored and
   the fingerprint matches.
 - **A pin is identified by its `generation` and `fingerprint`.** The handle `pinAt` returns reads as a `pin()` handle does,
-  but its `pinnedAt.version` can differ from the original pin's, since it names the row as it is now.
+  but its `pinnedAt.version` can differ from the original pin's, since it names the row's `pointerId` as it is now,
+  which a later load, rollback or erasure renews.
 - **It costs one row read and one tail read** (the tail read alone without a registry), and a leased `pinAt` makes one
   conditional write to the row besides. The object it opens is the one its first read finds open. After that the handle
   reads exactly as a `pin()` handle does, including what it does once the generation is swept (see above).
@@ -304,14 +314,14 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   including ids a newer load removed, until it ends: [Erasing a subject](erasure.md) says what that means for a
   deletion request.
 - **What it costs.** A leased pin makes the row read, one conditional write to the row and the tail read: one PUT-class
-  request more than a pin without a lease. The write moves the row's token, which a load, an erasure rewrite, a
-  shred, a drop, a rollback and a retention write are fenced on. None of them is refused by it: a row that differs from the
-  one the writer read only in its leases does not refuse the writer, which goes on against the row it finds, after a
-  jittered wait and without redoing its work ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one
-  write per job, not per read, and its release is one more. Each of those writes, like every write of the row (a load's
-  publish, a `setRetention`), moves the version every store keys its cached reader and chunks on: each store reading
-  the segment opens it again at its next pointer refresh, one tail read, and fetches again the chunks it reads next.
-  On a segment many processes read, a leased job costs each of them that re-open twice, so lease per job, not per read.
+  request more than a pin without a lease, and no tail read at all while another pin of the generation is open in the
+  store, leased or not, since a lease changes nothing the row resolves to and the two share one open. The write moves
+  the row's token, which a load, an erasure rewrite, a shred, a drop, a rollback and a retention write are fenced on.
+  None of them is refused by it: a row that differs from the one the writer read only in its leases does not refuse the
+  writer, which goes on against the row it finds, after a jittered wait and without redoing its work
+  ([how a load stays correct](loading.md#how-it-stays-correct)). A lease is one write per job, not per read, and its
+  release is one more. Neither changes the row's `pointerId`, so a store reading the segment keeps its open reader and
+  its cached chunks across both: its next pointer refresh reads the row and nothing else.
 - **It needs a backend with a registry**: `UnsupportedError` on a bare `IStorageDriver`, and `NotFoundError` on a segment
   with no current generation. A failed pin releases the lease it took. A store built with no clock cannot judge a lease,
   and its loads read none: `CloudRoaring` always has one, and a core `loadSegment` is given one in `deps.clock`.

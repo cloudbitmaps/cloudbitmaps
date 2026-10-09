@@ -270,5 +270,21 @@
   {
     "entry": "@cloudbitmaps/roaring ExportManifest.skipped",
     "reason": "a required list on every manifest, like failed: the destroyed segments the export skipped, so segments, failed and skipped together account for every segment row the registry listed; code that builds its own ExportManifest (a test double) adds skipped: []; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core RegistryRecord.pointerId",
+    "reason": "registry schema 4: every row carries pointerId, the token of the last write that named currentGen, status, wrappedDeks, keyId or summary, which a reader keys its caches on so a lease or a policy write keeps them warm; a registry of your own sets it (renewsPointer in driver-kit gives the rule) and the conformance suite holds it to it; RegistryRecord is what a registry returns, so only a registry implementation changes; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ClearRegistrySummary.fingerprint",
+    "reason": "registry schema 4: a clear summary records the fingerprint (size and footer checksum) of the object it describes, so stat() answers its size from the row and every open holds the object to the row; every shipped summary writer writes it and the shipped registries refuse a summary without it; only a registry implementation or a test double builds one; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryRecord.pointerId",
+    "reason": "registry schema 4: every row carries pointerId, the token of the last write that named currentGen, status, wrappedDeks, keyId or summary, which a reader keys its caches on so a lease or a policy write keeps them warm; a registry of your own sets it (renewsPointer in driver-kit gives the rule) and the conformance suite holds it to it; RegistryRecord is what a registry returns, so only a registry implementation changes; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ClearRegistrySummary.fingerprint",
+    "reason": "registry schema 4: a clear summary records the fingerprint (size and footer checksum) of the object it describes, so stat() answers its size from the row and every open holds the object to the row; every shipped summary writer writes it and the shipped registries refuse a summary without it; only a registry implementation or a test double builds one; agreed with the maintainer"
   }
 ]

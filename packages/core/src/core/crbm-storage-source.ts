@@ -1037,7 +1037,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * Where a pinned reader of one object is memoised. With a registry that is its version, which names the object:
-   * a name purged and loaded again gets a new row, and with it a new token. Without one the version is the bare
+   * a name purged and loaded again gets a new row, and with it a new `pointerId`. Without one the version is the bare
    * generation number, which two incarnations share, so the object's fingerprint is added to tell them apart.
    */
   private pinnedKey(ref: SegmentRef, version: string, fingerprint?: string): string {

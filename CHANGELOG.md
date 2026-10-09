@@ -11,8 +11,53 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Registry rows are schema 4, and a store moves to 0.20 by loading its segments into a new prefix.** Every row 0.20
+  writes is stamped `schemaVersion: 4` and carries `pointerId`, below, and 0.20 reads rows stamped 4 only. A row stamped
+  1, 2 or 3 is refused with `UnsupportedError`, naming its key and saying what to do, by every read and write of it and
+  by every `list()` that reaches it, so one such row stops each fleet-wide call that lists its namespace. A 0.19 process
+  refuses a schema-4 row the same way. There is no upgrade in place and no downgrade: the rows of one prefix are all of
+  one release. A token in any form but `<incarnation>.<counter>.<write>` is an `IntegrityError`, and a deleted row is
+  removed wherever the registry reports `conditionalDelete`, whenever it was created. Move each store:
+  1. With 0.19, export every segment (`store.exportSegments`, [the export guide](docs/guide/export.md)), and save beside
+     each file the segment's row's whole `retention` and `residency` objects, read from `backend.registry` (`get`, or
+     `list` for a namespace), keys of your own included, and its generation's `metadata` from `seg.stat()` if you load
+     with metadata.
+  2. With 0.20, on a new prefix and with the same `encryption` options, load each file (`store.load(ref, { serialized })`
+     for a `roaring` file, its ids for an `ndjson` one) with its metadata. Then restore each row's retention and
+     residency exactly: read the row the load created with `backend.registry.get(ref)`, and write
+     `backend.registry.compareAndSwap(ref, row.token, { retention, residency })`, naming only the ones the old row had
+     (`setRetention` writes `expiresAt` alone).
+  3. Re-run, against the new prefix, every erasure (`eraseSubject`, `eraseNamespace`, a crypto-shred) processed since
+     the export began: the export holds what each segment held when it was read.
+  4. Move every reader and writer to the new prefix, then delete the old prefix, its noncurrent versions and delete
+     markers included on a versioned bucket, and its soft-deleted objects where the storage keeps them.
+
+  Re-loading from your own source instead of an export can bring back ids you erased from the store: re-run those
+  erasures against the new prefix before it serves a read. Only each segment's current generation moves: the
+  generations `keep` retained, and every lease, stay in the old prefix. A crypto-shredded segment is not exported
+  (`manifest.skipped`), and its row, the store's record that it was destroyed, goes with the old prefix: keep your own
+  record of it first.
+
+- **A registry of your own sets `pointerId` on every row, and a summary names its object.** `RegistryRecord` gains the
+  required `pointerId`: the token of the row's create, renewed to the token of every compare-and-swap whose patch names
+  `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary`, at any value, the one the row already has included, and
+  kept by a write that names only `leases`, `retention`, `residency` or `keptGens`. `renewsPointer(patch)` and
+  `RESOLVED_FIELDS` in `@cloudbitmaps/core/driver-kit` give the rule. A reader refuses a row with no `pointerId` with
+  `UnsupportedError`. A clear `RegistrySummary` carries `fingerprint`, the `<size>:<crc>` of the object it describes, and
+  a sealed one seals the count, the size and the checksum before the metadata, so it is at least 48 bytes; the shipped
+  registries refuse a summary without it, and a `create` or a compare-and-swap that names `token` or `pointerId`, with
+  `ValidationError`. The conformance suite holds a driver to each: a create, a renewal by each resolved field, the
+  fields that do not renew, a same-value `currentGen` that keeps the summary, `keptGens` and `leases`, a lost
+  compare-and-swap, and a write that names `pointerId`.
+
 ### Added
 
+- **`@cloudbitmaps/core/driver-kit` exports `RESOLVED_FIELDS`, `renewsPointer`, `renewPointer` and `pointerIdOf`**: the
+  fields a read resolves through, whether a patch renews a row's `pointerId`, the patch that renews it and changes
+  nothing a read resolves (the pointer, named at the value it has), and a row's `pointerId`, refusing a row with none
+  ([driver kit](docs/guide/api-reference.md#cloudbitmapscoredriver-kit)).
 - **`@cloudbitmaps/tools`: the cost model, in a package of its own.** `estimateCost`, `groundedReport`, the price lists
   `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER`, and their types
   (`CostReport`, `PricingProfile`, `RedisSizing`, `RedisNodeType`, `Workload`, `SegmentSizing`, `EstimateInput`) are
@@ -24,9 +69,11 @@ so, and so do the module headers in the code.
   release that ships them, as before: pass your own profile for a decision that turns on the price
   ([the cost guide](docs/guide/cost.md)).
 - **`stat()` reports `sizeBytes`: the bytes of the generation's object in storage.** `SegmentStat` gains the required
-  `sizeBytes: number | null`, read from the object's footer and index with no payload read, and from the same opened
-  generation as the number, count and metadata beside it, so it is never another generation's. A pinned handle reports
-  its pinned generation's. It is `null` for a segment with no generation, and on a store whose source cannot report a
+  `sizeBytes: number | null`, from the same resolution as the number, count and metadata beside it, so it is never
+  another generation's: from the row's summary, which records the object's size, or, for a row with no summary to use,
+  from the object's footer and index, with no payload read. A cold `stat()` stays one registry read, and a warm one
+  sends nothing; a row with no summary to use adds a tail read of the object when cold. A pinned handle reports its
+  pinned generation's. It is `null` for a segment with no generation, and on a store whose source cannot report a
   size. A grounded cost report is then `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`. A storage source
   provides it through a new optional `StorageChunkSource.stat`, which the `.crbm` source, the pinned source and the
   retrying wrapper implement; a source of your own without it reports its `sizeOf`, or `sizeBytes: null`
@@ -50,13 +97,20 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **A cold `stat()` reads the object's tail, for its size.** It was one registry read and no read of the object; it is
-  now one registry read and one tail read (two requests on S3 and GCS, three on Azure Blob; a range read more for an
-  index longer than the tail), and nothing while the generation is open, as a read of the segment leaves it. A cold
-  `stat()` keeps the generation open in the reader cache, as a read does. `count()` is unchanged: one registry
-  read when cold. It answers from the opened object, so a pointer that names a missing object (a torn restore) makes
-  `stat()` throw `NotFoundError`, as a read of the object does, where it answered the row's number; `count()` still
-  answers it, and `checkConsistency()` finds it.
+- **A reader's caches key on the generation with the row's `pointerId`, not its token.** A lease taken or released, a
+  `setRetention` or a `clearRetention` leaves a warm reader's open object and decoded chunks in place: a warm `has()`
+  after one, once `cache.genTtlMs` lapses, is the registry read alone, where it was a registry read, a tail read and a
+  chunk read. `pinnedAt.version` is `<generation>:<pointerId>`, so it stays the same across those writes, and leased
+  pins of one generation share one open of its object. A publish, a rollback, an erasure's rewrite, a status or key
+  change, and a compare-and-swap that names `currentGen` at the value it has renew `pointerId`, and a reader opens the
+  object again after them.
+- **A read never serves an object its row does not name.** Every open of the row's generation, where the row carries a
+  summary, holds the object's footer to the fingerprint the summary records, before its index is read or decrypted and
+  at no extra request.
+  An object that is another one under the number (put back from outside the library, or restored beside a row that
+  names another) is refused with `NotFoundError`, which says it is another object than its registry row names, and the
+  read resolves the segment again once. `checkConsistency({ summaries: true })` reports such a row as
+  `summary-mismatch`.
 
 ### Removed
 

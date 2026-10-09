@@ -551,7 +551,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
       { registry: w.backend.registry },
       { expiresAt: Date.now() + 86_400_000 },
     );
-    const after = await store.segment('s').pin(); // the same generation and object, under a new row token
+    const after = await store.segment('s').pin(); // the same generation and object: the row's token moved, its pointerId did not
     expect(await collect(before.intersect([after]))).toEqual([1, 2, 3]);
     await w.reload([9]);
     const other = await store.segment('s').pin();

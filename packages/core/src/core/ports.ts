@@ -153,9 +153,10 @@ export interface StorageChunkSource {
   /**
    * Optional: what {@link summary} answers, with the size of the generation's object, both from **one** resolution of
    * the segment, so the size is the size of the generation described; `null` if the segment has no Storage
-   * generation. The size comes from the object's footer and index, so this opens the generation (one tail read of
-   * the object when it is not open already, and a range read for an index longer than the tail) and reads no
-   * payload; the number, count and metadata come from the opened object. For a source that omits it, `stat()` asks
+   * generation. The `.crbm` source answers from the registry row's summary when it can use it, whose fingerprint
+   * carries the object's size: one registry read and no read of the object. When it cannot, it opens the generation
+   * (one tail read of the object when it is not open already, and a range read for an index longer than the tail) and
+   * answers from its footer and index, with no payload read. For a source that omits it, `stat()` asks
    * {@link summary} and {@link sizeOf}, two resolutions that can straddle a publish, and reports no size when
    * there is no `sizeOf` either.
    */

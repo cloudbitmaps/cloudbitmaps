@@ -142,7 +142,7 @@ const DEFAULT_CACHE_MAX_CHUNKS = 1024;
 const DEFAULT_ADMIN_CONCURRENCY = 8;
 /**
  * The row version a live version from a `CrbmStorageChunkSource` names: the version up to its last `#`, which starts
- * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every row token. It is
+ * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every `pointerId`. It is
  * core's `rowVersionOf` for this one caller, which is handed only that source's versions; core keeps that function
  * off its public entry.
  */
@@ -3287,8 +3287,9 @@ export interface SegmentStat {
   /** The metadata the generation was loaded with; absent when it has none. */
   readonly metadata?: GenerationMetadata;
   /**
-   * The generation's object in storage, in bytes, from its footer and index (no payload read): what the segment
-   * stores. `null` when the segment has no generation, or when the store's source cannot report a size.
+   * The generation's object in storage, in bytes: what the segment stores. From the registry row's summary, which
+   * records the object's size with its checksum, or from the object's footer when the row has no summary to use.
+   * `null` when the segment has no generation, or when the store's source cannot report a size.
    */
   readonly sizeBytes: number | null;
 }
@@ -3704,8 +3705,8 @@ export class Segment {
    * Cardinality of the generation this handle reads: **one registry read when cold, none when warm, and no read of the
    * object**, with **zero payload reads**. The registry row records the id count of the generation it names, written
    * by the write that made it current, and a count answers from that. A row with no summary it can use (one written
-   * before rows carried it, one that names another generation, a sealed one that does not open) sends the count to the
-   * `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
+   * without it, as a registry of your own may, one that names another generation, a sealed one that does not open)
+   * sends the count to the `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
    * restore) still counts the row's number, while a read of the object throws; `checkConsistency` is what finds it.
    *
    * What this trusts: the row's summary, or the index's sum, and no payload is decoded to confirm it. The summary is
@@ -3726,16 +3727,21 @@ export class Segment {
   /**
    * What the generation this handle reads is, from one resolution: its number, its id count, the metadata it was
    * loaded with (absent when it has none), and `sizeBytes`, its object's bytes in storage. All four come from the
-   * generation's object, opened once: its footer and index, with no payload read. That is one registry read and
-   * one tail read of the object when cold (and a range read for an index longer than the tail), and none while the
-   * generation is open (a read of the segment opens it, and so does this, which keeps it in the reader cache as a
-   * read does); on a pinned handle it answers for the generation it pinned. A segment with no generation
-   * answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size
-   * answers `sizeBytes: null`. A pointer that names a missing object throws `NotFoundError`, as a read of the object does.
+   * registry row when it has a summary this store can use, as `count()`'s do: the summary records the object's
+   * fingerprint, its size with its checksum. That is **one registry read when cold, none when warm, and no read of the
+   * object**. With no summary it can use, they come from the generation's object, opened once: its footer and index,
+   * with no payload read, which is a tail read of the object more when cold (and a range read for an index longer than
+   * the tail) and keeps the generation in the reader cache as a read does. On a pinned handle it answers for the
+   * generation it pinned, from the pinned object. A segment with no generation answers
+   * `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size answers
+   * `sizeBytes: null`. A pointer that names a missing object (a torn restore) still answers from the row's summary, as
+   * `count()` does, while a read of the object throws `NotFoundError`; with no summary to use, `stat()` throws it too.
+   * `checkConsistency` is what finds such a row.
    *
-   * Trust is as for the index on `count()`'s cold path: the index is checked for internal consistency when the
-   * object is opened, and the count is its sum. The opened object is held against the registry row's summary, and a
-   * disagreement makes this process stop using that summary, so `count()` then answers what this does.
+   * Trust is as for `count()`: what the row's summary says is believed until the object is next opened. Every open
+   * holds the object to the row's fingerprint, so a read never serves another object than the row names, and holds its
+   * count against the summary's; a disagreement makes this process stop using that summary, so `stat()` then answers
+   * from the object, whose index is checked for internal consistency and whose count is the index's sum.
    *
    * `sizeBytes` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *

@@ -169,12 +169,14 @@ holds it again, with the id count one smaller. Neither is scanned for the id. On
 metadata block is missing, with a sealed summary on the row that has metadata, is rewritten with the row's metadata, since
 the block's presence is not authenticated and the summary is.
 
-A **deleted row**. When the S3, GCS, Azure Blob or local-file registry deletes a row, whether `registry.delete` or the
-retention sweep's purge of a tombstone, it keeps the row's record in a deleted marker, so the token counter survives a
-re-create. A tombstone
-from `dropSegment` or `destroySegment` holds no key and no summary, since both clear them, so what a purge keeps is the
-name, the pointer, the retention policy and the timestamps. A live row deleted directly with `registry.delete` keeps
-its summary too.
+A **deleted row**, where the registry cannot remove one. A registry that reports `conditionalDelete` (S3 when its
+client sends to an AWS S3 host, Azure Blob, the local filesystem and memory, by default) removes a row it deletes,
+whether by `registry.delete` or the retention sweep's purge of a tombstone. One that does not (an S3 client that sends to
+an S3-compatible store or an emulator, or a GCS client, by default, or `conditionalDelete: false`) keeps the row's record
+in a deleted marker, so the token counter survives a re-create. A tombstone from `dropSegment` or `destroySegment` holds
+no key and no summary, since both clear them, so what such a purge keeps is the name, the pointer, the retention policy
+and the timestamps. A live row deleted directly with `registry.delete` keeps its summary too, in a marker where one is
+written.
 
 Backups, replicas and noncurrent object versions hold the old object until their own lifecycle removes it. For an
 at-rest guarantee that survives those, encrypt and crypto-shred (`destroySegment` and `eraseNamespace`, see

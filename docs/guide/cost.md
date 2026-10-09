@@ -56,8 +56,8 @@ report.redisCrossover.readsPerSec; // ≈ 672 sustained reads/s at THIS report's
 ```
 <!-- SIZING:GUIDE_EXAMPLE:END -->
 
-**Grounded** (a segment's real size, which `stat()` reads from its `.crbm` footer and index — exact, no payload
-reads):
+**Grounded** (a segment's real size, which `stat()` reports from the registry row's summary, which records the size of
+the generation's object, or from its `.crbm` footer when the row has no summary to use — exact, no payload reads):
 
 ```ts
 import { groundedReport } from '@cloudbitmaps/tools';
@@ -149,10 +149,10 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
 - **A cold `count()` is one pointer read.** The row records the current generation's id count, so a count reads no
   object, whatever the segment's size or index width, encrypted or not (one request on every backend, held by a test
-  that counts the requests). A row with no summary it can use is read from the object, which adds the tail read. A
-  cold `stat()` always adds it, since the object's size is in its footer: one pointer read and one tail read, and a
-  range read for an index longer than the tail read (tens of thousands of chunks). Counts
-  and stats within `cache.genTtlMs`, while the generation is open, are free beyond the pointer refresh.
+  that counts the requests). A cold `stat()` is the same pointer read: the row's summary records the object's size
+  too. A row with no summary it can use is read from the object, which adds the tail read, and a range read for an
+  index longer than the tail read (tens of thousands of chunks). Counts and stats within `cache.genTtlMs` are free
+  beyond the pointer refresh.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
   P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and four GETs: two pointer reads and
   two checks, each a single request on every backend (a `HeadObject` on S3), that the next generation number is free

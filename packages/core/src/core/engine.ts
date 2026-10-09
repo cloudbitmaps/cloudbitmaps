@@ -437,10 +437,10 @@ export class SegmentEngine {
   /**
    * What the segment's current generation is: its number, its id count, its metadata and the size of its object in
    * bytes. A source with a `stat` (the `.crbm` source) answers all four from one resolution, so they cannot straddle
-   * a publish: from the opened generation's footer and index, with no payload read. A source without one answers
-   * from its other methods, each its own resolution: its summary when it has one, else `count()` and the generation
-   * it resolves, and its `sizeOf`, or `size: null` when it has none. A segment with no generation answers
-   * `{ generation: null, cardinality: 0, size: null }`.
+   * a publish: from the registry row's summary when it can use it, else from the opened generation's footer and
+   * index, with no payload read. A source without one answers from its other methods, each its own resolution: its
+   * summary when it has one, else `count()` and the generation it resolves, and its `sizeOf`, or `sizeBytes: null`
+   * when it has none. A segment with no generation answers `{ generation: null, cardinality: 0, sizeBytes: null }`.
    */
   async stat(seg: SegmentRef): Promise<{
     generation: number | null;

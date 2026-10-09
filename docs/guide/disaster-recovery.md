@@ -213,9 +213,9 @@ makes the coordinated restore point easy to hit rather than something you have t
    has no such version; the row's body names its `namespace` and `segment`. If you do not want that segment's
    objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
    removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`. On a registry
-   that reports `conditionalDelete` it removes a row created by 0.12 outright, by a delete fenced on the version it
-   read; any other row it replaces with a tombstone that keeps the row's token counter, and the rest of the row
-   with it, wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
+   that reports `conditionalDelete` it removes the row outright, by a delete fenced on the version it read; on any
+   other it replaces the row with a tombstone that keeps the row's token counter, and the rest of the row with it,
+   wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
    removes whatever version is current when it lands, a row written since you looked included. A segment you delete
    the row of without dropping keeps its objects in the bucket with no row; `store.generations(ref)` lists them.
    Step 6 is what tells you the result is coherent.
@@ -262,10 +262,14 @@ makes the coordinated restore point easy to hit rather than something you have t
    touched** (`store.invalidate(ref)`), then route traffic. Until then a store answers from what it resolved before
    the restore: for up to `cache.genTtlMs` if it refreshes on a timer, and for as long as
    [readers still on an old generation](#readers-still-on-an-old-generation) says if it does not. A restored row
-   carries the token it had at `T`, and every write after the restore gives it a token it never had, because each
-   write draws a random part of its token, so a store keying a segment's cached chunks by generation and token, checked
-   against the object it opens, never takes them for a generation written since, nor for another object put back under
-   the same number. Optionally run a targeted `subjectReport`/read spot-check on a few
+   carries the token and the `pointerId` it had at `T`, and every write after the restore that changes what the row
+   resolves to gives it a `pointerId` it never had, because each write draws a random part of its token and the
+   `pointerId` is the token of such a write, so a store keying a segment's cached chunks by generation and `pointerId`,
+   checked against the object the row's summary names whenever it opens one, never takes them for a generation written
+   since, nor for another object put back under the same number. A restored row whose summary names another object than
+   the one restored under its number (a row and a bucket restored from two points) has every read of that generation
+   refused with `NotFoundError`, while a `count()` and a `stat()` answer the row's figures:
+   `checkConsistency({ summaries: true })` finds it. Optionally run a targeted `subjectReport`/read spot-check on a few
    known segments.
 
 ## Quiesce writers during a restore
@@ -293,8 +297,9 @@ it re-reads the pointer (and while the registry cannot be read because of a tran
 apart reaches it), and decoded chunks sit in the cache for as long as the cache keeps them. After a manual
 `currentGen` roll, a long-lived process may therefore keep answering from the generation it resolved *before* the
 roll for that window. After a registry restore, restart each store or invalidate the restored segments in it (step 9
-of the procedure) rather than wait: a restored row's later writes are given tokens it never had, so no cache is
-misled, but each store answers from the generation it resolved before the restore until it re-reads the row. Some
+of the procedure) rather than wait: a restored row's later writes are given tokens it never had, and with them every
+`pointerId` they set, so no cache is misled, but each store answers from the generation it resolved before the restore
+until it re-reads the row. Some
 stores need more than waiting after a roll too. One with no registry (built on a bare
 `IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
@@ -585,16 +590,17 @@ only once the pointer is on the target — so keep the error with your incident 
 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
-level or in the record) or one its `schemaVersion` did not have, or that holds a value out of range, such as an
-unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, a malformed `keptGens` or `leases` list, or a `token` in none of the forms the
-library writes. A row stamped 1 holds a decimal counter; one stamped 2 or 3 holds a decimal counter and a write part
-(16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. A row stamped
-2 or 1 that carries a `keptGens` or `leases` is refused too: only schema 3 has them. Each is an
+level or in the record), or that holds a value out of range, such as an unknown `status`, a malformed `wrappedDeks`
+list, a malformed `summary` (one without the fingerprint of its object included), a malformed `keptGens` or `leases`
+list, a `token` in any form but the library's, or a `pointerId` that is not one of the row's own tokens. A token is 32
+lowercase hex digits of incarnation id, a decimal counter and a write part (16 lowercase hex digits), `.`-separated; a
+`pointerId` has the same form, the token's incarnation and a counter no higher than the token's. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
-`wrappedDeks` list. This release writes rows stamped 3 and reads rows stamped 1, 2 or 3. A row with a higher
-`schemaVersion` than this build reads was written by a newer release; it is refused with `UnsupportedError`, and the
-fix is to upgrade the process reading it, not to touch the row. A release before 0.17 refuses every row this one
-writes the same way, and a restore of the registry to a point before the first 0.17 write is the only way back.
+`wrappedDeks` list. This release writes rows stamped 4 and reads rows stamped 4 only. A row with another
+`schemaVersion` is refused with `UnsupportedError` naming its key: a higher one was written by a newer release, and the
+fix is to upgrade the process reading it, not to touch the row; one stamped 1, 2 or 3 was written by a release before
+0.20, and the fix is to move the bucket's segments to a new prefix, as the [CHANGELOG](../../CHANGELOG.md) says. A
+release before 0.20 refuses every row this one writes the same way.
 
 One refused row costs far more than its own segment:
 
@@ -618,7 +624,7 @@ copy. An object under the prefix whose key is not a row's key is skipped by the 
 
 1. If a version of it that the library wrote is available — a noncurrent object version, or a backup of the
    file — copy that version back to current, as restore step 4 does. Then restart or invalidate the stores over
-   the bucket, as after any registry restore: the row moves back to the token it had then.
+   the bucket, as after any registry restore: the row moves back to the token and the `pointerId` it had then.
 2. If there is no such version, delete the object with the object store's own delete; `registry.delete(ref)` cannot,
    since it has to read the row first. That also removes any token counter the key held, so a row created later
    under the same name starts its counter again at 0, under a new random incarnation id that keeps its tokens apart

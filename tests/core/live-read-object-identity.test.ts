@@ -532,7 +532,7 @@ describe('the version’s spelling', () => {
     expect(rowVersionOf('1:tok#5h.1b8gqkl')).toBe('1:tok');
     expect(rowVersionOf('0#5h.1b8gqkl')).toBe('0');
     expect(rowVersionOf('1:a#b#5h.1b8gqkl')).toBe('1:a#b');
-    // A row token that itself ends like a suffix is kept: only the version's end is the object.
+    // A pointerId that itself ends like a suffix is kept: only the version's end is the object.
     expect(rowVersionOf('1:a#b.c#5h.1b8gqkl')).toBe('1:a#b.c');
     expect(rowVersionOf('1:x#5h.1b8gqkl#7.9')).toBe('1:x#5h.1b8gqkl');
   });

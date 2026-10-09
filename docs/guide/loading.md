@@ -324,17 +324,17 @@ await store.load({ segment: 'audience:active' }, ids, {
 - **Encrypted segments seal it** in the object, as the index is, and in the row. See
   [encryption](encryption.md#what-is-sealed-where).
 - **Reading it back.** `seg.stat()` returns the generation's number, id count and metadata, with its size, from the
-  opened generation, and the current entry of `store.generations()` carries the number, count and metadata from the
-  row it already reads, with no read of the object. See
+  row's summary, which names the generation's object by its fingerprint, and the current entry of `store.generations()`
+  carries the number, count and metadata from the row it already reads; neither reads the object. See
   [reading](reading.md#stat-the-generation-its-count-its-metadata-and-its-size).
 
 ### Where the guard reads the size of the current generation
 
 A guarded load compares what it wrote with what the segment held, which is the size of the current generation. It reads
 that size from the row's summary of the generation: a row that carries one for the generation it names gives the guard
-the number with no request for the object. A row with no usable summary is read as before, from the object's index
-with one tail read: a row written before rows carried one, a summary that names another generation, or a sealed one
-that does not open. The first load onto such a row writes a summary, and the next load reads none.
+the number with no request for the object. A row with no usable summary is read from the object's index with one tail
+read: a row written without one, a summary that names another generation, or a sealed one that does not open. The
+first load onto such a row writes a summary, and the next load reads none.
 
 One behaviour follows from reading the row. A row that names an object that is gone (a lifecycle rule, a partial
 restore) still remembers the size, so a repair load is judged against it: a repair smaller than `guard.minRetained`
@@ -1098,8 +1098,9 @@ writer consulting only the pointer would pick that same number and conflict on e
 number below an object above the pointer, such as one a rollback left there, but never onto one: write-once refuses a
 put to a number an object holds, and a load that loses that race reports `superseded`. A number whose object was
 deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
-row's token, checked against the object itself whenever a reader opens it, and a reader that finds the object under its
-number replaced re-reads the segment.
+row's `pointerId` (the token of the last write that changed what the row resolves to, which every publish renews),
+checked against the object the row's summary names whenever a reader opens it, and a reader that finds another object
+under the number re-reads the segment and never serves it.
 
 **A load overlaps its round trips with its encoding.** The existence check, and the keystore's unwrap of an encrypted
 segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it
@@ -1235,7 +1236,8 @@ differs from the one the writer read only in its leases (the same incarnation, a
 the token aside), it waits, reads the row again, and goes on against that row, without writing its object again and
 without deriving its content again. The wait is a random time of up to 25 ms, growing with each retry to up to 400 ms, taken on the
 store's clock; a writer given no clock `sleep` retries without waiting, and one given no `rng` waits the whole bound. A difference in anything else, the pointer, the kept window, the summary,
-a retention policy, the key wrappings or the status, refuses as it always has. This covers a load's publish, an erasure
+a retention policy, the key wrappings, the status or the row's `pointerId` (another writer named the pointer, even at
+the value it had), refuses as it always has. This covers a load's publish, an erasure
 rewrite's publish and the re-proof before each delete above the pointer, a rollback's swap and its undo, a retention
 write, and a shred or a drop, which re-read the row on every attempt and do not count a lost race to a lease write. Each waits
 out at most 136 such changes (a take and a release by each of the 64 holders a row can hold, and a few more) and then

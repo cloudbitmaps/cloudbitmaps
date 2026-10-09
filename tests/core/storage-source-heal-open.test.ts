@@ -98,7 +98,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     });
 
     const source = new CrbmStorageChunkSource(storage, { registry });
-    // Generation 1's version, of the one incarnation there is: `<generation>:<row token>`.
+    // Generation 1's version, of the one incarnation there is: `<generation>:<pointerId>`.
     await expect(source.currentVersion(SEG)).resolves.toMatch(/^1:/);
   });
 
