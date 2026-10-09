@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { CloudRoaring, MemoryStorage, Segment, ValidationError } from '@/index';
 
 /**
@@ -66,6 +67,35 @@ describe('a handle takes no deadline', () => {
     for (const expiresAt of [Date.now() + 86_400_000, Date.now() - 86_400_000, 0, null, 'soon']) {
       expect(() => segmentOf(store, { expiresAt })).toThrow(ValidationError);
       expect(() => segmentOf(store, { namespace: 'ns', expiresAt })).toThrow(MESSAGE);
+    }
+  });
+
+  it('refuses an `expiresAt` no scan of plain own keys would see: inherited, non-enumerable, or a getter of a class', () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    const deadline = Date.now() + 86_400_000;
+    const notEnumerable = Object.defineProperty({}, 'expiresAt', {
+      value: deadline,
+      enumerable: false,
+    });
+    class Options {
+      get expiresAt(): number {
+        return deadline;
+      }
+    }
+    expect(() => segmentOf(store, notEnumerable)).toThrow(MESSAGE);
+    for (const options of [Object.create({ expiresAt: deadline }), new Options()]) {
+      expect(() => segmentOf(store, options)).toThrow(ValidationError);
+      expect(() => segmentOf(store, options)).toThrow(/options must be a plain object/);
+    }
+  });
+
+  it('takes a plain object of any realm, and one with no prototype', async () => {
+    const store = new CloudRoaring({ storage: new MemoryStorage() });
+    await store.load({ segment: 's', namespace: 'ns' }, [1, 2, 3]);
+    const otherRealm = runInNewContext('({ namespace: "ns" })') as unknown;
+    const noPrototype = Object.assign(Object.create(null) as object, { namespace: 'ns' });
+    for (const options of [{ namespace: 'ns' }, otherRealm, noPrototype]) {
+      expect(await segmentOf(store, options).count()).toBe(3);
     }
   });
 

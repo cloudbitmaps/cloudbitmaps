@@ -1327,16 +1327,25 @@ export class CloudRoaring {
 
   /**
    * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). The options
-   * are `{ namespace }` and nothing else: anything else is refused with {@link ValidationError}, by name, since a
-   * misspelt `namespace` would otherwise address the default namespace, and a deadline such as `expiresAt` would be
-   * left unread. A key whose value is `undefined` is read as absent, so a spread of options keeps working.
+   * are a plain object holding `{ namespace }` and nothing else: any other own key, enumerable or not, is refused with
+   * {@link ValidationError}, by name, since a misspelt `namespace` would otherwise address the default namespace, and a
+   * deadline such as `expiresAt` would be left unread. A class instance, or an object built on another, is refused too,
+   * since it can carry an option no scan of its own keys sees. A key whose value is `undefined` is read as absent, so a
+   * spread of options keeps working.
    */
   segment(name: string, options?: SegmentOptions): Segment {
     if (options !== undefined && options !== null) {
       if (typeof options !== 'object' || Array.isArray(options)) {
         throw new ValidationError('segment: options must be an object such as { namespace }');
       }
-      const unknown = Object.keys(options).filter(
+      // A plain object of any realm has a prototype whose own prototype is null.
+      const proto = Object.getPrototypeOf(options) as object | null;
+      if (proto !== null && Object.getPrototypeOf(proto) !== null) {
+        throw new ValidationError(
+          'segment: options must be a plain object such as { namespace }, not a class instance or an object built on another',
+        );
+      }
+      const unknown = Object.getOwnPropertyNames(options).filter(
         (k) => k !== 'namespace' && (options as Record<string, unknown>)[k] !== undefined,
       );
       if (unknown.length > 0) {
