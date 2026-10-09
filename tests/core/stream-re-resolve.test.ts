@@ -20,6 +20,7 @@ import type { Clock, IMetricsSink, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { DEFAULT_INTERSECT_CONCURRENCY } from '@/core/engine';
 import { withoutRangedReads } from '../helpers/no-ranged-reads';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 const CHUNK = 65_536;
@@ -484,8 +485,8 @@ describe('under reader-cache pressure, an erasure while a read is open', () => {
  * The written bound on what a read already in progress can still yield after the store it runs on erases an id, counted
  * once the read's window is full: the erasure returns while the read is handing out chunk 40 of 120. A combine can yield
  * the id from the key it is handing out and the `concurrency` keys it had already requested, so `concurrency` + 1 chunks
- * (33 by default); an `iterate` read chunk by chunk from the chunk in hand and the 31 it had requested, 32; a streamed
- * `iterate` from the chunk in hand alone. Each case erases the id at the last chunk the bound reaches, which the read
+ * (33 by default); an `iterate` read chunk by chunk from the chunk in hand and the 31 it had requested, 32, and so
+ * does a `count` that reads chunks; a streamed `iterate` from the chunk in hand alone. Each case erases the id at the last chunk the bound reaches, which the read
  * yields, and at the next, which it never does. The erasure is the store's own, so it holds whatever the TTL.
  */
 describe("the bound after an erasure by the read's own store, counted past the ramp-up", () => {
@@ -558,6 +559,70 @@ describe("the bound after an erasure by the read's own store, counted past the r
     },
     60_000,
   );
+
+  /**
+   * Whether a `count`, read chunk by chunk, counts the id the store erases from chunk `victimChunk` once the count has
+   * taken chunk AT. The `.crbm` source answers a count from the row's summary or the object's index and reads no chunk,
+   * so it is made to answer as a source with neither does. With no consumer to wait on, the erasure starts as the count
+   * requests the last chunk its window holds past chunk AT, and chunk AT is handed to it only once the erasure returns.
+   * The victim's chunk holds 600 ids in the generation the count began on and 599 after the erasure.
+   */
+  async function countedAfterErasure(victimChunk: number): Promise<boolean> {
+    const proto = CrbmStorageChunkSource.prototype;
+    const kept = (['summary', 'cardinalities', 'getChunk'] as const).map(
+      (name) => [name, Object.getOwnPropertyDescriptor(proto, name)!] as const,
+    );
+    const ns = { namespace: 'ns' };
+    const victim = victimChunk * CHUNK + 4;
+    let erasure: Promise<Awaited<ReturnType<CloudRoaring['eraseSubject']>>> | undefined;
+    let erasureReturned!: () => void;
+    const returned = new Promise<void>((resolve) => (erasureReturned = resolve));
+    let store: CloudRoaring | undefined;
+    const getChunk = proto.getChunk;
+    try {
+      for (const name of ['summary', 'cardinalities'] as const) {
+        Object.defineProperty(proto, name, {
+          value: undefined,
+          configurable: true,
+          writable: true,
+        });
+      }
+      Object.defineProperty(proto, 'getChunk', {
+        configurable: true,
+        writable: true,
+        value(this: CrbmStorageChunkSource, ref: Parameters<typeof getChunk>[0]) {
+          const read = getChunk.call(this, ref);
+          if (ref.segment !== 's') return read;
+          if (ref.chunkKey === AT) {
+            return read.then(async (bytes) => {
+              await returned;
+              return bytes;
+            });
+          }
+          if (ref.chunkKey === AT + DEFAULT_INTERSECT_CONCURRENCY - 1 && erasure === undefined) {
+            erasure = store!.eraseSubject(victim, ns);
+            void erasure.finally(erasureReturned);
+          }
+          return read;
+        },
+      });
+      const w = await world({ ttl: 1_000_000 });
+      store = w.store;
+      const total = await w.store.segment('s', ns).count();
+      expect((await erasure!).erasedFrom).toContainEqual(
+        expect.objectContaining({ segment: 's', erased: true }),
+      );
+      expect(total, 'every other chunk is counted whole').toBeGreaterThanOrEqual(CHUNKS * PER - 1);
+      return total === CHUNKS * PER;
+    } finally {
+      for (const [name, descriptor] of kept) Object.defineProperty(proto, name, descriptor);
+    }
+  }
+
+  it('count (chunk by chunk): an id erased from the chunks the bound counts (32) is counted, from the next one never', async () => {
+    expect(await countedAfterErasure(AT + 31)).toBe(true);
+    expect(await countedAfterErasure(AT + 32)).toBe(false);
+  }, 60_000);
 });
 
 describe('a warm read that crosses a move reads the rest as one stream, not a chunk at a time', () => {
