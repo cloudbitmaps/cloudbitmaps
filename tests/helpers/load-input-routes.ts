@@ -83,6 +83,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/live-read-row-fingerprint.test.ts',
   'tests/core/live-read-row-fingerprint.property.test.ts',
   'tests/core/summary-fingerprint.test.ts',
+  'tests/core/cache-key-pointer-id.test.ts',
   'tests/core/union-andnot.test.ts',
   'tests/core/write-path-read-retry.test.ts',
   'tests/drivers/azure/read-timeout.test.ts',
