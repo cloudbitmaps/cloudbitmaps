@@ -1097,7 +1097,8 @@ writer consulting only the pointer would pick that same number and conflict on e
 number below an object above the pointer, such as one a rollback left there, but never onto one: write-once refuses a
 put to a number an object holds, and a load that loses that race reports `superseded`. A number whose object was
 deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
-row's token, and a reader that finds the object under its number replaced re-reads the segment.
+row's token, checked against the object itself whenever a reader opens it, and a reader that finds the object under its
+number replaced re-reads the segment.
 
 **A load overlaps its round trips with its encoding.** The existence check, and the keystore's unwrap of an encrypted
 segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it

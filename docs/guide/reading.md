@@ -166,6 +166,16 @@ encrypted segment, the key it unwrapped) until it moves on or ends, outside the 
 `readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
 when that matters.
 
+**A cached chunk is one object's.** The store caches each decoded chunk, and keeps each open reader, under the
+generation's number and its registry row's token, and checks that against the object itself whenever it opens one: the
+object's size and footer checksum, which the open reads anyway, so the check costs no request. The check is needed
+because a number can be taken again once its object is deleted, as after a `rollback`, an `eraseSubject` that deletes
+the generation above the pointer holding the id, and a load, and because the store can open a generation some time
+after it read the row: a `count()` answered from the row opens nothing, and the read after it opens whatever object is
+under the number by then. A chunk cached from one object is never served for another, so a read never mixes the two,
+and inside `cache.genTtlMs` it can serve the newer object before the store reads the row that names it. A segment
+reopened after the reader cache let it go is the same object, and its cached chunks still answer.
+
 ## Read one fixed point in time
 
 `seg.pin()` returns a handle held at the generation that is current right now, for the life of the handle. A long
