@@ -116,6 +116,18 @@ full listing reads. `backend.registry.capabilities()`
 reports which (`conditionalDelete: true` or `false`). A value that is not a boolean is refused with `ValidationError`.
 The registry needs delete permission on its prefix for it.
 
+**The same option covers the storage half.** Where it is on, a delete the storage driver is given a version for
+(`delete(key, { ifVersion })`, the version a tail read of the object reported) is sent under that precondition, so it
+removes the object only while it is the one that was read, and `backend.storage.capabilities().conditionalDelete`
+reports `true`; off, the version is ignored and the delete removes whatever is under the key. An erasure's delete of a
+holder above the pointer, and a refused load's delete of the object its footer proved its own, are the ones the library
+sends that way, so a load that took the number since keeps its generation (within the limits in the erasure guide:
+[a number taken again during an erasure](erasure.md#how-it-stays-correct)). A precondition that no longer holds is a
+`WriteConflictError` while an object is under the key, and an absent object is a no-op whichever of `404` or `412` the
+service answers for it. The S3 storage half reads its default from the client as the registry does, on its first
+conditional delete: `capabilities().conditionalDelete` reads `false` until then unless you set the option, and stays
+`false` when the client cannot be resolved then (no region), in which case its deletes are unconditional.
+
 | Backend | Default | Why |
 |---|---|---|
 | `S3Storage` | `true` when the host the client resolves is an AWS S3 host; `false` for any other host, or one that cannot be resolved | AWS documents `If-Match` on `DeleteObject` for general purpose and directory buckets. An S3-compatible store may accept the header and ignore it, and MinIO does, so a client that sends to one keeps tombstones until you set `true`. The host is the one the SDK resolves for a request, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file counts as a constructor `endpoint` does; an AWS regional, FIPS, dual-stack or VPC interface host is AWS, as is an access point's, a multi-region access point's, an Object Lambda's, an Outpost's and a directory bucket's; another AWS service's host whose name starts with `s3` (a load balancer, an API Gateway, a website endpoint) is not |
@@ -409,7 +421,9 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 
 ### The storage interfaces (used to type `storage` / `registry`)
 
-`IStorageDriver` · `IRegistryDriver` · `StorageChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy` · `Clock` · `Rng`
+`IStorageDriver` · `IRegistryDriver` · `StorageChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy` · `Clock` · `Rng` ·
+`TailRead` (what `getTail` answers: `{ bytes, size, version? }`) · `StorageDeleteOptions` (`{ ifVersion? }`, what `delete`
+takes)
 
 ### Read and combine options (used to type `iterate`, `intersect` / `union` / `andNot` and the `*Into` verbs)
 
@@ -644,8 +658,9 @@ driver cannot execute it today. Until it is, the load-bearing behaviours to repr
 conditional create that **refuses** rather than overwrites (hard invariant 2 — this is the one that silently
 loses data if you get it wrong), ranged reads that return exactly the requested bytes, a compare-and-swap on
 the pointer row that reports a lost race rather than clobbering, a delete that removes a row only while it is
-the version the delete read, if you report `conditionalDelete: true`, and the four `currentGen: null` obligations
-listed below.
+the version the delete read, if you report `conditionalDelete: true`, a storage delete given `ifVersion` that removes
+only the object that version names, refuses another with `WriteConflictError` and takes an absent one as a no-op, if
+your storage reports `conditionalDelete: true`, and the four `currentGen: null` obligations listed below.
 
 </details>
 
@@ -668,6 +683,7 @@ nothing can compare one. Branding them is you taking that on.
 |---|---|
 | `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry. |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes. A backend may also carry an optional `attachMetrics(sink)`: a store given a `metrics` sink calls it once, as it is built, so the backend can send that sink an `advisory` event about its own setup (the S3 backend's socket pool does). A backend without it is never told. It must not throw: an exception propagates from the store's constructor |
+| `TailRead` · `StorageDeleteOptions` | what `getTail` answers (`{ bytes, size, version? }`, `version` being the object's as the backend names it: an ETag, a GCS object generation) and what `delete` takes (`{ ifVersion? }`); see `StorageCaps.conditionalDelete` below |
 | `IMetricsSink` · `MetricEvent` | the sink `attachMetrics` receives and the event union it emits to, re-exported so a driver does not import core's main entry for them |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend, and the symbol a backend class declares it with. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another. It checks that `storage` has a `putImmutable` and `registry` a `compareAndSwap`, throwing `ValidationError` otherwise, or when the object is frozen or non-extensible, and returns the object it was given. It takes a class (`brandAsBackend(this)` in the constructor) or a plain `{ storage, registry }` object, which is how halves of your own are paired — see below |
 | `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write with overwhelming probability, since it carries random parts; compared by equality only; ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
@@ -699,8 +715,18 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   the erasure's holder probe and verify, and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
   reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
 - An out-of-range read, meaning a range past the end or a negative or non-integer offset or length, throws
-  `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size.
-- `delete` is idempotent: deleting an absent key is a no-op.
+  `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size, and, where the
+  driver has one, its `version`, from the same response as the bytes.
+- `delete` is idempotent: deleting an absent key is a no-op, with or without `ifVersion`.
+- `delete` with `ifVersion` does what `StorageCaps.conditionalDelete` says: with `true`, it removes the object only
+  while it is the one that version names, by a check the backend applies in the same step as the removal, and for
+  another object throws `WriteConflictError` and leaves it; with `false` or absent, it ignores the version. A read
+  followed by a delete is two steps, and does not qualify. A conditional delete may be sent again after a lost
+  response: a copy that meets its own landed delete finds nothing, which is its success, so a service that answers a
+  failed precondition for a key with no object is looked at again before the driver reports a conflict.
+- A driver that wraps another forwards `ifVersion` and the `version` of a tail read, or reports
+  `conditionalDelete: false`: a wrapper that hands `delete` the key alone, and reports the inner driver's capability,
+  makes every conditional delete through it unconditional without a word.
 - `list` is strongly consistent, read-after-delete: once `delete` resolves, the generation is no longer listed. The
   erasure's re-check for a generation still holding the id, `generationsRemaining`, the retention sweep's check that a
   tombstone's storage is gone, and rollback's post-move check prove a deletion or a presence by listing.
@@ -738,6 +764,24 @@ conditioned on the store's own version of the row, so a `held` row that has chan
 return, one of another row), or whose `held` and `expected` token disagree, reads the row as it does without a hint,
 and a write that gets no answer is settled by reading the row, never by `held`. A driver that ignores the option reads
 the row, which is correct.
+
+**`StorageCaps.conditionalDelete` says what a storage delete given a version does.** `true`: `getTail` reports a
+`version` for every object it reads, and `delete(key, { ifVersion })` removes the object only while it is the one that
+version names, refusing another with `WriteConflictError`, so a delete decided from one read and delayed cannot
+remove an object stored under the key since: a generation number can be taken again once its object is deleted. The
+erasure passes the version it read when it searched each holder above the pointer, and a refused load the version of
+the footer read that proved its object its own. `false` or absent: the version is ignored. A driver that learns this
+from its client may report `false` until its first delete given `ifVersion`; what the delete does is what it states,
+and the S3 driver is one. The in-memory driver reports `true`, the local-filesystem one `false`, the cloud ones as their
+backend's `conditionalDelete` option says. A version names the object, not the key, except where the backend computes it
+from the bytes, as an S3 ETag of an object stored without SSE-KMS or SSE-C is: two objects with the same bytes, each
+stored whole in one request, or each in parts of the same sizes, share one there. It is optional and additive: a driver
+of your own that omits it is read as `false`, and keeps deleting unconditionally. A driver that wraps another forwards
+`ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`. In this repository
+`tests/arch/storage-delete-forwarding.test.ts` checks the first half, that a storage wrapper's `delete` takes and
+forwards the options, for the wrapper shapes it recognises; its header lists the shapes it does not see, and nothing
+checks that a wrapper hands on the tail read's `version`. The in-repo conformance suite's `conditional delete` case holds a driver to what it reports, and
+`storageDriverConformance`'s `conditionalDelete` option states at the call site what that must be.
 
 **`RegCaps.conditionalDelete` says what `delete` leaves behind.** `true`: a delete removes the row from the backend for
 good, and only while the row is still the exact version it read (by a precondition the backend applies, or a lock every
@@ -894,7 +938,8 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 
 ### Low-level ports & capabilities (driver-author typing)
 
-`StorageCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` (every row carries `token` and `pointerId`; see the
+`StorageCaps` (`conditionalDelete?` included, see the [driver kit](#driver-kit--what-you-need-to-implement-a-driver)) ·
+`TailRead` · `StorageDeleteOptions` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` (every row carries `token` and `pointerId`; see the
 [driver kit](#driver-kit--what-you-need-to-implement-a-driver)) · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` ·
 `RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize` · `RegistrySummary`
 (`ClearRegistrySummary` `{ generation, cardinality, fingerprint, metadata? }` or `SealedRegistrySummary`
@@ -1002,7 +1047,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
 `ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
-· `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
+· `TailRead` · `StorageDeleteOptions` · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
 · `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `GenerationMetadata`
 · `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
 `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
@@ -1036,7 +1081,7 @@ The contract a storage-driver package builds against — see
 not import these.
 
 Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
-`SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
+`TailRead` · `StorageDeleteOptions` · `SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
 
 Metrics: `IMetricsSink` · `MetricEvent`
 
@@ -1067,7 +1112,10 @@ object with its own id is a success and any other a `WriteConflictError`; with n
 upload is an unknown outcome, a `TransientError`. A bare `429`, which AWS S3 does not send but some S3-compatible
 services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer that keys on
 `TransientError` will not retry it. A transient failure of a conditional write throws `TransientError`, and the write may
-or may not have landed ([why](production.md#reliability-retries-backoff--timeouts)).
+or may not have landed ([why](production.md#reliability-retries-backoff--timeouts)). The storage half's `DeleteObject` under `If-Match`, which with `conditionalDelete` deletes an erasure's holder only
+while it is the object the erasure read, keeps the client's retry: a copy that meets its own landed delete finds
+nothing, which is its success (a `412` on it is looked at with a `HeadObject` before it is called a conflict), and one
+that meets an object stored since is refused.
 
 With `readTimeoutMs` set (it is off by default), each read the backend makes, every `GetObject` and `HeadObject` of a
 generation or a pointer, is aborted if it has not finished, body included, after that many ms, and throws
@@ -1127,7 +1175,9 @@ object that carries its own id is a success and any other a `WriteConflictError`
 ([why](production.md#reliability-retries-backoff--timeouts)). With `conditionalDelete`, the registry removes a row with
 a delete under `ifGenerationMatch`, which the SDK retries as it does any request with a precondition: a second copy can
 remove nothing the first could not, and one that meets the first's landed delete is a 404, which the registry reads as
-a lost race and re-reads.
+a lost race and re-reads. With it the storage half deletes an erasure's holder under `ifGenerationMatch` too, the
+generation its tail read reported, and there a `404` is an absent object, a no-op, and a `412` is a conflict only while
+the metadata still shows an object.
 
 ### `@cloudbitmaps/azure-blob`
 
@@ -1144,7 +1194,10 @@ a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write
 `TransientError`. A load's fresh compare-and-swap after an unanswered row write goes through that policy too, so a registry
 that never answers costs up to four times the policy's tries: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry removes a
 row with Delete Blob under `ifMatch`, unless `conditionalDelete` is `false`; a `412` or a `404` on it is a lost race,
-and a `409` (a snapshot or a lease in the way) reaches the caller as the SDK raised it.
+and a `409` (a snapshot or a lease in the way) reaches the caller as the SDK raised it. The storage half deletes an
+erasure's holder under `ifMatch` too, with the ETag its tail read reported, unless `conditionalDelete` is `false`:
+there a `404` is an absent blob, a no-op, a `412` is a conflict only while the properties still show a blob, and a `409`
+reaches the caller as the SDK raised it.
 
 ### `@cloudbitmaps/tools`
 

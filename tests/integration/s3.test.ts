@@ -101,6 +101,8 @@ storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, {
   largeBytes: 6 * 1024 * 1024,
   missingLocation: () => new S3StorageDriver({ client, bucket: MISSING, prefix: `${RUN}/missing` }),
   pagedListSize: PAST_ONE_PAGE,
+  // A custom endpoint: MinIO accepts If-Match on a DeleteObject and ignores it (conditional-delete.test.ts records it).
+  conditionalDelete: false,
 });
 
 storageChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {
@@ -196,7 +198,12 @@ describe('S3StorageDriver specifics (MinIO)', () => {
     // MinIO answers a suffix range of an empty object with a 206 and `Content-Range: bytes 0--1/0`, where S3 answers 416
     // (it answers `bytes=0-15` with 416 too). So this holds the empty tail on a real backend; the unit tests hold the 416.
     await driver.putImmutable(gen(1), async () => {});
-    expect(await driver.getTail(gen(1), 16)).toEqual({ bytes: new Uint8Array(0), size: 0 });
+    // The version is the ETag of the response that answered it.
+    expect(await driver.getTail(gen(1), 16)).toEqual({
+      bytes: new Uint8Array(0),
+      size: 0,
+      version: expect.any(String),
+    });
   });
 
   it('delete is idempotent and actually removes the object', async () => {

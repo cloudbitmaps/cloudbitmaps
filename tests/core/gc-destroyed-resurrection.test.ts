@@ -1,6 +1,6 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
 import { WriteConflictError } from '@/index';
-import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, SegmentRef, StorageDeleteOptions } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
@@ -258,8 +258,11 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const storageWithRaceDuringDeletes = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'delete') return Reflect.get(target, prop, rx) as unknown;
-        return async (key: { namespace?: string; segment: string; generation: number }) => {
-          await storage.delete(key);
+        return async (
+          key: { namespace?: string; segment: string; generation: number },
+          options?: StorageDeleteOptions,
+        ) => {
+          await storage.delete(key, options);
           if (fired) return;
           fired = true;
           for (const g of await generations(storage))
@@ -338,8 +341,11 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const storageWithRaceDuringDeletes = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'delete') return Reflect.get(target, prop, rx) as unknown;
-        return async (key: { namespace?: string; segment: string; generation: number }) => {
-          await storage.delete(key);
+        return async (
+          key: { namespace?: string; segment: string; generation: number },
+          options?: StorageDeleteOptions,
+        ) => {
+          await storage.delete(key, options);
           if (fired) return;
           fired = true;
           for (const g of await generations(storage))

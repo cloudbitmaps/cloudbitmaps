@@ -28,6 +28,7 @@
  * A probe that cannot run (a client with no resolved config, an unresolvable region, a stack that does not hold the
  * step the probe hooks) answers `undefined`, which callers read as "not known".
  */
+import { ValidationError } from '@cloudbitmaps/core/driver-kit';
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type {
   $Command,
@@ -165,6 +166,33 @@ export async function probeClient(
   } finally {
     probe?.destroy();
   }
+}
+
+/**
+ * Whether a `DeleteObject` may rely on `If-Match`, for the registry's row delete and the storage half's conditional
+ * delete alike: `explicit` when the caller set it, but never for an SDK seen not to send the header; otherwise only
+ * when the client resolves to an AWS S3 host, which applies the precondition, and `false` until the client has been
+ * asked, since an S3-compatible store (MinIO, for one) can accept the header and ignore it.
+ */
+export function appliesDeleteIfMatch(
+  explicit: boolean | undefined,
+  facts: ClientFacts | undefined,
+): boolean {
+  if (explicit === false) return false;
+  if (explicit === true) return facts?.sendsDeleteIfMatch !== false;
+  return facts !== undefined && facts.sendsDeleteIfMatch && isAwsS3Host(facts.host);
+}
+
+/**
+ * A `conditionalDelete` option, checked: `undefined` leaves the decision to the client ({@link appliesDeleteIfMatch}),
+ * and anything but a boolean is refused.
+ */
+export function checkConditionalDelete(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
+  }
+  return value;
 }
 
 /** The domains AWS serves S3 from: the standard partition, and China's. */

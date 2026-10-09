@@ -392,7 +392,7 @@ describe('`retry` retries reads of segment data, and no write', () => {
       getRange: (key, offset, length) => s.getRange(key, offset, length),
       getTail: (key, maxBytes) =>
         trips('getTail') ? Promise.reject(blip('getTail')) : s.getTail(key, maxBytes),
-      delete: (key) => s.delete(key),
+      delete: (key, o) => s.delete(key, o),
       list: (ref) =>
         trips('list')
           ? (async function* () {

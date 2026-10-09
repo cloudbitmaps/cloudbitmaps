@@ -191,7 +191,7 @@ function counting(
       return storage.getTail(k, m);
     },
     getRange: (k, o, l) => storage.getRange(k, o, l),
-    delete: (k) => storage.delete(k),
+    delete: (k, o) => storage.delete(k, o),
     list: (ref) => storage.list(ref),
     putImmutable: (k, fn) => storage.putImmutable(k, fn),
   };

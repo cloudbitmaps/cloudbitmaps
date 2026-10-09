@@ -82,7 +82,7 @@ function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): I
   return {
     capabilities: () => base.capabilities(),
     getTail: (k, m) => base.getTail(k, m),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (ref) => base.list(ref),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getRange: async (k, o, l) => {
@@ -200,7 +200,7 @@ describe('a publish derived from one generation lands only on that generation', 
       capabilities: () => hooked.capabilities(),
       getTail: (k, m) => hooked.getTail(k, m),
       getRange: (k, o, l) => hooked.getRange(k, o, l),
-      delete: (k) => hooked.delete(k),
+      delete: (k, o) => hooked.delete(k, o),
       list: (r) => hooked.list(r),
       putImmutable: async (k, fn) => {
         const out = await hooked.putImmutable(k, fn);
@@ -273,7 +273,7 @@ describe('a publish derived from one generation lands only on that generation', 
       capabilities: () => w.storage.capabilities(),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       // `verifyGeneration` is the only thing that opens a reader on the generation we just wrote.
       getTail: async (k, m) => {
@@ -468,7 +468,7 @@ describe('a materialisation reports whether it actually landed', () => {
       capabilities: () => w.storage.capabilities(),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       putImmutable: async (k, fn) => {
         const res = await w.storage.putImmutable(k, fn);
@@ -592,7 +592,7 @@ describe('the guards no happy-path test reaches', () => {
       capabilities: () => w.storage.capabilities(),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       // The index lives in the tail, so corrupting the tail read of the NEW generation is what a dropped chunk
       // would look like to the verifier.
@@ -722,7 +722,7 @@ describe('a summary never describes another generation than the one the row name
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
@@ -760,7 +760,7 @@ describe('a summary never describes another generation than the one the row name
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
@@ -797,7 +797,7 @@ describe('a summary never describes another generation than the one the row name
       ...w.storage,
       capabilities: () => w.storage.capabilities(),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getTail: async (k, m) => {
@@ -832,7 +832,7 @@ describe('a summary never describes another generation than the one the row name
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);

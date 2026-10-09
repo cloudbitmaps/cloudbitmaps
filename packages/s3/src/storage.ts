@@ -26,6 +26,18 @@
  * keep the SDK's retry. **Each read can be timed** ({@link timedRead}): with `readTimeoutMs` set, a `GetObject` or
  * `HeadObject` that has not finished, body included, after it throws {@link TransientError}. It is off by default, and
  * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
+ *
+ * **A delete given `ifVersion` is a `DeleteObject` under `If-Match: <that ETag>`** where `conditionalDelete` holds: by
+ * default when the host the client resolves is an AWS S3 host and the SDK sends the header, as for the registry's row
+ * delete ({@link appliesDeleteIfMatch}), resolved once, on the first such delete; MinIO, for one, accepts the header and
+ * ignores it. A tail read reports the object's `ETag` as its version, from the `GetObject` that carried the bytes, or
+ * the `HeadObject` when none were asked for. A `412` is the precondition failing, and a `409` a conditional request
+ * that raced another on the key, which says nothing of which object is there; the delete has removed nothing either
+ * way, and both are reported as {@link WriteConflictError} unless a `HeadObject` then finds no object under the key: an
+ * absent object is a no-op, whichever of `204`, `404` or `412` the service answers for it. The delete keeps the SDK's
+ * retry: a copy that meets its own landed delete finds nothing, and one that meets an object stored since is refused.
+ * An ETag is computed from the bytes for an object stored without SSE-KMS or SSE-C, so the condition cannot tell apart
+ * two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes.
  */
 import {
   IntegrityError,
@@ -43,6 +55,8 @@ import type {
   IStorageDriver,
   SegmentRef,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
 } from '@cloudbitmaps/core/driver-kit';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import {
@@ -79,6 +93,12 @@ import type { SocketAdvisory } from './socket-advisory';
 import { sendOnce } from './send-once';
 import { readBounded } from './bounded-body';
 import { scrubCredentials } from './scrub-error';
+import {
+  appliesDeleteIfMatch,
+  checkConditionalDelete,
+  probeClient,
+  type ClientFacts,
+} from './client-probe';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
@@ -137,6 +157,15 @@ export interface S3StorageDriverOptions {
   readonly sockets?: SocketAdvisory;
   /** What the backoff before re-sending a throttled commit waits on; real time when absent. */
   readonly clock?: Sleeper;
+  /**
+   * Whether a delete given `ifVersion` is sent with `If-Match`, so it removes the object only while it is the one that
+   * ETag names. Defaults as the registry's option does: on when the host the client resolves is an AWS S3 host and the
+   * SDK sends the header, resolved on the first such delete (until then `capabilities()` reads `false`), and off for any
+   * other host, and for a client that cannot be resolved then (no region), whose deletes stay unconditional. Set it for
+   * an S3-compatible store only once you know the store applies `If-Match` on a delete. A `true` never overrides an SDK
+   * that does not send the header.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 export class S3StorageDriver implements IStorageDriver {
@@ -148,9 +177,13 @@ export class S3StorageDriver implements IStorageDriver {
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
   private readonly sockets: SocketAdvisory | undefined;
+  private readonly explicitConditionalDelete: boolean | undefined;
+  private probed: Promise<void> | undefined;
+  private facts: ClientFacts | undefined;
 
   constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
+    this.explicitConditionalDelete = checkConditionalDelete(options.conditionalDelete);
     this.sockets = options.sockets;
     this.bucket = options.bucket;
     this.prefix = normalizeS3Prefix(options.prefix);
@@ -186,7 +219,20 @@ export class S3StorageDriver implements IStorageDriver {
   }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: this.maxObjectBytes,
+      conditionalPut: true,
+      conditionalDelete: appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts),
+    };
+  }
+
+  /** Ask the client once where its requests go and whether it sends `If-Match` on a delete; it sends nothing. */
+  private settle(): Promise<void> {
+    this.probed ??= probeClient(this.client, this.bucket).then((facts) => {
+      this.facts = facts;
+    });
+    return this.probed;
   }
 
   async putImmutable(
@@ -271,11 +317,12 @@ export class S3StorageDriver implements IStorageDriver {
     });
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const objectKey = storageObjectKey(this.prefix, key);
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
-      return { bytes: new Uint8Array(0), size: (await this.headSize(key, objectKey)) ?? 0 };
+      const head = await this.head(key, objectKey);
+      return withVersion({ bytes: new Uint8Array(0), size: head.size ?? 0 }, head.version);
     }
     const read = await this.read('GetObject', key, async (options) => {
       try {
@@ -293,7 +340,7 @@ export class S3StorageDriver implements IStorageDriver {
           () => this.badRead(key, 'tail', `the response is longer than the ${maxBytes}B requested`),
           res.ContentLength,
         );
-        return { bytes, contentRange: res.ContentRange };
+        return { bytes, contentRange: res.ContentRange, version: res.ETag };
       } catch (err) {
         // A zero-byte object has no suffix to satisfy, so S3 refuses the range with a 416. The HEAD below settles
         // whether that is an empty object or a real range fault.
@@ -302,10 +349,11 @@ export class S3StorageDriver implements IStorageDriver {
       }
     });
     if ('refused' in read) {
-      if ((await this.headSize(key, objectKey)) !== 0) throw this.mapReadError(read.refused, key);
-      return { bytes: new Uint8Array(0), size: 0 };
+      const head = await this.head(key, objectKey);
+      if (head.size !== 0) throw this.mapReadError(read.refused, key);
+      return withVersion({ bytes: new Uint8Array(0), size: 0 }, head.version);
     }
-    const { bytes, contentRange } = read;
+    const { bytes, contentRange, version } = read;
     let size = totalFromContentRange(contentRange);
     if (contentRange !== undefined && !(size === 0 && bytes.length === 0)) {
       // A ranged answer must be the suffix asked for and hold exactly its bytes, as a range read's must. An empty
@@ -330,10 +378,11 @@ export class S3StorageDriver implements IStorageDriver {
       // non-compliant backend — confirm the true size with a HEAD rather than trust a possibly-short read.
       size =
         bytes.length === maxBytes
-          ? ((await this.headSize(key, objectKey)) ?? bytes.length)
+          ? ((await this.head(key, objectKey)).size ?? bytes.length)
           : bytes.length;
     }
-    return { bytes, size };
+    // The version of the object the bytes came from: the ETag of the response that carried them.
+    return withVersion({ bytes, size }, version);
   }
 
   private badRead(key: GenKey, what: 'range' | 'tail', why: string): ValidationError {
@@ -342,14 +391,20 @@ export class S3StorageDriver implements IStorageDriver {
     );
   }
 
-  /** The object's size from a `HeadObject`, or `undefined` when the response does not carry one. */
-  private headSize(key: GenKey, objectKey: string): Promise<number | undefined> {
+  /**
+   * The object's size and ETag from a `HeadObject`, each `undefined` when the response does not carry it. A missing
+   * object throws {@link NotFoundError}.
+   */
+  private head(
+    key: GenKey,
+    objectKey: string,
+  ): Promise<{ size: number | undefined; version: string | undefined }> {
     return this.read('HeadObject', key, async (options) => {
       const head = await this.client.send(
         new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }),
         options,
       );
-      return head.ContentLength;
+      return { size: head.ContentLength, version: head.ETag };
     });
   }
 
@@ -373,14 +428,47 @@ export class S3StorageDriver implements IStorageDriver {
     });
   }
 
-  async delete(key: GenKey): Promise<void> {
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const objectKey = storageObjectKey(this.prefix, key);
+    const ifVersion = options?.ifVersion;
+    if (ifVersion !== undefined && this.explicitConditionalDelete !== false) await this.settle();
+    const conditional =
+      ifVersion !== undefined && appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts);
     // Idempotent: S3 DeleteObject succeeds even if the key is absent (GC may race / retry).
     try {
       await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key: storageObjectKey(this.prefix, key) }),
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: objectKey,
+          ...(conditional ? { IfMatch: ifVersion } : {}),
+        }),
       );
-    } catch (err) {
+    } catch (raw) {
+      const err = scrubCredentials(raw);
+      if (conditional) {
+        // An absent object is a no-op whatever version was given, and a failed precondition (`412`, or `409` for a
+        // conditional request racing another on the key) is a conflict only while an object is under the key: a
+        // service may answer it for a key with nothing there, a copy of this delete that landed first included.
+        if (isNotFound(err)) return;
+        if (isConditionalConflict(err)) {
+          if (!(await this.exists(key, objectKey))) return;
+          throw new WriteConflictError(
+            `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+          );
+        }
+      }
       throw this.mapError(err);
+    }
+  }
+
+  /** Whether an object is under the key, from one `HeadObject`. A read that fails in any other way throws. */
+  private async exists(key: GenKey, objectKey: string): Promise<boolean> {
+    try {
+      await this.head(key, objectKey);
+      return true;
+    } catch (err) {
+      if (isNotFoundError(err)) return false;
+      throw err;
     }
   }
 
@@ -450,6 +538,14 @@ export class S3StorageDriver implements IStorageDriver {
     }
     return err;
   }
+}
+
+/** A tail read, with the version it was read at when the response carried one. */
+function withVersion(
+  tail: { bytes: Uint8Array; size: number },
+  version: string | undefined,
+): TailRead {
+  return version === undefined ? tail : { ...tail, version };
 }
 
 /** Concatenate a list of byte chunks of known total length into one buffer. */

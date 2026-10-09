@@ -15,9 +15,11 @@
  *
  * Refusing therefore has to clean up after itself. The object is already durable at that point, and it sits
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
- * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged, gone
- * or `destroyed`. Once another write has changed the row, the object's number may name a re-created segment's live
- * object, so it stays, and collection takes it like any other generation once one above it is current.
+ * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged (or
+ * differs only in its leases), gone or `destroyed`, or has key material when the load wrote cleartext. Under a row
+ * that is gone or keyed, a read of the object's footer must prove it the load's own first. Once another write has
+ * otherwise changed the row, the object's number may name a re-created segment's live object, so it stays, and
+ * collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
@@ -25,7 +27,7 @@ import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadAhead,
   cleartextUnderRequiredEncryption,
-  holdsObject,
+  provenObject,
   openGenerationReader,
   provesOwnObject,
   publishGenerationKept,
@@ -675,7 +677,13 @@ async function runLoad(
    * - No row, or a row with key material when this load wrote cleartext (a cleartext object has no place in an
    *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable):
    *   the object under the key must be proved this load's by its fingerprint, from one read of its footer. One that
-   *   is gone, is another object, or cannot be read is kept.
+   *   is gone, is another object, or cannot be read is kept. The delete passes the version that read reported, so on a
+   *   storage driver that reports `conditionalDelete` it removes that object and no other: a number taken again
+   *   between the read and the delete keeps the object put under it since, and the refused delete is a fault of the
+   *   cleanup, which the refusal swallows.
+   *
+   * The first two delete by number, with no condition: the decision comes from the row, and the object is this
+   * load's own write, of which the write reports no version.
    */
   const reclaim = async (): Promise<void> => {
     const now = await deps.registry.get(ref);
@@ -690,12 +698,9 @@ async function runLoad(
       return;
     }
     const keyed = now !== null && now.wrappedDeks !== undefined && now.wrappedDeks.length > 0;
-    if (
-      (now === null || (keyed && !written.encrypted)) &&
-      (await holdsObject(deps.storage, key, written.fingerprint))
-    ) {
-      await deps.storage.delete(key);
-    }
+    if (now !== null && !(keyed && !written.encrypted)) return;
+    const own = await provenObject(deps.storage, key, written.fingerprint);
+    if (own !== null) await deps.storage.delete(key, { ifVersion: own.version });
   };
 
   // Set when a registry write of this load's publish ended without an answer: a refusal after that cannot say whether

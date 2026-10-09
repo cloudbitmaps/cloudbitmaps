@@ -544,8 +544,8 @@ function afterFirstDelete(base: IStorageDriver, hook: () => Promise<unknown>): I
     getTail: (k, m) => base.getTail(k, m),
     list: (r) => base.list(r),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
-    delete: async (k) => {
-      await base.delete(k);
+    delete: async (k, o) => {
+      await base.delete(k, o);
       if (!fired) {
         fired = true;
         await hook();
@@ -564,7 +564,7 @@ function onFirstOpenOf(
   const driver: IStorageDriver = {
     capabilities: () => base.capabilities(),
     getRange: (k, o, l) => base.getRange(k, o, l),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (r) => base.list(r),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getTail: async (k, m) => {

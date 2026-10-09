@@ -42,7 +42,7 @@ function reincarnateAfterFirstRead(
   return {
     capabilities: () => real.capabilities(),
     getTail: (k, m) => real.getTail(k, m),
-    delete: (k) => real.delete(k),
+    delete: (k, o) => real.delete(k, o),
     list: (r) => real.list(r),
     putImmutable: (k, fn) => real.putImmutable(k, fn),
     getRange: async (k, o, l) => {
@@ -95,7 +95,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     const wrapped: IStorageDriver = {
       capabilities: () => storage.capabilities(),
       getRange: (k, o, l) => storage.getRange(k, o, l),
-      delete: (k) => storage.delete(k),
+      delete: (k, o) => storage.delete(k, o),
       list: (r) => storage.list(r),
       putImmutable: async (k, fn) => {
         const res = await storage.putImmutable(k, fn);
@@ -138,7 +138,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     const wrappedStorage: IStorageDriver = {
       capabilities: () => storage.capabilities(),
       getRange: (k, o, l) => storage.getRange(k, o, l),
-      delete: (k) => storage.delete(k),
+      delete: (k, o) => storage.delete(k, o),
       list: (r) => storage.list(r),
       putImmutable: async (k, fn) => {
         const res = await storage.putImmutable(k, fn);

@@ -5,7 +5,7 @@ import { openGenerationReader } from '@/core/crbm-storage-source';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, RecordingAuditSink } from '@/index';
-import type { GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, IKeystore, SegmentRef, StorageDeleteOptions } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -435,9 +435,9 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     const flaky = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
-        return async (key: GenKey) => {
+        return async (key: GenKey, options?: StorageDeleteOptions) => {
           if (broken) throw new Error('storage delete fault');
-          return w.storage.delete(key);
+          return w.storage.delete(key, options);
         };
       },
     }) as typeof w.storage;
@@ -461,9 +461,9 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     const flaky = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
-        return async (key: GenKey) => {
+        return async (key: GenKey, options?: StorageDeleteOptions) => {
           if (broken) throw new Error('storage delete fault');
-          return w.storage.delete(key);
+          return w.storage.delete(key, options);
         };
       },
     }) as typeof w.storage;

@@ -60,6 +60,19 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A storage driver can delete an object only while it is the one that was read: `StorageCaps.conditionalDelete`,
+  `IStorageDriver.delete(key, { ifVersion })` and `getTail`'s `version`.** A tail read reports the object's version
+  (`TailRead.version`: an S3 or Azure Blob ETag, a GCS object generation), and a driver that reports
+  `conditionalDelete: true` deletes, given that version, only the object it names, by a precondition the backend
+  applies (`If-Match`, `ifGenerationMatch`, `ifMatch`), refuses another object under the key with
+  `WriteConflictError`, and treats an absent one as a no-op. A driver that reports `false`, or omits it, ignores the
+  version. The in-memory driver reports `true`; the local-filesystem driver `false`, since a filesystem has no delete
+  conditioned on which file is under a path; S3, GCS and Azure Blob as the backend's existing `conditionalDelete` option
+  says, which now covers the storage half as well as the registry: on by default for S3 when its client sends to an AWS
+  S3 host and for Azure Blob, off by default for GCS. All three parts are optional, so a driver of your own keeps
+  compiling and deleting unconditionally until it implements them; the in-repo conformance suite's `conditional delete`
+  case is the test ([driver kit](docs/guide/api-reference.md#driver-kit--what-you-need-to-implement-a-driver)). New
+  types `TailRead` and `StorageDeleteOptions`, from `@cloudbitmaps/core`, its driver kit and `@cloudbitmaps/roaring`.
 - **`@cloudbitmaps/core/driver-kit` exports `RESOLVED_FIELDS`, `renewsPointer`, `renewPointer` and `pointerIdOf`**: the
   fields a read resolves through, whether a patch renews a row's `pointerId`, the patch that renews it and changes
   nothing a read resolves (the pointer, named at the value it has), and a row's `pointerId`, refusing a row with none
@@ -169,6 +182,29 @@ so, and so do the module headers in the code.
   `pointerRefreshMs` getters of `CrbmStorageChunkSource`, `PinnedStorageChunkSource` and `RetryingStorageChunkSource`,
   and `SegmentEngine`'s `pointerRefreshMs`, `supportsStorageSize` and `segmentSize`; a storage source of your own can
   drop its `pointerRefreshMs`.
+
+### Fixed
+
+- **On a storage driver that reports `conditionalDelete`, an erasure no longer deletes a generation a load put, since
+  its search, under the number of a holder above the pointer, and a refused load no longer deletes one put under its
+  number since its footer read.** A number can be taken again once its object is deleted. While one erasure re-read the
+  row before deleting a holder above the pointer, a second erasure of the same id could delete that holder, and a load
+  take its number, write and publish; the first erasure's delete then removed the load's generation, and the pointer
+  named a missing object. Each delete of a holder above the pointer now passes the version the erasure read when it
+  searched that object, and on a driver that reports `conditionalDelete` the delete of another object is refused: the
+  erasure stops deleting and reports `erased: true` when nothing left holds the id, or `'superseded'`. A load refused
+  after its row was purged, which proves its object its own by a footer read before deleting it, passes the version of
+  that read the same way. On a driver that does not report it (the local-filesystem driver, GCS by default, S3 on a
+  host other than AWS S3 unless set) the window remains. The condition names the object, not the row, so a rollback
+  onto the generation being deleted still leaves the pointer on a missing object; on S3, whose ETag is computed from
+  the bytes of an object stored without SSE-KMS or SSE-C, a load that writes exactly the holder's bytes under its
+  number, stored the same way, is not told apart; and every other delete stays unconditioned, by number: a refused
+  rewrite's of its own object above the winner's pointer or under a `destroyed` row, and a refused load's of its own object under a row that is
+  unchanged, changed only in its leases, or `destroyed`, since a write reports no version; generation collection's,
+  decided below the pointer from a listing or from the row's list of kept generations, where a number is taken again
+  only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a listing
+  names under a `destroyed` row, which every writer refuses until it is purged
+  ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 
 ## [0.19.1] — 2026-10-09
 

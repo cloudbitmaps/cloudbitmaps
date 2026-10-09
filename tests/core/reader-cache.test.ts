@@ -25,7 +25,7 @@ function countingStorage(base: IStorageDriver): { storage: IStorageDriver; opens
       opens += 1;
       return base.getTail(k, m);
     },
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (r) => base.list(r),
   };
   return { storage, opens: () => opens };
