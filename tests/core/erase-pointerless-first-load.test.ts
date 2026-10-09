@@ -245,7 +245,7 @@ describe('an erasure and a first load onto a row with no pointer', () => {
     await crashedFirstLoad(w.storage, w.registry, 0, [1, X]);
     // The load reads the row and stops before it writes its object: it numbers past the crashed one.
     const atWrite = gate();
-    const load = loadSegment(REF, [5, 6], {
+    const load = loadSegment(REF, [5, X], {
       ...w.deps,
       storage: heldAtWrite(w.storage, atWrite),
     });
@@ -258,6 +258,14 @@ describe('an erasure and a first load onto a row with no pointer', () => {
     atWrite.open();
     expect(await load).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect((await w.registry.get(REF))!.currentGen).toBeNull();
+    // Its object, written after the erasure's last look, stays where no pointer names it; the next erasure finds it.
+    expect(await generations(w.storage)).toEqual([1]);
+    expect(await eraseIdFromSegment(REF, X, w.deps)).toMatchObject({
+      erased: true,
+      fromGeneration: 1,
+      collected: [1],
+    });
+    expect(await generations(w.storage)).toEqual([]);
   });
 
   it('a holder written after the listing is found by the last check, which says re-run; the re-run deletes it', async () => {

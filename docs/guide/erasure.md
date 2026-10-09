@@ -278,10 +278,12 @@ driver authors) over every registered segment, and each ledger entry is that fun
   cannot be searched: it counts as a holder whatever the id, and is deleted too, and with only such objects the result
   is `'no-generation'` with them in `collected` ([the effect across a fleet](#two-rules-while-you-erase)). A row with no
   object that holds the id is `'no-generation'`, under `requireEncryption` too, and the call writes nothing. A load
-  that read the row before the renewal and writes its object after the call listed the bucket leaves a holder the last
-  look at the bucket finds: that throws `WriteConflictError`, and a re-run renews the row again and deletes it. A load
-  that read the row after the renewal publishes its own object, which the call never deletes: do not load the id
-  while erasing it.
+  that read the row before the renewal is refused at its publish whenever it writes its object. One that writes it
+  between the call's listing and its last look at the bucket leaves a holder that look finds: that throws
+  `WriteConflictError`, and a re-run renews the row again and deletes it. One that writes it after the last look leaves
+  it in the bucket, where no pointer names it and the next erasure of that id finds it: `erased: true` is true when the call
+  returns, and is not a promise about objects written later. A load that read the row after the renewal publishes its
+  own object, which the call never deletes: do not load the id while erasing it.
 - `'superseded'` means another writer moved the pointer off `fromGeneration` while the call was in flight: a load,
   another erasure, or a rollback. It means this call did not erase the id, not that the id is still there. Re-run, and
   if a racing erasure of the same id got there first, the re-run reports `'not-member'`.
