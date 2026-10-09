@@ -1408,9 +1408,10 @@ export class CloudRoaring {
    * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
    * before you write the retry. `'superseded'` covers five different causes — the write-once PUT collided,
    * the pointer moved, a row appeared where the load found none, the row's token changed, the row was purged —
-   * and only the first three are the "somebody beat us" the name suggests. A token can also change on a write
-   * that is not a supersession at all, such as a `setRetention` on the destination. On top of that, the collection pass that runs AFTER a
-   * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
+   * and only the first two are always the "somebody beat us" the name suggests. A row can appear, and a token can
+   * change, on a write that is not a supersession at all: a `setRetention` on the destination creates its row when it
+   * has none, and rewrites it when it has one. On top of that, the collection pass that runs AFTER a successful
+   * publish can raise the same error. So: treat it as "re-read the destination and decide",
    * never as "the write did not happen".
    *
    * **And by default it collects nothing**, unlike `load()`. See the `keep` default below.
@@ -1480,8 +1481,8 @@ export class CloudRoaring {
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
-          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
-          `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
+          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
+          `(a retention policy does either), dropped or purged. Re-read the destination and re-run.`,
       );
     }
     return {

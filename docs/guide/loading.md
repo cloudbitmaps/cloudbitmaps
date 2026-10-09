@@ -1120,10 +1120,12 @@ other reports `published: false` with `reason: 'superseded'`. If both took the s
 write it is refused by the write-once put and writes nothing. If not, the publish that lands second finds the row
 changed since its load read it, or finds a row where its load read none, and is refused, whatever its options: two
 first loads of a segment with no row race to create it, and the one that loses is refused whichever number it holds.
-Its object stays in the bucket when the refusal cannot prove it its own (another writer made the row), and a later
-load's collection deletes it. A load that won the number can still be refused by its guard. Publishing the generation
-that is already current is a no-op that reports success, unless the publish is fenced (below), in which case it is
-refused.
+Its object stays in the bucket when the refusal cannot prove it its own (another writer made the row): it is an
+orphan, collected as the paragraph on crashes below says, by the next load whose check meets it and at the latest by
+the listing a load runs every sixteenth generation, and it is billed until then, or until `dropSegment` or the
+retention sweep removes the segment. A load that won the number can still be refused by its guard. Publishing the
+generation that is already current is a no-op that reports success, unless the publish is fenced (below), in which
+case it is refused.
 
 **The row records the window, and the write that moves the pointer writes it.** The list of kept generations goes in the
 same compare-and-swap as the pointer, derived from the very row that write is conditioned on, so the list a load deletes

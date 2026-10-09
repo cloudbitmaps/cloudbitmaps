@@ -22,11 +22,17 @@ so, and so do the module headers in the code.
   `missing-storage-generation`. Every load that found no row now fences its publish on that absence, as a guarded load
   already did: it is refused with `reason: 'superseded'` and audited as `segment.load-refused`, and an `*Into` throws
   `WriteConflictError` for it, as a `materializeMany` output reports it. Of two first loads of one segment at once,
-  exactly one lands. The refused load's object is deleted when the row that appeared is a tombstone, or holds key
-  material where the load wrote cleartext and the object's footer proves it the load's; otherwise it stays in the
-  bucket, and a later load's collection deletes it.
-  Such a load that races a drop now reports `superseded` instead of throwing `ValidationError`, and one that races the
-  segment's first encrypted load reports `superseded` instead of throwing `KeyUnavailableError` or `ValidationError`.
+  at most one lands. The refused load's object is deleted when the row that appeared is a tombstone, or holds key
+  material where the load wrote cleartext and the object's footer proves it the load's. Otherwise it stays in the
+  bucket, still billed, until a later load's collection deletes it (the next load whose check meets it, and at the
+  latest the listing a load runs every sixteenth generation: see
+  [how a load stays correct](docs/guide/loading.md#how-it-stays-correct)), or `dropSegment` or the retention sweep
+  removes the segment. A first load that meets another writer's row only at its publish, a drop's tombstone or a row whose keys
+  do not match the object it wrote, now reports `superseded` instead of throwing `ValidationError` or
+  `KeyUnavailableError`. One that meets that row before it writes still throws, as before, and writes nothing:
+  `ValidationError` for a tombstone, `KeyUnavailableError` for a row with key material when it has no keystore, and
+  `ValidationError` for a cleartext row under `requireEncryption`. The fence holds once every process that writes the segment runs this release: a process
+  on an earlier release still moves the pointer over a row that appeared while its load ran.
 
 ## [0.19.0] — 2026-10-08
 

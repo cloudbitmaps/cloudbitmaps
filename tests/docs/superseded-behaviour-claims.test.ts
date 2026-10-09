@@ -789,11 +789,17 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     why: "the next load of a destination deletes the one generation its own publish pushes out of the window by name; an `*Into` with `keep` collects every generation below its own pointer at once, and a load's listing, on every sixteenth generation, takes the rest",
   },
   // A load that found no row fences its publish on that absence, guarded or not, so no page may say such a load
-  // publishes forward-only over a row that appeared, fences on nothing, or lands beside another first load.
+  // publishes forward-only over a row that appeared, fences on nothing, or lands beside another first load. An unguarded
+  // load does carry no fence on the pointer, which is true and said so: "carries no fence on the pointer" passes.
   {
     claim: new RegExp(
       g(
-        String.raw`\bno row,?(?: [\w'(),.:-]+){0,3}? (?:publishes|publish|is|are|lands?|stays)(?: (?:a|the one|one))?(?: bare| plain)? forward-only\b|\bfences? on nothing\b|\b(?:reads?|found|finds?|has) (?:anything|nothing) to fence on\b|\bboth (?:loads? )?land\b`,
+        String.raw`\bno row,?(?: [\w'(),.:-]+){0,3}? (?:publishes|publish|is|are|lands?|stays)(?: (?:a|the one|one))?(?: bare| plain)? forward-only\b` +
+          String.raw`|\bforward-only,? (?:[\w'(),-]+ ){0,6}?no row\b` +
+          String.raw`|\bunguarded (?:first )?loads? (?:[\w'(),:-]+ ){0,8}?(?:is|are|stays|publishes|publish|lands?)(?: (?:still|always|a|the one|one))?(?: bare| plain)? forward-only\b` +
+          String.raw`|\b(?:unguarded|first loads?|no row|found none|rowless)\b[^.]{0,80}?\b(?:carr(?:y|ies) no fence|(?:is|are) unfenced|publish(?:es)? (?:with no|without (?:a|any)) fence)\b(?! on the pointer)` +
+          String.raw`|\bfences? on nothing\b|\b(?:reads?|found|finds?|has) (?:anything|nothing) to fence on\b` +
+          String.raw`|\bboth (?:loads? )?(?:land|publish|succeed)\b|\beach (?:one |load )?lands\b`,
       ),
       'i',
     ),
@@ -1330,6 +1336,17 @@ describe('no document claims behaviour this library does not have', () => {
     'neither load read anything to fence on, so each is a forward-only publish',
     'If the lower generation number lands first, both land and the higher stays current.',
     'a load that found no row\n * publishes forward-only',
+    // The same claim reworded: the order reversed, the subject named, the fence said to be missing, the loads counted.
+    'An unguarded load publishes forward-only onto a segment with no row.',
+    'it publishes forward-only onto a segment\n * with no row',
+    'An unguarded first load is forward-only.',
+    'an unguarded load (`allowEmpty: true`) is still forward-only',
+    'An unguarded first load carries no fence.',
+    'A load onto a segment with no row is unfenced.',
+    'An unguarded load that found none publishes without a fence.',
+    'Two first loads of a segment with no row both publish.',
+    'Two first loads race, and each one lands.',
+    'Both succeed, and the higher stays current.',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1507,6 +1524,11 @@ describe('no document claims behaviour this library does not have', () => {
     'A publish is forward-only: it never moves the pointer back.',
     'Of two loads of one segment at once, at most one lands.',
     'A segment with no row is created by its first load, whose publish is a create-only write.',
+    'An unguarded load carries no fence on the pointer, which is right for it.',
+    'An unguarded load carries no fence on\n * the pointer, which is right for it.',
+    'Every load is fenced, so of two loads of one segment at most one of them lands.',
+    'Forward-only is right for an unguarded load: its ids come from upstream.',
+    'A guarded load also fences on the pointer it judged; an unguarded one does not.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });

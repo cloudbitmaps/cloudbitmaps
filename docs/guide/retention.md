@@ -70,8 +70,9 @@ record the segment, not on every load. It is idempotent, so re-running is harmle
   floor, `MIN_EXPIRES_AT_MS`.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
   `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
-  sweep can already see the segment, and the first load publishes onto that row. Reads are unaffected: a pointer-less
-  row resolves exactly like a segment with no row.
+  sweep can already see the segment, and the first load publishes onto that row. A load already running when
+  `setRetention` creates the row found none, so it is refused `superseded`, guarded or not: re-run it, and it
+  publishes onto that row. Reads are unaffected: a pointer-less row resolves exactly like a segment with no row.
 
 Reading and cancelling:
 

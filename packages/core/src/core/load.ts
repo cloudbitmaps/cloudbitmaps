@@ -356,7 +356,8 @@ export type LoadRefusal =
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
    * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
-   * the bucket, where a later load's collection deletes it, because its generation number may by then name another
+   * the bucket, still billed, until a later load's collection deletes it (at the latest the listing a load runs
+   * every sixteenth generation) or the segment is dropped, because its generation number may by then name another
    * incarnation's live object; once the row is `destroyed` (dropped or crypto-shredded), the object is deleted, and
    * once the row is gone, so is an object its footer proves this load's own.
    */
