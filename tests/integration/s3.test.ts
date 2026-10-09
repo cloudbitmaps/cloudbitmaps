@@ -88,12 +88,20 @@ beforeAll(async () => {
 let n = 0;
 const freshDriver = (): S3StorageDriver =>
   new S3StorageDriver({ client, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
+// Never created: the emulator answers as the service does for a bucket that is not there.
+const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+// MinIO lists 1,000 keys a page, as S3 does.
+const PAST_ONE_PAGE = 1_001;
 
 // The S3 driver must pass the SAME storage-source contract as in-memory + LocalFs.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
 // `largeBytes` is past one 5 MiB part, so the collision is raised by the conditional CompleteMultipartUpload.
-storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, { largeBytes: 6 * 1024 * 1024 });
+storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, {
+  largeBytes: 6 * 1024 * 1024,
+  missingLocation: () => new S3StorageDriver({ client, bucket: MISSING, prefix: `${RUN}/missing` }),
+  pagedListSize: PAST_ONE_PAGE,
+});
 
 storageChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {
   const driver = freshDriver();
@@ -117,6 +125,11 @@ registryConformance(
       prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
+  {
+    missingLocation: () =>
+      new S3RegistryDriver({ client, bucket: MISSING, prefix: `${RUN}/missing`, now: ticking() }),
+    pagedListSize: PAST_ONE_PAGE,
+  },
 );
 
 // Two drivers over one bucket, racing the same row — the cross-process fence (`If-None-Match: *` /
@@ -709,9 +722,6 @@ describe('S3 (MinIO): a cold count is one request', () => {
 });
 
 describe('a bucket that does not exist', () => {
-  // Never created: the emulator answers as the service does for a bucket that is not there.
-  const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
-
   it("fails every read and a delete with the service's own error, not as an absent object", async () => {
     await expectMissingLocationFails(
       () => new S3Storage({ client, bucket: MISSING, prefix: `${RUN}/missing` }),

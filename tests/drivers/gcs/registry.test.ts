@@ -178,6 +178,14 @@ const driverOver = (
 
 // The GCS registry must pass the SAME contract as memory / LocalFs / S3 / Azure, in the fast lane.
 registryConformance('GcsRegistryDriver (fake GCS)', () => driverOver(new FakeGcs()));
+// The same contract over a fake that pages its listing three objects at a time, so the listing must follow its token.
+registryConformance(
+  'GcsRegistryDriver (fake GCS, three objects a page)',
+  () => driverOver(new FakeGcs(3)),
+  {
+    pagedListSize: 10,
+  },
+);
 
 // …and the cross-process fence, against a fake that enforces preconditions exactly where GCS does.
 registryConcurrency('GcsRegistryDriver (fake GCS)', () => {

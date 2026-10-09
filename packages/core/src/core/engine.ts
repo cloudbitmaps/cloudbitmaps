@@ -164,7 +164,11 @@ interface StreamedChunks {
   /** The keys the stream carries; `undefined` when it carries every key from where it opened (nothing was cached). */
   inStream: ReadonlySet<number> | undefined;
   stream: ChunkStream | undefined;
-  /** Whether the segment was invalidated after the stream opened: a chunk delivered after that is not cached. */
+  /**
+   * Whether a chunk the stream delivers from now on is left out of the cache: the segment was invalidated after the
+   * stream opened, or, on a source with no `currentVersion`, the read moved to another generation while the stream was
+   * open, so what the stream still delivers cannot be told to be of either one.
+   */
   invalidated: boolean;
 }
 
@@ -1275,7 +1279,12 @@ export class SegmentEngine {
       if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
       return hit;
     }
-    if (streamed !== undefined && streamed.gen === planned && now !== null) streamed.gen = now;
+    if (streamed !== undefined && streamed.gen === planned && now !== null) {
+      streamed.gen = now;
+      // On a source with no `currentVersion` a streamed chunk is cached under the read's generation, which has just
+      // moved while the stream may still be reading the earlier one: cache nothing more it delivers.
+      if (streamed.opened && this.storage.currentVersion === undefined) streamed.invalidated = true;
+    }
     return this.storageChunk(ref, now, false, report);
   }
 

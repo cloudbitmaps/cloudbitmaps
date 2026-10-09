@@ -118,6 +118,15 @@ registryConformance('S3RegistryDriver (fake S3)', () => {
   const client = new FakeS3() as unknown as S3Client;
   return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudbitmaps', now: ticking() });
 });
+// The same contract over a fake that pages its listing three keys at a time, so the listing must follow its token.
+registryConformance(
+  'S3RegistryDriver (fake S3, three keys a page)',
+  () => {
+    const client = new FakeS3(3) as unknown as S3Client;
+    return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudbitmaps', now: ticking() });
+  },
+  { pagedListSize: 10 },
+);
 
 // What a delete leaves behind: with the gate on, a row born with an incarnation id is removed by a DeleteObject under
 // If-Match; off, it is tombstoned as before. The fake is a double the registry cannot ask where it sends, so the gate is
