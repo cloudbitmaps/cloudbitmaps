@@ -2103,7 +2103,10 @@ export class CloudRoaring {
    * is renewed so that the load, if still running, is refused at its publish, and the entry reads `erased: true`. An
    * encrypted first load's object there cannot be searched, so it is deleted whatever the id: on an encrypted store,
    * an erasure of any id refuses an encrypted first load in flight that has written its object onto a segment made
-   * ahead of its data.
+   * ahead of its data. Each such delete, and each of a holder above the pointer, names the object the erasure read:
+   * on a storage driver that reports `conditionalDelete`, another erasure of the id that deletes it first, followed by
+   * a load that takes the number freed and publishes, does not lose that load's generation to this erasure's delete,
+   * which is refused, and the entry says what the row says; on one that does not, it can.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer, or replaced an object the call meant to

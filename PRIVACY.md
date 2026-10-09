@@ -119,7 +119,11 @@ cleartext object left under it that holds the id is deleted with everything unde
 `erased: true`. A segment whose row names no generation yet (a retention policy set before its first load) is searched
 too: an object a first load wrote and never published that holds the id is deleted, and the entry reads `erased:
 true`. Before it deletes anything the erasure renews the row's `pointerId`, so a load still running that wrote such an
-object is refused at its publish and never names an object that is gone. On an encrypted store such an object cannot
+object is refused at its publish and never names an object that is gone. Each delete names the object the erasure
+read: on a storage driver that reports `conditionalDelete`, another erasure of the id that deletes it first, followed
+by a load that takes the number freed and publishes, does not lose that load's generation to this erasure's delete; on
+one that does not, it can, and the row then names a missing object, which `store.checkConsistency()` reports
+([a number taken again](docs/guide/erasure.md#how-it-stays-correct)). On an encrypted store such an object cannot
 be searched until its load publishes the key, so it is deleted whatever id is erased: an erasure of any id refuses an
 encrypted first load in flight that has written its object onto a segment whose row was made ahead of its data, and
 that load is re-run ([the erasure guide](docs/guide/erasure.md#two-rules-while-you-erase)). On an encrypted segment,

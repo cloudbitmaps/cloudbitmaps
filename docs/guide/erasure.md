@@ -320,15 +320,18 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   object, which `checkConsistency()` reports: a generation above the pointer; on a segment with no generation yet, a
   first load's object that a rollback with `allowForward` accepts (on a row with no key, only a cleartext one); or an
   object below the pointer that the segment's key does not open, which only a rollback with no key at hand moves onto.
-  The call reads the row just before each delete; one round trip remains between that read and the delete, and the
-  storage driver port has no conditional delete to close it.
+  The call reads the row just before each delete; one round trip remains between that read and the delete, and a
+  condition on the object cannot close it, since the pointer then names the very object the call read.
 
 **A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
-a call deletes a holder above the pointer, another erasure of the same id can delete that holder first, and a load can
-then take the number, write its own generation under it and publish it. So each delete above the pointer names the
-object the call searched: it passes the version the storage driver reported when the call read that object
-(`delete(key, { ifVersion })`), and a driver that reports `conditionalDelete` deletes only that object. The load's
-generation stays, and the call reports `erased: true` when nothing left holds the id, or the reason the row gives,
+a call deletes a holder by name, above the pointer or on a segment with no generation yet, another erasure of the same
+id can delete that holder first, and a load that read the row after both erasures renewed it can then take the
+number, write its own generation under it and publish it: nothing refuses that publish. So each such delete names the
+object the call read: it passes the version the storage driver reported on the read that made the object a holder
+(`delete(key, { ifVersion })`), the read of an object the call searched, or, for one it cannot search, the read of its
+footer that found it encrypted under a row with no key, or the open whose index failed its authentication under the
+segment's key. A driver that reports `conditionalDelete` deletes only that object. The load's generation stays, the
+call deletes nothing more, and it reports `erased: true` when nothing left holds the id, or the reason the row gives,
 `'superseded'` as a rule. Which drivers report it:
 
 | Storage | `conditionalDelete` |
@@ -340,10 +343,11 @@ generation stays, and the call reports `erased: true` when nothing left holds th
 | `LocalFsStorage` | no: a filesystem has no delete conditioned on which file is under a path |
 
 On a driver that does not report it, a delete in that window removes the load's generation, and the pointer names a
-missing object, which `checkConsistency()` reports. These limits hold on every driver:
+missing object, which `checkConsistency()` reports: the race of two erasures and a load stays open there, above the
+pointer and on a segment with no generation yet alike. These limits hold on every driver:
 
 - The condition names the object, not the row, so it does not cover the rollback in the last bullet above: the pointer
-  then names the very object that was searched.
+  then names the very object the call read.
 - On S3 the version is the object's ETag, which for an object stored without SSE-KMS or SSE-C is computed from its
   bytes. Two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes, share
   one, so a load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
@@ -376,14 +380,20 @@ driver authors) over every registered segment, and each ledger entry is that fun
   a cleartext one with a generation, an encrypted one) is deleted as a holder whatever the id, wherever the call meets
   it but as the current generation or under a tombstone, and listed in `collected`; only a searched generation that
   held the id makes the entry `erased: true` ([the effect across a fleet](#two-rules-while-you-erase)). An object the
-  segment's own key opens whose chunk does not is corrupt: `IntegrityError`.
+  segment's own key opens whose chunk does not is corrupt: `IntegrityError`. One whose chunk read fails because another
+  object is under the number by then (a load took it after another erasure deleted the one listed) is not: the object
+  the call listed is gone, as when a collector takes it.
 - A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too, since a
   first load's object can be there: its load still running, or one that crashed between its write and its publish.
   When objects hold the id, the call first renews the row's `pointerId`, with a write that names the pointer at the
   value it has, none, so a load that wrote one is refused `superseded` at its publish. Then it deletes each object
   that holds the id, reading the row before each delete and stopping if anything but its leases has changed, and the
-  entry reads `erased: true`, with those generations in `collected`. So a crashed first load's object is erased as any
-  other holder is. On an encrypted store such an object is sealed under a key its load has not published, so it cannot
+  entry reads `erased: true`, with those generations in `collected`. Each delete passes the version of the read that
+  made the object a holder: another erasure of the id can delete it first, and a load that read the row after both
+  renewals take its number and publish, and on a storage driver that reports `conditionalDelete` this call's delete is
+  then refused, the call deletes nothing more, and the load's generation stays; on one that does not, the delete
+  removes it ([a number taken again during an erasure](#how-it-stays-correct)). So a crashed first load's object is
+  erased as any other holder is. On an encrypted store such an object is sealed under a key its load has not published, so it cannot
   be searched: it counts as a holder whatever the id, and is deleted too, and with only such objects the result is
   `'no-generation'` with them in `collected` ([the effect across a fleet](#two-rules-while-you-erase)). A row with no
   object that holds the id is `'no-generation'`, under `requireEncryption` too, and the call writes nothing. A load
@@ -396,9 +406,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
 - `'superseded'` means another writer moved the pointer off `fromGeneration`, or replaced an object this call meant to
   delete, while the call was in flight: a load, another erasure, or a rollback. On a segment with no generation yet it
   also means another write of the row (a `setRetention`, say) landed before the call renewed it. When an object was
-  replaced, the object this call searched was deleted, as a holder above the pointer by another erasure or by the
-  refused load that wrote it, and a load stored another object under its number, so the storage driver's conditional
-  delete refused this call's delete, whether or not the pointer moved. It means this call did not erase the id, not
+  replaced, the object this call meant to delete was deleted, as a holder by another erasure (above the pointer, or on
+  a segment with no generation yet) or by the refused load that wrote it, and a load stored another object under its
+  number, so the storage driver's conditional delete refused this call's delete, whether or not the pointer moved. It means this call did not erase the id, not
   that the id is still there. Re-run, and if a racing erasure of the same id got there first, the re-run reports
   `'not-member'`.
 - A racing erasure collects with `keep: 0`, so it can delete the generation this call was streaming or the object it had

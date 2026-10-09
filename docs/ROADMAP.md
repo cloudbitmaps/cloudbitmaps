@@ -201,8 +201,9 @@ is a dependency of both and is never installed directly. The storage drivers are
   **physical deletion on return**, with a
   per-segment ledger and an audit event per segment: `segment.rewrite`, or `segment.collect` where only other
   generations held the id. `subjectReport` is the read side (access). What a
-  rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder above the
-  pointer is deleted only while it is the object the erasure searched, on a storage driver that reports
+  rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder an erasure
+  deletes by name, above the pointer or on a segment with no generation yet, is deleted only while it is the object
+  the erasure read, on a storage driver that reports
   `conditionalDelete` (in-memory, Azure Blob, S3 on an AWS host, GCS when set), so a load that took its number since
   keeps its generation ([the limits](guide/erasure.md#how-it-stays-correct)); the local-filesystem driver cannot.
 - **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
