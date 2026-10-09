@@ -1,7 +1,8 @@
 import { loadSegment } from '@/core/load';
+import { KeyUnavailableError, ValidationError } from '@/core/errors';
 import { roaringCodec } from '@/roaring-codec';
 import { RecordingAuditSink, TransientError } from '@/index';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
 /**
@@ -45,5 +46,61 @@ describe('a refused load whose cleanup fails is still a refusal', () => {
     expect(res).toMatchObject({ published: false, reason: 'min-retained' });
     expect(audit.snapshot().map((e) => e.kind)).toContain('segment.load-refused');
     expect((await registry.get(REF))!.currentGen).toBe(0);
+  });
+});
+
+describe('a refusal the publish raises as an error', () => {
+  // A publish states three refusals by throwing, each before that attempt's write is sent, and a registry raises
+  // `ValidationError` only from checks it makes before sending a write. The load treats both classes as a definite
+  // refusal: it reclaims its object as any refused load does, and rethrows. Anything else may still land, so the object
+  // stays. A segment with no row: the reclaim finds none, and deletes the object its footer proves the load's own.
+  const objects = async (storage: IStorageDriver): Promise<number[]> => {
+    const out: number[] = [];
+    for await (const k of storage.list(REF)) out.push(k.generation);
+    return out;
+  };
+  const createThrows = (registry: MemoryRegistryDriver, err: Error): IRegistryDriver => {
+    const stub = Object.create(registry) as IRegistryDriver;
+    stub.create = () => Promise.reject(err);
+    return stub;
+  };
+
+  it.each<[string, Error]>([
+    ['ValidationError', new ValidationError('the row is over the registry size cap')],
+    ['KeyUnavailableError', new KeyUnavailableError('the key cannot be unwrapped')],
+  ])(
+    'a %s from the registry is rethrown, nothing is published, and the object is reclaimed',
+    async (_, err) => {
+      const storage = new MemoryStorageDriver();
+      const registry = new MemoryRegistryDriver();
+      const audit = new RecordingAuditSink();
+      await expect(
+        loadSegment(
+          REF,
+          [1, 2, 3],
+          { storage, registry: createThrows(registry, err), codec: roaringCodec },
+          { allowEmpty: true, audit },
+        ),
+      ).rejects.toBe(err);
+      expect(await registry.get(REF)).toBeNull();
+      expect(await objects(storage)).toEqual([]);
+      expect(audit.snapshot().map((e) => e.kind)).not.toContain('segment.publish');
+    },
+  );
+
+  it('a fault that is not a refusal is rethrown and keeps the object', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const err = new Error('socket hang up');
+    await expect(
+      loadSegment(
+        REF,
+        [1, 2, 3],
+        { storage, registry: createThrows(registry, err), codec: roaringCodec },
+        { allowEmpty: true },
+      ),
+    ).rejects.toBe(err);
+    expect(await registry.get(REF)).toBeNull();
+    expect(await objects(storage)).toEqual([0]);
   });
 });

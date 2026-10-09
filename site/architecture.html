@@ -394,8 +394,8 @@
             </div>
             <p class="dgm-formula">
               The new generation is written <b>beside</b> the old one, and the pointer flips
-              <b>last</b>, by compare-and-swap, and only <b>forward</b>. A load's swap is also fenced on the row
-              it read, when there is one: if another write lands in between, the load reports
+              <b>last</b>, by compare-and-swap, and only <b>forward</b>. A load's swap is also fenced on what it
+              read, the row or its absence: if another write lands in between, the load reports
               <span class="m">superseded</span> rather than overwrite it. Until the flip, every reader still sees generation 6 &mdash; so a half-written publish cannot be observed, a crash
               between the two steps leaves 6 authoritative, and the superseded object stays readable for a grace
               window before the next load collects it. Every write of a segment's contents is this protocol; the

@@ -354,10 +354,12 @@ export type LoadRefusal =
   /**
    * Another writer got there first. Either another load wrote the same generation number first, so the write-once
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
-   * writing: another load published, a retention change, a rollback or an erasure wrote the row, or the row was
-   * deleted. Once another write has changed the row, the object stays in the bucket, because its generation number
-   * may by then name another incarnation's live object; once the row is `destroyed` (dropped or crypto-shredded),
-   * the object is deleted, and once the row is gone, so is an object its footer proves this load's own.
+   * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
+   * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
+   * the bucket, still billed, until a later load's collection deletes it (at the latest the listing a load runs
+   * every sixteenth generation) or the segment is dropped, because its generation number may by then name another
+   * incarnation's live object; once the row is `destroyed` (dropped or crypto-shredded), the object is deleted, and
+   * once the row is gone, so is an object its footer proves this load's own.
    */
   | 'superseded';
 
@@ -738,19 +740,19 @@ async function runLoad(
   const leasesNow =
     deps.clock === undefined ? undefined : (): number => (deps.clock as Clock).now();
 
-  // Fence the publish on the row the guard judged.
+  // Fence the publish on what this load found: the row it read, or that there was none.
   //
-  // Forward-only is right for an UNGUARDED load: its ids come from upstream, so losing a race costs nothing that
-  // the winner did not also bring. A guarded load is a different animal — it derived its decision from a
-  // particular generation's cardinality, which makes it exactly the writer invariant 1 says must publish with
-  // `expectFrom`. Without that, anything published between the "before" read and this publish voids the guard's
-  // premise while the guard still reports success: reproduced, two loaders on a fresh segment let an EMPTY
-  // generation land over a thousand ids, under default options, because `before` was read as "no row".
+  // `expectToken` goes on whenever there was a row. It is incarnation identity rather than a derivation fence, it costs
+  // nothing legitimate (a token only changes when a row write lands: a policy write, a lease), and it is what stops
+  // this call publishing into a segment that merely reuses the name it started with. A row that differs from the one
+  // this load read only in its leases does not refuse it (`expectRow`): readers write those, and they say nothing
+  // about what it derived.
   //
-  // `expectToken` goes on regardless. It is incarnation identity rather than a derivation fence, it costs
-  // nothing legitimate — a token only changes when a row write lands (a policy write, a lease) — and it is what stops this call publishing
-  // into a segment that merely reuses the name it started with. A row that differs from the one this load read only
-  // in its leases does not refuse it (`expectRow`): readers write those, and they say nothing about what it derived.
+  // A guarded load also fences on the pointer it judged (`expectFrom`). It derived its decision from a particular
+  // generation's cardinality, which makes it exactly the writer invariant 1 says must publish with `expectFrom`:
+  // without that, anything published between the "before" read and this publish voids the guard's premise while the
+  // guard still reports success. An unguarded load needs no fence on the pointer: its ids come from upstream, so a
+  // newer generation costs nothing it knew about.
   let published: PublishResult;
   try {
     published = await publishGenerationKept(deps.registry, key, {
@@ -762,14 +764,14 @@ async function runLoad(
       cleartext: !written.encrypted,
       ...(fromToken === undefined ? {} : { expectToken: fromToken, expectRow: row }),
       ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
-      // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment
-      // that had NO ROW. Both `expectFrom` and `expectToken` compare against a value read from a row, so with no
-      // row both are omitted and the publish becomes a bare forward-only advance — which lands over anything
-      // that appeared in between. `before` was `null`, so the empty, `minRetained` and `maxGrowth` bounds had nothing
-      // to judge and passed vacuously. Verified: an empty generation published over a thousand ids that a
-      // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
-      // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
-      ...(needsBefore && row === null ? { expectAbsent: true } : {}),
+      // A load that found NO ROW fences on that absence, guarded or not, so a row that appeared since refuses it.
+      // `expectFrom` and `expectToken` both compare against a value read from a row, so with no row both are omitted,
+      // and the publish would otherwise be a bare forward-only advance over whatever appeared in between. For a guarded
+      // load, `before` was `null` and its bounds passed vacuously, so an empty generation would land over the ids
+      // another writer had just loaded. For an unguarded one, the pointer would move over another first load's
+      // generation or onto a row `setRetention` made, and, where an erasure had already deleted this load's object
+      // above that row's pointer, onto an object that is gone, so that every read of the segment would fail.
+      ...(row === null ? { expectAbsent: true } : {}),
       // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
       // is this load's publish only over the object this load wrote, which one footer read proves.
       holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
@@ -783,8 +785,9 @@ async function runLoad(
   } catch (err) {
     // A refusal the publish states by throwing is as definite as a `false`: each of these is raised before that
     // attempt's compare-and-swap or create is sent, so nothing landed from it. `publishGeneration` raises three: a
-    // `destroyed` row (no fence answered first, as for an unguarded load that found no row), new key material for a
-    // segment that already has a generation, and a cleartext object for a row with key material. The registries raise
+    // `destroyed` row, new key material for a segment that already has a generation, and a cleartext object for a row
+    // with key material. The fence a load carries (the row's token, or its absence) refuses each of those rows first,
+    // so these are a second line rather than an answer a load expects. The registries raise
     // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
     // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
     // `TransientError` of a registry write the publish could not settle by reading the row back.
