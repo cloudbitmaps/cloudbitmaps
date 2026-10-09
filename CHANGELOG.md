@@ -103,6 +103,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The written bound on what a read already in progress can yield after an erasure counts the key a combine is
+  handing out.** A combine can still yield an id the store's own erasure removed from up to `concurrency` + 1 keys of
+  each operand (33 by default): the key it is handing out when the erasure returns and the `concurrency` keys it had
+  already requested. `PRIVACY.md`, its published copy and the erasure guide said `concurrency` (32). The reads are
+  unchanged; `iterate` and `count` stay at 32 chunks, and a test now counts each bound in a read past its ramp-up.
 - **A store keeps each segment's resolution apart from its reader, so the reader cache letting a segment go no longer
   moves a read on or reads its row again.** With a timed refresh (a backend and `cache.genTtlMs` above 0), the store
   keeps what it read of each segment's row (the generation, its `pointerId`, the wrapped keys and the summary, never a

@@ -18,6 +18,7 @@ import { brandAsBackend } from '@/core/ports';
 import { destroySegment } from '@/core/erasure';
 import type { Clock, IMetricsSink, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { DEFAULT_INTERSECT_CONCURRENCY } from '@/core/engine';
 import { withoutRangedReads } from '../helpers/no-ranged-reads';
 
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
@@ -291,7 +292,8 @@ describe('a warm cache, and another store writes while a read is open, once cach
           got.after.some((id) => genOf(id) === 1),
           mode,
         ).toBe(true);
-        // the written bound: up to 32 chunks for `iterate`, and up to `concurrency` (32) keys for a combine
+        // within the written bound (up to 32 chunks for `iterate`, and `concurrency` + 1 keys for a combine): this early
+        // in the read, before its window has widened, it has requested fewer
         expect(got.after.filter((id) => genOf(id) === 0).length, mode).toBeLessThanOrEqual(
           32 * PER,
         );
@@ -396,8 +398,8 @@ describe('a partly warm read under reader-cache pressure, and another store publ
       ).toEqual([]);
       const first = ids.findIndex((id) => genOf(id) === 1);
       expect(first, 'the read reached the new generation').toBeGreaterThanOrEqual(lapsedAt);
-      // the written bound: past the chunk it was handing out when the TTL lapsed (chunk 40), what it served of the
-      // earlier generation is what it had already requested, up to `concurrency` (32) keys for a combine
+      // the written bound: the chunk it was handing out when the TTL lapsed (chunk 40), and what it had already
+      // requested, up to `concurrency` (32) keys for a combine
       expect(first - (lapsedAt + PER)).toBeLessThanOrEqual(32 * PER);
       const back = ids.slice(first).filter((id) => genOf(id) === 0);
       expect(back.length, 'ids of the earlier generation after the move').toBe(0);
@@ -473,6 +475,86 @@ describe('under reader-cache pressure, an erasure while a read is open', () => {
       // Within the bound: inside the TTL the warm read still serves the chunk it cached, readers let go or not, and
       // the lapse is what stops it.
       expect(served).toEqual({ lapse: false, 'no lapse': true });
+    },
+    60_000,
+  );
+});
+
+/**
+ * The written bound on what a read already in progress can still yield after the store it runs on erases an id, counted
+ * once the read's window is full: the erasure returns while the read is handing out chunk 40 of 120. A combine can yield
+ * the id from the key it is handing out and the `concurrency` keys it had already requested, so `concurrency` + 1 chunks
+ * (33 by default); an `iterate` read chunk by chunk from the chunk in hand and the 31 it had requested, 32; a streamed
+ * `iterate` from the chunk in hand alone. Each case erases the id at the last chunk the bound reaches, which the read
+ * yields, and at the next, which it never does. The erasure is the store's own, so it holds whatever the TTL.
+ */
+describe("the bound after an erasure by the read's own store, counted past the ramp-up", () => {
+  const AT = 40;
+  type Verb = 'iterate' | 'intersect' | 'union' | 'andNot';
+
+  /** Whether `verb` yields, after the store's erasure returns at chunk AT, the id erased from chunk `victimChunk`. */
+  async function yieldedAfterErasure(
+    verb: Verb,
+    mode: Mode,
+    victimChunk: number,
+    concurrency?: number,
+  ): Promise<boolean> {
+    inMode(mode);
+    const w = await world({ ttl: 1_000_000 });
+    const ns = { namespace: 'ns' };
+    const others: Record<Exclude<Verb, 'iterate'>, { name: string; ids: number[] }> = {
+      // every id of both generations: the intersect is the segment's own ids
+      intersect: { name: 'mirror', ids: [...gen(0), ...gen(1)].sort((a, b) => a - b) },
+      // ids past the segment's chunks: the union is the segment's ids, then these
+      union: { name: 'far', ids: [300 * CHUNK + 1] },
+      // ids the segment never holds: the difference is the segment's own ids
+      andNot: { name: 'odd', ids: gen(1) },
+    };
+    if (verb !== 'iterate') {
+      const { name, ids } = others[verb];
+      await bulkLoadCrbmGeneration(w.storage, { ...ns, segment: name, generation: 0 }, ids, {
+        registry: w.registry,
+      });
+    }
+    const seg = w.store.segment('s', ns);
+    const options = concurrency === undefined ? {} : { concurrency };
+    const stream =
+      verb === 'iterate'
+        ? seg.iterate()
+        : seg[verb]([w.store.segment(others[verb].name, ns)], options);
+    // The second id of the chunk, so even the chunk in hand yields it only after the erasure has returned.
+    const victim = victimChunk * CHUNK + 4;
+    let seen = 0;
+    let after = false;
+    for await (const id of stream) {
+      if (seen++ === AT * PER) {
+        const ledger = await w.store.eraseSubject(victim, ns);
+        expect(ledger.erasedFrom).toContainEqual(
+          expect.objectContaining({ segment: 's', erased: true }),
+        );
+      } else if (seen > AT * PER && id === victim) {
+        after = true;
+      }
+    }
+    return after;
+  }
+
+  const C = DEFAULT_INTERSECT_CONCURRENCY;
+  it.each([
+    ['intersect', 'stream', undefined, C + 1],
+    ['union', 'stream', undefined, C + 1],
+    ['andNot', 'stream', undefined, C + 1],
+    ['intersect', 'per-key', undefined, C + 1],
+    ['intersect', 'stream', 4, 5],
+    ['union', 'stream', 4, 5],
+    ['andNot', 'stream', 4, 5],
+    ['iterate', 'per-key', undefined, 32],
+    ['iterate', 'stream', undefined, 1],
+  ] as const)(
+    '%s (%s, concurrency %s): an id erased from the chunks the bound counts (%s) is yielded, from the next one never',
+    async (verb, mode, concurrency, chunks) => {
+      expect(await yieldedAfterErasure(verb, mode, AT + chunks - 1, concurrency)).toBe(true);
+      expect(await yieldedAfterErasure(verb, mode, AT + chunks, concurrency)).toBe(false);
     },
     60_000,
   );

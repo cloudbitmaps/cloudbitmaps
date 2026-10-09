@@ -108,8 +108,9 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
 The erasure is immediate in storage, and immediate in the store that performed it for every read that starts after it
 returns: that store drops what it had cached about the segment before returning, so it cannot keep answering from
 memory. A read of that store already in progress moves to the rewritten generation, but what it had already taken is the old
-generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency`
-keys (32 by default) for a combine. A combine or `iterate` reads each operand's chunks as ranges of the object, and
+generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1
+keys (33 by default) for a combine, the key it is handing out and the `concurrency` keys it had already requested. A
+combine or `iterate` reads each operand's chunks as ranges of the object, and
 resolves the segment again before it serves each chunk, one held in its cache included, as a read of that chunk alone
 does, so the ranges it had already
 requested are dropped when the erasure has landed, not served ([a long call can describe two

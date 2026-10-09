@@ -188,8 +188,9 @@ store's chunk cache included, exactly where
 a read of one chunk would, so a range it had already requested of the earlier generation is dropped, not served; an
 `exclude` read after an AND of two or more includes, a point read and every read of a source that reads chunk by chunk
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
-taken: up to `concurrency` keys per operand (32 by default) for a combine, up to 32 chunks for `iterate`, and up to 32
-chunk keys on a source that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
+taken: up to `concurrency` + 1 keys per operand (33 by default) for a combine, the key it is handing out and the
+`concurrency` keys it had already requested, on a source that reads ranges or chunk by chunk; up to 32 chunks for
+`iterate`, the one it is handing out included; and up to 32 chunk keys for `count` where it reads chunks. Its answer then describes two
 instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
 encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
 `readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
