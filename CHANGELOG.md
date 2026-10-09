@@ -31,6 +31,22 @@ so, and so do the module headers in the code.
   provides it through a new optional `StorageChunkSource.stat`, which the `.crbm` source, the pinned source and the
   retrying wrapper implement; a source of your own without it reports its `sizeOf`, or `sizeBytes: null`
   ([`stat()`](docs/guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)).
+- **Every `segment.*` audit event carries `incarnation`**, the id of the segment's registry row as the operation found
+  or wrote it. A name whose row was purged and created again starts its generations at `0` again, so a segment and a
+  generation number could belong to two lives of the segment; the incarnation tells them apart.
+  Within one life a number whose object was deleted can still be taken again by a later load. The field is absent when
+  the row's token carries no incarnation id, for example from a registry of your own, and on a `segment.load-refused`
+  from a load that found no row.
+- **A `segment.collect` audit event for an erasure that rewrites nothing.** When `eraseSubject` finds the id only
+  outside the current generation (a retained older generation, one above the pointer after a rollback, or an object
+  left under a tombstone), it deletes the generations holding it and now emits `segment.collect { fromGeneration,
+  collected }` once no generation holds the id. Every ledger entry with `erased: true` now has an event:
+  `segment.rewrite` or `segment.collect`. `AuditEvent` gains the member, so an exhaustive `switch` on `kind` needs a
+  case for it.
+- **The export manifest lists the segments it skipped.** `ExportManifest.skipped` names each destroyed segment the
+  export did not read, `{ segment, namespace?, reason: 'destroyed' }`, so `segments`, `failed` and `skipped` together
+  account for every segment row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary
+  line counts them.
 
 ### Changed
 

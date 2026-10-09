@@ -14,6 +14,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
+import { incarnationOf } from '@/core/token';
 
 /**
  * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
@@ -512,7 +513,14 @@ describe('a materialisation reports whether it actually landed', () => {
     const store = w.reader();
     await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')], { audit });
 
-    expect(events).toEqual([{ kind: 'segment.publish', segment: 'dest', generation: 0 }]);
+    expect(events).toEqual([
+      {
+        kind: 'segment.publish',
+        segment: 'dest',
+        incarnation: incarnationOf((await w.registry.get({ segment: 'dest' }))!.token),
+        generation: 0,
+      },
+    ]);
   });
 
   it('a streaming combine cannot even be handed an audit sink', async () => {

@@ -254,5 +254,21 @@
   {
     "entry": "@cloudbitmaps/roaring SegmentStat.sizeBytes",
     "reason": "stat() reports the generation's byte size (owner's decision), named sizeBytes as the port, estimateCost's segments and the reader name it, since size means a count in Roaring and JavaScript: the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "every segment event gains an optional incarnation (the registry row's incarnation id), and the union gains segment.collect, emitted by an erasure that deletes the generations holding an id and rewrites none; an exhaustive switch on kind needs a case for it; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "every segment event gains an optional incarnation (the registry row's incarnation id), and the union gains segment.collect, emitted by an erasure that deletes the generations holding an id and rewrites none; an exhaustive switch on kind needs a case for it; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ExportManifest.skipped",
+    "reason": "a required list on every manifest, like failed: the destroyed segments the export skipped, so segments, failed and skipped together account for every segment row the registry listed; code that builds its own ExportManifest (a test double) adds skipped: []; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ExportManifest.skipped",
+    "reason": "a required list on every manifest, like failed: the destroyed segments the export skipped, so segments, failed and skipped together account for every segment row the registry listed; code that builds its own ExportManifest (a test double) adds skipped: []; agreed with the maintainer"
   }
 ]

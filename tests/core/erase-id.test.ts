@@ -9,6 +9,7 @@ import type { GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `eraseIdFromSegment` — subject erasure on a loaded segment, one id at a time.
@@ -197,7 +198,14 @@ describe('eraseIdFromSegment — the rewrite', () => {
     const audit = new RecordingAuditSink();
     await eraseIdFromSegment(SEG, 2, w.deps, { audit });
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rewrite', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rewrite',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
+        fromGeneration: 0,
+        generation: 1,
+      },
     ]);
   });
 
@@ -485,10 +493,9 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     expect(await generations(w.storage, SEG)).toEqual([0]); // and the id is STILL in the bucket
   });
 
-  it('an ex-member erasure emits NO audit event and carries no generation', async () => {
-    // The receipt for this path is the ledger entry alone. Nothing is rewritten and nothing is published — the
-    // generation holding the id is simply collected — so a control reconciling "one `segment.rewrite` per
-    // ledger entry" would flag a correct erasure. Four documents say so; this is what holds them to it.
+  it('an ex-member erasure emits segment.collect, not segment.rewrite, and carries no generation', async () => {
+    // Nothing is rewritten and nothing is published — the generation holding the id is collected — so the event is
+    // `segment.collect`, one per ledger entry as a rewrite's is, and the documents that list the kinds say so.
     const w = await world();
     await w.load(SEG, [1, 2, 3]); // gen 0 holds the id
     await w.load(SEG, [1, 3]); // gen 1 — a re-seed that dropped it; `keep: 1` retains gen 0
@@ -499,6 +506,6 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     expect(res.erased).toBe(true);
     expect(res.fromGeneration).toBe(0); // the superseded generation it was found in
     expect(res.generation).toBeUndefined(); // nothing was written
-    expect(audit.snapshot()).toHaveLength(0);
+    expect(audit.snapshot().map((e) => e.kind)).toEqual(['segment.collect']);
   });
 });

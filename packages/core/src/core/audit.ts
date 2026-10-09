@@ -3,7 +3,7 @@
  * from the metrics sink (`IMetricsSink`). Different audience (an audit log / SIEM, not a dashboard), different
  * retention, and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics
  * sink). It doubles as the GDPR Art. 30 "record of processing" surface: publishes, refused loads, rollbacks,
- * rewrites, erasures and disposals.
+ * rewrites, an erasure's deletion of the generations holding an id, crypto-shreds and disposals.
  *
  * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the operations that emit — a load, the `*Into`
  * verbs, a rollback, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped
@@ -19,13 +19,25 @@
 
 import { ValidationError } from './errors';
 
-/** A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor. */
+/**
+ * A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor.
+ *
+ * Every event about a segment carries `incarnation`: the id of the registry row's incarnation the operation acted on.
+ * A segment's name can be purged and created again, and its generations then start again at `0`; the incarnation
+ * tells those lives of the name apart, and every write of a row keeps it. It does not make a generation number name
+ * one object for good: within one incarnation, a number whose object was deleted (a refused load's object, or a
+ * generation an erasure deleted above the pointer) can be taken again by a later load. It is absent when the row's
+ * token carries no incarnation id, for example from a registry of the caller's own that issues tokens in another
+ * form, and on a `segment.load-refused` from a load that found no row.
+ */
 export type AuditEvent =
   | {
       /** A new immutable Storage generation *became the segment's current generation*, by a load's publish. */
       readonly kind: 'segment.publish';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row whose pointer the publish moved. */
+      readonly incarnation?: string;
       readonly generation: number;
     }
   | {
@@ -43,6 +55,8 @@ export type AuditEvent =
       readonly kind: 'segment.rollback';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row whose pointer the rollback moved. */
+      readonly incarnation?: string;
       readonly fromGeneration: number | null;
       readonly generation: number;
     }
@@ -65,6 +79,8 @@ export type AuditEvent =
       readonly kind: 'segment.load-refused';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row the load read before it wrote; absent when it found no row. */
+      readonly incarnation?: string;
       readonly generation: number;
       readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth' | 'superseded';
       readonly cardinality: number;
@@ -76,13 +92,40 @@ export type AuditEvent =
        * place. Today the one emitter is `eraseIdFromSegment` (a subject erasure clearing one id), and the event is
        * emitted at the publish — before the superseded generation is collected — so the record exists the moment
        * the generation without the id is authoritative. A `segment.publish` is NOT also emitted for a rewrite: a
-       * rewrite derives its content from the segment itself, a publish brings content in from outside.
+       * rewrite derives its content from the segment itself, a publish brings content in from outside. An erasure
+       * that finds the id only outside the current generation rewrites nothing and emits `segment.collect`.
        */
       readonly kind: 'segment.rewrite';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row the rewrite read `fromGeneration` from and published on. */
+      readonly incarnation?: string;
       readonly fromGeneration: number;
       readonly generation: number;
+    }
+  | {
+      /**
+       * An erasure of one id found it only in generations no reader resolves, **deleted them**, and rewrote none. Two
+       * cases reach it: an id that only generations other than the current one hold (someone who left the segment,
+       * whose bit the reader grace window or a rollback target keeps), and objects left under a tombstone (a cleartext
+       * destroy, or a drop whose sweep left one). The one emitter is `eraseIdFromSegment`, once a listing of the bucket
+       * shows no generation holding the id, so the record exists only for a finished erasure. A call that ends
+       * otherwise throws or reports `erased: false` and emits nothing, even when it had deleted a holder; its re-run
+       * emits when it finishes, and reports `'not-member'` with no event when another collection deleted the last
+       * holder meanwhile, as its ledger entry does.
+       *
+       * `fromGeneration` is the newest generation the call found holding the id. `collected` is every generation the
+       * call deleted, ascending, and the same list as its ledger entry: below the pointer that is every generation,
+       * holder or not, since the deletion takes them all, and above it only the holders. A holder another collection
+       * deleted first is not in it, so the list can be empty.
+       */
+      readonly kind: 'segment.collect';
+      readonly namespace?: string;
+      readonly segment: string;
+      /** The incarnation of the row the erasure read: the active row, or the tombstone. */
+      readonly incarnation?: string;
+      readonly fromGeneration: number;
+      readonly collected: readonly number[];
     }
   | {
       /**
@@ -93,6 +136,8 @@ export type AuditEvent =
       readonly kind: 'segment.erase';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row the shred turned into a tombstone. */
+      readonly incarnation?: string;
     }
   | {
       /**
@@ -115,6 +160,8 @@ export type AuditEvent =
       readonly kind: 'segment.dispose';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the tombstone the drop wrote or found. */
+      readonly incarnation?: string;
       readonly generationsDeleted: number;
     }
   | {
@@ -188,7 +235,9 @@ export class RecordingAuditSink implements IAuditSink {
 
   /** An independent copy of the recorded events, in emission order. */
   snapshot(): AuditEvent[] {
-    return this.recorded.map((e) => ({ ...e }));
+    return this.recorded.map((e) =>
+      e.kind === 'segment.collect' ? { ...e, collected: [...e.collected] } : { ...e },
+    );
   }
 
   reset(): void {

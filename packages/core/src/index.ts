@@ -261,6 +261,7 @@ export type {
   ExportedSegment,
   ExportFailure,
   ExportManifest,
+  ExportSkipped,
 } from './export';
 
 // Resilience: the retry primitive, the policy and its defaults, and the read-source wrapper `CloudRoaring` builds

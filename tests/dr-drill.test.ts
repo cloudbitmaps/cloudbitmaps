@@ -12,6 +12,7 @@ import { runConsistencyCheck } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { incarnationOf } from '@/core/token';
 
 /**
  * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
@@ -124,6 +125,7 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
         kind: 'segment.rollback',
         segment: 'beta',
         namespace: undefined,
+        incarnation: incarnationOf(rec.token),
         fromGeneration: 1,
         generation: 0,
       },
