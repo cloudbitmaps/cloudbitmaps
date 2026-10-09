@@ -3,6 +3,7 @@ import { expectTypeOf } from 'vitest';
 import type { GuardRefusal, LoadJudgement, LoadRefusal } from '@cloudbitmaps/core';
 import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-storage-source';
+import { FOOTER_BYTES } from '@/core/crbm/format';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { RecordingAuditSink } from '@/index';
@@ -356,6 +357,37 @@ describe('loadSegment — racing writers', () => {
     // The refusal is the answer: the refused delete raises nothing out of the load.
     expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect(sent).toHaveLength(1);
+    expect(await generations(w.storage)).toEqual([0, 1]);
+    expect(await idsOf(w.storage, 1)).toEqual([77]);
+  });
+
+  it('a refusal deletes with the version of the footer read that proved its object, not one read after it', async () => {
+    // The object is replaced right after the read that proves it the load's own, before anything else is asked of it.
+    // The delete must name the object that read saw: a version read again later names the one put since, and that
+    // delete would remove it.
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const racing = around(w.storage, 'after', () => w.registry.delete(SEG));
+    let replaced = false;
+    const driver = new Proxy(racing, {
+      get(t, p, rx) {
+        if (p !== 'getTail') return Reflect.get(t, p, rx) as unknown;
+        return async (key: GenKey, maxBytes: number) => {
+          const read = await w.storage.getTail(key, maxBytes);
+          if (!replaced && key.generation === 1 && maxBytes === FOOTER_BYTES) {
+            replaced = true; // the proving footer read has landed: another writer takes the number now
+            await w.storage.delete({ ...SEG, generation: 1 });
+            await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [77], {
+              codec: roaringCodec,
+            });
+          }
+          return read;
+        };
+      },
+    }) as IStorageDriver;
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
+    expect(replaced).toBe(true);
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect(await generations(w.storage)).toEqual([0, 1]);
     expect(await idsOf(w.storage, 1)).toEqual([77]);
   });
