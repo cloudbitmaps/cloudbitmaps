@@ -714,7 +714,12 @@ describe('S3 (MinIO): a cold count is one request', () => {
         generation: 0,
         cardinality: chunks,
       });
-      expect(proxy.requests).toEqual([]);
+      // A stat after it reads the object for its size, and not the row, which the count just read: one tail read, and a
+      // range read more for an index longer than the tail read.
+      expect(proxy.requests.map((r) => r.method)).toEqual(
+        chunks > 10_000 ? ['GET', 'GET'] : ['GET'],
+      );
+      expect(proxy.requests.filter((r) => r.path.includes('registry'))).toEqual([]);
     } finally {
       await proxy.close();
     }
