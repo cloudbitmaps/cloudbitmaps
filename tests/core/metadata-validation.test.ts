@@ -6,7 +6,7 @@ import { ValidationError } from '@/core/errors';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
-import { FINGERPRINT } from '../helpers/fingerprint';
+import { objectFingerprint } from '../helpers/fingerprint';
 
 const { RoaringBitmap32 } = roaring;
 
@@ -195,7 +195,7 @@ describe('metadata that changes while a load runs', () => {
     expect(row.summary).toEqual({
       generation: 0,
       cardinality: 2,
-      fingerprint: expect.stringMatching(FINGERPRINT),
+      fingerprint: await objectFingerprint(w.backend.storage, { ...SEG, generation: 0 }),
       metadata: { run: 'one' },
     });
   });

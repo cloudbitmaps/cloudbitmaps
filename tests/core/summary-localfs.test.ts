@@ -11,7 +11,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { roaringCodec } from '@/roaring-codec';
-import { FINGERPRINT } from '../helpers/fingerprint';
+import { objectFingerprint } from '../helpers/fingerprint';
 
 /**
  * The write paths' summary, on the local-filesystem backend: the row on disk carries the summary of the current
@@ -89,7 +89,7 @@ describe.each([
     expect('sealed' in row.summary!).toBe(keystore !== undefined);
     expect(first.described).toEqual({
       cardinality: 4,
-      fingerprint: expect.stringMatching(FINGERPRINT),
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 0 }),
       metadata: META,
     });
 
@@ -97,7 +97,7 @@ describe.each([
     const second = await describedOnDisk(keystore);
     expect(second.described).toEqual({
       cardinality: 7,
-      fingerprint: expect.stringMatching(FINGERPRINT),
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 1 }),
       metadata: { def: 'v4' },
     });
   });
@@ -135,7 +135,7 @@ describe.each([
     expect(seen.row.currentGen).toBe(0);
     expect(seen.described).toEqual({
       cardinality: 3,
-      fingerprint: expect.stringMatching(FINGERPRINT),
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 0 }),
       metadata: META,
     });
 
@@ -145,7 +145,7 @@ describe.each([
     expect(seen.row.currentGen).toBe(result.generation);
     expect(seen.described).toEqual({
       cardinality: 2,
-      fingerprint: expect.stringMatching(FINGERPRINT),
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: result.generation! }),
       metadata: META,
     });
   });
