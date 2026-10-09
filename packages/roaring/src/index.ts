@@ -2887,7 +2887,8 @@ export class CloudRoaring {
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
    * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
    * `summaries: true` it also opens each segment's current object (one tail read each) and reports a segment whose
-   * row's summary says another id count or metadata than the object holds as `summary-mismatch`, which is what a
+   * row's summary names another object by its fingerprint, or says another id count or metadata than the object holds,
+   * as `summary-mismatch`, which is what a
    * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
    * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
    *
@@ -3738,10 +3739,12 @@ export class Segment {
    * `count()` does, while a read of the object throws `NotFoundError`; with no summary to use, `stat()` throws it too.
    * `checkConsistency` is what finds such a row.
    *
-   * Trust is as for `count()`: what the row's summary says is believed until the object is next opened. Every open
-   * holds the object to the row's fingerprint, so a read never serves another object than the row names, and holds its
-   * count against the summary's; a disagreement makes this process stop using that summary, so `stat()` then answers
-   * from the object, whose index is checked for internal consistency and whose count is the index's sum.
+   * Trust is as for `count()`: what the row's summary says is believed until the object is next opened. Every open of
+   * the generation holds the object to the fingerprint the summary records, so another object under the number is
+   * refused when it is opened, and holds its count against the summary's; a disagreement in count makes this process
+   * stop using that summary, so `stat()` then answers from the object, whose index is checked for internal consistency
+   * and whose count is the index's sum. A reader already open is not checked again until it is resolved again,
+   * evicted or invalidated.
    *
    * `sizeBytes` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *

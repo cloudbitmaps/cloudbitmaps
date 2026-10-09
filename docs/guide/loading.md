@@ -1099,8 +1099,8 @@ number below an object above the pointer, such as one a rollback left there, but
 put to a number an object holds, and a load that loses that race reports `superseded`. A number whose object was
 deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
 row's `pointerId` (the token of the last write that changed what the row resolves to, which every publish renews),
-checked against the object the row's summary names whenever a reader opens it, and a reader that finds another object
-under the number re-reads the segment and never serves it.
+checked against the object the row's summary names whenever a reader opens it for a row with a summary, and a reader
+that finds another object under the number re-reads the segment rather than serve it.
 
 **A load overlaps its round trips with its encoding.** The existence check, and the keystore's unwrap of an encrypted
 segment's key, are sent before the ids are bucketed and encoded, and the write waits for their answers only when it

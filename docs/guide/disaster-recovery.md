@@ -76,16 +76,17 @@ taking the ones its publish pushes out of its row's window by name and the rest 
 one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
 to delete the generation the restored registry names.
 
-**The summary a row carries.** A row also holds a summary of its current generation, its id count and metadata, written
-by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records, which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the count alone does not show the tear. A disagreement between a row and an object that is there (a registry restored from another point than its bucket, with a number re-taken since) is caught whenever a read opens the object, which stops that store using the row's summary, and by `checkConsistency({ summaries: true })`. A load
+**The summary a row carries.** A row also holds a summary of its current generation, its id count, its metadata and its
+object's fingerprint, written
+by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records, which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the count alone does not show the tear. An object that is there but is not the one the row's summary names by its fingerprint (a registry restored from another point than its bucket, with a number re-taken since) is refused whenever a read opens it, with `NotFoundError`, as a missing object is, and `checkConsistency({ summaries: true })` reports it; a summary whose count or metadata disagree with the object it names stops that store using the summary. A load
 sizes the current generation from it for its guard and opens no object. That changes what a repair load meets in a torn
 restore: the row names a generation whose object is gone, and the summary still says how many ids it held, so a repair
 smaller than `guard.minRetained` allows, or larger than `guard.maxGrowth` allows, is refused. Repair without either (`allowEmpty: true` lifts neither), and the
 load publishes a new generation and a new summary. The load also keeps the older
 generation a listing keeps, which is the one you can still roll back to: before it takes a generation by name it looks
-for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key, for any reason, rolls back all the same and leaves the row with none, and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row from before rows carried a summary has
-none, and is read from the object as before. A summary that names another generation, or a sealed one that does not
-open, is not used.
+for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key, for any reason, rolls back all the same and leaves the row with none, and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
+could not open the key, is read from the object, and its object is checked against nothing. A summary that names another
+generation, a sealed one that does not open, and a clear one whose fingerprint names no object are not used.
 
 ## The hard requirement: one restore point for both stores
 
@@ -269,8 +270,9 @@ makes the coordinated restore point easy to hit rather than something you have t
    since, nor for another object put back under the same number. A restored row whose summary names another object than
    the one restored under its number (a row and a bucket restored from two points) has every read of that generation
    refused with `NotFoundError`, while a `count()` and a `stat()` answer the row's figures:
-   `checkConsistency({ summaries: true })` finds it. Optionally run a targeted `subjectReport`/read spot-check on a few
-   known segments.
+   `checkConsistency({ summaries: true })` finds it. A row with no summary has no fingerprint, so a torn restore there
+   is guarded only by `pointerId`. A reader a process already holds open is not checked again: restart the process or
+   `invalidate(ref)` it. Optionally run a targeted `subjectReport`/read spot-check on a few known segments.
 
 ## Quiesce writers during a restore
 
@@ -521,14 +523,16 @@ if (report.errored.length > 0) {
   - **a pointer that is valid but older than you intended** — a registry restored to an earlier point than you
     meant is stale, not torn, wherever the generations it names are still in the bucket, and reads serve a correct
     older view;
+  - **another object under the number** — an object put back under the generation's key that is not the one the row
+    names; use `summaries: true`, below, which holds it to the summary's fingerprint;
   - **objects above the pointer** — loads that published after the registry's restore point. Reads through a
     backend never see them (a store on a bare `IStorageDriver` serves the newest of them; see
     [readers still on an old generation](#readers-still-on-an-old-generation)); see
     [what a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back).
 - **`summaries: true` also checks what a count answers from.** The default check lists, and reads no object. With the
   option it opens each segment's current object (one tail read each, a second for an index longer than that) and holds
-  the row's summary against it: the same id count and the same metadata. A segment whose summary disagrees is
-  reported as `summary-mismatch` in `inconsistent`. A sealed summary needs the store's keystore; a segment whose
+  the row's summary against it: the object its fingerprint names, the same id count and the same metadata. A segment
+  whose summary disagrees is reported as `summary-mismatch` in `inconsistent`. A sealed summary needs the store's keystore; a segment whose
   summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row with no summary
   has nothing to check.
 - **A segment with no Storage generation is healthy, not torn.** A registry row whose `currentGen` is `null` says

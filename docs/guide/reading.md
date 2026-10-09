@@ -186,8 +186,8 @@ generation's number and its registry row's `pointerId`: the token of the last wr
 resolves to (a load's publish, a rollback, an erasure's rewrite, a shred), which a lease or a policy write leaves as
 it was. So a `setRetention`, or a lease taken or released, costs a store reading the segment nothing more than the
 pointer read its refresh makes anyway: it keeps its open reader and its cached chunks. It checks the object itself
-whenever it opens one, against the fingerprint the row's summary names: the object's size and footer checksum, which
-the open reads anyway, so the check costs no request. The check is needed because a number can be taken again once
+whenever it opens one for a row whose summary it can use, against the fingerprint the summary names: the object's size
+and footer checksum, which the open reads anyway, so the check costs no request. The check is needed because a number can be taken again once
 its object is deleted, as after a `rollback`, an `eraseSubject` that deletes the generation above the pointer holding
 the id, and a load, and because the store can open a generation some time after it read the row: a `count()` answered
 from the row opens nothing, and the read after it opens whatever object is under the number by then. An object that is
@@ -196,8 +196,19 @@ the other object, so a load that was refused, or whose publish
 [got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
 earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
 checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
-same object, and its cached chunks still answer. A row with no summary names no object, and its generation's object is
-opened as it is.
+same object, and its cached chunks still answer.
+
+What the check does not cover:
+
+- **A row with no summary it can use names no object**, and its generation's object is opened as it is: a row a
+  rollback onto an encrypted target wrote when the store had no key to open the target, a row a registry of your own
+  wrote without one, and a summary that does not open or names no object.
+- **A reader already open is not checked again.** It answers from the object it opened until its refresh resolves the
+  segment again, the reader cache lets it go, or `store.invalidate(ref)` drops it. After you put objects back under a
+  segment from outside the library, restart the processes reading it or invalidate it.
+- **A pin reads the object it pinned**, by that object's fingerprint, which `pinAt` takes from its caller: a pin is held
+  to its own object, not to the row. A live `pin()` holds a reader it shares with an earlier pin to the row's summary
+  first.
 
 ## Read one fixed point in time
 
