@@ -732,7 +732,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * A read that fails with a transient fault answers what `prior` found, when it found a generation, and is asked again
    * soon ({@link retrySoon}): `prior` is the resolution of the snapshot the reader cache still holds, so an outage of the
-   * registry keeps that snapshot's generation, and the key it unwrapped, and ends shortly after the registry answers.
+   * registry keeps that snapshot's generation, and its reader and unwrapped key where it has them; one resolved without
+   * an open, for a count or a generation lookup, unwraps the key from `prior`'s wrapped keys when a read first needs
+   * it. The outage ends shortly after the registry answers.
    * That answer is the snapshot's alone ({@link Resolution.rodeOut}): it is not kept as the segment's resolution, and a
    * snapshot built on it after the reader cache let that one go fails with the fault. With no `prior` the fault
    * fails the read, as a cold resolve's does. If `prior` found none or failed, the pointer is read once more rather than
