@@ -1214,6 +1214,28 @@ export function registryConformance(
       }
     });
 
+    // "Names" is by presence, whatever the value: each resolved field named at the value the row already has renews it,
+    // from a row whose pointerId is not its token, so a driver that compared values instead would be seen.
+    it('a compare-and-swap naming any resolved field at the value it already has renews pointerId', async () => {
+      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+      const rows: ReadonlyArray<{ create: NewRegistryRecord; patch: RegistryPatch }> = [
+        { create: { currentGen: 3, summary: clearSummary }, patch: { summary: clearSummary } },
+        { create: { currentGen: 3 }, patch: { status: 'active' } },
+        { create: { currentGen: 3, keyId: 'k1' }, patch: { keyId: 'k1' } },
+        { create: { currentGen: 3, wrappedDeks }, patch: { wrappedDeks } },
+      ];
+      for (const { create, patch } of rows) {
+        const d = makeDriver();
+        const { token: t0 } = await d.create(SEG, create);
+        const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
+        expect((await d.get(SEG))!.pointerId).toBe(t0);
+        const { token: t2 } = await d.compareAndSwap(SEG, t1, patch);
+        const row = (await d.get(SEG))!;
+        expect(row.pointerId, JSON.stringify(patch)).toBe(t2);
+        expect(row).toMatchObject(patch);
+      }
+    });
+
     it('a compare-and-swap naming only leases, policy or the kept window moves the token and leaves pointerId', async () => {
       const d = makeDriver();
       const { token: created } = await d.create(SEG, { currentGen: 5 });
@@ -1309,6 +1331,50 @@ export function registryConformance(
       expect(after.pointerId).not.toBe(forged);
       if (swapped instanceof ValidationError) expect(after.token).toBe(row.token);
       else expect(after.pointerId).toBe(row.pointerId);
+    });
+
+    // A forged value beside a resolved field, and forged values a careless driver could take for its own: the row's
+    // pointerId before its last renewal, and the row's own token while its pointerId is another.
+    it('a patch naming pointerId beside a resolved field, or as a value the row has had, never sets it', async () => {
+      const d = makeDriver();
+      const forged = '0123456789abcdef0123456789abcdef.0.0123456789abcdef';
+      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+      // The row now has pointerId t1, and a token past it once a policy write lands.
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, { retention: { expiresAt: 9 } });
+      expect((await d.get(SEG))!).toMatchObject({ token: t2, pointerId: t1 });
+
+      // Beside a resolved field: the write renews pointerId to its own token, or is refused; never the forged value.
+      const combined = await d
+        .compareAndSwap(SEG, t2, { currentGen: 2, pointerId: forged } as RegistryPatch)
+        .catch((err: unknown) => err);
+      let row = (await d.get(SEG))!;
+      expect(row.pointerId).not.toBe(forged);
+      if (combined instanceof ValidationError) {
+        expect(row).toMatchObject({ token: t2, pointerId: t1, currentGen: 1 });
+      } else {
+        expect(row).toMatchObject({
+          currentGen: 2,
+          pointerId: (combined as { token: string }).token,
+        });
+      }
+
+      // Its previous pointerId, and its own token while its pointerId is another: refused, or not stored.
+      for (const pick of ['previous', 'token'] as const) {
+        const before = (await d.get(SEG))!;
+        const { token: ahead } = await d.compareAndSwap(SEG, before.token, {
+          retention: { expiresAt: 10 },
+        });
+        const now = (await d.get(SEG))!;
+        expect(now.pointerId).not.toBe(now.token);
+        const value = pick === 'previous' ? t0 : ahead;
+        const swapped = await d
+          .compareAndSwap(SEG, ahead, { pointerId: value } as RegistryPatch)
+          .catch((err: unknown) => err);
+        row = (await d.get(SEG))!;
+        expect(row.pointerId, pick).toBe(now.pointerId);
+        if (swapped instanceof ValidationError) expect(row.token, pick).toBe(ahead);
+      }
     });
 
     it('list of a namespace that is not a valid name is refused, not read as empty', async () => {
