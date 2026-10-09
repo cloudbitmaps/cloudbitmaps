@@ -5,7 +5,7 @@ import { writeCrbmGenerationStream } from '@/core/crbm-storage-source';
 import { FOOTER, FOOTER_BYTES } from '@/core/crbm/format';
 import { aadFor } from '@/core/crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, WriteConflictError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
@@ -191,6 +191,30 @@ describe('an object sealed under a key the row does not hold', () => {
       collected: [0],
     });
     expect(await generations(w.storage)).toEqual([]);
+  });
+});
+
+describe('the last look at the bucket counts an object it cannot search', () => {
+  it('one sealed elsewhere that appears during the deletes is left, and the erasure asks for a re-run', async () => {
+    const w = world();
+    const minted = await w.keystore.createDek();
+    await w.registry.create(REF, { currentGen: null, wrappedDeks: minted.wrapped });
+    await sealedElsewhere(w, 0, [X]);
+    // While the erasure deletes the object at 0, a first load of its own key writes one at 5.
+    let planted = false;
+    const storage = Object.create(w.storage) as IStorageDriver;
+    storage.delete = async (key) => {
+      await w.storage.delete(key);
+      if (!planted) {
+        planted = true;
+        await sealedElsewhere(w, 5, [3]);
+      }
+    };
+    await expect(eraseIdFromSegment(REF, X, { ...w.deps, storage })).rejects.toSatisfy(
+      (e: unknown) => e instanceof WriteConflictError && /generation 5\b.*re-run/.test(e.message),
+    );
+    expect(planted).toBe(true);
+    expect(await generations(w.storage)).toEqual([5]);
   });
 });
 
