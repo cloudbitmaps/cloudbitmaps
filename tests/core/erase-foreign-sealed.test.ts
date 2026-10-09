@@ -238,8 +238,8 @@ describe('the last look at the bucket counts an object it cannot search', () => 
     // While the erasure deletes the object at 0, a first load of its own key writes one at 5.
     let planted = false;
     const storage = Object.create(w.storage) as IStorageDriver;
-    storage.delete = async (key) => {
-      await w.storage.delete(key);
+    storage.delete = async (key, options) => {
+      await w.storage.delete(key, options);
       if (!planted) {
         planted = true;
         await sealedElsewhere(w, 5, [3]);

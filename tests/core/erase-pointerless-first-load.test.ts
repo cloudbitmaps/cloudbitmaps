@@ -569,9 +569,9 @@ describe('the renewal gets no answer', () => {
     });
     const statusAtDelete: (string | undefined)[] = [];
     const storage = Object.create(w.storage) as IStorageDriver;
-    storage.delete = async (key) => {
+    storage.delete = async (key, options) => {
       statusAtDelete.push((await w.registry.get(REF))?.status);
-      return w.storage.delete(key);
+      return w.storage.delete(key, options);
     };
     expect(
       await eraseIdFromSegment(REF, X, {
