@@ -303,7 +303,7 @@ segment mid-call and how the timed refresh behaves.
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `Promise<SubjectReport>` | GDPR Art. 15 — which registered segments is this id in? Needs an explicit `namespace` or an `allNamespaces: true` ack, and throws `ValidationError` with neither. Needs a backend |
 | `store.eraseSubject(id, { namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `Promise<EraseSubjectResult>` | GDPR Art. 17: for every registered segment the id is in, **rewrite the current generation without it** and delete every generation that held the bit, so it is gone from the bucket on return. Returns the erasure ledger, one entry per segment ([erasure](erasure.md)). Needs a `namespace` or `allNamespaces: true`, and a backend |
 | `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit? })` → `Promise<LoadResult>` | **replace this segment's contents** with `input` (ids, `{ serialized }` or `{ bitmap }`) as one new immutable generation: next number, write, check, move the pointer, collect. **Branch on `published`**: a refusal is a normal outcome, not a throw ([why a load is refused](loading.md#when-a-load-is-refused)). Needs a backend |
-| `store.materializeMany({ operands, outputs, keep, feed?, mayBeEmpty?, after?, through?, pin?, maxBufferedBytes?, budget?, publishConcurrency?, concurrency?, allowAbsentOperands?, dryRun? })` → `Promise<MaterializeManyRun>`, or `Promise<MaterializeManyDryRun>` with `dryRun: true` | **many `*Into` outputs from one chunk-ordered pass**: `operands` names stored segments, each of `outputs` is `{ dest, expr, exclude?, guard?, allowEmpty?, metadata?, audit?, keep? }` with `expr` an `Expr` (`string \| { and: Expr[] } \| { or: Expr[] } \| { andNot: Expr[] }`), and `keep` is required. `run.outputs[i]` is what output `i`'s `*Into` would have returned (`MaterializeResult`) or `{ published: false, error }`, index-aligned; `run.stats` has the groups, requests (`rangeReads`, `chunkReads`, `registryReads`, `opens`, `publishes` and `attributed: { get, put }`, a lower bound), the budget used, memory, `maxRangesInFlight` (the most range requests in flight at once), `feed` (`{ records, keys, ids }`: what a feed delivered, when the call had one) and every operand's pinned, start and end generation and whether it moved. **`dryRun: true`** computes and judges every output as its publish would and writes nothing: each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }` or `{ published: false, error }`, reading what the publishing call reads, without the writes ([a dry run](loading.md#look-before-you-publish-a-dry-run)). The call typechecks with `dryRun` the literal `true`, or `false` or absent: to switch on a `boolean`, branch between the two forms. Every stored operand is pinned for the call by default (one generation per operand, not one instant), every pinned operand an output subtracts (its `exclude`, or after the first entry of an `andNot`) is re-checked, and one that was replaced gets its outputs `StaleOperandError`, and `maxBufferedBytes` (default 256 MiB) counts resident bytes, plan included, regrouping (and reading the operands again) when outputs do not fit; process memory is more than the count ([how much](loading.md#many-outputs-from-one-pass-materializemany)). `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order (`records` is an `AsyncIterable<{ key, operands: Record<string, Uint32Array> }>`, `counts` required): every record is checked before the pass sees it, a bad feed refuses every fed output and publishes none, a fed call runs as one group and **requires `maxBufferedBytes`**, `mayBeEmpty` lists the fed names allowed to be empty, and an erasure in this store refuses a fed call with `StaleOperandError` (`reason: 'erased'`); the call waits as long as the producer takes, so an iterator or `counts` that never settles hangs it, stored-only outputs too, and an iterator's slow `return()` delays it, and a feed no output names is never read ([the feed](loading.md#operands-that-arrive-as-records-a-feed)). A set you hold is fed ([a set you hold](loading.md#a-set-you-hold-feed-it)). Throws `ValidationError` for bad input before any request ([details](loading.md#many-outputs-from-one-pass-materializemany)). Needs a backend |
+| `store.materializeMany({ operands, outputs, keep, feed?, mayBeEmpty?, after?, through?, pin?, maxBufferedBytes?, budget?, publishConcurrency?, concurrency?, allowAbsentOperands?, dryRun? })` → `Promise<MaterializeManyRun>`, or `Promise<MaterializeManyDryRun>` with `dryRun: true` | **many `*Into` outputs from one chunk-ordered pass**: `operands` names stored segments, each of `outputs` is `{ dest, expr, exclude?, guard?, allowEmpty?, metadata?, audit?, keep? }` with `expr` an `Expr` (`string \| { and: Expr[] } \| { or: Expr[] } \| { andNot: Expr[] }`), and `keep` is required. `run.outputs[i]` is what output `i`'s `*Into` would have returned (`MaterializeResult`) or `{ published: false, error }`, index-aligned; `run.stats` has the groups, requests (`rangeReads`, `chunkReads`, `registryReads`, `opens`, `publishes` and `attributed: { get, put }`, a lower bound), the budget used, memory, `maxRangesInFlight` (the most range requests in flight at once), `feed` (`{ records, keys, ids }`: what a feed delivered, when the call had one) and every operand's pinned, start and end generation and whether it moved. **`dryRun: true`** computes and judges every output as its publish would and writes nothing: each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore, wouldRefuse? }` or `{ published: false, error }`, reading what the publishing call reads, without the writes ([a dry run](loading.md#look-before-you-publish-a-dry-run)). `dryRun: true` is typed as a dry run and `false` or absent as a publish; a `dryRun` held in a variable, a `boolean` or an optional one, is typed as either, and the flag says which. Every stored operand is pinned for the call by default (one generation per operand, not one instant), every pinned operand an output subtracts (its `exclude`, or after the first entry of an `andNot`) is re-checked, and one that was replaced gets its outputs `StaleOperandError`, and `maxBufferedBytes` (default 256 MiB) counts resident bytes, plan included, regrouping (and reading the operands again) when outputs do not fit; process memory is more than the count ([how much](loading.md#many-outputs-from-one-pass-materializemany)). `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order (`records` is an `AsyncIterable<{ key, operands: Record<string, Uint32Array> }>`, `counts` required): every record is checked before the pass sees it, a bad feed refuses every fed output and publishes none, a fed call runs as one group and **requires `maxBufferedBytes`**, `mayBeEmpty` lists the fed names allowed to be empty, and an erasure in this store refuses a fed call with `StaleOperandError` (`reason: 'erased'`); the call waits as long as the producer takes, so an iterator or `counts` that never settles hangs it, stored-only outputs too, and an iterator's slow `return()` delays it, and a feed no output names is never read ([the feed](loading.md#operands-that-arrive-as-records-a-feed)). A set you hold is fed ([a set you hold](loading.md#a-set-you-hold-feed-it)). Throws `ValidationError` for bad input before any request ([details](loading.md#many-outputs-from-one-pass-materializemany)). Needs a backend |
 | `store.exists(ref)` → `Promise<boolean>` | whether a read of this segment would find anything, as **one registry point read**. Not the same as `count() > 0` ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.segments({ namespace? })` → `AsyncIterable<SegmentInfo>` | every segment the registry holds, **streamed**, optionally scoped to one namespace. An admin call, not a request-path one ([details](loading.md#does-this-segment-exist)). Needs a backend |
 | `store.generations(ref)` → `Promise<GenerationEntry[]>` | every generation still in the bucket, ascending, with the current one marked: the set `store.rollback` can choose from ([details](loading.md#roll-back-a-segment)). The current entry also carries `cardinality` and `metadata` from its row, with no further request (an encrypted segment's need a keystore that opens its key); the others carry only their number. Needs a backend |
@@ -656,7 +656,7 @@ nothing can compare one. Branding them is you taking that on.
 | `namespacePathPart` | the physical namespace component of a **path**: the caller's namespace **encoded**, or the `_default` sentinel emitted **literally**. That asymmetry is load-bearing — encoding the sentinel too would send an absent namespace to `%5Fdefault`, exactly where a caller who names their namespace `_default` already goes, and the two would read each other's data. Use it rather than encoding `ns ?? '_default'` yourself. (`namespaceKeyPart` is the object-key twin) |
 | `validateSegmentRef` | the name rules a driver applies to a ref, and nothing more: it takes a namespace in the reserved `cbm.due.` prefix, where the library's own due-index rows live. The refusal of that prefix is in the calls that take an application's ref or `namespace`, not here |
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
-| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `isValidationError` · `isWriteConflictError` · `isNotFoundError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
+| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and a predicate for each: `isValidationError` · `isWriteConflictError` · `isNotFoundError` · `isIntegrityError` · `isTransientError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
 
 **What a storage driver must do.** Callers rely on each of these, and the conformance suite holds every shipped
 driver to them (`IStorageDriver`'s doc comment states the same list):
@@ -667,8 +667,9 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - Keys keep every name apart: one segment in two namespaces, two names an encoding could fold into one (`a/b` and
   `a_b`, `a:b` and `a%3Ab`), and a name that extends another (`s` and `s.1`) are separate objects, each listed and
   deleted alone. Generations are listed and deleted by number, never by a prefix of one (`1` is not `10`).
-- A bucket or container that does not exist fails with an error that is not `NotFoundError`. Read as one, it answers
-  every read as an empty segment.
+- A bucket or container that does not exist fails with an error that is neither `NotFoundError` nor a
+  `TransientError`. Read as the first, it answers every read as an empty segment; as the second, it is retried for
+  nothing.
 - A missing object makes `getRange` and `getTail` throw `NotFoundError`, never an empty or short result. Heal-forward,
   the erasure's holder probe and verify, and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
   reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
@@ -678,6 +679,8 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - `list` is strongly consistent, read-after-delete: once `delete` resolves, the generation is no longer listed. The
   erasure's re-check for a generation still holding the id, `generationsRemaining`, the retention sweep's check that a
   tombstone's storage is gone, and rollback's post-move check prove a deletion or a presence by listing.
+- `list` yields every generation, however many pages the service splits the listing into. One that stops after its
+  first page drops generations from every collection and every check above.
 - Never replay a conditional write without telling the replay apart. A write that lands and loses its response, sent
   again, meets its own object and would report a collision. Send each write once, with the client's retry off for
   that request, or, when the precondition fails, read back an id you stored with the write and treat a match as
@@ -689,7 +692,9 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 **What a registry driver must do.** `create` and `compareAndSwap` are atomic conditional writes that throw
 `WriteConflictError` and change nothing when they lose; a token is not reused, `delete` then `create` included, but for a collision of probability 2^-128 per pair of incarnations;
 reads are strongly consistent; a row is keyed by its namespace and segment together, so one segment name in two
-namespaces is two rows; `list` yields every existing row, `destroyed` tombstones included, with every field;
+namespaces is two rows; `list` yields every existing row, `destroyed` tombstones included, with every field, however many
+pages the service splits the listing into; a bucket or container that does not exist fails a read, a listing and a
+write with an error that is neither `NotFoundError` nor a `TransientError`, never a `null` read;
 the replay rule above applies to `create` and `compareAndSwap`, which a driver never sends again on a throttle. The
 store's publish reads the row after one that ended without an answer and recognises its own landed write by its
 effect; when the row is unchanged it sends a **fresh** compare-and-swap from the version it read (at most three, after a
@@ -878,8 +883,12 @@ Two things worth knowing:
   ids, `$metadata`). The library's own `message` is identifier-only and safe to log; serializing the whole error
   *chain* includes that metadata.
 
-**Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
-`isNotFoundError` · `isIntegrityError` · `isValidationError`.
+**Bundle-safe predicates**, one for every error class: `isCloudRoaringError` · `isValidationError` ·
+`isWriteConflictError` · `isIntegrityError` · `isNotFoundError` · `isTransientError` · `isUnsupportedError` ·
+`isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError` · `isLeaseExpiredError` · `isLeaseLimitError` ·
+`isStaleOperandError`. Each names the library's own class by its name, so an application's subclass of one (`class
+TenantRefused extends ValidationError`) is not matched by it; `isCloudRoaringError` and `isTransientError` match by brand,
+and do match such a subclass.
 
 **On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the backend
 packages and `@cloudbitmaps/core` itself. Every package is published with `@cloudbitmaps/core` left
@@ -929,7 +938,8 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
 `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
-· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError`
+· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError` · `isUnsupportedError`
+· `isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError`
 
 ### `@cloudbitmaps/roaring` — types
 
@@ -989,7 +999,7 @@ Keys, paths and prefixes: `normalizeObjectPrefix` · `prefixPart` · `encodeName
 
 Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
 `NotFoundError` · `IntegrityError` · `TransientError` · `isValidationError` · `isWriteConflictError` ·
-`isNotFoundError`
+`isNotFoundError` · `isIntegrityError` · `isTransientError`
 
 ### `@cloudbitmaps/s3`
 
@@ -1019,13 +1029,24 @@ SDK's own retries of that request fall inside it and nothing else the client sen
 also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, which reads as
 this library's word for the durable tier, so the backend takes it as `client`.
 
-The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
-and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
-`ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after
-a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its other requests keep
-the SDK's retries. A `client` you pass is used as given, so build it with `retryOptions: { autoRetry: false }`, which also
-turns off the SDK's retries of listings, metadata reads and resumable uploads on that client
-([why](production.md#reliability-retries-backoff--timeouts)).
+The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on
+7.22.0 and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the
+process with `ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff,
+after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504,
+and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its
+listings, deletes, resumable uploads and the metadata read that settles a write keep its retry settings (under which the
+SDK sends a delete with no precondition once); a single-request conditional write is sent without them. A client you
+pass as `client` keeps its own retries for those requests: its downloads go through a twin of it, built from its own
+class with the same credentials object, endpoint, project, user agent, timeout, checksum generator and interceptors and
+the SDK's retries off ([why](production.md#reliability-retries-backoff--timeouts)). A `Storage` client is always used
+through its twin, which must have taken the settings that decide where and how a download goes: the same credentials
+object, URL and endpoint, and retry settings of its own, which are then turned off over any its class set. The backend
+refuses, when it is built, a client whose twin would not (a subclass that builds from options of its own), one whose
+class overrides `bucket` (as a test double built on `Storage` does), and one whose `bucket` is replaced on the instance
+(as by a test stub). Stub `Storage.prototype` (or `Bucket.prototype`, `File.prototype`) instead, which reaches the twin;
+a stub on the client's instance does not. A test double that is not a `Storage` client is used as it is when it has
+`retryOptions: { autoRetry: false }`, and refused without it; with the SDK's module mocked, pass the mock as `client`.
+What is set on a client after the backend was built, other than an interceptor, is not carried to the twin.
 
 A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. It bounds
 one read as a whole (a tail with the metadata read it falls back on for an empty object, a range, a registry row): one

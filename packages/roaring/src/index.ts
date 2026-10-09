@@ -1513,6 +1513,15 @@ export class CloudRoaring {
    */
   materializeMany(options: MaterializeManyDryRunOptions): Promise<MaterializeManyDryRun>;
   /**
+   * The call with `dryRun` a switch held in a variable, optional or not: a {@link MaterializeManyDryRun} when it is
+   * `true` and a {@link MaterializeManyRun} when it is `false` or absent, so with a `boolean` (or `boolean | undefined`)
+   * the result is typed as either, and the flag passed says which. A literal `true` or `false`, and a call without
+   * `dryRun`, are typed exactly, as by the forms either side of this one.
+   */
+  materializeMany<D extends boolean | undefined = undefined>(
+    options: MaterializeManyOptions & { readonly dryRun?: D },
+  ): Promise<D extends true ? MaterializeManyDryRun : MaterializeManyRun>;
+  /**
    * **Many outputs, each operand read once per group.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
    * to depth 64) published as a new generation of its own `dest`, exactly as an `*Into` would publish it, but computed
    * together: each operand's chunks are read once for all the outputs that use them, instead of once per output and
@@ -1599,7 +1608,7 @@ export class CloudRoaring {
   materializeMany(
     options: MaterializeManyOptions & { readonly dryRun?: false },
   ): Promise<MaterializeManyRun>;
-  /** The one body of the two forms above. */
+  /** The one body of the forms above. */
   async materializeMany(
     options: MaterializeManyOptions & { readonly dryRun?: boolean },
   ): Promise<MaterializeManyRun | MaterializeManyDryRun> {
@@ -4163,6 +4172,10 @@ export {
   isLeaseExpiredError,
   isLeaseLimitError,
   isStaleOperandError,
+  isUnsupportedError,
+  isCapabilityError,
+  isBudgetExceededError,
+  isKeyUnavailableError,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,

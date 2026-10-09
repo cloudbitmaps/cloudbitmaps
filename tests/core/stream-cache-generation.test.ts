@@ -90,4 +90,80 @@ describe('a streaming source that names generations and not versions', () => {
     );
     expect(cache.size).toBe(0);
   });
+
+  describe('a read that moves while its stream is open caches nothing more the stream delivers', () => {
+    const KEYS = Array.from({ length: 40 }, (_, i) => i);
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    /** Generation 7 of `a` holds remainder 1 in each chunk and generation 8 remainder 2; `b` holds both. */
+    function twoGenerations() {
+      const at7 = new StreamChunkSource();
+      const at8 = new StreamChunkSource();
+      seedSegment(
+        at7,
+        'a',
+        KEYS.map((c) => joinId(c, 1)),
+      );
+      seedSegment(
+        at8,
+        'a',
+        KEYS.map((c) => joinId(c, 2)),
+      );
+      for (const source of [at7, at8]) {
+        seedSegment(
+          source,
+          'b',
+          KEYS.flatMap((c) => [joinId(c, 1), joinId(c, 2)]),
+        );
+      }
+      const state = { gen: 7, resolveMs: 0 };
+      const live = () => (state.gen === 7 ? at7 : at8);
+      const storage: StorageChunkSource = {
+        getChunk: (r) => live().getChunk(r),
+        listChunkKeys: (r) => live().listChunkKeys(r),
+        getChunks: (r, keys, options) => live().getChunks(r, keys, options),
+        currentGeneration: async () => {
+          if (state.resolveMs > 0) await sleep(state.resolveMs);
+          return state.gen;
+        },
+      };
+      const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
+      const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+      /** A later read of `a` at generation 8 must hold generation 8's ids alone. */
+      const readAt8 = async (): Promise<number[]> => {
+        const later = await collect(engine.iterate(ref('a')));
+        expect(later).toHaveLength(KEYS.length);
+        return later.filter((id) => id % 65_536 === 1);
+      };
+      return { at7, state, engine, readAt8 };
+    }
+
+    it("iterate: chunks the stream still delivers from generation 7 are not cached as 8's", async () => {
+      const { state, engine, readAt8 } = twoGenerations();
+      expect(await engine.has(ref('a'), joinId(2, 1))).toBe(true); // chunk 2 cached at 7
+      let first = true;
+      for await (const id of engine.iterate(ref('a'))) {
+        void id;
+        if (first) state.gen = 8; // chunk 2's check finds the move; chunks 3 to 39 still come from the open stream
+        first = false;
+      }
+      expect(await readAt8()).toEqual([]);
+    });
+
+    it('intersect: neither are chunks in flight when the move is found', async () => {
+      const { at7, state, engine, readAt8 } = twoGenerations();
+      for (const c of KEYS)
+        if (c % 2 === 0) expect(await engine.has(ref('a'), joinId(c, 1))).toBe(true);
+      // The stream of `a` answers slowly and the move takes a moment to resolve, so ranges are in flight when it lands.
+      at7.beforeYield = (stream) =>
+        stream.segment === 'a' && stream.keys.length > 1 ? sleep(10) : undefined;
+      let first = true;
+      for await (const id of engine.intersect([ref('a'), ref('b')])) {
+        void id;
+        if (first) Object.assign(state, { gen: 8, resolveMs: 5 });
+        first = false;
+      }
+      expect(await readAt8()).toEqual([]);
+    });
+  });
 });

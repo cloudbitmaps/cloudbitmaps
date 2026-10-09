@@ -9,7 +9,7 @@
  *   the reads followed by `+upload`: a small upload on the same backend, and a read and a registry write on a second
  *   backend (prefix `q`, no timeout), all started just before the read;
  * - `readTimeoutMs`: a number, `default` to leave it unset, or `client:<n>` to pass `<n>` beside a client of the
- *   test's own (built with `autoRetry: false`, as the docs say);
+ *   test's own (built with `autoRetry: false`);
  * - then `linger=<ms>`, how long to stay up after printing (so a late response can arrive and crash it), or `natural`,
  *   which never calls `process.exit` and lets the process end by itself once nothing is left to run.
  *

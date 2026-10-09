@@ -95,6 +95,13 @@ const ticking = (): (() => number) => {
   let t = 1_000;
   return () => (t += 1);
 };
+// Never created: the emulator answers as the service does for a bucket that is not there.
+const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+// fake-gcs-server 1.52.2 does not page a listing: it truncates at `maxResults` and sends no `nextPageToken`, so a listing
+// past one page cannot be held here. The registry, which asks for 1,000 rows a page, is held to paging by its unit fake
+// (three rows a page). A generation listing is paged by the SDK's auto-pagination, which sends no page size, so the
+// emulator answers it in one page: there the case holds the count, and the paging rests on the SDK.
+const PAST_ONE_PAGE = 1_001;
 registryConformance(
   'GcsRegistryDriver (fake-gcs-server)',
   () =>
@@ -104,6 +111,10 @@ registryConformance(
       prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
+  {
+    missingLocation: () =>
+      new GcsRegistryDriver({ storage, bucket: MISSING, prefix: `${RUN}/missing`, now: ticking() }),
+  },
 );
 
 // And it must fence writers that do NOT share a process — the property the sequential suite above cannot
@@ -125,7 +136,11 @@ const freshDriver = (): GcsStorageDriver =>
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
-storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver);
+storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver, {
+  missingLocation: () =>
+    new GcsStorageDriver({ storage, bucket: MISSING, prefix: `${RUN}/missing` }),
+  pagedListSize: PAST_ONE_PAGE,
+});
 // The same cases with a 100-byte threshold, so every object takes the resumable upload. fake-gcs-server does not
 // enforce `ifGenerationMatch` on a resumable upload (a second write to the key succeeds and overwrites), so the
 // collision is skipped here: a real GCS answers it with 412, and the driver maps that the same way as the simple path.
@@ -641,9 +656,6 @@ describe('GCS (fake-gcs-server): a registry write made against a held row', () =
 });
 
 describe('a bucket that does not exist', () => {
-  // Never created: the emulator answers as the service does for a bucket that is not there.
-  const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
-
   it("fails every read and a delete with the service's own error, not as an absent object", async () => {
     await expectMissingLocationFails(
       () =>

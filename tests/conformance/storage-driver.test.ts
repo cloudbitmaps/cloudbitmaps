@@ -6,7 +6,9 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 
 // Every IStorageDriver must pass the same contract.
-storageDriverConformance('MemoryStorageDriver', () => new MemoryStorageDriver());
+storageDriverConformance('MemoryStorageDriver', () => new MemoryStorageDriver(), {
+  pagedListSize: 25,
+});
 
 let root: string;
 let n = 0;
@@ -20,4 +22,5 @@ afterAll(async () => {
 storageDriverConformance(
   'LocalFsStorageDriver',
   () => new LocalFsStorageDriver(join(root, `d${n++}`)),
+  { pagedListSize: 25 },
 );
