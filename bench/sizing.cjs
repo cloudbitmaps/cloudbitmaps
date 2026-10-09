@@ -142,6 +142,10 @@ function latestRunReport() {
  * does not restate. Expected, not measured on a cloud.
  */
 const RANGE_COUNTS = JSON.parse(fs.readFileSync(path.join(__dirname, 'range-counts.json'), 'utf8'));
+// The heap a filled resolution cache's entries took against the weight it counted, measured by `resolution-heap.cjs`.
+const RESOLUTION_HEAP = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'resolution-heap-results.json'), 'utf8'),
+);
 /** The range requests a cold intersect makes of EACH operand, for a deployment's chunks and an overlap and layout. */
 function rangesPerOperand(id, shared, layout = 'packed') {
   const found = RANGE_COUNTS.profiles[id]?.coldIntersect.find(
@@ -698,10 +702,16 @@ function render() {
   // stops binding first. Derived from the settings, not measured.
   const resolutionEntries = RESOLUTIONS_PER_OPEN_SEGMENT * READER_MAX;
   const resolutionBytes = READER_MAX_BYTES / RESOLUTION_BYTES_DIVISOR;
-  // The heap the entries take, measured on Node 24 by filling a cache at the default settings with each of four row
-  // shapes (cleartext and encrypted, without metadata and with 300 bytes of it), as a multiple of the weight the cache
-  // counted for them: 1.24 to 1.53.
-  const RESOLUTION_HEAP_RANGE = 'about 1.2 to 1.5 times';
+  // The heap the entries take, as a multiple of the weight the cache counted for them: measured by
+  // `resolution-heap.cjs`, which no gate runs, and read from the results file it writes.
+  const heapRuns = RESOLUTION_HEAP.shapes.map((s) => s.heapPerCounted);
+  const heapNode = /^v(\d+)\./.exec(RESOLUTION_HEAP.node)?.[1];
+  if (heapNode === undefined || heapRuns.length === 0) {
+    throw new Error(
+      'sizing: bench/resolution-heap-results.json names no Node version or no row shape',
+    );
+  }
+  const RESOLUTION_HEAP_RANGE = `about ${Math.min(...heapRuns).toFixed(1)} to ${Math.max(...heapRuns).toFixed(1)} times`;
   const resolutions =
     "**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also " +
     "keeps each segment's resolution (the fields of its row a read resolves through: never an unwrapped key, though " +
@@ -713,9 +723,10 @@ function render() {
     `${int(resolutionBytes / resolutionEntries)} bytes, as a segment without metadata whose key is wrapped once does, ` +
     'cleartext or encrypted, and the byte bound once they average more: with a few hundred bytes of metadata on each, ' +
     'or keys wrapped under several key-encryption keys or under long key ids. These bounds are derived from the ' +
-    'settings, and they bound the bytes the cache counts, not the heap: measured on Node 24 by filling a cache at the ' +
-    'default settings with each of four row shapes, cleartext and encrypted, with and without a few hundred bytes of ' +
-    `metadata, the heap the entries took was ${RESOLUTION_HEAP_RANGE} the weight counted for them. Lowering \`cache.readerMax\` ` +
+    'settings, and they bound the bytes the cache counts, not the heap: the entries of a cache filled at the default ' +
+    `settings took ${RESOLUTION_HEAP_RANGE} the weight counted for them in heap, measured on Node ${heapNode} by ` +
+    '[`bench/resolution-heap.cjs`](../../bench/resolution-heap.cjs) with each of four row shapes, cleartext and ' +
+    'encrypted, with and without a few hundred bytes of metadata. Lowering `cache.readerMax` ' +
     'and `cache.readerMaxBytes` for a small heap lowers this cache with them.';
 
   const bill = [
