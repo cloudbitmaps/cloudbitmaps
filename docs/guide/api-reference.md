@@ -546,7 +546,7 @@ because the store methods return them; the `*Deps` types (`LoadDeps`, `Generatio
 | `rollbackSegment(ref, toGeneration, { storage, registry, keystore? }, { audit?, allowForward? })` → `Promise<RollbackResult>` | the unwired form of `store.rollback`, taking the drivers instead of a store. `keystore` lets the rollback open an encrypted target to seal its count and metadata into the row; without it, or when it cannot open the key, the segment still rolls back and the row has no summary. The target is verified after the swap, and the pointer is put back if it vanished or, for an `allowForward` target, was replaced ([how a rollback can fail half-way](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)) |
 | `loadSegment(ref, input, { storage, registry, codec?, keystore?, requireEncryption?, clock?, rng?, readRetry?, collectByListing? }, { allowEmpty?, guard?, keep?, metadata?, audit? })` → `Promise<LoadResult>` | the unwired form of `store.load`: replaces a segment's contents with `input`, the same `LoadInput` (`{ serialized }` and `{ bitmap }` decoded by the `codec`, and written through its `encodeChunks?()`), as one immutable generation. It refuses a byte array passed as ids, as `store.load` does; a bare `RoaringBitmap32` passed as ids is ids here, since core names no codec's class. It takes the drivers, plus a `codec`, `keystore` and `clock`, instead of a store. `readRetry` (a `RetryDeps` plus an optional `policy`) retries the guard's read of the current generation; without it that read is made once. The registry write is not governed by `readRetry`: when it gets no answer, the publish reads the row back and, if it is unchanged, sends a fresh compare-and-swap, at most three times, each after a wait on `clock`, a random time under 500 ms, then 1 s, then 2 s that `rng` spreads (the bound itself when neither `rng` nor `readRetry` has a source; with no `clock` it throws the registry's `TransientError` at once). A write-once object is sent again after a throttle by the S3 and GCS drivers. `collectByListing: true` makes the load collect by listing whatever `keep` is, where it would otherwise delete by name the one generation its publish pushed out of the window with a `keep` of 0 or 1; the `*Into` verbs set it, since their `keep` clears every generation below the new one beyond it. Options, results and refusal reasons are `store.load`'s ([loading](loading.md)) |
 | `loadSegmentChunks(ref, chunks, deps, options?)` → `Promise<LoadResult>` | `loadSegment` for a result already held as chunks: `chunks` is an `AsyncIterable<{ chunkKey, bitmap }>` ascending by key, each `bitmap` the 16-bit remainders of one chunk, and each is written as it is, so no id is built for a value. What the `*Into` verbs call. `deps`, `options`, the result and the refusals are `loadSegment`'s. A chunk is refused with `ValidationError`, before anything is written, unless its bitmap is one the `codec` made (`CodecInterface.owns?(bitmap)`, so a codec without it refuses every chunk), its key is an integer in `[0, 65535]` above the one before, and its values are 16-bit; an empty bitmap is left out. **The load consumes the bitmaps it is given:** writing may re-encode one in place for size, never changing its members, so pass bitmaps made for this call. The public `load()` and `loadSegment()` take no chunk input |
-| `judgeLoad(ref, cardinality, deps, { allowEmpty?, guard? }?)` → `Promise<LoadJudgement>` | judge a write of `cardinality` ids into `ref` as a load would, and write nothing: `{ cardinalityBefore, wouldRefuse?, reads }`, the size it reads as a load reads it, the bound a load of that size would be refused for now (a `LoadRefusal` other than `'superseded'`), and the requests it made. A `destroyed` segment throws the `ValidationError` a load's write would. What a `materializeMany` dry run runs for each output |
+| `judgeLoad(ref, cardinality, deps, { allowEmpty?, guard? }?)` → `Promise<LoadJudgement>` | judge a write of `cardinality` ids into `ref` as a load would, and write nothing: `{ cardinalityBefore, wouldRefuse?, reads }`, the size it reads as a load reads it, the bound a load of that size would be refused for now (a `GuardRefusal`: a `LoadRefusal` other than `'superseded'`), and the requests it made. A `destroyed` segment throws the `ValidationError` a load's write would. What a `materializeMany` dry run runs for each output |
 | `eraseIdFromSegment(ref, id, { storage, registry, codec?, keystore?, requireEncryption?, clock?, rng?, maxBitmapBytes?, readRetry? }, { audit? })` → `Promise<EraseIdResult>` | remove **one id** from one segment by rewriting its current generation without it: the step `store.eraseSubject` runs over every registered segment. `erased: true` means no generation holds the id; otherwise `reason` says why ([the result of erasing one segment](erasure.md#how-it-stays-correct)). `readRetry`, shaped as `loadSegment`'s, retries the reads the rewrite makes; without it each is made once. The rewrite's registry write is settled as a load's is, and `clock` and `rng` are what it waits on; the deletes are not retried `maxBitmapBytes` (default 1 MiB per chunk) is the decode ceiling; the `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes on an encrypted object) when it opens the object, so a caller who raises `maxBitmapBytes` also sets `maxPayloadBytes` on the chunk source. |
 | `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `Promise<DropResult>` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `runConsistencyCheck({ storage, registry, keystore? }, { namespace?, concurrency?, maxScanSegments?, summaries? })` → `Promise<ConsistencyReport>` | the free function behind `store.checkConsistency` — run it over your own drivers, or over a backend's `storage` and `registry`. `maxScanSegments` (default 250,000) is how many registry rows one scan may hold resident; past it the call throws `BudgetExceededError` rather than report a partial scan |
@@ -656,7 +656,7 @@ nothing can compare one. Branding them is you taking that on.
 | `namespacePathPart` | the physical namespace component of a **path**: the caller's namespace **encoded**, or the `_default` sentinel emitted **literally**. That asymmetry is load-bearing — encoding the sentinel too would send an absent namespace to `%5Fdefault`, exactly where a caller who names their namespace `_default` already goes, and the two would read each other's data. Use it rather than encoding `ns ?? '_default'` yourself. (`namespaceKeyPart` is the object-key twin) |
 | `validateSegmentRef` | the name rules a driver applies to a ref, and nothing more: it takes a namespace in the reserved `cbm.due.` prefix, where the library's own due-index rows live. The refusal of that prefix is in the calls that take an application's ref or `namespace`, not here |
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
-| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `isValidationError` · `isWriteConflictError` · `isNotFoundError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
+| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and a predicate for each: `isValidationError` · `isWriteConflictError` · `isNotFoundError` · `isIntegrityError` · `isTransientError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
 
 **What a storage driver must do.** Callers rely on each of these, and the conformance suite holds every shipped
 driver to them (`IStorageDriver`'s doc comment states the same list):
@@ -878,8 +878,12 @@ Two things worth knowing:
   ids, `$metadata`). The library's own `message` is identifier-only and safe to log; serializing the whole error
   *chain* includes that metadata.
 
-**Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
-`isNotFoundError` · `isIntegrityError` · `isValidationError`.
+**Bundle-safe predicates**, one for every error class: `isCloudRoaringError` · `isValidationError` ·
+`isWriteConflictError` · `isIntegrityError` · `isNotFoundError` · `isTransientError` · `isUnsupportedError` ·
+`isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError` · `isLeaseExpiredError` · `isLeaseLimitError` ·
+`isStaleOperandError`. Each names the library's own class by its name, so an application's subclass of one (`class
+TenantRefused extends ValidationError`) is not matched by it; `isCloudRoaringError` and `isTransientError` match by brand,
+and do match such a subclass.
 
 **On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the backend
 packages and `@cloudbitmaps/core` itself. Every package is published with `@cloudbitmaps/core` left
@@ -929,7 +933,8 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
 `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
-· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError`
+· `isValidationError` · `isLeaseExpiredError` · `isLeaseLimitError` · `isStaleOperandError` · `isUnsupportedError`
+· `isCapabilityError` · `isBudgetExceededError` · `isKeyUnavailableError`
 
 ### `@cloudbitmaps/roaring` — types
 
@@ -967,7 +972,7 @@ Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `g
 `listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` · `takeLease` · `releaseLease` ·
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
 
-Types: `EngineDeps` · `EngineCombineOptions` · `SegmentReader` · `RetryDeps` · `RetryingOptions` · `LoadDeps` · `LoadJudgement` ·
+Types: `EngineDeps` · `EngineCombineOptions` · `SegmentReader` · `RetryDeps` · `RetryingOptions` · `LoadDeps` · `LoadJudgement` · `GuardRefusal` ·
 `CombineExpr` · `CombineManyDeps` · `CombineManyFeed` · `CombineManyFeedRecord` · `CombineManyOperand` · `CombineManyOperandStats` · `CombineManyOutcome` · `CombineManyOutput` · `CombineManyOutputStats` · `CombineManyRequest` · `CombineManyRun` · `CombineManyStats` · `CombineManyWrite` · `CompiledCombineMany` · `GenerationListDeps` · `GenerationSummary` · `PinLease` · `LeaseDeps` · `LeaseTake` · `TakenLease` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
 
 ### `@cloudbitmaps/core/driver-kit`
@@ -989,7 +994,7 @@ Keys, paths and prefixes: `normalizeObjectPrefix` · `prefixPart` · `encodeName
 
 Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
 `NotFoundError` · `IntegrityError` · `TransientError` · `isValidationError` · `isWriteConflictError` ·
-`isNotFoundError`
+`isNotFoundError` · `isIntegrityError` · `isTransientError`
 
 ### `@cloudbitmaps/s3`
 

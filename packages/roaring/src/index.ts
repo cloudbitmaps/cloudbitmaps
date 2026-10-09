@@ -4172,6 +4172,10 @@ export {
   isLeaseExpiredError,
   isLeaseLimitError,
   isStaleOperandError,
+  isUnsupportedError,
+  isCapabilityError,
+  isBudgetExceededError,
+  isKeyUnavailableError,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
