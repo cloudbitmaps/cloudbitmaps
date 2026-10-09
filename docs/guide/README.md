@@ -35,7 +35,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 
 - [**What it saves, and where it doesn't**](why-cloudbitmaps.md): CloudBitmaps against an always-on Redis, with charts.
 - [**What it costs at your size**](sizing.md): a small, a medium and a large deployment priced term by term, and
-  [how to estimate your own](cost.md).
+  [how to estimate your own](cost.md) with `@cloudbitmaps/tools`.
 - [**Benchmarks**](../benchmarks.md): the measured cost and memory figures, and their method.
 
 ## Reference

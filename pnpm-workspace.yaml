@@ -1,4 +1,4 @@
-# The @cloudbitmaps family monorepo — five packages on two axes, all versioned and released in lockstep.
+# The @cloudbitmaps family monorepo — six packages, five of them on two axes, all versioned and released in lockstep.
 #
 #   packages/core        → @cloudbitmaps/core        the codec-agnostic engine, the .crbm format, the driver
 #                                                    PORTS, and the in-memory + local-filesystem drivers.
@@ -9,6 +9,9 @@
 #   packages/s3          → @cloudbitmaps/s3          the STORAGE axis: one package per storage service, each
 #   packages/gcs         → @cloudbitmaps/gcs         with its cloud SDK as a real dependency, not a peer.
 #   packages/azure-blob  → @cloudbitmaps/azure-blob  Users install one package of each axis.
+#   packages/tools       → @cloudbitmaps/tools       offline tools that need nothing internal from a store:
+#                                                    the cost model. On neither axis; it takes core's public
+#                                                    entry and nothing else.
 #
 # Every dependent depends on `@cloudbitmaps/core` via `workspace:^`, which pnpm resolves to a symlink into
 # `packages/core` locally and rewrites to a real semver range at publish. The dependency arrow is one-way —

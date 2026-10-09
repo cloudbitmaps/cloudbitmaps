@@ -37,7 +37,16 @@ npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs n
 
 You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
 package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it.
+arrives on its own and you never install it. The family is six packages, released together at one version:
+
+| Package | What it is | Install it |
+|---|---|---|
+| `@cloudbitmaps/roaring` | the store, `CloudRoaring`, with the in-memory and local-disk backends | always |
+| `@cloudbitmaps/s3` | S3 and S3-compatible storage, with `@aws-sdk/client-s3` | for S3 |
+| `@cloudbitmaps/gcs` | Google Cloud Storage, with `@google-cloud/storage` | for GCS |
+| `@cloudbitmaps/azure-blob` | Azure Blob Storage, with `@azure/storage-blob` | for Azure |
+| `@cloudbitmaps/tools` | offline tools that need nothing internal from a store: the [cost model](docs/guide/cost.md) | to price a store |
+| `@cloudbitmaps/core` | the engine underneath, with no cloud SDK | never: it arrives with the others |
 
 ### First run, in memory
 
@@ -124,8 +133,8 @@ A Roaring Bitmap holds a huge set of integer ids, such as *"which of my 1.2 bill
 structures, so teams reach for an always-on Redis cluster and pay for memory around the clock to hold sets that are
 mostly read. CloudBitmaps keeps the bitmap engine and puts the sets in your own object storage.
 
-What it costs at three illustrative sizes, priced by the library's own estimator against the cheapest on-demand
-Redis OSS cluster that would hold each one's data:
+What it costs at three illustrative sizes, priced by the project's own estimator (`estimateCost()` in
+`@cloudbitmaps/tools`) against the cheapest on-demand Redis OSS cluster that would hold each one's data:
 
 <!-- SIZING:WHY_SIZES:START -->
 | | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
@@ -207,7 +216,7 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │  exists()  segments()              andNotInto()                       │
   │  generations() rollback()                                             │
   │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
-  │  setRetention() getRetention()     costReport()                       │
+  │  setRetention() getRetention()     stat()       ← number, count, size │
   │  clearRetention()                                                     │
   │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
   │  checkConsistency() exportSegments()                                  │

@@ -1,7 +1,7 @@
 # What it costs at your size
 
-Three illustrative deployments, small, medium and large, priced by the library's own `estimateCost()` at AWS
-`us-east-1` on-demand rates, and set against the Redis that would hold each one's data.
+Three illustrative deployments, small, medium and large, priced by `estimateCost()` from `@cloudbitmaps/tools`, the
+project's own cost model, at AWS `us-east-1` on-demand rates, and set against the Redis that would hold each one's data.
 
 **The answer is in [the monthly bill](#the-monthly-bill): each deployment's bill, term by term, beside the Redis that
 would hold its data.** The workloads are made up; the arithmetic is not. Each workload is a guess at what a typical
@@ -177,13 +177,14 @@ the long tail: the segments that are too many or too large to keep in RAM, and t
 
 ## Price your own
 
-`CloudRoaring.estimateCost()` keeps working until it moves to `@cloudbitmaps/tools` ([when, and why](cost.md)).
+`estimateCost()` is in `@cloudbitmaps/tools` (`pnpm add @cloudbitmaps/tools`), a package of offline tools beside the
+library:
 
 <!-- SIZING:SAMPLE:START -->
 ```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { estimateCost } from '@cloudbitmaps/tools';
 
-const report = CloudRoaring.estimateCost({
+const report = estimateCost({
   segments: [{ sizeBytes: 4_000_000, count: 5_000 }],
   workload: {
     intersectsPerSec: 1, // priced cold
@@ -204,8 +205,8 @@ report.assumptions.notes; // what it modeled, and what it did not
 
 Every report says what it modeled and what it left out: which Redis it priced and why, loads or the refresh when you
 did not size them, and more hot segments than a reader keeps open by default. [the cost
-guide](cost.md#cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
-real segment at its measured size and the store's own `cache.genTtlMs`.
+guide](cost.md#cost-estimate-it-then-ground-it) has the whole model, and `groundedReport()` prices a real segment at
+the size its `stat()` reports.
 
 ## What this page does not establish
 

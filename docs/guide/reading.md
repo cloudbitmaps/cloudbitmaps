@@ -96,17 +96,24 @@ decode the payloads, whose structure is checked. The same index supplies the chu
 fetches from, and `load`'s `cardinalityBefore` when the row carries no summary of the generation. Where an exact answer matters more than the request count, `iterate()` the
 segment and count what it yields.
 
-## `stat()`: the generation, its count and its metadata
+## `stat()`: the generation, its count, its metadata and its size
 
-`seg.stat()` returns `{ generation, cardinality, metadata? }`: the number of the generation the handle reads, its id
-count, and the metadata it was loaded with (absent when it has none). One resolution answers all three, so they
-describe one generation and cannot straddle a publish. It is one registry read when cold, none when the store has the
-segment, and none on a pinned handle, which answers for the generation it pinned. The same row read answers a `count()`,
-so a `stat()` then a `count()` is one request. It trusts what `count()` trusts. A segment with no generation answers
-`{ generation: null, cardinality: 0 }`.
+`seg.stat()` returns `{ generation, cardinality, metadata?, size }`: the number of the generation the handle reads, its
+id count, the metadata it was loaded with (absent when it has none), and `size`, the bytes of the generation's object
+in storage. All four come from that one generation, opened once: its footer and index, with no payload read, so they
+cannot straddle a publish and the size is never another generation's. It is one registry read and one tail read of the
+object when cold, and none while the generation is open (a read of the segment opens it, and so does a `stat()`); a
+pinned handle answers for the generation it pinned. After it, a `count()` reads nothing. A segment with no generation
+answers `{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
+`size: null`. A pointer that names a missing object (a torn restore) throws `NotFoundError`, as a read of the object
+does, where `count()` answers the row's number.
 
-`store.generations(ref)` carries the same `cardinality` and `metadata` on its current entry, from the row it already
-reads. Only the current entry has them: the other generations are not opened.
+The count is the index's sum, checked for internal consistency when the object is opened, and the opened object is
+held against the row's summary: a disagreement makes the store stop using that summary, so `count()` then answers what
+`stat()` does. `size` is what [`groundedReport()`](cost.md) prices a segment's storage from.
+
+`store.generations(ref)` carries `cardinality` and `metadata` on its current entry from the row it already reads, with
+no read of the object. Only the current entry has them: the other generations are not opened.
 
 ## How soon a reader sees a new load
 
@@ -250,7 +257,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
 
 - **A read after the lease throws, and never reads empty.** Once the clock reaches `leaseUntil`, or after
   `release()`, every read of the handle throws `LeaseExpiredError`: `has`, `count`, `stat`, `iterate`, `batches()`,
-  `costReport`, `everyNth`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
+  `everyNth`, and a call of another handle that takes this one as an operand or as an `exclude`, or as the target of an
   `*Into`. An opt-out list held through a lease that has ended is an error, never an empty list that suppresses nobody. It
   throws whether or not the object is still in the bucket, and a small generation's cached reader is not consulted.
   `pin()` or `pinAt()` from a leased handle past its lease throws too; before it, `pin()` takes the generation current now

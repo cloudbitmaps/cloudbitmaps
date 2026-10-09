@@ -894,9 +894,9 @@ function render() {
   const medium = byId('medium');
   const sample = [
     '```ts',
-    "import { CloudRoaring } from '@cloudbitmaps/roaring';",
+    "import { estimateCost } from '@cloudbitmaps/tools';",
     '',
-    'const report = CloudRoaring.estimateCost({',
+    'const report = estimateCost({',
     `  segments: [{ sizeBytes: ${medium.segmentBytes.toLocaleString('en-US').replace(/,/g, '_')}, count: ${medium.segments.toLocaleString('en-US').replace(/,/g, '_')} }],`,
     '  workload: {',
     `    intersectsPerSec: ${medium.intersectsPerMonth / SECONDS_PER_MONTH}, // priced cold`,
@@ -959,9 +959,9 @@ function render() {
   const guideWords = estimatorWords(g);
   const guideExample = [
     '```ts',
-    "import { CloudRoaring } from '@cloudbitmaps/roaring';",
+    "import { estimateCost } from '@cloudbitmaps/tools';",
     '',
-    'const report = CloudRoaring.estimateCost({',
+    'const report = estimateCost({',
     `  segments: [{ sizeBytes: ${seg.sizeBytes.toExponential().replace('e+', 'e')}, count: ${seg.count} }], // or { cardinality }`,
     '  workload: {',
     `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is at most one GET`,

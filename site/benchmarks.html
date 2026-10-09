@@ -231,7 +231,7 @@
                tell whether the node is sized for this dataset or five times larger than it.
 
                The instance class and node count come from ONE_REDIS_HA_CLUSTER's own comment in
-               core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
+               tools/src/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
                rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
           <p class="tpanel-foot">
             Assumptions: cache hit rate <strong>0</strong>, the stored-bytes term at
@@ -257,7 +257,7 @@
            default prices the Redis that holds that set lower, and the row says where the line would sit.
 
            Two of the four can remove the crossover altogether, and this is the estimator's own arithmetic
-           (core/cost.ts): `readsCross` is `Infinity` unless `storageGetUSD > 0 && missFraction > 0`, so a 100%
+           (tools/src/cost.ts): `readsCross` is `Infinity` unless `storageGetUSD > 0 && missFraction > 0`, so a 100%
            cache-hit rate or a store with no per-request charge leaves no meter to cross.
 
            Publishing the most pessimistic supported configuration is the right instinct. Publishing it without
@@ -833,7 +833,7 @@ pnpm install
 
 <span class="c"># regenerates bench/results.json</span>
 pnpm bench</code></pre>
-            <p class="link-row"><a href="usage.html">Or call CloudRoaring.estimateCost() directly →</a></p>
+            <p class="link-row"><a href="usage.html">Or call estimateCost() from @cloudbitmaps/tools directly →</a></p>
           </div>
         </div>
       </section>

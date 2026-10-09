@@ -30,13 +30,15 @@ chunks from it. There is no `add`, no `remove`, and no mutable tier.
 
 You install **two packages** — a codec and a storage — and `@cloudbitmaps/core` arrives as a dependency of
 both. Each package is its own entry point, and `@cloudbitmaps/roaring` re-exports, by name, the part of core that
-an application uses, as the next paragraph says:
+an application uses, as the next paragraph says. To price a store, add `@cloudbitmaps/tools`, the cost model, which
+reads nothing of a store and needs none to run:
 
 ```
 @cloudbitmaps/roaring         the store + memory/localfs backends + the errors, helpers and types an application uses
 @cloudbitmaps/s3              S3Storage                                           (dep: @aws-sdk/client-s3)
 @cloudbitmaps/gcs             GcsStorage                                          (dep: @google-cloud/storage)
 @cloudbitmaps/azure-blob      AzureBlobStorage                                    (dep: @azure/storage-blob)
+@cloudbitmaps/tools           estimateCost, groundedReport, the price lists       (offline; dep: @cloudbitmaps/core)
 @cloudbitmaps/core            the engine, the standalone forms of the store's methods,  (flavor and driver authors only)
                               the retry and budget internals
 @cloudbitmaps/core/driver-kit the declared contract for writing a driver package   (driver authors only)
@@ -263,7 +265,7 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 |---|---|
 | `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
 | `seg.count()` → `Promise<number>` | cardinality of the generation the handle reads: **one registry read when cold, none when warm, and no read of the object**, since the row records the generation's id count. A row with no summary it can use sends it to the `.crbm` index instead, with **zero payload reads**. It trusts the row's summary, or the index: neither is confirmed against the payloads, and a summary is held against the object whenever the object is opened ([What `count()` trusts](reading.md#what-count-trusts)). A segment whose pointer names a missing object counts the row's number, and a read of the object throws |
-| `seg.stat()` → `Promise<SegmentStat>` | `{ generation, cardinality, metadata? }` from the one resolution that answers `count()`: the generation's number, its id count and the metadata it was loaded with (absent when it has none). One registry read when cold, none when warm or pinned. `{ generation: null, cardinality: 0 }` for a segment with no generation ([details](reading.md#stat-the-generation-its-count-and-its-metadata)) |
+| `seg.stat()` → `Promise<SegmentStat>` | `{ generation, cardinality, metadata?, size }`, all four from the one generation the handle reads, opened once: its number, its id count, the metadata it was loaded with (absent when it has none), and `size`, the bytes of its object in storage, from the object's footer and index (no payload read). One registry read and one tail read when cold, none while the generation is open or on a pinned handle. `{ generation: null, cardinality: 0, size: null }` for a segment with no generation; `size: null` on a store whose source cannot report one; a pointer that names a missing object throws `NotFoundError` as a read does. `size` is what [`groundedReport`](#offline-tools--cloudbitmapstools) prices storage from ([details](reading.md#stat-the-generation-its-count-its-metadata-and-its-size)) |
 | `seg.iterate({ after?, through? }?)` → `IdStream` | stream all ids, ascending, reading ahead as ranges of the object (the window opens 1, 2, 4 and on up to 32 range requests wide). With `after` / `through`, only the ids in `(after, through]` and the chunks the range overlaps ([paging](reading.md#page-through-a-segment)) |
 | `seg.everyNth(n, { after?, through? }?)` → `AsyncIterable<number>` | **pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`, ascending; a last partial window yields nothing. Reads the chunks that hold a boundary, each once, through `iterate`'s stream, window and budget; a range that cuts its first (or last) chunk reads that chunk too ([details](reading.md#every-nth-id-of-a-pin-everynth)). A live handle throws `UnsupportedError`, a bad `n` or bound `ValidationError`, and a chunk that is read and whose size disagrees with the index `IntegrityError`, each when first read. Chunks not read are trusted to their index counts, as `count()` trusts them On a leased handle (`pin({ leaseUntil })`, `pinAt(at, { leaseUntil })`) it throws `LeaseExpiredError` past the lease: before its first pull, even when no rank falls in its range, and at each chunk ([leases](reading.md#hold-a-generation-for-a-job-a-lease)) |
 | `IdStream` (what `iterate`, `intersect`, `union` and `andNot` return) | an `AsyncIterable<number>`: `for await` it for one id at a time. `.batches()` → `AsyncIterable<Uint32Array>` yields the same ids one chunk at a time, ascending, an array per non-empty chunk (at most 65,536 ids, 256 KiB) that is yours to keep ([batches](reading.md#read-a-chunk-at-a-time-batches)). The per-id stream is as before (single-use); `batches()` starts its own read when called ([details](reading.md#read-a-chunk-at-a-time-batches)) |
@@ -274,7 +276,6 @@ load refuses them; an empty buffer is the empty bitmap. Use it for bytes that cr
 | `seg.andNot([sup, …], { after?, through?, concurrency?, budget?, allowAbsentOperands? })` → `IdStream` | `this \ (sup…)`. Reads all of `this`, or all of it inside the range, but each exclude **only where it overlaps** |
 | *every combine, streamed or `*Into`* | **refuses an operand that names no segment, or one dropped, retired or shredded**, `this` and every `exclude` included, with `ValidationError`, unless you pass `allowAbsentOperands: true` ([why](reading.md#combine-segments-intersect-union-andnot)) |
 | `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`**, superseding it ([the `*Into` verbs](loading.md#write-a-result-into-another-segment-the-into-verbs)). `opts` takes the combine's options, a range included, and `keep`, `allowEmpty`, `guard` and `metadata`. An empty result over a non-empty `dest` is refused (`published: false`); a lost race throws `WriteConflictError`. Collects nothing unless you pass `keep`. Needs a backend |
-| `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). A grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
 | `seg.pinnedAt` | on a handle from `pin()` or `pinAt()`, the `PinnedAt` it is held at; `undefined` on a live handle |
 | `seg.lease` | on a handle from `pin({ leaseUntil })`, the `Lease` it holds, `{ holder, until }` (`until` in epoch milliseconds); `undefined` otherwise |
 | `seg.release()` → `Promise<void>` | end this handle's lease now, so a load's collection may take its generation. Idempotent: a handle with no lease, one already released, and one whose lease has ended make no request; otherwise one registry read and one write. Every read of the handle after it, and after the lease's own end, throws `LeaseExpiredError` |
@@ -316,7 +317,6 @@ segment mid-call and how the timed refresh behaves.
 | `store.checkConsistency({ namespace?, concurrency?, summaries? })` → `Promise<ConsistencyReport>` | DR: verify every registered segment's `currentGen` `.crbm` is present, to catch a torn cross-store restore. With `summaries: true` it also opens each current object (one tail read each) and reports `summary-mismatch` where the row's summary says another count or metadata than the object holds ([details](disaster-recovery.md#checkconsistency--verify-before-you-serve-traffic)). Holds at most 250,000 rows resident. Needs a backend |
 | `store.invalidate(ref)` → `void` | **drop what this store derived about a segment**, so its next read resolves the current generation afresh. The store's own writes do this for themselves; call it for what they cannot see ([details](reading.md#how-soon-a-reader-sees-a-new-load)). It also drops the segment's open chunk reads: callers already waiting on one still get its answer, and a dropped read is not written to the cache. No I/O |
 | `store.exportSegments(sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `Promise<ExportManifest>` | eject every registered segment's current generation to portable `roaring`/`ndjson` through your sink, each segment pinned for its export, so one file is one generation (one registry read per segment on a warm store). `codec` builds the exported bitmaps for `'roaring'` and defaults to the roaring codec. Needs a backend |
-| `CloudRoaring.estimateCost(input)` → `CostReport` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). **static** — plan costs with no instance/data (sizing, what-if) |
 
 ### Standalone functions (imported, called directly)
 
@@ -399,10 +399,43 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 `ExportSink` · `ExportWriter` · `ExportFormat` · `ExportOptions` · `ExportedSegment` · `ExportFailure` ·
 `ExportManifest`
 
-### Cost & observability
+### Observability
 
-`CostReport` · `PricingProfile` · `RedisSizing` · `RedisNodeType` · `Workload` · `SegmentSizing` · `EstimateInput` ·
 `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent`
+
+`MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto' | 'materializeMany'`;
+`MetricsSnapshot` is `{ storage, cache, retries: { transient }, intersect, ops }`.
+
+### The storage interfaces (used to type `storage` / `registry`)
+
+`IStorageDriver` · `IRegistryDriver` · `StorageChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy` · `Clock` · `Rng`
+
+### Read and combine options (used to type `iterate`, `intersect` / `union` / `andNot` and the `*Into` verbs)
+
+`IdRange` (`{ after?, through? }` — the ids in `(after, through]`; `iterate` takes it, and every combine's options type extends it) · `BaseCombineOptions` (`{ after?, through?, concurrency?, budget?, allowAbsentOperands? }`) · `CombineOptions` (adds `exclude?: Segment[]`) · `MaterializeOptions` (adds, for the `*Into` verbs, which publish, `audit?`, `allowEmpty?`, `guard?` and `keep?`; the streaming verbs write nothing and emit nothing) · `AndNotIntoOptions` (`MaterializeOptions` without `exclude`)
+
+---
+
+## Offline tools — `@cloudbitmaps/tools`
+
+```bash
+pnpm add @cloudbitmaps/tools
+```
+
+The cost model, in a package of its own: offline tools that read and write no store and need nothing internal from
+one. It depends on `@cloudbitmaps/core` alone, for `ValidationError`, which is what every refusal below throws. It is a
+planning tool: the price lists are as old as the release that ships them, so pass your own for a decision that turns on
+the price. The [cost guide](cost.md) is the whole model.
+
+| Call | Does |
+|---|---|
+| `estimateCost({ segments, workload?, pricing? })` → `CostReport` | **plan**: price segments you describe (`{ sizeBytes }`, or `{ cardinality }` at 2 bytes an id, each with a `count`) under a workload, with no store at all. `pricing` defaults to `AWS_US_EAST_1_ONDEMAND` |
+| `groundedReport({ storageBytes, workload?, pricing? })` → `CostReport` | **ground**: price a measured byte total, such as the `size` a segment's [`stat()`](#the-segment-verbs-the-90-of-daily-use) reports, `groundedReport({ storageBytes: (await seg.stat()).size })`. `storageBytes: null`, which `stat()` answers for a segment with no generation and on a store that cannot report a size, prices storage at $0 with `assumptions.grounded: false` and a note saying nothing was measured. Sum several segments' sizes to price them together |
+| `AWS_US_EAST_1_ONDEMAND` | the default `PricingProfile`: AWS us-east-1 on-demand object-storage prices, with Redis sized to the data from the catalogue below. Frozen; spread it to change a field |
+| `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` | the `RedisSizing` the default profile prices Redis from: ElastiCache for Redis OSS node prices from AWS's public price list (the version is in its `source`), every shard a primary and two replicas, 25% of each node's memory reserved |
+| `ONE_REDIS_HA_CLUSTER` | `{ monthlyUSD: 346 }`: one ElastiCache HA cluster (a primary and two replicas of `cache.m7g.large`), the fixed Redis the benchmarks page charts. Pass it as `pricing.redis` to compare with it whatever the data size |
+
+`CostReport` · `PricingProfile` · `RedisSizing` · `RedisNodeType` · `Workload` · `SegmentSizing` · `EstimateInput`
 
 The cost model has no per-id write term — data arrives as generations, and a generation is a load.
 `PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerPointerRead?,
@@ -420,16 +453,8 @@ compares against, with the last of `assumptions.notes` saying how it was priced;
 `redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
 refresh (≈329 reads/s against `ONE_REDIS_HA_CLUSTER` with a 0% cache-hit rate). What each term counts is in the
 [guide](cost.md#what-each-term-counts), and what the verdict compares against
-[beside it](cost.md#what-it-compares-against). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto' | 'materializeMany'`;
-`MetricsSnapshot` is `{ storage, cache, retries: { transient }, intersect, ops }`.
-
-### The storage interfaces (used to type `storage` / `registry`)
-
-`IStorageDriver` · `IRegistryDriver` · `StorageChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy` · `Clock` · `Rng`
-
-### Read and combine options (used to type `iterate`, `intersect` / `union` / `andNot` and the `*Into` verbs)
-
-`IdRange` (`{ after?, through? }` — the ids in `(after, through]`; `iterate` takes it, and every combine's options type extends it) · `BaseCombineOptions` (`{ after?, through?, concurrency?, budget?, allowAbsentOperands? }`) · `CombineOptions` (adds `exclude?: Segment[]`) · `MaterializeOptions` (adds, for the `*Into` verbs, which publish, `audit?`, `allowEmpty?`, `guard?` and `keep?`; the streaming verbs write nothing and emit nothing) · `AndNotIntoOptions` (`MaterializeOptions` without `exclude`)
+[beside it](cost.md#what-it-compares-against). If your store sets `cache.genTtlMs`, pass it as `Workload.genTtlMs`; the model
+prices the pointer refresh at the store's default, 2 s, otherwise.
 
 ---
 
@@ -512,7 +537,7 @@ this for you. They import from **`@cloudbitmaps/core`** and are not on `@cloudbi
 
 | Symbol | What it does |
 |---|---|
-| `SegmentEngine` / `EngineDeps` | the codec-agnostic **read** engine over a `StorageChunkSource` (`has` / `count` / `stat` / `iterate` / `intersect` / `union` / `andNot`, plus `supportsStorageSize` / `segmentSize` for grounded cost) + its injected deps (**`codec` is required** — core has no default; `cache?`, `maxBitmapBytes?`, `clock?`, `metrics?`, `budget?`). Read-only by design — there are no `*Into` verbs here `maxBitmapBytes` (default 1 MiB per chunk) is the decode ceiling, and above 1 MiB you must also set `maxPayloadBytes` on the chunk source; the `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes on an encrypted object) when it opens the object, so a caller who raises `maxBitmapBytes` also sets `maxPayloadBytes` on the chunk source. |
+| `SegmentEngine` / `EngineDeps` | the codec-agnostic **read** engine over a `StorageChunkSource` (`has` / `count` / `stat` / `iterate` / `intersect` / `union` / `andNot`) + its injected deps (**`codec` is required** — core has no default; `cache?`, `maxBitmapBytes?`, `clock?`, `metrics?`, `budget?`). Read-only by design — there are no `*Into` verbs here `maxBitmapBytes` (default 1 MiB per chunk) is the decode ceiling, and above 1 MiB you must also set `maxPayloadBytes` on the chunk source; the `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes on an encrypted object) when it opens the object, so a caller who raises `maxBitmapBytes` also sets `maxPayloadBytes` on the chunk source. |
 | `EngineCombineOptions` | the engine-level `{ after?, through?, concurrency?, budget?, exclude?: SegmentRef[], allowAbsentOperands? }` (the facade's `CombineOptions` maps `Segment` handles down to these refs) |
 | `BoundedLru` | the count+byte-bounded LRU the facade uses for the chunk cache and the `.crbm` reader cache |
 | `safeMetrics` / `NOOP_METRICS` | wrap a user `IMetricsSink` so a throwing sink can never break the data path, and the no-op sink that stands in when none is given |
@@ -553,8 +578,6 @@ because the store methods return them; the `*Deps` types (`LoadDeps`, `Generatio
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `Promise<SetRetentionResult>` | the free function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention(ref, { registry })` / `clearSegmentRetention(ref, { registry })` are its read/cancel siblings |
 | `retireExpired({ registry, storage }, { now, … })` → `Promise<RetireExpiredResult>` | the free function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
 | `runExport(reader, registry, sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `Promise<ExportManifest>` | the free function behind `store.exportSegments`; `codec` is required for the `'roaring'` format, and the store binds it. `reader` is a `SegmentReader`: any object with `segment(name, { namespace? })` returning a handle with `pin()`, which resolves to `{ iterate(): AsyncIterable<number> }` (a `CloudRoaring` is one); a reader without that shape throws `ValidationError` before any file is opened. Each segment is pinned for its export, so one file is one generation: a cold store makes one registry read and one tail read per segment, a warm store one registry read |
-| `estimateCost({ segments, workload?, pricing? })` → `CostReport` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). The free function behind the static `CloudRoaring.estimateCost` |
-| `groundedReport({ storageBytes, grounded?, workload?, pricing?, extraNotes? })` → `CostReport` | **Deprecated:** moves to `@cloudbitmaps/tools` ([why](cost.md)). Build a report from a **measured** byte total (backs `segment.costReport()`) |
 
 ### Driver kit — what you need to *implement* a driver
 
@@ -850,7 +873,8 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 (`ClearRegistrySummary` `{ generation, cardinality, metadata? }` or `SealedRegistrySummary` `{ generation, sealed }`,
 the row's cached description of its current generation) · `GenerationMetadata` (string keys, string or finite-number
 values, at most 1 KiB as canonical JSON) · `GenerationSummary` (`{ generation, cardinality, metadata? }`, what a
-`StorageChunkSource`'s optional `summary()` answers for a segment's current generation) · `ChunkRead` (`{ key, bytes, version }`, one chunk of the stream the optional `getChunks(ref, keys, options?)` answers: the key, its bytes or `null`, and the version of the generation it was read from) · `ReadChunksOptions` (`{ retry?, concurrency?, ramp?, onRequest? }`: `onRequest` is called once for every range request the stream sends, when it settles, including one a consumer that stopped left in flight and one that failed (with 0 bytes), with the bytes it moved (the gaps between chunks included) and its milliseconds, and an error it throws is ignored, so a caller can count what it is billed for; `retry` is a runner for each storage request the call makes, so a caller that retries repeats the one request that failed; `concurrency` is how many range requests the stream holds ahead of its consumer, 32 by default; `ramp` opens that window 1, 2, 4 … wide, or, given a number, that many wide and doubling from there). A source that implements `getChunks` reads several chunks of one segment from one generation in fewer requests, as a stream in key order (ascending, a key may repeat); one that omits it is read chunk by chunk, as before. Nothing is resolved or read until the first chunk is asked for. However many keys the stream is given, it holds at most `concurrency` ranges at once, in flight or landed and not yet taken, each at most 1 MiB (one chunk, at most the payload cap, when it is larger), and a consumer that stops early stops the reads: the requests already in flight finish and are dropped, and are not retried. A stream that fails raises at once and sends nothing further; the requests it left in flight finish in the background and never raise. One stream reads one generation; if that generation is swept or its object replaced while the stream runs, the `.crbm` source waits for those requests, so a heal never opens a second window beside them, then re-resolves the segment and carries on with the keys not yet yielded, and each chunk says which version it came from. A request that never answers delays a heal, as it would hang a read of one chunk, until the driver's read timeout (if it has one) ends it; it never delays an error. A plain chunk may be a view into a buffer of up to 1 MiB shared with its neighbours, and a key asked twice gets the same view, so do not write to it, and copy a chunk to keep it
+`StorageChunkSource`'s optional `summary()` answers for a segment's current generation, and, with the object's
+`sizeBytes` from the same opened generation, what its optional `stat()` answers) · `ChunkRead` (`{ key, bytes, version }`, one chunk of the stream the optional `getChunks(ref, keys, options?)` answers: the key, its bytes or `null`, and the version of the generation it was read from) · `ReadChunksOptions` (`{ retry?, concurrency?, ramp?, onRequest? }`: `onRequest` is called once for every range request the stream sends, when it settles, including one a consumer that stopped left in flight and one that failed (with 0 bytes), with the bytes it moved (the gaps between chunks included) and its milliseconds, and an error it throws is ignored, so a caller can count what it is billed for; `retry` is a runner for each storage request the call makes, so a caller that retries repeats the one request that failed; `concurrency` is how many range requests the stream holds ahead of its consumer, 32 by default; `ramp` opens that window 1, 2, 4 … wide, or, given a number, that many wide and doubling from there). A source that implements `getChunks` reads several chunks of one segment from one generation in fewer requests, as a stream in key order (ascending, a key may repeat); one that omits it is read chunk by chunk, as before. Nothing is resolved or read until the first chunk is asked for. However many keys the stream is given, it holds at most `concurrency` ranges at once, in flight or landed and not yet taken, each at most 1 MiB (one chunk, at most the payload cap, when it is larger), and a consumer that stops early stops the reads: the requests already in flight finish and are dropped, and are not retried. A stream that fails raises at once and sends nothing further; the requests it left in flight finish in the background and never raise. One stream reads one generation; if that generation is swept or its object replaced while the stream runs, the `.crbm` source waits for those requests, so a heal never opens a second window beside them, then re-resolves the segment and carries on with the keys not yet yielded, and each chunk says which version it came from. A request that never answers delays a heal, as it would hang a read of one chunk, until the driver's read timeout (if it has one) ends it; it never delays an error. A plain chunk may be a view into a buffer of up to 1 MiB shared with its neighbours, and a key asked twice gets the same view, so do not write to it, and copy a chunk to keep it
 
 ---
 
@@ -932,8 +956,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `readRetentionPolicy` · `MIN_EXPIRES_AT_MS` ·
 `excludingReservedRows` · `DEFAULT_RETRY_POLICY` ·
 `CrbmReader` · `BufferReader` ·
-`CountingMetricsSink` · `RecordingAuditSink` ·
-`AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` · `ONE_REDIS_HA_CLUSTER` (the price lists; deprecated, moving to `@cloudbitmaps/tools`, [why](cost.md)) · `CloudRoaringError` ·
+`CountingMetricsSink` · `RecordingAuditSink` · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `LeaseExpiredError` · `LeaseLimitError` · `StaleOperandError` · `LEASE_SKEW_MS` · `MAX_LEASE_MS` · `MAX_LEASES_PER_SEGMENT` ·
@@ -958,8 +981,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
 `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
 `RetryPolicy` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
-`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `RedisSizing` ·
-`RedisNodeType` · `CostReport` · `Workload` · `SegmentSizing` · `EstimateInput` · `IAuditSink` · `AuditEvent` · `Clock` ·
+`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `Clock` ·
 `Rng` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
 `CodecInterface` · `CodecBitmap` · `EncodedChunk` · `Token`
 
@@ -970,12 +992,12 @@ What a flavor or driver author imports from `@cloudbitmaps/core` and an applicat
 the store's methods](#the-standalone-forms-of-the-stores-methods) say what each is for. Every other name in
 `@cloudbitmaps/core`'s main entry is in the two `@cloudbitmaps/roaring` sections above.
 
-Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `groundedReport` · `splitId` ·
+Values: `SegmentEngine` · `BoundedLru` · `safeMetrics` · `NOOP_METRICS` · `splitId` ·
 `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` · `collectWithinBudget` ·
 `DEFAULT_BUDGET` · `segmentKey` · `isStorageBackend` · `PinnedStorageChunkSource` · `withRetry` ·
 `RetryingStorageChunkSource` · `decodeSerialized` · `loadSegment` · `loadSegmentChunks` · `judgeLoad` · `compileCombineMany` · `rebindCombineMany` · `runCombineMany` · `listGenerations` · `rollbackSegment` · `segmentExists` ·
 `listSegments` · `eraseIdFromSegment` · `dropSegment` · `runConsistencyCheck` · `runExport` · `takeLease` · `releaseLease` ·
-`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired` · `estimateCost`
+`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `retireExpired`
 
 Types: `EngineDeps` · `EngineCombineOptions` · `SegmentReader` · `RetryDeps` · `RetryingOptions` · `LoadDeps` · `LoadJudgement` · `GuardRefusal` ·
 `CombineExpr` · `CombineManyDeps` · `CombineManyFeed` · `CombineManyFeedRecord` · `CombineManyOperand` · `CombineManyOperandStats` · `CombineManyOutcome` · `CombineManyOutput` · `CombineManyOutputStats` · `CombineManyRequest` · `CombineManyRun` · `CombineManyStats` · `CombineManyWrite` · `CompiledCombineMany` · `GenerationListDeps` · `GenerationSummary` · `PinLease` · `LeaseDeps` · `LeaseTake` · `TakenLease` · `ChunkRead` · `ReadChunksOptions` · `EraseIdDeps` · `EraseIdResult` · `RetentionDeps` · `DropDeps` · `Entropy`
@@ -1094,6 +1116,14 @@ a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write
 that never answers costs up to four times the policy's tries: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry removes a
 row with Delete Blob under `ifMatch`, unless `conditionalDelete` is `false`; a `412` or a `404` on it is a lost race,
 and a `409` (a snapshot or a lease in the way) reaches the caller as the SDK raised it.
+
+### `@cloudbitmaps/tools`
+
+The cost model ([offline tools](#offline-tools--cloudbitmapstools)).
+
+Values: `estimateCost` · `groundedReport` · `AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` · `ONE_REDIS_HA_CLUSTER`
+
+Types: `CostReport` · `PricingProfile` · `RedisSizing` · `RedisNodeType` · `Workload` · `SegmentSizing` · `EstimateInput`
 
 ## Keeping this in sync
 

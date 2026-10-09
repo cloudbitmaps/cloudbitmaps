@@ -112,7 +112,7 @@ unbounded range resolved to 14.x, which is three majors of blast radius for no s
 **None of these overrides reach consumers.** A `pnpm.overrides` entry applies to *this workspace's* install
 tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
 ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
-`@cloudbitmaps/core`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
+`@cloudbitmaps/core` and none for `@cloudbitmaps/tools`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
 (the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). One of the packages above does
 sit under a shipped SDK transitively — `uuid` under `@google-cloud/storage` — at whatever version that SDK
 itself resolves, which is the surface to reason about here, not our pinned one. `undici` is **not** in that
@@ -214,7 +214,7 @@ produced the package they installed**. The controls:
 - **Recoverable checks run before the irreversible one.** Every gate above that a run performs — the re-run test
   suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`,
   and [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if the audit, the tag/version
-  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
+  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the six packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds

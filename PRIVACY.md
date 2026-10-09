@@ -257,10 +257,10 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
   The registry row's `retention` is untouched by a load, an `*Into` materialization or an erasure rewrite, so the
   `expiresAt` you set stays put across all of them.
 - Surface segment age and size so unbounded growth is visible, not silent. The **metrics sink** carries neither (its `storage.get` events count the bytes of each read, not a segment's size).
-  `seg.count()` gives a segment's cardinality; `seg.costReport()` prices its current generation's measured size
-  (`monthlyUSD.byOp.storage`, $0 when the storage source cannot measure it), and does not count superseded
-  generations still in the bucket, which `store.generations(ref)` lists; and its registry row carries `createdAt`
-  and `updatedAt`, which the backend's `registry.list()` returns for every row.
+  `seg.count()` gives a segment's cardinality; `seg.stat()` gives its current generation's size in bytes (`size`,
+  `null` when the storage source cannot measure it), and does not count superseded generations still in the bucket,
+  which `store.generations(ref)` lists; and its registry row carries `createdAt` and `updatedAt`, which the
+  backend's `registry.list()` returns for every row.
 
 **Be precise about what "drop the oldest" involves**, because the three levers differ in what they guarantee:
 

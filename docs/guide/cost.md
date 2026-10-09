@@ -1,15 +1,21 @@
 # Estimate your own cost
 
 [What it costs at your size](sizing.md) prices three example deployments. This page is how to price yours: call
-`CloudRoaring.estimateCost()` with your workload for a plan, or `segment.costReport()` for what a real segment costs.
-The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA cluster, whatever the data
-size, drawn from this same estimator and turned into build-breaking CI assertions, so the numbers cannot drift ahead
-of reality.
+`estimateCost()` with your workload for a plan, or `groundedReport()` with the size a segment's `stat()` reports for
+what a real segment costs. The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA
+cluster, whatever the data size, drawn from this same estimator and turned into build-breaking CI assertions, so the
+numbers cannot drift ahead of reality.
 
-> **The estimator moves to a package of its own, `@cloudbitmaps/tools`, in a coming minor.** It is a planning tool, not part
-> of reading or writing a set, and the price list it carries is as old as the release that ships it. Everything on
-> this page keeps working until then. With the move, `stat()` gains the generation's byte size, so a grounded report
-> needs nothing internal, and the price lists can be kept current for S3, GCS and Azure without a library release.
+The estimator is in its own package, `@cloudbitmaps/tools`: offline tools that need nothing internal from a store.
+Install it beside the library, or alone where you only plan:
+
+```bash
+pnpm add @cloudbitmaps/tools
+```
+
+It is a planning tool, not part of reading or writing a set. Its price lists are as old as the release that ships
+them, so for a decision that turns on the price, pass your own (see [the profile](#cost-estimate-it-then-ground-it)
+below).
 
 ## Cost: estimate it, then ground it
 
@@ -29,9 +35,9 @@ Each request count is one the engine is tested to make.
 
 <!-- SIZING:GUIDE_EXAMPLE:START -->
 ```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { estimateCost } from '@cloudbitmaps/tools';
 
-const report = CloudRoaring.estimateCost({
+const report = estimateCost({
   segments: [{ sizeBytes: 6e8, count: 2 }], // or { cardinality }
   workload: {
     readsPerSec: 200, // point reads; each cache miss is at most one GET
@@ -50,17 +56,29 @@ report.redisCrossover.readsPerSec; // ≈ 672 sustained reads/s at THIS report's
 ```
 <!-- SIZING:GUIDE_EXAMPLE:END -->
 
-**Grounded** (real sizes from the `.crbm` index — exact, no payload reads):
+**Grounded** (a segment's real size, which `stat()` reads from its `.crbm` footer and index — exact, no payload
+reads):
 
 ```ts
-const report = await store.segment('active-us').costReport({
+import { groundedReport } from '@cloudbitmaps/tools';
+
+const { size } = await store.segment('active-us').stat();
+const report = groundedReport({
+  storageBytes: size,
   workload: { readsPerSec: 200, cacheHitRate: 0.8 },
 });
 report.assumptions.grounded; // true — storage is this segment's real, measured size
 ```
 
+`size` is the bytes of the segment's current generation in storage, so the report prices what the bucket holds, not
+an estimate from the id count. It is `null` for a segment with no generation and on a store whose source cannot report
+one; `groundedReport` then prices storage at $0, sets `assumptions.grounded` to `false` and says so in the notes, so a
+missing size never reads as a confident $0. Pass `storageBytes: 0` for a segment you know is empty. To price several
+segments together, sum their sizes into one report. If your store sets `cache.genTtlMs`, pass the same value as
+`workload.genTtlMs`: the model prices the pointer refresh at the store's default, 2 s, unless you do.
+
 Rates are a pluggable `PricingProfile` — `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth },
-redis }`, default `aws-us-east-1-ondemand` from the fact-checked published pricing; override it for your
+redis }`, default `AWS_US_EAST_1_ONDEMAND` (`aws-us-east-1-ondemand`) from the fact-checked published pricing; override it for your
 region/cloud. [What it compares against](#what-it-compares-against) covers `redis`. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
 lists the model's simplifications (same-region egress free; request cost from your supplied workload rates —
 deriving it from live metrics is a later refinement; how many GETs each intersection was priced at; and, when you
@@ -82,9 +100,10 @@ It is the cheapest cluster of one kind, not the least Redis could cost, and its 
 <!-- SIZING:GUIDE_LEANINGS:END -->
 
 A report on one segment sizes its Redis to that segment alone, so the baselines of a store's segments do not add up
-to the store's. To judge a store, price all its segments in one `CloudRoaring.estimateCost()`. To alarm on one, sum the
+to the store's. To judge a store, price all its segments in one `estimateCost()`, or one `groundedReport()` of their
+summed sizes. To alarm on one, sum the
 segments' `monthlyUSD.total` and compare the sum with the Redis you would run for the store, as
-[the cost gauge](dashboards.md#2-cost-gauge-costreport--a-scheduled-sample) does: a per-segment verdict against that
+[the cost gauge](dashboards.md#2-cost-gauge-groundedreport--a-scheduled-sample) does: a per-segment verdict against that
 whole price fires only when one segment alone costs more than all of it. Two ways to compare differently:
 
 - **One cluster you name**, whatever the data size: `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: { monthlyUSD } }`.
@@ -129,8 +148,9 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
 - **A cold `count()` is one pointer read.** The row records the current generation's id count, so a count reads no
   object, whatever the segment's size or index width, encrypted or not (one request on every backend, held by a test
-  that counts the requests). Counts and `stat()` calls within `cache.genTtlMs` are free beyond the pointer refresh. A
-  row with no summary it can use is read from the object, which adds the tail read.
+  that counts the requests). A row with no summary it can use is read from the object, which adds the tail read. A
+  cold `stat()` always adds it, since the object's size is in its footer: one pointer read and one tail read. Counts
+  and stats within `cache.genTtlMs`, while the generation is open, are free beyond the pointer refresh.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
   P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and four GETs: two pointer reads and
   two checks, each a single request on every backend (a `HeadObject` on S3), that the next generation number is free
@@ -183,7 +203,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   default 2 s, about $0.53, and the whole term at most one GET per point read. Pass `hotSegments` for the segments
   each reader keeps reading, and **`readerProcesses`** for how many readers keep them: each refreshes on its own,
   so ten processes reading the same hundred segments pay ten times one's refresh.
-  `segment.costReport()` prices it at the store's own `cache.genTtlMs`. Raising the TTL lowers it, at the price of
+  It is priced at `workload.genTtlMs`, 2 s by default: pass your store's `cache.genTtlMs` if it sets another. Raising the TTL lowers it, at the price of
   a new load taking longer to become visible; `0` turns the timed refresh off, and the term with it: a reader then
   re-reads a pointer only on an eviction, a read that finds its generation swept, or an invalidation.
 

@@ -59,6 +59,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Registry rows at schema 3, and a random token for every write | **shipped** — a row carries an optional summary of its current generation, the generations its loads keep (`keptGens`), its live leases (`leases`), and a token with a random incarnation id and a random part for every write; a 0.16 process refuses a schema-3 row, so every 0.16 process that writes stops before the first 0.17 write and there is no downgrade ([upgrade order](../CHANGELOG.md#0170--2026-10-05)) |
 | A generation's metadata, and a row that describes its current generation — `metadata` on `load` and the `*Into` verbs | **shipped** — [below](#the-loaded-store) |
 | A cold `count()` in one request, and `seg.stat()` | **shipped** — [below](#the-loaded-store) |
+| The cost model in a package of its own, `@cloudbitmaps/tools`, and `stat()` reporting the generation's size | **on `main`, unreleased, to ship in `0.20.0`** — `estimateCost`, `groundedReport` and the price lists are in `@cloudbitmaps/tools`, offline tools that need nothing internal from a store, released with the family; the library carries no prices. `stat()` reports `size`, the bytes of the current generation's object from its footer and index, so a grounded report is `groundedReport({ storageBytes: (await seg.stat()).size })`; a cold `stat()` reads the object's tail for it ([the cost guide](guide/cost.md), [`stat()`](guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)) |
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
@@ -138,8 +139,10 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **A one-request cold `count()`, and `stat()`**. A cold `count()` is the pointer read and nothing else: the row records
   the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
   from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
-  returns the generation's number, count and metadata from the same resolution, one request when cold and none when warm
-  or pinned, and the current entry of `store.generations()` carries them from the row it already reads. A snapshot is a
+  returns the generation's number, count and metadata from one opened generation, and (on `main`, unreleased, to ship
+  in `0.20.0`) its object's size beside them, so a cold `stat()` adds a tail read of the object to the pointer read and
+  costs nothing while the generation is open or pinned; the current entry of `store.generations()` carries the number,
+  count and metadata from the row it already reads. A snapshot is a
   resolved target with a reader opened on first use, so a `count` and the `has` after it read one generation. The row's
   summary is used only for the generation it names, in the shape the keys call for, and is held against the object
   whenever a read opens it anyway: a disagreement stops that store using it and fails nothing, and
@@ -228,13 +231,12 @@ is a dependency of both and is never installed directly. The storage drivers are
 
 - **Observability without telemetry** — an injected metrics sink and a separate, off-by-default audit sink
   emitting compliance state changes. Nothing is sent anywhere by default; there is no phone-home.
-- **Honest cost tooling** — `CloudRoaring.estimateCost` for planning and a grounded per-segment `costReport` from the
-  segment's measured size, with a pluggable pricing profile that will tell you when CloudBitmaps *loses* to flat
-  Redis. The crossover is a **read rate** at a given cache-hit rate, net of storage and the pointer refresh a
-  long-lived reader pays, with a loads term that counts what `store.load()` sends. Each request count is held to
-  the engine by a test. The published crossover chart is in [Benchmarks](benchmarks.md). Both calls are marked
-  `@deprecated` in `0.19.0`: they move to `@cloudbitmaps/tools`, a package of their own,
-  in a coming minor ([on the way to 1.0](#on-the-way-to-10), item 10).
+- **Honest cost tooling** — `estimateCost` for planning and `groundedReport` for a segment's measured size, which
+  `stat()` reports, in `@cloudbitmaps/tools` (on `main`, unreleased, to ship in `0.20.0`), with a pluggable pricing
+  profile that will tell you when CloudBitmaps *loses* to flat Redis. The crossover is a **read rate** at a given
+  cache-hit rate, net of storage and the pointer refresh a long-lived reader pays, with a loads term that counts what
+  `store.load()` sends. Each request count is held to the engine by a test. The published crossover chart is in
+  [Benchmarks](benchmarks.md).
 - **An exit path.** `exportSegments` and the `export-segments` CLI dump every segment to portable
   `roaring` / `ndjson` that is readable **without** this library, with per-segment fault isolation. If the
   project vanished tomorrow, nothing of yours is locked up.
@@ -370,11 +372,11 @@ between here and there:
      index and metadata before it moves the pointer, and refuses one that does not open.)
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
-10. **The cost model in a package of its own.** `estimateCost`, `costReport`, `groundedReport` and the price lists keep
-    working in the library, marked `@deprecated`, and move to `@cloudbitmaps/tools`, a package of offline tools that need
-    nothing internal from a store, in a coming minor. `stat()` gains the generation's byte size, so a grounded
-    report needs nothing internal, and the price lists can be kept current for S3, GCS and Azure without a library
-    release.
+10. **The cost model in a package of its own — on `main`, unreleased, to ship in `0.20.0`.** `estimateCost`,
+    `groundedReport` and the price lists are in `@cloudbitmaps/tools`, a package of offline tools that need nothing
+    internal from a store, and the library carries none of them. `stat()` reports the generation's byte size, so a
+    grounded report needs nothing internal, and a price list for S3, GCS or Azure is a change to that package alone,
+    which ships with the family's next release.
 11. **A segment's resolution kept apart from its reader.** The reader cache is a store's only memory of which
     generation a segment resolved to. A store reading more segments at once than `cache.readerMax` or
     `cache.readerMaxBytes` keeps (as on a small Lambda) therefore asks the registry again, and opens the object again,
