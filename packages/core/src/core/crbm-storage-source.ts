@@ -60,6 +60,7 @@ import type {
   RegistrySummary,
   SegmentRef,
   SegmentSize,
+  TailRead,
   Token,
 } from './ports';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
@@ -137,15 +138,27 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   readonly maxOpenIndexBytes?: number;
 }
 
-/** Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. */
-function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
+/**
+ * Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. With `noteTail`, each tail read the reader makes is
+ * shown to it as the driver answered it, its `version` included; without it, the read is handed through as it is.
+ */
+function storageBlobReader(
+  driver: IStorageDriver,
+  key: GenKey,
+  noteTail?: (tail: TailRead) => void,
+): BlobReader {
   return {
     getRange(offset, length) {
       return driver.getRange(key, offset, length);
     },
-    getTail(maxBytes) {
-      return driver.getTail(key, maxBytes);
-    },
+    getTail:
+      noteTail === undefined
+        ? (maxBytes) => driver.getTail(key, maxBytes)
+        : async (maxBytes) => {
+            const tail = await driver.getTail(key, maxBytes);
+            noteTail(tail);
+            return tail;
+          },
   };
 }
 
@@ -3190,20 +3203,46 @@ async function bucketIds(
     .sort((a, b) => a.chunkKey - b.chunkKey);
 }
 
+/** The version the driver reported for the object each reader {@link openGenerationReader} opened. */
+const openedVersions = new WeakMap<CrbmReader, string>();
+
 /**
  * Open a {@link CrbmReader} on one generation over the storage driver's range/tail reads (decrypting if `crypto`).
  * The reader the write paths use to re-read what they wrote, and the erasure rewrite uses to stream the old
  * generation; the engine's read path goes through {@link CrbmStorageChunkSource} instead, which caches these. With
  * `named`, the fingerprint the row's summary records, the object must be that one: another is {@link NotFoundError}.
+ * The version of the object it opened, from the tail read the open made, is what {@link objectVersionOf} answers.
  */
-export function openGenerationReader(
+export async function openGenerationReader(
   storage: IStorageDriver,
   key: GenKey,
   crypto: CrbmCrypto | undefined,
   options: Omit<CrbmReaderOptions, 'crypto'> = {},
   named?: string,
 ): Promise<CrbmReader> {
-  return openChecked(storage, key, { ...options, crypto }, undefined, named);
+  let version: string | undefined;
+  const reader = await openChecked(
+    storage,
+    key,
+    { ...options, crypto },
+    undefined,
+    named,
+    (tail) => {
+      version ??= tail.version;
+    },
+  );
+  if (version !== undefined) openedVersions.set(reader, version);
+  return reader;
+}
+
+/**
+ * The version of the object `reader` was opened on, as the driver reported it on the tail read the open made, for a
+ * delete conditioned on that object ({@link StorageDeleteOptions.ifVersion}); `undefined` for a reader
+ * {@link openGenerationReader} did not open, or a driver that reports none. Held beside the reader rather than on it, so
+ * nothing is added to the reader's public surface, and no read the engine makes pays for it.
+ */
+export function objectVersionOf(reader: CrbmReader): string | undefined {
+  return openedVersions.get(reader);
 }
 
 /**
@@ -3231,8 +3270,9 @@ async function openChecked(
   options: CrbmReaderOptions,
   keepChunkBytesUpTo?: number,
   named?: string,
+  noteTail?: (tail: TailRead) => void,
 ): Promise<CrbmReader> {
-  const reader = await openHeldTo(storage, key, options, keepChunkBytesUpTo, named);
+  const reader = await openHeldTo(storage, key, options, keepChunkBytesUpTo, named, noteTail);
   if (reader === undefined) {
     throw new NotFoundError(
       `segment "${key.segment}" generation ${key.generation} is another object than its registry row names`,
@@ -3241,15 +3281,19 @@ async function openChecked(
   return reader;
 }
 
-/** {@link openChecked}'s open: `undefined` when `named` is given and the object under the key is another one. */
+/**
+ * {@link openChecked}'s open: `undefined` when `named` is given and the object under the key is another one. Either way
+ * the open makes one tail read of the driver, which `noteTail` is shown.
+ */
 async function openHeldTo(
   storage: IStorageDriver,
   key: GenKey,
   options: CrbmReaderOptions,
   keepChunkBytesUpTo: number | undefined,
   named: string | undefined,
+  noteTail?: (tail: TailRead) => void,
 ): Promise<CrbmReader | undefined> {
-  const raw = storageBlobReader(storage, key);
+  const raw = storageBlobReader(storage, key, noteTail);
   let reader: CrbmReader;
   if (named === undefined) {
     reader = await openCrbmReaderKeeping(raw, options, keepChunkBytesUpTo);

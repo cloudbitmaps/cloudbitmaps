@@ -241,6 +241,34 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
 - In the last instant before a delete, a rollback onto the generation being deleted leaves the pointer on a missing
   object, which `checkConsistency()` reports.
 
+**A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
+a call deletes a holder above the pointer, another erasure of the same id can delete that holder first, and a load can
+then take the number, write its own generation under it and publish it. So each delete above the pointer names the
+object the call searched: it passes the version the storage driver reported when the call read that object
+(`delete(key, { ifVersion })`), and a driver that reports `conditionalDelete` deletes only that object. The load's
+generation stays, and the call reports `erased: true` when nothing left holds the id, or the reason the row gives,
+`'superseded'` as a rule. Which drivers report it:
+
+| Storage | `conditionalDelete` |
+|---|---|
+| `MemoryStorage` | yes: the check and the removal are one step |
+| `AzureBlobStorage` | yes, by default: a Delete Blob under `ifMatch` |
+| `S3Storage` | yes when its client sends to an AWS S3 host, by default: a `DeleteObject` under `If-Match`. Off for any other host, MinIO included, unless you set `conditionalDelete: true` |
+| `GcsStorage` | only with `conditionalDelete: true`: a delete under `ifGenerationMatch`. Off by default, since no run against GCS has shown it applies the precondition to a delete |
+| `LocalFsStorage` | no: a filesystem has no delete conditioned on which file is under a path |
+
+On a driver that does not report it, a delete in that window removes the load's generation, and the pointer names a
+missing object, which `checkConsistency()` reports. Three limits hold on every driver:
+
+- The condition names the object, not the row, so it does not cover the rollback in the last bullet above: the pointer
+  then names the very object that was searched.
+- On S3 the version is the object's ETag, which for an object stored without SSE-KMS or SSE-C is computed from its
+  bytes. A load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
+  in the clear) is not told apart from it. An encrypted generation's bytes differ on every write.
+- A refused rewrite that deletes its own object again above the winner's pointer (see racing writers above) does not
+  condition that delete, since the write returns no version: if another erasure deletes that object as a holder and a
+  load takes its number in the same window, that delete removes the load's generation.
+
 **The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (on `@cloudbitmaps/core`, for flavor and
 driver authors) over every registered segment, and each ledger entry is that function's result.
 

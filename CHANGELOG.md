@@ -153,6 +153,22 @@ so, and so do the module headers in the code.
   and `SegmentEngine`'s `pointerRefreshMs`, `supportsStorageSize` and `segmentSize`; a storage source of your own can
   drop its `pointerRefreshMs`.
 
+### Fixed
+
+- **An erasure no longer deletes a generation a load put, since its search, under the number of a holder above the
+  pointer.** A number can be taken again once its object is deleted. While one erasure re-read the row before deleting
+  a holder above the pointer, a second erasure of the same id could delete that holder, and a load take its number,
+  write and publish; the first erasure's delete then removed the load's generation, and the pointer named a missing
+  object. Each delete of a holder above the pointer now passes the version the erasure read when it searched that
+  object, and on a driver that reports `conditionalDelete` the delete of another object is refused: the erasure stops
+  deleting and reports `erased: true` when nothing left holds the id, or `'superseded'`. On a driver that does not
+  report it (the local-filesystem driver, GCS by default, S3 on a host other than AWS S3 unless set) the window remains.
+  The condition names the object, not the row, so a rollback onto the generation being deleted still leaves the pointer
+  on a missing object; on S3, whose ETag is computed from the bytes of an object stored without SSE-KMS or SSE-C, a
+  load that writes exactly the holder's bytes under its number is not told apart; and a refused rewrite's delete of
+  its own object above the winner's pointer is not conditioned
+  ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
+
 ## [0.19.1] — 2026-10-09
 
 ### Fixed
