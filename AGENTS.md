@@ -17,12 +17,13 @@ carries the published cost and memory figures and how each was measured or model
 
 ## Repo layout
 
-A pnpm workspace of five packages, versioned in lockstep: `packages/core` (`@cloudbitmaps/core`: the codec-agnostic
+A pnpm workspace of six packages, versioned in lockstep: `packages/core` (`@cloudbitmaps/core`: the codec-agnostic
 engine, the `.crbm` format, the write path and the driver ports, with zero runtime dependencies and no cloud SDK),
-`packages/roaring` (the flavor and the `CloudRoaring` facade), and one driver package per storage service,
-`packages/{s3,gcs,azure-blob}`. Users install two packages, a flavor and a driver; core arrives transitively. Tests
-live at the repo root under `tests/`, and every gate command runs from the root. Detail:
-[CONTRIBUTING](CONTRIBUTING.md#repo-layout-a-pnpm-workspace-of-five-packages).
+`packages/roaring` (the flavor and the `CloudRoaring` facade), one driver package per storage service,
+`packages/{s3,gcs,azure-blob}`, and `packages/tools` (`@cloudbitmaps/tools`: offline tools, the cost model). Users
+install two packages, a flavor and a driver; core arrives transitively. Tests live at the repo root under `tests/`, and
+every gate command runs from the root. Detail:
+[CONTRIBUTING](CONTRIBUTING.md#repo-layout-a-pnpm-workspace-of-six-packages).
 
 ## Principles
 

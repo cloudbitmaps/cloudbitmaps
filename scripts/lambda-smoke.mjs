@@ -31,7 +31,7 @@ async function exercise(label, m) {
     (await seg.has(70_000)) &&
     !(await seg.has(1)) &&
     (await seg.count()) === 2 &&
-    (await seg.stat()).size > 0;
+    (await seg.stat()).sizeBytes > 0;
   if (!ok) throw new Error(`${label}: roaring round-trip returned a wrong result`);
   console.log(
     `  ${label}: roaring loads + round-trips on ${process.platform}/${process.arch} (node ${process.versions.node})`,

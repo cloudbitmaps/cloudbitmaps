@@ -3275,7 +3275,7 @@ export interface SegmentStat {
    * The generation's object in storage, in bytes, from its footer and index (no payload read): what the segment
    * stores. `null` when the segment has no generation, or when the store's source cannot report a size.
    */
-  readonly size: number | null;
+  readonly sizeBytes: number | null;
 }
 
 /**
@@ -3710,22 +3710,22 @@ export class Segment {
   }
   /**
    * What the generation this handle reads is, from one resolution: its number, its id count, the metadata it was
-   * loaded with (absent when it has none), and `size`, its object's bytes in storage. All four come from the
+   * loaded with (absent when it has none), and `sizeBytes`, its object's bytes in storage. All four come from the
    * generation's object, opened once: its footer and index, with no payload read. That is one registry read and
    * one tail read of the object when cold (and a range read for an index longer than the tail), and none while the
    * generation is open (a read of the segment opens it, and so does this, which keeps it in the reader cache as a
    * read does); on a pinned handle it answers for the generation it pinned. A segment with no generation
-   * answers `{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
-   * `size: null`. A pointer that names a missing object throws `NotFoundError`, as a read of the object does.
+   * answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size
+   * answers `sizeBytes: null`. A pointer that names a missing object throws `NotFoundError`, as a read of the object does.
    *
    * Trust is as for the index on `count()`'s cold path: the index is checked for internal consistency when the
    * object is opened, and the count is its sum. The opened object is held against the registry row's summary, and a
    * disagreement makes this process stop using that summary, so `count()` then answers what this does.
    *
-   * `size` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
+   * `sizeBytes` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *
    * ```ts
-   * const { generation, cardinality, metadata, size } = await store.segment('active-30d').stat();
+   * const { generation, cardinality, metadata, sizeBytes } = await store.segment('active-30d').stat();
    * ```
    */
   async stat(): Promise<SegmentStat> {

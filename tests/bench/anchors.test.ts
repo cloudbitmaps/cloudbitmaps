@@ -158,7 +158,7 @@ describe('bench-as-test anchors', () => {
 
     const measuredUSD = priceSnapshot(snap, AWS_US_EAST_1_ONDEMAND, size);
     const predicted = groundedReport({
-      storageBytes: (await seg.stat()).size,
+      storageBytes: (await seg.stat()).sizeBytes,
       workload: { readsPerSec: reads / SECONDS_PER_MONTH, cacheHitRate: observedHitRate },
     }).monthlyUSD.total;
 

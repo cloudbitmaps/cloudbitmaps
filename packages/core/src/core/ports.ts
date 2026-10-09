@@ -46,7 +46,7 @@ export interface GenKey extends SegmentRef {
 
 /**
  * A segment's on-disk footprint — the current generation's Storage object bytes, read cheaply from the `.crbm`
- * footer/index (no payload reads). It is the `size` a segment's `stat()` reports, and what bounds the bytes a combine
+ * footer/index (no payload reads). It is the `sizeBytes` a segment's `stat()` reports, and what bounds the bytes a combine
  * holds for an operand's stream.
  */
 export interface SegmentSize {

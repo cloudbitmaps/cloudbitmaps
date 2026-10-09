@@ -98,8 +98,8 @@ segment and count what it yields.
 
 ## `stat()`: the generation, its count, its metadata and its size
 
-`seg.stat()` returns `{ generation, cardinality, metadata?, size }`: the number of the generation the handle reads, its
-id count, the metadata it was loaded with (absent when it has none), and `size`, the bytes of the generation's object
+`seg.stat()` returns `{ generation, cardinality, metadata?, sizeBytes }`: the number of the generation the handle reads, its
+id count, the metadata it was loaded with (absent when it has none), and `sizeBytes`, the bytes of the generation's object
 in storage. All four come from that one generation, opened once: its footer and index, with no payload read, so they
 cannot straddle a publish and the size is never another generation's. It is one registry read and one tail read of the
 object when cold (and a range read for an index longer than the tail read, on a segment of tens of thousands of
@@ -107,14 +107,14 @@ chunks), and none while the generation is open (a read of the segment opens it, 
 cold `stat()` keeps the generation open in the reader cache, so a `stat()` of many segments the process does not
 otherwise read takes cache room from the ones it does. A pinned handle answers for the generation it pinned, and reads
 nothing while that generation is open. After it, a `count()` reads nothing. A segment with no generation answers
-`{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
-`size: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second resolution that a
+`{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size answers
+`sizeBytes: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second resolution that a
 publish between the two can make another generation's. A pointer that names a missing object (a torn restore) throws `NotFoundError`, as a read of the object
 does, where `count()` answers the row's number.
 
 The count is the index's sum, checked for internal consistency when the object is opened, and the opened object is
 held against the row's summary: a disagreement makes the store stop using that summary, so `count()` then answers what
-`stat()` does. `size` is what [`groundedReport()`](cost.md) prices a segment's storage from.
+`stat()` does. `sizeBytes` is what [`groundedReport()`](cost.md) prices a segment's storage from.
 
 `store.generations(ref)` carries `cardinality` and `metadata` on its current entry from the row it already reads, with
 no read of the object. Only the current entry has them: the other generations are not opened.

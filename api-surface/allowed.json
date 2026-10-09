@@ -249,10 +249,10 @@
   },
   {
     "entry": "@cloudbitmaps/core SegmentEngine.stat",
-    "reason": "stat() reports the generation's byte size (owner's decision): the answer gains `size: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+    "reason": "stat() reports the generation's byte size (owner's decision): the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
   },
   {
-    "entry": "@cloudbitmaps/roaring SegmentStat.size",
-    "reason": "stat() reports the generation's byte size (owner's decision): the answer gains `size: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+    "entry": "@cloudbitmaps/roaring SegmentStat.sizeBytes",
+    "reason": "stat() reports the generation's byte size (owner's decision), named sizeBytes as the port, estimateCost's segments and the reader name it, since size means a count in Roaring and JavaScript: the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
   }
 ]

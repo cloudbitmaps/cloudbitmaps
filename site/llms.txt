@@ -39,7 +39,7 @@ rather than as an optional peer, and the local filesystem (`LocalFsStorage`, fro
 development); plus the in-memory `MemoryStorage`, also from `@cloudbitmaps/roaring`, for tests. Each of the three clouds hosts both the storage generations and the registry, so a
 deployment needs exactly one cloud account. The cost model is a sixth package, `@cloudbitmaps/tools`: `estimateCost`
 prices a store you plan, and `groundedReport` one you run, from the size a segment's `stat()` reports
-(`groundedReport({ storageBytes: (await seg.stat()).size })`). It reads and writes no store.
+(`groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`). It reads and writes no store.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
 carries both the generations and the currentGen pointer, from one bucket and one prefix. MemoryStorage

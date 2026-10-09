@@ -441,23 +441,22 @@ export class SegmentEngine {
     generation: number | null;
     cardinality: number;
     metadata?: GenerationMetadata;
-    size: number | null;
+    sizeBytes: number | null;
   }> {
     if (this.storage.stat) {
       const found = await this.storage.stat(seg);
-      if (found === null) return { generation: null, cardinality: 0, size: null };
-      const { sizeBytes, ...summary } = found;
-      return { ...summary, size: sizeBytes };
+      if (found === null) return { generation: null, cardinality: 0, sizeBytes: null };
+      return found;
     }
     if (this.storage.summary) {
       const summary = await this.storage.summary(seg);
-      if (summary === null) return { generation: null, cardinality: 0, size: null };
-      return { ...summary, size: await this.sizeOf(seg) };
+      if (summary === null) return { generation: null, cardinality: 0, sizeBytes: null };
+      return { ...summary, sizeBytes: await this.sizeOf(seg) };
     }
     const generation = this.storage.currentGeneration
       ? await this.storage.currentGeneration(seg)
       : null;
-    return { generation, cardinality: await this.count(seg), size: await this.sizeOf(seg) };
+    return { generation, cardinality: await this.count(seg), sizeBytes: await this.sizeOf(seg) };
   }
 
   /** The size of the segment's current generation from the source's `sizeOf`, or `null` when it cannot say. */

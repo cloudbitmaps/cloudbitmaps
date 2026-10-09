@@ -23,13 +23,13 @@ so, and so do the module headers in the code.
   at $0 with `assumptions.grounded: false` and a note saying nothing was measured. The price lists are as old as the
   release that ships them, as before: pass your own profile for a decision that turns on the price
   ([the cost guide](docs/guide/cost.md)).
-- **`stat()` reports `size`: the bytes of the generation's object in storage.** `SegmentStat` gains the required
-  `size: number | null`, read from the object's footer and index with no payload read, and from the same opened
+- **`stat()` reports `sizeBytes`: the bytes of the generation's object in storage.** `SegmentStat` gains the required
+  `sizeBytes: number | null`, read from the object's footer and index with no payload read, and from the same opened
   generation as the number, count and metadata beside it, so it is never another generation's. A pinned handle reports
   its pinned generation's. It is `null` for a segment with no generation, and on a store whose source cannot report a
-  size. A grounded cost report is then `groundedReport({ storageBytes: (await seg.stat()).size })`. A storage source
+  size. A grounded cost report is then `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`. A storage source
   provides it through a new optional `StorageChunkSource.stat`, which the `.crbm` source, the pinned source and the
-  retrying wrapper implement; a source of your own without it reports its `sizeOf`, or `size: null`
+  retrying wrapper implement; a source of your own without it reports its `sizeOf`, or `sizeBytes: null`
   ([`stat()`](docs/guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)).
 
 ### Changed
@@ -47,7 +47,7 @@ so, and so do the module headers in the code.
 - **The cost model from `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, with `CloudRoaring.estimateCost` and
   `seg.costReport()`.** Core and the flavor no longer export `estimateCost`, `groundedReport`, the price lists or their
   types: import them from `@cloudbitmaps/tools`. `CloudRoaring.estimateCost(input)` is `estimateCost(input)` from there.
-  `seg.costReport({ workload, pricing })` is `groundedReport({ storageBytes: (await seg.stat()).size, workload,
+  `seg.costReport({ workload, pricing })` is `groundedReport({ storageBytes: (await seg.stat()).sizeBytes, workload,
   pricing })`; it priced the pointer refresh at the store's own `cache.genTtlMs`, so pass that as `workload.genTtlMs`
   if your store sets one. `groundedReport` no longer takes `grounded` or `extraNotes`: a `null` size is what marks a
   report ungrounded. What only the cost report read goes with it: `StorageChunkSource.pointerRefreshMs` and the

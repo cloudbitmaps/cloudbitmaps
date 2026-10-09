@@ -62,15 +62,15 @@ reads):
 ```ts
 import { groundedReport } from '@cloudbitmaps/tools';
 
-const { size } = await store.segment('active-us').stat();
+const { sizeBytes } = await store.segment('active-us').stat();
 const report = groundedReport({
-  storageBytes: size,
+  storageBytes: sizeBytes,
   workload: { readsPerSec: 200, cacheHitRate: 0.8 },
 });
 report.assumptions.grounded; // true — storage is this segment's real, measured size
 ```
 
-`size` is the bytes of the segment's current generation in storage, so the report prices what the bucket holds, not
+`sizeBytes` is the bytes of the segment's current generation in storage, so the report prices what the bucket holds, not
 an estimate from the id count. It is `null` for a segment with no generation and on a store whose source cannot report
 one; `groundedReport` then prices storage at $0, sets `assumptions.grounded` to `false` and says so in the notes, so a
 missing size never reads as a confident $0. Pass `storageBytes: 0` for a segment you know is empty. To price several

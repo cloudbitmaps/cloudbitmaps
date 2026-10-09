@@ -24,7 +24,7 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 
 /**
- * `stat()` reports `size`: the bytes of the object of the generation it describes, from that object's footer and
+ * `stat()` reports `sizeBytes`: the bytes of the object of the generation it describes, from that object's footer and
  * index, with no payload read. It is null for a segment with no generation and on a source that cannot say, a pin
  * reports its own generation's, and the four fields come from one opened generation, so the size is never another
  * generation's.
@@ -48,7 +48,7 @@ async function objectBytes(storage: IStorageDriver, generation: number): Promise
 const keystore = (): InProcessKeystore =>
   new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
 
-describe('stat().size', () => {
+describe('stat().sizeBytes', () => {
   it.each([
     ['cleartext', undefined],
     ['encrypted', keystore()],
@@ -67,14 +67,14 @@ describe('stat().size', () => {
       expect(first).toEqual({
         generation: 0,
         cardinality: 50,
-        size: await objectBytes(backend.storage, 0),
+        sizeBytes: await objectBytes(backend.storage, 0),
       });
 
       await store.load(SEG, ids(4), { keep: 9 });
       const second = await seg.stat();
       expect(second.generation).toBe(1);
-      expect(second.size).toBe(await objectBytes(backend.storage, 1));
-      expect(second.size).not.toBe(first.size);
+      expect(second.sizeBytes).toBe(await objectBytes(backend.storage, 1));
+      expect(second.sizeBytes).not.toBe(first.sizeBytes);
     },
   );
 
@@ -88,7 +88,7 @@ describe('stat().size', () => {
       );
       expect(files).toHaveLength(1);
       const onDisk = statSync(join(root, 'storage', files[0]!)).size;
-      expect((await store.segment('s', { namespace: 'ns' }).stat()).size).toBe(onDisk);
+      expect((await store.segment('s', { namespace: 'ns' }).stat()).sizeBytes).toBe(onDisk);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -99,11 +99,11 @@ describe('stat().size', () => {
     expect(await store.segment('never', { namespace: 'ns' }).stat()).toEqual({
       generation: null,
       cardinality: 0,
-      size: null,
+      sizeBytes: null,
     });
     // A row with a policy and no data is a segment with no generation too.
     await store.setRetention({ namespace: 'ns', segment: 'policy-only' }, { expiresAt: 4e12 });
-    expect((await store.segment('policy-only', { namespace: 'ns' }).stat()).size).toBeNull();
+    expect((await store.segment('policy-only', { namespace: 'ns' }).stat()).sizeBytes).toBeNull();
   });
 
   it("is the pinned generation's on a pinned handle, whatever the live handle has moved to", async () => {
@@ -117,13 +117,13 @@ describe('stat().size', () => {
     expect(await pinned.stat()).toEqual({
       generation: 0,
       cardinality: 50,
-      size: await objectBytes(backend.storage, 0),
+      sizeBytes: await objectBytes(backend.storage, 0),
     });
-    expect((await seg.stat()).size).toBe(await objectBytes(backend.storage, 1));
+    expect((await seg.stat()).sizeBytes).toBe(await objectBytes(backend.storage, 1));
 
     // A pin of a segment with no generation has none to measure.
     const empty = await store.segment('none', { namespace: 'ns' }).pin();
-    expect(await empty.stat()).toEqual({ generation: null, cardinality: 0, size: null });
+    expect(await empty.stat()).toEqual({ generation: null, cardinality: 0, sizeBytes: null });
   });
 
   it('is null on a source that cannot report a size, and what `sizeOf` says on one that can', async () => {
@@ -141,7 +141,7 @@ describe('stat().size', () => {
     expect(await bare.segment('x').stat()).toEqual({
       generation: null,
       cardinality: 1,
-      size: null,
+      sizeBytes: null,
     });
 
     class Sized extends ChunksOnly {
@@ -150,7 +150,7 @@ describe('stat().size', () => {
       }
     }
     const sized = new CloudRoaring({ storage: new Sized() });
-    expect((await sized.segment('x').stat()).size).toBe(123);
+    expect((await sized.segment('x').stat()).sizeBytes).toBe(123);
   });
 
   it('takes the summary and `sizeOf` on a source with a summary and no `stat`', async () => {
@@ -170,11 +170,19 @@ describe('stat().size', () => {
       sizeOf = sizeOf;
     }
     const store = new CloudRoaring({ storage: new Summarised() });
-    expect(await store.segment('x').stat()).toEqual({ generation: 3, cardinality: 7, size: 55 });
+    expect(await store.segment('x').stat()).toEqual({
+      generation: 3,
+      cardinality: 7,
+      sizeBytes: 55,
+    });
 
     // A size the source cannot give is null, never 0.
     sizeOf.mockResolvedValueOnce(null);
-    expect(await store.segment('x').stat()).toEqual({ generation: 3, cardinality: 7, size: null });
+    expect(await store.segment('x').stat()).toEqual({
+      generation: 3,
+      cardinality: 7,
+      sizeBytes: null,
+    });
 
     // No generation: nothing to measure, and `sizeOf` is not asked.
     summary = null;
@@ -182,7 +190,7 @@ describe('stat().size', () => {
     expect(await store.segment('x').stat()).toEqual({
       generation: null,
       cardinality: 0,
-      size: null,
+      sizeBytes: null,
     });
     expect(sizeOf).not.toHaveBeenCalled();
   });
@@ -278,7 +286,7 @@ describe('stat().size', () => {
     expect(await reader.segment('s', { namespace: 'ns' }).stat()).toEqual({
       generation: 0,
       cardinality: 50,
-      size: await objectBytes(backend.storage, 0),
+      sizeBytes: await objectBytes(backend.storage, 0),
     });
     expect(raced).toBe(true);
   });
@@ -313,7 +321,7 @@ describe('stat().size', () => {
     expect(await reader.segment('s', { namespace: 'ns' }).stat()).toEqual({
       generation: 0,
       cardinality: 50,
-      size: await objectBytes(backend.storage, 0),
+      sizeBytes: await objectBytes(backend.storage, 0),
     });
     expect(raced).toBe(true);
   });
@@ -337,7 +345,7 @@ describe('stat().size', () => {
       storage: brandAsBackend({ storage: flaky, registry: backend.registry }),
       retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
     });
-    expect((await store.segment('s', { namespace: 'ns' }).stat()).size).toBe(
+    expect((await store.segment('s', { namespace: 'ns' }).stat()).sizeBytes).toBe(
       await objectBytes(backend.storage, 0),
     );
     expect(failNextTail).toBe(false);

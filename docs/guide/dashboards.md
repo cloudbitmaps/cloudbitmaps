@@ -119,9 +119,9 @@ meter.addBatchObservableCallback(
   async (obs) => {
     let storeUsd = 0;
     for (const name of SEGMENTS) {
-      const { size } = await store.segment(name).stat();
+      const { sizeBytes } = await store.segment(name).stat();
       const r = groundedReport({
-        storageBytes: size,
+        storageBytes: sizeBytes,
         workload: { readsPerSec: 200, cacheHitRate: 0.8, loadsPerMonth: 30 },
       });
       obs.observe(monthlyUsd, r.monthlyUSD.total, { segment: name });

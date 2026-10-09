@@ -997,7 +997,7 @@ const GROUNDED_KEYS: ReadonlySet<string> = new Set(['storageBytes', 'workload', 
  * size of its current generation as `size`, read from the `.crbm` footer and index with no payload reads:
  *
  * ```ts
- * const report = groundedReport({ storageBytes: (await seg.stat()).size, workload: { readsPerSec: 50 } });
+ * const report = groundedReport({ storageBytes: (await seg.stat()).sizeBytes, workload: { readsPerSec: 50 } });
  * ```
  *
  * Sum the sizes of several segments to price them together; see {@link CostReport.redisBaseline} for why one report

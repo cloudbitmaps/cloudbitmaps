@@ -43,9 +43,9 @@ report.verdict; // 'win-big' | 'win' | 'lose-zone' — never hides the lose case
 report.assumptions.notes; // what it modeled, and what it did not
 ```
 
-## Ground: `groundedReport` from `stat().size`
+## Ground: `groundedReport` from `stat().sizeBytes`
 
-Price a store you run, from what it really holds. A segment handle's `stat()` reports `size`, the bytes of its
+Price a store you run, from what it really holds. A segment handle's `stat()` reports `sizeBytes`, the bytes of its
 current generation's object, read from the object's footer and index with no payload read:
 
 ```ts
@@ -54,15 +54,15 @@ import { S3Storage } from '@cloudbitmaps/s3';
 import { groundedReport } from '@cloudbitmaps/tools';
 
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
-const { size } = await store.segment('active-us').stat();
+const { sizeBytes } = await store.segment('active-us').stat();
 const report = groundedReport({
-  storageBytes: size,
+  storageBytes: sizeBytes,
   workload: { readsPerSec: 200, cacheHitRate: 0.8 },
 });
 report.assumptions.grounded; // true — storage is the segment's measured size
 ```
 
-`size` is `null` for a segment with no generation, and on a store whose source cannot report one; `groundedReport`
+`sizeBytes` is `null` for a segment with no generation, and on a store whose source cannot report one; `groundedReport`
 then prices storage at $0, sets `assumptions.grounded` to `false` and says in the notes that nothing was measured.
 Sum several segments' sizes to price them together, checking each for `null` first (JavaScript adds `null` as `0`):
 a report sizes its Redis to its own bytes, so one report of the sum is the store's, and the sum of per-segment reports

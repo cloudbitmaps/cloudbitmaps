@@ -683,8 +683,8 @@ describe('Redis sized to the data', () => {
 
   it('prices a grounded report against Redis sized to the segment it measured', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
-    const { size } = await store.segment('s').stat();
-    const r = groundedReport({ storageBytes: size });
+    const { sizeBytes } = await store.segment('s').stat();
+    const r = groundedReport({ storageBytes: sizeBytes });
     expect(r.redisBaseline).toEqual(baselineFor(ONE_CHUNK_BYTES));
     expect(clusterOf(r.redisBaseline).nodeType).toBe('cache.t4g.micro');
     // Any size this small prices the smallest cluster, so size it on a node that holds one byte: the shard count
@@ -693,7 +693,7 @@ describe('Redis sized to the data', () => {
       replicasPerShard: 0,
       reservedMemoryFraction: 0,
     });
-    const sized = groundedReport({ storageBytes: size, pricing: perByte });
+    const sized = groundedReport({ storageBytes: sizeBytes, pricing: perByte });
     expect(clusterOf(sized.redisBaseline).shards).toBe(ONE_CHUNK_BYTES);
   });
 });
@@ -751,7 +751,10 @@ async function reportOf(
   segment: string,
   options: { workload?: Workload; pricing?: PricingProfile } = {},
 ): Promise<CostReport> {
-  return groundedReport({ storageBytes: (await store.segment(segment).stat()).size, ...options });
+  return groundedReport({
+    storageBytes: (await store.segment(segment).stat()).sizeBytes,
+    ...options,
+  });
 }
 
 describe('groundedReport (from stat().size)', () => {
@@ -780,7 +783,7 @@ describe('groundedReport (from stat().size)', () => {
 
   it('a segment with no Storage generation has no size, and reports $0 storage that it did not measure', async () => {
     const { store } = seededStore();
-    expect((await store.segment('empty').stat()).size).toBeNull();
+    expect((await store.segment('empty').stat()).sizeBytes).toBeNull();
     const r = await reportOf(store, 'empty');
     expect(r.assumptions.grounded).toBe(false);
     expect(r.monthlyUSD.byOp.storage).toBe(0);
@@ -842,7 +845,7 @@ describe('groundedReport (from stat().size)', () => {
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3, 400_000]) },
     ]);
     const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
-    expect((await store.segment('g').stat()).size).toBe(size);
+    expect((await store.segment('g').stat()).sizeBytes).toBe(size);
     const r = await reportOf(store, 'g');
     expect(r.assumptions.grounded).toBe(true);
     expect(r.monthlyUSD.byOp.storage).toBeCloseTo((size / GIB) * 0.023, 9);

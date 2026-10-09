@@ -213,9 +213,9 @@ async function exerciseCore(label, m) {
   const seg = store.segment('smoke');
   const ok = (await seg.has(42)) && (await seg.has(70_000)) && (await seg.count()) === 2;
   if (!ok) throw new Error(`${label}: load/read round-trip returned a wrong result`);
-  const { size } = await seg.stat();
-  if (!(Number.isSafeInteger(size) && size > 0))
-    throw new Error(`${label}: stat() reported no size for a generation it holds: ${size}`);
+  const { sizeBytes } = await seg.stat();
+  if (!(Number.isSafeInteger(sizeBytes) && sizeBytes > 0))
+    throw new Error(`${label}: stat() reported no size for a generation it holds: ${sizeBytes}`);
 }
 
 /**
@@ -240,14 +240,14 @@ function exerciseTools(label, tools, core, storageBytes) {
     throw new Error(
       `${label}: ${TOOLS}'s refusal is not core's ValidationError, so it carries its own copy of core`,
     );
-  console.log(`  ${label}: ${TOOLS} prices a stat().size and refuses with core's ValidationError`);
+  console.log(`  ${label}: ${TOOLS} prices a stat().sizeBytes and refuses with core's ValidationError`);
 }
 
 /** The size of a one-segment store's generation, through the built flavor's `stat()`. */
 async function sizeThroughStat(m) {
   const store = new m.CloudRoaring({ storage: new m.MemoryStorage({ now: () => 0 }) });
   await store.load({ segment: 'priced' }, [1, 2, 3]);
-  return (await store.segment('priced').stat()).size;
+  return (await store.segment('priced').stat()).sizeBytes;
 }
 
 /*

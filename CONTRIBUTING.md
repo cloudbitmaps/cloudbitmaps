@@ -70,8 +70,6 @@ want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1
 for `test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all six packages.
 
-<a id="repo-layout-a-pnpm-workspace-of-five-packages"></a>
-
 ## Repo layout (a pnpm workspace of six packages)
 
 The `@cloudbitmaps` family is six packages, so this repo is a workspace
