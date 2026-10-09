@@ -11,6 +11,23 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A load that found no registry row is refused when a row appears before its publish, guarded or not.** A load with
+  `allowEmpty: true` and neither `guard.minRetained` nor `guard.maxGrowth`, into a segment with no row, published with
+  no fence at all: when another writer made the row first (another first load, a `setRetention`, a drop), it moved the
+  pointer over that row anyway. Racing a subject erasure, that could leave the pointer naming a generation that is not
+  in the bucket: the load's own object, which the erasure had just deleted because it held the erased id above the
+  pointer. Every read of the segment then failed with `NotFoundError`, the state `checkConsistency` reports as
+  `missing-storage-generation`. Every load that found no row now fences its publish on that absence, as a guarded load
+  already did: it is refused with `reason: 'superseded'` and audited as `segment.load-refused`, and an `*Into` throws
+  `WriteConflictError` for it, as a `materializeMany` output reports it. Of two first loads of one segment at once,
+  exactly one lands. The refused load's object is deleted when the row that appeared is a tombstone, or holds key
+  material where the load wrote cleartext and the object's footer proves it the load's; otherwise it stays in the
+  bucket, and a later load's collection deletes it.
+  Such a load that races a drop now reports `superseded` instead of throwing `ValidationError`, and one that races the
+  segment's first encrypted load reports `superseded` instead of throwing `KeyUnavailableError` or `ValidationError`.
+
 ## [0.19.0] — 2026-10-08
 
 ### Added
