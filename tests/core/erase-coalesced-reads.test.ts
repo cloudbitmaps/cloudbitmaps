@@ -60,7 +60,7 @@ function instrument(
     getTail: (key, max) => inner.getTail(key, max),
     putImmutable: (key, fn) => inner.putImmutable(key, fn),
     list: (ref) => inner.list(ref),
-    delete: (key) => inner.delete(key),
+    delete: (key, o) => inner.delete(key, o),
   };
   return { storage, counts };
 }

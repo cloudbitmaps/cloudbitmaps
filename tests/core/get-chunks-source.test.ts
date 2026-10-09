@@ -131,8 +131,9 @@ async function world(options: { keystore?: InProcessKeystore; chunks?: number } 
       keystore,
     });
   };
-  // Resolve and open the segment, so the requests counted afterwards are chunk reads.
-  await source.currentVersion(REF);
+  // Resolve and open the segment, so the requests counted afterwards are chunk reads. Its shape needs the reader: a
+  // version alone is answered from the row's summary, and opens nothing.
+  await source.listChunkKeys(REF);
   storage.ranges = [];
   return { storage, registry, clock, source, publishGen1 };
 }

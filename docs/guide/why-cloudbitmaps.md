@@ -213,8 +213,9 @@ proposed in an issue on this repo before it is built.
 - **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the row's `pointerId` has moved: a load's
-  publish moves it, a lease or a policy write does not) or the reader cache evicts its reader part-way through (a
-  pointer and an index), and a second index read for an index larger than the reader's tail read.
+  publish moves it, a lease or a policy write does not) or the reader cache evicts its reader part-way through (an
+  index, and a pointer too where the store keeps no resolution of the segment), and a second index read for an index
+  larger than the reader's tail read.
 - **Your readers' memory.** It is your own machines' cost, and not priced here.
 - **An invoice.** These are list prices applied to modeled request counts; data transfer out of the region is not
   modeled.

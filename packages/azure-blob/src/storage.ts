@@ -19,6 +19,14 @@
  * flushes and frees ~one block) finished with a conditional `commitBlockList`, so a load's write footprint
  * stays ~one block regardless of segment size, up to the advertised `maxObjectBytes`. Drivers may use
  * `node:crypto`; only `core/` is bound by the determinism lint.
+ *
+ * **A delete given `ifVersion` is a Delete Blob under `ifMatch: <that ETag>`**, unless `conditionalDelete` is turned
+ * off: Azure Blob applies the condition, and Azurite does too, as for the registry. A tail read reports the blob's ETag
+ * as its version, from the ranged download that carried the bytes, or the properties when none were asked for. A `412`
+ * (`ConditionNotMet`) is the condition failing, and is reported as {@link WriteConflictError} unless the properties then
+ * show no blob under the name: an absent blob is a no-op, whether the service answers it `404` or `412`. The delete
+ * keeps the client's retry policy: a copy that meets its own landed delete finds nothing, and one that meets a blob
+ * stored since is refused.
  */
 import {
   NotFoundError,
@@ -35,6 +43,8 @@ import type {
   IStorageDriver,
   SegmentRef,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
 } from '@cloudbitmaps/core/driver-kit';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { ContainerClient } from '@azure/storage-blob';
@@ -44,7 +54,13 @@ import {
   parseGenerationFromName,
   segmentObjectPrefix,
 } from './keys';
-import { isConditionalConflict, isInvalidRange, isNotFound, isTransient } from './azure-errors';
+import {
+  isConditionalConflict,
+  isInvalidRange,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+} from './azure-errors';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
@@ -85,6 +101,11 @@ export interface AzureBlobStorageDriverOptions {
    * 2,147,483,647.
    */
   readonly readTimeoutMs?: number;
+  /**
+   * Whether a delete given `ifVersion` is sent with `ifMatch`, so it removes the blob only while it is the one that ETag
+   * names. Defaults to `true`: Azure Blob applies `If-Match` on a delete, and Azurite does too.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 export class AzureBlobStorageDriver implements IStorageDriver {
@@ -93,9 +114,16 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   private readonly maxObjectBytes: number;
   private readonly blockBytes: number;
   private readonly readTimeoutMs: number;
+  private readonly conditionalDelete: boolean;
 
   constructor(options: AzureBlobStorageDriverOptions) {
     this.container = options.containerClient;
+    if (options.conditionalDelete !== undefined && typeof options.conditionalDelete !== 'boolean') {
+      throw new ValidationError(
+        `conditionalDelete must be a boolean; got ${String(options.conditionalDelete)}`,
+      );
+    }
+    this.conditionalDelete = options.conditionalDelete ?? true;
     this.prefix = normalizeAzurePrefix(options.prefix);
     this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
     // Fail fast at the boundary: nullish-coalescing only guards `undefined`, so an explicit 0 / negative /
@@ -138,7 +166,12 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: this.maxObjectBytes,
+      conditionalPut: true,
+      conditionalDelete: this.conditionalDelete,
+    };
   }
 
   private blob(name: string) {
@@ -206,7 +239,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     }
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const objectName = storageObjectName(this.prefix, key);
     try {
       // Two round-trips (properties for the size, then a ranged download) vs S3's one (suffix-range +
@@ -225,18 +258,26 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       if (!Number.isSafeInteger(size) || size < 0) {
         throw new ValidationError(`Azure returned an invalid blob size: ${String(size)}`);
       }
-      if (maxBytes <= 0 || size === 0) return { bytes: new Uint8Array(0), size };
+      if (maxBytes <= 0 || size === 0) {
+        return withVersion({ bytes: new Uint8Array(0), size }, props.etag);
+      }
       const take = Math.min(maxBytes, size);
-      const bytes = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
-        const res = await this.blob(objectName).download(size - take, take, { abortSignal });
-        return collect(
-          res.readableStreamBody,
-          abortSignal,
-          take,
-          () => this.badRead(key, 'tail', `the response is longer than the ${take}B requested`),
-          res.contentLength,
-        );
-      });
+      const { bytes, version } = await timedRead(
+        'download',
+        this.readTimeoutMs,
+        async (abortSignal) => {
+          const res = await this.blob(objectName).download(size - take, take, { abortSignal });
+          const body = await collect(
+            res.readableStreamBody,
+            abortSignal,
+            take,
+            () => this.badRead(key, 'tail', `the response is longer than the ${take}B requested`),
+            res.contentLength,
+          );
+          // The version of the blob the bytes came from: the ETag of the download that carried them.
+          return { bytes: body, version: res.etag };
+        },
+      );
       if (bytes.length !== take) {
         throw this.badRead(
           key,
@@ -244,17 +285,48 @@ export class AzureBlobStorageDriver implements IStorageDriver {
           `the response holds ${bytes.length}B of the ${take}B requested`,
         );
       }
-      return { bytes, size };
+      return withVersion({ bytes, size }, version);
     } catch (err) {
       throw this.mapReadError(err, key);
     }
   }
 
-  async delete(key: GenKey): Promise<void> {
-    // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const blob = this.blob(storageObjectName(this.prefix, key));
+    const ifVersion = options?.ifVersion;
+    if (ifVersion === undefined || !this.conditionalDelete) {
+      // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
+      try {
+        await blob.deleteIfExists();
+      } catch (err) {
+        throw this.mapError(err);
+      }
+      return;
+    }
     try {
-      await this.blob(storageObjectName(this.prefix, key)).deleteIfExists();
+      await blob.delete({ conditions: { ifMatch: ifVersion } });
     } catch (err) {
+      // An absent blob is a no-op whatever version was given (a missing container is not one: `isNotFound` excludes it),
+      // and a failed condition is a conflict only while a blob is under the name: a service may answer it for a name
+      // with nothing there, a copy of this delete that landed first included.
+      if (isNotFound(err)) return;
+      if (isPreconditionFailed(err)) {
+        if (!(await this.exists(blob))) return;
+        throw new WriteConflictError(
+          `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+        );
+      }
+      throw this.mapError(err);
+    }
+  }
+
+  /** Whether a blob is under the name, from its properties. A read that fails in any other way throws. */
+  private async exists(blob: BlockBlob): Promise<boolean> {
+    try {
+      await blob.getProperties();
+      return true;
+    } catch (err) {
+      if (isNotFound(err)) return false;
       throw this.mapError(err);
     }
   }
@@ -311,6 +383,14 @@ export class AzureBlobStorageDriver implements IStorageDriver {
 }
 
 type BlockBlob = ReturnType<ContainerClient['getBlockBlobClient']>;
+
+/** A tail read, with the version it was read at when the response carried one. */
+function withVersion(
+  tail: { bytes: Uint8Array; size: number },
+  version: string | undefined,
+): TailRead {
+  return version === undefined ? tail : { ...tail, version };
+}
 
 /** Concatenate byte chunks of known total length into one buffer. */
 function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {

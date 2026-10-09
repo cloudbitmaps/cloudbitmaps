@@ -294,5 +294,29 @@
   {
     "entry": "@cloudbitmaps/roaring AuditEvent",
     "reason": "the segment.collect event's fromGeneration becomes optional: an erasure that deletes only objects no read of the segment can open (sealed under a key the row does not hold, or encrypted under a cleartext row) found the id in none, so the event it now emits for that deletion names no generation; every other segment.collect carries it as before, and a sink that reads it as a number checks for undefined; segment.collect is unreleased (added after 0.19.1); agreed with the maintainer (owner's decision)"
+  },
+  {
+    "entry": "@cloudbitmaps/core IStorageDriver.delete",
+    "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core IStorageDriver.getTail",
+    "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IStorageDriver.delete",
+    "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IStorageDriver.getTail",
+    "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IStorageDriver.delete",
+    "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IStorageDriver.getTail",
+    "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
   }
 ]

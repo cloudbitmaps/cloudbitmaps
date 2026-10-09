@@ -184,7 +184,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const storage: IStorageDriver = {
       capabilities: () => real.capabilities(),
       getTail: (k, m) => real.getTail(k, m),
-      delete: (k) => real.delete(k),
+      delete: (k, o) => real.delete(k, o),
       list: (r) => real.list(r),
       putImmutable: (k, fn) => real.putImmutable(k, fn),
       getRange: (k, o, l) => {

@@ -90,7 +90,7 @@ async function probe(
     },
     putImmutable: (key, fn) => inner.putImmutable(key, fn),
     list: (ref) => inner.list(ref),
-    delete: (key) => inner.delete(key),
+    delete: (key, o) => inner.delete(key, o),
   };
   return { storage, registry, stats, held };
 }

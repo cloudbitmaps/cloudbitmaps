@@ -25,7 +25,9 @@
  *
  *  - Storage: `putImmutable` is write-once and throws `WriteConflictError` on a collision; a missing object makes
  *    `getRange`/`getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail` returns
- *    the true total size; `delete` is idempotent; `list` is strongly consistent, read-after-delete.
+ *    the true total size, and the object's `version` where the driver has one; `delete` is idempotent; a driver that
+ *    reports `conditionalDelete` deletes, given `ifVersion`, only the object that version names, in one step the
+ *    backend applies, and throws `WriteConflictError` for another; `list` is strongly consistent, read-after-delete.
  *  - Registry: `create` and `compareAndSwap` are atomic conditional writes that throw `WriteConflictError` when
  *    they lose; a token is not reused (2^-128 per pair of incarnations of a name); every row carries `pointerId`, the
  *    token of its create or of the last compare-and-swap that named a resolved field (`renewsPointer`); `delete` is
@@ -36,8 +38,10 @@
  *
  * PORT CHANGES are recorded in the root `CHANGELOG.md`, under **Added**, **Changed** or **Breaking** like any
  * other. A parameter added to a port method is optional, so an existing driver keeps compiling and keeps its old
- * behaviour until it implements the parameter: `IRegistryDriver.delete`'s optional expected token is the current
- * example, and a driver that ignores it deletes unfenced, as before.
+ * behaviour until it implements the parameter: `IRegistryDriver.delete`'s optional expected token, and
+ * `IStorageDriver.delete`'s optional `ifVersion` with `StorageCaps.conditionalDelete` and `getTail`'s optional
+ * `version`, are the current examples: a driver that ignores them deletes unconditionally, as before. A driver that
+ * wraps another forwards `ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`.
  */
 
 // The ports a driver implements, and the brand that marks a pair of halves as a backend. `brandAsBackend` also
@@ -49,6 +53,8 @@ export type {
   SegmentRef,
   StorageBackend,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
 } from './core/ports';
 export { brandAsBackend, STORAGE_BACKEND } from './core/ports';
 

@@ -75,7 +75,7 @@ function poisonStorageReadOf(base: IStorageDriver, segment: string): IStorageDri
       key.segment === segment
         ? Promise.reject(new Error('poison storage read'))
         : base.getTail(key, m),
-    delete: (key) => base.delete(key),
+    delete: (key, o) => base.delete(key, o),
     list: (r) => base.list(r),
   };
 }

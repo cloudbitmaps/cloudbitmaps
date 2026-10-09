@@ -14,6 +14,8 @@ import { segmentKey } from '../core/keys';
 import { validateSegmentRef } from '../core/validate';
 import type {
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
   GenKey,
   IStorageDriver,
   IRegistryDriver,
@@ -135,12 +137,25 @@ export class MemoryRegistryDriver implements IRegistryDriver {
  * In-memory {@link IStorageDriver} — write-once immutable generation objects as opaque bytes. A "dumb byte
  * mover" (understands neither roaring nor `.crbm`), so it's a faithful storage backend for tests and a zero-setup
  * local storage tier. Mirrors the LocalFs/S3 contract (write-once, range/tail reads).
+ *
+ * Every object stored gets a version from a counter the driver never reuses, so two objects stored one after the other
+ * under one key never share one, whatever their bytes. A delete given `ifVersion` compares it with the stored object's
+ * and removes it in the same step, with no await between them: `conditionalDelete` is `true`.
  */
 export class MemoryStorageDriver implements IStorageDriver {
-  private readonly objects = new Map<string, Uint8Array>();
+  private readonly objects = new Map<
+    string,
+    { readonly body: Uint8Array; readonly version: string }
+  >();
+  private stored = 0;
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: Number.MAX_SAFE_INTEGER,
+      conditionalPut: true,
+      conditionalDelete: true,
+    };
   }
 
   async putImmutable(
@@ -156,7 +171,8 @@ export class MemoryStorageDriver implements IStorageDriver {
         `generation already exists (write-once): ${key.segment}.${key.generation}`,
       );
     }
-    this.objects.set(k, body);
+    this.stored += 1;
+    this.objects.set(k, { body, version: String(this.stored) });
     return { size: body.length, sha256: createHash('sha256').update(body).digest('hex') };
   }
 
@@ -164,7 +180,7 @@ export class MemoryStorageDriver implements IStorageDriver {
     if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
-    const body = this.require(key);
+    const { body } = this.require(key);
     if (offset + length > body.length) {
       throw new ValidationError(
         `range [${offset}, ${offset + length}) out of bounds for ${body.length}B`,
@@ -173,14 +189,23 @@ export class MemoryStorageDriver implements IStorageDriver {
     return body.slice(offset, offset + length);
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const body = this.require(key);
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    const { body, version } = this.require(key);
     const take = Math.min(Math.max(maxBytes, 0), body.length);
-    return { bytes: body.slice(body.length - take), size: body.length };
+    return { bytes: body.slice(body.length - take), size: body.length, version };
   }
 
-  async delete(key: GenKey): Promise<void> {
-    this.objects.delete(genObjectKey(key)); // idempotent
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const k = genObjectKey(key);
+    const ifVersion = options?.ifVersion;
+    const stored = this.objects.get(k);
+    // The check and the removal in one step: nothing can store another object under the key between them.
+    if (ifVersion !== undefined && stored !== undefined && stored.version !== ifVersion) {
+      throw new WriteConflictError(
+        `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+      );
+    }
+    this.objects.delete(k); // idempotent
   }
 
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
@@ -197,12 +222,12 @@ export class MemoryStorageDriver implements IStorageDriver {
     }
   }
 
-  private require(key: GenKey): Uint8Array {
-    const body = this.objects.get(genObjectKey(key));
-    if (body === undefined) {
+  private require(key: GenKey): { readonly body: Uint8Array; readonly version: string } {
+    const stored = this.objects.get(genObjectKey(key));
+    if (stored === undefined) {
       throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
     }
-    return body;
+    return stored;
   }
 }
 

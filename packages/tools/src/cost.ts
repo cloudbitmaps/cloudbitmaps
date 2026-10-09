@@ -252,10 +252,12 @@ export interface Workload {
    * ⇒ the refresh is not modeled, and the report *discloses* the omission when there are reads to refresh for.
    *
    * It assumes each hot segment stays open in the reader's cache (`cache.readerMax`, 1,024 segments by default,
-   * and `cache.readerMaxBytes`, 64 MiB of parsed index). A read of a segment the cache evicted opens it again, a
-   * pointer read and a tail read, which is not priced here, and neither is the re-open every reader makes after
-   * each load, for the new generation's index. Size those caches to keep the hot set open; the report says so when
-   * `hotSegments` is more than a store keeps open by default.
+   * and `cache.readerMaxBytes`, 64 MiB of parsed index). A read of a segment the cache evicted that needs its index or
+   * a chunk the chunk cache does not hold opens it again, a tail read, which is not priced here; with a timed refresh the store keeps the segment's resolution apart from its
+   * reader, so the eviction reads its pointer again only for a segment whose resolution was let go too, and with none
+   * every reopen reads it. Neither is the re-open every reader makes after each load priced, for the new generation's
+   * index. Size those caches to keep the hot set open; the report says so when `hotSegments` is more than a store
+   * keeps open by default.
    */
   readonly hotSegments?: number;
   /**
@@ -875,8 +877,11 @@ function buildReport(input: {
         : null,
     hotSegments > DEFAULT_MAX_OPEN_SEGMENTS
       ? `More hot segments in a reader than a store keeps open by default (${DEFAULT_MAX_OPEN_SEGMENTS}): a read of a segment ` +
-        'the reader evicted opens it again, a pointer and a tail read, which this does not price. Raise ' +
-        'cache.readerMax, and cache.readerMaxBytes, to keep them open.'
+        (genTtlMs > 0
+          ? 'the reader evicted opens it again when the read needs its index or an uncached chunk, a tail read, and ' +
+            'reads its pointer too once the store has let its resolution go as well, which this does not price. '
+          : 'the reader evicted opens it again, a pointer and a tail read, which this does not price. ') +
+        'Raise cache.readerMax, and cache.readerMaxBytes, to keep them open.'
       : null,
     ...(retirementsPerMonth > 0 || purgesPerMonth > 0
       ? [

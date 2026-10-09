@@ -25,7 +25,7 @@ function countingStorage(base: IStorageDriver): { storage: IStorageDriver; opens
       opens += 1;
       return base.getTail(k, m);
     },
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (r) => base.list(r),
   };
   return { storage, opens: () => opens };
@@ -62,6 +62,34 @@ describe('CrbmStorageChunkSource — bounded reader cache', () => {
     // s2 is still cached → no new open.
     await source.listChunkKeys({ segment: 's2' });
     expect(opens()).toBe(4);
+  });
+
+  it("with a timed refresh, the reopen after an eviction reads no row: the segment's resolution was kept", async () => {
+    const base = new MemoryRegistryDriver({ now: () => 0 });
+    const { storage, opens } = countingStorage(new MemoryStorageDriver());
+    await seed(storage, base, SEGS);
+    let rows = 0;
+    const registry = new Proxy(base, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (p !== 'get') return typeof value === 'function' ? value.bind(t) : value;
+        return (...args: Parameters<MemoryRegistryDriver['get']>) => {
+          rows += 1;
+          return t.get(...args);
+        };
+      },
+    });
+    const source = new CrbmStorageChunkSource(storage, {
+      registry,
+      clock: { now: () => 0 },
+      currentGenTtlMs: 2_000,
+      maxOpenSegments: 2,
+    });
+    for (const segment of SEGS) await source.listChunkKeys({ segment });
+    expect({ opens: opens(), rows }).toEqual({ opens: 3, rows: 3 });
+    // s0 was evicted: the read opens it again, from the resolution kept for it, and reads no row.
+    await source.listChunkKeys({ segment: 's0' });
+    expect({ opens: opens(), rows }).toEqual({ opens: 4, rows: 3 });
   });
 
   it('bounds the resident reader set across a large fleet — memory cannot accumulate with fleet size', async () => {

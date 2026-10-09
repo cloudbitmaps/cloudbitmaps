@@ -36,7 +36,7 @@ function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): I
   return {
     capabilities: () => base.capabilities(),
     getTail: (k, m) => base.getTail(k, m),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (ref) => base.list(ref),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getRange: async (k, o, l) => {
@@ -56,7 +56,7 @@ function beforeOpen(base: IStorageDriver, hook: () => Promise<void>): IStorageDr
   return {
     capabilities: () => base.capabilities(),
     getRange: (k, o, l) => base.getRange(k, o, l),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (ref) => base.list(ref),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getTail: async (k, m) => {
@@ -109,7 +109,7 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     const storage: IStorageDriver = {
       capabilities: () => w.storage.capabilities(),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       putImmutable: async (k, fn) => {
         const res = await w.storage.putImmutable(k, fn);
@@ -154,7 +154,7 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     const storage: IStorageDriver = {
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getRange: async (k, o, l) => {

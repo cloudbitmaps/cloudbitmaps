@@ -471,9 +471,11 @@ export interface CacheOptions {
    * advanced.
    *
    * **While the registry cannot be read, the bound stretches.** A refresh that fails with a
-   * {@link TransientError} keeps serving the generation the reader holds, and the key it unwrapped, and is tried
-   * again 500 ms later (or after this TTL, if shorter), so the store converges within one retry of the registry
-   * answering. A refresh that fails with anything else, an access denial or a row that will not parse, is not
+   * {@link TransientError} keeps serving the generation of a segment still in the reader cache, and the key its reader
+   * unwrapped (a read that needs the key, where none was unwrapped before it, unwraps it from that segment's row as
+   * resolved before the outage), and is tried again 500 ms later (or after this TTL, if shorter), so the store converges
+   * within one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL: once that
+   * lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else, an access denial or a row that will not parse, is not
    * ridden out: the read that meets it throws that error, and the reader is dropped.
    *
    * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
@@ -488,7 +490,13 @@ export interface CacheOptions {
   /**
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
-   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. A reader of a small generation, one whose whole object came with its tail read,
+   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. With a
+   * timed refresh ({@link CacheOptions.genTtlMs} above 0, and a backend) the store also keeps up to 8 times this many
+   * segments' resolutions (what it read of each segment's row: never an unwrapped key, though the wrapped keys are in
+   * it) for `genTtlMs`, apart from their readers. An evicted segment is then reopened with no registry read, on the
+   * generation it had resolved, when a read needs its index or a chunk the chunk cache does not hold: `iterate` and the
+   * combines always do, and a `has()` of a cached chunk, a `count()` and a `stat()` do not, where the row has a summary
+   * the store can use. A reader of a small generation, one whose whole object came with its tail read,
    * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
    * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
@@ -502,7 +510,8 @@ export interface CacheOptions {
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
-   * would exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight
+   * would exceed the ceiling — whichever of the count/byte bounds binds first. A sixteenth of it (4 MiB by default)
+   * bounds the segments' resolutions a store with a timed refresh keeps besides. Lower it for memory-tight
    * deployments that read across wide segments. Applies whenever the store builds its own read path.
    */
   readonly readerMaxBytes?: number;
@@ -595,8 +604,9 @@ export interface SubjectErasureEntry {
   /** The generation written without the id (present whenever one was written). */
   readonly generation?: number;
   /**
-   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — the pointer moved while
-   * the call was in flight, by a load, another erasure or a rollback, so **this call** did not erase the id;
+   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — another writer (a load,
+   * another erasure or a rollback) moved the pointer, or replaced an object the call meant to delete, while the call
+   * was in flight, so **this call** did not erase the id;
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
    * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
@@ -1381,13 +1391,20 @@ export class CloudRoaring {
    * of it. A materialisation is a load whose ids happen to come from a combine instead of from upstream, so
    * everything `load()` learned the hard way applies unchanged: the generation is written UNPUBLISHED, the
    * guard runs while the old generation is still authoritative, the publish is fenced as above, and a refused
-   * object is reclaimed only when a re-read finds the row unchanged (the same token) or gone (hard invariant 1:
-   * deleting it after a purge-and-recreate would put a live row over a missing generation).
+   * object is reclaimed only when a re-read finds the row unchanged (the same token, or one that differs only in
+   * its leases), `destroyed`, or gone, or finds key material on it when the load wrote cleartext; under any other
+   * row it is kept (hard invariant 1: deleting it after a purge-and-recreate would put a live row over a missing
+   * generation).
    *
-   * That last check narrows the window rather than closing it: the row read and the delete are two round
-   * trips, and `IStorageDriver` has no conditional delete to make them one. the collection a load runs carries
-   * the same residual. The failure it leaves is an orphan object, which costs storage until
-   * something collects it — deliberately the cheaper side of the trade.
+   * Where the row is gone, or keyed over a cleartext write, the object is proved the load's own by its footer, and
+   * the delete passes the version that read reported, so on a storage driver that reports `conditionalDelete` an
+   * object put under the number since is kept. Where the row is unchanged or `destroyed`, the check narrows the
+   * window rather than closing it: the row read and the delete are two round trips, and the delete is by number,
+   * since the write reports no version of the object it made. Every other delete is by number too: a load's
+   * collection deletes what a listing, or the row's list of kept generations, names below the pointer, and a drop's
+   * sweep and a tombstoned segment's collection delete what a listing names under a `destroyed` row. The failure the
+   * checks leave when they refuse is an orphan object, which costs storage until something collects it —
+   * deliberately the cheaper side of the trade.
    *
    * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
    * swallowed everything, an operand that had not loaded yet — would silently replace `dest` with an empty
@@ -2089,10 +2106,10 @@ export class CloudRoaring {
    * ahead of its data.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
-   * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
-   * erase the id. Re-run: it erases the id if it is still there, and lists nothing for the segment if a racing
-   * erasure of the same id already removed it. Do not read `'superseded'` as "the id is still present" —
-   * read it as "not done by this call, and the re-run settles it".
+   * another writer (a load, another erasure, or a rollback) moved the pointer, or replaced an object the call meant to
+   * delete, mid-call, so **this call** did not erase the id. Re-run: it erases the id if it is still there, and lists
+   * nothing for the segment if a racing erasure of the same id already removed it. Do not read `'superseded'` as
+   * "the id is still present" — read it as "not done by this call, and the re-run settles it".
    * `` `error: …` `` is a per-segment fault (caught so one segment can't discard the whole ledger) and it can land
    * on either side of the publish: if the rewrite had not published, the id is still there and a re-run erases
    * it; if the publish succeeded and only the **collection** of the old generation failed, the id is already
@@ -2411,10 +2428,12 @@ export class CloudRoaring {
    * published, a retention change, a rollback or an erasure wrote the row, or the row was deleted.
    *
    * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
-   * collection deliberately never looks — but only while the segment's registry row is unchanged or gone. Once
-   * another write has changed the row, the generation number it holds may name another incarnation's live object,
-   * so it leaves the orphan rather than risk deleting live data. No row's list names it, so it takes no place in a
-   * window, and a listing deletes it once a later generation is current above it.
+   * collection deliberately never looks — but only while the segment's registry row is unchanged (or differs only
+   * in its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
+   * encrypted segment's bucket. Under a row that is gone or keyed, a read of the object's footer must prove it the
+   * load's own first. Once another write has otherwise changed the row, the generation number it holds may name
+   * another incarnation's live object, so it leaves the orphan rather than risk deleting live data. No row's list
+   * names it, so it takes no place in a window, and a listing deletes it once a later generation is current above it.
    *
    * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
    * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists
@@ -4234,6 +4253,8 @@ export type {
   StorageBackend,
   StorageCaps,
   StorageChunkSource,
+  StorageDeleteOptions,
+  TailRead,
   Token,
   WrappedDek,
 } from '@cloudbitmaps/core';

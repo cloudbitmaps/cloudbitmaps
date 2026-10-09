@@ -34,7 +34,7 @@ function manualClock(): Clock & { advance(ms: number): void } {
 }
 
 /** A writer store, and a counting reader store over the same bucket, which has read nothing yet. */
-function world(options: { encrypted?: boolean; readerMaxBytes?: number } = {}) {
+function world(options: { encrypted?: boolean; readerMax?: number; readerMaxBytes?: number } = {}) {
   const keystore = options.encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;
@@ -67,9 +67,10 @@ function world(options: { encrypted?: boolean; readerMaxBytes?: number } = {}) {
     new CloudRoaring({
       storage: brandAsBackend({ storage, registry }),
       ...(retry ? {} : { retry: false }),
-      ...(options.readerMaxBytes === undefined
-        ? {}
-        : { cache: { readerMaxBytes: options.readerMaxBytes } }),
+      cache: {
+        ...(options.readerMax === undefined ? {} : { readerMax: options.readerMax }),
+        ...(options.readerMaxBytes === undefined ? {} : { readerMaxBytes: options.readerMaxBytes }),
+      },
       seams: { clock },
       ...(keystore === undefined ? {} : { encryption: { keystore } }),
     });
@@ -153,6 +154,22 @@ describe('a cold count is one request', () => {
     expect(await seg.count()).toBe(10);
     expect(await seg.has(65_536)).toBe(true);
     expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 1 }); // the row, and the one chunk
+  });
+
+  it('after the reader cache lets the segment go, inside the TTL: no request at all', async () => {
+    const w = world({ readerMax: 1 });
+    await w.writer.load(SEG, spread(10));
+    await w.writer.load({ ...SEG, segment: 'other' }, spread(3));
+    const store = w.reader();
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    // A reader cache of one: counting another segment lets `s` go. Its resolution is kept, for the TTL.
+    expect(await store.segment('other', { namespace: 'ns' }).count()).toBe(3);
+    w.reset();
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    expect(w.sent()).toEqual({ rows: 0, tails: 0, ranges: 0 });
+    w.clock.advance(TTL);
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
   });
 
   it('through the default read retries, a cold count is still one row read', async () => {

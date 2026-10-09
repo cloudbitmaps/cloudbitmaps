@@ -55,7 +55,7 @@ import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
 import { sendOnce } from './send-once';
 import { destroyBody, readBounded } from './bounded-body';
 import { scrubCredentials } from './scrub-error';
-import { isAwsS3Host, probeClient } from './client-probe';
+import { appliesDeleteIfMatch, checkConditionalDelete, probeClient } from './client-probe';
 import type { ClientFacts } from './client-probe';
 
 export interface S3RegistryDriverOptions {
@@ -126,10 +126,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
    * vouched for the store.
    */
   get conditionalDelete(): boolean {
-    if (this.explicitConditionalDelete === false) return false;
-    const facts = this.facts;
-    if (this.explicitConditionalDelete === true) return facts?.sendsDeleteIfMatch !== false;
-    return facts !== undefined && facts.sendsDeleteIfMatch && isAwsS3Host(facts.host);
+    return appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts);
   }
 
   /** Ask the client once what it does with the registry's requests; every caller waits for the same answer. */
@@ -281,15 +278,6 @@ function mapError(err: unknown): unknown {
     );
   }
   return err;
-}
-
-/** {@link S3RegistryDriverOptions.conditionalDelete}, checked: `undefined` leaves the decision to the client. */
-function checkConditionalDelete(value: unknown): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'boolean') {
-    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
-  }
-  return value;
 }
 
 export class S3RegistryDriver extends ObjectStoreRegistry {

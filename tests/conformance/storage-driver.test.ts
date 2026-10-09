@@ -8,6 +8,8 @@ import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 // Every IStorageDriver must pass the same contract.
 storageDriverConformance('MemoryStorageDriver', () => new MemoryStorageDriver(), {
   pagedListSize: 25,
+  // Its check and its removal are one step, with no await between them.
+  conditionalDelete: true,
 });
 
 let root: string;
@@ -22,5 +24,6 @@ afterAll(async () => {
 storageDriverConformance(
   'LocalFsStorageDriver',
   () => new LocalFsStorageDriver(join(root, `d${n++}`)),
-  { pagedListSize: 25 },
+  // A filesystem has no unlink conditioned on which file is under the path (see the driver's note).
+  { pagedListSize: 25, conditionalDelete: false },
 );

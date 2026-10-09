@@ -17,6 +17,15 @@
  * a resumable upload's session is retried by the SDK, and a single-request upload is sent again by the driver after a
  * `429` or `503`, at most {@link THROTTLE_RESENDS} times with backoff, and after nothing else. Drivers may use
  * `node:crypto`; only `core/` is bound by the determinism lint.
+ *
+ * **A delete given `ifVersion` is sent with `ifGenerationMatch: <that object generation>`** when `conditionalDelete` is
+ * set, which it is not by default, as for the registry: no run against real GCS has shown the service applies the
+ * precondition to a delete, and fake-gcs-server accepts it and ignores it. A tail read reports the object's generation
+ * as its version, from the `x-goog-generation` header of the GET that carried the bytes, or the metadata when none were
+ * asked for. A `412` is the precondition failing, and is reported as {@link WriteConflictError} unless the metadata then
+ * shows no object under the name: an absent object is a no-op, whether the service answers it `404` or `412`. The
+ * delete keeps the SDK's retry, which re-sends a request with a precondition: a copy that meets its own landed delete
+ * finds nothing, and one that meets an object stored since is refused.
  */
 import {
   NotFoundError,
@@ -33,6 +42,8 @@ import type {
   IStorageDriver,
   SegmentRef,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
 } from '@cloudbitmaps/core/driver-kit';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { Writable } from 'node:stream';
@@ -120,6 +131,15 @@ export interface GcsStorageDriverOptions {
   readonly readTimeoutMs?: number;
   /** What the backoff before re-sending a throttled upload waits on; real time when absent. */
   readonly clock?: Sleeper;
+  /**
+   * Whether a delete given `ifVersion` is sent with `ifGenerationMatch`, so it removes the object only while it is the
+   * one that generation names. Defaults to `false`, on the public endpoint too, as the registry's option does: whether
+   * real GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and
+   * fake-gcs-server accepts the precondition and ignores it. Set `true` once you have. Until it is set, a delete
+   * decided from one read of an object removes whatever is under the name by then: on GCS the window in which an
+   * erasure's stalled delete takes a generation a load put under the number since stays open.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 export class GcsStorageDriver implements IStorageDriver {
@@ -132,9 +152,16 @@ export class GcsStorageDriver implements IStorageDriver {
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
   private readonly presence: BucketPresence;
+  private readonly conditionalDelete: boolean;
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
+    if (options.conditionalDelete !== undefined && typeof options.conditionalDelete !== 'boolean') {
+      throw new ValidationError(
+        `conditionalDelete must be a boolean; got ${String(options.conditionalDelete)}`,
+      );
+    }
+    this.conditionalDelete = options.conditionalDelete ?? false;
     this.clock = options.clock ?? REAL_TIME;
     this.readStorage = options.readStorage ?? options.storage;
     this.bucket = options.bucket;
@@ -162,7 +189,12 @@ export class GcsStorageDriver implements IStorageDriver {
   }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: this.maxObjectBytes,
+      conditionalPut: true,
+      conditionalDelete: this.conditionalDelete,
+    };
   }
 
   private file(name: string) {
@@ -275,14 +307,16 @@ export class GcsStorageDriver implements IStorageDriver {
     );
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const objectName = storageObjectName(this.prefix, key);
     // One deadline for the whole call: the tail's attempts, and the metadata read it may fall back on.
     const deadline = this.deadline('tail read', key);
     try {
       // Nothing to read: only the size is wanted, which the metadata answers in one request.
-      if (maxBytes <= 0)
-        return { bytes: new Uint8Array(0), size: await this.sizeOf(objectName, deadline) };
+      if (maxBytes <= 0) {
+        const meta = await this.metadataOf(objectName, deadline);
+        return withVersion({ bytes: new Uint8Array(0), size: meta.size }, meta.version);
+      }
       if (!Number.isSafeInteger(maxBytes)) {
         throw new ValidationError(`invalid tail length ${maxBytes}`);
       }
@@ -305,27 +339,38 @@ export class GcsStorageDriver implements IStorageDriver {
         // A zero-byte object has no suffix to satisfy, and a server may refuse the range with a 416. The metadata
         // settles whether that is an empty object (a valid, empty tail) or a real range fault.
         if (!isInvalidRange(err)) throw err;
-        const size = await this.sizeOf(objectName, deadline);
-        if (size !== 0) throw err;
-        return { bytes: new Uint8Array(0), size };
+        const meta = await this.metadataOf(objectName, deadline);
+        if (meta.size !== 0) throw err;
+        return withVersion({ bytes: new Uint8Array(0), size: 0 }, meta.version);
       }
       if (res.bytes.length === 0) {
         // No bytes came back for a positive request: only an empty object may do that.
-        const size = await this.sizeOf(objectName, deadline);
-        if (size !== 0) throw this.badTail(key, `no bytes returned for an object of ${size}B`);
-        return { bytes: res.bytes, size };
+        const meta = await this.metadataOf(objectName, deadline);
+        if (meta.size !== 0) {
+          throw this.badTail(key, `no bytes returned for an object of ${meta.size}B`);
+        }
+        return withVersion({ bytes: res.bytes, size: 0 }, meta.version);
       }
-      return { bytes: res.bytes, size: this.tailSize(res, maxBytes, key) };
+      // The version of the object the bytes came from: the generation the GET that carried them names.
+      const size = this.tailSize(res, maxBytes, key);
+      return withVersion(
+        { bytes: res.bytes, size },
+        objectGeneration(singleHeader(res.headers, 'x-goog-generation')),
+      );
     } catch (err) {
       throw await this.readFailure(err, key);
     }
   }
 
   /**
-   * The object's size from its metadata, validated. Read on the download client and retried as a download is, within
-   * the calling read's `deadline` ({@link withDeadline}), so nothing but the one request in flight runs past it.
+   * The object's size from its metadata, validated, and its generation when the metadata names a usable one. Read on the
+   * download client and retried as a download is, within the calling read's `deadline` ({@link withDeadline}), so
+   * nothing but the one request in flight runs past it.
    */
-  private async sizeOf(objectName: string, deadline: Deadline | undefined): Promise<number> {
+  private async metadataOf(
+    objectName: string,
+    deadline: Deadline | undefined,
+  ): Promise<{ size: number; version: string | undefined }> {
     const [meta] = await retryDownload(
       () => withDeadline(() => this.downloadable(objectName).getMetadata(), deadline),
       deadline,
@@ -334,7 +379,12 @@ export class GcsStorageDriver implements IStorageDriver {
     if (!Number.isSafeInteger(size) || size < 0) {
       throw new ValidationError(`GCS returned an invalid object size: ${String(meta.size)}`);
     }
-    return size;
+    return {
+      size,
+      version: objectGeneration(
+        meta.generation === undefined ? undefined : String(meta.generation),
+      ),
+    };
   }
 
   /**
@@ -374,14 +424,41 @@ export class GcsStorageDriver implements IStorageDriver {
     return new ValidationError(`GCS tail read of ${key.segment}.${key.generation} refused: ${why}`);
   }
 
-  async delete(key: GenKey): Promise<void> {
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const objectName = storageObjectName(this.prefix, key);
+    const ifVersion = options?.ifVersion;
+    const conditional = ifVersion !== undefined && this.conditionalDelete;
     // Idempotent: a racing/retried GC sweep of an absent object is a no-op. Not the SDK's `ignoreNotFound`, which takes
     // every 404 and so would report a delete in a missing bucket as done.
     try {
-      await this.file(storageObjectName(this.prefix, key)).delete();
+      await this.file(objectName).delete(
+        ...(conditional ? [{ ifGenerationMatch: generationOf(ifVersion, key) }] : []),
+      );
     } catch (err) {
       if (isNotFound(err)) return this.presence.confirm();
+      // A failed precondition is a conflict only while an object is under the name: a service may answer it for a name
+      // with nothing there, a copy of this delete that landed first included.
+      if (conditional && isPreconditionFailed(err)) {
+        if (!(await this.exists(objectName))) return;
+        throw new WriteConflictError(
+          `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+        );
+      }
       throw this.mapError(err);
+    }
+  }
+
+  /** Whether an object is under the name, from its metadata. A read that fails in any other way throws. */
+  private async exists(objectName: string): Promise<boolean> {
+    try {
+      await this.downloadable(objectName).getMetadata();
+      return true;
+    } catch (err) {
+      if (isNotFound(err)) {
+        await this.presence.confirm();
+        return false;
+      }
+      throw this.mapError(scrubCredentials(err));
     }
   }
 
@@ -452,6 +529,34 @@ export class GcsStorageDriver implements IStorageDriver {
 }
 
 type GcsFile = ReturnType<ReturnType<Storage['bucket']>['file']>;
+
+/** A tail read, with the version it was read at when there is one. */
+function withVersion(
+  tail: { bytes: Uint8Array; size: number },
+  version: string | undefined,
+): TailRead {
+  return version === undefined ? tail : { ...tail, version };
+}
+
+/**
+ * An object generation as GCS spells it, a positive decimal integer, or `undefined` for anything else: the version a
+ * delete is conditioned on goes back to the service as a number, so one that does not parse as one is never reported.
+ */
+function objectGeneration(value: string | undefined): string | undefined {
+  return value !== undefined && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))
+    ? value
+    : undefined;
+}
+
+/** The generation `ifGenerationMatch` takes, from a version this driver reported; any other is refused. */
+function generationOf(version: string, key: GenKey): number {
+  if (objectGeneration(version) === undefined) {
+    throw new ValidationError(
+      `ifVersion for ${key.segment}.${key.generation} is not a GCS object generation: ${version}`,
+    );
+  }
+  return Number(version);
+}
 
 /** Concatenate byte chunks of known total length into one buffer. */
 function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {

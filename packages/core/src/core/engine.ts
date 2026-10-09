@@ -732,11 +732,13 @@ export class SegmentEngine {
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
    * hit is invariant 3's: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an
    * operand's not-yet-requested chunks may re-resolve forward to the newer generation (a generation hop within one long
-   * call) — the call never crashes or returns a torn object, but may mix generations. Three things hop it without
-   * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
-   * (`maxOpenSegments`), whose re-read re-resolves fresh; a sweep deleting the generation it was reading, which
-   * heals the read forward; and an invalidation, which this store's own `load`, `rollback` and `eraseSubject` make
-   * and `invalidate()` makes on request. Still whole/immutable per read, never torn. An operand's stream resolves its
+   * call) — the call never crashes or returns a torn object, but may mix generations. Some things hop it without
+   * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call** on a
+   * store with no timed refresh (`maxOpenSegments`), whose re-read re-resolves fresh, and on a store with one the
+   * resolution cache letting the operand's resolution go; a sweep deleting the generation it was reading, or another
+   * object under its number, met by this read or another, which heals the read forward, as another read's failed open
+   * of the operand does; and an invalidation, which this store's own `load`, `rollback` and `eraseSubject` make and
+   * `invalidate()` makes on request. Still whole/immutable per read, never torn. An operand's stream resolves its
    * segment again before it serves each chunk, so each of those moves a running read as it would a read of one chunk, and
    * the ranges it had requested of the earlier generation are dropped, not served.
    */

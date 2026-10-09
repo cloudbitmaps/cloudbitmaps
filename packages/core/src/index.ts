@@ -116,6 +116,8 @@ export type {
   StorageChunkSource,
   IStorageDriver,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
   ChunkRef,
   ChunkRead,
   ReadChunksOptions,

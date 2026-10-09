@@ -51,8 +51,8 @@ generation of another segment. See [Loading in depth](loading.md#write-a-result-
   count to the `.crbm` index, which costs a tail read more. The row's word is what the count trusts: see
   [What `count()` trusts](#what-count-trusts).
 - **`has()` comes from memory once warm.** A `has()` whose chunk is in the cache makes no request, beyond at most one
-  pointer read per segment each `cache.genTtlMs` (2 s by default) for as long as the reader cache keeps the segment
-  open.
+  pointer read per segment each `cache.genTtlMs` (2 s by default), and, on an encrypted segment whose reader the reader
+  cache let go, a key unwrapped again through the keystore.
 - **`intersect` skips.** Two 2,000,000-id segments that share 100 of their 2,000 chunks intersect by fetching only the
   shared chunks. The [at-scale benchmark](../benchmarks.md#at-scale--measured-1k--10k--100k-segments) measured it at
   24.6 ms, on in-memory storage on an Apple M3 Pro, so that figure times the engine and not object storage.
@@ -136,18 +136,44 @@ bound is stated; other pages link here.
   store's own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)`. Another process's
   load then reaches it with no bound at all. Use `0` only for a store that never needs to see another process's
   loads.
-- **An eviction re-resolves early.** When the reader cache evicts a segment's reader, the next read re-resolves the
-  segment even if `cache.genTtlMs` has not elapsed.
+- **An eviction moves nothing on a store with a timed refresh.** The store keeps each segment's resolution apart from
+  its reader: the fields of its row a read resolves through (the generation, the `pointerId`, the wrapped keys and the
+  summary), never an unwrapped key; the wrapped keys are in it. It keeps it for `cache.genTtlMs` from the instant the
+  registry read that made it was sent. When the reader cache evicts a segment's reader, the next read builds on that
+  resolution and reads no row. So a read under reader-cache pressure, as on a small Lambda, agrees on one generation
+  until the TTL lapses, as any read does, unless one of these moves it first: an invalidation; a read of the segment,
+  this one or another, that finds its generation swept or another object under its number, or whose open of it fails,
+  since each makes the next read read the row again; and the resolution cache letting the resolution go. That cache is
+  bounded apart from the readers, at 8 × `cache.readerMax` segments and `cache.readerMaxBytes` / 16 bytes (8,192 and
+  4 MiB by default, [what they hold](sizing.md#what-each-reader-holds)). A resolution that found no generation (no row, a
+  row with no generation yet, a destroyed one) is not kept: the next read asks the registry again.
+- **What a read costs after an eviction.** It opens the object again, a tail read, when it needs the generation's index
+  or a chunk the chunk cache does not hold: `iterate` and the combines always do, since they read the chunk keys from
+  the index; a `has()` whose chunk is cached, a `count()` and a `stat()` answered from the row's summary do not. On an
+  encrypted segment the key is unwrapped again through the keystore, one request to it, for the open or for the row's
+  sealed summary, which names the object a cached chunk is checked against.
+- **What it means for another store's erasure or crypto-shred.** After an eviction a store can serve a cached chunk of a
+  generation another store erased from, up to the same `cache.genTtlMs`. It also reads with the wrapped keys it kept:
+  a store whose reader was evicted unwraps the key from them again through the keystore, so a crypto-shred by another
+  store reaches it once the resolution lapses, within `cache.genTtlMs` while the registry can be read. Both are within
+  [the bound an erasure gives another store](erasure.md#who-stops-seeing-the-id-and-when).
+- **Without a timed refresh, an eviction re-resolves.** A store with `cache.genTtlMs: 0`, no clock or no registry keeps
+  no resolution apart from its reader, so when the reader cache evicts a segment's reader, the next read resolves the
+  segment again: for such a store that is one of the few things that moves a read on.
 - **The bound is timed on the store's clock**, the system clock unless `seams.clock` replaces it. A system clock
   stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
-  dropped connection) keeps serving the generation the reader holds, and retries 500 ms later (or after the TTL, if
-  that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything
+  dropped connection) keeps serving the generation of a segment still in the reader cache (its reader open, or its row
+  resolved for a count), and retries 500 ms later (or after the TTL, if that is shorter). A read during the outage
+  that needs the key, where none was unwrapped before it, unwraps it from that row's wrapped keys. The store converges
+  within one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL:
+  once that lapses, a read of it fails with the fault, as a cold read does. One let go while it rode the outage out
+  fails at its next read, and at the next chunk of a stream already reading it. A refresh that fails with anything
   else, such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that
   error, and the next read resolves the segment afresh.
-- **`store.invalidate(ref)` forgets what this store derived about a segment**: its open reader and the key that reader
-  unwrapped, its decoded chunks, and those of every pin of the segment, so its next read resolves the current
-  generation afresh. It also drops the segment's open chunk reads: a caller already waiting on one still gets its
+- **`store.invalidate(ref)` forgets what this store derived about a segment**: its kept resolution, its open reader
+  and the key that reader unwrapped, its decoded chunks, and those of every pin of the segment, so its next read
+  resolves the current generation afresh. It also drops the segment's open chunk reads: a caller already waiting on one still gets its
   answer, a call made after the invalidation starts its own read, and the dropped read is not written to the cache.
   It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
   `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
@@ -166,16 +192,18 @@ bound is stated; other pages link here.
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
 load landing mid-call never tears a chunk. A long call can still re-resolve: a `cache.genTtlMs` boundary after a publish,
-the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
-its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
+the reader cache evicting the segment on a store with no timed refresh, the resolution cache letting its resolution go
+on a store with one, a sweep that collects the generation it was reading or an object replaced under its number, met
+by this read or by another read of the segment, another read's open of the segment failing, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
 `retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
 `iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, one held in the
 store's chunk cache included, exactly where
 a read of one chunk would, so a range it had already requested of the earlier generation is dropped, not served; an
 `exclude` read after an AND of two or more includes, a point read and every read of a source that reads chunk by chunk
 (a custom one) re-resolve the same way. What a read can still serve from the earlier generation is what it had already
-taken: up to `concurrency` keys per operand (32 by default) for a combine, up to 32 chunks for `iterate`, and up to 32
-chunk keys on a source that reads chunk by chunk and for `count` where it reads chunks. Its answer then describes two
+taken: up to `concurrency` + 1 keys per operand (33 by default) for a combine, the key it is handing out and the
+`concurrency` keys it had already requested, on a source that reads ranges or chunk by chunk; up to 32 chunks for
+`iterate`, the one it is handing out included; and up to 32 chunk keys for `count` where it reads chunks. Its answer then describes two
 instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
 encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
 `readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
@@ -197,7 +225,13 @@ the other object, so a load that was refused, or whose publish
 [got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
 earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
 checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
-same object, and its cached chunks still answer.
+same object, and its cached chunks still answer; with a timed refresh it is reopened from the resolution the store
+kept, with no row read. The version a cached chunk is looked up under comes from the row's summary, which names the
+object, so a `has()` whose chunk is in the chunk cache opens nothing; a read that needs the generation's index, as
+`iterate` and the combines do, opens it. An object under the number that is not the
+one the row names is met by the first read that opens the generation, which refuses it and resolves the row again;
+until then the cached chunks answer for the object the row named, as they would had the reader stayed open. A row
+with no summary the store can use names no object, so there the version comes from the object, opened.
 
 What the check does not cover:
 

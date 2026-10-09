@@ -48,10 +48,11 @@ rates above. Both take memory, and the default chunk cache holds a small share o
 | **Large** | 38 MiB | fits | 2,000,000 | 10 GB | 1,953× it | 0.051% |
 <!-- SIZING:READERS:END -->
 
-A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a pointer read and a tail
-read each, which **neither the bill below nor the estimator's report prices**: the report warns only when there are
-more hot segments than the default `cache.readerMax`, since it sees neither your store's own setting nor how large
-each index is. Two more things about these columns:
+A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a tail read each when a
+read needs the index or a chunk its chunk cache does not hold, which **neither the bill below nor the estimator's report prices**: the report warns only when there are more hot segments
+than the default `cache.readerMax`, since it sees neither your store's own setting nor how large each index is. It reads a segment's pointer again only when the segment's
+resolution, kept apart from its reader, lapses (the pointer refresh the bill prices) or is let go too; a store with no
+timed refresh keeps no resolution, and reads the pointer at every reopen. Two more things about these columns:
 
 - **The index column is the reader's own count, and it is exact.** The reader holds its parsed index as typed
   arrays, so each chunk's entry weighs the fixed size in the column's heading and the reader reports the arrays'
@@ -64,6 +65,10 @@ each index is. Two more things about these columns:
 
 Raising the chunk cache is the price of these figures, paid in each reader's memory. The default index budget holds
 the hot set's indices at all three sizes.
+
+<!-- SIZING:RESOLUTIONS:START -->
+**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also keeps each segment's resolution (the fields of its row a read resolves through: never an unwrapped key, though the wrapped keys are in it) for `cache.genTtlMs`, whether or not the segment's reader is still open: up to 8 × `cache.readerMax` of them, 8,192 by default, within `cache.readerMaxBytes` / 16, 4 MiB by default, whichever binds first. The cache counts an entry as 256 bytes plus its row's summary and wrapped keys as JSON, so at the defaults the count binds first while entries average under 512 bytes, as a segment without metadata whose key is wrapped once does, cleartext or encrypted, and the byte bound once they average more: with a few hundred bytes of metadata on each, or keys wrapped under several key-encryption keys or under long key ids. These bounds are derived from the settings, and they bound the bytes the cache counts, not the heap: the entries of a cache filled at the default settings took about 1.2 to 1.5 times the weight counted for them in heap, measured on Node 24 by [`bench/resolution-heap.cjs`](../../bench/resolution-heap.cjs) with each of four row shapes, cleartext and encrypted, with and without a few hundred bytes of metadata. Lowering `cache.readerMax` and `cache.readerMaxBytes` for a small heap lowers this cache with them.
+<!-- SIZING:RESOLUTIONS:END -->
 
 ## The monthly bill
 
@@ -213,8 +218,9 @@ the size its `stat()` reports.
 - **Latency.** Nothing here says how fast a query returns; the [in-region run](../benchmarks.md#real-cloud-calibration--aws) measured one shape.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the row's `pointerId` has moved: a load's
-  publish moves it, a lease or a policy write does not) or the reader cache evicts its reader part-way through (a
-  pointer and an index), and a second index read for an index larger than the reader's tail read.
+  publish moves it, a lease or a policy write does not) or the reader cache evicts its reader part-way through (an
+  index, and a pointer too where the store keeps no resolution of the segment), and a second index read for an index
+  larger than the reader's tail read.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.

@@ -229,6 +229,48 @@ export interface StorageCaps {
   readonly maxObjectBytes: number;
   /** Optional: enables the pure-object `LATEST`-pointer registry variant (S3 conditional put). */
   readonly conditionalPut?: boolean;
+  /**
+   * Optional: `true` when `delete` applies {@link StorageDeleteOptions.ifVersion}. The driver then removes an object
+   * only while it is still the one that version names, by a check the backend applies in the same step as the removal
+   * (a precondition on the request, or a check and a removal with nothing between them), refuses another object under
+   * the key with {@link WriteConflictError}, and reports a `version` on every {@link IStorageDriver.getTail} of an
+   * object. `false` or absent: `delete` ignores `ifVersion` and removes whatever is under the key, and a caller that
+   * decided to delete one object can remove another stored under the key since.
+   *
+   * A driver that learns this from its client may report `false` until its first delete given `ifVersion`; what the
+   * delete does is what it states. The S3 driver does: it reads where the client sends its requests, and whether the
+   * SDK sends the header, on its first such delete, and reports `false` for good when that cannot be found out.
+   */
+  readonly conditionalDelete?: boolean;
+}
+
+/** What {@link IStorageDriver.getTail} read. */
+export interface TailRead {
+  /** The last `min(maxBytes, size)` bytes of the object. */
+  readonly bytes: Uint8Array;
+  /** The object's true total size, not the number of bytes returned. */
+  readonly size: number;
+  /**
+   * Optional: which object the read saw, as the backend names it (an S3 or Azure Blob ETag, a GCS object generation),
+   * taken from the response that carried `bytes`, or from the metadata read when no bytes were asked for. Opaque, and
+   * compared by equality only, by the driver that reported it. It names the object, not the key: two objects stored
+   * one after the other under one key carry different versions, except where the backend's version is computed from
+   * the bytes (an S3 ETag of an object stored without SSE-KMS or SSE-C is), where two objects with the same bytes, each
+   * stored whole in one request, or each in parts of the same sizes, share one. A driver that reports
+   * `conditionalDelete: true` reports it on every read; another may omit it.
+   */
+  readonly version?: string;
+}
+
+/** Options of {@link IStorageDriver.delete}. */
+export interface StorageDeleteOptions {
+  /**
+   * Delete the object only while it is the one this version names: the `version` a {@link IStorageDriver.getTail} of
+   * it reported. Pass the one read when the decision to delete was made, never one read after it, or the condition
+   * names whatever is under the key by then. Applied only by a driver that reports
+   * {@link StorageCaps.conditionalDelete}; ignored by any other, and absent, the delete is unconditional.
+   */
+  readonly ifVersion?: string;
 }
 
 /**
@@ -258,9 +300,27 @@ export interface StorageCaps {
  *   negative or non-integer offset or length. Never a clamped, short or adjacent read. A pin whose object
  *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
  *   to check that the object is still the one it pinned.
- * - **`getTail` reports the object's true total size**, not the number of bytes it returned.
+ * - **`getTail` reports the object's true total size**, not the number of bytes it returned, and, where the driver has
+ *   one, the object's `version` ({@link TailRead.version}) from the same response as the bytes.
  * - **`delete` is idempotent.** Deleting an absent key is a no-op, not an error: collection passes race each
- *   other and retry.
+ *   other and retry. That holds with `ifVersion` too: an absent object is a no-op whatever version is given.
+ * - **`delete` with `ifVersion` does what {@link StorageCaps.conditionalDelete} says.** A driver that reports `true`
+ *   removes the object only while it is the one the version names, by a check the backend applies in the same step as
+ *   the removal (S3 `If-Match`, GCS `ifGenerationMatch`, Azure Blob `ifMatch`; in memory, the check and the removal with
+ *   no await between them), and for another object under the key throws {@link WriteConflictError} and leaves it. A
+ *   check made by reading the object first and deleting after is not one step, and does not qualify. Where the service
+ *   answers a failed precondition for a key with no object, the driver looks again before it reports a conflict, so an
+ *   absent object stays a no-op. A driver that reports `false`, or omits it, ignores `ifVersion` and deletes whatever is
+ *   under the key. A number can be taken again once its object is deleted, so this is what keeps a delete decided from
+ *   one read, and delayed, from removing an object stored under the number since: the erasure's delete of a holder
+ *   above the pointer passes the version it read when it searched that object, and a refused load's delete of an
+ *   object it proved its own by a footer read passes the version of that read.
+ * - **A driver that wraps another forwards `ifVersion` and the `version` of a tail read, or reports
+ *   `conditionalDelete: false`.** A wrapper that hands `delete` the key alone, and reports the inner driver's
+ *   capability, makes every conditional delete through it unconditional without a word.
+ * - **A conditional delete may be sent again**, by the backend client's retry, after a lost response: a copy that meets
+ *   its own landed delete finds the object absent, which is its success, and one that meets an object stored since is
+ *   refused. It can remove nothing the first copy could not.
  * - **`list` is strongly consistent, read-after-delete.** Once `delete` has resolved, `list` no longer yields
  *   that generation, and once `putImmutable` has resolved it does. The erasure's re-check for a generation still
  *   holding the id, `dropSegment`'s `generationsRemaining`, the retention sweep's check that a tombstone's storage
@@ -295,12 +355,16 @@ export interface IStorageDriver {
    */
   getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array>;
   /**
-   * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**. A missing
-   * object throws {@link NotFoundError}.
+   * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**, and its `version`
+   * where the driver has one ({@link TailRead}). A missing object throws {@link NotFoundError}.
    */
-  getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }>;
-  /** Idempotent: deleting an absent key is a no-op, not an error. */
-  delete(key: GenKey): Promise<void>;
+  getTail(key: GenKey, maxBytes: number): Promise<TailRead>;
+  /**
+   * Idempotent: deleting an absent key is a no-op, not an error. With `options.ifVersion`, on a driver that reports
+   * {@link StorageCaps.conditionalDelete}, the object is removed only while it is the one that version names, and
+   * another object under the key is left and the delete throws {@link WriteConflictError}; any other driver ignores it.
+   */
+  delete(key: GenKey, options?: StorageDeleteOptions): Promise<void>;
   /**
    * Enumerate the generations present for a segment (orphan sweep / latest-gen resolution). Strongly
    * consistent, read-after-delete and read-after-put.

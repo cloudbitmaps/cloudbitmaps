@@ -33,7 +33,7 @@ function dropAt(
     capabilities: () => real.capabilities(),
     getTail: (k, m) => real.getTail(k, m),
     getRange: (k, o, l) => real.getRange(k, o, l),
-    delete: (k) => real.delete(k),
+    delete: (k, o) => real.delete(k, o),
     list: (r) => real.list(r),
     putImmutable: async (k: GenKey, write) => {
       if (!fired && when === 'before-commit') {

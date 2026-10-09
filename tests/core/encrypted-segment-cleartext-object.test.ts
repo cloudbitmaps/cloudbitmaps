@@ -4,7 +4,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { BufferSink } from '@/core/blob';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { nextGeneration } from '@/core/generation-gc';
-import { holdsObject } from '@/core/crbm-storage-source';
+import { provenObject } from '@/core/crbm-storage-source';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { IntegrityError, NotFoundError } from '@/core/errors';
@@ -66,8 +66,10 @@ describe('a cleartext object under an encrypted segment', () => {
     const bytes = await storage.getRange(key, 0, size);
     const fingerprint = (await CrbmReader.open(new BufferReader(bytes))).fingerprint;
     expect(await CrbmReader.sameObject(new BufferReader(bytes), fingerprint)).toBe(true);
-    expect(await holdsObject(storage, key, fingerprint)).toBe(true);
-    expect(await holdsObject(storage, key, `${size}:1`)).toBe(false);
+    expect(await provenObject(storage, key, fingerprint)).toEqual({
+      version: (await storage.getTail(key, 0)).version,
+    });
+    expect(await provenObject(storage, key, `${size}:1`)).toBeNull();
   });
 
   it('a forgery in place of the current generation is refused by every read of the object', async () => {

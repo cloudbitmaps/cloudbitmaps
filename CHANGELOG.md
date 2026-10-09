@@ -60,6 +60,19 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A storage driver can delete an object only while it is the one that was read: `StorageCaps.conditionalDelete`,
+  `IStorageDriver.delete(key, { ifVersion })` and `getTail`'s `version`.** A tail read reports the object's version
+  (`TailRead.version`: an S3 or Azure Blob ETag, a GCS object generation), and a driver that reports
+  `conditionalDelete: true` deletes, given that version, only the object it names, by a precondition the backend
+  applies (`If-Match`, `ifGenerationMatch`, `ifMatch`), refuses another object under the key with
+  `WriteConflictError`, and treats an absent one as a no-op. A driver that reports `false`, or omits it, ignores the
+  version. The in-memory driver reports `true`; the local-filesystem driver `false`, since a filesystem has no delete
+  conditioned on which file is under a path; S3, GCS and Azure Blob as the backend's existing `conditionalDelete` option
+  says, which now covers the storage half as well as the registry: on by default for S3 when its client sends to an AWS
+  S3 host and for Azure Blob, off by default for GCS. All three parts are optional, so a driver of your own keeps
+  compiling and deleting unconditionally until it implements them; the in-repo conformance suite's `conditional delete`
+  case is the test ([driver kit](docs/guide/api-reference.md#driver-kit--what-you-need-to-implement-a-driver)). New
+  types `TailRead` and `StorageDeleteOptions`, from `@cloudbitmaps/core`, its driver kit and `@cloudbitmaps/roaring`.
 - **`@cloudbitmaps/core/driver-kit` exports `RESOLVED_FIELDS`, `renewsPointer`, `renewPointer` and `pointerIdOf`**: the
   fields a read resolves through, whether a patch renews a row's `pointerId`, the patch that renews it and changes
   nothing a read resolves (the pointer, named at the value it has), and a row's `pointerId`, refusing a row with none
@@ -139,6 +152,36 @@ so, and so do the module headers in the code.
   against (its own or another erasure's), sends a fresh write after a wait, at most three, when the row is as it was,
   and otherwise reports what the row says; one it cannot settle throws the registry's `TransientError`, and the
   generations the write guards are not deleted ([erasure](docs/guide/erasure.md#how-it-stays-correct)).
+- **The written bound on what a read already in progress can yield after an erasure counts the key a combine is
+  handing out.** A combine can still yield an id the store's own erasure removed from up to `concurrency` + 1 keys of
+  each operand (33 by default): the key it is handing out when the erasure returns and the `concurrency` keys it had
+  already requested. `PRIVACY.md`, its published copy and the erasure guide said `concurrency` (32). The reads are
+  unchanged; `iterate` and `count` stay at 32 chunks, and a test now counts each bound in a read past its ramp-up.
+- **A store keeps each segment's resolution apart from its reader, so the reader cache letting a segment go no longer
+  moves a read on or reads its row again.** With a timed refresh (a backend and `cache.genTtlMs` above 0), the store
+  keeps what it read of each segment's row (the generation, its `pointerId`, the wrapped keys and the summary, never an
+  unwrapped key) for `cache.genTtlMs` from the instant that registry read was sent, in a cache of its own bounded at
+  8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default; there is no new
+  option). After an eviction inside the TTL a read sends no registry read. A `has()` whose chunk is cached, a `count()`
+  and a `stat()` answered from the row's summary send nothing to storage or the registry, where a `has()` sent a
+  registry read and a tail read and a `count()` the registry read. A read that needs the index or a chunk the chunk
+  cache does not hold opens the object again: `iterate` and the combines always do, with a tail read, and a `has()` of
+  an uncached chunk sends the tail read and, unless the tail carried the chunk, its range. On an encrypted segment the
+  key is unwrapped again through your keystore, one request to it, for the open or for the row's sealed summary. A long read under reader-cache pressure, as on a small Lambda, stays on the generation it
+  resolved until the TTL lapses, as any read does, unless the resolution cache lets the resolution go (past its bounds)
+  or a read of the segment, this one or another, finds its generation swept or another object under its number, or
+  fails to open it. After an eviction a store can serve a cached chunk of a generation another store erased from, and
+  read with the wrapped keys it kept after another store's crypto-shred, up to the same `cache.genTtlMs`: both within
+  the written bound. The `.crbm` source's `currentVersion()` and `currentGeneration()` answer from the resolution and
+  open nothing: the version names the object the row's summary names, and a generation swept or an object replaced
+  under the number is met by the first read that opens the object, which resolves the row again; a row with no summary
+  it can use still has its object opened to name it. During a registry outage only a segment still in the reader cache
+  keeps serving; a segment the reader cache let go fails with the fault once its resolution lapses, as a cold read
+  does. A segment resolved only for its generation, with no reader open, unwraps its key at the first read that needs it,
+  during an outage from the wrapped keys of the row it resolved before, where the generation lookup used to unwrap it;
+  `PRIVACY.md` and its published copy now say what a store serves through an outage, a segment resolved for a count or
+  a generation lookup included. `invalidate()` forgets the resolution, and so do a read that finds its generation swept and any open that
+  fails. A store with no timed refresh keeps no resolution, and an eviction resolves the segment again there.
 - **`store.segment(name, options)` takes a plain object, and refuses `expiresAt` as it refuses any other key but
   `namespace`**: with `ValidationError` naming it, `segment: unknown option "expiresAt"; a handle takes { namespace }
   only`. Every own key is scanned, enumerable or not, and a class instance or an object built on another is refused,
@@ -175,6 +218,29 @@ so, and so do the module headers in the code.
   `pointerRefreshMs` getters of `CrbmStorageChunkSource`, `PinnedStorageChunkSource` and `RetryingStorageChunkSource`,
   and `SegmentEngine`'s `pointerRefreshMs`, `supportsStorageSize` and `segmentSize`; a storage source of your own can
   drop its `pointerRefreshMs`.
+
+### Fixed
+
+- **On a storage driver that reports `conditionalDelete`, an erasure no longer deletes a generation a load put, since
+  its search, under the number of a holder above the pointer, and a refused load no longer deletes one put under its
+  number since its footer read.** A number can be taken again once its object is deleted. While one erasure re-read the
+  row before deleting a holder above the pointer, a second erasure of the same id could delete that holder, and a load
+  take its number, write and publish; the first erasure's delete then removed the load's generation, and the pointer
+  named a missing object. Each delete of a holder above the pointer now passes the version the erasure read when it
+  searched that object, and on a driver that reports `conditionalDelete` the delete of another object is refused: the
+  erasure stops deleting and reports `erased: true` when nothing left holds the id, or `'superseded'`. A load refused
+  after its row was purged, which proves its object its own by a footer read before deleting it, passes the version of
+  that read the same way. On a driver that does not report it (the local-filesystem driver, GCS by default, S3 on a
+  host other than AWS S3 unless set) the window remains. The condition names the object, not the row, so a rollback
+  onto the generation being deleted still leaves the pointer on a missing object; on S3, whose ETag is computed from
+  the bytes of an object stored without SSE-KMS or SSE-C, a load that writes exactly the holder's bytes under its
+  number, stored the same way, is not told apart; and every other delete stays unconditioned, by number: a refused
+  rewrite's of its own object above the winner's pointer or under a `destroyed` row, and a refused load's of its own object under a row that is
+  unchanged, changed only in its leases, or `destroyed`, since a write reports no version; generation collection's,
+  decided below the pointer from a listing or from the row's list of kept generations, where a number is taken again
+  only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a listing
+  names under a `destroyed` row, which every writer refuses until it is purged
+  ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 
 ## [0.19.1] — 2026-10-09
 

@@ -95,6 +95,7 @@ import type { Yielder } from './cooperative';
 import type { Rng } from './determinism';
 import {
   objectIsEncrypted,
+  objectVersionOf,
   openGenerationReader,
   provesOwnObject,
   publishGeneration,
@@ -195,9 +196,12 @@ export interface EraseIdResult {
    *
    * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
    * load, another erasure, or a rollback — moved the pointer off the generation this call read (on a row with no
-   * pointer, any other write of the row before this call renewed it, a `setRetention` included), so what it was
-   * doing no longer follows from what is current: a rewrite derived from that generation is not a valid successor
-   * to the new one, and a generation it meant to delete above the pointer may be the one the pointer now names.
+   * pointer, any other write of the row before this call renewed it, a `setRetention` included), or replaced an
+   * object it meant to delete (another erasure deleted a holder above the pointer and a load stored another object
+   * under its number, so the storage driver's conditional delete refused this call's, whether or not the pointer
+   * moved). What it was doing no longer follows from what is current: a rewrite derived from that generation is not
+   * a valid successor to the new one, and a generation it meant to delete above the pointer may be the one the
+   * pointer now names, or another object than the one it searched.
    * Re-run against the new generation: if the id is still present it is erased then; if the racing writer was
    * another erasure of the *same* id, the re-run reports `'not-member'` because it is already gone. Either way the
    * re-run settles it, which is why it is the documented action for this reason and for no other.
@@ -437,6 +441,12 @@ async function eraseOnce(
    */
   const sealed = new Set<number>();
   /**
+   * The version of the object `holds` last searched under each generation, as the driver reported it on the open's tail
+   * read: what a delete of that generation as a holder is conditioned on, so it removes the object that was searched and
+   * not one stored under the number since.
+   */
+  const searched = new Map<number, string | undefined>();
+  /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
    * but the outcome it wants. `true`, and the generation noted in `sealed`, for an object sealed under a key the row
@@ -496,6 +506,7 @@ async function eraseOnce(
         }
         reader = await read(() => openGenerationReader(deps.storage, key, undefined));
       }
+      searched.set(generation, objectVersionOf(reader));
       const bytes = await read(() => reader.getChunk(chunkKey));
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
@@ -675,8 +686,14 @@ async function eraseOnce(
    * with `allowForward` onto an object the rollback accepts (on a row with no key, a cleartext one: it refuses an
    * encrypted target there); below it, an object sealed under a key the row does not hold, which only a rollback with
    * no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
-   * move-then-verify catches every such landing except one whose check runs before the delete, and the storage driver
-   * port has no conditional delete to close it.
+   * move-then-verify catches every such landing except one whose check runs before the delete, and a condition on the
+   * object cannot close it, since the pointer then names the very object that was searched.
+   *
+   * What the condition does close is another object under the number. In that round trip another erasure can delete
+   * the holder and a load take its number, write and publish. Each delete passes the version the search read
+   * (`searched`), so a driver that reports `conditionalDelete` refuses it for any other object, and the deletes stop
+   * there, with the row's reason, `'superseded'` when the row gives none. On a driver that does not, the delete
+   * removes whatever is under the number.
    */
   const deleteFenced = async (
     holders: readonly number[],
@@ -687,7 +704,15 @@ async function eraseOnce(
       if (moved !== null) break;
       moved = rowVerdict(await deps.registry.get(ref));
       if (moved !== null) break;
-      await deps.storage.delete({ ...base, generation });
+      try {
+        await deps.storage.delete({ ...base, generation }, { ifVersion: searched.get(generation) });
+      } catch (err) {
+        if (!isWriteConflictError(err)) throw err;
+        // Another object is under the number now: the one searched was deleted, and the number taken again. What this
+        // call was doing no longer follows from what is there, so it deletes nothing more, and the row says why.
+        moved = rowVerdict(await deps.registry.get(ref)) ?? 'superseded';
+        break;
+      }
       deleted.push(generation);
     }
     return { deleted, moved };
@@ -820,7 +845,14 @@ async function eraseOnce(
    *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
    *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
    *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
-   *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}).
+   *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}): a rollback that
+   *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
+   *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
+   *    the object cannot close that one, since the pointer then names the very object that was searched.
+   *    What the condition does close is another object under the number: in that round trip another erasure can
+   *    delete the holder and a load take its number, write and publish. Each delete passes the version the search
+   *    read (`searched`), so a driver that reports `conditionalDelete` refuses it for any other object, and the deletes
+   *    stop as they do for a moved row. On a driver that does not, the delete removes whatever is under the number.
    *
    * An object sealed under a key the row does not hold is a holder this call cannot search ({@link holds}). Beside a
    * generation that was searched and held the id, it goes as any holder does: above the pointer by name, below it with
@@ -1033,10 +1065,13 @@ async function eraseOnce(
    * Everywhere else the object is left alone, as a refused load leaves its own once the row has changed. At or
    * above `written` the pointer either names it or belongs to a writer that numbered after it and whose
    * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone or without a pointer
-   * is not one this call can reason about. The position is read from a fresh row, just before the delete, and the
-   * number still names this call's own object: a name re-created since would have had to lose this object and
-   * then write that many generations of its own, and only its pointer landing on `written` could make the delete
-   * unsafe, which the bound excludes.
+   * is not one this call can reason about. The position is read from a fresh row, just before the delete. A name
+   * re-created since would have had to lose this object and then write that many generations of its own, and only its
+   * pointer landing on `written` could make the delete unsafe, which the bound excludes. Within the incarnation the
+   * number can be taken again in the round trip between that read and the delete: another erasure, of an id this
+   * object still holds, deletes it as a holder above the pointer, and a load numbers `currentGen + 1`, which can be
+   * `written`, and publishes. This delete is not conditioned on the object, since the write returns no version of it,
+   * so in that window it removes the load's generation.
    *
    * Returns the row it read, so a refused publish reports what that row says.
    */

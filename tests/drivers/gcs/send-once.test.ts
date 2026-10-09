@@ -595,9 +595,11 @@ describe('GCS: one-request reads through the real SDK', () => {
       { 'content-type': 'application/json' },
       '{"error":{"code":416}}',
     ];
+    // The version is the object generation the metadata names.
     expect(await (backend.storage as GcsStorageDriver).getTail(GEN, 10)).toEqual({
       bytes: new Uint8Array(0),
       size: 0,
+      version: expect.stringMatching(/^[1-9]\d*$/),
     });
     expect(stub.count('media')).toBe(1);
     expect(stub.count('metadata')).toBe(1);

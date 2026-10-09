@@ -434,9 +434,10 @@ survives an erasure, which collects every generation below its new pointer, and 
 [Reading in depth](reading.md#read-one-fixed-point-in-time) covers pins and
 [leases](reading.md#hold-a-generation-for-a-job-a-lease).
 
-**What no value of `keep` gives you is a single instant.** A read whose TTL elapses, whose reader is evicted, or whose
-store is invalidated moves to another generation whether or not the old one still exists. A job that needs one
-instant, such as an export, a reconciliation, or a send that must match the count you reported, needs a pinned handle.
+**What no value of `keep` gives you is a single instant.** A read whose TTL elapses, whose reader is evicted on a store
+with no timed refresh, whose resolution is let go by the resolution cache of a store with one, whose segment another
+read of the store resolves again (finding its generation swept, or failing to open it), or whose store is invalidated
+moves to another generation whether or not the old one still exists. A job that needs one instant, such as an export, a reconciliation, or a send that must match the count you reported, needs a pinned handle.
 See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load).
 
 There is deliberately no time-based floor on collection ("keep nothing younger than 24 h"). It would read as a
@@ -1165,7 +1166,11 @@ commits atomically: a hard link, a conditional PUT, a multipart complete) and th
 generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an object
 that was never current. So does a load whose registry write ended without an answer that the row could settle (it throws
 `TransientError`), and a refused load that finds another write has changed the segment's row, since by then its
-generation number may name a re-created segment's object. The orphan is named by no row's list, because only a generation that was current is recorded as kept, so it takes no
+generation number may name a re-created segment's object. A refused load that finds the row gone, or a cleartext load
+that finds a key on the row, deletes its object only once its footer proves it is the object this load wrote, and passes
+the version that read reported, so on a storage driver that reports `conditionalDelete` an object put under the number
+since is kept. Where the row is unchanged, the delete is by number: the object is this load's own write, of which the
+write reports no version. The orphan is named by no row's list, because only a generation that was current is recorded as kept, so it takes no
 place in a window. A load whose check meets it numbers above it by a listing and, once its own generation is current,
 that listing deletes the orphan, which is below the pointer and not named. An orphan stranded elsewhere below the pointer
 waits for the next listing, at most 16 generations on. There is no half-loaded state a reader can observe: a read resolves one generation and reads
