@@ -128,7 +128,10 @@ so, and so do the module headers in the code.
   under the number is met by the first read that opens the object, which resolves the row again; a row with no summary
   it can use still has its object opened to name it. During a registry outage only a segment still in the reader cache
   keeps serving; a segment the reader cache let go fails with the fault once its resolution lapses, as a cold read
-  does. `invalidate()` forgets the resolution, and so do a read that finds its generation swept and any open that
+  does. A segment resolved only for its generation, with no reader open, unwraps its key at the first read that needs it,
+  during an outage from the wrapped keys of the row it resolved before, where the generation lookup used to unwrap it;
+  `PRIVACY.md` and its published copy now say what a store serves through an outage, a segment resolved for a count or
+  a generation lookup included. `invalidate()` forgets the resolution, and so do a read that finds its generation swept and any open that
   fails. A store with no timed refresh keeps no resolution, and an eviction resolves the segment again there.
 - **`store.segment(name, options)` takes a plain object, and refuses `expiresAt` as it refuses any other key but
   `namespace`**: with `ValidationError` naming it, `segment: unknown option "expiresAt"; a handle takes { namespace }
