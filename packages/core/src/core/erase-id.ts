@@ -745,8 +745,13 @@ async function eraseOnce(
   > => {
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
+    // The row's summary of `from`, when it has one this call can use: the rewrite reads only the object it names, as a
+    // live read does, so an object put under the number from outside the library is never published as the rewrite.
+    const described = usableSummary(ref, record, aead);
     try {
-      const reader = await read(() => openGenerationReader(deps.storage, fromKey, cryptoAt(from)));
+      const reader = await read(() =>
+        openGenerationReader(deps.storage, fromKey, cryptoAt(from), {}, described?.fingerprint),
+      );
       const bytes = await read(() => reader.getChunk(chunkKey));
       // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
       // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
@@ -765,10 +770,7 @@ async function eraseOnce(
       // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
       // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
       // authenticated and the summary is, so a stripped block is not made permanent by the rewrite.
-      const metadata = metadataToCarry(
-        reader.metadata,
-        aead === undefined ? undefined : usableSummary(ref, record, aead),
-      );
+      const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
       const tally = await writeCrbmGenerationStream(
         deps.storage,
         key,
@@ -806,7 +808,9 @@ async function eraseOnce(
       }
       const verdict = rowVerdict(now);
       if (verdict !== null) return refused(verdict, written);
-      throw err; // the pointer still names the missing object: genuinely absent, not a race
+      // The pointer still names the object, and it is missing or is another object than the row's summary names:
+      // neither is a race, and nothing was published from it.
+      throw err;
     }
   };
 

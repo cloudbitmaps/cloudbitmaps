@@ -6,8 +6,9 @@ import {
   verifyGeneration,
   writeCrbmGenerationStream,
 } from '@/core/crbm-storage-source';
+import { CrbmReader } from '@/core/crbm/reader';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, isNotFoundError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import type { GenerationMetadata, RegistrySummary, SegmentRef } from '@/core/ports';
 import { openSummary, sealSummary, summaryAgrees, usableSummary } from '@/core/summary';
@@ -182,12 +183,41 @@ async function stripBlock(w: World): Promise<void> {
 }
 
 describe('an erasure over an object whose metadata block was stripped', () => {
-  // Whoever can write the bucket replaces generation 0 with the same ids and no block: whether an encrypted object's
-  // block is there is not authenticated, so it opens without complaint. The row's sealed summary is authenticated.
-  it('on an encrypted segment carries the metadata the row authenticated, and the erasure goes through', async () => {
+  // Whoever can write the bucket replaces generation 0 with the same ids and no block. The stripped object is another
+  // object than the row's summary names by its fingerprint, so the erasure refuses it before it writes anything. A
+  // fingerprint is a size and a CRC, which whoever can write the bucket can match on purpose: past a matched one, whether
+  // an encrypted object's block is there is still not authenticated, and the row's sealed summary is.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  /** Whoever stripped the block also matched the fingerprint the row's summary records. */
+  const forgeFingerprint = (): void => {
+    vi.spyOn(CrbmReader, 'sameObject').mockResolvedValue(true);
+  };
+
+  it.each([
+    ['an encrypted', true],
+    ['a cleartext', false],
+  ])(
+    'on %s segment it refuses the stripped object, and writes and publishes nothing',
+    async (_, sealed) => {
+      const w = world(sealed ? key() : undefined);
+      await loadSegment(SEG, IDS, w.deps, { metadata: META });
+      await stripBlock(w);
+      const before = (await w.registry.get(SEG))!;
+
+      await expect(eraseIdFromSegment(SEG, 1, w.deps)).rejects.toSatisfy(isNotFoundError);
+      const after = (await w.registry.get(SEG))!;
+      expect(after.token).toBe(before.token);
+      await expect(readerOf(w, 1)).rejects.toSatisfy(isNotFoundError);
+    },
+  );
+
+  it('on an encrypted segment, past a matched fingerprint, carries the metadata the row authenticated', async () => {
     const w = world(key());
     await loadSegment(SEG, IDS, w.deps, { metadata: META });
     await stripBlock(w);
+    forgeFingerprint();
 
     const result = await eraseIdFromSegment(SEG, 1, w.deps);
     expect(result).toMatchObject({ erased: true, generation: 1 });
@@ -256,10 +286,11 @@ describe('an erasure over an object whose metadata block was stripped', () => {
     expect((await readerOf(w, 1)).metadata).toBeUndefined();
   });
 
-  it('on a cleartext segment carries the object as it is: a clear summary has no more authority than the block it sits beside', async () => {
+  it('on a cleartext segment, past a matched fingerprint, carries the object as it is: a clear summary has no more authority than the block it sits beside', async () => {
     const w = world();
     await loadSegment(SEG, IDS, w.deps, { metadata: META });
     await stripBlock(w);
+    forgeFingerprint();
     const row = (await w.registry.get(SEG))!;
     expect(row.summary).toMatchObject({ metadata: META });
 

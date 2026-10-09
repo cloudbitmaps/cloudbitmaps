@@ -3171,15 +3171,17 @@ async function bucketIds(
 /**
  * Open a {@link CrbmReader} on one generation over the storage driver's range/tail reads (decrypting if `crypto`).
  * The reader the write paths use to re-read what they wrote, and the erasure rewrite uses to stream the old
- * generation; the engine's read path goes through {@link CrbmStorageChunkSource} instead, which caches these.
+ * generation; the engine's read path goes through {@link CrbmStorageChunkSource} instead, which caches these. With
+ * `named`, the fingerprint the row's summary records, the object must be that one: another is {@link NotFoundError}.
  */
 export function openGenerationReader(
   storage: IStorageDriver,
   key: GenKey,
   crypto: CrbmCrypto | undefined,
   options: Omit<CrbmReaderOptions, 'crypto'> = {},
+  named?: string,
 ): Promise<CrbmReader> {
-  return openChecked(storage, key, { ...options, crypto });
+  return openChecked(storage, key, { ...options, crypto }, undefined, named);
 }
 
 /**
