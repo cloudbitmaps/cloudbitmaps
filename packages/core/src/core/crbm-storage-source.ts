@@ -33,6 +33,7 @@ import { yieldEvery } from './cooperative';
 import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import { incarnationField, sameIncarnation } from './token';
+import { pointerIdOf } from './pointer-id';
 import { nextKept } from './kept-generations';
 import { isLive, leaseChurn, onlyLeasesDiffer } from './leases';
 import type { KeptAfter } from './kept-generations';
@@ -155,13 +156,14 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
 
 /**
  * A resolved read target, as `resolveLive` produces it: which generation is current, and its DEK wrappings if it
- * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete, because a shipped
- * registry never gives two writes under one name the same token, but for a collision of probability 2^-128 per pair of
- * incarnations: each row's token carries a random 128-bit incarnation id, and each write a random part of its own. It is what separates two *incarnations*
- * of one name, which a generation number cannot:
- * the numbering restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
- * segment presents different data at the same `currentGen`. Undefined for a registry-less source, which has no
- * row: there, only the object itself tells two incarnations apart, by the fingerprint a pin records.
+ * is encrypted. `lineage` is the registry row's `pointerId`: the token of the write that last set what the row resolves
+ * to, which a shipped registry never gives two writes under one name, but for a collision of probability 2^-128 per pair
+ * of incarnations. It is what separates two *incarnations* of one name, which a generation number cannot: the numbering
+ * restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created segment presents different
+ * data at the same `currentGen`; and it separates two resolutions of one number within an incarnation, since every write
+ * that changes what the row resolves to renews it. A lease or a policy write leaves it, so what is cached under it
+ * outlives those. Undefined for a registry-less source, which has no row: there, only the object itself tells two
+ * incarnations apart, by the fingerprint a pin records.
  */
 type Target = { generation: number; lineage?: Token; wrappedDeks?: readonly WrappedDek[] };
 
@@ -182,10 +184,10 @@ const notThePinned = (ref: SegmentRef, generation: number): NotFoundError =>
   );
 
 /**
- * What a resolution names: `<generation>`, or `<generation>:<row token>` where there is a row. One spelling, for the
+ * What a resolution names: `<generation>`, or `<generation>:<pointerId>` where there is a row. One spelling, for the
  * live lookup and for what a pin holds. It names an object only as of the row read that produced it: a number can be
- * taken again once its object is deleted, and every row write that leads there moves the token, so an object opened
- * after that row read can be another one under the same name. {@link versionOfReader} adds the object.
+ * taken again once its object is deleted, and every row write that leads there renews the `pointerId`, so an object
+ * opened after that row read can be another one under the same name. {@link versionOfReader} adds the object.
  */
 function versionOf(generation: number, lineage: unknown): string {
   return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
@@ -213,12 +215,12 @@ function versionOfReader(reader: CrbmReader): string {
 const OBJECT_SUFFIX = /#[0-9a-z]+\.[0-9a-z]+$/;
 
 /**
- * What a live version's resolution named, without the object's fingerprint: `<generation>:<row token>`, or
+ * What a live version's resolution named, without the object's fingerprint: `<generation>:<pointerId>`, or
  * `<generation>` with no registry. For a caller that compares a live version, from
- * {@link CrbmStorageChunkSource.currentVersion} or a chunk of its `getChunks`, with a row it read, which names no
- * object. A live version always ends with the suffix, which holds no `#`, so the match starts at its last `#` and a row
- * token holding `#` of its own is kept whole. Known limit: a string with no suffix, such as a pin's version or one
- * from another source, loses its end when its row token itself ends in `#<base 36>.<base 36>`; no caller passes one.
+ * {@link CrbmStorageChunkSource.currentVersion} or a chunk of its `getChunks`, with a row it read. A live version always
+ * ends with the suffix, which holds no `#`, so the match starts at its last `#` and a `pointerId` holding `#` of its own
+ * is kept whole. Known limit: a string with no suffix, such as a pin's version or one from another source, loses its end
+ * when its `pointerId` itself ends in `#<base 36>.<base 36>`; no caller passes one.
  */
 export function rowVersionOf(version: string): string {
   return version.replace(OBJECT_SUFFIX, '');
@@ -291,14 +293,14 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
   };
 }
 
-/** Whether a reader is of the generation, and the row incarnation, a resolution found. */
+/** Whether a reader is of the generation, and the row's `pointerId`, a resolution found. */
 const readerIsOf = (reader: CrbmReader, live: Live): boolean =>
   reader.generation === live.target.generation && reader.lineage === live.target.lineage;
 
 /**
  * Whether `snap` reads the object `reader` opened. Once the snapshot's reader has opened, its version says, which names
  * the object. Until then, while none has been asked for and while another read's open of it is under way, its
- * resolution says, by generation and row token, so nothing is opened, and nothing waited on, to learn it; the
+ * resolution says, by generation and the row's `pointerId`, so nothing is opened, and nothing waited on, to learn it; the
  * snapshot's reader can still turn out to be another object under that name, which the caller checks once it opens.
  * An open that failed is another read's failure, and never the caller's: the reader cache forgets a snapshot whose open
  * failed as the failure lands, so the caller meets a new snapshot next and resolves the segment through it.
@@ -782,10 +784,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * `<generation>#<object>` for a registry-less source, or `<generation>:<row token>#<object>` with one: the generation
+   * `<generation>#<object>` for a registry-less source, or `<generation>:<pointerId>#<object>` with one: the generation
    * the segment's snapshot resolved, and the object its reader opened, by that object's size and footer checksum in
-   * base 36, which the open read anyway. The token moves on every row write, so an unrelated write (a `setRetention`)
-   * costs the segment's decoded chunks once — bounded, and on an admin path. Two objects do not share a version
+   * base 36, which the open read anyway. The row's `pointerId` moves only with a write that changes what the row
+   * resolves to, so a lease or a policy write (a `setRetention`) leaves the version, the open reader and the decoded
+   * chunks as they were. Two objects do not share a version
    * string, as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second
    * one: a name purged and loaded again (a new row, or with no registry the same bare number), a number taken again
    * within one row once its object was deleted, or an object put back under its key from outside the library. That
@@ -884,12 +887,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // A lease goes before the open and the verify, as a pin's does: the write is fenced on the row just read, so what
       // it holds is held from here on. For a generation below the pointer one window remains: a collector that read the
       // row before this write and deletes after it, inside its own round trip, takes the generation anyway, and the verify
-      // below, or a later read, then fails with `NotFoundError`. The caller releases the lease when this throws.
-      let lineage = record.token;
+      // below, or a later read, then fails with `NotFoundError`. The caller releases the lease when this throws. A lease
+      // changes nothing the row resolves to, so the version is the row's as read.
+      const lineage = pointerIdOf(record);
       if (lease !== undefined) {
         const taken = await lease.take(record);
         if (taken === 'moved') throw gone('the segment moved while its lease was taken');
-        lineage = taken.token;
       }
       version = versionOf(generation, lineage);
       const key = this.pinnedKey(ref, version);
@@ -946,22 +949,22 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no timed refresh,
     // arbitrarily far behind. Pinning through it made a pin on such a store
     // return whatever generation the store happened to hold, however old.
-    let live = await this.resolveLive(ref);
+    const live = await this.resolveLive(ref);
     if (live === null) return null;
     if (lease !== undefined && live.row !== undefined) {
       // The lease goes first and the open second. The write lands only while the row is the one just read, so the
       // generation was current at that instant and no collection can have taken it; every later collection reads
-      // the row, and the lease with it. The version then names the row the write made.
+      // the row, and the lease with it. A lease changes nothing the row resolves to, so the row's `pointerId`, and with
+      // it the version, are the ones just read: leased and unleased pins of one generation share one open.
       const taken = await lease.take(live.row);
       if (taken === 'moved') throw new PinMoved();
-      live = { ...live, target: { ...live.target, lineage: taken.token } };
     }
     const target = live.target;
     const version = versionOf(target.generation, target.lineage);
     // Opened now, not at the first pinned read, so the pin knows which object it holds: a name purged and loaded
     // again starts again at generation 0, and only the object itself tells the two apart. With a registry the
-    // version already does, since the row a name is loaded into again is a new row with a new token, so every pin of
-    // this version shares one open. It is installed before it resolves, so pins taken at the same moment wait on it
+    // version already does, since the row a name is loaded into again is a new row with a new `pointerId`, so every pin
+    // of this version shares one open. It is installed before it resolves, so pins taken at the same moment wait on it
     // rather than each make their own: N pins of one generation make one tail read and one key unwrap between them,
     // while the store keeps the reader. Without a registry the version is the bare generation number, which two
     // incarnations share, so every pin opens the object afresh and reads its fingerprint.
@@ -1135,7 +1138,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     if (record === null || record.status === 'destroyed') return null;
     return this.openForTarget(ref, {
       generation,
-      lineage: record.token,
+      lineage: pointerIdOf(record),
       wrappedDeks: record.wrappedDeks,
     });
   }
@@ -1383,7 +1386,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       const crypto = once(() => this.cryptoForRead(ref, generation, keys, unwrap));
       return {
         row: record,
-        target: { generation, lineage: record.token, wrappedDeks: record.wrappedDeks },
+        target: { generation, lineage: pointerIdOf(record), wrappedDeks: record.wrappedDeks },
         crypto,
         unwrap,
         // The same checks as a read of the object makes (`requireEncryption`, a keystore for an encrypted row)
@@ -1738,8 +1741,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * caller-visible error, so instead we drop the stale snapshot,
    * re-resolve `currentGen`, and retry once — the read then serves the newer (committed, immutable) generation,
    * a monotonic move forward — within one incarnation of the row. A name that was retired and re-created is a
-   * different segment and can resolve to a LOWER generation, which is why the snapshot carries the row's token
-   * as its lineage rather than trusting the generation number (invariant 1).
+   * different segment and can resolve to a LOWER generation, which is why the snapshot carries the row's
+   * `pointerId` as its lineage rather than trusting the generation number (invariants 1 and 2).
    *
    * **Resolution and open are inside the retry, not before it.** Resolving `currentGen` and opening that
    * generation's object are two backend round trips with a gap between them, so the object can be swept after
@@ -2598,7 +2601,7 @@ export async function publishGeneration(
  * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over the caller's own object.
  *
  * The incarnation is the one in the row's token ({@link sameIncarnation}): exact, and no clock. A row with no id in its
- * token (one 0.11 wrote, or a registry of someone else's) is compared by its creation stamp, a clock reading that two
+ * token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock reading that two
  * incarnations can share. So the object is always proved too, never assumed: the pointer and the incarnation alone
  * cannot say whose write this is. With no proof to ask for, the answer cannot be given, and that is an unknown outcome,
  * never a guess.

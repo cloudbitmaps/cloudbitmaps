@@ -78,6 +78,8 @@ export const ROUTED: readonly string[] = [
   'tests/core/first-load-race.property.test.ts',
   'tests/core/summary-sequences.property.test.ts',
   'tests/core/subject-report-fresh.test.ts',
+  'tests/core/pointer-id-operands.test.ts',
+  'tests/core/pointer-id-warm-reader.test.ts',
   'tests/core/union-andnot.test.ts',
   'tests/core/write-path-read-retry.test.ts',
   'tests/drivers/azure/read-timeout.test.ts',

@@ -85,16 +85,18 @@ export interface CombineManyOperand {
   /** The generation the operand is pinned to: `null` when pinned to a segment with none, `undefined` when not pinned. */
   readonly pinnedGeneration?: number | null;
   /**
-   * The pin's version: the generation and the registry row's token it was taken under (`<generation>:<token>`), or just
-   * the generation where there is no row. It is what tells a name deleted and created again, which restarts at
+   * The pin's version: the generation and the registry row's `pointerId` it was taken under (`<generation>:<pointerId>`),
+   * or just the generation where there is no row. It is what tells a name deleted and created again, which restarts at
    * generation 0, from the one that was pinned.
    */
   readonly pinnedVersion?: string | null;
   /** The fingerprint of the object the pin holds: the identity of the generation's bytes, where a number can be taken again. */
   readonly pinnedFingerprint?: string | null;
   /**
-   * A fresh read of the segment's registry row: its current generation and token, or `null` when it has no row. Read
-   * for every subtracted pinned operand just before the publishes, and once more at the end of the call for the rest.
+   * A fresh read of the segment's registry row: its current generation and, as `token`, its `pointerId` (the token of the
+   * write that last set what the row resolves to, so a lease or a policy write does not change it), or `null` when it
+   * has no row. Read for every subtracted pinned operand just before the publishes, and once more at the end of the call
+   * for the rest.
    */
   readonly current?: (options?: { readonly fingerprint?: boolean }) => Promise<{
     readonly generation: number | null;
@@ -567,7 +569,7 @@ interface OperandState {
   /** The row the last read at the end of the call, or before a publish, found: `undefined` when none was read. */
   endRow: EndRow | null | undefined;
   /**
-   * For an operand read live, the version (generation and row token, and with the `.crbm` source the object) its index
+   * For an operand read live, the version (generation and the row's `pointerId`, and with the `.crbm` source the object) its index
    * was read under, where the source says.
    */
   startVersion: string | null | undefined;
@@ -1860,8 +1862,8 @@ class Run<R> {
 }
 
 /**
- * The token of a row's version (`<generation>:<token>`, as a pin holds it), or `undefined` where the version names no
- * row. A live version from the `.crbm` source ends with the opened object's fingerprint: read it through
+ * The `pointerId` of a row's version (`<generation>:<pointerId>`, as a pin holds it), or `undefined` where the version
+ * names no row. A live version from the `.crbm` source ends with the opened object's fingerprint: read it through
  * `rowVersionOf` first.
  */
 export function tokenOfVersion(version: string | null | undefined): string | undefined {
@@ -1870,7 +1872,10 @@ export function tokenOfVersion(version: string | null | undefined): string | und
   return colon < 0 ? undefined : version.slice(colon + 1);
 }
 
-/** Whether two row tokens are one row: the same incarnation where they have one, else the same token. */
+/**
+ * Whether two of a row's `pointerId`s are one row: the same incarnation where they have one, else the same value, which a
+ * lease or a policy write does not change.
+ */
 function sameRow(a: string, b: string): boolean {
   const ia = incarnationOf(a);
   const ib = incarnationOf(b);
@@ -1880,9 +1885,8 @@ function sameRow(a: string, b: string): boolean {
 /**
  * Whether what `spec` was pinned to is still what the registry holds, given the row read now (`null`: no row). The
  * generation number alone is not an identity: a name deleted and created again starts at generation 0, and a number can be
- * taken again once its object is gone. So the incarnation of the row is compared (two tokens of one incarnation are writes
- * of one row: a retention policy or a lease moves the token and not the incarnation), and, where the row read carries
- * the current object's fingerprint, the object's too.
+ * taken again once its object is gone. So the incarnation of the row is compared (two `pointerId`s of one incarnation are
+ * writes of one row), and, where the row read carries the current object's fingerprint, the object's too.
  */
 function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boolean {
   const pinned = spec.pinnedGeneration ?? null;

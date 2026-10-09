@@ -68,7 +68,7 @@ import {
   splitId,
   takeLease,
 } from '@cloudbitmaps/core';
-import { validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import { pointerIdOf, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
 import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
@@ -1958,7 +1958,7 @@ export class CloudRoaring {
       }
     }
     const row = await this.withRetries(() => registry.get(ref));
-    return row === null ? null : { generation: row.currentGen, token: row.token };
+    return row === null ? null : { generation: row.currentGen, token: pointerIdOf(row) };
   }
 
   /** Throw what a read of, or a publish to, `handle` must throw now: its lease error, if it has one. */
@@ -2020,13 +2020,14 @@ export class CloudRoaring {
         // The row this scan just listed is authoritative; the reader's snapshot may be up to `cache.genTtlMs` behind
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
-        // version is `<generation>:<row token>` (invariant 1: the row's OCC token is the identity, the number
-        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too, followed by `#` and
-        // the fingerprint of the object its reader opened, which a row does not name and is left out here. Only a
-        // segment that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
+        // version is `<generation>:<pointerId>` (invariant 2: the number restarts at 0 once a row is purged, and is taken
+        // again once its object is deleted, and every write that leads there renews the row's pointerId), so a retired
+        // name loaded again is told apart too, followed by `#` and the fingerprint of the object its reader opened, which
+        // is left out here. Only a segment whose resolution differs is re-resolved: one whose row has not moved, or has
+        // moved only by a lease or a policy write, keeps its snapshot and costs no extra read.
         if (this.crbmSource !== undefined) {
           const held = await this.crbmSource.currentVersion(ref);
-          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
+          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${pointerIdOf(rec)}`;
           if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
@@ -2626,8 +2627,8 @@ export class CloudRoaring {
    * Pass `purgeTombstones: false` to keep every tombstone, that row included. On a backend whose registry reports
    * `conditionalDelete` (AWS S3, Azure Blob, the local filesystem and memory, by default; GCS when you set `conditionalDelete: true`)
    * the purge removes the row from the bucket for good, by a delete the store applies only to the version it judged,
-   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere,
-   * and for a row a release before 0.12 wrote, it leaves a tombstone. Each retirement files a pointer in the due index
+   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere it
+   * leaves a tombstone. Each retirement files a pointer in the due index
    * under the day its tombstone's grace ends, so `scan: 'index'` purges as well as retires.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
