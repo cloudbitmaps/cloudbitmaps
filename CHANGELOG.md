@@ -20,10 +20,11 @@ so, and so do the module headers in the code.
   the earlier one's chunks by. Inside `cache.genTtlMs` a read then returned ids of both objects, the erased id among
   them, a set no generation ever held, and `has()` could answer for the erased id and a new one together. The store
   now names each generation it reads by the object it opened as well, its size and footer checksum, which the open
-  reads anyway, so a chunk cached from one object is never served for another. It costs no request: a count answered
-  from the row still opens nothing, and a segment reopened after the reader cache let it go still reads its cached
-  chunks. The version `CrbmStorageChunkSource.currentVersion()` returns, and the one each chunk of `getChunks()`
-  carries, end with that fingerprint; compare versions for equality, as before.
+  reads anyway, so a chunk cached from one object is not served for another, as far as their sizes and footer checksums
+  tell them apart. It costs no request: a count answered from the row still opens nothing, and a segment reopened after
+  the reader cache let it go still reads its cached chunks. The version `CrbmStorageChunkSource.currentVersion()`
+  returns, and the one each chunk of `getChunks()` carries, end with that fingerprint; compare versions for equality,
+  as before.
 
 ## [0.19.0] — 2026-10-08
 

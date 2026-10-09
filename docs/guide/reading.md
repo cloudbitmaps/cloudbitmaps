@@ -172,9 +172,12 @@ object's size and footer checksum, which the open reads anyway, so the check cos
 because a number can be taken again once its object is deleted, as after a `rollback`, an `eraseSubject` that deletes
 the generation above the pointer holding the id, and a load, and because the store can open a generation some time
 after it read the row: a `count()` answered from the row opens nothing, and the read after it opens whatever object is
-under the number by then. A chunk cached from one object is never served for another, so a read never mixes the two,
-and inside `cache.genTtlMs` it can serve the newer object before the store reads the row that names it. A segment
-reopened after the reader cache let it go is the same object, and its cached chunks still answer.
+under the number by then. A chunk cached from one object is never served for another, as far as their sizes and footer
+checksums tell them apart, so a read does not mix the two. Inside `cache.genTtlMs` such a read serves the object under
+the number when it opened, which no row need name: a load that was refused, or whose publish
+[got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), can leave its object there while the row names
+an earlier generation. The store's next read of the row moves it to what the row names. A segment reopened after the
+reader cache let it go is the same object, and its cached chunks still answer.
 
 ## Read one fixed point in time
 
