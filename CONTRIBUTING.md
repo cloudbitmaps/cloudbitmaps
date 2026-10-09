@@ -299,7 +299,7 @@ gets the reasoning rather than a dead reference to it.
 This applies to code comments as much as prose: a doc-comment reaches users on hover in their editor and
 inside the published `.d.ts` and sourcemaps. **CI-enforced** by
 [`tests/docs/internal-citations.test.ts`](tests/docs/internal-citations.test.ts), which scans every `.ts`, `.js`,
-`.cjs`, `.mjs`, `.md`, `.html`, `.json`, `.yml`, `.yaml` and `.txt` file in the tree — except itself and this file,
+`.cjs`, `.mjs`, `.md`, `.html`, `.json`, `.yml`, `.yaml` and `.txt` file git tracks — except itself and this file,
 which spell the forms out to define the rule. A shell or Python script is not scanned, so keep ids out of those by
 hand. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
 [`AGENTS.md`](AGENTS.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
