@@ -2199,17 +2199,17 @@ export async function publishGenerationKept(
     /**
      * Publish only while the segment still has **no registry row**.
      *
-     * The fence for a caller whose decision rests on the row being ABSENT. `expectFrom` and `expectToken`
-     * cannot express it: both compare against a value read from a row, so when there was no row there is
-     * nothing to compare and both are simply omitted — leaving the publish a bare forward-only advance that
-     * happily lands over whatever appeared in the meantime.
+     * The fence for a caller whose decision rests on the row being ABSENT: every load that found no row sets it,
+     * guarded or not. `expectFrom` and `expectToken` cannot express it: both compare against a value read from a
+     * row, so when there was no row there is nothing to compare and both are simply omitted — leaving the publish a
+     * bare forward-only advance that happily lands over whatever appeared in the meantime.
      *
-     * That gap was a silent wipe, not a theoretical one. A guarded load into a segment that did not exist yet
-     * read "no row", so its empty/`minRetained` bounds had nothing to judge and passed vacuously; a
-     * concurrent writer then created the row and published a thousand ids; and the guarded load published an
-     * EMPTY generation over them, reporting `published: true` with no reason. Reproduced through both
-     * `loadSegment` and the `*Into` verbs, which hit it far more often because materialising into a
-     * destination that does not exist yet is the ordinary first run of a pipeline.
+     * Without it, a guarded load into a segment that did not exist yet would judge "no row", pass its empty and
+     * `minRetained` bounds vacuously, and land an EMPTY generation over the ids a concurrent writer had just loaded,
+     * reporting `published: true`. An unguarded load would move the pointer over another first load's generation or
+     * onto a row `setRetention` made, and, where an erasure had deleted its object above that row's pointer, onto an
+     * object that is gone. Materialising into a destination that does not exist yet is the ordinary first run of a
+     * pipeline, so the `*Into` verbs reach this as often as `loadSegment` does.
      */
     expectAbsent?: boolean;
     /**

@@ -52,7 +52,7 @@ changes. To judge the outputs of a `materializeMany` call without writing anythi
 | `'min-cardinality'` | The set has fewer ids than `guard.minCardinality`. | Check the source. Lower the guard if the smaller set is real. |
 | `'min-retained'` | The set is smaller than `guard.minRetained` times the current segment. | The same: a shrink bigger than you allowed. |
 | `'max-growth'` | The set is larger than `guard.maxGrowth` times the current segment. | A growth bigger than you allowed: often a source that landed twice, or a join on the wrong key. Check the source. Raise the guard if the larger set is real. |
-| `'superseded'` | Another writer got there first: another load took the same generation number, or the segment's row changed while this load was writing. | Re-run the load. |
+| `'superseded'` | Another writer got there first: another load took the same generation number, or the segment's row changed while this load was writing, or appeared where it found none. | Re-run the load. |
 
 A refused load also emits `segment.load-refused` to the `audit` sink you pass.
 
@@ -136,7 +136,7 @@ again and decides from what it holds:
 |---|---|
 | names this load's generation, over the object this load wrote | `published: true`: the write landed, and only its response was lost |
 | names this load's generation over another writer's object, or belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: nothing this load wrote is published |
-| has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. An unguarded load of a segment with no row fences on nothing, and publishes over the row that appeared |
+| has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. A load that found no row is refused by any row that appeared meanwhile, guarded or not |
 | is still as the write found it | the load sends a fresh compare-and-swap from the row it just read, after a wait on the store's clock: at most three, after under 500 ms, then 1 s, then 2 s. It is a new request, not a replay, and it carries the version the first one did, so the registry lets at most one of the two land. Each is settled by this same table. Still unanswered, the load throws the registry's own `TransientError` |
 
 Whether the object under the row's pointer is the load's own is proved by its footer, never taken from the pointer and
@@ -1119,13 +1119,14 @@ advance the registry pointer, with a compare-and-swap that never moves backwards
 load is simply a newer identical generation. Run two loads of one segment at once and at most one of them lands; the
 other reports `published: false` with `reason: 'superseded'`. If both took the same generation number, the second to
 write it is refused by the write-once put and writes nothing. If not, the publish that lands second finds the row
-changed since its load read it, or finds a row where its load read none, and is refused. A load that won the number can
-still be refused by its guard. The one exception is a segment with no row yet, loaded with `allowEmpty: true` and
-neither `guard.minRetained` nor `guard.maxGrowth`: neither load read anything to fence on, so each is a forward-only
-publish. If the lower
-generation number lands first, both land and the higher stays current. If the higher lands first, the lower is
-refused as `superseded`, because a publish never moves the pointer back. Publishing the generation that is already current is a
-no-op that reports success, unless the publish is fenced (below), in which case it is refused.
+changed since its load read it, or finds a row where its load read none, and is refused, whatever its options: two
+first loads of a segment with no row race to create it, and the one that loses is refused whichever number it holds.
+Its object stays in the bucket when the refusal cannot prove it its own (another writer made the row): it is an
+orphan, collected as the paragraph on crashes below says, by the next load whose check meets it and at the latest by
+the listing a load runs every sixteenth generation, and it is billed until then, or until `dropSegment` or the
+retention sweep removes the segment. A load that won the number can still be refused by its guard. Publishing the
+generation that is already current is a no-op that reports success, unless the publish is fenced (below), in which
+case it is refused.
 
 **The row records the window, and the write that moves the pointer writes it.** The list of kept generations goes in the
 same compare-and-swap as the pointer, derived from the very row that write is conditioned on, so the list a load deletes
@@ -1138,12 +1139,12 @@ row a load of an earlier release wrote records none, so the first load of this r
 current: a load's ids come from upstream, so winning a race loses nothing it knew about. It is wrong for a writer that
 derived its content from a particular generation, and such a writer publishes with `expectFrom` and `expectToken`.
 The publish then lands only while the pointer is still exactly there, on the same row, and reports `superseded`
-otherwise, so the caller can re-derive. Every load that finds a row fences its publish on the row's token. A guarded
-load (the default, since the empty refusal needs the size of the current generation) also fences on the pointer it
-judged, and one that found no row fences on that absence, so a row that appeared meanwhile refuses it. Only an
-unguarded load onto a segment with no row publishes bare forward-only, which is right for it: there was nothing to
-judge, and its ids come from upstream. An [`*Into`](#write-a-result-into-another-segment-the-into-verbs) is a load and
-publishes the same way. Forward-only would be wrong for the erasure rewrite, whose object is one generation minus a
+otherwise, so the caller can re-derive. Every load that finds a row fences its publish on the row's token, and every
+load that finds none fences on that absence, guarded or not, so a row that appeared meanwhile refuses it: another
+first load's, one `setRetention` made, or a drop's tombstone. A guarded load (the default, since the empty refusal
+needs the size of the current generation) also fences on the pointer it judged. An unguarded load carries no fence on
+the pointer, which is right for it: there was nothing to judge, and its ids come from upstream. An
+[`*Into`](#write-a-result-into-another-segment-the-into-verbs) is a load and publishes the same way. Forward-only would be wrong for the erasure rewrite, whose object is one generation minus a
 bit and which is numbered above everything in the bucket: a forward-only publish would out-rank a concurrent publish
 and then delete it, so the rewrite fences on its source generation and the row's token instead.
 

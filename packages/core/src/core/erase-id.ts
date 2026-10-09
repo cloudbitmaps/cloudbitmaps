@@ -70,8 +70,9 @@
  * carries whatever its source held, and the library cannot know that source was meant to exclude the id.
  * A load already in flight writes its object above the pointer before it publishes. An erasure that finds the id in that
  * object writes the row before deleting it, so the load's publish, fenced on the row it read, is refused
- * (`published: false`) and the pointer never names a missing object (see `fenceInFlight`). A first load onto a row with
- * no pointer has nothing to be fenced on, so an erasure that finds the id in its object refuses instead.
+ * (`published: false`) and the pointer never names a missing object (see `fenceInFlight`). On a row with no pointer
+ * the erasure writes nothing to the row, so a first load's object there may still be published; an erasure that finds
+ * the id in it refuses instead of deleting it.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { MAX_REMAINDER, splitId } from './bit-route';
@@ -513,9 +514,9 @@ async function eraseOnce(
   /**
    * The row names no generation, so nothing has been published, but a first load's object can be in the bucket: its
    * load still running, or one that wrote and never published (a crash, or a registry write that got no answer, after
-   * which the object is kept by design). Each object is searched. One that holds the id cannot be deleted safely: its
-   * load may still publish it, fenced on a row with no field this call could write to refuse it, and the row would then
-   * name an object that is not there. So that is refused, loudly, rather than reported as a segment holding nothing.
+   * which the object is kept by design). Each object is searched. One that holds the id is not deleted: this path
+   * writes nothing to the row, so the load that wrote the object may still publish it, and the row would then name an
+   * object that is not there. So that is refused, loudly, rather than reported as a segment holding nothing.
    */
   const unpublished = async (): Promise<EraseIdResult> => {
     const generations: number[] = [];

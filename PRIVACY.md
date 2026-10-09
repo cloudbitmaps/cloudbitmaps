@@ -115,9 +115,9 @@ ledger is not by itself proof the id is gone. A tombstoned segment is searched t
 cleartext object left under it that holds the id is deleted with everything under the tombstone, and the entry reads
 `erased: true`. A segment whose row names no generation yet (a retention policy set before its first load) is
 searched too: an object a first load wrote and never published that holds the id, or on an encrypted store cannot
-be searched until its load publishes the key, is reported as an `error: …` note and not deleted, because that load may
-still publish it. Load the segment, which makes the object collectable, or drop
-it, and re-run.
+be searched until its load publishes the key, is reported as an `error: …` note and not deleted: the erasure writes
+nothing to such a row, so the load that wrote the object may still publish it. Load the segment, which makes the
+object collectable, or drop it, and re-run.
 
 **Do not roll a segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto a
 generation the erasure did not rewrite, so the id can be current again. Roll back before the erasure starts or

@@ -271,7 +271,7 @@ makes the coordinated restore point easy to hit rather than something you have t
 ## Quiesce writers during a restore
 
 Writers are safe *against each other* without any coordination. A load publishes with a compare-and-swap fenced
-on the row it read (an unguarded load onto a segment with no row publishes forward-only instead), and a
+on the row it read (a load that read no row creates the row, which fails when one appeared meanwhile), and a
 subject-erasure rewrite on the generation it streamed, so the one that loses a race
 reports `superseded` rather than clobbering the newer generation: a load as `published: false, reason:
 'superseded'`, a rewrite as `erased: false, note: 'superseded'`. A load that finds its generation number already

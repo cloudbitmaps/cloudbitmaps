@@ -100,10 +100,9 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **One write path: the load.** `store.load` builds a generation from an unsorted sync **or async**
   ID stream without holding the *input* in memory (memory is bounded by the distinct result set, not the input
   length), writes it as one write-once object, judges it against the guard, and publishes it with a
-  compare-and-swap on the registry row. A load that finds a row fences on the row's token; a default load also
-  fences on the pointer it judged, or on the row's absence; only an unguarded load (`allowEmpty: true`, with neither
-  `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row is bare forward-only; and a duplicate publish is an idempotent
-  no-op. A segment larger than
+  compare-and-swap on the registry row. A load that finds a row fences on the row's token, and one that finds none
+  on that absence, guarded or not; a default load also fences on the pointer it judged; and a duplicate publish is an
+  idempotent no-op. A segment larger than
   RAM wants the external-merge bulk load listed under [Planned](#planned--exploring). A load also takes a whole
   bitmap, `{ bitmap }` (anything with `serialize('portable')`) or `{ serialized }` portable Roaring bytes: checked
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
