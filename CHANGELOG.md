@@ -110,21 +110,26 @@ so, and so do the module headers in the code.
   unchanged; `iterate` and `count` stay at 32 chunks, and a test now counts each bound in a read past its ramp-up.
 - **A store keeps each segment's resolution apart from its reader, so the reader cache letting a segment go no longer
   moves a read on or reads its row again.** With a timed refresh (a backend and `cache.genTtlMs` above 0), the store
-  keeps what it read of each segment's row (the generation, its `pointerId`, the wrapped keys and the summary, never a
-  key) for `cache.genTtlMs` from the instant that registry read was sent, in a cache of its own bounded at
+  keeps what it read of each segment's row (the generation, its `pointerId`, the wrapped keys and the summary, never an
+  unwrapped key) for `cache.genTtlMs` from the instant that registry read was sent, in a cache of its own bounded at
   8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default; there is no new
-  option). After an eviction inside the TTL, a `has()` whose chunk is cached and a `count()` send no request, where a
-  `has()` sent a registry read and a tail read and a `count()` the registry read; a read that needs a chunk sends the
-  tail read and the chunk's range, and no registry read. A long read under reader-cache pressure, as on a small Lambda,
-  stays on the generation it resolved until the TTL lapses, as any read does, and after an eviction a store can serve a
-  cached chunk of a generation another store erased from, up to the same `cache.genTtlMs`: both within the written
-  bound. The `.crbm` source's `currentVersion()` and `currentGeneration()` answer from the resolution and open nothing:
-  the version names the object the row's summary names, and a generation swept or an object replaced under the number
-  is met by the first read that opens the object, which resolves the row again; a row with no summary it can use still
-  has its object opened to name it. During a registry outage only a segment still in the reader cache keeps serving; a
-  segment the reader cache let go fails with the fault once its resolution lapses, as a cold read does.
-  `invalidate()` forgets the resolution, and so do a read that finds its generation swept and any open that fails. A store with no timed refresh keeps no resolution, and an eviction resolves the
-  segment again there.
+  option). After an eviction inside the TTL a read sends no registry read. A `has()` whose chunk is cached, a `count()`
+  and a `stat()` answered from the row's summary send nothing, where a `has()` sent a registry read and a tail read and
+  a `count()` the registry read. A read that needs the index or a chunk the chunk cache does not hold opens the object
+  again: `iterate` and the combines always do, with a tail read, and a `has()` of an uncached chunk sends the tail read
+  and, unless the tail carried the chunk, its range. On an encrypted segment each such read unwraps the key again, a
+  request to your keystore. A long read under reader-cache pressure, as on a small Lambda, stays on the generation it
+  resolved until the TTL lapses, as any read does, unless the resolution cache lets the resolution go (past its bounds)
+  or a read of the segment, this one or another, finds its generation swept or another object under its number, or
+  fails to open it. After an eviction a store can serve a cached chunk of a generation another store erased from, and
+  read with the wrapped keys it kept after another store's crypto-shred, up to the same `cache.genTtlMs`: both within
+  the written bound. The `.crbm` source's `currentVersion()` and `currentGeneration()` answer from the resolution and
+  open nothing: the version names the object the row's summary names, and a generation swept or an object replaced
+  under the number is met by the first read that opens the object, which resolves the row again; a row with no summary
+  it can use still has its object opened to name it. During a registry outage only a segment still in the reader cache
+  keeps serving; a segment the reader cache let go fails with the fault once its resolution lapses, as a cold read
+  does. `invalidate()` forgets the resolution, and so do a read that finds its generation swept and any open that
+  fails. A store with no timed refresh keeps no resolution, and an eviction resolves the segment again there.
 - **`store.segment(name, options)` takes a plain object, and refuses `expiresAt` as it refuses any other key but
   `namespace`**: with `ValidationError` naming it, `segment: unknown option "expiresAt"; a handle takes { namespace }
   only`. Every own key is scanned, enumerable or not, and a class instance or an object built on another is refused,

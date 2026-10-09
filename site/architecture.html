@@ -188,9 +188,10 @@
               the chunks are fetched from it. Every chunk is one whole, checksum-verified chunk of one
               generation, never a merge of two sources, so a read cannot be torn. What a call can meet — a long
               one most often — is a second instant: a <span class="m">cache.genTtlMs</span> refresh after a
-              publish, the reader cache evicting the segment on a store with no timed refresh, a sweep of the
-              generation it was reading or an invalidation moves the rest of its chunks to whichever generation is
-              current then. To hold one
+              publish, the reader cache evicting the segment on a store with no timed refresh, the resolution
+              cache letting the segment's resolution go on a store with one, a sweep of the generation it was
+              reading, met by this read or another, or an invalidation moves the rest of its chunks to whichever
+              generation is current then. To hold one
               generation for as long as a job runs, take a pin, <span class="m">seg.pin()</span> — a hold, not a
               lease: a pinned read fails rather than read another generation once its own is collected, so keep
               enough generations for the job.

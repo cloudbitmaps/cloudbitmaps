@@ -132,6 +132,14 @@ no bus, and no connection between two stores that happen to point at the same bu
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
 serving: the read that meets it throws, and the reader is dropped with the key it unwrapped.
 
+A store with a timed refresh keeps each segment's resolution, the row's wrapped keys among it (never an unwrapped
+key), for `cache.genTtlMs` from the registry read that made it, whether or not the segment's reader is still open.
+Within that time a store whose reader was evicted builds its next read on the kept resolution and unwraps the key from
+those wrapped keys through the keystore again, so another store's crypto-shred reaches it once the resolution lapses:
+within `cache.genTtlMs`, as the table says. A lapsed resolution is never read from: if the registry read that should
+replace it fails with a transient fault, the read fails too, unless the store still holds the segment in its reader
+cache, which rides out the outage as above.
+
 `cache: { genTtlMs: 0 }` turns the timed refresh off. It is a reasonable setting for a read-only replica of immutable
 data, but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)`
 is the hook, and fanning the reference out to your fleet is yours, because the transport is yours. The same applies to

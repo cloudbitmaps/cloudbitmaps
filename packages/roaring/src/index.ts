@@ -491,9 +491,10 @@ export interface CacheOptions {
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
    * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. With a
    * timed refresh ({@link CacheOptions.genTtlMs} above 0, and a backend) the store also keeps up to 8 times this many
-   * segments' resolutions (what it read of each segment's row, never a key) for `genTtlMs`, apart from their readers: an
-   * evicted segment is then reopened with no registry read, only when a read needs a chunk the chunk cache does not hold,
-   * and on the generation it had resolved. A reader of a small generation, one whose whole object came with its tail read,
+   * segments' resolutions (what it read of each segment's row: never an unwrapped key, though the wrapped keys are in
+   * it) for `genTtlMs`, apart from their readers. An evicted segment is then reopened with no registry read, on the
+   * generation it had resolved, when a read needs its index or a chunk the chunk cache does not hold: `iterate` and the
+   * combines always do, and a `has()` of a cached chunk, a `count()` and a `stat()` do not. A reader of a small generation, one whose whole object came with its tail read,
    * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
    * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built

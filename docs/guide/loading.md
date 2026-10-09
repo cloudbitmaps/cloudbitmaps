@@ -435,9 +435,9 @@ survives an erasure, which collects every generation below its new pointer, and 
 [leases](reading.md#hold-a-generation-for-a-job-a-lease).
 
 **What no value of `keep` gives you is a single instant.** A read whose TTL elapses, whose reader is evicted on a store
-with no timed refresh, or whose store is invalidated moves to another generation whether or not the old one still
-exists. A job that needs one
-instant, such as an export, a reconciliation, or a send that must match the count you reported, needs a pinned handle.
+with no timed refresh, whose resolution is let go by the resolution cache of a store with one, whose segment another
+read of the store resolves again (finding its generation swept, or failing to open it), or whose store is invalidated
+moves to another generation whether or not the old one still exists. A job that needs one instant, such as an export, a reconciliation, or a send that must match the count you reported, needs a pinned handle.
 See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load).
 
 There is deliberately no time-based floor on collection ("keep nothing younger than 24 h"). It would read as a

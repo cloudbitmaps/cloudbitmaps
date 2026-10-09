@@ -122,7 +122,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
    * generations are immutable). Raise it for a big cache working set of small segments. A source with a timed refresh
    * also keeps up to 8 times this many segments' resolutions apart from their readers, for the TTL: the re-open then
-   * reads no row, and comes only when a read needs the reader.
+   * reads no row, and comes only when a read needs the reader, for the index or for a chunk.
    */
   readonly maxOpenSegments?: number;
   /**
@@ -529,9 +529,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * Each segment's resolution, kept apart from its reader, by segment: what a read of its row found, for the TTL from
    * the instant that read was sent, whether or not the reader cache still holds the segment's reader. So letting a reader
-   * go moves nothing: the next read builds a snapshot on the resolution, reads no row, and opens the object only when it
-   * needs a chunk the chunk cache does not hold. It holds the resolved fields only ({@link Resolved}), never a key, and
-   * never a resolution that found no generation, which is read again by the next read as it always was.
+   * go moves nothing: the next read builds a snapshot on the resolution, reads no row, and opens the object when it needs
+   * the index or a chunk the chunk cache does not hold (a version, a count and a stat from the row's summary need
+   * neither). It holds the resolved fields only ({@link Resolved}): the wrapped keys, never an unwrapped one, so a
+   * snapshot built on it unwraps the key again through the keystore. It never holds a resolution that found no
+   * generation: the next read of such a segment reads the row.
    *
    * Only a source with a timed refresh has one: without it, letting a reader go is one of the few things that ever moves
    * a read on, and keeping the resolution would keep it forever. **Bounded** by count and by bytes, both derived from
@@ -816,7 +818,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // the target is resolved, and the reader (its parsed index and any metadata) once one is open. Identity-guarded
     // via `peek` (no recency change) so a since-replaced snapshot doesn't mis-weight the fresh entry. An open that
     // fails forgets the resolution too, as `dropStale` does: what it names could not be read, so the next read reads
-    // the row again, as it did when a failed open left nothing to build on.
+    // the row again, as a cold read does.
     snap.onReader = (reader) => {
       reader.then(
         (r) => {
@@ -936,8 +938,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * Where the row's summary names the object, the version is answered from the resolution, with no open: every live
    * open of the generation is held to that object ({@link openLive}), refused as a move otherwise, so the one object any
    * reader of this resolution can name is the one the summary names, and a version named from it is the one that
-   * reader's would be. So a read whose chunks are all in the chunk cache opens nothing, after the reader cache let the
-   * segment go included; an object under the number that is not the row's is met by the read that fetches from it,
+   * reader's would be. So a `has()` whose chunk is in the chunk cache opens nothing, after the reader cache let
+   * the segment go included (a read that needs the index opens the object for it, and on an encrypted segment the
+   * key is unwrapped to read the row's sealed summary); an object under the number that is not the row's is met by the read that fetches from it,
    * which refuses it and heals. Where the row has no summary it can use, or there is no registry, nothing names the
    * object but the object: the reader is opened, and the version names what it opened, however long after its row read
    * that is.
@@ -1575,7 +1578,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * generation, each made only when asked for. A snapshot that replaces `prior` with the same wrapped keys keeps the key
    * `prior` unwrapped, so a count polling an encrypted segment asks the keystore once, not once each `genTtlMs`.
    * Different keys (a shred, a re-created name) unwrap afresh, and so does a snapshot with no prior: the resolution
-   * holds no key.
+   * holds the wrapped keys, never an unwrapped one.
    */
   private liveOf(
     ref: SegmentRef,

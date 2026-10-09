@@ -212,12 +212,14 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 
   It assumes each hot segment stays open in the reader's cache: 1,024 segments by default (`cache.readerMax`), and
   64 MiB of parsed indices, and of the chunk bytes a reader keeps of a small generation (`cache.readerMaxBytes`). A read
-  of a segment the cache evicted opens it again when it needs a chunk the chunk cache does not hold, a tail read, which
-  the model does not price, and the report says so when `hotSegments` is past 1,024. Its pointer is not read again for the eviction: the store keeps the segment's
-  resolution apart from its reader (up to 8 × `cache.readerMax` segments), and reads the pointer when that lapses, which
-  is the refresh priced here. A store with no timed refresh keeps none, and reads the pointer at every reopen, unpriced.
-  Nor does the model price the index each reader opens again after every load. Size the caches to keep the hot set
-  open.
+  of a segment the cache evicted opens it again, a tail read, when it needs the index or a chunk the chunk cache does
+  not hold (`iterate` and the combines always do; a `has()` whose chunk is cached, a `count()` and a `stat()` do not),
+  which the model does not price, and the report says so when `hotSegments` is past 1,024. On an encrypted segment it
+  also unwraps the key again, a request to your keystore, which the model leaves out as it leaves out every keystore
+  call. Its pointer is not read again for the eviction: the store keeps the segment's resolution apart from its reader
+  (up to 8 × `cache.readerMax` segments), and reads the pointer when that lapses, which is the refresh priced here. A
+  store with no timed refresh keeps none, and reads the pointer at every reopen, unpriced. Nor does the model price the
+  index each reader opens again after every load. Size the caches to keep the hot set open.
 
 **`checkConsistency({ summaries: true })` costs one tail read per segment**, on top of the listing the default check
 makes: it opens each current object to compare the row's summary with it. The model does not price it, since a
