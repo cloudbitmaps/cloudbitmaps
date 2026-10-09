@@ -46,8 +46,10 @@ export interface AzureBlobStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /**
-   * Whether the registry removes a deleted row for good, by a Delete Blob sent with `ifMatch`, rather than leaving a
-   * tombstone a full listing reads forever. Defaults to `true`.
+   * Whether the service applies `ifMatch` on a Delete Blob, which both halves rely on when it is on: the registry
+   * removes a deleted row for good rather than leaving a tombstone a full listing reads forever, and the storage half
+   * removes an erasure's holder only while it is the blob the erasure searched, by its ETag. Defaults to `true`: Azure
+   * Blob applies it, and Azurite does too.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -140,6 +142,9 @@ export class AzureBlobStorage implements StorageBackend {
       ...shared,
       ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
       ...(options.blockBytes === undefined ? {} : { blockBytes: options.blockBytes }),
+      ...(options.conditionalDelete === undefined
+        ? {}
+        : { conditionalDelete: options.conditionalDelete }),
     });
     this.registry = new AzureBlobRegistryDriver({
       ...shared,

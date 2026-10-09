@@ -129,6 +129,8 @@ storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver, {
       prefix: `${RUN}/missing`,
     }),
   pagedListSize: PAST_ONE_PAGE,
+  // On by default: Azurite applies ifMatch on a Delete Blob, so the case runs the condition end to end.
+  conditionalDelete: true,
 });
 // The same cases with 64-byte blocks, so every object is staged blocks and a conditional commit.
 storageDriverConformance(

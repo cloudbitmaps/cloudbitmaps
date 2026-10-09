@@ -47,7 +47,7 @@ Any other key is refused by name.
 | `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time) |
 | `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 400 GiB) |
 | `readTimeoutMs` | how long each read request may take, its body included, before it is cut off with a `TransientError` the store's read retry repeats (default `0`, off) |
-| `conditionalDelete` | whether the registry removes a deleted row with Delete Blob under `ifMatch`, rather than leaving a tombstone every full listing reads. On by default: Azure Blob applies the precondition, and so does Azurite. A blob with a snapshot refuses the delete (`409 SnapshotsPresent`), which the sweep counts in `purgeFaults`. Needs a role that may delete blobs on the registry prefix |
+| `conditionalDelete` | whether the service applies `ifMatch` on a Delete Blob: the registry then removes a deleted row rather than leaving a tombstone every full listing reads, and the storage half deletes an erasure's holder only while it is the blob the erasure read, by its ETag. On by default: Azure Blob applies the precondition, and so does Azurite. A blob with a snapshot refuses the delete (`409 SnapshotsPresent`), which the sweep counts in `purgeFaults`. Needs a role that may delete blobs on the registry prefix |
 
 ## Before production
 

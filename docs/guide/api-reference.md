@@ -1184,7 +1184,10 @@ a write again after a `503 ServerBusy` or a `500 OperationTimedOut`, and a write
 `TransientError`. A load's fresh compare-and-swap after an unanswered row write goes through that policy too, so a registry
 that never answers costs up to four times the policy's tries: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured). The registry removes a
 row with Delete Blob under `ifMatch`, unless `conditionalDelete` is `false`; a `412` or a `404` on it is a lost race,
-and a `409` (a snapshot or a lease in the way) reaches the caller as the SDK raised it.
+and a `409` (a snapshot or a lease in the way) reaches the caller as the SDK raised it. The storage half deletes an
+erasure's holder under `ifMatch` too, with the ETag its tail read reported, unless `conditionalDelete` is `false`:
+there a `404` is an absent blob, a no-op, a `412` is a conflict only while the properties still show a blob, and a `409`
+reaches the caller as the SDK raised it.
 
 ### `@cloudbitmaps/tools`
 

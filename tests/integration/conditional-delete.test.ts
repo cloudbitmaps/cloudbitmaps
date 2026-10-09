@@ -14,6 +14,9 @@
  *   against them record that they ignore it: if a pinned image starts applying it, they fail, and the default can be
  *   reconsidered. This lane can therefore show that the S3 and GCS drivers *send* the precondition, never that real
  *   S3 or GCS apply it; `real-cloud-conditional-delete.test.ts` is the probe for that, and it is skipped here.
+ *
+ * The storage drivers follow the same defaults with the same option. Each one's delete given `ifVersion` sends the
+ * version its own tail read reported; on Azurite the erasure race it exists for is run end to end.
  */
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -33,9 +36,11 @@ import { GcsRegistryDriver, GcsRegistryStore } from '@/gcs/registry';
 import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
 import { S3StorageDriver } from '@/s3/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
+import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { storageObjectKey } from '@/s3/keys';
 import { storageObjectName as gcsObjectName } from '@/gcs/keys';
 import type { GenKey } from '@/core/ports';
+import { byFreeFunction, raceStaleHolderDelete } from '../helpers/retaken-number-race';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
@@ -531,6 +536,39 @@ describe('GCS storage (fake-gcs-server): the driver sends ifGenerationMatch; the
     );
     expect(sent).toEqual([undefined, Number(version)]);
     expect(await gcsExists(gcsObjectName(p, GEN))).toBe(false);
+  });
+});
+
+describe('Azure Blob storage (Azurite): the condition is applied', () => {
+  it('the gate is on by default', () => {
+    expect(
+      new AzureBlobStorage({ containerClient: container }).storage.capabilities().conditionalDelete,
+    ).toBe(true);
+  });
+
+  it('a stale ETag is refused with WriteConflictError and the blob stays; the current one removes it', async () => {
+    const driver = new AzureBlobStorageDriver({
+      containerClient: container,
+      prefix: prefix('st-stale'),
+    });
+    await writeText(driver, 'one');
+    const stale = (await driver.getTail(GEN, 3)).version;
+    await driver.delete(GEN);
+    await writeText(driver, 'two');
+    const current = (await driver.getTail(GEN, 3)).version;
+    expect(current).not.toBe(stale);
+    expect(await staleDeleteOutcome(() => driver.delete(GEN, { ifVersion: stale }))).toBe(
+      'refused',
+    );
+    expect((await driver.getTail(GEN, 0)).size).toBe(3);
+    await driver.delete(GEN, { ifVersion: current });
+    await expect(driver.delete(GEN, { ifVersion: current })).resolves.toBeUndefined();
+    expect(await driver.getTail(GEN, 0).catch((err: unknown) => err)).toBeInstanceOf(Error);
+  });
+
+  it('an erasure whose holder above the pointer was deleted and its number taken again keeps the new generation', async () => {
+    const backend = new AzureBlobStorage({ containerClient: container, prefix: prefix('race') });
+    await raceStaleHolderDelete(backend.storage, backend.registry, byFreeFunction);
   });
 });
 
