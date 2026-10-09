@@ -112,6 +112,7 @@ import type {
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
+  Token,
 } from './ports';
 import { type ReadRetry, retryRead } from './retry';
 import { metadataToCarry, summaryOf, usableSummary } from './summary';
@@ -242,30 +243,62 @@ export async function eraseIdFromSegment(
   deps: EraseIdDeps,
   options: { audit?: IAuditSink } = {},
 ): Promise<EraseIdResult> {
-  const first: { tombstoned?: boolean } = {};
+  const first: Pass = {};
   const result = await eraseOnce(ref, id, deps, options, first);
   // A row tombstoned while this call ran is searched as a fresh call searches one: a cleartext destroy, or a drop whose
   // sweep left an object, leaves objects that can still hold the id. Once: the second pass starts on the tombstone.
   if (result.reason === 'destroyed' && first.tombstoned === false) {
-    const again = await eraseOnce(ref, id, deps, options, {});
+    const second: Pass = {};
+    const again = await eraseOnce(ref, id, deps, options, second);
     // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
     if (again.reason === 'destroyed') return result;
     if (!again.erased) return again;
     // Erased under the tombstone: the report covers both passes, what each deleted and the newest holder either read.
     const collected = [...new Set([...result.collected, ...again.collected])].sort((a, b) => a - b);
     const newest = Math.max(result.fromGeneration ?? -1, again.fromGeneration ?? -1);
-    return { ...again, collected, ...(newest >= 0 ? { fromGeneration: newest } : {}) };
+    const merged = { ...again, collected, ...(newest >= 0 ? { fromGeneration: newest } : {}) };
+    return recordCollect(ref, merged, second, options);
+  }
+  return recordCollect(ref, result, first, options);
+}
+
+/** What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, and the token of the
+ * row it read when it finished by deleting the holders and rewriting none. */
+interface Pass {
+  tombstoned?: boolean;
+  collectedOn?: Token;
+}
+
+/**
+ * Emit `segment.collect` for a call that finished by deleting the holders and rewriting none, from the report the call
+ * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included.
+ */
+function recordCollect(
+  ref: SegmentRef,
+  result: EraseIdResult,
+  pass: Pass,
+  options: { audit?: IAuditSink },
+): EraseIdResult {
+  if (pass.collectedOn !== undefined && result.fromGeneration !== undefined) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.collect',
+      namespace: ref.namespace,
+      segment: ref.segment,
+      ...incarnationField(pass.collectedOn),
+      fromGeneration: result.fromGeneration,
+      collected: [...result.collected],
+    });
   }
   return result;
 }
 
-/** One pass of {@link eraseIdFromSegment}. It records in `seen` whether the row it read first was a tombstone. */
+/** One pass of {@link eraseIdFromSegment}. It records in `seen` what {@link Pass} says. */
 async function eraseOnce(
   ref: SegmentRef,
   id: number,
   deps: EraseIdDeps,
   options: { audit?: IAuditSink },
-  seen: { tombstoned?: boolean },
+  seen: Pass,
 ): Promise<EraseIdResult> {
   validateUserRef(ref);
   checkedAuditSink(options.audit, 'eraseIdFromSegment');
@@ -515,18 +548,17 @@ async function eraseOnce(
 
   /**
    * The answer for an erasure that deleted the generations holding the id and rewrote none, once a listing found no
-   * holder left: recorded as `segment.collect` against the row this call read, the active one or the tombstone.
+   * holder left. The pass notes the row it read, the active one or the tombstone, for the `segment.collect` event the
+   * call emits once it has its whole report.
    */
   const collectedAll = (fromGeneration: number, collected: readonly number[]): EraseIdResult => {
-    audit.onEvent({
-      kind: 'segment.collect',
-      namespace: ref.namespace,
-      segment: ref.segment,
-      ...incarnationField(record.token),
+    seen.collectedOn = record.token;
+    return {
+      ...base,
+      erased: true,
       fromGeneration,
       collected: [...collected].sort((a, b) => a - b),
-    });
-    return { ...base, erased: true, fromGeneration, collected };
+    };
   };
 
   /**

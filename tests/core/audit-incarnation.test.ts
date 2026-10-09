@@ -376,7 +376,7 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     expect(audit.snapshot()).toEqual([]);
   });
 
-  it('emits nothing when another collection took the holder first: the call deleted nothing', async () => {
+  it('emits nothing when another collection deleted the holder before the call looked: no generation holds the id', async () => {
     const w = world();
     await loadSegment(SEG, [1, 2], w.deps);
     await loadSegment(SEG, [1], w.deps);
@@ -408,6 +408,97 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
         incarnation: await w.incarnation(),
         fromGeneration: 3,
         collected: [0, 2, 3],
+      },
+    ]);
+  });
+
+  it('an erasure that meets a drop part-way records what both of its passes deleted, once', async () => {
+    // The first pass deletes the newest holder above the pointer; a drop that cannot delete objects then tombstones the
+    // row, and the second pass finds the older holders under the tombstone. One event covers the whole call.
+    const w = world();
+    const keep = { keep: 5 };
+    await loadSegment(SEG, [1], w.deps, keep); // gen 0, clean
+    await loadSegment(SEG, [1, 9], w.deps, keep); // gen 1 holds the id
+    await loadSegment(SEG, [1, 9], w.deps, keep); // gen 2 holds it
+    await loadSegment(SEG, [1, 9, 4], w.deps, keep); // gen 3 holds it
+    await rollbackSegment(SEG, 0, w.deps); // pointer at 0: every holder is above it
+    const denied: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      list: (r) => w.storage.list(r),
+      putImmutable: (k, b) => w.storage.putImmutable(k, b),
+      delete: () => Promise.reject(new Error('AccessDenied')),
+    };
+    let fired = false;
+    const racing: IStorageDriver = {
+      ...denied,
+      delete: async (k) => {
+        await w.storage.delete(k);
+        if (!fired && k.generation === 3) {
+          fired = true;
+          await dropSegment(
+            SEG,
+            { storage: denied, registry: w.registry },
+            { confirmSegment: 's' },
+          ).catch(() => undefined);
+        }
+      },
+    };
+    const audit = new RecordingAuditSink();
+
+    const res = await eraseIdFromSegment(SEG, 9, { ...w.deps, storage: racing }, { audit });
+
+    expect(fired).toBe(true);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 3, collected: [0, 1, 2, 3] });
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: await w.incarnation(),
+        fromGeneration: 3,
+        collected: [0, 1, 2, 3],
+      },
+    ]);
+  });
+
+  it('records the finished erasure when another collection deletes the holder during the call, with nothing collected', async () => {
+    // The event attests the state of the bucket the call verified, whoever emptied it: a finished erasure is never left
+    // unrecorded because a load's or a drop's collection won the race.
+    const w = world();
+    await loadSegment(SEG, [1, 2], w.deps);
+    await loadSegment(SEG, [1], w.deps); // `keep: 1` retains gen 0, which holds the id
+    let lists = 0;
+    const racing: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      putImmutable: (k, b) => w.storage.putImmutable(k, b),
+      list: (r) => {
+        lists += 1;
+        if (lists !== 2) return w.storage.list(r);
+        // The second listing is the erasure's collection: another collector takes the holder first.
+        return (async function* () {
+          await gcOrphanGenerations(SEG, { storage: w.storage, registry: w.registry }, { keep: 0 });
+          yield* w.storage.list(r);
+        })();
+      },
+    };
+    const audit = new RecordingAuditSink();
+
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage: racing }, { audit });
+
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, collected: [] });
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: await w.incarnation(),
+        fromGeneration: 0,
+        collected: [],
       },
     ]);
   });

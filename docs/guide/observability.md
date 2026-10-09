@@ -133,10 +133,12 @@ The events are vendor-neutral. There are eight kinds, each carrying the segment'
 
 Every `segment.*` event also carries `incarnation`, the id of the segment's registry row as the operation found or
 wrote it. A segment whose row was purged and created again starts its generations at `0` again, so a name and a
-generation number can belong to two different lives of the segment; key your records on segment, incarnation and
-generation together. Every write of a row keeps its incarnation, so all the events of one life of a segment share it.
-It is absent when the row's token carries no incarnation id, as a registry of your own may issue tokens in another
-form, and on a `segment.load-refused` from a load that found no row.
+generation number can belong to two different lives of the segment; the incarnation tells them apart. Every write of a
+row keeps its incarnation, so all the events of one life of a segment share it. Within one life a generation number
+still does not name one object for good: a number whose object was deleted, such as a refused load's or one an erasure
+deleted above the pointer, can be taken again by a later load, so read a segment's events in the order they arrived.
+It is absent when the row's token carries no incarnation id, for example from a registry of your own that issues
+tokens in another form, and on a `segment.load-refused` from a load that found no row.
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |

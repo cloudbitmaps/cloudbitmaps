@@ -15,9 +15,10 @@ so, and so do the module headers in the code.
 
 - **Every `segment.*` audit event carries `incarnation`**, the id of the segment's registry row as the operation found
   or wrote it. A name whose row was purged and created again starts its generations at `0` again, so a segment and a
-  generation number could belong to two lives of the segment; with the incarnation an audit consumer tells them apart.
-  It is absent when the row's token carries no incarnation id, as a registry of your own may issue tokens in another
-  form, and on a `segment.load-refused` from a load that found no row.
+  generation number could belong to two lives of the segment; the incarnation tells them apart.
+  Within one life a number whose object was deleted can still be taken again by a later load. The field is absent when
+  the row's token carries no incarnation id, for example from a registry of your own, and on a `segment.load-refused`
+  from a load that found no row.
 - **A `segment.collect` audit event for an erasure that rewrites nothing.** When `eraseSubject` finds the id only
   outside the current generation (a retained older generation, one above the pointer after a rollback, or an object
   left under a tombstone), it deletes the generations holding it and now emits `segment.collect { fromGeneration,

@@ -23,10 +23,12 @@ import { ValidationError } from './errors';
  * A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor.
  *
  * Every event about a segment carries `incarnation`: the id of the registry row's incarnation the operation acted on.
- * A segment's name can be purged and created again, and its generations then start again at `0`, so a segment and a
- * generation number alone can name two different generations; with the incarnation they name one. It is absent when
- * the row's token carries no incarnation id, as a registry of the caller's own may issue tokens in another form, and on
- * a `segment.load-refused` from a load that found no row.
+ * A segment's name can be purged and created again, and its generations then start again at `0`; the incarnation
+ * tells those lives of the name apart, and every write of a row keeps it. It does not make a generation number name
+ * one object for good: within one incarnation, a number whose object was deleted (a refused load's object, or a
+ * generation an erasure deleted above the pointer) can be taken again by a later load. It is absent when the row's
+ * token carries no incarnation id, for example from a registry of the caller's own that issues tokens in another
+ * form, and on a `segment.load-refused` from a load that found no row.
  */
 export type AuditEvent =
   | {
@@ -103,16 +105,19 @@ export type AuditEvent =
     }
   | {
       /**
-       * An erasure of one id **deleted the generations that held it** and rewrote none, because the generation the
-       * pointer names does not hold it. Two cases reach it: an id that only older generations hold (someone who
-       * left the segment, whose bit the reader grace window or a rollback target keeps), and objects left under a
-       * tombstone (a cleartext destroy, or a drop whose sweep left one). The one emitter is `eraseIdFromSegment`, once
-       * a listing of the bucket shows no generation holding the id, so the record exists only for a finished erasure;
-       * one that ends otherwise throws or reports `erased: false`, and its re-run emits.
+       * An erasure of one id found it only in generations no reader resolves, **deleted them**, and rewrote none. Two
+       * cases reach it: an id that only generations other than the current one hold (someone who left the segment,
+       * whose bit the reader grace window or a rollback target keeps), and objects left under a tombstone (a cleartext
+       * destroy, or a drop whose sweep left one). The one emitter is `eraseIdFromSegment`, once a listing of the bucket
+       * shows no generation holding the id, so the record exists only for a finished erasure. A call that ends
+       * otherwise throws or reports `erased: false` and emits nothing, even when it had deleted a holder; its re-run
+       * emits when it finishes, and reports `'not-member'` with no event when another collection deleted the last
+       * holder meanwhile, as its ledger entry does.
        *
-       * `fromGeneration` is the newest generation found holding the id. `collected` is every generation this call
-       * deleted, ascending: below the pointer that is every generation, holder or not, since the deletion takes them
-       * all, and above it only the holders. A holder another collection deleted first is not in it.
+       * `fromGeneration` is the newest generation the call found holding the id. `collected` is every generation the
+       * call deleted, ascending, and the same list as its ledger entry: below the pointer that is every generation,
+       * holder or not, since the deletion takes them all, and above it only the holders. A holder another collection
+       * deleted first is not in it, so the list can be empty.
        */
       readonly kind: 'segment.collect';
       readonly namespace?: string;
