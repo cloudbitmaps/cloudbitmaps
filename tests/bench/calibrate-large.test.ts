@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1210,8 +1211,8 @@ describe('the harness, run', () => {
   // not been built, and cost nothing. No run is ever authorised here, and a child that runs on is killed.
   const home = mkdtempSync(join(tmpdir(), 'calib-large-no-aws-'));
   afterAll(() => rmSync(home, { recursive: true, force: true }));
-  const harness = (args: string[], env: Record<string, string> = {}) =>
-    spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs'), ...args], {
+  const harness = (args: string[], env: Record<string, string> = {}, root = ROOT) =>
+    spawnSync(process.execPath, [join(root, 'bench', 'calibrate-aws.cjs'), ...args], {
       env: {
         PATH: process.env.PATH ?? '',
         HOME: home,
@@ -1286,23 +1287,26 @@ describe('the harness, run', () => {
   });
 
   it('refuses a committed large run id, and a default run id is another suite’s evidence, not a conflict', () => {
-    const dir = join(ROOT, 'bench', 'calibration', 'large');
-    mkdirSync(dir, { recursive: true });
-    const id = '2026-10-07-zzzzz';
-    const file = join(dir, `${id}.json`);
-    expect(existsSync(file)).toBe(false);
-    writeFileSync(file, '{}');
+    // A copy of the harness in a directory of its own, so the evidence it finds is planted there and never in this
+    // checkout, where tests that list the repo's files run alongside this one.
+    const root = mkdtempSync(join(tmpdir(), 'calib-large-run-id-'));
     try {
-      const large_ = harness(['--suite', 'large'], { CR_CALIBRATE_RUN_ID: id });
+      cpSync(join(ROOT, 'bench', 'lib'), join(root, 'bench', 'lib'), { recursive: true });
+      cpSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), join(root, 'bench', 'calibrate-aws.cjs'));
+      const dir = join(root, 'bench', 'calibration', 'large');
+      mkdirSync(dir, { recursive: true });
+      const id = '2026-10-07-zzzzz';
+      writeFileSync(join(dir, `${id}.json`), '{}');
+      const large_ = harness(['--suite', 'large'], { CR_CALIBRATE_RUN_ID: id }, root);
       expect(large_.status).toBe(2);
       expect(large_.stderr).toMatch(
         /bench\/calibration\/large\/2026-10-07-zzzzz\.json already exists/,
       );
       // The same id under the default suite is not taken: its evidence directory holds no such run.
-      const other = harness([], { CR_CALIBRATE_RUN_ID: id });
+      const other = harness([], { CR_CALIBRATE_RUN_ID: id }, root);
       expect(other.stderr).not.toMatch(/already exists/);
     } finally {
-      rmSync(file, { force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
