@@ -3,7 +3,7 @@
  * (`<size>:<footer checksum>`), with no key: what a row's summary of that generation names.
  */
 import { FOOTER, FOOTER_BYTES } from '@/core/crbm/format';
-import { fingerprintFor } from '@/core/crbm/reader';
+import { fingerprintFor } from '@/core/crbm/fingerprint';
 import type { GenKey, IStorageDriver } from '@/core/ports';
 
 export async function objectFingerprint(storage: IStorageDriver, key: GenKey): Promise<string> {

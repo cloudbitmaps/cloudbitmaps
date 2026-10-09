@@ -9,7 +9,7 @@
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
-import { fingerprintParts } from '@/core/crbm/reader';
+import { fingerprintParts } from '@/core/crbm/fingerprint';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import { renewsPointer } from '@/core/pointer-id';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';

@@ -4,7 +4,7 @@ import type { Clock, IMetricsSink, SegmentRef } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { ChunkRead, GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
 import { rowVersionOf } from '@/core/crbm-storage-source';
-import { compactFingerprint } from '@/core/crbm/reader';
+import { compactFingerprint } from '@/core/crbm/fingerprint';
 import { tokenOfVersion } from '@/core/combine-many';
 import { IntegrityError, NotFoundError } from '@/core/errors';
 import { counting } from '../helpers/counting';

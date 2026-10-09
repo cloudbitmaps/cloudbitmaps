@@ -63,13 +63,8 @@ import type {
   Token,
 } from './ports';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
-import {
-  CrbmReader,
-  compactFingerprint,
-  fingerprintFor,
-  footerSaysEncrypted,
-  openCrbmReaderKeeping,
-} from './crbm/reader';
+import { CrbmReader, footerSaysEncrypted, openCrbmReaderKeeping } from './crbm/reader';
+import { compactFingerprint, fingerprintFor } from './crbm/fingerprint';
 import type { ChunkStream, CrbmReaderOptions } from './crbm/reader';
 import { ItemPull } from './item-pull';
 import { CrbmWriter } from './crbm/writer';

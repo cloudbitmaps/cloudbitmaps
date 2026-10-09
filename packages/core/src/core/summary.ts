@@ -17,7 +17,7 @@
 import type { Aead } from './crypto';
 import { aadFor } from './crypto';
 import { IntegrityError, isIntegrityError } from './errors';
-import { fingerprintFor, fingerprintParts } from './crbm/reader';
+import { fingerprintFor, fingerprintParts } from './crbm/fingerprint';
 import {
   MAX_METADATA_BYTES,
   canonicalMetadataJson,
