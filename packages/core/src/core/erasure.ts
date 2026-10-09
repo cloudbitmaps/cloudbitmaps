@@ -13,10 +13,11 @@
  * operation — `eraseIdFromSegment` rewrites the generation without it.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
+import { incarnationField } from './token';
 import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { type ChurnDeps, leaseChurn } from './leases';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import { withoutSweepMark } from './retention';
@@ -85,7 +86,7 @@ export async function destroySegment(
       `destroySegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental crypto-shred)`,
     );
   }
-  const result = await shredSegment(ref, deps, options.allowCleartext ?? false);
+  const { token, ...result } = await shredSegment(ref, deps, options.allowCleartext ?? false);
   // Audit only a genuine crypto-shred — not the idempotent already-destroyed/absent no-ops, and not a
   // cleartext tombstone (whose Storage bytes stay readable, so it is not an irreversible erasure).
   if (result.cryptoShredded) {
@@ -93,6 +94,7 @@ export async function destroySegment(
       kind: 'segment.erase',
       namespace: ref.namespace,
       segment: ref.segment,
+      ...incarnationField(token),
     });
   }
   return result;
@@ -161,8 +163,9 @@ export async function eraseNamespace(
     // carries the honest `segmentsShredded` count, which will be lower than the segment count, so an audit
     // trail still shows the shortfall even if the return value is ignored.
     let result: DestroyResult;
+    let token: Token | undefined;
     try {
-      result = await shredSegment(ref, deps, options.allowCleartext ?? false);
+      ({ token, ...result } = await shredSegment(ref, deps, options.allowCleartext ?? false));
     } catch (err) {
       result = {
         segment: ref.segment,
@@ -178,7 +181,12 @@ export async function eraseNamespace(
     // destroyed (each carries the namespace) — not just that the command ran.
     if (result.cryptoShredded) {
       segmentsShredded += 1;
-      audit.onEvent({ kind: 'segment.erase', namespace: ref.namespace, segment: ref.segment });
+      audit.onEvent({
+        kind: 'segment.erase',
+        namespace: ref.namespace,
+        segment: ref.segment,
+        ...incarnationField(token),
+      });
     }
     return result;
   });
@@ -399,13 +407,13 @@ export async function dropSegmentFor(
       };
     }
     try {
-      await deps.registry.create(ref, {
+      const tombstone = await deps.registry.create(ref, {
         // The max listed generation, so the row is consistent with what is on disk if anything reads it before
         // the sweep finishes. It is a tombstone, so no reader resolves through it either way.
         currentGen: orphans[orphans.length - 1]!,
         status: 'destroyed',
       });
-      shred = { ...shred, destroyed: true, reason: undefined };
+      shred = { ...shred, destroyed: true, reason: undefined, token: tombstone.token };
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
       // A row appeared between our `get` and our `create` — that is the racing writer we were trying to fence,
@@ -438,6 +446,7 @@ export async function dropSegmentFor(
       kind: 'segment.erase',
       namespace: ref.namespace,
       segment: ref.segment,
+      ...incarnationField(shred.token),
     });
   }
 
@@ -482,6 +491,7 @@ export async function dropSegmentFor(
       kind: 'segment.dispose',
       namespace: ref.namespace,
       segment: ref.segment,
+      ...incarnationField(shred.token),
       generationsDeleted: generationsDeleted.length,
     });
   }
@@ -515,6 +525,9 @@ async function listGenerations(storage: IStorageDriver, ref: SegmentRef): Promis
   return generations.sort((a, b) => a - b);
 }
 
+/** A shred's result, with a token of the tombstone it wrote or found: where its audit events read the incarnation. */
+type Shred = DestroyResult & { readonly token?: Token };
+
 /**
  * The shred itself: CAS the registry row to a `destroyed` tombstone with no wrappings.
  *
@@ -526,21 +539,21 @@ async function shredSegment(
   deps: EraseDeps,
   allowCleartext: boolean,
   op?: 'destroySegment' | 'dropSegment',
-): Promise<DestroyResult>;
+): Promise<Shred>;
 async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
   allowCleartext: boolean,
   op: 'destroySegment' | 'dropSegment',
   sweep: SweepDrop | undefined,
-): Promise<DestroyResult | null>;
+): Promise<Shred | null>;
 async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
   allowCleartext: boolean,
   op: 'destroySegment' | 'dropSegment' = 'destroySegment',
   sweep?: SweepDrop,
-): Promise<DestroyResult | null> {
+): Promise<Shred | null> {
   const base = { segment: ref.segment, namespace: ref.namespace };
   // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
   // to a lease write is waited out and costs none, up to the churn bound.
@@ -569,7 +582,13 @@ async function shredSegment(
       return { ...base, destroyed: false, cryptoShredded: false, reason: 'absent' };
     }
     if (record.status === 'destroyed') {
-      return { ...base, destroyed: true, cryptoShredded: false, reason: 'already' };
+      return {
+        ...base,
+        destroyed: true,
+        cryptoShredded: false,
+        reason: 'already',
+        token: record.token,
+      };
     }
     const encrypted = record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
     if (!encrypted && !allowCleartext) {
@@ -577,7 +596,7 @@ async function shredSegment(
     }
     const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
     try {
-      await deps.registry.compareAndSwap(ref, record.token, {
+      const tombstone = await deps.registry.compareAndSwap(ref, record.token, {
         status: 'destroyed',
         wrappedDeks: undefined, // ← the crypto-shred: the only copy of the DEK wrappings is gone
         keyId: undefined,
@@ -596,7 +615,7 @@ async function shredSegment(
       });
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).
-      return { ...base, destroyed: true, cryptoShredded: encrypted };
+      return { ...base, destroyed: true, cryptoShredded: encrypted, token: tombstone.token };
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
       // A concurrent publish or policy write advanced the row — re-read and shred again.

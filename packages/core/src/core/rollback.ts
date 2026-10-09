@@ -17,6 +17,7 @@
  * Art. 30 record or an incident review wants to find.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
+import { incarnationField } from './token';
 import { openRollbackTarget, provesOwnObject } from './crbm-storage-source';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -382,6 +383,7 @@ export async function rollbackSegment(
     kind: 'segment.rollback',
     segment: ref.segment,
     namespace: ref.namespace,
+    ...incarnationField(record.token),
     fromGeneration: record.currentGen,
     generation: toGeneration,
   });

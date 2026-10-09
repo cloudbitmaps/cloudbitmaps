@@ -4217,6 +4217,7 @@ export type {
   ExportManifest,
   ExportOptions,
   ExportSink,
+  ExportSkipped,
   ExportWriter,
   ExportedSegment,
   GenKey,

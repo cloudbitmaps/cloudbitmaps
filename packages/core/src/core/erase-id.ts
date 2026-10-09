@@ -74,6 +74,7 @@
  * no pointer has nothing to be fenced on, so an erasure that finds the id in its object refuses instead.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
+import { incarnationField } from './token';
 import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
@@ -232,7 +233,8 @@ export interface EraseIdResult {
  * it. See the module note for the contract.
  *
  * Emits one `segment.rewrite` audit event at the publish (before the superseded generation is collected), so the
- * compliance record exists the moment the generation without the id is authoritative.
+ * compliance record exists the moment the generation without the id is authoritative. An erasure that rewrites nothing,
+ * because only other generations held the id, emits one `segment.collect` once no generation holds it.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -271,6 +273,7 @@ async function eraseOnce(
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
   const base = { segment: ref.segment, namespace: ref.namespace };
+  const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   /** A read this call makes, under the store's read retry when it was given one. */
   const read = <T>(op: () => Promise<T>): Promise<T> => retryRead(op, deps.readRetry);
 
@@ -511,6 +514,22 @@ async function eraseOnce(
   };
 
   /**
+   * The answer for an erasure that deleted the generations holding the id and rewrote none, once a listing found no
+   * holder left: recorded as `segment.collect` against the row this call read, the active one or the tombstone.
+   */
+  const collectedAll = (fromGeneration: number, collected: readonly number[]): EraseIdResult => {
+    audit.onEvent({
+      kind: 'segment.collect',
+      namespace: ref.namespace,
+      segment: ref.segment,
+      ...incarnationField(record.token),
+      fromGeneration,
+      collected: [...collected].sort((a, b) => a - b),
+    });
+    return { ...base, erased: true, fromGeneration, collected };
+  };
+
+  /**
    * The row names no generation, so nothing has been published, but a first load's object can be in the bucket: its
    * load still running, or one that wrote and never published (a crash, or a registry write that got no answer, after
    * which the object is kept by design). Each object is searched. One that holds the id cannot be deleted safely: its
@@ -550,7 +569,7 @@ async function eraseOnce(
     const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
     const left = await holderLeft(new Set());
     if (left !== undefined) throw cannotRemove(left);
-    return { ...base, erased: true, fromGeneration: holder.generation, collected };
+    return collectedAll(holder.generation, collected);
   };
 
   /**
@@ -649,7 +668,7 @@ async function eraseOnce(
     }
 
     const left = await holderLeft(clean);
-    if (left === undefined) return { ...base, erased: true, fromGeneration: newest, collected };
+    if (left === undefined) return collectedAll(newest, collected);
     if (moved !== null) {
       return { ...base, erased: false, reason: moved, fromGeneration: newest, collected };
     }
@@ -847,10 +866,11 @@ async function eraseOnce(
       collected: [],
     };
   }
-  safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+  audit.onEvent({
     kind: 'segment.rewrite',
     namespace: ref.namespace,
     segment: ref.segment,
+    ...incarnationField(fromToken),
     fromGeneration: from,
     generation,
   });

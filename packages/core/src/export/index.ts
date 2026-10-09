@@ -89,6 +89,16 @@ export interface ExportFailure {
   readonly error: string;
 }
 
+/**
+ * A registered segment the export did not read, and why. `'destroyed'` is a tombstone: the segment was crypto-shredded
+ * or dropped, so it resolves no generation and has nothing to export.
+ */
+export interface ExportSkipped {
+  readonly segment: string;
+  readonly namespace?: string;
+  readonly reason: 'destroyed';
+}
+
 /** What {@link runExport} produced — a self-describing summary the CLI persists as `manifest.json`. */
 export interface ExportManifest {
   /** Schema version of this manifest shape (currently `1`) — insurance for evolving the format post-1.0. */
@@ -102,6 +112,12 @@ export interface ExportManifest {
    * "a manifest exists" ⇒ the run finished, **not** that every segment succeeded — always check this list.
    */
   readonly failed: readonly ExportFailure[];
+  /**
+   * Registered segments the export did not read, each with its reason (empty when there were none). With `segments`
+   * and `failed` it accounts for every row the registry listed, so a `totalSegments` below the registry's row count
+   * is explained rather than silent.
+   */
+  readonly skipped: readonly ExportSkipped[];
 }
 
 /**
@@ -176,6 +192,7 @@ export async function runExport(
   const batchCap = options.ndjsonBatchBytes ?? DEFAULT_NDJSON_BATCH_BYTES;
   const segments: ExportedSegment[] = [];
   const failed: ExportFailure[] = [];
+  const skipped: ExportSkipped[] = [];
   let totalIds = 0;
   if (typeof (reader as { segment?: unknown } | undefined)?.segment !== 'function') {
     throw new ValidationError(
@@ -264,8 +281,20 @@ export async function runExport(
     // A due-index pointer row is not a segment: an unscoped eject would otherwise write one empty file per pointer
     // into the portability dump — the artifact whose whole value is being a faithful copy of the user's data.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
-    if (rec.status === 'destroyed') continue; // crypto-shredded → bytes unrecoverable; nothing to export
+    if (rec.status === 'destroyed') {
+      // A tombstone resolves no generation, so there is nothing to export: recorded, so the dump accounts for the row.
+      skipped.push({ segment: rec.segment, namespace: rec.namespace, reason: 'destroyed' });
+      continue;
+    }
     await exportRef({ segment: rec.segment, namespace: rec.namespace });
   }
-  return { version: 1, format, totalSegments: segments.length, totalIds, segments, failed };
+  return {
+    version: 1,
+    format,
+    totalSegments: segments.length,
+    totalIds,
+    segments,
+    failed,
+    skipped,
+  };
 }

@@ -43,7 +43,8 @@ const manifest = await store.exportSegments(sink, {
 });
 // manifest: { version, format, totalSegments, totalIds,
 //             segments: [{ segment, namespace?, count, bytes }],
-//             failed:   [{ segment, namespace?, error }] }   // segments that could not be read (see below)
+//             failed:   [{ segment, namespace?, error }],              // segments that could not be read (see below)
+//             skipped:  [{ segment, namespace?, reason: 'destroyed' }] } // tombstones: nothing to export
 ```
 
 Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives bytes, `close` commits a
@@ -100,7 +101,8 @@ And a store loads one straight back, with no per-id work:
   segment has a registry row (the publish writes it), so the registry is complete by construction. Build the store on
   the backend the loads used.
 - **Encrypted segments are decrypted** transparently if the store has the keystore, so the export is **cleartext**.
-  Protect it. Crypto-shredded segments are skipped.
+  Protect it. A destroyed segment (crypto-shredded or dropped) resolves no generation, so it is skipped and listed in
+  the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every row the registry listed.
 - **A segment that cannot be read does not stop the run.** A corrupt storage object, or an encrypted segment when the
   store has no keystore (the command wires none, so it cannot decrypt those), is recorded in the manifest's `failed[]`.
   The export continues, and that segment's partial output is discarded. So "a `manifest.json` exists" means the run

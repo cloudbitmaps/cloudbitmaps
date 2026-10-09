@@ -19,6 +19,7 @@ import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `subjectReport` (Art. 15) and `eraseSubject` (Art. 17) — the store-level admin scans over every registered
@@ -271,7 +272,14 @@ describe('eraseSubject', () => {
     await w.reader().eraseSubject(1, { namespace: NS, audit });
 
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rewrite', namespace: NS, segment: 'a', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rewrite',
+        namespace: NS,
+        segment: 'a',
+        incarnation: incarnationOf((await w.registry.get({ namespace: NS, segment: 'a' }))!.token),
+        fromGeneration: 0,
+        generation: 1,
+      },
     ]);
   });
 

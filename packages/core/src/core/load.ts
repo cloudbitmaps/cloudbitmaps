@@ -20,6 +20,7 @@
  * object, so it stays, and collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
+import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import {
   bulkLoadAhead,
@@ -632,6 +633,7 @@ async function runLoad(
       kind: 'segment.load-refused',
       segment: ref.segment,
       namespace: ref.namespace,
+      ...incarnationField(fromToken),
       generation,
       reason: 'superseded',
       cardinality: 0,
@@ -709,6 +711,7 @@ async function runLoad(
       kind: 'segment.load-refused',
       segment: ref.segment,
       namespace: ref.namespace,
+      ...incarnationField(fromToken),
       generation,
       reason,
       cardinality: written.cardinality,
@@ -797,6 +800,7 @@ async function runLoad(
     kind: 'segment.publish',
     segment: ref.segment,
     namespace: ref.namespace,
+    ...incarnationField(published.token),
     generation,
   });
 

@@ -13,12 +13,14 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { incarnationOf } from '@/core/token';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
  * `segment.rollback` (the pointer moved back), `segment.load-refused` (a load's guard refused it),
- * `segment.rewrite` (a subject erasure), `segment.erase` (a crypto-shred), `segment.dispose` (storage
- * reclaimed) and `namespace.erase`.
+ * `segment.rewrite` (a subject erasure), `segment.collect` (a subject erasure that deleted generations and rewrote
+ * none), `segment.erase` (a crypto-shred), `segment.dispose` (storage reclaimed) and `namespace.erase`. Each segment
+ * event's `incarnation` is covered in `audit-incarnation.test.ts`.
  *
  * Two properties are load-bearing throughout, because an audit trail exists to prevent exactly these:
  * **never over-attest** (no event for an operation that did not happen — a no-op publish, an idempotent
@@ -144,7 +146,15 @@ describe('audit: segment.publish (bulk-load)', () => {
       { registry: w.registry, audit },
     );
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.publish', namespace: 'ns', segment: 's', generation: 3 },
+      {
+        kind: 'segment.publish',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf(
+          (await w.registry.get({ namespace: 'ns', segment: 's' }))!.token,
+        ),
+        generation: 3,
+      },
     ]);
   });
 
@@ -205,7 +215,16 @@ describe('audit: segment.rewrite (subject erasure)', () => {
 
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rewrite', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rewrite',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf(
+          (await w.registry.get({ namespace: 'ns', segment: 's' }))!.token,
+        ),
+        fromGeneration: 0,
+        generation: 1,
+      },
     ]);
   });
 
@@ -287,7 +306,16 @@ describe('audit: segment.erase / namespace.erase', () => {
       audit,
     });
     expect(res.cryptoShredded).toBe(true);
-    expect(audit.snapshot()).toEqual([{ kind: 'segment.erase', namespace: 'ns', segment: 's' }]);
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.erase',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf(
+          (await w.registry.get({ namespace: 'ns', segment: 's' }))!.token,
+        ),
+      },
+    ]);
   });
 
   it('does NOT emit on the idempotent already-destroyed call', async () => {
@@ -404,6 +432,8 @@ describe('AuditEvent union', () => {
         case 'segment.publish':
           return e.segment;
         case 'segment.rewrite':
+          return e.segment;
+        case 'segment.collect':
           return e.segment;
         case 'segment.load-refused':
           return e.segment;

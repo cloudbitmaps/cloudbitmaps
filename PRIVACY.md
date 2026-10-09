@@ -73,7 +73,9 @@ It reuses the store's own drivers (so build the store with a backend). It return
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
 one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id found only
 outside the current generation (a retained *superseded* one, or one above the pointer after a rollback) is
-collected rather than rewritten, so it emits no event and its ledger entry carries no `generation`. Segments the id is
+collected rather than rewritten, so it emits `segment.collect { fromGeneration, collected }` instead and its ledger
+entry carries no `generation`. Each event also names the segment's `incarnation`, so a segment created again under
+the same name is never mistaken for the one erased. Segments the id is
 not in are not listed. `store.subjectReport(id, { namespace })` answers the read side (Art. 15 — which segments
 an id is in).
 
