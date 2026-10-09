@@ -4,8 +4,12 @@ vi.mock('@/core/crbm/reader', async (original) =>
 /**
  * Invariant 2, as a property: over random sequences of loads, replacements of the current object under an unchanged
  * row (as a restore from outside the library makes), puts-back, reader-cache evictions, refresh lapses and reads, no
- * read ever serves an object its row did not name. A read either answers from a generation that was published, or
+ * read ever serves an object its row did not name. A read answers only ids of generations that were published, or
  * throws `NotFoundError` for an object that is not the row's; it never answers an id only a replacement holds.
+ *
+ * It does not ask an `iterate` for one generation's ids. A long read can re-resolve part-way, when a collection takes
+ * the generation it started on, and then describe two instants (invariant 3's stated bound): chunks of the earlier
+ * generation, then of the later one. Each of those ids is still one a published generation held.
  */
 import fc from 'fast-check';
 import { CloudRoaring, MemoryStorage } from '@/index';
@@ -71,8 +75,11 @@ async function run(ops: readonly Op[]): Promise<void> {
   await writer.load(B, [1]);
   let gen = 0;
   await writer.load(A, published(gen), { keep: 0 });
-  const everPublished = new Set([JSON.stringify(published(gen))]);
+  /** Every id a published generation of `a` held. */
+  const everPublished = new Set(published(gen));
   const counts = new Set([published(gen).length]);
+  /** Whether an id is one only a replacement holds: no load ever wrote one. */
+  const onlyReplaced = (id: number): boolean => (id & 0xffff) === MARK;
   let replaced = false;
 
   const tolerate = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
@@ -100,7 +107,7 @@ async function run(ops: readonly Op[]): Promise<void> {
         expect(await writer.load(A, published(gen), { keep: 0 })).toMatchObject({
           generation: gen,
         });
-        everPublished.add(JSON.stringify(published(gen)));
+        for (const id of published(gen)) everPublished.add(id);
         counts.add(published(gen).length);
         break;
       case 'replace':
@@ -135,9 +142,15 @@ async function run(ops: readonly Op[]): Promise<void> {
           return out;
         });
         if (ids !== undefined) {
-          expect(everPublished.has(JSON.stringify(ids)), `iterate ${JSON.stringify(ids)}`).toBe(
-            true,
+          const where = `iterate ${JSON.stringify(ids)}`;
+          expect(ids.some(onlyReplaced), `${where}: served an id only a replacement holds`).toBe(
+            false,
           );
+          expect(
+            ids.every((id) => everPublished.has(id)),
+            `${where}: an id no published generation held`,
+          ).toBe(true);
+          expect(ids, `${where}: ascending`).toEqual([...ids].sort((x, y) => x - y));
         }
         break;
       }
