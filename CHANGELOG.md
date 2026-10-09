@@ -103,6 +103,10 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`store.segment(name, options)` refuses `expiresAt` as it refuses any other key but `namespace`**: with
+  `ValidationError` naming it, `segment: unknown option "expiresAt"; a handle takes { namespace } only`. A deadline on a
+  set is recorded with `setRetention` and acted on by `retireExpired`, or checked where you read
+  ([a deadline on a set](docs/guide/retention.md#a-deadline-on-a-set)).
 - **A reader's caches key on the generation with the row's `pointerId`, not its token.** A lease taken or released, a
   `setRetention` or a `clearRetention` leaves a warm reader's open object and decoded chunks in place: a warm `has()`
   after one, once `cache.genTtlMs` lapses, is the registry read alone, where it was a registry read, a tail read and a

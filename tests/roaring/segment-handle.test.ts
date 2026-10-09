@@ -56,9 +56,7 @@ describe('a Segment handle is not constructible', () => {
 });
 
 describe('a handle takes no deadline', () => {
-  const MESSAGE =
-    'segment: `expiresAt` is not an option of a handle; check a deadline where you read, or record it with ' +
-    '`store.setRetention(ref, { expiresAt })` and run `store.retireExpired()`';
+  const MESSAGE = 'segment: unknown option "expiresAt"; a handle takes { namespace } only';
   /** `expiresAt` is not in `SegmentOptions`, so each call goes through a cast, as plain JavaScript would. */
   const segmentOf = (store: CloudRoaring, options: unknown): Segment =>
     store.segment('s', options as Parameters<CloudRoaring['segment']>[1]);
