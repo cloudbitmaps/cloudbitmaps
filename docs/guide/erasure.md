@@ -108,8 +108,9 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
 The erasure is immediate in storage, and immediate in the store that performed it for every read that starts after it
 returns: that store drops what it had cached about the segment before returning, so it cannot keep answering from
 memory. A read of that store already in progress moves to the rewritten generation, but what it had already taken is the old
-generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency`
-keys (32 by default) for a combine. A combine or `iterate` reads each operand's chunks as ranges of the object, and
+generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1
+keys (33 by default) for a combine, the key it is handing out and the `concurrency` keys it had already requested. A
+combine or `iterate` reads each operand's chunks as ranges of the object, and
 resolves the segment again before it serves each chunk, one held in its cache included, as a read of that chunk alone
 does, so the ranges it had already
 requested are dropped when the erasure has landed, not served ([a long call can describe two
@@ -130,6 +131,14 @@ no bus, and no connection between two stores that happen to point at the same bu
 
 A refresh that fails with anything but a transient fault (an access denial, a row that will not parse) does not keep
 serving: the read that meets it throws, and the reader is dropped with the key it unwrapped.
+
+A store with a timed refresh keeps each segment's resolution, the row's wrapped keys among it (never an unwrapped
+key), for `cache.genTtlMs` from the registry read that made it, whether or not the segment's reader is still open.
+Within that time a store whose reader was evicted builds its next read on the kept resolution and unwraps the key from
+those wrapped keys through the keystore again, so another store's crypto-shred reaches it once the resolution lapses:
+within `cache.genTtlMs`, as the table says. A lapsed resolution is never read from: if the registry read that should
+replace it fails with a transient fault, the read fails too, unless the store still holds the segment in its reader
+cache, which rides out the outage as above until the reader cache lets it go: what it rides out on is not kept.
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off. It is a reasonable setting for a read-only replica of immutable
 data, but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)`

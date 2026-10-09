@@ -172,7 +172,8 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
    * A pinned segment reports the version captured when it was pinned, marked as a pin's, so its decoded chunks
    * are cached under keys that no live read writes. A live read keys its fetches by the version it resolved when
    * it began, but is served whatever generation the live source holds when each fetch lands — after a publish
-   * and a lapsed `cache.genTtlMs`, a reader-cache eviction, a sweep that heals the read forward, or an
+   * and a lapsed `cache.genTtlMs`, a reader-cache eviction on a store with no timed refresh, the resolution
+   * cache letting the segment's resolution go on a store with one, a sweep that heals the read forward, or an
    * invalidation, a different one — so an entry under a live version can hold another generation's chunk.
    * Invariant 3 lets that live call see it, and later live reads resolve the current version and never look the
    * entry up; a pin sharing the key would be handed it, and return a read that mixed two generations. A pinned

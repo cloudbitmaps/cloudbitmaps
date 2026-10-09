@@ -12,6 +12,8 @@ import {
   DEFAULT_MAX_OPEN_INDEX_BYTES,
   DEFAULT_MAX_OPEN_SEGMENTS,
   REFRESH_RETRY_MS,
+  RESOLUTION_BYTES_DIVISOR,
+  RESOLUTIONS_PER_OPEN_SEGMENT,
 } from './reader-defaults';
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import {
@@ -119,7 +121,9 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * Hard ceiling on how many segments' readers (each holding a fully-parsed `.crbm` index) are cached at once
    * (default 1024) — a memory bound for a long-running server. Past it, the least-recently-used
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
-   * generations are immutable). Raise it for a big cache working set of small segments.
+   * generations are immutable). Raise it for a big cache working set of small segments. A source with a timed refresh
+   * also keeps up to 8 times this many segments' resolutions apart from their readers, for the TTL: the re-open then
+   * reads no row, and comes only when a read needs the reader, for the index or for a chunk.
    */
   readonly maxOpenSegments?: number;
   /**
@@ -133,7 +137,8 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * that region is at most this ceiling divided by {@link maxOpenSegments} (64 KiB by default) — its fair share — so a small generation's
    * chunks are served from memory with no further request, and a bigger one is read by range. Only a source with a timed
    * pointer refresh ({@link currentGenTtlMs} above 0, a registry and a clock) keeps chunk bytes. Lower it for memory-tight deployments with wide segments; a single
-   * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside.
+   * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside. A
+   * sixteenth of it bounds the resolutions a source with a timed refresh keeps besides (4 MiB by default).
    */
   readonly maxOpenIndexBytes?: number;
 }
@@ -163,8 +168,8 @@ function storageBlobReader(
 }
 
 /**
- * A resolved read target, as `resolveLive` produces it: which generation is current, and its DEK wrappings if it
- * is encrypted. `lineage` is the registry row's `pointerId`: the token of the last write that named a field a read
+ * A resolved read target, as a resolution of the segment produces it: which generation is current, and its DEK wrappings
+ * if it is encrypted. `lineage` is the registry row's `pointerId`: the token of the last write that named a field a read
  * resolves through, at any value, which a shipped registry never gives two writes under one name, but for a collision of probability 2^-128 per pair
  * of incarnations. It is what separates two *incarnations* of one name, which a generation number cannot: the numbering
  * restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created segment presents different
@@ -174,6 +179,63 @@ function storageBlobReader(
  * incarnations apart, by the fingerprint a pin records.
  */
 type Target = { generation: number; lineage?: Token; wrappedDeks?: readonly WrappedDek[] };
+
+/**
+ * What one resolution of a segment found: the fields of its row a read resolves through (the generation, the row's
+ * `pointerId`, the wrapped keys and the summary), and nothing else. Not the row: its token, leases, retention and the
+ * rest are no part of what a read reads. Not a key either: the wrapped keys are unwrapped by each snapshot built on the
+ * resolution ({@link Live.unwrap}), so an unwrapped key is held only while a reader of the segment is.
+ */
+interface Resolved extends Target {
+  readonly summary?: RegistrySummary;
+}
+
+/**
+ * One read of a segment's pointer: the registry's row, or a listing of the bucket with no registry, and when it was sent.
+ * `null` for no generation: no row, a row with no generation yet, or a destroyed one. Its TTL counts from
+ * {@link sentAtMs}, the instant the read was sent, not the one it answered, so a slow read does not lengthen the life of
+ * what it found; a reopen and a read that finds it leave it, and only a refresh that failed transiently moves it, to ask
+ * again sooner.
+ */
+interface Resolution {
+  readonly resolved: Promise<Resolved | null>;
+  sentAtMs: number;
+  /**
+   * Set when the read failed transiently and this answers what the resolution `from` found instead: only the snapshot
+   * that replaces one on `from` is served it, and any other fails with the read's `fault`, as a cold resolve does.
+   * Cleared when the next refresh rides out from this one, so an outage holds one link of it, however long.
+   */
+  rodeOut?: { readonly from: Resolution; readonly fault: unknown };
+}
+
+/**
+ * The fields of a row a read resolves through, or `null` where a read finds no generation: no row; a crypto-shredded
+ * one, whose DEK is gone, so its Storage bytes are unrecoverable; and a row with no Storage generation yet (minted by
+ * `setSegmentRetention` ahead of the first load, so admin tools can see the segment), which resolves exactly like a
+ * segment with no row. Returning `null` for that last one rather than a generation is the whole reason such a row is safe
+ * to create: the alternative, pointing at a generation that does not exist, is the `missing-storage-generation` state.
+ */
+function resolvedOf(record: RegistryRecord | null): Resolved | null {
+  if (record === null || record.status === 'destroyed' || record.currentGen === null) return null;
+  return {
+    generation: record.currentGen,
+    lineage: pointerIdOf(record),
+    wrappedDeks: record.wrappedDeks,
+    summary: record.summary,
+  };
+}
+
+/**
+ * What a resolution weighs, in the resolution cache and in the reader cache while a snapshot holds no reader: a fixed
+ * part for the entry and its strings, then the row's summary and wrapped keys as JSON.
+ */
+function weightOf(resolved: Resolved): number {
+  return (
+    SNAPSHOT_BASE_BYTES +
+    (resolved.summary === undefined ? 0 : JSON.stringify(resolved.summary).length) +
+    (resolved.wrappedDeks === undefined ? 0 : JSON.stringify(resolved.wrappedDeks).length)
+  );
+}
 
 /**
  * What a pin holds of the object it pinned: the version its cache entries are keyed by, and the object's
@@ -244,21 +306,27 @@ export interface PinLease {
 class PinMoved extends Error {}
 
 /**
- * What one resolution of a segment's pointer found: the target, and what its row says of the generation, each
- * computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
+ * What a snapshot makes of one resolution of a segment's pointer: the target, and what its row says of the generation,
+ * each computed only when asked for. The key is unwrapped once however many ask, and a failure is not remembered, so a
  * transient fault in the keystore is asked again.
  */
 interface Live {
   readonly target: Target;
-  /** The row this resolution read, when it came from a registry. */
+  /** The row a pin's resolution read, which its lease is written against. A snapshot's resolution keeps no row. */
   readonly row?: RegistryRecord;
   /** The generation's decryption context (`undefined` for a cleartext segment); applies `requireEncryption`. */
   readonly crypto: () => Promise<CrbmCrypto | undefined>;
-  /** The segment's unwrapped key, shared with the next resolution while the row's wrapped keys are the same. */
+  /** The segment's unwrapped key, shared with the next snapshot while the row's wrapped keys are the same. */
   readonly unwrap: (() => Promise<Aead>) | undefined;
   /** What the row's summary says of the generation, when the row's summary is usable for it. */
   readonly summary: () => Promise<SummaryDescription | undefined>;
-  /** What the resolution weighs while no reader is open: the row's summary. */
+  /**
+   * The version any reader opened for this resolution names ({@link versionOfReader}), when the row's summary names the
+   * object: every live open is held to that object, so no reader that opens names another. `undefined` when the row has
+   * no summary it can use: only an open then says which object is under the number.
+   */
+  readonly version: () => Promise<string | undefined>;
+  /** What the resolution weighs while no reader is open ({@link weightOf}). */
   readonly bytes: number;
 }
 
@@ -335,23 +403,23 @@ function describe(reader: CrbmReader): GenerationDescription {
 }
 
 /**
- * A memoized per-segment snapshot plus the time it was installed, for the current-generation TTL refresh. A live
- * snapshot is a resolved target, and a reader that is opened only when a read needs one: one resolution serves a
- * `count` answered from the row and a `has` that follows it, which reads the generation the count saw. The reader
- * opens whatever object is under that generation's key when it opens, which is another object than the row named if
- * the number has been taken again since the row was read; its version names the object it opened
- * ({@link versionOfReader}), so nothing cached from the earlier object answers for it. A pinned snapshot is its reader
- * alone.
+ * A memoized per-segment snapshot, on one resolution of the segment, whose TTL is the snapshot's. A live snapshot is a
+ * resolved target, and a reader that is opened only when a read needs one: one resolution serves a `count` answered
+ * from the row and a `has` that follows it, which reads the generation the count saw. The reader opens whatever object
+ * is under that generation's key when it opens, which is another object than the row named if the number has been
+ * taken again since the row was read; it is held to the object the row's summary names where there is one
+ * ({@link CrbmStorageChunkSource.openLive}), and its version names the object it opened ({@link versionOfReader}), so
+ * nothing cached from the earlier object answers for it. A pinned snapshot is its reader alone.
  */
 class Snapshot {
-  /** When the snapshot's refresh clock started. A refresh that failed transiently moves it back, so it lapses sooner. */
-  installedAtMs = 0;
   /** Set by the cache, to hear of a reader as it is opened. */
   onReader: ((reader: Promise<CrbmReader | null>) => void) | undefined;
   private opened: Promise<CrbmReader | null> | undefined;
   private outcome: { readonly reader: CrbmReader | null } | undefined;
 
   private constructor(
+    /** The read of the pointer this snapshot is on, whose TTL is the snapshot's; absent on a pinned snapshot. */
+    readonly resolution: Resolution | undefined,
     /** What the pointer resolved to; absent on a pinned snapshot. */
     readonly target: Promise<Live | null> | undefined,
     private readonly open: ((live: Live) => Promise<CrbmReader>) | undefined,
@@ -360,15 +428,16 @@ class Snapshot {
   ) {}
 
   static live(
+    resolution: Resolution,
     target: Promise<Live | null>,
     open: (live: Live) => Promise<CrbmReader>,
     prior?: Promise<CrbmReader | null>,
   ): Snapshot {
-    return new Snapshot(target, open, prior);
+    return new Snapshot(resolution, target, open, prior);
   }
 
   static eager(reader: Promise<CrbmReader | null>): Snapshot {
-    const snap = new Snapshot(undefined, undefined, undefined);
+    const snap = new Snapshot(undefined, undefined, undefined, undefined);
     snap.hold(reader);
     return snap;
   }
@@ -445,12 +514,13 @@ class Snapshot {
   }
 }
 
+/** The fixed part of what a resolution weighs ({@link weightOf}): the entry, its generation and its `pointerId`. */
+const SNAPSHOT_BASE_BYTES = 256;
 /**
  * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
  * transient JS-side buffer to **~28 MB measured** irrespective of input size, while keeping batches large
  * enough that the per-id JS↔native crossing is amortised away.
  */
-const SNAPSHOT_BASE_BYTES = 256;
 const BULK_FLUSH_IDS = 1 << 20;
 /**
  * Ids between ingest-loop yields. 16x coarser than the per-chunk cadence because the per-id work is ~40 ns
@@ -475,6 +545,21 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * steady-state memory bound; re-opening an evicted segment is one cheap tail GET.
    */
   private readonly snapshots: BoundedLru<string, Snapshot>;
+  /**
+   * Each segment's resolution, kept apart from its reader, by segment: what a read of its row found, for the TTL from
+   * the instant that read was sent, whether or not the reader cache still holds the segment's reader. So letting a reader
+   * go moves nothing: the next read builds a snapshot on the resolution, reads no row, and opens the object when it needs
+   * the index or a chunk the chunk cache does not hold (a version, a count and a stat from the row's summary need
+   * neither). It holds the resolved fields only ({@link Resolved}): the wrapped keys, never an unwrapped one, so a
+   * snapshot built on it unwraps the key again through the keystore. It never holds a resolution that found no
+   * generation: the next read of such a segment reads the row.
+   *
+   * Only a source with a timed refresh has one: without it, letting a reader go is one of the few things that ever moves
+   * a read on, and keeping the resolution would keep it forever. **Bounded** by count and by bytes, both derived from
+   * the reader cache's: {@link RESOLUTIONS_PER_OPEN_SEGMENT} times its count bound, and its byte bound over
+   * {@link RESOLUTION_BYTES_DIVISOR}. An entry heavier than the byte bound is kept alone, as the reader cache keeps one.
+   */
+  private readonly resolutions: BoundedLru<string, Resolution> | undefined;
   /**
    * Pins ({@link heldKey}) whose object has been found replaced: another object is under its generation's key. Kept,
    * and bounded as the readers are, so that a pin's later chunk reads and any reopen fail at once rather than pay for
@@ -590,14 +675,21 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.clock = clock;
     this.currentGenTtlMs = currentGenTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS;
     // Bound the reader cache by BOTH count and aggregate parsed-index bytes. No TTL on the LRU itself —
-    // the currentGen TTL is handled separately via each snapshot's `installedAtMs`; these ceilings only bound how
-    // many segment readers/indices stay resident. Each reader's byte weight is reported once it resolves (below).
+    // the currentGen TTL is handled separately via each snapshot's resolution (`sentAtMs`); these ceilings only bound
+    // how many segment readers/indices stay resident. Each reader's byte weight is reported once it resolves (below).
     // The cache never compares against wall-clock, so a zero clock is fine when none is injected.
     this.snapshots = new BoundedLru<string, Snapshot>({
       maxEntries: maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS,
       maxBytes: maxOpenIndexBytes ?? DEFAULT_MAX_OPEN_INDEX_BYTES,
       clock: clock ?? { now: () => 0 },
     });
+    this.resolutions = this.timedRefresh
+      ? new BoundedLru<string, Resolution>({
+          maxEntries: RESOLUTIONS_PER_OPEN_SEGMENT * (maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS),
+          maxBytes: (maxOpenIndexBytes ?? DEFAULT_MAX_OPEN_INDEX_BYTES) / RESOLUTION_BYTES_DIVISOR,
+          clock: { now: () => 0 },
+        })
+      : undefined;
     this.distrusted = new BoundedLru<string, true>({
       maxEntries: maxOpenSegments ?? DEFAULT_MAX_OPEN_SEGMENTS,
       clock: { now: () => 0 },
@@ -620,99 +712,173 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The segment's live snapshot, refreshing on the TTL. Cheap within the TTL window. The snapshot holds the resolved
-   * target, and its reader once a read has asked for one.
+   * The segment's live snapshot, refreshing on the TTL. Cheap within the TTL window: the snapshot the reader cache holds,
+   * while its resolution is inside the TTL. With a timed refresh, a segment whose reader the cache let go is served a
+   * snapshot built on its kept resolution, while that is inside the TTL: no row is read, and the reader opens only when a
+   * read needs one. Otherwise the pointer is read now. The snapshot holds the resolved target, and its reader once a read
+   * has asked for one.
    */
   private liveSnapshot(ref: SegmentRef): Snapshot {
     const key = this.keyOf(ref);
     const existing = this.snapshots.get(key);
-    if (existing === undefined) {
-      return this.install(
-        key,
-        Snapshot.live(this.resolveLive(ref), (live) => this.openLive(ref, live)),
-      );
+    if (existing !== undefined && !this.expired(existing.resolution as Resolution)) return existing;
+    const kept = this.resolutions?.get(key);
+    if (kept !== undefined && kept !== existing?.resolution && !this.expired(kept)) {
+      return this.install(key, this.snapshotOn(ref, kept, existing));
     }
-    if (!this.expired(existing.installedAtMs)) return existing;
-    // Expired: install the in-flight refresh **synchronously** (before any await) so concurrent readers in this
-    // window coalesce onto the one re-resolve — ≤ one registry read + at most one reopen per segment per window
-    // (no boundary thundering-herd). The refresh keeps the prior reader unless the generation moved.
-    const snap: Snapshot = this.install(
-      key,
-      Snapshot.live(
-        this.refreshedTarget(ref, existing, () => this.retrySoon(snap)),
-        (live) => this.openLive(ref, live),
-        existing.openedReader,
-      ),
-    );
-    return snap;
-  }
-
-  /** The current resolved reader for a segment, refreshing on the TTL. */
-  private resolvedReader(ref: SegmentRef): Promise<CrbmReader | null> {
-    return this.liveSnapshot(ref).reader;
+    // Expired, or never resolved: the pointer is read now, and the resolution and the snapshot on it are installed
+    // **synchronously** (before any await) so concurrent readers in this window coalesce onto the one read — ≤ one
+    // registry read + at most one reopen per segment per window (no boundary thundering-herd). The refresh keeps the
+    // prior reader unless the generation moved. Only a snapshot the reader cache still holds rides out a transient
+    // fault in that read, and what it rides out on is not kept: a lapsed resolution kept with no snapshot on it is not
+    // served past its TTL, so once the reader cache lets the snapshot go the read fails as a cold resolve does,
+    // whatever wrapped keys the lapsed resolution held.
+    const resolution = this.resolveNow(ref, existing?.resolution);
+    this.remember(key, resolution);
+    return this.install(key, this.snapshotOn(ref, resolution, existing));
   }
 
   /**
-   * A refresh failed transiently and the prior reader keeps serving: make this snapshot lapse after
-   * {@link REFRESH_RETRY_MS} (never longer than the TTL) rather than after a whole TTL, so the next read after
-   * that asks the registry again. It costs no read of its own; it only changes when the next refresh happens.
+   * Read the segment's pointer now. The read is sent before this returns, and the TTL counts from this instant: a read
+   * that answers late does not lengthen the life of what it found. The row read is always fresh, so what a snapshot on
+   * it says of the generation (its summary included) is what the row says now, never `prior`'s.
+   *
+   * A read that fails with a transient fault answers what `prior` found, when it found a generation, and is asked again
+   * soon ({@link retrySoon}): `prior` is the resolution of the snapshot the reader cache still holds, so an outage of the
+   * registry keeps that snapshot's generation, and its reader and unwrapped key where it has them; one resolved without
+   * an open, for a count or a generation lookup, unwraps the key from `prior`'s wrapped keys when a read first needs
+   * it. The outage ends shortly after the registry answers.
+   * That answer is the snapshot's alone ({@link Resolution.rodeOut}): it is not kept as the segment's resolution, and a
+   * snapshot built on it after the reader cache let that one go fails with the fault. With no `prior` the fault
+   * fails the read, as a cold resolve's does. If `prior` found none or failed, the pointer is read once more rather than
+   * a dead resolution re-armed (else the segment reads empty for a whole TTL window). Anything else — an access denial, a corrupt row, a
+   * registry that answers NotFound — fails the read exactly as a cold resolve of the segment would, and the resolution
+   * and the snapshot on it are forgotten, so a reader and the key it unwrapped do not outlive a refresh that could not
+   * be trusted.
    */
-  private retrySoon(snap: Snapshot): void {
-    snap.installedAtMs =
+  private resolveNow(ref: SegmentRef, prior: Resolution | undefined): Resolution {
+    const sentAtMs = this.now();
+    const sent = this.resolve(ref);
+    if (prior === undefined) return { resolved: sent, sentAtMs };
+    const resolution: Resolution = {
+      sentAtMs,
+      resolved: sent.catch(async (err: unknown) => {
+        if (!isTransientError(err)) throw err;
+        const before = await prior.resolved.catch(() => null);
+        if (before === null) return this.resolve(ref);
+        this.retrySoon(resolution);
+        // What `prior` found is served to the snapshot that held it, and to nothing else. Kept as the segment's
+        // resolution, it would be built on again once the reader cache let that snapshot go, unwrapping the key again
+        // from the wrapped keys of a row the registry was not asked about; and a stream on the snapshot, once let go,
+        // would not re-check. Not kept, both resolve afresh, as a cold read does.
+        const key = this.keyOf(ref);
+        if (this.resolutions?.peek(key) === resolution) this.resolutions.delete(key);
+        resolution.rodeOut = { from: prior, fault: err };
+        // `prior` has settled and is no longer the segment's resolution, so what it rode out from is needed no more:
+        // kept, each retry of a long outage would hold the one before it, and its fault.
+        prior.rodeOut = undefined;
+        return before;
+      }),
+    };
+    return resolution;
+  }
+
+  /**
+   * A refresh failed transiently and the prior resolution keeps serving: make it lapse after {@link REFRESH_RETRY_MS}
+   * (never longer than the TTL) rather than after a whole TTL, so the next read after that asks the registry again. It
+   * costs no read of its own; it only changes when the next refresh happens.
+   */
+  private retrySoon(resolution: Resolution): void {
+    resolution.sentAtMs =
       this.now() - (this.currentGenTtlMs - Math.min(this.currentGenTtlMs, REFRESH_RETRY_MS));
   }
 
   /**
-   * TTL elapsed: cheaply re-resolve the pointer. The row read is always fresh, so what the new snapshot says of the
-   * generation (its summary included) is what the row says now, never the prior snapshot's. The reader is reopened
-   * only if the generation or the row changed, and only when a read asks for it.
+   * Keep `resolution` as the segment's, from the instant its read was sent, so the reads that come while it is in flight
+   * share it, and a read after the reader cache let the segment go builds on it. Its weight is reported once it lands,
+   * and one that finds no generation, or fails, is forgotten. Both are identity-guarded, as the reader cache's are, and
+   * nothing is installed when the read lands: an `invalidate` while it is in flight, or a newer resolution, is never
+   * undone by its answer.
    */
-  private async refreshedTarget(
-    ref: SegmentRef,
-    existing: Snapshot,
-    onTransientFault: () => void,
-  ): Promise<Live | null> {
-    const prior = await (existing.target as Promise<Live | null>).catch(() => null);
-    try {
-      return await this.resolveLive(ref, prior);
-    } catch (err) {
-      // Only a transient fault is ridden out. Anything else — an access denial, a corrupt row, a registry that
-      // answers NotFound — fails this read exactly as a cold resolve of the segment would, and the snapshot is
-      // forgotten, so the reader and the key it unwrapped do not outlive a refresh that could not be trusted.
-      if (!isTransientError(err)) throw err;
-      // Transient resolve fault: keep serving the prior snapshot if it's alive, but ask again soon rather than a
-      // whole TTL later, so an outage ends the stale serving shortly after the registry answers. If it's dead (no
-      // target, or a failed open), resolve again rather than re-arm a dead snapshot (else the segment reads empty for a
-      // whole TTL window).
-      const alive = prior !== null;
-      if (!alive) return this.resolveLive(ref);
-      onTransientFault();
-      return prior;
-    }
+  private remember(key: string, resolution: Resolution): void {
+    const cache = this.resolutions;
+    if (cache === undefined) return;
+    cache.set(key, resolution);
+    const forgetIfStale = (): void => {
+      if (cache.peek(key) === resolution) cache.delete(key);
+    };
+    resolution.resolved.then((resolved) => {
+      if (resolved === null) forgetIfStale();
+      else if (cache.peek(key) === resolution) cache.setWeight(key, weightOf(resolved));
+    }, forgetIfStale);
   }
 
   /**
-   * Memoize a snapshot as the segment's at `now()`, forgetting it later if it resolves to null / throws
-   * (identity-guarded, so a stale cleanup never clobbers a fresher snapshot). Installing the (pending) snapshot
-   * **synchronously** is what lets concurrent callers coalesce onto one in-flight resolve.
+   * A live snapshot on `resolution`. `before` is the snapshot it replaces, while the reader cache still holds one: its
+   * reader is kept if the resolution finds the same generation, `pointerId` and object ({@link Snapshot.reuse}), and its
+   * unwrapped key if the same wrapped keys. A snapshot built after the reader cache let the segment go has neither, so
+   * its open asks the keystore again: a key is held only while a reader of the segment is.
+   */
+  private snapshotOn(
+    ref: SegmentRef,
+    resolution: Resolution,
+    before: Snapshot | undefined,
+  ): Snapshot {
+    // The target is built in a function of its own. The snapshot keeps its `open` closure for life, and closures made in
+    // one call share what any of them reads from it: built here, the target's would have `open` keep `before`, and
+    // through it every snapshot before that, with their readers and keys, outside the reader cache's bounds.
+    return Snapshot.live(
+      resolution,
+      this.targetOn(ref, resolution, before),
+      (live) => this.openLive(ref, live),
+      before?.openedReader,
+    );
+  }
+
+  /** What the snapshot on `resolution` that replaces `before` reads: see {@link snapshotOn}. */
+  private targetOn(
+    ref: SegmentRef,
+    resolution: Resolution,
+    before: Snapshot | undefined,
+  ): Promise<Live | null> {
+    const prior = before?.target;
+    const replaces = before?.resolution;
+    return resolution.resolved.then(async (resolved) => {
+      if (resolved === null) return null;
+      // A read that came while the refresh was in flight, after the reader cache let the snapshot it replaces go, built
+      // on the refresh as the segment's resolution: a ride-out is not served to it ({@link resolveNow}).
+      const rodeOut = resolution.rodeOut;
+      if (rodeOut !== undefined && replaces !== rodeOut.from) throw rodeOut.fault;
+      return this.liveOf(ref, resolved, prior === undefined ? null : await prior.catch(() => null));
+    });
+  }
+
+  /**
+   * Memoize a snapshot as the segment's, forgetting it later if it resolves to null / throws (identity-guarded, so a
+   * stale cleanup never clobbers a fresher snapshot). Installing the (pending) snapshot **synchronously** is what lets
+   * concurrent callers coalesce onto one in-flight resolve.
    */
   private install(key: string, snap: Snapshot): Snapshot {
-    snap.installedAtMs = this.now();
     this.snapshots.set(key, snap);
     const forgetIfStale = (): void => {
       if (this.snapshots.get(key) === snap) this.snapshots.delete(key);
     };
     // Report what the snapshot holds so the cache can bound aggregate resident bytes: the row's summary while only
     // the target is resolved, and the reader (its parsed index and any metadata) once one is open. Identity-guarded
-    // via `peek` (no recency change) so a since-replaced snapshot doesn't mis-weight the fresh entry.
+    // via `peek` (no recency change) so a since-replaced snapshot doesn't mis-weight the fresh entry. An open that
+    // fails forgets the resolution too, as `dropStale` does: what it names could not be read, so the next read reads
+    // the row again, as a cold read does.
     snap.onReader = (reader) => {
-      reader.then((r) => {
-        if (r === null) {
-          forgetIfStale();
-          return;
-        }
-        if (this.snapshots.peek(key) === snap) this.snapshots.setWeight(key, r.retainedBytes);
-      }, forgetIfStale);
+      reader.then(
+        (r) => {
+          if (r === null) {
+            forgetIfStale();
+            return;
+          }
+          if (this.snapshots.peek(key) === snap) this.snapshots.setWeight(key, r.retainedBytes);
+        },
+        () => this.dropStale(key, snap),
+      );
     };
     if (snap.target !== undefined) {
       snap.target.then(async (live) => {
@@ -736,52 +902,53 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * Whether a stream reading from `snap` must resolve its segment again before its next chunk, as a read of one chunk
-   * would: the snapshot's TTL has lapsed, an invalidation has happened since `epoch`, or the snapshot is no longer the
-   * one the reader cache holds for the segment (it let it go, or another read installed a newer one). Else nothing can
-   * have moved it, and the check costs a compare and a lookup.
+   * would. In this order: an invalidation has happened since `epoch` (what the store that erased stops on, at once);
+   * the TTL of the snapshot's resolution has lapsed; or that resolution is no longer the segment's: another read
+   * installed a newer one (a refresh, or a heal), or the resolution cache let it go. With no resolution cache (no timed
+   * refresh) the last test is of the snapshot itself, so there the reader cache letting it go is a move, as it is one of
+   * the few things that ever moves such a store's read on. With one, it is not. Else nothing can have moved it, and the
+   * check costs a compare and a lookup in each cache.
    */
   private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
-    return (
-      this.invalidations !== epoch ||
-      this.expired(snap.installedAtMs) ||
-      this.snapshots.get(key) !== snap
-    );
+    const resolution = snap.resolution as Resolution;
+    if (this.invalidations !== epoch || this.expired(resolution)) return true;
+    // Looked up as a read of the segment would be, which keeps a running stream's snapshot in its place in the reader
+    // cache: else other reads push it out under pressure, and a read of the segment beside the stream opens it again.
+    const held = this.snapshots.get(key);
+    return this.resolutions === undefined
+      ? held !== snap
+      : this.resolutions.get(key) !== resolution;
   }
 
-  private expired(installedAtMs: number): boolean {
+  private expired(resolution: Resolution): boolean {
     // With no timed refresh, only an eviction, a sweep's heal or `invalidate` re-resolves the segment. A registry-less
     // setup is single-process local, not the shared bucket that separate loaders publish into.
-    return this.timedRefresh && this.now() - installedAtMs >= this.currentGenTtlMs;
+    return this.timedRefresh && this.now() - resolution.sentAtMs >= this.currentGenTtlMs;
   }
 
   /**
-   * The segment's current generation number — the engine keys its chunk cache by this so a generation bump
-   * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
-   * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
+   * The segment's current generation number, as its snapshot's resolution found it: no backend read within the TTL
+   * window, and no open of the object, ever. `null` if the segment has no committed generation. A generation swept from
+   * under the resolution is met by the read that fetches from it, which heals ({@link withFreshSnapshot}). Since it
+   * opens nothing, the only error it meets is the resolution's own, and it fails with that error at once: there is
+   * nothing to heal. The reads that can open the object (`listChunkKeys`, `summary`, `currentVersion` and the rest)
+   * resolve once more on any `NotFoundError`, a registry's among them, since theirs can be a swept generation.
    *
-   * Heals a swept generation exactly like {@link withFreshSnapshot}: a caller that resolves the generation once
-   * per op, before any chunk fetch, would otherwise fail the whole operation rather than one chunk. The engine
-   * keys by {@link currentVersion} instead, which heals the same way, and falls back to this for a source that
-   * cannot report a version. It is spelled out rather than delegated because a lookup like this runs once per
-   * operand of every `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with
-   * no backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
-   * frame, a per-call closure, and an `await` on a plain number) for a race that fires only during a
-   * concurrent sweep. One retry, then propagate — same contract, same eviction rule.
+   * It is spelled out rather than delegated because a lookup like this runs once per operand of every
+   * `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with no backend call at all.
+   * Routing it through the generic helper cost ~115 ns/op on that path (a second async frame, a per-call closure, and
+   * an `await` on a plain number).
    */
   async currentGeneration(ref: SegmentRef): Promise<number | null> {
     const snap = this.liveSnapshot(ref);
-    try {
-      return (await snap.reader)?.generation ?? null;
-    } catch (err) {
-      if (!isNotFoundError(err)) throw err;
-      this.dropStale(segmentKey(ref), snap);
-      return (await this.resolvedReader(ref))?.generation ?? null; // a second miss propagates
-    }
+    const settled = snap.settled;
+    if (settled !== undefined) return settled.reader?.generation ?? null;
+    return (await (snap.target as Promise<Live | null>))?.target.generation ?? null;
   }
 
   /**
-   * Forget everything derived from `ref`: the resolved snapshot and the open reader behind it (and with the
-   * reader, the DEK it unwrapped at open time), and what its pins' objects were found to be. The next read
+   * Forget everything derived from `ref`: its resolution, the resolved snapshot and the open reader behind it (and with
+   * the reader, the DEK it unwrapped at open time), and what its pins' objects were found to be. The next read
    * resolves the segment again.
    *
    * Needed because the TTL refresh only ever answers "has the pointer moved?", and every *destructive* verb —
@@ -794,6 +961,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     this.invalidations += 1;
     const key = segmentKey(ref);
     this.snapshots.delete(key);
+    // …and the resolution the snapshot was built on, which the next read would otherwise build a snapshot on again.
+    this.resolutions?.delete(key);
     // …and every PINNED reader of the same segment, which is memoized under `<key>@<generation>`. Dropping
     // only the live entry left a pinned handle reading a crypto-shredded segment: the pin is exactly the
     // reader that does not re-resolve on its own, so it is the one that most needs to be told.
@@ -808,33 +977,52 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * `<generation>#<object>` for a registry-less source, or `<generation>:<pointerId>#<object>` with one: the generation
-   * the segment's snapshot resolved, and the object its reader opened, by that object's size and footer checksum in
-   * base 36, which the open read anyway. The row's `pointerId` moves only with a write that names a field a read resolves
-   * through, at any value, so a lease or a policy write (a `setRetention`) leaves the version, the open reader and the
-   * decoded chunks as they were. Two objects do not share a version
-   * string, as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second
-   * one: a name purged and loaded again (a new row, or with no registry the same bare number), a number taken again
-   * within one row once its object was deleted, or an object put back under its key from outside the library. That
-   * holds however long after its row read a reader opens: a snapshot that a `count()` resolved from the row opens its
-   * reader only when a later read needs it, and the object under the key may have changed in between. The version is
-   * opaque: compare two for equality.
+   * the segment's snapshot resolved, and the object a reader of it opens, by that object's size and footer checksum in
+   * base 36. The row's `pointerId` moves only with a write that names a field a read resolves through, at any value, so
+   * a lease or a policy write (a `setRetention`) leaves the version, the open reader and the decoded chunks as they were.
+   * Two objects do not share a version string, as far as their sizes and footer checksums tell them apart, whichever way
+   * a number came to name a second one: a name purged and loaded again (a new row, or with no registry the same bare
+   * number), a number taken again within one row once its object was deleted, or an object put back under its key from
+   * outside the library. The version is opaque: compare two for equality.
    *
-   * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its
-   * chunk cache, so it heals a swept generation exactly as {@link currentGeneration} does: unhealed, a cold read
-   * racing a publish and a `keep: 0` sweep failed the whole operation with `NotFoundError`, where the same race
-   * on a chunk fetch heals. Spelled out rather than delegated for the reason `currentGeneration` gives: it is
-   * almost always served from the cached snapshot with no backend call at all. One retry, then propagate.
+   * Where the row's summary names the object, the version is answered from the resolution, with no open: every live
+   * open of the generation is held to that object ({@link openLive}), refused as a move otherwise, so the one object any
+   * reader of this resolution can name is the one the summary names, and a version named from it is the one that
+   * reader's would be. So a `has()` whose chunk is in the chunk cache opens nothing, after the reader cache let
+   * the segment go included (a read that needs the index opens the object for it, and on an encrypted segment the
+   * key is unwrapped to read the row's sealed summary); an object under the number that is not the row's is met by the read that fetches from it,
+   * which refuses it and heals. Where the row has no summary it can use, or there is no registry, nothing names the
+   * object but the object: the reader is opened, and the version names what it opened, however long after its row read
+   * that is.
+   *
+   * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its chunk
+   * cache, so an open it makes heals a swept generation as a read does: unhealed, a cold read racing a publish and a
+   * `keep: 0` sweep failed the whole operation with `NotFoundError`, where the same race on a chunk fetch heals. Spelled
+   * out rather than delegated for the reason `currentGeneration` gives: it is almost always served from the cached
+   * snapshot with no backend call at all. One retry, then propagate.
    */
   async currentVersion(ref: SegmentRef): Promise<string | null> {
     const snap = this.liveSnapshot(ref);
-    let reader: CrbmReader | null;
+    const settled = snap.settled;
+    if (settled !== undefined) {
+      return settled.reader === null ? null : versionOfReader(settled.reader);
+    }
     try {
-      reader = await snap.reader;
+      return await this.versionOn(snap);
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
       this.dropStale(segmentKey(ref), snap);
-      reader = await this.resolvedReader(ref); // a second miss propagates
+      return await this.versionOn(this.liveSnapshot(ref)); // a second miss propagates
     }
+  }
+
+  /** {@link currentVersion} of one snapshot: named by the row's summary when it can be, else by the reader, opened. */
+  private async versionOn(snap: Snapshot): Promise<string | null> {
+    const live = await (snap.target as Promise<Live | null>);
+    if (live === null) return null;
+    const named = await live.version();
+    if (named !== undefined) return named;
+    const reader = await snap.reader;
     return reader === null ? null : versionOfReader(reader);
   }
 
@@ -1330,12 +1518,22 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * Evict a snapshot we just failed to read from — matched by the snapshot itself, so a concurrent call's
-   * fresher snapshot is never clobbered. The identity guard is the whole point: `install` replaces the entry
-   * wholesale, so comparing anything else would drop a good snapshot on the floor.
+   * Evict a snapshot we just failed to read from, and the resolution it was built on — each matched by identity, so a
+   * concurrent call's fresher snapshot or resolution is never clobbered. The identity guard is the whole point: `install`
+   * and `remember` replace an entry wholesale, so comparing anything else would drop a good one on the floor. The
+   * resolution goes too, or the read's retry would build its snapshot on it again and reopen the generation it just
+   * found gone; and so does a snapshot the reader cache holds on that same resolution, which another read built once the
+   * cache had let `snap` go, or the retry would open that one.
    */
   private dropStale(key: string, snap: Snapshot): void {
-    if (this.snapshots.get(key) === snap) this.snapshots.delete(key);
+    const resolution = snap.resolution;
+    const held = this.snapshots.peek(key);
+    if (held === snap || (resolution !== undefined && held?.resolution === resolution)) {
+      this.snapshots.delete(key);
+    }
+    if (resolution !== undefined && this.resolutions?.peek(key) === resolution) {
+      this.resolutions.delete(key);
+    }
   }
 
   /** Open a {@link CrbmReader} for an already-resolved generation target (decrypting if the segment is encrypted). */
@@ -1402,57 +1600,86 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The current generation + its DEK wrappings: the registry's authoritative record (one strong read), or a
-   * `list` scan for the max generation when there's no registry (a registry-less source can only read cleartext
-   * — there's nowhere a wrapped DEK could live). The row's summary rides along, to be used or not by whoever
-   * asks.
+   * What the segment resolves to now: the fields of the registry's authoritative record a read resolves through (one
+   * strong read), or the highest generation a `list` of the bucket finds when there is no registry (a registry-less
+   * source can only read cleartext: there is nowhere a wrapped DEK could live). `null` for no generation.
    */
-  private async resolveLive(ref: SegmentRef, prior?: Live | null): Promise<Live | null> {
-    if (this.registry !== undefined) {
-      const record = await this.registry.get(ref);
-      if (record === null) return null;
-      // A crypto-shredded segment reads as empty — its DEK is gone, so its Storage bytes are unrecoverable.
-      if (record.status === 'destroyed') return null;
-      // A row with no Storage generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools
-      // can see the segment) resolves exactly like a segment with NO row: every read answers empty. Returning
-      // `null` here rather than a generation is the whole reason such a row is safe to create — the alternative,
-      // pointing at a generation that does not exist, is the `missing-storage-generation` state.
-      if (record.currentGen === null) return null;
-      const generation = record.currentGen;
-      // A refresh that finds the same wrapped keys keeps the key it already unwrapped, so a count polling an encrypted
-      // segment asks the keystore once, not once each `genTtlMs`. Different keys (a shred, a re-created name) unwrap afresh.
-      const keys = record.wrappedDeks;
-      const unwrap =
-        keys === undefined || keys.length === 0 || this.keystore === undefined
-          ? undefined
-          : prior?.unwrap !== undefined && sameKeys(prior.target.wrappedDeks, keys)
-            ? prior.unwrap
-            : once(() => (this.keystore as IKeystore).openDek(keys));
-      const crypto = once(() => this.cryptoForRead(ref, generation, keys, unwrap));
-      return {
-        row: record,
-        target: { generation, lineage: pointerIdOf(record), wrappedDeks: record.wrappedDeks },
-        crypto,
-        unwrap,
-        // The same checks as a read of the object makes (`requireEncryption`, a keystore for an encrypted row)
-        // come first, then the row's summary, used only if it names this generation in the shape the keys call for.
-        summary: once(async () => usableSummary(ref, record, (await crypto())?.aead)),
-        bytes:
-          SNAPSHOT_BASE_BYTES +
-          (record.summary === undefined ? 0 : JSON.stringify(record.summary).length),
-      };
-    }
+  private async resolve(ref: SegmentRef): Promise<Resolved | null> {
+    if (this.registry !== undefined) return resolvedOf(await this.registry.get(ref));
     let maxGen = -1;
     for await (const key of this.driver.list(ref)) {
       if (key.generation > maxGen) maxGen = key.generation;
     }
-    if (maxGen < 0) return null;
+    return maxGen < 0 ? null : { generation: maxGen };
+  }
+
+  /**
+   * The segment resolved afresh for a pin, with the row it read, which a lease is written against. Never a kept
+   * resolution, and kept nowhere: the generation current right now is the whole promise of a pin.
+   */
+  private async resolveLive(ref: SegmentRef): Promise<Live | null> {
+    if (this.registry === undefined) {
+      const resolved = await this.resolve(ref);
+      return resolved === null ? null : this.liveOf(ref, resolved, null);
+    }
+    const row = await this.registry.get(ref);
+    const resolved = resolvedOf(row);
+    return resolved === null || row === null ? null : this.liveOf(ref, resolved, null, row);
+  }
+
+  /**
+   * What a snapshot, or a pin, makes of a resolution: its decryption context and what the row's summary says of the
+   * generation, each made only when asked for. A snapshot that replaces `prior` with the same wrapped keys keeps the key
+   * `prior` unwrapped, so a count polling an encrypted segment asks the keystore once, not once each `genTtlMs`.
+   * Different keys (a shred, a re-created name) unwrap afresh, and so does a snapshot with no prior: the resolution
+   * holds the wrapped keys, never an unwrapped one.
+   */
+  private liveOf(
+    ref: SegmentRef,
+    resolved: Resolved,
+    prior: Live | null,
+    row?: RegistryRecord,
+  ): Live {
+    if (this.registry === undefined) {
+      return {
+        target: resolved,
+        crypto: () => Promise.resolve(undefined),
+        unwrap: undefined,
+        summary: () => Promise.resolve(undefined),
+        version: () => Promise.resolve(undefined),
+        bytes: weightOf(resolved),
+      };
+    }
+    const { generation, lineage, wrappedDeks: keys, summary } = resolved;
+    const unwrap =
+      keys === undefined || keys.length === 0 || this.keystore === undefined
+        ? undefined
+        : prior?.unwrap !== undefined && sameKeys(prior.target.wrappedDeks, keys)
+          ? prior.unwrap
+          : once(() => (this.keystore as IKeystore).openDek(keys));
+    const crypto = once(() => this.cryptoForRead(ref, generation, keys, unwrap));
+    // The same checks as a read of the object makes (`requireEncryption`, a keystore for an encrypted row) come first,
+    // then the row's summary, used only if it names this generation in the shape the keys call for.
+    const described = once(async () =>
+      usableSummary(
+        ref,
+        { status: 'active', currentGen: generation, summary, wrappedDeks: keys },
+        (await crypto())?.aead,
+      ),
+    );
     return {
-      target: { generation: maxGen },
-      crypto: () => Promise.resolve(undefined),
-      unwrap: undefined,
-      summary: () => Promise.resolve(undefined),
-      bytes: SNAPSHOT_BASE_BYTES,
+      target: resolved,
+      ...(row === undefined ? {} : { row }),
+      crypto,
+      unwrap,
+      summary: described,
+      version: once(async () => {
+        const named = (await described())?.fingerprint;
+        return named === undefined
+          ? undefined
+          : `${versionOf(generation, lineage)}#${compactFingerprint(named)}`;
+      }),
+      bytes: weightOf(resolved),
     };
   }
 
