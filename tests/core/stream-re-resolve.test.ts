@@ -12,6 +12,7 @@
  * The segments are 120 chunks of 600 ids (about 1.2 KB each): the whole object is one range, so a stream that did not
  * re-resolve would serve every remaining chunk from the range it had already read.
  */
+import { setImmediate } from 'node:timers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
 import { brandAsBackend } from '@/core/ports';
@@ -575,8 +576,8 @@ describe("the bound after an erasure by the read's own store, counted past the r
     const ns = { namespace: 'ns' };
     const victim = victimChunk * CHUNK + 4;
     let erasure: Promise<Awaited<ReturnType<CloudRoaring['eraseSubject']>>> | undefined;
-    let erasureReturned!: () => void;
-    const returned = new Promise<void>((resolve) => (erasureReturned = resolve));
+    /** Whether the erasure started while chunk AT was held: whether the window reached AT + 31 with AT not yet taken. */
+    let startedWhileHeld = false;
     let store: CloudRoaring | undefined;
     const getChunk = proto.getChunk;
     try {
@@ -595,13 +596,18 @@ describe("the bound after an erasure by the read's own store, counted past the r
           if (ref.segment !== 's') return read;
           if (ref.chunkKey === AT) {
             return read.then(async (bytes) => {
-              await returned;
+              // Held until the erasure starts, for a bounded number of turns: a window narrower than the bound never
+              // requests AT + 31 while AT is held, and the count then goes on, to fail the check below, not hang.
+              for (let turn = 0; turn < 1_000 && erasure === undefined; turn++) {
+                await new Promise((resolve) => setImmediate(resolve));
+              }
+              startedWhileHeld = erasure !== undefined;
+              await erasure;
               return bytes;
             });
           }
           if (ref.chunkKey === AT + DEFAULT_INTERSECT_CONCURRENCY - 1 && erasure === undefined) {
             erasure = store!.eraseSubject(victim, ns);
-            void erasure.finally(erasureReturned);
           }
           return read;
         },
@@ -609,6 +615,10 @@ describe("the bound after an erasure by the read's own store, counted past the r
       const w = await world({ ttl: 1_000_000 });
       store = w.store;
       const total = await w.store.segment('s', ns).count();
+      expect(
+        startedWhileHeld,
+        `the count requested chunk ${AT + 31} while chunk ${AT} was held: its window is ${DEFAULT_INTERSECT_CONCURRENCY} wide`,
+      ).toBe(true);
       expect((await erasure!).erasedFrom).toContainEqual(
         expect.objectContaining({ segment: 's', erased: true }),
       );
