@@ -1205,6 +1205,24 @@ describe('pointer refresh cost term', () => {
     expect(fleet.assumptions.notes.some((n) => /keeps open by default/.test(n))).toBe(false);
   });
 
+  it('says what a reopen after an eviction reads: a tail read, and the pointer only where the store keeps no resolution', () => {
+    const note = (genTtlMs?: number): string | undefined =>
+      estimateCost({
+        segments: [{ sizeBytes: 0 }],
+        workload: {
+          hotSegments: 1025,
+          readsPerSec: 10,
+          ...(genTtlMs === undefined ? {} : { genTtlMs }),
+        },
+      }).assumptions.notes.find((n) => /keeps open by default/.test(n));
+    // A timed refresh: the store keeps the segment's resolution apart from its reader.
+    expect(note()).toContain(
+      'opens it again, a tail read, and reads its pointer too once the store has let its resolution go as well',
+    );
+    // None: every reopen reads the pointer.
+    expect(note(0)).toContain('opens it again, a pointer and a tail read');
+  });
+
   it('lowers the read crossover by what the refresh already spends', () => {
     const quiet = estimateCost({ segments: [{ sizeBytes: 0 }], pricing: FLAT });
     const hot = estimateCost({

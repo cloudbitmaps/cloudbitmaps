@@ -19,3 +19,17 @@ export const DEFAULT_MAX_OPEN_SEGMENTS = 1024;
 
 /** Default aggregate ceiling (bytes) on resident parsed indices in the reader cache — the steady-state byte bound. */
 export const DEFAULT_MAX_OPEN_INDEX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * How many segments' resolutions a store keeps per reader it keeps open: the resolution cache's count bound is this
+ * times `cache.readerMax` (8,192 by default). A resolution is the few hundred bytes of a row a read resolves through,
+ * kept for `cache.genTtlMs` whether or not the segment's reader is still open, so a store reading more segments at once
+ * than its readers hold keeps more of them than it keeps readers.
+ */
+export const RESOLUTIONS_PER_OPEN_SEGMENT = 8;
+
+/**
+ * The resolution cache's byte bound is `cache.readerMaxBytes` divided by this (4 MiB by default): what it holds is a
+ * sixteenth of what the readers may.
+ */
+export const RESOLUTION_BYTES_DIVISOR = 16;

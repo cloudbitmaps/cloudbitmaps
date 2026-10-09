@@ -327,36 +327,146 @@ describe('a warm cache, and another store writes while a read is open, once cach
   );
 });
 
+/**
+ * With `readerMax: 1` and two operands, the reader cache lets each segment go between two of its chunks. A segment's
+ * resolution is kept apart from its reader, for `cache.genTtlMs` from the registry read that made it, so letting the
+ * reader go moves nothing: a chunk checked against its segment, cached or streamed, finds the resolution the read
+ * started on until the TTL lapses.
+ */
 describe('a partly warm read under reader-cache pressure, and another store publishes while it runs', () => {
+  /** A store under reader pressure, every other chunk of `s` and the whole mirror in its chunk cache. */
+  async function partlyWarm(ttl: number) {
+    let counting = false;
+    let lookups = 0;
+    const metrics: IMetricsSink = {
+      onEvent: (e) => void (counting && e.kind === 'cache' && lookups++),
+    };
+    const w = await world({ ttl, readerMax: 1, metrics });
+    await addMirror(w);
+    const seg = w.store.segment('s', { namespace: 'ns' });
+    for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
+    for (let c = 0; c < CHUNKS; c += 2) expect(await seg.has(c * CHUNK + 1)).toBe(true);
+    counting = true;
+    return { w, seg, lookups: () => lookups };
+  }
+
+  /** Another process's publish of generation 1, which this store is not told of. */
+  const publish = (w: Awaited<ReturnType<typeof world>>) =>
+    bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, gen(1), { registry: w.registry });
+
   it.each(MODES)(
-    'intersect (%s): the read moves to the new generation once, and never goes back',
+    'intersect (%s): inside the TTL the read stays on the generation it started on, to the end',
     async (mode) => {
       inMode(mode);
-      // A long TTL, so nothing but the reader cache letting a segment go can show the read the publish: a cached chunk
-      // checked against its segment resolves an evicted segment afresh, and the stream must follow it there.
-      let counting = false;
-      let lookups = 0;
-      const metrics: IMetricsSink = {
-        onEvent: (e) => void (counting && e.kind === 'cache' && lookups++),
-      };
-      const w = await world({ ttl: 1_000_000, readerMax: 1, metrics });
-      await addMirror(w);
-      const seg = w.store.segment('s', { namespace: 'ns' });
-      for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
-      for (let c = 0; c < CHUNKS; c += 2) expect(await seg.has(c * CHUNK + 1)).toBe(true);
-      counting = true;
+      const { w, lookups } = await partlyWarm(1_000_000);
       const got = await reach(w.store, 'intersect', async () => {
-        await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, gen(1), {
-          registry: w.registry,
-        });
+        await publish(w);
       });
       expect(got.error).toBeNull();
-      const first = got.after.findIndex((id) => genOf(id) === 1);
-      expect(first, 'the read reached the new generation').toBeGreaterThanOrEqual(0);
-      const back = got.after.slice(first).filter((id) => genOf(id) === 0);
-      expect(back.length, 'ids of the earlier generation after the move').toBe(0);
+      expect(got.after).toHaveLength(CHUNKS * PER - 1);
+      expect(got.after.filter((id) => genOf(id) === 1)).toEqual([]);
       // each chunk of each operand is looked up in the cache once, however often its stream opens
-      expect(lookups).toBe(2 * CHUNKS);
+      expect(lookups()).toBe(2 * CHUNKS);
+    },
+    60_000,
+  );
+
+  it.each(MODES)(
+    'intersect (%s): the read moves once the TTL lapses, within the window, once, and never goes back',
+    async (mode) => {
+      inMode(mode);
+      const TTL_LONG = 1_000;
+      const { w, seg, lookups } = await partlyWarm(TTL_LONG);
+      const ids: number[] = [];
+      let lapsedAt = -1;
+      for await (const id of seg.intersect([w.store.segment('mirror', { namespace: 'ns' })])) {
+        if (ids.length === 0) await publish(w);
+        // Chunk 40 of 120: every resolution of the read was made at time 0, so each lapses here.
+        if (ids.length === 40 * PER) {
+          w.clock.advance(TTL_LONG);
+          lapsedAt = ids.length;
+        }
+        ids.push(id);
+      }
+      expect(lapsedAt).toBe(40 * PER);
+      const before = ids.slice(0, lapsedAt);
+      expect(
+        before.filter((id) => genOf(id) === 1),
+        'moved before the TTL',
+      ).toEqual([]);
+      const first = ids.findIndex((id) => genOf(id) === 1);
+      expect(first, 'the read reached the new generation').toBeGreaterThanOrEqual(lapsedAt);
+      // the written bound: past the chunk it was handing out when the TTL lapsed (chunk 40), what it served of the
+      // earlier generation is what it had already requested, up to `concurrency` (32) keys for a combine
+      expect(first - (lapsedAt + PER)).toBeLessThanOrEqual(32 * PER);
+      const back = ids.slice(first).filter((id) => genOf(id) === 0);
+      expect(back.length, 'ids of the earlier generation after the move').toBe(0);
+      expect(lookups()).toBe(2 * CHUNKS);
+    },
+    60_000,
+  );
+});
+
+/**
+ * The written bounds on what a read already in progress can yield after an erasure, under reader-cache pressure: the
+ * store that erased stops at once, within the read's window, whatever its TTL; another store stops within
+ * `cache.genTtlMs`. Letting a reader go is not part of either bound, and no longer re-resolves the segment before its TTL.
+ */
+describe('under reader-cache pressure, an erasure while a read is open', () => {
+  it.each([
+    ['cold', 'stream'],
+    ['warm', 'stream'],
+    ['cold', 'per-key'],
+    ['warm', 'per-key'],
+  ] as const)(
+    '%s cache (%s): the store that erased yields the erased id only from what the read had already taken',
+    async (temperature, mode) => {
+      for (const victimChunk of [60, 110]) {
+        inMode(mode);
+        // A TTL that never lapses here: only the store's own invalidation can move the read.
+        const w = await world({ ttl: 1_000_000, readerMax: 1 });
+        await addMirror(w);
+        if (temperature === 'warm') {
+          for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
+          for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
+        }
+        const victim = victimChunk * CHUNK + 1;
+        expect(await w.open().segment('s', { namespace: 'ns' }).has(victim)).toBe(true);
+        const got = await reach(w.store, 'intersect', async () => {
+          const ledger = await w.store.eraseSubject(victim, { namespace: 'ns' });
+          expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
+        });
+        expect(got.error).toBeNull();
+        expect(got.after.includes(victim), `chunk ${victimChunk}`).toBe(false);
+        expect(
+          got.after.some((id) => id > victim),
+          'control: the read went on past the victim',
+        ).toBe(true);
+      }
+    },
+    60_000,
+  );
+
+  it.each(MODES)(
+    "warm (%s): another store's erasure stops the read serving the erased id once cache.genTtlMs lapses",
+    async (mode) => {
+      inMode(mode);
+      const w = await world({ ttl: TTL, readerMax: 1 });
+      await addMirror(w);
+      for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
+      for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
+      const victim = 60 * CHUNK + 1; // past the window: chunk 60 of 120
+      const got = await reach(w.store, 'intersect', async () => {
+        const ledger = await w.open().eraseSubject(victim, { namespace: 'ns' });
+        expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
+        w.clock.advance(TTL + 1);
+      });
+      expect(got.error).toBeNull();
+      expect(got.after.includes(victim)).toBe(false);
+      expect(
+        got.after.some((id) => id > victim),
+        'control: the read went on past the victim',
+      ).toBe(true);
     },
     60_000,
   );

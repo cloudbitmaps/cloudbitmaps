@@ -25,7 +25,8 @@ import { counting } from '../helpers/counting';
  *     load a [20, 65556]          -> g1
  *                                              has(20), has(65556): opens g1, caches its chunks 0 and 1
  *                                              reads of other segments: the reader cache lets a go
- *                                              count(a) = 2: a snapshot from the row alone, no object opened
+ *                                              count(a) = 2: a snapshot on the resolution the store kept, from
+ *                                                the row's summary, no request and no object opened
  *     rollback a -> 0
  *     eraseSubject(20): deletes g1, above the pointer
  *     load a [30, 65566, 131102]  -> g1 again
@@ -118,7 +119,7 @@ type World = Awaited<ReturnType<typeof world>>;
 
 /**
  * The reader caches both chunks of generation 1, lets `a` go from its reader cache, and counts `a` from the row's
- * summary, which opens no object.
+ * summary, which opens no object: the store kept `a`'s resolution when its reader went, so the count reads no row either.
  */
 async function warmLetGoAndCount(w: World): Promise<void> {
   expect(await w.a.has(20)).toBe(true);
@@ -126,8 +127,8 @@ async function warmLetGoAndCount(w: World): Promise<void> {
   for (const s of w.evictors) expect(await s.has(1)).toBe(true);
   const before = w.requests();
   expect(await w.a.count()).toBe(OLD.length);
-  // One pointer read, and no read of the object: the count opened nothing.
-  expect(w.requests()).toEqual({ ...before, pointer: before.pointer + 1 });
+  // No request: the count read the kept resolution, and opened nothing.
+  expect(w.requests()).toEqual(before);
 }
 
 /** Number 1 is taken again: a rollback onto 0, an erasure that deletes 1 above the pointer, and a load of `fresh`. */
@@ -162,7 +163,7 @@ async function sourceWorld(ids: { old: number[]; fresh: number[] }) {
   await writer.load(A, FIRST);
   await writer.load(A, ids.old);
   await writer.load({ namespace: NS, segment: 'b' }, [1]);
-  /** The reader cache lets `a` go, and a summary resolves it again from the row, opening nothing. */
+  /** The reader cache lets `a` go, and a summary builds a snapshot on its kept resolution, opening nothing. */
   const letGoAndSummarize = async (): Promise<void> => {
     await source.listChunkKeys({ namespace: NS, segment: 'b' });
     const tails = calls.getTail ?? 0;
@@ -556,7 +557,7 @@ describe('the version’s spelling', () => {
 });
 
 describe('a reopen of the same object costs what it did', () => {
-  it('after the reader cache lets a segment go, its cached chunks still answer: a pointer read and a tail read, no range', async () => {
+  it('after the reader cache lets a segment go, its cached chunks still answer: a tail read, no pointer read and no range', async () => {
     const w = await world();
     expect(await w.a.has(20)).toBe(true);
     expect(await w.a.has(HI + 20)).toBe(true);
@@ -564,8 +565,9 @@ describe('a reopen of the same object costs what it did', () => {
     expect(await w.evictors[0]!.has(1)).toBe(true);
     let before = w.requests();
     let hits = w.cacheHits();
+    // The resolution was kept: the reopen reads no row.
     expect(await w.a.has(20)).toBe(true);
-    expect(w.requests()).toEqual({ ...before, pointer: before.pointer + 1, tail: before.tail + 1 });
+    expect(w.requests()).toEqual({ ...before, tail: before.tail + 1 });
     expect(w.cacheHits()).toBe(hits + 1);
     // Warm: nothing at all.
     before = w.requests();
@@ -577,7 +579,7 @@ describe('a reopen of the same object costs what it did', () => {
     before = w.requests();
     hits = w.cacheHits();
     expect(await collect(w.a.iterate())).toEqual(OLD);
-    expect(w.requests()).toEqual({ ...before, pointer: before.pointer + 1, tail: before.tail + 1 });
+    expect(w.requests()).toEqual({ ...before, tail: before.tail + 1 });
     expect(w.cacheHits()).toBe(hits + OLD.length);
   });
 

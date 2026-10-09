@@ -136,15 +136,27 @@ bound is stated; other pages link here.
   store's own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)`. Another process's
   load then reaches it with no bound at all. Use `0` only for a store that never needs to see another process's
   loads.
-- **An eviction re-resolves early.** When the reader cache evicts a segment's reader, the next read re-resolves the
-  segment even if `cache.genTtlMs` has not elapsed.
+- **An eviction moves nothing on a store with a timed refresh.** The store keeps each segment's resolution (the fields
+  of its row a read resolves through: the generation, the `pointerId`, the wrapped keys and the summary, never a key)
+  apart from its reader, for `cache.genTtlMs` from the instant the registry read that made it was sent. When the reader
+  cache evicts a segment's reader, the next read builds on that resolution: it reads no row, and opens the object again
+  on the generation it had resolved. So a read under reader-cache pressure, as on a small Lambda, agrees on one
+  generation until the TTL lapses, as any read does: within
+  [the bound an erasure gives another store](erasure.md#who-stops-seeing-the-id-and-when). The resolutions are bounded
+  apart from the readers: up to 8 × `cache.readerMax` segments and `cache.readerMaxBytes` / 16 bytes, so 8,192 and
+  4 MiB by default ([what they hold](sizing.md#what-each-reader-holds)), and a segment whose resolution went too is
+  resolved again, from its row. A resolution that found no generation (no row, a row with no generation yet, a
+  destroyed one) is not kept: the next read asks the registry again.
+- **Without a timed refresh, an eviction re-resolves.** A store with `cache.genTtlMs: 0`, no clock or no registry keeps
+  no resolution apart from its reader, so when the reader cache evicts a segment's reader, the next read resolves the
+  segment again: for such a store that is one of the few things that moves a read on.
 - **The bound is timed on the store's clock**, the system clock unless `seams.clock` replaces it. A system clock
   stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
-  dropped connection) keeps serving the generation the reader holds, and retries 500 ms later (or after the TTL, if
-  that is shorter). The store converges within one retry of the registry answering. A refresh that fails with anything
-  else, such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that
-  error, and the next read resolves the segment afresh.
+  dropped connection) keeps serving the generation the store resolved, whether or not its reader is still open, and
+  retries 500 ms later (or after the TTL, if that is shorter). The store converges within one retry of the registry
+  answering. A refresh that fails with anything else, such as an access denial or a row that will not parse, is not
+  ridden out: the call that meets it throws that error, and the next read resolves the segment afresh.
 - **`store.invalidate(ref)` forgets what this store derived about a segment**: its open reader and the key that reader
   unwrapped, its decoded chunks, and those of every pin of the segment, so its next read resolves the current
   generation afresh. It also drops the segment's open chunk reads: a caller already waiting on one still gets its
@@ -166,8 +178,8 @@ bound is stated; other pages link here.
 **A long call can describe two instants.** Within one read, such as one `count` or one `intersect`, the generation is
 resolved once, before any chunk is fetched, and every chunk is a whole, checksum-verified chunk of one generation. A
 load landing mid-call never tears a chunk. A long call can still re-resolve: a `cache.genTtlMs` boundary after a publish,
-the reader cache evicting the segment, a sweep that collects the generation it was reading or an object replaced under
-its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
+the reader cache evicting the segment on a store with no timed refresh, a sweep that collects the generation it was
+reading or an object replaced under its number, and an invalidation (the store's own `load`, `rollback`, `eraseSubject` and `*Into` writes, `dropSegment`,
 `retireExpired`, and `invalidate()`) each move the rest of it to the generation that is current then. A combine or
 `iterate` reads each operand's chunks as ranges of the object and does this before it serves each chunk, one held in the
 store's chunk cache included, exactly where
@@ -197,7 +209,8 @@ the other object, so a load that was refused, or whose publish
 [got no answer](loading.md#when-a-write-is-throttled-or-gets-no-answer), never has its object read while the row names an
 earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
 checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
-same object, and its cached chunks still answer.
+same object, and its cached chunks still answer; with a timed refresh it is reopened from the resolution the store
+kept, with no row read.
 
 What the check does not cover:
 

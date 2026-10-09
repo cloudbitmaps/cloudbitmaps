@@ -471,8 +471,8 @@ export interface CacheOptions {
    * advanced.
    *
    * **While the registry cannot be read, the bound stretches.** A refresh that fails with a
-   * {@link TransientError} keeps serving the generation the reader holds, and the key it unwrapped, and is tried
-   * again 500 ms later (or after this TTL, if shorter), so the store converges within one retry of the registry
+   * {@link TransientError} keeps serving the generation the store resolved, and the key its reader unwrapped, and is
+   * tried again 500 ms later (or after this TTL, if shorter), so the store converges within one retry of the registry
    * answering. A refresh that fails with anything else, an access denial or a row that will not parse, is not
    * ridden out: the read that meets it throws that error, and the reader is dropped.
    *
@@ -488,7 +488,10 @@ export interface CacheOptions {
   /**
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
-   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. A reader of a small generation, one whose whole object came with its tail read,
+   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. With a
+   * timed refresh ({@link CacheOptions.genTtlMs} above 0, and a backend) the store also keeps up to 8 times this many
+   * segments' resolutions (what it read of each segment's row, never a key) for `genTtlMs`, apart from their readers: an
+   * evicted segment is then reopened with no registry read, on the generation it had resolved. A reader of a small generation, one whose whole object came with its tail read,
    * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
    * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
@@ -502,7 +505,8 @@ export interface CacheOptions {
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
-   * would exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight
+   * would exceed the ceiling — whichever of the count/byte bounds binds first. A sixteenth of it (4 MiB by default)
+   * bounds the segments' resolutions a store with a timed refresh keeps besides. Lower it for memory-tight
    * deployments that read across wide segments. Applies whenever the store builds its own read path.
    */
   readonly readerMaxBytes?: number;

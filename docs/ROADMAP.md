@@ -331,7 +331,8 @@ between here and there:
    describes a single instant rather than whichever generations happened to be current as it went. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded, and, unless leased, holds nothing alive. Generation
    GC's grace window (`keep`) never provided this: of the four things that move a long read to another
    generation, a larger `keep` removes one, the sweep's heal, except after an erasure, whose rewrite collects the
-   erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
+   erased generation whatever `keep` says; it leaves the TTL, an eviction on a store with no timed refresh, and
+   invalidations.
    Size `keep` past your longest pinned job, or lease the pin (`pin({ leaseUntil })`, up to 14 days) — a pinned read
    does not heal forward, it fails, which is the honest failure for a caller that asked for one instant.
 5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry exports what the library
@@ -379,13 +380,14 @@ between here and there:
     internal from a store, and the library carries none of them. `stat()` reports the generation's byte size, so a
     grounded report needs nothing internal, and a price list for S3, GCS or Azure is a change to that package alone,
     which ships with the family's next release.
-11. **A segment's resolution kept apart from its reader.** The reader cache is a store's only memory of which
-    generation a segment resolved to. A store reading more segments at once than `cache.readerMax` or
-    `cache.readerMaxBytes` keeps (as on a small Lambda) therefore asks the registry again, and opens the object again,
-    for each chunk of a segment whose reader was let go, and a long read moves to the current generation whenever that
-    happens. Keeping each segment's resolution, a few bytes, for `cache.genTtlMs` whether or not its reader is still
-    open removes both: every chunk of a read agrees on one generation until the refresh, and an eviction costs only the
-    reopen a chunk actually needs. In a coming minor.
+11. **A segment's resolution kept apart from its reader — on `main`, unreleased, to ship in `0.20.0`.** A store with
+    a timed refresh keeps each segment's resolution (the fields of its row a read resolves through: the generation, the
+    `pointerId`, the wrapped keys and the summary, never a key) for `cache.genTtlMs` from the instant the registry read
+    was sent, whether or not the segment's reader is still open, in a cache bounded by 8 × `cache.readerMax` entries and
+    `cache.readerMaxBytes` / 16 bytes. A store reading more segments at once than its reader cache keeps (as on a small
+    Lambda) no longer asks the registry again for a segment whose reader was let go, and every chunk of a read agrees on
+    one generation until the refresh. An eviction costs the reopen of the object, and no registry read. A store with no
+    timed refresh keeps no resolution, and an eviction re-resolves there.
 
 ## Planned / exploring
 

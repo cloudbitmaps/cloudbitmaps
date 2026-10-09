@@ -214,7 +214,7 @@ export function openSummary(
  */
 export function usableSummary(
   ref: SegmentRef,
-  row: RegistryRecord,
+  row: Pick<RegistryRecord, 'summary' | 'status' | 'currentGen' | 'wrappedDeks'>,
   aead: Aead | undefined,
 ): SummaryDescription | undefined {
   const summary: RegistrySummary | undefined = row.summary;
