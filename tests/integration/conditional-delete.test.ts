@@ -32,7 +32,9 @@ import { S3RegistryDriver, S3RegistryStore } from '@/s3/registry';
 import { GcsRegistryDriver, GcsRegistryStore } from '@/gcs/registry';
 import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
 import { S3StorageDriver } from '@/s3/storage';
+import { GcsStorageDriver } from '@/gcs/storage';
 import { storageObjectKey } from '@/s3/keys';
+import { storageObjectName as gcsObjectName } from '@/gcs/keys';
 import type { GenKey } from '@/core/ports';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
@@ -488,6 +490,47 @@ describe('S3 storage (MinIO): the driver sends If-Match with the ETag its tail r
     );
     expect(sent).toEqual([undefined, version]);
     expect(await s3Exists(storageObjectKey(p, GEN))).toBe(false);
+  });
+});
+
+describe('GCS storage (fake-gcs-server): the driver sends ifGenerationMatch; the emulator ignores it', () => {
+  it('the gate is off by default', () => {
+    expect(
+      new GcsStorageDriver({ storage: gcs, bucket: BUCKET }).capabilities().conditionalDelete,
+    ).toBe(false);
+  });
+
+  it('vouched for, the delete carries the generation the tail read reported, and a stale one deletes anyway', async () => {
+    const p = prefix('st-header');
+    const sent: unknown[] = [];
+    const watched = new Storage({
+      projectId: 'test',
+      apiEndpoint: process.env.GCS_ENDPOINT ?? 'http://127.0.0.1:4443',
+    });
+    watched.interceptors.push({
+      request: (reqOpts) => {
+        const seen = reqOpts as { method?: string; qs?: Record<string, unknown> };
+        if (seen.method === 'DELETE') sent.push(seen.qs?.ifGenerationMatch);
+        return reqOpts as Parameters<typeof watched.makeAuthenticatedRequest>[0];
+      },
+    });
+    const driver = new GcsStorageDriver({
+      storage: watched,
+      bucket: BUCKET,
+      prefix: p,
+      conditionalDelete: true,
+    });
+    await writeText(driver, 'one');
+    const { version } = await driver.getTail(GEN, 3);
+    const [meta] = await gcsFile(gcsObjectName(p, GEN)).getMetadata();
+    expect(version).toBe(String(meta.generation));
+    await driver.delete(GEN);
+    await writeText(driver, 'two');
+    expect(await staleDeleteOutcome(() => driver.delete(GEN, { ifVersion: version }))).toBe(
+      'deleted',
+    );
+    expect(sent).toEqual([undefined, Number(version)]);
+    expect(await gcsExists(gcsObjectName(p, GEN))).toBe(false);
   });
 });
 

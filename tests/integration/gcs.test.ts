@@ -140,6 +140,8 @@ storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver, {
   missingLocation: () =>
     new GcsStorageDriver({ storage, bucket: MISSING, prefix: `${RUN}/missing` }),
   pagedListSize: PAST_ONE_PAGE,
+  // Off by default: fake-gcs-server ignores ifGenerationMatch on a delete (conditional-delete.test.ts records it).
+  conditionalDelete: false,
 });
 // The same cases with a 100-byte threshold, so every object takes the resumable upload. fake-gcs-server does not
 // enforce `ifGenerationMatch` on a resumable upload (a second write to the key succeeds and overwrites), so the

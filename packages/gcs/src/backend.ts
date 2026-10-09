@@ -69,10 +69,12 @@ export interface GcsStorageOptions {
    */
   readonly readTimeoutMs?: number;
   /**
-   * Whether the registry removes a deleted row for good, by an object delete sent with `ifGenerationMatch`, rather
-   * than leaving a tombstone a full listing reads forever. Defaults to `false`, on the public endpoint too: whether real
-   * GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server
-   * accepts the precondition and ignores it, so CI cannot show it. Set `true` to remove rows for good.
+   * Whether the service applies `ifGenerationMatch` on an object delete, which both halves rely on when it is set: the
+   * registry removes a deleted row for good rather than leaving a tombstone a full listing reads forever, and the
+   * storage half removes an erasure's holder only while it is the object the erasure searched, by its generation.
+   * Defaults to `false`, on the public endpoint too: whether real GCS applies `ifGenerationMatch` to a delete has not
+   * been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so CI
+   * cannot show it. Set `true` once you know it does.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -181,6 +183,9 @@ export class GcsStorage implements StorageBackend {
       ...(options.simpleUploadThresholdBytes === undefined
         ? {}
         : { simpleUploadThresholdBytes: options.simpleUploadThresholdBytes }),
+      ...(options.conditionalDelete === undefined
+        ? {}
+        : { conditionalDelete: options.conditionalDelete }),
     });
     this.registry = new GcsRegistryDriver({
       ...shared,

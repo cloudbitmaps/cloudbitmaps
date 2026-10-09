@@ -1165,7 +1165,9 @@ object that carries its own id is a success and any other a `WriteConflictError`
 ([why](production.md#reliability-retries-backoff--timeouts)). With `conditionalDelete`, the registry removes a row with
 a delete under `ifGenerationMatch`, which the SDK retries as it does any request with a precondition: a second copy can
 remove nothing the first could not, and one that meets the first's landed delete is a 404, which the registry reads as
-a lost race and re-reads.
+a lost race and re-reads. With it the storage half deletes an erasure's holder under `ifGenerationMatch` too, the
+generation its tail read reported, and there a `404` is an absent object, a no-op, and a `412` is a conflict only while
+the metadata still shows an object.
 
 ### `@cloudbitmaps/azure-blob`
 
