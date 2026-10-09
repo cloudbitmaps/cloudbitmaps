@@ -571,6 +571,36 @@ describe('the renewal gets no answer', () => {
     expect(await generations(w.storage)).toEqual([0]);
   });
 
+  it('a row purged and made again meanwhile is no renewal: nothing is deleted, and the number a new load took stays its own', async () => {
+    // While the renewal is unanswered, the row is purged and the bucket emptied, the name is made again with no
+    // pointer, and a first load of the new row takes generation 0 again and stops at its publish. The new row has a
+    // pointerId of its own, but it is another incarnation: taking it for a renewal would delete that load's object
+    // under the number the erasure listed, and the load would then publish a pointer to nothing.
+    const w = await seeded();
+    const t = timing();
+    const atPublish = gate();
+    let load: Promise<LoadResult> | undefined;
+    const registry = dropping(w.registry, ['throw'], async () => {
+      const row = (await w.registry.get(REF))!;
+      await w.registry.delete(REF, row.token);
+      await w.storage.delete({ ...REF, generation: 0 });
+      await w.registry.create(REF, { currentGen: null });
+      load = loadSegment(REF, [3, X], {
+        ...w.deps,
+        registry: heldAtPublish(w.registry, atPublish),
+      });
+      await atPublish.reached;
+    });
+    expect(
+      await eraseIdFromSegment(REF, X, { ...w.deps, registry, clock: t.clock, rng: t.rng }),
+    ).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
+    expect(await generations(w.storage)).toEqual([0]);
+    atPublish.open();
+    expect(await load).toMatchObject({ generation: 0, published: true });
+    expect((await w.registry.get(REF))!.currentGen).toBe(0);
+    expect(await generations(w.storage)).toEqual([0]);
+  });
+
   it('a renewal another erasure landed first, met as a lost race, licenses the deletes too', async () => {
     const w = await seeded();
     let raced = false;
