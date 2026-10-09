@@ -46,9 +46,9 @@ so, and so do the module headers in the code.
   kept by a write that names only `leases`, `retention`, `residency` or `keptGens`. `renewsPointer(patch)` and
   `RESOLVED_FIELDS` in `@cloudbitmaps/core/driver-kit` give the rule. A reader refuses a row with no `pointerId` with
   `UnsupportedError`. A clear `RegistrySummary` carries `fingerprint`, the `<size>:<crc>` of the object it describes, and
-  a sealed one seals the count, the size and the checksum before the metadata, so it is at least 48 bytes; the shipped
-  registries refuse a summary without it, and a `create` or a compare-and-swap that names `token` or `pointerId`, with
-  `ValidationError`. The conformance suite holds a driver to each: a create, a renewal by each resolved field, the
+  a sealed one seals the count, the size and the checksum before the metadata, so it is at least 48 bytes. The shipped
+  registries refuse with `ValidationError` a write of a summary without it, and a `create` or a compare-and-swap that
+  names `token` or `pointerId`; a stored summary without it is an `IntegrityError`. The conformance suite holds a driver to each: a create, a renewal by each resolved field, the
   fields that do not renew, a same-value `currentGen` that keeps the summary, `keptGens` and `leases`, a lost
   compare-and-swap, and a write that names `pointerId`.
 
