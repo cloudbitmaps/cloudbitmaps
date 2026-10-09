@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { CloudRoaring, InProcessKeystore, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
-import type { RegistryRecord } from '@/core/ports';
+import { brandAsBackend } from '@/core/ports';
+import type { IRegistryDriver, RegistryRecord } from '@/core/ports';
 import { usableSummary } from '@/core/summary';
 
 /**
@@ -97,5 +98,39 @@ describe.each([
     await w.store.rollback(at('a'), 0);
     const row = await expectNamesItsObject(w, at('a'));
     expect(row.currentGen).toBe(0);
+  });
+});
+
+describe('a registry of your own whose summary names no object', () => {
+  // The type says a string; a registry in JavaScript can hand over anything. The summary is not used, as one that is not
+  // there: the count, the read and the size come from the object, and nothing fails untyped where the fingerprint
+  // would have been compared with the object's.
+  it('is not used: a count, a read and a stat answer from the object', async () => {
+    const backend = new MemoryStorage();
+    await new CloudRoaring({ storage: backend, retry: false }).load(at('a'), [1, 2, HI + 3]);
+    const registry: IRegistryDriver = {
+      capabilities: () => backend.registry.capabilities(),
+      get: async (ref) => {
+        const row = await backend.registry.get(ref);
+        return row === null || row.summary === undefined
+          ? row
+          : ({ ...row, summary: { ...row.summary, fingerprint: 5 } } as unknown as RegistryRecord);
+      },
+      create: (ref, rec, o) => backend.registry.create(ref, rec, o),
+      compareAndSwap: (ref, t, p, o) => backend.registry.compareAndSwap(ref, t, p, o),
+      list: (ns) => backend.registry.list(ns),
+      delete: (ref, t) => backend.registry.delete(ref, t),
+    };
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: backend.storage, registry }),
+      retry: false,
+    });
+    const seg = store.segment('a', { namespace: NS });
+    expect(await seg.has(1)).toBe(true);
+    expect(await seg.count()).toBe(3);
+    const pinned = await new CloudRoaring({ storage: backend, retry: false })
+      .segment('a', { namespace: NS })
+      .pin();
+    expect(`${(await seg.stat()).sizeBytes}`).toBe(pinned.pinnedAt!.fingerprint!.split(':')[0]);
   });
 });

@@ -208,8 +208,9 @@ export function openSummary(
  * What a row's summary says of its current generation, or `undefined` when it says nothing a reader may use. It is
  * used only for the generation it names, on an active row, and in the shape the row's keys call for: clear on a row
  * with no wrapped keys, sealed on a row with them. A sealed one is opened with `aead`, and is unusable without it,
- * or when it does not open, so a summary a tamperer moved or rewrote is never believed. Never throws for a bad
- * summary: the row's copy is a cache, and a copy that cannot be used is a copy that is not there.
+ * or when it does not open, so a summary a tamperer moved or rewrote is never believed; a clear one whose fingerprint
+ * names no object is unusable too. Never throws for a bad summary: the row's copy is a cache, and a copy that cannot be
+ * used is a copy that is not there.
  */
 export function usableSummary(
   ref: SegmentRef,
@@ -231,6 +232,9 @@ export function usableSummary(
     }
   }
   if (keyed) return undefined;
+  // A shipped registry refuses a clear summary whose fingerprint names no object when it reads the row; a registry of
+  // your own may hand one over, and it is not used, so no read compares it with an object's.
+  if (fingerprintParts(summary.fingerprint) === undefined) return undefined;
   return {
     cardinality: summary.cardinality,
     metadata: summary.metadata,

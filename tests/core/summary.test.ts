@@ -320,6 +320,22 @@ describe('what a row lets a reader use of its summary', () => {
     expect(usableSummary(REF, other, await aeadOf())).toBeUndefined();
   });
 
+  // A shipped registry refuses such a row when it reads it; a registry of your own may hand one over. A clear summary
+  // whose fingerprint names no object is not used, as a sealed one that does not open is not, rather than reaching a
+  // read that compares it with the object's.
+  it('is nothing from a clear summary whose fingerprint names no object, rather than a failure', () => {
+    for (const fingerprint of [5, '', '7', '0:1', '4096:4294967296', undefined]) {
+      const r = row({
+        summary: {
+          generation: 4,
+          cardinality: 9,
+          fingerprint,
+        } as unknown as RegistryRecord['summary'],
+      });
+      expect(usableSummary(REF, r, undefined), String(fingerprint)).toBeUndefined();
+    }
+  });
+
   it('lets a failure that is not an integrity fault through', async () => {
     const aead = await aeadOf();
     const wrappedDeks = [{ keyId: 'k1', wrapped: 'AAAA' }];
