@@ -262,6 +262,22 @@ describe('what a resolution holds', () => {
   );
 });
 
+describe("a running stream keeps its segment's place in the reader cache", () => {
+  it('each chunk it hands out touches the snapshot, so a read of the segment beside it opens nothing', async () => {
+    const x = await world({ readerMax: 2 });
+    await x.publish(C, 0, [5]);
+    const it = x.source.getChunks!(A, [0, 1], { concurrency: 1 })[Symbol.asyncIterator]();
+    expect((await it.next()).done).toBe(false);
+    await x.open(B); // the reader cache: a, then b
+    expect((await it.next()).done).toBe(false); // the stream's check of `a` touches it: b, then a
+    await x.open(C); // lets the least recently used go: b
+    x.reset();
+    await x.open(A);
+    expect(x.sent()).toEqual({ rows: 0, tails: 0, ranges: 0 });
+    await it.return!(undefined);
+  });
+});
+
 describe('what forgets a resolution', () => {
   it('invalidate: the next read reads the row, and finds a publish', async () => {
     const x = await world();

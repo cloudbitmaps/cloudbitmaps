@@ -856,17 +856,17 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * installed a newer one (a refresh, or a heal), or the resolution cache let it go. With no resolution cache (no timed
    * refresh) the last test is of the snapshot itself, so there the reader cache letting it go is a move, as it is one of
    * the few things that ever moves such a store's read on. With one, it is not. Else nothing can have moved it, and the
-   * check costs a compare and a lookup.
+   * check costs a compare and a lookup in each cache.
    */
   private mayHaveMoved(key: string, snap: Snapshot, epoch: number): boolean {
     const resolution = snap.resolution as Resolution;
-    return (
-      this.invalidations !== epoch ||
-      this.expired(resolution) ||
-      (this.resolutions === undefined
-        ? this.snapshots.get(key) !== snap
-        : this.resolutions.get(key) !== resolution)
-    );
+    if (this.invalidations !== epoch || this.expired(resolution)) return true;
+    // Looked up as a read of the segment would be, which keeps a running stream's snapshot in its place in the reader
+    // cache: else other reads push it out under pressure, and a read of the segment beside the stream opens it again.
+    const held = this.snapshots.get(key);
+    return this.resolutions === undefined
+      ? held !== snap
+      : this.resolutions.get(key) !== resolution;
   }
 
   private expired(resolution: Resolution): boolean {
