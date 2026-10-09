@@ -16,8 +16,8 @@ so, and so do the module headers in the code.
 - **Every `segment.*` audit event carries `incarnation`**, the id of the segment's registry row as the operation found
   or wrote it. A name whose row was purged and created again starts its generations at `0` again, so a segment and a
   generation number could belong to two lives of the segment; with the incarnation an audit consumer tells them apart.
-  It is present whenever the registry's tokens carry one, as every shipped registry's do, and absent on a
-  `segment.load-refused` from a load that found no row.
+  It is absent when the row's token carries no incarnation id, as a registry of your own may issue tokens in another
+  form, and on a `segment.load-refused` from a load that found no row.
 - **A `segment.collect` audit event for an erasure that rewrites nothing.** When `eraseSubject` finds the id only
   outside the current generation (a retained older generation, one above the pointer after a rollback, or an object
   left under a tombstone), it deletes the generations holding it and now emits `segment.collect { fromGeneration,
@@ -26,7 +26,7 @@ so, and so do the module headers in the code.
   case for it.
 - **The export manifest lists the segments it skipped.** `ExportManifest.skipped` names each destroyed segment the
   export did not read, `{ segment, namespace?, reason: 'destroyed' }`, so `segments`, `failed` and `skipped` together
-  account for every row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary
+  account for every segment row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary
   line counts them.
 
 ## [0.19.0] — 2026-10-08

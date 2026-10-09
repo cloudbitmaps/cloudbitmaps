@@ -102,7 +102,8 @@ And a store loads one straight back, with no per-id work:
   the backend the loads used.
 - **Encrypted segments are decrypted** transparently if the store has the keystore, so the export is **cleartext**.
   Protect it. A destroyed segment (crypto-shredded or dropped) resolves no generation, so it is skipped and listed in
-  the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every row the registry listed.
+  the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every segment row the registry
+  listed. (The registry's internal due-index rows are not segments, and are in none of the three.)
 - **A segment that cannot be read does not stop the run.** A corrupt storage object, or an encrypted segment when the
   store has no keystore (the command wires none, so it cannot decrypt those), is recorded in the manifest's `failed[]`.
   The export continues, and that segment's partial output is discarded. So "a `manifest.json` exists" means the run

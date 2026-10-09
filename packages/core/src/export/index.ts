@@ -114,8 +114,9 @@ export interface ExportManifest {
   readonly failed: readonly ExportFailure[];
   /**
    * Registered segments the export did not read, each with its reason (empty when there were none). With `segments`
-   * and `failed` it accounts for every row the registry listed, so a `totalSegments` below the registry's row count
-   * is explained rather than silent.
+   * and `failed` it accounts for every segment row the registry listed, so a `totalSegments` below the registry's
+   * segment count is explained rather than silent. The registry's internal due-index rows are not segments, and are in
+   * none of the three.
    */
   readonly skipped: readonly ExportSkipped[];
 }

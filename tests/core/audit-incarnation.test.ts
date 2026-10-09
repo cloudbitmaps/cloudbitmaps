@@ -1,8 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/index';
-import type { AuditEvent, IKeystore, SegmentRef } from '@/index';
+import type {
+  AuditEvent,
+  IKeystore,
+  IRegistryDriver,
+  IStorageDriver,
+  RegistryRecord,
+  SegmentRef,
+} from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { destroySegment, dropSegment, eraseNamespace } from '@/core/erasure';
+import { WriteConflictError } from '@/core/errors';
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
@@ -35,6 +43,45 @@ function world(keystore?: IKeystore) {
     return id;
   };
   return { storage, registry, deps, incarnation };
+}
+
+/**
+ * A registry of someone else's: the same rows, under tokens with no incarnation id (`"1"`, `"2"`, …), translated both
+ * ways so every fence still holds.
+ */
+function foreignTokens(base: IRegistryDriver): IRegistryDriver {
+  const toForeign = new Map<string, string>();
+  const toBase = new Map<string, string>();
+  const out = (token: string): string => {
+    let foreign = toForeign.get(token);
+    if (foreign === undefined) {
+      foreign = String(toForeign.size + 1);
+      toForeign.set(token, foreign);
+      toBase.set(foreign, token);
+    }
+    return foreign;
+  };
+  const inn = (token: string): string => toBase.get(token) ?? token;
+  const rowOut = (row: RegistryRecord | null): RegistryRecord | null =>
+    row === null ? null : { ...row, token: out(row.token) };
+  const held = <O extends { held?: RegistryRecord | null } | undefined>(options: O): O =>
+    options?.held == null
+      ? options
+      : { ...options, held: { ...options.held, token: inn(options.held.token) } };
+  return {
+    capabilities: () => base.capabilities(),
+    get: async (ref) => rowOut(await base.get(ref)),
+    create: async (ref, record, options) => ({
+      token: out((await base.create(ref, record, held(options))).token),
+    }),
+    compareAndSwap: async (ref, expected, patch, options) => ({
+      token: out((await base.compareAndSwap(ref, inn(expected), patch, held(options))).token),
+    }),
+    list: async function* (namespace) {
+      for await (const row of base.list(namespace)) yield rowOut(row)!;
+    },
+    delete: (ref, expected) => base.delete(ref, expected === undefined ? undefined : inn(expected)),
+  };
 }
 
 const keystore = (): InProcessKeystore =>
@@ -340,6 +387,55 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     expect(audit.snapshot()).toEqual([]);
   });
 
+  it('the list is ascending even when holders above the pointer are deleted newest first', async () => {
+    const w = world();
+    const keep = { keep: 5 };
+    await loadSegment(SEG, [2], w.deps, keep); // gen 0 holds the id
+    await loadSegment(SEG, [1], w.deps, keep); // gen 1 does not
+    await loadSegment(SEG, [2, 4], w.deps, keep); // gen 2 holds it
+    await loadSegment(SEG, [2, 5], w.deps, keep); // gen 3 holds it
+    await rollbackSegment(SEG, 1, w.deps); // pointer at 1: holders 2 and 3 above it, 0 below
+    const audit = new RecordingAuditSink();
+
+    const res = await eraseIdFromSegment(SEG, 2, w.deps, { audit });
+
+    expect(res).toMatchObject({ erased: true, fromGeneration: 3 });
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: await w.incarnation(),
+        fromGeneration: 3,
+        collected: [0, 2, 3],
+      },
+    ]);
+  });
+
+  it('emits nothing when a holder is still in the bucket and the call throws', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps); // gen 0 holds the id
+    await loadSegment(SEG, [1, 3], w.deps); // gen 1 dropped it; `keep: 1` retains gen 0
+    let reads = 0;
+    // The erasure's own first read sees the row; the collection's read then finds none, so it declines to delete.
+    const flaky = new Proxy(w.registry, {
+      get(t, p, rx) {
+        if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
+        return async (ref: SegmentRef) => ((reads += 1) === 2 ? null : t.get(ref));
+      },
+    }) as IRegistryDriver;
+    const audit = new RecordingAuditSink();
+
+    await expect(
+      eraseIdFromSegment(SEG, 2, { ...w.deps, registry: flaky }, { audit }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(audit.snapshot()).toEqual([]);
+
+    const rerun = await eraseIdFromSegment(SEG, 2, w.deps, { audit });
+    expect(rerun).toMatchObject({ erased: true, fromGeneration: 0 });
+    expect(audit.snapshot().map((e) => e.kind)).toEqual(['segment.collect']);
+  });
+
   it("the sink's copy of the list is its own: a snapshot is not changed by a later edit of the event", async () => {
     const audit = new RecordingAuditSink();
     const collected = [0, 1];
@@ -349,5 +445,106 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     expect(snap).toEqual([
       { kind: 'segment.collect', segment: 's', fromGeneration: 1, collected: [0, 1] },
     ]);
+  });
+});
+
+describe('audit: a registry whose tokens carry no incarnation id', () => {
+  it('every segment event leaves the field out entirely', async () => {
+    const ks = keystore();
+    const storage = new MemoryStorageDriver();
+    const registry = foreignTokens(new MemoryRegistryDriver());
+    const deps = { storage, registry, keystore: ks, codec: roaringCodec };
+    const audit = new RecordingAuditSink();
+    const keep = { keep: 5, audit };
+    await loadSegment(SEG, [1, 2, 3], deps, keep);
+    await loadSegment(SEG, [1, 3], deps, keep);
+    expect((await registry.get(SEG))!.token).toMatch(/^\d+$/); // the foreign form really reaches the library
+    await loadSegment(SEG, [], deps, { audit }); // refused: empty
+    await eraseIdFromSegment(SEG, 2, deps, { audit }); // only gen 0 holds it: collected
+    await eraseIdFromSegment(SEG, 1, deps, { audit }); // rewritten
+    await loadSegment(SEG, [9], deps, keep);
+    await rollbackSegment(SEG, 2, deps, { audit });
+    await dropSegment(SEG, deps, { confirmSegment: 's', audit });
+
+    const events = audit.snapshot();
+    expect(events.map((e) => e.kind)).toEqual([
+      'segment.publish',
+      'segment.publish',
+      'segment.load-refused',
+      'segment.collect',
+      'segment.rewrite',
+      'segment.publish',
+      'segment.rollback',
+      'segment.erase',
+      'segment.dispose',
+    ]);
+    for (const event of events) expect(event).not.toHaveProperty('incarnation');
+  });
+});
+
+describe('audit: the incarnation is the one the operation acted on, not the row found afterwards', () => {
+  it('a load refused because the name was purged and created again names the row it read', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.deps);
+    const before = await w.incarnation();
+    let fired = false;
+    // While the load writes its object, the segment is dropped, its tombstone purged, and the name loaded again.
+    const racing = new Proxy(w.storage, {
+      get(t, p, rx) {
+        if (p !== 'put' && p !== 'putImmutable') return Reflect.get(t, p, rx) as unknown;
+        const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
+        return async (...args: never[]) => {
+          if (!fired) {
+            fired = true;
+            await dropSegment(SEG, w.deps, { confirmSegment: 's' });
+            await w.registry.delete(SEG);
+            await loadSegment(SEG, [7], w.deps);
+          }
+          return inner.apply(t, args);
+        };
+      },
+    }) as IStorageDriver;
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing }, { audit });
+
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    const after = await w.incarnation();
+    expect(after).not.toBe(before);
+    expect(audit.snapshot()).toEqual([
+      expect.objectContaining({ kind: 'segment.load-refused', incarnation: before }),
+    ]);
+  });
+
+  it('eraseNamespace names each segment its own row, and a skipped cleartext segment emits nothing', async () => {
+    const ks = keystore();
+    const w = world(ks);
+    const names = ['a', 'b', 'c'];
+    for (const segment of names) await loadSegment({ namespace: 'ns', segment }, [1], w.deps);
+    // A cleartext segment in the same namespace: no key to shred, so no event.
+    await loadSegment({ namespace: 'ns', segment: 'plain' }, [1], {
+      ...w.deps,
+      keystore: undefined,
+    });
+    const own = new Map<string, string>();
+    for (const segment of names)
+      own.set(segment, await w.incarnation({ namespace: 'ns', segment }));
+    expect(new Set(own.values()).size).toBe(3);
+
+    const audit = new RecordingAuditSink();
+    const { destroyed } = await eraseNamespace('ns', w.deps, { confirmNamespace: 'ns', audit });
+
+    const erased = audit.snapshot().filter((e) => e.kind === 'segment.erase');
+    expect(erased).toHaveLength(3);
+    for (const e of erased) expect(e).toEqual({ ...e, incarnation: own.get(e.segment) });
+    // The token the shred read is the audit event's, never the caller's: it stays off every ledger entry.
+    for (const entry of destroyed) expect(entry).not.toHaveProperty('token');
+  });
+
+  it('destroySegment returns no token', async () => {
+    const w = world(keystore());
+    await loadSegment(SEG, [1], w.deps);
+    const res = await destroySegment(SEG, w.deps, { confirmSegment: 's' });
+    expect(res.cryptoShredded).toBe(true);
+    expect(res).not.toHaveProperty('token');
   });
 });

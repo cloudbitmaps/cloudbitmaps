@@ -11,9 +11,10 @@ import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { setSegmentRetention } from '@/core/retention';
 import { usableSummary } from '@/core/summary';
+import { incarnationOf } from '@/core/token';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
-import { CloudRoaring, MIN_EXPIRES_AT_MS } from '@/index';
+import { CloudRoaring, MIN_EXPIRES_AT_MS, RecordingAuditSink } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -758,6 +759,50 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
     expect(w.writes.compareAndSwap).toBe(1);
     expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+});
+
+describe('a publish settled by reading the row names its incarnation in the audit event', () => {
+  // The write's own answer carries the new token; a publish settled by a read of the row has none, so the event takes
+  // the incarnation from that read. A first load that found no row has no other source for it.
+  const publishEvent = async (w: ReturnType<typeof world>) => ({
+    kind: 'segment.publish',
+    namespace: 'ns',
+    segment: 's',
+    incarnation: incarnationOf((await w.base.get(SEG))!.token),
+  });
+
+  it("a segment's first create that landed and lost its response", async () => {
+    const w = world();
+    w.arm({ kind: 'land-then-transient' });
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [7, 8], w.deps, { audit });
+    expect(r).toMatchObject({ generation: 0, published: true });
+    expect(audit.snapshot()).toStrictEqual([{ ...(await publishEvent(w)), generation: 0 }]);
+  });
+
+  it('a compare-and-swap that landed and reported a conflict', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-conflict' });
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9, audit });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(audit.snapshot()).toStrictEqual([{ ...(await publishEvent(w)), generation: 3 }]);
+  });
+
+  it('attempts that ran out while the last unanswered write landed', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 2);
+    w.arm({ kind: 'transient-unapplied' }, 3);
+    w.duringWait(async () => {
+      if (w.waits.length === 3) await w.land();
+    });
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9, audit });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(audit.snapshot()).toStrictEqual([{ ...(await publishEvent(w)), generation: 3 }]);
   });
 });
 

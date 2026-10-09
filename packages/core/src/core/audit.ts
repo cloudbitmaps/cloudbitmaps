@@ -24,9 +24,9 @@ import { ValidationError } from './errors';
  *
  * Every event about a segment carries `incarnation`: the id of the registry row's incarnation the operation acted on.
  * A segment's name can be purged and created again, and its generations then start again at `0`, so a segment and a
- * generation number alone can name two different generations; with the incarnation they name one. It is present
- * whenever the registry's tokens carry an incarnation id, as every shipped registry's do. It is absent for a registry
- * that issues tokens in another form, and on a `segment.load-refused` from a load that found no row.
+ * generation number alone can name two different generations; with the incarnation they name one. It is absent when
+ * the row's token carries no incarnation id, as a registry of the caller's own may issue tokens in another form, and on
+ * a `segment.load-refused` from a load that found no row.
  */
 export type AuditEvent =
   | {

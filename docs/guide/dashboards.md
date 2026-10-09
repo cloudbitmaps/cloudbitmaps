@@ -173,7 +173,7 @@ const audit = siemAudit('batch-loader@svc');
 
 // Pass it to each lifecycle op (audit is not a store-constructor option — these are separate entry points):
 await store.load({ segment: 'users' }, ids, { audit });
-await store.eraseSubject(subjectId, { namespace: 'eu', audit }); // GDPR Art. 17 — one segment.rewrite per segment
+await store.eraseSubject(subjectId, { namespace: 'eu', audit }); // GDPR Art. 17 — one segment.rewrite or segment.collect per segment
 await store.rollback({ segment: 'users' }, 4, { audit }); // an operator moving the pointer
 await store.dropSegment({ segment: 'users' }, { confirmSegment: 'users', audit }); // retire + reclaim storage
 await store.retireExpired({ audit }); // one segment.dispose per retirement
@@ -210,9 +210,9 @@ which may be 0).
   `eraseSubject` returned, one event per entry with `erased: true`. A segment whose current generation held the id is
   **rewritten**: `segment.rewrite`, with the ledger entry `{ erased: true, fromGeneration, generation }`. The event
   attests that the generation without the id became authoritative; the ledger attests that the generation which held
-  it was deleted before the call returned. A segment where only other generations held it (someone a re-seed dropped,
-  whose bit a retained older generation still carries, or a generation above the pointer after a rollback, or an
-  object left under a tombstone) is **collected**: nothing is rewritten, the generations holding it are deleted, and
+  it was deleted before the call returned. A segment where only other generations held it (an id dropped by a re-seed
+  that a retained older generation still carries; a generation above the pointer after a rollback; or an object left
+  under a tombstone) is **collected**: nothing is rewritten, the generations holding it are deleted, and
   the event is `segment.collect`, with the ledger entry `{ erased: true, fromGeneration }` and no `generation`. Keep the
   events and the ledger both.
 - A `segment.publish` is not a receipt for anything: it says a set was loaded, not what was removed from it.
@@ -238,7 +238,7 @@ and conflating them would make your dashboard over-attest.**
 
 A **cleartext** `dropSegment` emits only `segment.dispose`. An **encrypted** one emits **both**, because both
 things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim (on the terms in its row
-above), `segment.rewrite` (with its ledger) for a per-subject erasure, and `segment.dispose` for a
+above), `segment.rewrite` or `segment.collect` (with its ledger) for a per-subject erasure, and `segment.dispose` for a
 retention/lifecycle trail. Never substitute one for another.
 
 > **KEK rotation is not in this stream** — rotating the key-encryption key is operator-side keystore
