@@ -365,8 +365,9 @@ the steady-load stage is held to the counts of an engine that collects by name, 
 library that does not, before it creates anything.
 
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
-`@cloudbitmaps/s3` into a scratch directory, and runs the harness against those — so the figures describe what a
-consumer installs, not a build of this checkout. A finished run's results land in `~/<runId>.json`, and an
+`@cloudbitmaps/s3` into a scratch directory, with `@cloudbitmaps/tools` of the same release for the prices the run is
+billed at, and runs the harness against those — so the figures describe what a consumer installs, not a build of this
+checkout. A finished run's results land in `~/<runId>.json`, and an
 interrupted one's in `~/<runId>.partial.json`, which is not evidence; the large suite's land under
 `~/bench/calibration/large/` instead. A name already taken in `~` is left alone,
 and this run's copy goes beside it with a timestamp, still a `.partial.json` if it was one. The script runs the

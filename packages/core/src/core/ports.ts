@@ -45,8 +45,9 @@ export interface GenKey extends SegmentRef {
 }
 
 /**
- * A segment's grounded on-disk footprint — the current generation's Storage object bytes, read cheaply from the
- * `.crbm` footer/index (no payload reads). Powers the grounded `costReport()`.
+ * A segment's on-disk footprint — the current generation's Storage object bytes, read cheaply from the `.crbm`
+ * footer/index (no payload reads). It is the `size` a segment's `stat()` reports, and what bounds the bytes a combine
+ * holds for an operand's stream.
  */
 export interface SegmentSize {
   readonly sizeBytes: number;
@@ -130,16 +131,10 @@ export interface StorageChunkSource {
     options?: ReadChunksOptions,
   ): AsyncIterable<ChunkRead>;
   /**
-   * Optional: the current generation's grounded size, cheaply (from the already-parsed `.crbm` index — no
-   * payload reads), or `null` if the segment has no Storage generation. Powers the grounded `costReport()`.
+   * Optional: the current generation's size, cheaply (from the already-parsed `.crbm` index — no payload reads), or
+   * `null` if the segment has no Storage generation.
    */
   sizeOf?(ref: SegmentRef): Promise<SegmentSize | null>;
-  /**
-   * Optional: how often this source re-reads a segment's pointer while the segment is being read, in ms, or 0 if
-   * it never does. The grounded `costReport()` prices the pointer refresh at this interval; a source that omits it
-   * is priced at the store's default.
-   */
-  readonly pointerRefreshMs?: number;
   /**
    * Optional: the current generation's **per-chunk cardinality** (`chunkKey → count`), read from the
    * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Storage generation.
@@ -155,6 +150,14 @@ export interface StorageChunkSource {
    * summary omits this, and `count()` keeps its other paths.
    */
   summary?(ref: SegmentRef): Promise<GenerationSummary | null>;
+  /**
+   * Optional: what {@link summary} answers, with the size of the generation's object, both from **one** resolution of
+   * the segment, so the size is the size of the generation described; `null` if the segment has no Storage
+   * generation. The size comes from the object's footer and index, so this opens the generation (one tail read of
+   * the object, when it is not open already) and reads no payload; the number, count and metadata come from the
+   * opened object. A source that omits it has a `stat()` that reports no size.
+   */
+  stat?(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null>;
   /**
    * Optional: the segment's **current generation number** as this source resolves it right now (registry
    * `currentGen`, or the highest storage generation), or `null` if the segment has no Storage generation. The engine

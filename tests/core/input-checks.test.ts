@@ -1,5 +1,5 @@
 import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
-import { estimateCost } from '@cloudbitmaps/core';
+import { estimateCost } from '@cloudbitmaps/tools';
 import type { ExportSink } from '@/index';
 import { InProcessKeystore, NodeAead } from '@/drivers/crypto';
 import { RetryingStorageChunkSource } from '@/drivers/retry/retrying-chunk-source';

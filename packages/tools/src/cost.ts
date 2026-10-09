@@ -1,11 +1,10 @@
 /**
- * Cost model & estimator — pure, `core/`-safe (no I/O, time, or SDK). Turns the verified economics of the
- * loaded store into a first-class library API:
+ * Cost model & estimator — pure arithmetic: no I/O, no time, no SDK, and nothing of a store's but the figures it
+ * is handed. It prices the economics of the loaded store:
  *
  * - {@link estimateCost} — **planning** mode: pure what-if from segment sizes + a workload (sizing/sales).
- * - `segment.costReport()` (wired in the facade) — **grounded** mode: the segment's real size from the `.crbm`
- *   index (free + exact, no payload reads) + a supplied workload for request rates. (Whole-store aggregation is
- *   a later phase.)
+ * - {@link groundedReport} — **grounded** mode: a segment's real size, which its handle's `stat()` reports as
+ *   `size` from the `.crbm` footer and index (no payload reads), + a supplied workload for request rates.
  *
  * Guiding split: **formulas are the spec; rates are a pluggable {@link PricingProfile}.** The report always emits
  * a {@link CostReport.verdict} that includes the lose-zone — it never hides where an always-on cache (Redis)
@@ -21,7 +20,7 @@
  * (deriving it from live metrics counters is a later refinement). There is no per-write term because the loaded
  * store has no per-id write: data arrives as generations, and a generation is a load.
  *
- * Every request count below is one the engine makes, and `tests/core/cost.test.ts` holds each to the engine by
+ * Every request count below is one the engine makes, and `tests/tools/cost.test.ts` holds each to the engine by
  * counting what it sends: the model is only as honest as those counts, and they move when the engine does. They
  * are for a single-bucket store, where the pointer is an object beside the data, which is the topology that
  * ships. A load is more than the object's PUT, and an intersect more than its chunk reads: pricing either as the
@@ -35,9 +34,12 @@
  * once per process, which {@link Workload.readerProcesses} carries. Where the model still quotes low is listed on
  * {@link Workload.hotSegments} and {@link Workload.chunksPerIntersect}.
  */
-import { ValidationError } from './errors';
-import { LIST_COLLECTION_CADENCE } from './generation-gc';
-import { DEFAULT_CURRENT_GEN_TTL_MS, DEFAULT_MAX_OPEN_SEGMENTS } from './reader-defaults';
+import { ValidationError } from '@cloudbitmaps/core';
+import {
+  DEFAULT_CURRENT_GEN_TTL_MS,
+  DEFAULT_MAX_OPEN_SEGMENTS,
+  LIST_COLLECTION_CADENCE,
+} from './store-defaults';
 
 /**
  * Freeze a constant and everything in it, so a caller that changes one — a `push` onto a catalogue's rows — cannot
@@ -136,8 +138,6 @@ export interface RedisSizing {
  * because an `m6g` or `r6g` with the same memory costs less. It is the cheapest cluster of THIS kind; Redis bought
  * another way costs less — one replica a shard a third less, ElastiCache for Valkey 20% less a node, reserved nodes
  * less again — so against those the saving the verdict reports is smaller. Pass their prices to compare with them.
- * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
- * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 export const ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: RedisSizing = deepFreeze({
   source: 'ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list 20260914063714',
@@ -169,9 +169,6 @@ export const ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: RedisSizing = deepFreeze({
  * at $0.158 an hour each: 3 × 730 h × $0.158 = $346.02, published to the dollar. The per-request crossovers on the
  * benchmarks page are drawn against this one cluster, whatever the data size; pass it as `pricing.redis` to compare
  * with it. It is not the cheapest cluster for any size of data: three cache.m6g.large hold the same memory for less.
- *
- * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
- * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
  */
 // The trailing comment below is parsed by scripts/site-figures.cjs, and the literal by bench/lib/calibration-figures.cjs.
 export const ONE_REDIS_HA_CLUSTER = deepFreeze({ monthlyUSD: 346 }); // ElastiCache HA: 1 primary + 2 replicas (cache.m7g.large); ~$115 single-node
@@ -179,8 +176,7 @@ export const ONE_REDIS_HA_CLUSTER = deepFreeze({ monthlyUSD: 346 }); // ElastiCa
 /**
  * Default profile — **AWS us-east-1, on-demand**, mid-2026, from the fact-checked published pricing rather than
  * copied from a blog post, with Redis sized to the data. Override it for your region, cloud, or committed term.
- * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
- * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
+ * Its prices are as old as the release of this package that ships them: a planning figure, not a quote.
  */
 export const AWS_US_EAST_1_ONDEMAND: PricingProfile = deepFreeze({
   name: 'aws-us-east-1-ondemand',
@@ -269,7 +265,7 @@ export interface Workload {
   readonly readerProcesses?: number;
   /**
    * How long the reader trusts a pointer, in ms: the store's `cache.genTtlMs`. Default 2000, the store's own
-   * default; `segment.costReport()` uses the store's. `0` turns the timed refresh off, and the model bills none: a
+   * default; pass the store's when it sets one. `0` turns the timed refresh off, and the model bills none: a
    * reader then re-reads a pointer only when its cache evicts the segment, a read finds its generation swept, or a
    * write invalidates it, none of which this term prices.
    */
@@ -337,7 +333,7 @@ export interface CostReport {
    * given.
    *
    * **It is not additive across reports.** Each report sizes Redis to its own bytes, so a per-segment report
-   * (`segment.costReport()`) compares with a cluster holding that one segment alone, and the baselines of a store's
+   * (`groundedReport` of one segment's size) compares with a cluster holding that one segment alone, and the baselines of a store's
    * segments do not sum to the store's. To judge a store, price all its segments in one `estimateCost`. To alarm on
    * one, sum `monthlyUSD.total` over its segments and compare the sum with the Redis you would run for it: a
    * per-segment verdict against that whole price fires only when one segment alone costs more than all of it.
@@ -369,7 +365,10 @@ export interface CostReport {
   readonly assumptions: {
     readonly cacheHitRate: number;
     readonly pricingName: string;
-    /** True when segment **sizes** were real (grounded `costReport`), false for a pure `estimateCost`. */
+    /**
+     * True when the size was measured (a `groundedReport` given a byte count), false for a pure `estimateCost` and
+     * for a `groundedReport` given `storageBytes: null`.
+     */
     readonly grounded: boolean;
     /** What the model assumed and what it left out, in words. The last says how the Redis was priced. */
     readonly notes: readonly string[];
@@ -393,7 +392,7 @@ const GIB = 1024 ** 3;
  * generation gives it the size the guard needs. It makes two checks, each a single metadata request on every backend
  * (S3's `HeadObject`, GCS's object metadata, Azure Blob's properties), so `requestsPerSizedRead` applies to neither:
  * that the next generation number is free, on every load, and that the current generation's object is there, before
- * the collection deletes by name, so on every load but the listing one. `tests/core/cost.test.ts` holds these to the
+ * the collection deletes by name, so on every load but the listing one. `tests/tools/cost.test.ts` holds these to the
  * engine over sixteen consecutive loads at a `keep` of 1, 2, 12 and 64. A load whose `keep` is above 64 records no list
  * and lists on every load, and so does the first load of a row that records none, and one whose check meets an object:
  * one more PUT-class request and two more pointer reads than these, and one check fewer. This model prices the first
@@ -412,7 +411,7 @@ interface SweepRequests {
 
 /**
  * What the retention sweep makes per segment, counted with a store that counts its requests
- * (`tests/core/retention-hard-purge.test.ts` holds each figure to the engine, and `tests/core/cost.test.ts` holds the
+ * (`tests/core/retention-hard-purge.test.ts` holds each figure to the engine, and `tests/tools/cost.test.ts` holds the
  * estimator to these). With the registry's `conditionalDelete` on, a retirement files a due-index pointer to the
  * tombstone and a purge removes the row and every pointer: a later sweep reads nothing of a purged segment. With it
  * off, a retirement files no pointer, a purge rewrites the row as a tombstone, and every later full sweep reads what
@@ -951,10 +950,8 @@ function checkModelInputs(op: string, pricing: unknown, workload: unknown): void
 
 /**
  * **Planning** cost estimate — pure, no instance or live data needed (sizing, sales, what-if). Segment sizes
- * are taken as given (or roughly derived from cardinality); use the grounded `segment.costReport()` for
- * exact, real sizes. See {@link CostReport}.
- * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
- * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
+ * are taken as given (or roughly derived from cardinality); use {@link groundedReport} with a segment's measured
+ * size for exact, real sizes. See {@link CostReport}.
  */
 export function estimateCost(input: EstimateInput): CostReport {
   // Shapes a plain-JavaScript caller can get wrong, refused as such rather than as a raw TypeError from deep inside.
@@ -993,25 +990,38 @@ export function estimateCost(input: EstimateInput): CostReport {
 }
 
 /**
- * **Grounded** report from a real segment byte total (from the `.crbm` index) + a supplied workload. Used by
- * `Segment.costReport()` in the facade. `grounded` defaults to true (the size is exact, not estimated); the
- * caller passes `grounded: false` + a note when the Storage source can't measure size.
- * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
- * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
+ * **Grounded** report from a measured byte total + a supplied workload. A segment handle's `stat()` reports the
+ * size of its current generation as `size`, read from the `.crbm` footer and index with no payload reads:
+ *
+ * ```ts
+ * const report = groundedReport({ storageBytes: (await seg.stat()).size, workload: { readsPerSec: 50 } });
+ * ```
+ *
+ * Sum the sizes of several segments to price them together; see {@link CostReport.redisBaseline} for why one report
+ * of the sum is not the sum of the reports. `storageBytes: null`, which `stat()` answers for a segment with no
+ * generation and on a store whose source cannot report a size, prices storage at $0 and says so in the notes, with
+ * `assumptions.grounded` false: nothing was measured, so the report does not claim a confident $0.
  */
 export function groundedReport(input: {
-  readonly storageBytes: number;
-  readonly grounded?: boolean;
+  readonly storageBytes: number | null;
   readonly workload?: Workload;
   readonly pricing?: PricingProfile;
-  readonly extraNotes?: readonly string[];
 }): CostReport {
-  checkModelInputs('costReport', input.pricing, input.workload);
+  if (input === null || typeof input !== 'object') {
+    throw new ValidationError('groundedReport: input must be an object such as { storageBytes }');
+  }
+  checkModelInputs('groundedReport', input.pricing, input.workload);
+  const measured = input.storageBytes !== null;
   return buildReport({
-    storageBytes: input.storageBytes,
+    storageBytes: measured ? input.storageBytes : 0,
     workload: input.workload ?? {},
     pricing: input.pricing ?? AWS_US_EAST_1_ONDEMAND,
-    grounded: input.grounded ?? true,
-    extraNotes: input.extraNotes,
+    grounded: measured,
+    extraNotes: measured
+      ? undefined
+      : [
+          'storageBytes is null — no size was measured (a segment with no generation, or a store whose source ' +
+            'cannot report one), so storage is reported as $0.',
+        ],
   });
 }

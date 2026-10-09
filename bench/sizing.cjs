@@ -13,8 +13,8 @@
  * page says what a cold intersect waits on.
  *
  * Run: `pnpm bench:sizing` (builds first) to rewrite the regions; `pnpm bench:sizing:check` to verify them.
- * `require()` loads @cloudbitmaps/core, which ships ESM only, through Node's `require(esm)`, as bench/run.cjs does:
- * core, not the flavor, since this is arithmetic and the flavor would load the native addon for nothing.
+ * `require()` loads @cloudbitmaps/tools, which ships ESM only, through Node's `require(esm)`, as bench/run.cjs does:
+ * the tools package, not the flavor, since this is arithmetic and the flavor would load the native addon for nothing.
  */
 'use strict';
 const { execFileSync } = require('node:child_process');
@@ -25,7 +25,7 @@ const {
   AWS_US_EAST_1_ONDEMAND,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
-} = require('@cloudbitmaps/core');
+} = require('@cloudbitmaps/tools');
 
 const ROOT = path.resolve(__dirname, '..');
 const { DOCS, CHARTS } = require('./lib/sizing-pages.cjs');
@@ -152,7 +152,7 @@ function rangeBytesPerOperand(id, shared, layout = 'packed') {
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
-const COST_TS = 'packages/core/src/core/cost.ts';
+const COST_TS = 'packages/tools/src/cost.ts';
 const HOURS_PER_MONTH = sourceConstant(COST_TS, 'HOURS_PER_MONTH');
 const SECONDS_PER_MONTH =
   HOURS_PER_MONTH *

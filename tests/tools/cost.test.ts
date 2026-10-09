@@ -6,22 +6,25 @@ vi.mock('@/core/crbm/reader', async (original) =>
 import { SafeBitmap } from '@/roaring-codec';
 import {
   CloudRoaring,
+  CrbmStorageChunkSource,
+  ValidationError,
+  type StorageChunkSource,
+} from '@/index';
+import {
   AWS_US_EAST_1_ONDEMAND,
   ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
-  CrbmStorageChunkSource,
-  ValidationError,
+  estimateCost,
+  groundedReport,
   type CostReport,
   type PricingProfile,
   type RedisSizing,
-  type StorageChunkSource,
   type Workload,
-} from '@/index';
+} from '@cloudbitmaps/tools';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { seededStore } from '../helpers/loaded';
-import { estimateCost } from '@cloudbitmaps/core';
-import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
+import { RETENTION_SWEEP_REQUESTS } from '@/tools/cost';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
@@ -680,7 +683,8 @@ describe('Redis sized to the data', () => {
 
   it('prices a grounded report against Redis sized to the segment it measured', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
-    const r = await store.segment('s').costReport();
+    const { size } = await store.segment('s').stat();
+    const r = groundedReport({ storageBytes: size });
     expect(r.redisBaseline).toEqual(baselineFor(ONE_CHUNK_BYTES));
     expect(clusterOf(r.redisBaseline).nodeType).toBe('cache.t4g.micro');
     // Any size this small prices the smallest cluster, so size it on a node that holds one byte: the shard count
@@ -689,7 +693,7 @@ describe('Redis sized to the data', () => {
       replicasPerShard: 0,
       reservedMemoryFraction: 0,
     });
-    const sized = await store.segment('s').costReport({ pricing: perByte });
+    const sized = groundedReport({ storageBytes: size, pricing: perByte });
     expect(clusterOf(sized.redisBaseline).shards).toBe(ONE_CHUNK_BYTES);
   });
 });
@@ -741,20 +745,29 @@ describe('estimateCost (planning)', () => {
   });
 });
 
-describe('costReport (grounded)', () => {
+/** A grounded report of one segment, priced from the size its handle's `stat()` reports. */
+async function reportOf(
+  store: CloudRoaring,
+  segment: string,
+  options: { workload?: Workload; pricing?: PricingProfile } = {},
+): Promise<CostReport> {
+  return groundedReport({ storageBytes: (await store.segment(segment).stat()).size, ...options });
+}
+
+describe('groundedReport (from stat().size)', () => {
   it('grounded storage cost matches a direct byte count of the real chunk payload', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
-    const r = await store.segment('s').costReport();
+    const r = await reportOf(store, 's');
     expect(r.assumptions.grounded).toBe(true); // measured, not supplied
     expect(r.monthlyUSD.byOp.storage).toBeCloseTo((ONE_CHUNK_BYTES / GIB) * 0.023, 9);
     expect(r.monthlyUSD.total).toBeCloseTo(r.monthlyUSD.byOp.storage, 9); // no workload → storage only
   });
 
-  it('estimateCost and costReport agree when fed identical inputs', async () => {
+  it('estimateCost and groundedReport agree when fed identical inputs', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
     const workload = { readsPerSec: 50, cacheHitRate: 0.5, loadsPerMonth: 30 };
 
-    const grounded = await store.segment('s').costReport({ workload });
+    const grounded = await reportOf(store, 's', { workload });
     const planned = estimateCost({ segments: [{ sizeBytes: ONE_CHUNK_BYTES }], workload });
 
     expect(grounded.monthlyUSD).toEqual(planned.monthlyUSD);
@@ -765,14 +778,21 @@ describe('costReport (grounded)', () => {
     expect(planned.assumptions.grounded).toBe(false);
   });
 
-  it('a segment with no Storage generation reports zero storage (grounded)', async () => {
+  it('a segment with no Storage generation has no size, and reports $0 storage that it did not measure', async () => {
     const { store } = seededStore();
-    const r = await store.segment('empty').costReport();
-    expect(r.assumptions.grounded).toBe(true);
+    expect((await store.segment('empty').stat()).size).toBeNull();
+    const r = await reportOf(store, 'empty');
+    expect(r.assumptions.grounded).toBe(false);
     expect(r.monthlyUSD.byOp.storage).toBe(0);
+    expect(r.assumptions.notes.some((n) => n.startsWith('storageBytes is null'))).toBe(true);
+    // A caller who knows the segment is empty says so, and the $0 is then a measurement.
+    const empty = groundedReport({ storageBytes: 0 });
+    expect(empty.assumptions.grounded).toBe(true);
+    expect(empty.monthlyUSD.byOp.storage).toBe(0);
+    expect(empty.assumptions.notes.some((n) => n.startsWith('storageBytes is null'))).toBe(false);
   });
 
-  it('a custom storage source without sizeOf() → grounded:false + a note, not a false $0', async () => {
+  it('a custom storage source that cannot report a size → grounded:false + a note, not a false $0', async () => {
     class NoSizeStorage implements StorageChunkSource {
       // Minimal impl — omitting the unused params still satisfies the interface.
       async getChunk(): Promise<Uint8Array | null> {
@@ -783,10 +803,10 @@ describe('costReport (grounded)', () => {
       }
     }
     const store = new CloudRoaring({ storage: new NoSizeStorage() });
-    const r = await store.segment('x').costReport();
+    const r = await reportOf(store, 'x');
     expect(r.assumptions.grounded).toBe(false); // storage was NOT measured — don't claim a confident $0
     expect(r.monthlyUSD.byOp.storage).toBe(0);
-    expect(r.assumptions.notes.some((n) => n.includes('sizeOf'))).toBe(true);
+    expect(r.assumptions.notes.some((n) => n.includes('no size was measured'))).toBe(true);
     // Nor a confident Redis: sized to no bytes, it is the cheapest cluster there is, and the report says so.
     expect(r.assumptions.notes.at(-1)).toContain(
       'because nothing is stored or nothing was measured',
@@ -800,7 +820,8 @@ describe('costReport (grounded)', () => {
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3, 400_000]) },
     ]);
     const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
-    const r = await store.segment('g').costReport();
+    expect((await store.segment('g').stat()).size).toBe(size);
+    const r = await reportOf(store, 'g');
     expect(r.assumptions.grounded).toBe(true);
     expect(r.monthlyUSD.byOp.storage).toBeCloseTo((size / GIB) * 0.023, 9);
   });
@@ -1681,31 +1702,6 @@ describe('the estimator counts the requests the engine makes', () => {
     expect(price(hot, POINTERS_ONLY).pointerRefresh).toBe(price(hot).pointerRefresh);
     expect(price(hot, TAILS_ONLY).pointerRefresh).toBe(0);
   });
-
-  it("prices a segment's grounded report at the store's own refresh", async () => {
-    const { open } = countingStore();
-    await open().load({ segment: 'hot' }, [1, 2, 3]);
-    const workload = { hotSegments: 1, readsPerSec: 10 };
-    const at = async (options: object, extra: Partial<Workload> = {}): Promise<number> =>
-      (
-        await open(options)
-          .segment('hot')
-          .costReport({ workload: { ...workload, ...extra }, pricing: COUNTING })
-      ).monthlyUSD.byOp.pointerRefresh;
-    const clock = virtualClock();
-    // A store with a clock refreshes at its own TTL, 2 s by default.
-    expect(await at({ seams: { clock } })).toBeCloseTo((SECONDS_PER_MONTH * 1000) / 2000, 3);
-    expect(await at({ seams: { clock }, cache: { genTtlMs: 60_000 } })).toBeCloseTo(
-      (SECONDS_PER_MONTH * 1000) / 60_000,
-      3,
-    );
-    // With no timed refresh, the report bills none.
-    expect(await at({ seams: { clock }, cache: { genTtlMs: 0 } })).toBe(0);
-    // A workload that states its own TTL wins.
-    expect(
-      await at({ seams: { clock }, cache: { genTtlMs: 60_000 } }, { genTtlMs: 2000 }),
-    ).toBeCloseTo((SECONDS_PER_MONTH * 1000) / 2000, 3);
-  });
 });
 
 describe('retention sweep cost term', () => {
@@ -1810,5 +1806,48 @@ describe('estimateCost refuses an input of the wrong shape', () => {
     ]) {
       expect(() => estimateCost(input as never), JSON.stringify(input)).toThrow(ValidationError);
     }
+  });
+});
+
+describe('groundedReport refuses an input of the wrong shape', () => {
+  it('a missing input, a size that is not a finite number of at least 0 or null, or pricing without storage', () => {
+    for (const input of [
+      null,
+      {},
+      { storageBytes: undefined },
+      { storageBytes: -1 },
+      { storageBytes: NaN },
+      { storageBytes: Infinity },
+      { storageBytes: '5' },
+      { storageBytes: 1, pricing: {} },
+      { storageBytes: 1, pricing: null },
+      { storageBytes: 1, workload: 'x' },
+      { storageBytes: 1, workload: [] },
+    ]) {
+      expect(() => groundedReport(input as never), JSON.stringify(input)).toThrow(ValidationError);
+    }
+  });
+
+  it("names itself in a refusal, so a caller can tell the model's from a store's", () => {
+    expect(() => groundedReport({ storageBytes: 1, pricing: {} as never })).toThrow(
+      /^groundedReport: pricing must be a profile/,
+    );
+    expect(() => groundedReport(null as never)).toThrow(/^groundedReport: input must be an object/);
+  });
+});
+
+describe('a workload is read as a caller builds it', () => {
+  it('reads one held on a prototype, as it reads one of its own', () => {
+    const own = groundedReport({ storageBytes: 1e6, workload: { readsPerSec: 500 } });
+    const inherited = groundedReport({
+      storageBytes: 1e6,
+      workload: Object.create({ readsPerSec: 500 }) as Workload,
+    });
+    expect(inherited).toEqual(own);
+    expect(inherited).not.toEqual(groundedReport({ storageBytes: 1e6 }));
+    // `null` reads as no workload, as an omitted one does.
+    expect(groundedReport({ storageBytes: 1e6, workload: null as never })).toEqual(
+      groundedReport({ storageBytes: 1e6 }),
+    );
   });
 });

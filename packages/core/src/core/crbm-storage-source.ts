@@ -228,6 +228,14 @@ function summaryOfGeneration(
     : { generation, cardinality, metadata: Object.freeze({ ...metadata }) };
 }
 
+/** What an opened generation says of itself, with its object's size. */
+function sizedSummary(reader: CrbmReader): GenerationSummary & SegmentSize {
+  return {
+    ...summaryOfGeneration(reader.generation, describe(reader)),
+    sizeBytes: reader.sizeBytes,
+  };
+}
+
 /** Whether two rows carry the same wrapped keys. */
 const sameKeys = (a: readonly WrappedDek[] | undefined, b: readonly WrappedDek[]): boolean =>
   a !== undefined && JSON.stringify(a) === JSON.stringify(b);
@@ -414,8 +422,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   private readonly currentGenTtlMs: number;
   /**
    * Whether the segment's pointer is re-read on a timer: it needs a clock (the TTL), a registry (the cheap row read; with
-   * none, resolving is a listing of the bucket) and a TTL above 0. It decides the keeping of chunk bytes, the TTL lapse
-   * and the refresh interval the cost report prices, so it is decided once.
+   * none, resolving is a listing of the bucket) and a TTL above 0. It decides the keeping of chunk bytes and the TTL
+   * lapse, so it is decided once.
    */
   private readonly timedRefresh: boolean;
 
@@ -635,15 +643,6 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   private now(): number {
     return this.clock ? this.clock.now() : 0;
-  }
-
-  /**
-   * How often this source re-reads a segment's pointer while the segment is being read, in ms: its TTL, or 0 when
-   * it has no timed refresh (no clock, no registry, or a TTL of 0). The grounded cost report prices the refresh at
-   * this.
-   */
-  get pointerRefreshMs(): number {
-    return this.timedRefresh ? this.currentGenTtlMs : 0;
   }
 
   /**
@@ -1186,7 +1185,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return reader === null ? null : reader.cardinalities();
   }
 
-  /** Grounded size of a specific generation. `held` as for {@link getChunkAt}. */
+  /** Size of a specific generation. `held` as for {@link getChunkAt}. */
   async sizeOfAt(
     ref: SegmentRef,
     generation: number,
@@ -1626,6 +1625,33 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     validateUserRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? null : summaryOfGeneration(reader.generation, describe(reader));
+  }
+
+  /**
+   * The current generation's number, id count and metadata, with its object's size, all from the one generation a
+   * single resolution opened: the object's footer and index, with no payload read. That is a registry read and a tail
+   * read of the object when cold, and nothing once the generation is open. It heals a generation swept from under the
+   * resolution as a read of the object does, and a pointer that names a missing object throws `NotFoundError`, as a
+   * read does, where {@link summary} answers from the row.
+   */
+  async stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
+    validateUserRef(ref);
+    return this.withFreshSnapshot<(GenerationSummary & SegmentSize) | null>(
+      ref,
+      (reader) => sizedSummary(reader),
+      null,
+    );
+  }
+
+  /** {@link stat} of a specific generation, from the object a pin holds. `held` as for {@link getChunkAt}. */
+  async statAt(
+    ref: SegmentRef,
+    generation: number,
+    held?: PinnedObject,
+  ): Promise<(GenerationSummary & SegmentSize) | null> {
+    validateUserRef(ref);
+    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    return reader === null ? null : sizedSummary(reader);
   }
 
   /**

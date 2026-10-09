@@ -25,7 +25,6 @@ export { SegmentEngine } from './core/engine';
 export type { EngineDeps, CombineOptions as EngineCombineOptions, IdRange } from './core/engine';
 export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';
-export { groundedReport } from './core/cost';
 export { runExport } from './export';
 export type { SegmentReader } from './export';
 // `splitId` only: the flavor uses it to fail fast on a non-u32 id. `joinId` is the inverse and has no
@@ -287,24 +286,6 @@ export type { BlobReader, BlobSink } from './core/blob';
 // (storage/cache/retry/intersect/op) to your stack; see the observability guide.
 export { NOOP_METRICS, CountingMetricsSink } from './core/metrics';
 export type { IMetricsSink, MetricEvent, MetricOpName, MetricsSnapshot } from './core/metrics';
-
-// Cost model & estimator: pure `estimateCost` planning + grounded `segment.costReport()`; the pluggable pricing
-// profile + the honest `CostReport` verdict (never hides the lose-zone).
-export {
-  estimateCost,
-  AWS_US_EAST_1_ONDEMAND,
-  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
-  ONE_REDIS_HA_CLUSTER,
-} from './core/cost';
-export type {
-  PricingProfile,
-  RedisNodeType,
-  RedisSizing,
-  CostReport,
-  Workload,
-  SegmentSizing,
-  EstimateInput,
-} from './core/cost';
 
 // Audit trail: a separate injected seam for security/compliance state changes (publish/rewrite/erase/dispose) —
 // distinct from metrics. Pass `audit` to the load and erasure APIs; see the dashboards guide. Exception-safe; the

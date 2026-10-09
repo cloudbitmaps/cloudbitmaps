@@ -5,8 +5,8 @@
  * Design: the library emits **neutral domain events** and stays vendor-agnostic — you (or a ~12-line
  * adapter) map them to OpenTelemetry / Datadog / a log line. The default is a **no-op**, and emission is
  * skipped entirely when no sink is wired (near-zero overhead, no telemetry dependency). Events carry **raw
- * observations** (bytes, counts, ms); turning those into billable units / dollars is the cost model's job,
- * which keeps rates pluggable.
+ * observations** (bytes, counts, ms); turning those into billable units / dollars is left to whoever reads them,
+ * which keeps rates out of the library (`@cloudbitmaps/tools` prices a workload you give it).
  *
  * Two caveats for sink authors: `onEvent` runs **synchronously on the I/O path**, so keep it cheap and
  * non-blocking (offload batching/network to your own async queue); and `segment`/`namespace` are
@@ -201,9 +201,9 @@ const OP_NAMES: readonly MetricOpName[] = [
 ];
 
 /**
- * A ready-made sink that tallies events into a {@link MetricsSnapshot} — handy for tests, quick scripts,
- * and as the grounded-request-cost source behind `costReport()`. `snapshot()` returns an independent copy;
- * `reset()` zeroes the counters.
+ * A ready-made sink that tallies events into a {@link MetricsSnapshot} — handy for tests, quick scripts, and for
+ * reading the request rates a cost model is given. `snapshot()` returns an independent copy; `reset()` zeroes the
+ * counters.
  */
 export class CountingMetricsSink implements IMetricsSink {
   private storage = { gets: 0, bytes: 0, totalMs: 0 };

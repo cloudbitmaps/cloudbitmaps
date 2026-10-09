@@ -7,6 +7,7 @@ import * as roaring from '@/index';
 import * as s3 from '@cloudbitmaps/s3';
 import * as gcs from '@cloudbitmaps/gcs';
 import * as azureBlob from '@cloudbitmaps/azure-blob';
+import * as tools from '@cloudbitmaps/tools';
 
 /**
  * Names the library does not export stay out of it: out of both packages' runtime surface, and out of every
@@ -42,6 +43,10 @@ const HELD_INSTEAD =
 /** What a reader who wanted the tombstone reaper uses instead. */
 const REAPER_INSTEAD =
   "the retention guide's recipe, which runs the reaper the 0.18 releases ship, once, for a bucket a release before 0.12 wrote";
+
+/** What a reader who wanted a segment's cost report uses instead. */
+const COST_REPORT_INSTEAD =
+  '`groundedReport` from `@cloudbitmaps/tools`, given the size `seg.stat()` reports: `groundedReport({ storageBytes: (await seg.stat()).size })`';
 
 /** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
 const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
@@ -98,7 +103,12 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'RetryingRegistryDriver', instead: RETRY_INSTEAD, code: true },
   { name: 'TimeoutError', instead: '`TransientError`' },
   { name: 'AuditEventKind', instead: "`AuditEvent['kind']`", code: true },
-  { name: 'DEFAULT_PRICING', instead: '`AWS_US_EAST_1_ONDEMAND`', code: true },
+  {
+    name: 'DEFAULT_PRICING',
+    instead: '`AWS_US_EAST_1_ONDEMAND` from `@cloudbitmaps/tools`',
+    code: true,
+  },
+  { name: 'costReport', instead: COST_REPORT_INSTEAD, code: true },
   { name: 'MemoryStorageChunkSource', instead: '`MemoryStorage`' },
   { name: 'writeCrbmGeneration', instead: GENERATION_INSTEAD },
   { name: 'publishGeneration', instead: GENERATION_INSTEAD },
@@ -172,7 +182,6 @@ const OFF_THE_FLAVOR = [
   'checkBudget',
   'withRetry',
   'RetryingStorageChunkSource',
-  'groundedReport',
   'splitId',
   'mapWithConcurrency',
   'segmentKey',
@@ -189,9 +198,20 @@ const OFF_THE_FLAVOR = [
   'runExport',
   'dropSegment',
   'retireExpired',
-  'estimateCost',
   'loadSegment',
   'eraseIdFromSegment',
+];
+
+/**
+ * The cost model's names, which left both core and the flavor for `@cloudbitmaps/tools`. Pages name them, from that
+ * package, so they are held to the runtime surface: off core and the flavor, on tools.
+ */
+const MOVED_TO_TOOLS = [
+  'estimateCost',
+  'groundedReport',
+  'AWS_US_EAST_1_ONDEMAND',
+  'ELASTICACHE_REDIS_US_EAST_1_ONDEMAND',
+  'ONE_REDIS_HA_CLUSTER',
 ];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
@@ -277,6 +297,17 @@ describe('a removed export is named nowhere a reader looks', () => {
       expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
       expect(name in core, `@cloudbitmaps/core no longer exports ${name}`).toBe(true);
     }
+  });
+
+  it('the cost model is on the tools package alone: off core, off the flavor and off its store class', () => {
+    for (const name of MOVED_TO_TOOLS) {
+      expect(name in core, `@cloudbitmaps/core exports ${name}`).toBe(false);
+      expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
+      expect(name in tools, `@cloudbitmaps/tools does not export ${name}`).toBe(true);
+    }
+    expect('estimateCost' in roaring.CloudRoaring).toBe(false);
+    const seg = new roaring.CloudRoaring({ storage: new core.MemoryStorage() }).segment('s');
+    expect('costReport' in seg).toBe(false);
   });
 
   it('the driver-kit subpath exports none of the names that left it, and still exports the ones that moved onto it', () => {
@@ -375,5 +406,7 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(retiredNames('SafeBitmap.fromValues(ids) and roaringCodec')).toHaveLength(2);
     // A longer name that contains one, and the SDK error a driver reads by name, are not the removed exports.
     expect(retiredNames('nextGenerationNumber and MyDEFAULT_PRICING_TABLE')).toEqual([]);
+    expect(retiredNames('const r = await seg.costReport({ workload });')).toHaveLength(1);
+    expect(retiredNames('a costReportCard or myCostReport')).toEqual([]);
   });
 });

@@ -317,7 +317,7 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 });
 
 // What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
-// counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
+// counts that the cost model is held to (`tests/tools/cost.test.ts`) are of the driver ports; these are of the wire,
 // command by command. A load reads its row once before the publish and checks the next generation number with one
 // HeadObject instead of listing, and sizes the current generation from the row's summary of it. Its publish is written
 // against the row it read, so the write makes no read of the row. It collects by name: it looks for the current object

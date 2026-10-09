@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/core';
+import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/tools';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 
 /**
@@ -1835,7 +1835,7 @@ function hitsIn(rel: string, text: string): string[] {
 // Known limits, stated rather than hidden: it does not read a figure that has no "per million" in its clause
 // (a table cell is its own clause), a ratio more than 40 characters after `store.load()`, or another backend's or
 // an encrypted segment's price, which the model does not derive. Those figures are held where they are derived,
-// `tests/bench/calibrate-guards.test.ts` and `tests/core/cost.test.ts`.
+// `tests/bench/calibrate-guards.test.ts` and `tests/tools/cost.test.ts`.
 // ---------------------------------------------------------------------------------------------------
 type Dollars = {
   first: number;
@@ -2184,7 +2184,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //
 // The prices above are held, and the counts behind them were not: a request count in prose (a guide, the bench README,
 // a doc-comment, the changelog) was restated by hand each time the engine's counts moved, and each time a copy was
-// missed. The counts here come from the cost model, which `tests/core/cost.test.ts` holds to the engine by counting
+// missed. The counts here come from the cost model, which `tests/tools/cost.test.ts` holds to the engine by counting
 // what it sends, and from the pricing the model gives a pointer read and a tail read, so a count that moves with the
 // engine moves the gate with it.
 //
@@ -2497,7 +2497,7 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
       join('docs', 'guide', 'reading.md'),
       join('docs', 'ROADMAP.md'),
       join('site', 'usage.html'),
-      join('packages', 'core', 'src', 'core', 'cost.ts'),
+      join('packages', 'tools', 'src', 'cost.ts'),
     ])
       expect(pages).toContain(f);
     expect(pages.some((f) => f.startsWith('tests'))).toBe(false);

@@ -244,7 +244,6 @@ const SITES: Array<[string, (leased: Segment, h: H) => Promise<unknown>]> = [
   ['iterate', (l) => collect(l.iterate())],
   ['iterate().batches()', async (l) => collect(flat(l.iterate().batches()))],
   ['everyNth', (l) => collect(l.everyNth(1))],
-  ['costReport', (l) => l.costReport()],
   ['pin()', (l) => l.pin()],
   ['intersect (receiver)', (l, h) => collect(l.intersect([plain(h)]))],
   ['intersect (operand)', (l, h) => collect(plain(h).intersect([l]))],

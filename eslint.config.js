@@ -200,7 +200,7 @@ export default tseslint.config(
     // EVERY package that is not core or a flavor, so a fourth service package is guarded the day it is
     // added rather than the day someone notices. Naming the three meant `packages/r2/src/**` matched no
     // block at all and silently had no boundary rules — and separate service packages exist so that adding
-    // one is cheap.
+    // one is cheap. `packages/tools` is not a driver: its own block below restates a narrower list.
     files: ['packages/*/src/**/*.ts'],
     ignores: ['packages/core/src/**', 'packages/roaring/src/**'],
     rules: {
@@ -349,6 +349,49 @@ export default tseslint.config(
               group: ['@aws-sdk/*', 'aws-sdk', '@google-cloud/*'],
               message:
                 "this package imports only its own cloud SDK — a sibling's is not in its dependencies and would be missing for every consumer.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // @cloudbitmaps/tools: offline tools that need nothing internal from a store. It reaches core through core's
+    // public main entry and nothing else: not the driver-kit subpath, not a path into core's source, and not the
+    // `@/` alias, which this package's tsconfig maps onto core's internals. No flavor, no driver package, no cloud
+    // SDK and no node builtin: the model is arithmetic over the figures it is handed, and runs wherever core does.
+    // This block restates the whole list because eslint REPLACES a rule's options rather than merging them, so the
+    // generic package block above does not reach these files.
+    files: ['packages/tools/src/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '^@cloudbitmaps/(?!core$)',
+              message:
+                "@cloudbitmaps/tools takes @cloudbitmaps/core's public entry and nothing else of ours — not a subpath of core, not a flavor, not a driver package.",
+            },
+            {
+              regex: '^@/',
+              message:
+                "@cloudbitmaps/tools imports nothing internal from core: `@/` resolves to core's source here. Copy the figure into this package and hold it to core's with a test.",
+            },
+            {
+              regex: '^(?:\\.\\./)+(?:core|roaring|s3|gcs|azure-blob)(?:/.*)?$',
+              message:
+                'reach core by its package name (@cloudbitmaps/core), not by a relative path out of this package.',
+            },
+            {
+              group: ['@aws-sdk/*', 'aws-sdk', '@google-cloud/*', '@azure/*'],
+              message: '@cloudbitmaps/tools names no cloud SDK: it reads and writes no store.',
+            },
+            {
+              regex:
+                '^(?:node:.*|(?:assert|async_hooks|buffer|child_process|cluster|console|constants|crypto|dgram|diagnostics_channel|dns|domain|events|fs|http|http2|https|inspector|module|net|os|path|perf_hooks|process|punycode|querystring|readline|repl|stream|string_decoder|sys|timers|tls|trace_events|tty|url|util|v8|vm|wasi|worker_threads|zlib)(?:/.*)?)$',
+              message:
+                '@cloudbitmaps/tools imports no node builtin: its tools are arithmetic over the figures they are handed.',
             },
           ],
         },

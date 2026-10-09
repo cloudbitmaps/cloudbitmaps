@@ -7,6 +7,7 @@ const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url)
 const S3 = fileURLToPath(new URL('./packages/s3/src', import.meta.url));
 const GCS = fileURLToPath(new URL('./packages/gcs/src', import.meta.url));
 const AZURE = fileURLToPath(new URL('./packages/azure-blob/src', import.meta.url));
+const TOOLS = fileURLToPath(new URL('./packages/tools/src', import.meta.url));
 
 export default defineConfig({
   test: {
@@ -37,7 +38,7 @@ export default defineConfig({
     ],
   },
   resolve: {
-    // The test suite lives at the repo root and drives all five packages (many tests are white-box across
+    // The test suite lives at the repo root and drives all six packages (many tests are white-box across
     // the facade + core internals), so `@/…` is mapped onto the workspace here — which is why a test imports a
     // module by one alias whichever package holds it. Order matters: the exact matches win over the `@/*`
     // catch-all, so a new package's alias goes ABOVE it.
@@ -59,10 +60,13 @@ export default defineConfig({
       { find: /^@\/s3\/(.*)$/, replacement: S3 + '/$1' },
       { find: /^@\/gcs\/(.*)$/, replacement: GCS + '/$1' },
       { find: /^@\/azure-blob\/(.*)$/, replacement: AZURE + '/$1' },
+      // The offline tools package's own sources, as the driver packages' are.
+      { find: /^@\/tools\/(.*)$/, replacement: TOOLS + '/$1' },
       { find: /^@\/(.*)$/, replacement: CORE + '/$1' },
       { find: /^@cloudbitmaps\/s3$/, replacement: S3 + '/index.ts' },
       { find: /^@cloudbitmaps\/gcs$/, replacement: GCS + '/index.ts' },
       { find: /^@cloudbitmaps\/azure-blob$/, replacement: AZURE + '/index.ts' },
+      { find: /^@cloudbitmaps\/tools$/, replacement: TOOLS + '/index.ts' },
       { find: /^@cloudbitmaps\/core$/, replacement: CORE + '/index.ts' },
       { find: /^@cloudbitmaps\/core\/(.*)$/, replacement: CORE + '/$1' },
     ],

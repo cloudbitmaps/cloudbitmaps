@@ -48,8 +48,6 @@ import {
   excludingReservedRows,
   dropSegment,
   eraseIdFromSegment,
-  estimateCost,
-  groundedReport,
   judgeLoad,
   loadSegment,
   loadSegmentChunks,
@@ -88,10 +86,8 @@ import type {
   CodecInterface,
   StorageChunkSource,
   ConsistencyReport,
-  CostReport,
   EngineDeps,
   DropResult,
-  EstimateInput,
   ExportManifest,
   ExportOptions,
   ExportSink,
@@ -102,7 +98,6 @@ import type {
   IRegistryDriver,
   StorageBackend,
   MetricOpName,
-  PricingProfile,
   RetentionPolicy,
   RetireExpiredOptions,
   RetireExpiredResult,
@@ -113,7 +108,6 @@ import type {
   PinnedAt,
   IdRange,
   SegmentRef,
-  Workload,
 } from '@cloudbitmaps/core';
 import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
@@ -281,22 +275,6 @@ const CALL_KEYS = {
     'summaries',
   ]),
   exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
-  costReport: keysOf<NonNullable<Parameters<Segment['costReport']>[0]>>()(['pricing', 'workload']),
-  workload: keysOf<Workload>()([
-    'readsPerSec',
-    'intersectsPerSec',
-    'cacheHitRate',
-    'chunksPerIntersect',
-    'operandsPerIntersect',
-    'loadsPerMonth',
-    'requestsPerLoad',
-    'hotSegments',
-    'readerProcesses',
-    'genTtlMs',
-    'retirementsPerMonth',
-    'purgesPerMonth',
-    'conditionalDelete',
-  ]),
 } as const;
 
 /** How a value of the wrong kind is named in a message: by its kind, never by its content. */
@@ -2934,16 +2912,6 @@ export class CloudRoaring {
     // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
     return runExport(this, registry, sink, { ...opts, codec: opts.codec ?? roaringCodec });
   }
-
-  /**
-   * Planning cost estimate — pure, no instance/data needed: sizing, sales, what-if. For a real, grounded report
-   * from live segment sizes, use `store.segment(name).costReport()`. See {@link CostReport}.
-   * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
-   * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
-   */
-  static estimateCost(input: EstimateInput): CostReport {
-    return estimateCost(input);
-  }
 }
 
 /**
@@ -3293,13 +3261,21 @@ export interface PinAt {
   readonly fingerprint: string;
 }
 
-/** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
+/**
+ * What {@link Segment.stat} answers: the generation a handle reads, its id count, its metadata and the size of its
+ * object.
+ */
 export interface SegmentStat {
   /** The generation read, or `null` when the segment has none. */
   readonly generation: number | null;
   readonly cardinality: number;
   /** The metadata the generation was loaded with; absent when it has none. */
   readonly metadata?: GenerationMetadata;
+  /**
+   * The generation's object in storage, in bytes, from its footer and index (no payload read): what the segment
+   * stores. `null` when the segment has no generation, or when the store's source cannot report a size.
+   */
+  readonly size: number | null;
 }
 
 /**
@@ -3733,17 +3709,22 @@ export class Segment {
     return this.timed('count', () => this.engine.count(this.ref));
   }
   /**
-   * What the generation this handle reads is, from one resolution: its number, its id count and the metadata it
-   * was loaded with (absent when it has none). It is what answers {@link Segment.count}, so the three describe one
-   * generation and cannot straddle a publish. One registry read when cold, none while warm, and none on a pinned
-   * handle, which answers for the generation it pinned. A segment with no generation answers
-   * `{ generation: null, cardinality: 0 }`.
+   * What the generation this handle reads is, from one resolution: its number, its id count, the metadata it was
+   * loaded with (absent when it has none), and `size`, its object's bytes in storage. All four come from the
+   * generation's object, opened once: its footer and index, with no payload read. That is one registry read and
+   * one tail read of the object when cold, and none while the generation is open (a read of the segment opens it,
+   * and so does this); on a pinned handle it answers for the generation it pinned. A segment with no generation
+   * answers `{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
+   * `size: null`. A pointer that names a missing object throws `NotFoundError`, as a read of the object does.
    *
-   * Trust is as for `count()`: the registry row's word, not confirmed against the object until the object is
-   * opened, when a disagreement makes this process stop using that row's summary.
+   * Trust is as for the index on `count()`'s cold path: the index is checked for internal consistency when the
+   * object is opened, and the count is its sum. The opened object is held against the registry row's summary, and a
+   * disagreement makes this process stop using that summary, so `count()` then answers what this does.
+   *
+   * `size` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *
    * ```ts
-   * const { generation, cardinality, metadata } = await store.segment('active-30d').stat();
+   * const { generation, cardinality, metadata, size } = await store.segment('active-30d').stat();
    * ```
    */
   async stat(): Promise<SegmentStat> {
@@ -4073,51 +4054,6 @@ export class Segment {
       ),
     );
   }
-
-  /**
-   * Grounded cost report for this segment: storage cost from its **real** `.crbm` size (exact, no payload
-   * reads); request cost from the supplied `workload` rates. A segment with no Storage generation reports zero
-   * storage. The pointer refresh is priced at the store's own `cache.genTtlMs`, or at none when the store never
-   * refreshes, unless the workload sets `genTtlMs`. See {@link CostReport} — it always includes a verdict (incl.
-   * the lose-zone).
-   * @deprecated Moves to `@cloudbitmaps/tools`, a package of its own, with a `size` on `stat()` so a grounded report
-   * needs nothing internal. It is a planning tool, and its price list is as old as the release that ships it.
-   */
-  async costReport(options?: {
-    pricing?: PricingProfile;
-    workload?: Workload;
-  }): Promise<CostReport> {
-    checkOptions(options, 'costReport', CALL_KEYS.costReport);
-    const shape: unknown = options?.workload;
-    if (
-      shape !== undefined &&
-      shape !== null &&
-      (typeof shape !== 'object' || Array.isArray(shape))
-    ) {
-      throw new ValidationError('costReport: workload must be an object');
-    }
-    this.assertLeases([this]);
-    const canMeasure = this.engine.supportsStorageSize;
-    const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
-    const refreshMs = this.engine.pointerRefreshMs;
-    const given =
-      options?.workload === undefined || options.workload === null
-        ? undefined
-        : picked(options.workload, CALL_KEYS.workload);
-    const workload =
-      refreshMs === undefined || given?.genTtlMs !== undefined
-        ? given
-        : { ...given, genTtlMs: refreshMs };
-    return groundedReport({
-      storageBytes: size?.sizeBytes ?? 0,
-      grounded: canMeasure,
-      workload,
-      pricing: options?.pricing,
-      extraNotes: canMeasure
-        ? undefined
-        : ['storage source has no sizeOf() — storage not measured, reported as $0.'],
-    });
-  }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -4179,13 +4115,10 @@ export {
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
-  // Metrics, audit and pricing
+  // Metrics, audit and retry
   CountingMetricsSink,
   RecordingAuditSink,
   DEFAULT_RETRY_POLICY,
-  AWS_US_EAST_1_ONDEMAND,
-  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
-  ONE_REDIS_HA_CLUSTER,
 } from '@cloudbitmaps/core';
 export type {
   Aead,
@@ -4202,7 +4135,6 @@ export type {
   ConsistencyErrorEntry,
   ConsistencyIssue,
   ConsistencyReport,
-  CostReport,
   CrbmCrypto,
   CrbmReaderOptions,
   CrbmStorageChunkSourceOptions,
@@ -4211,7 +4143,6 @@ export type {
   DropResult,
   EncodedChunk,
   EraseDeps,
-  EstimateInput,
   ExportFailure,
   ExportFormat,
   ExportManifest,
@@ -4244,9 +4175,6 @@ export type {
   PinnedAt,
   PinnedObject,
   PortableBitmap,
-  PricingProfile,
-  RedisNodeType,
-  RedisSizing,
   RegCaps,
   RegistryPatch,
   RegistryRecord,
@@ -4265,12 +4193,10 @@ export type {
   SegmentInfo,
   SegmentRef,
   SegmentSize,
-  SegmentSizing,
   SetRetentionResult,
   StorageBackend,
   StorageCaps,
   StorageChunkSource,
   Token,
-  Workload,
   WrappedDek,
 } from '@cloudbitmaps/core';

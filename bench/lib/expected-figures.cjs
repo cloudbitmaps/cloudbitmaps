@@ -23,7 +23,7 @@ const mb = (n) => (n < MB ? `${Math.round(n / 1000)} KB` : `${Number((n / MB).to
 
 /** The GETs a cold intersect makes when it makes `chunkRequests` range requests of its two operands in all. */
 function intersectGets(chunkRequests) {
-  const { estimateCost, AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/core');
+  const { estimateCost, AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/tools');
   const GET_USD = AWS_US_EAST_1_ONDEMAND.storage.getPerMillion / 1e6;
   const r = estimateCost({
     segments: [],
@@ -40,7 +40,7 @@ function intersectGets(chunkRequests) {
  * estimator. `bench/expected-figures.cjs` writes them to `bench/expected-figures.json`; everything else reads that file.
  */
 function computeExpectedFigures() {
-  const { AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/core');
+  const { AWS_US_EAST_1_ONDEMAND } = require('@cloudbitmaps/tools');
   const GET_USD = AWS_US_EAST_1_ONDEMAND.storage.getPerMillion / 1e6;
   const counts = JSON.parse(fs.readFileSync(COUNTS, 'utf8'));
   const small = counts.profiles.small.coldIntersect;

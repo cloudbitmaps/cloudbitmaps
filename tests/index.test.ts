@@ -75,7 +75,7 @@ describe('public API', () => {
       'intersectInto',
       'unionInto',
       'andNotInto',
-      'costReport',
+      'stat',
     ] as const) {
       expect(typeof seg[method]).toBe('function');
     }

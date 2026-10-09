@@ -132,21 +132,21 @@ function readSources(root) {
       throw new Error(`calibration-figures: could not read ${what} — did its source move?`);
     return m;
   };
-  const cost = read('packages/core/src/core/cost.ts');
+  const cost = read('packages/tools/src/cost.ts');
   const format = read('packages/core/src/core/crbm/format.ts');
   const readerDefaults = read('packages/core/src/core/reader-defaults.ts');
   const engine = read('packages/core/src/core/engine.ts');
   const profile = need(
     /name:\s*'([\w-]+)',\s*storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\},/,
     cost,
-    'the default pricing profile in packages/core/src/core/cost.ts',
+    'the default pricing profile in packages/tools/src/cost.ts',
   );
   // A run's crossover is against one Redis-HA cluster, whatever the data size; the default profile sizes Redis
   // to the data instead, which is the estimator's verdict and not a run's.
   const cluster = need(
     /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*(?:deepFreeze\()?\{\s*monthlyUSD:\s*(\d+)\s*\}/,
     cost,
-    'ONE_REDIS_HA_CLUSTER in packages/core/src/core/cost.ts',
+    'ONE_REDIS_HA_CLUSTER in packages/tools/src/cost.ts',
   );
   const hours = need(/const HOURS_PER_MONTH = (\d+);/, cost, 'HOURS_PER_MONTH');
   const month = need(
