@@ -114,11 +114,11 @@ so, and so do the module headers in the code.
   unwrapped key) for `cache.genTtlMs` from the instant that registry read was sent, in a cache of its own bounded at
   8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default; there is no new
   option). After an eviction inside the TTL a read sends no registry read. A `has()` whose chunk is cached, a `count()`
-  and a `stat()` answered from the row's summary send nothing, where a `has()` sent a registry read and a tail read and
-  a `count()` the registry read. A read that needs the index or a chunk the chunk cache does not hold opens the object
-  again: `iterate` and the combines always do, with a tail read, and a `has()` of an uncached chunk sends the tail read
-  and, unless the tail carried the chunk, its range. On an encrypted segment each such read unwraps the key again, a
-  request to your keystore. A long read under reader-cache pressure, as on a small Lambda, stays on the generation it
+  and a `stat()` answered from the row's summary send nothing to storage or the registry, where a `has()` sent a
+  registry read and a tail read and a `count()` the registry read. A read that needs the index or a chunk the chunk
+  cache does not hold opens the object again: `iterate` and the combines always do, with a tail read, and a `has()` of
+  an uncached chunk sends the tail read and, unless the tail carried the chunk, its range. On an encrypted segment the
+  key is unwrapped again through your keystore, one request to it, for the open or for the row's sealed summary. A long read under reader-cache pressure, as on a small Lambda, stays on the generation it
   resolved until the TTL lapses, as any read does, unless the resolution cache lets the resolution go (past its bounds)
   or a read of the segment, this one or another, finds its generation swept or another object under its number, or
   fails to open it. After an eviction a store can serve a cached chunk of a generation another store erased from, and
