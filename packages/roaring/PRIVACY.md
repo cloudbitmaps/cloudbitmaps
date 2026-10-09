@@ -313,8 +313,9 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > segment whose pointer is gone: its generations look unreferenced, and nothing reads or collects them. The library
 > removes a row only by a delete the store applies to the exact version it judged, and every row's token carries a
 > random incarnation id, so a name re-created later is told apart from it with overwhelming probability. That token is
-> the segment's **identity**: it is what a cached reader, a fenced publish and a generation-collection pass each compare to decide
-> whether two observations describe the same segment. Re-issue one and they can all answer "yes" about a segment that
+> the segment's **identity**: a fenced publish and a generation-collection pass compare it, and a cached reader
+> compares the row's `pointerId`, itself one of the row's tokens, to decide whether two observations describe the same
+> segment. Re-issue one and they can all answer "yes" about a segment that
 > no longer exists — serving a deleted incarnation's data, or collecting a live one's objects. A rule on
 > *noncurrent* versions of the registry prefix touches neither the current row nor its tombstone; what it shortens is
 > the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
