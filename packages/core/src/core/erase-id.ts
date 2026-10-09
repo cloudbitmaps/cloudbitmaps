@@ -176,9 +176,12 @@ export interface EraseIdResult {
    * generation in the bucket holds the id — the common case across a fleet scan), or `'superseded'`.
    *
    * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
-   * load, another erasure, or a rollback — moved the pointer off the generation this call read, so what it was
-   * doing no longer follows from what is current: a rewrite derived from that generation is not a valid successor
-   * to the new one, and a generation it meant to delete above the pointer may be the one the pointer now names.
+   * load, another erasure, or a rollback — moved the pointer off the generation this call read, or replaced an
+   * object it meant to delete (another erasure deleted a holder above the pointer and a load stored another object
+   * under its number, so the storage driver's conditional delete refused this call's, whether or not the pointer
+   * moved). What it was doing no longer follows from what is current: a rewrite derived from that generation is not
+   * a valid successor to the new one, and a generation it meant to delete above the pointer may be the one the
+   * pointer now names, or another object than the one it searched.
    * Re-run against the new generation: if the id is still present it is erased then; if the racing writer was
    * another erasure of the *same* id, the re-run reports `'not-member'` because it is already gone. Either way the
    * re-run settles it, which is why it is the documented action for this reason and for no other.

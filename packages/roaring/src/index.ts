@@ -595,8 +595,9 @@ export interface SubjectErasureEntry {
   /** The generation written without the id (present whenever one was written). */
   readonly generation?: number;
   /**
-   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — the pointer moved while
-   * the call was in flight, by a load, another erasure or a rollback, so **this call** did not erase the id;
+   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — another writer (a load,
+   * another erasure or a rollback) moved the pointer, or replaced an object the call meant to delete, while the call
+   * was in flight, so **this call** did not erase the id;
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
    * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
@@ -2085,10 +2086,10 @@ export class CloudRoaring {
    * the tombstone, and the entry reads `erased: true`.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
-   * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
-   * erase the id. Re-run: it erases the id if it is still there, and lists nothing for the segment if a racing
-   * erasure of the same id already removed it. Do not read `'superseded'` as "the id is still present" —
-   * read it as "not done by this call, and the re-run settles it".
+   * another writer (a load, another erasure, or a rollback) moved the pointer, or replaced an object the call meant to
+   * delete, mid-call, so **this call** did not erase the id. Re-run: it erases the id if it is still there, and lists
+   * nothing for the segment if a racing erasure of the same id already removed it. Do not read `'superseded'` as
+   * "the id is still present" — read it as "not done by this call, and the re-run settles it".
    * `` `error: …` `` is a per-segment fault (caught so one segment can't discard the whole ledger) and it can land
    * on either side of the publish: if the rewrite had not published, the id is still there and a re-run erases
    * it; if the publish succeeded and only the **collection** of the old generation failed, the id is already
