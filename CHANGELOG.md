@@ -28,7 +28,8 @@ so, and so do the module headers in the code.
   wouldRefuse? }`, or `{ published: false, error }` for what would fail its publish; `wouldRefuse` is the `reason` a
   publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
   publish would, so it fails for memory where the publish would. A call with `dryRun: true`
-  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
+  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes; and a
+  `dryRun` held in a variable, a `boolean` or an optional one, returns either. Core gains
   `judgeLoad`, which a dry run runs for each output, and `CombineManyRequest.dryRun`, for a flavor built on
   `runCombineMany`. The guide shows how to publish what was reviewed, and recipes over
   a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives
