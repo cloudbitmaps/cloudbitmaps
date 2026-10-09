@@ -492,10 +492,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   private readonly distrusted: BoundedLru<string, true>;
   /**
-   * The readers a live open held to the row's summary ({@link openLive}). A pin that finds one memoised under its
-   * version shares it as it is: the version names the row's `pointerId`, and every write of the summary renews it, so
-   * the summary it was held to is the one the row has now. Any other memoised reader (a `pinAt`'s, held to the
-   * fingerprint its caller named) is held to the row's summary before a live pin shares it.
+   * The readers held to the row's summary: by a live open ({@link openLive}), or by a live pin that shared one. A pin
+   * that finds one memoised under its version shares it as it is: the version names the row's `pointerId`, and every
+   * write of the summary renews it, so the summary it was held to is the one the row has now. Any other memoised reader
+   * (a `pinAt`'s, held to the fingerprint its caller named) is held to the row's summary before a live pin shares it.
    */
   private readonly rowChecked = new WeakSet<CrbmReader>();
   private readonly registry: IRegistryDriver | undefined;
@@ -1004,8 +1004,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         if (this.replacedPins.get(this.heldKey(ref, version, r.fingerprint)) !== undefined)
           return true;
         if (this.rowChecked.has(r)) return false;
+        // A keystore fault fails this pin, as it would fail a cold open of the generation, which needs the key too.
         const fingerprint = await (named ??= live.summary().then((d) => d?.fingerprint));
-        return fingerprint !== undefined && r.fingerprint !== fingerprint;
+        if (fingerprint !== undefined && r.fingerprint !== fingerprint) return true;
+        // Held to the row now: the version names the summary it was held to, so no later pin of it asks again.
+        this.rowChecked.add(r);
+        return false;
       };
       // A memoised reader is of the object that was under the key when it was opened. One the store has since found
       // replaced, or one of another object than the row names, is not what this pin may hold, so this pin opens the

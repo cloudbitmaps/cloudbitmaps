@@ -166,3 +166,38 @@ describe('a live pin that finds another reader memoised under its version while 
     expect('err' in outcome && isNotFoundError(outcome.err)).toBe(true);
   });
 });
+
+describe('a reader a live pin has held to the row is not held to it again', () => {
+  it("a pinAt reader that matches the row's summary is checked by the first live pin only: one unwrap", async () => {
+    const inner = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const backend = new MemoryStorage();
+    await new CloudRoaring({
+      storage: backend,
+      retry: false,
+      encryption: { keystore: inner },
+    }).load(A, PUBLISHED);
+    const pinnedAt = (
+      await new CloudRoaring({ storage: backend, retry: false, encryption: { keystore: inner } })
+        .segment('a', { namespace: NS })
+        .pin()
+    ).pinnedAt!;
+    let unwraps = 0;
+    const keystore: IKeystore = {
+      createDek: () => inner.createDek(),
+      openDek: (wrapped) => {
+        unwraps += 1;
+        return inner.openDek(wrapped);
+      },
+    };
+    const store = new CloudRoaring({ storage: backend, retry: false, encryption: { keystore } });
+    const seg = () => store.segment('a', { namespace: NS });
+    await seg().pinAt({ generation: pinnedAt.generation!, fingerprint: pinnedAt.fingerprint! });
+    const before = unwraps;
+    // The first live pin unwraps the key to open the row's sealed summary and holds the pinAt reader to it.
+    expect((await seg().pin()).pinnedAt?.fingerprint).toBe(pinnedAt.fingerprint);
+    expect(unwraps).toBe(before + 1);
+    // The next ones share the reader as it is.
+    for (let i = 0; i < 3; i++) await seg().pin();
+    expect(unwraps).toBe(before + 1);
+  });
+});
