@@ -701,8 +701,8 @@ describe('a segment is loaded once', () => {
   it("a reload, even of a row with no summary whose number is taken and that loses four races, makes no more requests than a first load's bound", async () => {
     /**
      * The GET-class requests of a segment's load number `nth` (from 2), when its publish loses `lost` races, and
-     * when `taken`, a crashed load's object sits under the number it checks. `legacy` leaves the row as one written
-     * before rows carried a summary of the current generation, which the load then has to open to size.
+     * when `taken`, a crashed load's object sits under the number it checks. `legacy` leaves the row with no summary
+     * of the current generation, which the load then has to open to size.
      */
     const reload = async (
       nth: number,
@@ -757,7 +757,7 @@ describe('a segment is loaded once', () => {
     // and before each delete: six with nothing racing, and with four lost publishes ten.
     expect(await reload(3, 0, true)).toEqual({ gets: 6, threw: false });
     expect(await reload(3, 4, true)).toEqual({ gets: 10, threw: false });
-    // The same reload of a row written before rows carried a summary reads the current generation's index as well:
+    // The same reload of a row with no summary reads the current generation's index as well:
     // one more, which is still inside the bound.
     expect(await reload(3, 4, true, true)).toEqual({ gets: 11, threw: false });
     for (const gets of [10, 11]) expect(gets).toBeLessThanOrEqual(bound);

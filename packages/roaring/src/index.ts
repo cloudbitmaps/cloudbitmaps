@@ -889,8 +889,9 @@ export interface MaterializeResult {
    * What the destination held when the guard judged it — `null` when it had no current generation, **or when
    * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with neither
    * `guard.minRetained` nor `guard.maxGrowth` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
-   * carries a summary of its current generation the count comes from the row and the object is not read; a row
-   * written before rows carried a summary costs one object-header fetch.
+   * carries a summary of its current generation the count comes from the row and the object is not read; a row with
+   * none (one a rollback left when it could not open the key, or one a registry of your own stores without one) costs
+   * one object-header fetch.
    */
   readonly cardinalityBefore: number | null;
   /** Non-empty chunks in the generation. */

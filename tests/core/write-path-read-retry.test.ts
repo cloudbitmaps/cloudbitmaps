@@ -89,8 +89,7 @@ function flakyReads(inner: IStorageDriver): {
 
 /**
  * A store over `MemoryStorage` whose storage half fails the armed read; the registry is the real one. `summary: false`
- * leaves the row as one written before rows carried a summary of the current generation, which a load's guard has to
- * open the object to size.
+ * leaves the row with no summary of the current generation, which a load's guard has to open the object to size.
  */
 async function world(
   ids: readonly number[],
