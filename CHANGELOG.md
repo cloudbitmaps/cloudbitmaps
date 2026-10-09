@@ -13,13 +13,23 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A predicate for every error class: `isUnsupportedError`, `isCapabilityError`, `isBudgetExceededError` and
+  `isKeyUnavailableError`**, from `@cloudbitmaps/core` and `@cloudbitmaps/roaring`. These four classes had none, so a
+  caller classifying them fell back on `instanceof`, which a second copy of the package or another realm defeats. Each
+  matches the brand and the name, as the other predicates do, and holds under a minifying bundler.
+  `@cloudbitmaps/core/driver-kit` exports `isIntegrityError` and `isTransientError` beside the classes it already
+  exported, so a driver classifies every error it throws without the main entry.
+- **`GuardRefusal` is exported from `@cloudbitmaps/core`**: the type of `judgeLoad`'s `wouldRefuse`, every
+  `LoadRefusal` but `'superseded'`, which a caller could read but not name. `@cloudbitmaps/roaring`'s dry-run results
+  keep their own name for the same set of refusals, `MaterializeRefusal`.
 - **`materializeMany({ dryRun: true })`: look at a whole refresh before any of it is live.** Every output is computed
   exactly as the call would compute it and judged against its `dest` as its publish would be, and nothing is written: no
   object, no pointer, no audit event. Each result is `{ dryRun: true, published: false, cardinality, cardinalityBefore,
   wouldRefuse? }`, or `{ published: false, error }` for what would fail its publish; `wouldRefuse` is the `reason` a
   publish would give now. It reads what the publishing call reads, without the writes, and holds the memory a
   publish would, so it fails for memory where the publish would. A call with `dryRun: true`
-  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes. Core gains
+  returns a `MaterializeManyDryRun`; a call without it keeps its types exactly, so no caller's code changes; and a
+  `dryRun` held in a variable, a `boolean` or an optional one, returns either. Core gains
   `judgeLoad`, which a dry run runs for each output, and `CombineManyRequest.dryRun`, for a flavor built on
   `runCombineMany`. The guide shows how to publish what was reviewed, and recipes over
   a dry run: a growth ceiling with an absolute floor, and the overlap of each output with what is live. It also gives
@@ -50,6 +60,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The driver contract says two more things a driver must do**, which the conformance suites the shipped drivers
+  run now hold them to: a listing, of generations or of registry rows, yields every entry however many pages the
+  service splits it into; and a registry over a bucket or container that does not exist fails a read, a listing and a
+  write rather than answering an absent row. Both are in `IStorageDriver`'s and `IRegistryDriver`'s doc comments and
+  the API reference's driver kit.
 - **Combines on operands of a million to ten million ids, and the `*Into` verbs, are now measured on S3.** The first
   run of the calibration harness's large suite, from AWS CloudShell in `us-east-1` on 2026-10-07 (run
   `2026-10-07-88cd3`, against the published `0.18.3` packages), timed 40 cold reads of each combine at each size on two operands of about

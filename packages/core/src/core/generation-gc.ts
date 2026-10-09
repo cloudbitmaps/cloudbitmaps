@@ -14,7 +14,13 @@
  * publish pushed out of that window ({@link deleteEvicted}). Pure orchestration over the driver ports — no I/O, time or
  * randomness of its own.
  */
-import { IntegrityError, ValidationError, WriteConflictError, isNotFoundError } from './errors';
+import {
+  IntegrityError,
+  ValidationError,
+  WriteConflictError,
+  isNotFoundError,
+  isWriteConflictError,
+} from './errors';
 import { MAX_KEPT_GENERATIONS, usableKeptGens } from './kept-generations';
 import { heldGenerations } from './leases';
 import type {
@@ -463,7 +469,7 @@ async function reconcile(
     try {
       await deps.registry.compareAndSwap(ref, token, { keptGens: present });
     } catch (err) {
-      if (!(err instanceof WriteConflictError)) throw err;
+      if (!isWriteConflictError(err)) throw err;
     }
   }
   return deleted;

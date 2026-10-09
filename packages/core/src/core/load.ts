@@ -37,6 +37,7 @@ import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
   KeyUnavailableError,
   ValidationError,
+  isKeyUnavailableError,
   isNotFoundError,
   isValidationError,
   isWriteConflictError,
@@ -787,7 +788,7 @@ async function runLoad(
     // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
     // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
     // `TransientError` of a registry write the publish could not settle by reading the row back.
-    if (isValidationError(err) || err instanceof KeyUnavailableError) await tidy();
+    if (isValidationError(err) || isKeyUnavailableError(err)) await tidy();
     throw err;
   }
   if (!published.published) return refuse('superseded');

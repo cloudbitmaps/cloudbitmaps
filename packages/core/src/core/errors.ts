@@ -229,3 +229,23 @@ export function isIntegrityError(err: unknown): err is IntegrityError {
 export function isValidationError(err: unknown): err is ValidationError {
   return isCloudRoaringError(err) && err.name === 'ValidationError';
 }
+
+/** This build or this store's wiring cannot do what was asked, though nothing is malformed. */
+export function isUnsupportedError(err: unknown): err is UnsupportedError {
+  return isCloudRoaringError(err) && err.name === 'UnsupportedError';
+}
+
+/** A driver lacks a capability the store's wiring needs. */
+export function isCapabilityError(err: unknown): err is CapabilityError {
+  return isCloudRoaringError(err) && err.name === 'CapabilityError';
+}
+
+/** A call would pass its per-op request budget, so it was refused before fanning out. */
+export function isBudgetExceededError(err: unknown): err is BudgetExceededError {
+  return isCloudRoaringError(err) && err.name === 'BudgetExceededError';
+}
+
+/** No key the keystore holds can unwrap an encrypted segment's data key. */
+export function isKeyUnavailableError(err: unknown): err is KeyUnavailableError {
+  return isCloudRoaringError(err) && err.name === 'KeyUnavailableError';
+}

@@ -339,6 +339,24 @@ describe('materializeMany({ dryRun: true })', () => {
     expect(looked.stats.groups).toBe(wrote.stats.groups);
   });
 
+  it('a switch held in a variable runs the form it holds', async () => {
+    const w = await batchWorld(DATA);
+    const s = (n: string) => w.store.segment(n);
+    const call = (dryRun: boolean) =>
+      w.store.materializeMany({
+        operands: { a: s('a') },
+        outputs: [{ dest: s('v'), expr: 'a' }],
+        keep: 1,
+        dryRun,
+      });
+    const looked = await call(true);
+    expect(looked.outputs[0]).toMatchObject({ dryRun: true, published: false });
+    expect(await w.store.exists({ segment: 'v' })).toBe(false);
+    const wrote = await call(false);
+    expect(wrote.outputs[0]).toMatchObject({ published: true });
+    expect(await w.store.exists({ segment: 'v' })).toBe(true);
+  });
+
   it('reports its op to the metrics sink, as a publishing call does', async () => {
     const metrics = new CountingMetricsSink();
     const w = await batchWorld(DATA, { metrics });
@@ -362,6 +380,26 @@ describe('materializeMany({ dryRun: true })', () => {
     const explicitlyNot = (store: Store, options: MaterializeManyOptions) =>
       store.materializeMany({ ...options, dryRun: false });
     expectTypeOf(explicitlyNot).returns.resolves.toEqualTypeOf<MaterializeManyRun>();
+    // A switch held in a variable: either result, as the flag decides at run time.
+    const flagged = (store: Store, options: MaterializeManyOptions, flag: boolean) =>
+      store.materializeMany({ ...options, dryRun: flag });
+    expectTypeOf(flagged).returns.resolves.toEqualTypeOf<
+      MaterializeManyRun | MaterializeManyDryRun
+    >();
+    // An optional switch, as a wrapper's own options hold one: either result too.
+    const forwarded = (store: Store, options: MaterializeManyOptions & { dryRun?: boolean }) =>
+      store.materializeMany(options);
+    expectTypeOf(forwarded).returns.resolves.toEqualTypeOf<
+      MaterializeManyRun | MaterializeManyDryRun
+    >();
+    const maybe = (store: Store, options: MaterializeManyOptions, flag: boolean | undefined) =>
+      store.materializeMany({ ...options, dryRun: flag });
+    expectTypeOf(maybe).returns.resolves.toEqualTypeOf<
+      MaterializeManyRun | MaterializeManyDryRun
+    >();
+    const undefinedFlag = (store: Store, options: MaterializeManyOptions) =>
+      store.materializeMany({ ...options, dryRun: undefined });
+    expectTypeOf(undefinedFlag).returns.resolves.toEqualTypeOf<MaterializeManyRun>();
     // The utility types read the last overload, which is the form without `dryRun`, as they read the one signature before.
     expectTypeOf<ReturnType<Store['materializeMany']>>().toEqualTypeOf<
       Promise<MaterializeManyRun>

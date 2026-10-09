@@ -106,5 +106,13 @@
   {
     "entry": "@cloudbitmaps/roaring MetricOpName",
     "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape and a sink with a default branch needs no change, while a sink that switches exhaustively on name adds a case, and a Record<MetricOpName, ...> built by hand (a MetricsSnapshot literal) adds the key, as the type's doc says; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) GuardRefusal",
+    "reason": "now exported from @cloudbitmaps/core under its own name, with the same declaration: judgeLoad's wouldRefuse type, which a caller could read but not name; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.materializeMany #2",
+    "reason": "a form for dryRun held in a variable (boolean, optional or not) goes between the dry-run form and the publishing form, which moves unchanged to #3; a literal true, a literal false and a call without dryRun keep their types, dryRun typed any is typed as either result, and the utility types still read the publishing form; agreed with the maintainer"
   }
 ]
