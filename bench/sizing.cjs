@@ -143,6 +143,7 @@ function latestRunReport() {
  */
 const RANGE_COUNTS = JSON.parse(fs.readFileSync(path.join(__dirname, 'range-counts.json'), 'utf8'));
 // The heap a filled resolution cache's entries took against the weight it counted, measured by `resolution-heap.cjs`.
+const { heapRange } = require('./lib/resolution-heap-range.cjs');
 const RESOLUTION_HEAP = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'resolution-heap-results.json'), 'utf8'),
 );
@@ -703,15 +704,11 @@ function render() {
   const resolutionEntries = RESOLUTIONS_PER_OPEN_SEGMENT * READER_MAX;
   const resolutionBytes = READER_MAX_BYTES / RESOLUTION_BYTES_DIVISOR;
   // The heap the entries take, as a multiple of the weight the cache counted for them: measured by
-  // `resolution-heap.cjs`, which no gate runs, and read from the results file it writes.
-  const heapRuns = RESOLUTION_HEAP.shapes.map((s) => s.heapPerCounted);
-  const heapNode = /^v(\d+)\./.exec(RESOLUTION_HEAP.node)?.[1];
-  if (heapNode === undefined || heapRuns.length === 0) {
-    throw new Error(
-      'sizing: bench/resolution-heap-results.json names no Node version or no row shape',
-    );
-  }
-  const RESOLUTION_HEAP_RANGE = `about ${Math.min(...heapRuns).toFixed(1)} to ${Math.max(...heapRuns).toFixed(1)} times`;
+  // `resolution-heap.cjs`, which no gate runs, and read from the results file it writes, refused unless every shape in
+  // it has a multiple.
+  const heap = heapRange(RESOLUTION_HEAP);
+  const heapNode = heap.node;
+  const RESOLUTION_HEAP_RANGE = `about ${heap.low} to ${heap.high} times`;
   const resolutions =
     "**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also " +
     "keeps each segment's resolution (the fields of its row a read resolves through: never an unwrapped key, though " +
