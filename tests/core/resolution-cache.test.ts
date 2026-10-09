@@ -692,8 +692,16 @@ describe('a refresh keeps nothing of what it replaced alive', () => {
       r = r.rodeOut.from
     )
       chain++;
+    // The chain is the exact claim: the current resolution holds the one it rode out from, and that one holds nothing.
     expect(chain).toBe(1);
-    expect(await alive(resolutions)).toBeLessThanOrEqual(2);
+    // The count catches any other reference that keeps a resolution per retry, which leaves hundreds of these alive.
+    // Its bound leaves the engine room: beyond the two the source holds, V8 can keep a few objects of its own past the
+    // collections (Node 22 has kept four), and a bound of two fails on that.
+    const count = await alive(resolutions);
+    const survivors = resolutions.flatMap((r, i) => (r.deref() === undefined ? [] : [i]));
+    const named =
+      survivors.length > 20 ? `${survivors.slice(0, 20).join(', ')}, …` : survivors.join(', ');
+    expect(count, `alive: [${named}]`).toBeLessThanOrEqual(resolutions.length / 100);
     expect(resolutions.at(-1)!.deref()).toBe(held(x).resolution); // control: the current one
   });
 });

@@ -306,8 +306,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
   same way. A row with nothing in its bucket is `'no-generation'`, under `requireEncryption` too. In `eraseSubject`'s
   ledger it is an `error: …` entry. Load the segment, which makes the object collectable, or drop it, and re-run.
 - `'superseded'` means another writer moved the pointer off `fromGeneration`, or replaced an object this call meant to
-  delete, while the call was in flight: a load, another erasure, or a rollback. In the second case another erasure
-  deleted a holder above the pointer and a load stored another object under its number, so the storage driver's
+  delete, while the call was in flight: a load, another erasure, or a rollback. In the second case the object this call
+  searched was deleted, as a holder above the pointer by another erasure or by the refused load that wrote it, and a
+  load stored another object under its number, so the storage driver's
   conditional delete refused this call's delete, whether or not the pointer moved. It means this call did not erase
   the id, not that the id is still there. Re-run, and if a racing erasure of the same id got there first, the re-run
   reports `'not-member'`.

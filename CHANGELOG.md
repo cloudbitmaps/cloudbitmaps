@@ -199,7 +199,7 @@ so, and so do the module headers in the code.
   onto the generation being deleted still leaves the pointer on a missing object; on S3, whose ETag is computed from
   the bytes of an object stored without SSE-KMS or SSE-C, a load that writes exactly the holder's bytes under its
   number, stored the same way, is not told apart; and every other delete stays unconditioned, by number: a refused
-  rewrite's of its own object above the winner's pointer, and a refused load's of its own object under a row that is
+  rewrite's of its own object above the winner's pointer or under a `destroyed` row, and a refused load's of its own object under a row that is
   unchanged, changed only in its leases, or `destroyed`, since a write reports no version; generation collection's,
   decided below the pointer from a listing or from the row's list of kept generations, where a number is taken again
   only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a listing
