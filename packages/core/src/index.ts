@@ -97,6 +97,7 @@ export type {
   LoadDeps,
   LoadOptions,
   LoadGuard,
+  GuardRefusal,
   LoadJudgement,
   LoadResult,
   LoadRefusal,
