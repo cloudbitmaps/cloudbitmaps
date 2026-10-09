@@ -3712,8 +3712,9 @@ export class Segment {
    * What the generation this handle reads is, from one resolution: its number, its id count, the metadata it was
    * loaded with (absent when it has none), and `size`, its object's bytes in storage. All four come from the
    * generation's object, opened once: its footer and index, with no payload read. That is one registry read and
-   * one tail read of the object when cold, and none while the generation is open (a read of the segment opens it,
-   * and so does this); on a pinned handle it answers for the generation it pinned. A segment with no generation
+   * one tail read of the object when cold (and a range read for an index longer than the tail), and none while the
+   * generation is open (a read of the segment opens it, and so does this, which keeps it in the reader cache as a
+   * read does); on a pinned handle it answers for the generation it pinned. A segment with no generation
    * answers `{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
    * `size: null`. A pointer that names a missing object throws `NotFoundError`, as a read of the object does.
    *

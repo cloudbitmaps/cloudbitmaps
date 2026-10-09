@@ -88,7 +88,7 @@ The `@cloudbitmaps` family is six packages, so this repo is a workspace
 
 A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
 (`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
-directly. `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither of the others. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
+directly. `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
 core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
 entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
 core's but its public main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a

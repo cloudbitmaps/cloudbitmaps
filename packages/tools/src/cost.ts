@@ -989,6 +989,9 @@ export function estimateCost(input: EstimateInput): CostReport {
   return buildReport({ storageBytes, workload, pricing, grounded: false, sizesFromCardinality });
 }
 
+/** The keys {@link groundedReport} takes. */
+const GROUNDED_KEYS: ReadonlySet<string> = new Set(['storageBytes', 'workload', 'pricing']);
+
 /**
  * **Grounded** report from a measured byte total + a supplied workload. A segment handle's `stat()` reports the
  * size of its current generation as `size`, read from the `.crbm` footer and index with no payload reads:
@@ -1009,6 +1012,22 @@ export function groundedReport(input: {
 }): CostReport {
   if (input === null || typeof input !== 'object') {
     throw new ValidationError('groundedReport: input must be an object such as { storageBytes }');
+  }
+  // A misspelt key would drop what it names and still return a confident report, so every key is checked.
+  for (const key of Object.keys(input)) {
+    if (!GROUNDED_KEYS.has(key)) {
+      throw new ValidationError(
+        `groundedReport: unknown option "${key}"; it takes { storageBytes, workload?, pricing? } (pass a stat()'s ` +
+          '`size` as storageBytes)',
+      );
+    }
+  }
+  const bytes: unknown = input.storageBytes;
+  if (bytes !== null && (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0)) {
+    throw new ValidationError(
+      'groundedReport: storageBytes must be a byte count (a finite number >= 0) or null when nothing was measured; ' +
+        `got ${typeof bytes === 'string' ? `${JSON.stringify(bytes)} (a string)` : String(bytes)}`,
+    );
   }
   checkModelInputs('groundedReport', input.pricing, input.workload);
   const measured = input.storageBytes !== null;

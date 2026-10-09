@@ -814,6 +814,28 @@ describe('groundedReport (from stat().size)', () => {
     expect(r.assumptions.notes.at(-1)).not.toContain('cardinality');
   });
 
+  it('refuses its input loudly: an unknown key, a stat result passed whole, a size that is not a number', () => {
+    // A misspelt key would otherwise drop the workload and report storage alone, confidently.
+    expect(() =>
+      groundedReport({ storageBytes: 1e6, worklaod: { readsPerSec: 9 } } as unknown as Parameters<
+        typeof groundedReport
+      >[0]),
+    ).toThrow(/groundedReport: unknown option "worklaod"/);
+    // `stat()`'s result has `size`, not `storageBytes`.
+    const stat = { generation: 0, cardinality: 3, size: 120 };
+    expect(() => groundedReport(stat as unknown as Parameters<typeof groundedReport>[0])).toThrow(
+      /groundedReport: unknown option "generation"/,
+    );
+    expect(() => groundedReport({} as unknown as Parameters<typeof groundedReport>[0])).toThrow(
+      /groundedReport: storageBytes must be a byte count .* or null .*; got undefined/,
+    );
+    expect(() =>
+      groundedReport({ storageBytes: '123' } as unknown as Parameters<typeof groundedReport>[0]),
+    ).toThrow(/got "123" \(a string\)/);
+    expect(() => groundedReport({ storageBytes: -1 })).toThrow(ValidationError);
+    expect(() => groundedReport({ storageBytes: Number.NaN })).toThrow(/got NaN/);
+  });
+
   it('grounded size flows through CrbmStorageChunkSource from the .crbm index', async () => {
     const driver = new MemoryStorageDriver();
     const { size } = await writeCrbmGeneration(driver, { segment: 'g', generation: 0 }, [

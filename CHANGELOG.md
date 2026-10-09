@@ -35,8 +35,9 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **A cold `stat()` reads the object's tail, for its size.** It was one registry read and no read of the object; it is
-  now one registry read and one tail read (two requests on S3 and GCS, three on Azure Blob), and nothing while the
-  generation is open, as a read of the segment leaves it, or on a pinned handle. `count()` is unchanged: one registry
+  now one registry read and one tail read (two requests on S3 and GCS, three on Azure Blob; a range read more for an
+  index longer than the tail), and nothing while the generation is open, as a read of the segment leaves it. A cold
+  `stat()` keeps the generation open in the reader cache, as a read does. `count()` is unchanged: one registry
   read when cold. It answers from the opened object, so a pointer that names a missing object (a torn restore) makes
   `stat()` throw `NotFoundError`, as a read of the object does, where it answered the row's number; `count()` still
   answers it, and `checkConsistency()` finds it.

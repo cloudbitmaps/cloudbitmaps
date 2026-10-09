@@ -64,8 +64,9 @@ report.assumptions.grounded; // true — storage is the segment's measured size
 
 `size` is `null` for a segment with no generation, and on a store whose source cannot report one; `groundedReport`
 then prices storage at $0, sets `assumptions.grounded` to `false` and says in the notes that nothing was measured.
-Sum several segments' sizes to price them together: a report sizes its Redis to its own bytes, so one report of the
-sum is the store's, and the sum of per-segment reports is not. If your store sets `cache.genTtlMs`, pass the same
+Sum several segments' sizes to price them together, checking each for `null` first (JavaScript adds `null` as `0`):
+a report sizes its Redis to its own bytes, so one report of the sum is the store's, and the sum of per-segment reports
+is not. If your store sets `cache.genTtlMs`, pass the same
 value as `workload.genTtlMs`.
 
 ## Prices

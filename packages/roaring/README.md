@@ -14,6 +14,7 @@ file, then ask `has`, `count`, `iterate`, `intersect`, `union` and `andNot`, wit
 ```bash
 pnpm add @cloudbitmaps/roaring              # the store, with in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3                   # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
+pnpm add @cloudbitmaps/tools                # optional: price a store, offline
 ```
 
 On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
@@ -83,7 +84,8 @@ pointer read: it reads no payload and no object.
 The trade is stated plainly. A membership check that misses the cache costs a ranged GET against object storage,
 where an in-process store costs a memory read. If you need sub-millisecond answers on a working set that fits a
 bounded cache, use Redis. [The benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md)
-give the method and what the numbers do not establish.
+give the method and what the numbers do not establish. To price your own store, from the sizes `seg.stat()` reports, use
+`@cloudbitmaps/tools` ([the cost guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/cost.md)).
 
 ## Before production
 

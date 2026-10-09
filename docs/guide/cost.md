@@ -74,7 +74,8 @@ report.assumptions.grounded; // true — storage is this segment's real, measure
 an estimate from the id count. It is `null` for a segment with no generation and on a store whose source cannot report
 one; `groundedReport` then prices storage at $0, sets `assumptions.grounded` to `false` and says so in the notes, so a
 missing size never reads as a confident $0. Pass `storageBytes: 0` for a segment you know is empty. To price several
-segments together, sum their sizes into one report. If your store sets `cache.genTtlMs`, pass the same value as
+segments together, sum their sizes into one report, checking each for `null` first: JavaScript adds `null` as `0`, so
+a sum would hide a segment that was not measured. If your store sets `cache.genTtlMs`, pass the same value as
 `workload.genTtlMs`: the model prices the pointer refresh at the store's default, 2 s, unless you do.
 
 Rates are a pluggable `PricingProfile` — `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth },
@@ -149,7 +150,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 - **A cold `count()` is one pointer read.** The row records the current generation's id count, so a count reads no
   object, whatever the segment's size or index width, encrypted or not (one request on every backend, held by a test
   that counts the requests). A row with no summary it can use is read from the object, which adds the tail read. A
-  cold `stat()` always adds it, since the object's size is in its footer: one pointer read and one tail read. Counts
+  cold `stat()` always adds it, since the object's size is in its footer: one pointer read and one tail read, and a
+  range read for an index longer than the tail read (tens of thousands of chunks). Counts
   and stats within `cache.genTtlMs`, while the generation is open, are free beyond the pointer refresh.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
   P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and four GETs: two pointer reads and

@@ -102,10 +102,14 @@ segment and count what it yields.
 id count, the metadata it was loaded with (absent when it has none), and `size`, the bytes of the generation's object
 in storage. All four come from that one generation, opened once: its footer and index, with no payload read, so they
 cannot straddle a publish and the size is never another generation's. It is one registry read and one tail read of the
-object when cold, and none while the generation is open (a read of the segment opens it, and so does a `stat()`); a
-pinned handle answers for the generation it pinned. After it, a `count()` reads nothing. A segment with no generation
-answers `{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
-`size: null`. A pointer that names a missing object (a torn restore) throws `NotFoundError`, as a read of the object
+object when cold (and a range read for an index longer than the tail read, on a segment of tens of thousands of
+chunks), and none while the generation is open (a read of the segment opens it, and so does a `stat()`). Like a read, a
+cold `stat()` keeps the generation open in the reader cache, so a `stat()` of many segments the process does not
+otherwise read takes cache room from the ones it does. A pinned handle answers for the generation it pinned, and reads
+nothing while that generation is open. After it, a `count()` reads nothing. A segment with no generation answers
+`{ generation: null, cardinality: 0, size: null }`, and a store whose source cannot report a size answers
+`size: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second resolution that a
+publish between the two can make another generation's. A pointer that names a missing object (a torn restore) throws `NotFoundError`, as a read of the object
 does, where `count()` answers the row's number.
 
 The count is the index's sum, checked for internal consistency when the object is opened, and the opened object is

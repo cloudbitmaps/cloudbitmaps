@@ -1,8 +1,11 @@
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { vi } from 'vitest';
 import type {
   ChunkRef,
+  GenerationSummary,
   IRegistryDriver,
   IStorageDriver,
   SegmentRef,
@@ -11,7 +14,13 @@ import type {
 } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { TransientError } from '@/core/errors';
-import { CloudRoaring, LocalFsStorage, MemoryStorage } from '@/index';
+import { segmentKey } from '@/core/keys';
+import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
+import type { PinnedAt } from '@/core/pinned-storage-source';
+import { InProcessKeystore } from '@/drivers/crypto';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { CloudRoaring, CrbmStorageChunkSource, LocalFsStorage, MemoryStorage } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
 
 /**
@@ -27,30 +36,47 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 const ids = (chunks: number): number[] =>
   Array.from({ length: chunks * 50 }, (_, i) => (i % chunks) * 65_536 + Math.floor(i / chunks));
 
+/** The calls a counted driver saw that reach the service: `capabilities()` is answered locally. */
+const requests = (calls: Record<string, number>): Record<string, number> =>
+  Object.fromEntries(Object.entries(calls).filter(([name]) => name !== 'capabilities'));
+
 /** The size `getTail` reports for one generation's object: what the bucket holds, read without the reader. */
 async function objectBytes(storage: IStorageDriver, generation: number): Promise<number> {
   return (await storage.getTail({ ...SEG, generation }, 0)).size;
 }
 
-describe('stat().size', () => {
-  it("is the current generation's object, byte for byte, and moves with each load", async () => {
-    const backend = new MemoryStorage();
-    const store = new CloudRoaring({ storage: backend, retry: false });
-    await store.load(SEG, ids(1), { keep: 9 });
-    const seg = store.segment('s', { namespace: 'ns' });
-    const first = await seg.stat();
-    expect(first).toEqual({
-      generation: 0,
-      cardinality: 50,
-      size: await objectBytes(backend.storage, 0),
-    });
+const keystore = (): InProcessKeystore =>
+  new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
 
-    await store.load(SEG, ids(4), { keep: 9 });
-    const second = await seg.stat();
-    expect(second.generation).toBe(1);
-    expect(second.size).toBe(await objectBytes(backend.storage, 1));
-    expect(second.size).not.toBe(first.size);
-  });
+describe('stat().size', () => {
+  it.each([
+    ['cleartext', undefined],
+    ['encrypted', keystore()],
+  ] as const)(
+    "is the current generation's object, byte for byte, and moves with each load: %s",
+    async (_, ks) => {
+      const backend = new MemoryStorage();
+      const store = new CloudRoaring({
+        storage: backend,
+        retry: false,
+        ...(ks === undefined ? {} : { encryption: { keystore: ks } }),
+      });
+      await store.load(SEG, ids(1), { keep: 9 });
+      const seg = store.segment('s', { namespace: 'ns' });
+      const first = await seg.stat();
+      expect(first).toEqual({
+        generation: 0,
+        cardinality: 50,
+        size: await objectBytes(backend.storage, 0),
+      });
+
+      await store.load(SEG, ids(4), { keep: 9 });
+      const second = await seg.stat();
+      expect(second.generation).toBe(1);
+      expect(second.size).toBe(await objectBytes(backend.storage, 1));
+      expect(second.size).not.toBe(first.size);
+    },
+  );
 
   it('is the file on disk, on the local-filesystem backend', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cbm-stat-size-'));
@@ -127,6 +153,76 @@ describe('stat().size', () => {
     expect((await sized.segment('x').stat()).size).toBe(123);
   });
 
+  it('takes the summary and `sizeOf` on a source with a summary and no `stat`', async () => {
+    const chunk = new Uint8Array([58, 48, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 7, 0]);
+    const sizeOf = vi.fn(async (): Promise<SegmentSize | null> => ({ sizeBytes: 55 }));
+    let summary: GenerationSummary | null = { generation: 3, cardinality: 7 };
+    class Summarised implements StorageChunkSource {
+      async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
+        return ref.chunkKey === 0 ? chunk : null;
+      }
+      async listChunkKeys(): Promise<number[]> {
+        return [0];
+      }
+      async summary(): Promise<GenerationSummary | null> {
+        return summary;
+      }
+      sizeOf = sizeOf;
+    }
+    const store = new CloudRoaring({ storage: new Summarised() });
+    expect(await store.segment('x').stat()).toEqual({ generation: 3, cardinality: 7, size: 55 });
+
+    // A size the source cannot give is null, never 0.
+    sizeOf.mockResolvedValueOnce(null);
+    expect(await store.segment('x').stat()).toEqual({ generation: 3, cardinality: 7, size: null });
+
+    // No generation: nothing to measure, and `sizeOf` is not asked.
+    summary = null;
+    sizeOf.mockClear();
+    expect(await store.segment('x').stat()).toEqual({
+      generation: null,
+      cardinality: 0,
+      size: null,
+    });
+    expect(sizeOf).not.toHaveBeenCalled();
+  });
+
+  it('asks the source for the pinned generation on a pinned segment, and for the live one otherwise', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, ids(1), { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    const pin = (await source.pinGeneration(SEG))!;
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, ids(4), { registry });
+    const stat = vi.spyOn(source, 'stat');
+    const statAt = vi.spyOn(source, 'statAt');
+    const other: SegmentRef = { namespace: 'ns', segment: 'other' };
+    const wrapper = new PinnedStorageChunkSource(
+      source,
+      new Map<string, PinnedAt>([
+        [segmentKey(SEG), pin],
+        [segmentKey(other), { generation: null, version: null }],
+      ]),
+    );
+
+    expect(await wrapper.stat(SEG)).toMatchObject({
+      generation: 0,
+      sizeBytes: await objectBytes(storage, 0),
+    });
+    expect(statAt).toHaveBeenCalledTimes(1);
+    expect(statAt.mock.calls[0]!.slice(0, 2)).toEqual([SEG, 0]);
+    expect(stat).not.toHaveBeenCalled();
+
+    // A pin of no generation asks nothing.
+    expect(await wrapper.stat(other)).toBeNull();
+    expect(statAt).toHaveBeenCalledTimes(1);
+    expect(stat).not.toHaveBeenCalled();
+
+    // An unpinned segment is read live.
+    expect(await wrapper.stat({ namespace: 'ns', segment: 'live' })).toBeNull();
+    expect(stat).toHaveBeenCalledTimes(1);
+  });
+
   it('reads the footer and index once when cold and nothing while the generation is open; no payload', async () => {
     const backend = new MemoryStorage();
     await new CloudRoaring({ storage: backend, retry: false }).load(SEG, ids(4));
@@ -141,29 +237,15 @@ describe('stat().size', () => {
     });
     const seg = reader.segment('s', { namespace: 'ns' });
     await seg.stat();
-    // One row read and one tail read of the object; no range read, so no chunk's payload.
-    expect({
-      rows: rowCalls.get ?? 0,
-      tails: calls.getTail ?? 0,
-      ranges: calls.getRange ?? 0,
-    }).toEqual({
-      rows: 1,
-      tails: 1,
-      ranges: 0,
-    });
+    // One row read and one tail read of the object, and nothing else: no range read, so no chunk's payload.
+    expect(requests(calls)).toEqual({ getTail: 1 });
+    expect(requests(rowCalls)).toEqual({ get: 1 });
     for (const k of Object.keys(calls)) delete calls[k];
     for (const k of Object.keys(rowCalls)) delete rowCalls[k];
     await seg.stat();
     await seg.count();
-    expect({
-      rows: rowCalls.get ?? 0,
-      tails: calls.getTail ?? 0,
-      ranges: calls.getRange ?? 0,
-    }).toEqual({
-      rows: 0,
-      tails: 0,
-      ranges: 0,
-    });
+    expect(requests(calls)).toEqual({});
+    expect(requests(rowCalls)).toEqual({});
   });
 
   it('is the size of the generation the rest describes, when a load lands while it resolves', async () => {
@@ -191,6 +273,41 @@ describe('stat().size', () => {
     const reader = new CloudRoaring({
       storage: brandAsBackend({ storage: backend.storage, registry }),
       retry: false,
+      seams: { clock },
+    });
+    expect(await reader.segment('s', { namespace: 'ns' }).stat()).toEqual({
+      generation: 0,
+      cardinality: 50,
+      size: await objectBytes(backend.storage, 0),
+    });
+    expect(raced).toBe(true);
+  });
+
+  it('is the size of the generation the rest describes on a store that retries, too', async () => {
+    // The retry wrapper forwards `stat`: without it the engine would take the summary and the size from two
+    // resolutions, and this race would put generation 1's size beside generation 0's count.
+    const backend = new MemoryStorage();
+    const writer = new CloudRoaring({ storage: backend, retry: false });
+    await writer.load(SEG, ids(1), { keep: 9 });
+    let t = 0;
+    const clock = { now: () => t, sleep: async () => {} };
+    let raced = false;
+    const registry: IRegistryDriver = Object.create(backend.registry, {
+      get: {
+        value: async (ref: SegmentRef) => {
+          const row = await backend.registry.get(ref);
+          if (!raced) {
+            raced = true;
+            await writer.load(SEG, ids(4), { keep: 9 });
+            t += 60_000;
+          }
+          return row;
+        },
+      },
+    });
+    const reader = new CloudRoaring({
+      storage: brandAsBackend({ storage: backend.storage, registry }),
+      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 },
       seams: { clock },
     });
     expect(await reader.segment('s', { namespace: 'ns' }).stat()).toEqual({

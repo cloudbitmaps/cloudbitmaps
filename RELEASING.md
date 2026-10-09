@@ -59,7 +59,7 @@ change, and the tag goes on the commit that pull request makes on `main`.
 7. The job re-runs the gate and the audit, checks the tag and that no package is private, probes the registry,
    checks the notes and leak-scans the tarballs, and only then publishes all six packages, tokenlessly, with a
    signed provenance attestation. `pnpm -r publish` walks the workspace in topological order, so `core` lands
-   before the four that depend on it. A second job then creates the GitHub Release, with that changelog section
+   before the packages that depend on it. A second job then creates the GitHub Release, with that changelog section
    as its notes.
 
 The approval comes first: nothing in the job runs until it is given, and nothing reaches npm before it.
@@ -231,6 +231,8 @@ so the hardening below is part of first-publishing one, not an afterthought:
 **Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
 that does not exist yet.** `pnpm release:bootstrap` runs once for each new package name, **including one added to
 a family whose other packages are already on npm**, and publishes only the names the registry does not have.
+`@cloudbitmaps/tools` is such a name until the first release that ships it: run `pnpm release:bootstrap` and bind its
+Trusted Publisher before that release is tagged.
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
