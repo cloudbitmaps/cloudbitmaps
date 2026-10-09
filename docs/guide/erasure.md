@@ -59,7 +59,7 @@ there", and `note` says why:
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
 | `error: <message>`, a `NotFoundError` saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
-| `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
+| `error: <message>`, an `IntegrityError` naming a chunk, or saying authentication failed | That segment is corrupt: a chunk holds a value no chunk can, or a generation sealed under the segment's own key has a chunk that does not open under it, or the current generation does not open under it at all. The rewrite refused to copy the corruption into a new generation, the erasure deleted nothing it could not search, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all, and on a segment with no generation yet, when the erasure found a first load's object to delete and a first load wrote another, holding the id or sealed under its own key, after the erasure listed the bucket. | See what a re-run reports instead of assuming the job finished. |
 
 A fault can also land after a rewrite published. Examples are a storage `delete` fault, a collect that could not prove
@@ -114,6 +114,16 @@ is searched), or a cleartext first load whose object does not hold the id. And o
 encrypted first load that writes its object onto that segment before the erasure's last look at the bucket makes the
 entry an `error: …` note (`WriteConflictError`): re-run the erasure. Pausing loads while you erase, as the first rule
 says, avoids both.
+
+**On an encrypted store, an object the segment's key does not open goes too, whatever id is erased.** On a segment
+with a key, an object sealed under a key its row does not hold opens for no read of the segment: the object of a first
+load that lost the race to the one that published, or that crashed before its publish, each under a key it made and
+never stored. The erasure cannot search it, so wherever it meets one, above the pointer or below it, it deletes it as a
+holder, under the same renewal of the row and read before the delete, and lists it in `collected`; it never makes the
+answer `erased: true`. When no generation is found to hold the id, only those objects go, and the generations kept below
+the pointer stay. Which objects those are is read from where the object fails to open: one whose index the segment's key
+opens is the segment's own, and when a chunk of it then does not open, that is corruption, which the erasure reports
+with `IntegrityError`, deleting nothing it could not search. The current generation is never deleted for this.
 
 ## Who stops seeing the id, and when
 
@@ -254,7 +264,8 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   while the call deletes those objects is reported as `'superseded'` too, and the object stays.
 - In the last instant before a delete, a rollback onto the generation being deleted leaves the pointer on a missing
   object, which `checkConsistency()` reports: a generation above the pointer, or, on a segment with no generation yet,
-  a first load's object, which a rollback with `allowForward` can make current. The call reads the row just before
+  a first load's object, which a rollback with `allowForward` can make current, or an object below the pointer that the
+  segment's key does not open, which only a rollback with no key at hand moves onto. The call reads the row just before
   each delete; one round trip remains between that read and the delete, and no storage offers a conditional delete to
   close it.
 
@@ -268,6 +279,10 @@ driver authors) over every registered segment, and each ledger entry is that fun
   drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
   id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is
   `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
+- On an encrypted segment, an object sealed under a key the row does not hold, which no read of the segment opens,
+  is deleted as a holder whatever the id, wherever the call meets it, and listed in `collected`; only a searched
+  generation that held the id makes the entry `erased: true` ([the effect across a fleet](#two-rules-while-you-erase)).
+  An object the segment's own key opens whose chunk does not is corrupt: `IntegrityError`.
 - A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too, since
   a first load's object can be there: its load still running, or one that crashed between its write and its publish.
   When objects hold the id, the call first renews the row's `pointerId`, with a write that names the pointer at the

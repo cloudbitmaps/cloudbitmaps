@@ -33,6 +33,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-overtaken-by-drop.test.ts',
   'tests/core/erase-pointerless-first-load.test.ts',
   'tests/core/erase-pointerless-race.property.test.ts',
+  'tests/core/erase-foreign-sealed.test.ts',
   'tests/core/load-refusal-cleanup.test.ts',
   'tests/core/due-index-fast-sweep.test.ts',
   'tests/core/encrypted-segment-cleartext-object.test.ts',

@@ -126,7 +126,9 @@ searched too: an object a first load wrote and never published that holds the id
 wrote such an object is refused at its publish and never names an object that is gone. On an encrypted store such an
 object cannot be searched until its load publishes the key, so it is deleted whatever id is erased: an erasure of any
 id refuses an encrypted first load in flight that has written its object onto a segment whose row was made ahead of
-its data, and that load is re-run ([the erasure guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#two-rules-while-you-erase)).
+its data, and that load is re-run ([the erasure guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#two-rules-while-you-erase)). On any encrypted segment, an object sealed under a
+key its row does not hold, which no read of the segment can open (the object of a first load that lost the race to the
+one that published, or crashed), is deleted the same way wherever an erasure meets it, whatever id is erased.
 
 **Do not roll a segment back while erasing from it.** A rollback that lands mid-erasure can move the pointer onto a
 generation the erasure did not rewrite, so the id can be current again. Roll back before the erasure starts or

@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { aadFor } from '@/core/crypto';
 import { eraseIdFromSegment, type EraseIdResult } from '@/core/erase-id';
-import { IntegrityError, WriteConflictError } from '@/core/errors';
+import { WriteConflictError } from '@/core/errors';
 import { loadSegment, type LoadResult } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
@@ -285,21 +285,8 @@ describe('an erasure racing first loads onto a row with no pointer (property)', 
             if (!o.r.published) expect(o.r.reason).toBe('superseded');
           });
           if ('err' in erased) {
-            const end = await registry.get(SEG);
-            if (
-              encrypted &&
-              erased.err instanceof IntegrityError &&
-              end !== null &&
-              end.currentGen !== null
-            ) {
-              // A known limit outside this test's subject: once a first load has published, an erasure that searches
-              // the generations other than the current one cannot open an object sealed under a key the row does not
-              // hold (a first load's that lost the race to the one that published, or crashed), and stops there with
-              // IntegrityError rather than report the segment clean, whatever it had rewritten or deleted before.
-              expect(String(erased.err)).toMatch(/AEAD/);
-            } else {
-              expect(erased.err).toBeInstanceOf(WriteConflictError);
-            }
+            // A holder left at its last look asks for a re-run; a number another writer took first is write-once.
+            expect(erased.err).toBeInstanceOf(WriteConflictError);
           }
 
           // 2. An id the erasure reported erased is not served, when every load read the row before it began.

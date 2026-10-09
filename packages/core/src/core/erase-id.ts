@@ -73,9 +73,15 @@
  * A load already in flight writes its object above the pointer before it publishes, or, as a first load onto a row with
  * no pointer, before there is a pointer at all. An erasure that finds the id in that object renews the row's `pointerId`
  * before deleting it, so the load's publish, fenced on the row it read, is refused (`published: false`) and the pointer
- * never names a missing object (see `fenceInFlight`). An erasure that finds no holder writes nothing. On a row with no
- * pointer the erasure holds no key, so an object sealed under a key no row holds counts as a holder whatever the id:
- * an erasure of any id that finds one deletes it, and the encrypted first load that wrote it is refused.
+ * never names a missing object (see `fenceInFlight`). An erasure that finds no holder writes nothing.
+ *
+ * An object sealed under a key its row does not hold cannot be searched, and no read of the segment can open it: a
+ * first load's on a row with no pointer, whose key that load has not published, or, on a segment with a key, a first
+ * load's that lost the race to the one that published, or crashed, under a key it made and never stored. It counts as
+ * a holder whatever the id: an erasure of any id that finds one deletes it, under the same renewal of the row and read
+ * before the delete, and lists it in `collected`, and a first load still in flight that wrote it is refused. Only a
+ * searched object that held the id makes the answer `erased: true`. The current generation is never one of them: one
+ * the row's key does not open throws, as every read of the segment does.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
@@ -180,7 +186,8 @@ export interface EraseIdResult {
    * Why the id was not erased, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
    * tombstone — already unreadable), `'no-generation'` (a row with no Storage data yet: no object in its bucket held
    * the id, and `collected` names any object this call deleted unsearched, see below), `'not-member'` (no
-   * generation in the bucket holds the id — the common case across a fleet scan), or `'superseded'`.
+   * generation in the bucket holds the id — the common case across a fleet scan — with the same note on `collected`),
+   * or `'superseded'`.
    *
    * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
    * load, another erasure, or a rollback — moved the pointer off the generation this call read, so what it was
@@ -211,8 +218,9 @@ export interface EraseIdResult {
    * the current generation did not hold the id, it is every generation below the pointer (`keep: 0` takes them
    * together) and each one above the pointer that held the id; the ones above it that did not hold the id stay,
    * because they are an operator's rollback targets. On a row with no pointer it is each first load's object that
-   * held the id, and each one sealed under a key no row holds, which this call cannot search and deletes whatever the
-   * id: with only those, `reason` is `'no-generation'` and they are listed here. Empty when nothing was deleted.
+   * held the id. Wherever it found them, it is also each object sealed under a key the row does not hold, which this
+   * call cannot search and deletes whatever the id: with only those, `reason` is `'no-generation'` on a row with no
+   * pointer and `'not-member'` on one with a pointer, and they are listed here. Empty when nothing was deleted.
    *
    * **It is what THIS call deleted, not the proof that the id is gone** — those differ: a concurrent collector can
    * take a generation holding the id first, and then `erased: true` is returned without it in `collected`, because
@@ -409,26 +417,46 @@ async function eraseOnce(
     return row.currentGen === from && same ? null : 'superseded';
   };
 
-  /** Unpublished generations `holds` could not search, because their first load has not published the key yet. */
-  const sealedUnpublished = new Set<number>();
+  /**
+   * Generations `holds` could not search and counts as holders: objects sealed under a key the row does not hold. On a
+   * row with no pointer, a first load's whose key that load has not published; on a row with a key, one whose index
+   * does not open under it, which no read of the segment can open either.
+   */
+  const sealed = new Set<number>();
   /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
-   * but the outcome it wants. Any other fault propagates: it must never be swallowed into a clean receipt.
+   * but the outcome it wants. `true`, and the generation noted in `sealed`, for an object sealed under a key the row
+   * does not hold: it cannot be searched, so it is treated as one that may hold the id. Any other fault propagates: it
+   * must never be swallowed into a clean receipt.
+   *
+   * Which key an object is sealed under is read from where its open fails, since its footer names none. Every check
+   * before the index's authentication passes for an object sealed under another key, and that authentication fails:
+   * the index was not sealed under the row's key for this segment and generation, so no read through the row opens
+   * it. An object whose index opens under the row's key is the segment's own, and a chunk of it that then fails its
+   * checks is corruption, which throws. The row's key never changes while the row lives (a key is made only for a
+   * segment's first generation, a publish never adds one to a segment that has generations, and only a crypto-shred,
+   * which tombstones the row, removes it), so no generation a reader of the row can open is ever counted here.
    */
   const holds = async (generation: number): Promise<boolean | null> => {
     const key: GenKey = { ...base, generation };
-    const chunkIn = (crypto: CrbmCrypto | undefined): Promise<Uint8Array | null> =>
-      read(async () => (await openGenerationReader(deps.storage, key, crypto)).getChunk(chunkKey));
+    const crypto = cryptoAt(generation);
     try {
-      let bytes: Uint8Array | null;
+      let reader: CrbmReader;
+      const index = { refused: false };
       try {
-        bytes = await chunkIn(cryptoAt(generation));
+        reader = await read(() =>
+          openGenerationReader(
+            deps.storage,
+            key,
+            crypto === undefined ? undefined : noticingIndex(crypto, index),
+          ),
+        );
       } catch (err) {
         // A cleartext object under an encrypted segment was never one of its generations, so no read believes it.
         // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
         // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
-        if (cryptoAt(generation) === undefined) {
+        if (crypto === undefined) {
           if (
             (tombstoned || pointerless) &&
             (await read(() => objectIsEncrypted(deps.storage, key)))
@@ -437,16 +465,21 @@ async function eraseOnce(
             // read through the library finds anything in it. Under a row with no pointer it is a first load's, sealed
             // under a key that load has not published yet: it cannot be searched, so it counts as a holder.
             if (tombstoned) return false;
-            sealedUnpublished.add(generation);
+            sealed.add(generation);
             return true;
           }
           throw err;
         }
+        if (isIntegrityError(err) && index.refused) {
+          sealed.add(generation);
+          return true;
+        }
         if (!isIntegrityError(err) || (await read(() => objectIsEncrypted(deps.storage, key)))) {
           throw err;
         }
-        bytes = await chunkIn(undefined);
+        reader = await read(() => openGenerationReader(deps.storage, key, undefined));
       }
+      const bytes = await read(() => reader.getChunk(chunkKey));
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
       if (isNotFoundError(err)) return null;
@@ -454,11 +487,15 @@ async function eraseOnce(
     }
   };
 
+  /** Whether `holds` found the id in `generation`, as opposed to counting it a holder it could not search. */
+  const found = (generation: number, held: boolean | null): boolean =>
+    held === true && !sealed.has(generation);
+
   /**
    * `holds` over `generations`, read a few at a time, with the outcomes the serial scan would have produced: they
-   * come back in the order given, ending at the first holder when `stopAtHolder` is set (a generation read beyond
-   * it is read for nothing and dropped), and the first fault in that order is the one thrown, so a fault past a
-   * holder never surfaces, as it never did.
+   * come back in the order given, ending at the first generation found to hold the id when `stopAtHolder` is set (a
+   * generation read beyond it is read for nothing and dropped; one that could not be searched does not end it), and
+   * the first fault in that order is the one thrown, so a fault past a holder never surfaces, as it never did.
    */
   const holdsEach = async (
     generations: readonly number[],
@@ -477,7 +514,7 @@ async function eraseOnce(
         }
         try {
           const held = await holds(generation);
-          if (held === true && index < firstHolder) firstHolder = index;
+          if (found(generation, held) && index < firstHolder) firstHolder = index;
           return { generation, held, fault: undefined };
         } catch (fault) {
           return { generation, held: null, fault: { error: fault } };
@@ -488,7 +525,7 @@ async function eraseOnce(
     for (const { generation, held, fault } of settled) {
       if (fault !== undefined) throw fault.error;
       outcomes.push({ generation, held });
-      if (stopAtHolder && held === true) break;
+      if (stopAtHolder && found(generation, held)) break;
     }
     return outcomes;
   };
@@ -616,10 +653,11 @@ async function eraseOnce(
    * renewed (or that row with only its leases changed), and stop at the first that is not. Returns what was deleted, and
    * the row's reason when the deletes stopped.
    *
-   * One round trip remains between that read and its delete: a `rollback({ allowForward: true })` that lands inside it
-   * onto the holder being deleted leaves the pointer naming a missing object. The rollback's own move-then-verify
-   * catches every such landing except one whose check runs before the delete, and no storage port offers a conditional
-   * delete to close it.
+   * One round trip remains between that read and its delete: a rollback that lands inside it onto the holder being
+   * deleted leaves the pointer naming a missing object. Above the pointer that is one with `allowForward`; below it, an
+   * object sealed under a key the row does not hold, which only a rollback with no key at hand moves onto, since one
+   * with the key refuses an object it cannot open. The rollback's own move-then-verify catches every such landing
+   * except one whose check runs before the delete, and no storage port offers a conditional delete to close it.
    */
   const deleteFenced = async (
     holders: readonly number[],
@@ -683,20 +721,20 @@ async function eraseOnce(
     const none: EraseIdResult = { ...base, erased: false, reason: 'no-generation', collected: [] };
     if (holders.length === 0) return none;
     // The newest object that was searched and held the id; a sealed one could not be searched.
-    const found = holders.find((generation) => !sealedUnpublished.has(generation));
+    const newest = holders.find((generation) => !sealed.has(generation));
 
     const { deleted, moved } = await deleteFenced(holders);
     const collected = [...deleted].sort((a, b) => a - b);
     const left = await holderLeft(clean);
     if (left === undefined) {
-      return found === undefined ? { ...none, collected } : collectedAll(found, collected);
+      return newest === undefined ? { ...none, collected } : collectedAll(newest, collected);
     }
     if (moved !== null) {
       return {
         ...base,
         erased: false,
         reason: moved,
-        ...(found === undefined ? {} : { fromGeneration: found }),
+        ...(newest === undefined ? {} : { fromGeneration: newest }),
         collected,
       };
     }
@@ -753,6 +791,12 @@ async function eraseOnce(
    *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
    *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}).
    *
+   * An object sealed under a key the row does not hold is a holder this call cannot search ({@link holds}). Beside a
+   * generation that was searched and held the id, it goes as any holder does: above the pointer by name, below it with
+   * the collection. With no such generation, nothing proves the segment held the subject, so the collection does not
+   * run: each of those objects is deleted by name, above the pointer or below it, under the same renewal of the row and
+   * read before each delete, and the generations below the pointer that were searched and found clean stay.
+   *
    * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
    * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection
    * takes them. If something still holds it and the pointer moved, the row says why, as it does everywhere else in
@@ -783,7 +827,7 @@ async function eraseOnce(
     const newestFirst = [...others].sort((a, b) => b - a);
 
     const clean = new Set<number>([from]);
-    const holdersAbove: number[] = []; // newest first
+    const holdersAbove: number[] = []; // newest first, those that could not be searched included
     for (const { generation, held } of await holdsEach(
       newestFirst.filter((g) => g > from),
       false,
@@ -791,31 +835,42 @@ async function eraseOnce(
       if (held === true) holdersAbove.push(generation);
       else if (held === false) clean.add(generation);
     }
+    const foundAbove = holdersAbove.find((generation) => !sealed.has(generation));
     let holderBelow: number | undefined;
-    if (holdersAbove.length === 0) {
+    const sealedBelow: number[] = [];
+    if (foundAbove === undefined) {
       for (const { generation, held } of await holdsEach(
         newestFirst.filter((g) => g < from),
         true,
       )) {
-        if (held === true) holderBelow = generation;
+        if (found(generation, held)) holderBelow = generation;
+        else if (held === true) sealedBelow.push(generation);
         else if (held === false) clean.add(generation);
       }
     }
-    const newest = holdersAbove[0] ?? holderBelow;
-    if (newest === undefined) return notMember;
+    const newest = foundAbove ?? holderBelow;
+    // Where a searched generation held the id, the collection takes every generation below the pointer, those that
+    // could not be searched with them. Where none did, those are deleted one by one, under the fence, and the
+    // generations below the pointer that were searched and found clean stay.
+    const fenced = newest === undefined ? [...holdersAbove, ...sealedBelow] : holdersAbove;
+    if (newest === undefined && fenced.length === 0) return notMember;
 
-    const collected = [...(await gcOrphanGenerations(ref, deps, { keep: 0 }))];
+    const collected =
+      newest === undefined ? [] : [...(await gcOrphanGenerations(ref, deps, { keep: 0 }))];
     let moved: ReturnType<typeof rowVerdict> = null;
-    if (holdersAbove.length > 0) {
-      const above = await deleteFenced(holdersAbove);
-      collected.push(...above.deleted);
-      moved = above.moved;
+    if (fenced.length > 0) {
+      const deleted = await deleteFenced(fenced);
+      collected.push(...deleted.deleted);
+      moved = deleted.moved;
     }
 
     const left = await holderLeft(clean);
-    if (left === undefined) return collectedAll(newest, collected);
+    if (left === undefined) {
+      if (newest !== undefined) return collectedAll(newest, collected);
+      return { ...notMember, collected: collected.sort((a, b) => a - b) };
+    }
     if (moved !== null) {
-      return { ...base, erased: false, reason: moved, fromGeneration: newest, collected };
+      return { ...base, erased: false, reason: moved, fromGeneration: newest ?? from, collected };
     }
     throw cannotRemove(left);
   };
@@ -1037,6 +1092,34 @@ async function eraseOnce(
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
+}
+
+/**
+ * `crypto`, noting in `index.refused` when the object's index fails its authentication under it: the AAD it is opened
+ * with is the one `crypto` gives the index of this segment and generation. The reader authenticates the index after
+ * every check of the footer and of the index's checksum, and before anything else it decrypts, so a refusal there says
+ * the object was not sealed under this key for this generation, rather than that it is damaged.
+ */
+function noticingIndex(crypto: CrbmCrypto, index: { refused: boolean }): CrbmCrypto {
+  const indexAad = crypto.aadFor('index');
+  return {
+    aadFor: crypto.aadFor,
+    aead: {
+      seal: (plaintext, aad) => crypto.aead.seal(plaintext, aad),
+      open: (sealed, aad) => {
+        try {
+          return crypto.aead.open(sealed, aad);
+        } catch (err) {
+          if (sameBytes(aad, indexAad)) index.refused = true;
+          throw err;
+        }
+      },
+    },
+  };
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 /**

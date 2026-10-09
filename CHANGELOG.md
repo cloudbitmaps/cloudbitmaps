@@ -103,6 +103,16 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An erasure deletes an object its segment's key does not open, as a holder it cannot search.** On an encrypted
+  segment, the object of a first load that lost the race to the one that published, or that crashed before its
+  publish, is sealed under a key it made and never stored: no read of the segment opens it. An erasure that met one
+  threw `IntegrityError` (AEAD authentication failed) on every run, for every id, until a load's collection took the
+  object, so `eraseSubject` reported the segment as an `error: …` entry. It now deletes it, above the pointer or below
+  it, under the renewal of the row and a read of the row before each delete, lists it in `collected`, and reports
+  `erased: true` only when a searched generation held the id; with none, only those objects go, and the generations kept
+  below the pointer stay. An object whose index the segment's key opens and whose chunk does not is still reported as
+  corruption with `IntegrityError`, and the current generation is never deleted for this
+  ([erasure](docs/guide/erasure.md#two-rules-while-you-erase)).
 - **An erasure deletes a first load's object on a segment with no generation yet, and refuses the load that wrote
   it.** On a row with no pointer (one `setRetention` made before the first load), an erasure that finds an object
   holding the id first renews the row's `pointerId`, as it does before it deletes a generation above the pointer, so a
