@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-10-09
+
 ### Fixed
 
 - **A live read no longer mixes the ids of two objects stored under one generation number.** A number can be taken
