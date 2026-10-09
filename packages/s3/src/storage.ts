@@ -31,12 +31,13 @@
  * default when the host the client resolves is an AWS S3 host and the SDK sends the header, as for the registry's row
  * delete ({@link appliesDeleteIfMatch}), resolved once, on the first such delete; MinIO, for one, accepts the header and
  * ignores it. A tail read reports the object's `ETag` as its version, from the `GetObject` that carried the bytes, or
- * the `HeadObject` when none were asked for. A `412` or `409` is the precondition failing, and is reported as
- * {@link WriteConflictError} unless a `HeadObject` then finds no object under the key: an absent object is a no-op,
- * whichever of `204`, `404` or `412` the service answers for it. The delete keeps the SDK's retry: a copy that meets its
- * own landed delete finds nothing, and one that meets an object stored since is refused. An ETag is computed from the
- * bytes for an object stored without SSE-KMS or SSE-C, so the condition cannot tell two objects with the same bytes
- * apart.
+ * the `HeadObject` when none were asked for. A `412` is the precondition failing, and a `409` a conditional request
+ * that raced another on the key, which says nothing of which object is there; the delete has removed nothing either
+ * way, and both are reported as {@link WriteConflictError} unless a `HeadObject` then finds no object under the key: an
+ * absent object is a no-op, whichever of `204`, `404` or `412` the service answers for it. The delete keeps the SDK's
+ * retry: a copy that meets its own landed delete finds nothing, and one that meets an object stored since is refused.
+ * An ETag is computed from the bytes for an object stored without SSE-KMS or SSE-C, so the condition cannot tell apart
+ * two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes.
  */
 import {
   IntegrityError,
@@ -160,8 +161,9 @@ export interface S3StorageDriverOptions {
    * Whether a delete given `ifVersion` is sent with `If-Match`, so it removes the object only while it is the one that
    * ETag names. Defaults as the registry's option does: on when the host the client resolves is an AWS S3 host and the
    * SDK sends the header, resolved on the first such delete (until then `capabilities()` reads `false`), and off for any
-   * other host. Set it for an S3-compatible store only once you know the store applies `If-Match` on a delete. A `true`
-   * never overrides an SDK that does not send the header.
+   * other host, and for a client that cannot be resolved then (no region), whose deletes stay unconditional. Set it for
+   * an S3-compatible store only once you know the store applies `If-Match` on a delete. A `true` never overrides an SDK
+   * that does not send the header.
    */
   readonly conditionalDelete?: boolean;
 }

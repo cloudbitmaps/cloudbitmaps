@@ -135,7 +135,9 @@ export interface GcsStorageDriverOptions {
    * Whether a delete given `ifVersion` is sent with `ifGenerationMatch`, so it removes the object only while it is the
    * one that generation names. Defaults to `false`, on the public endpoint too, as the registry's option does: whether
    * real GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and
-   * fake-gcs-server accepts the precondition and ignores it. Set `true` once you have.
+   * fake-gcs-server accepts the precondition and ignores it. Set `true` once you have. Until it is set, a delete
+   * decided from one read of an object removes whatever is under the name by then: on GCS the window in which an
+   * erasure's stalled delete takes a generation a load put under the number since stays open.
    */
   readonly conditionalDelete?: boolean;
 }

@@ -74,7 +74,8 @@ export interface GcsStorageOptions {
    * storage half removes an erasure's holder only while it is the object the erasure searched, by its generation.
    * Defaults to `false`, on the public endpoint too: whether real GCS applies `ifGenerationMatch` to a delete has not
    * been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so CI
-   * cannot show it. Set `true` once you know it does.
+   * cannot show it. Set `true` once you know it does. Until then, the window in which an erasure's stalled delete
+   * takes a generation a load put under the number since stays open on GCS.
    */
   readonly conditionalDelete?: boolean;
 }
