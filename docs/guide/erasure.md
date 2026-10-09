@@ -115,10 +115,11 @@ encrypted first load that writes its object onto that segment before the erasure
 entry an `error: …` note (`WriteConflictError`): re-run the erasure. Pausing loads while you erase, as the first rule
 says, avoids both.
 
-**On an encrypted store, an object the segment's key does not open goes too, whatever id is erased.** On a segment
-with a key, an object sealed under a key its row does not hold opens for no read of the segment: the object of a first
-load that lost the race to the one that published, or that crashed before its publish, each under a key it made and
-never stored. The erasure cannot search it, so wherever it meets one, above the pointer or below it, it deletes it as a
+**An object no read of the segment can open goes too, whatever id is erased.** On a segment with a key, an object
+sealed under a key its row does not hold opens for no read of the segment: the object of a first load that lost the race
+to the one that published, or that crashed before its publish, each under a key it made and never stored. On a cleartext
+segment with a generation, so does any encrypted object: a key is made only for a segment's first generation, so it is
+a first load's that made one and crashed, or lost the race to a cleartext first load. The erasure cannot search it, so wherever it meets one, above the pointer or below it, it deletes it as a
 holder, under the same renewal of the row and read before the delete, and lists it in `collected`; it never makes the
 answer `erased: true`. When no generation is found to hold the id, only those objects go, and the generations kept below
 the pointer stay. Which objects those are is read from where the object fails to open: one whose index the segment's key

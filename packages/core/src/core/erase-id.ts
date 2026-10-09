@@ -76,8 +76,11 @@
  * never names a missing object (see `fenceInFlight`). An erasure that finds no holder writes nothing.
  *
  * An object sealed under a key its row does not hold cannot be searched, and no read of the segment can open it: a
- * first load's on a row with no pointer, whose key that load has not published, or, on a segment with a key, a first
- * load's that lost the race to the one that published, or crashed, under a key it made and never stored. It counts as
+ * first load's on a row with no pointer, whose key that load has not published; on a segment with a key, a first
+ * load's that lost the race to the one that published, or crashed, under a key it made and never stored; and on a
+ * cleartext segment with a pointer, any encrypted object, since a key is made only for a segment's first generation
+ * and a publish never adds one to a segment that has generations: a first load's that minted a key and crashed, or
+ * lost the race to a cleartext first load. It counts as
  * a holder whatever the id: an erasure of any id that finds one deletes it, under the same renewal of the row and read
  * before the delete, and lists it in `collected`, and a first load still in flight that wrote it is refused. Only a
  * searched object that held the id makes the answer `erased: true`. The current generation is never one of them: one
@@ -457,13 +460,13 @@ async function eraseOnce(
         // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
         // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
         if (crypto === undefined) {
-          if (
-            (tombstoned || pointerless) &&
-            (await read(() => objectIsEncrypted(deps.storage, key)))
-          ) {
+          if (await read(() => objectIsEncrypted(deps.storage, key))) {
             // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no
             // read through the library finds anything in it. Under a row with no pointer it is a first load's, sealed
-            // under a key that load has not published yet: it cannot be searched, so it counts as a holder.
+            // under a key that load has not published yet; under a cleartext row with a pointer it is a first load's
+            // that minted a key and crashed, or lost the race to a cleartext first load, since a key is made only for
+            // a segment's first generation and a publish never adds one to a segment that has generations. Either
+            // way it cannot be searched, so it counts as a holder.
             if (tombstoned) return false;
             sealed.add(generation);
             return true;

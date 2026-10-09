@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/core/audit';
 import type { CodecBitmap } from '@/core/codec';
 import { writeCrbmGenerationStream } from '@/core/crbm-storage-source';
+import { FOOTER, FOOTER_BYTES } from '@/core/crbm/format';
 import { aadFor } from '@/core/crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError } from '@/core/errors';
@@ -51,6 +52,33 @@ async function sealedElsewhere(w: W, generation: number, ids: number[]): Promise
     keystore: w.keystore,
     publish: false,
   });
+}
+
+/** The whole object at `generation`. */
+async function bytesOf(storage: IStorageDriver, generation: number): Promise<Uint8Array> {
+  return (await storage.getTail({ ...REF, generation }, 1 << 30)).bytes;
+}
+
+/** Replace the object at `generation` with `change` of its bytes, as damage or a forger would. */
+async function rewriteObject(
+  storage: IStorageDriver,
+  generation: number,
+  change: (bytes: Uint8Array) => Uint8Array,
+): Promise<void> {
+  const changed = change(Uint8Array.from(await bytesOf(storage, generation)));
+  await storage.delete({ ...REF, generation });
+  await storage.putImmutable({ ...REF, generation }, async (out) => out.write(changed));
+}
+
+/** Where the footer starts, and its fields' offsets in it. */
+const footerAt = (bytes: Uint8Array): number => bytes.length - FOOTER_BYTES;
+const u64 = (bytes: Uint8Array, at: number): number =>
+  Number(new DataView(bytes.buffer, bytes.byteOffset).getBigUint64(at, true));
+
+/** A byte of the index flipped, its checksum left as it was. */
+function flipIndexByte(bytes: Uint8Array): Uint8Array {
+  bytes[u64(bytes, footerAt(bytes) + FOOTER.indexOffset)]! ^= 0x01;
+  return bytes;
 }
 
 /** The ids as the ascending chunks a generation is written from. */
@@ -200,6 +228,52 @@ describe("an object sealed under the row's own key that does not open is corrupt
     );
     expect((await w.registry.get(REF))!.currentGen).toBe(1);
     await expect(eraseIdFromSegment(REF, X, w.deps)).rejects.toBeInstanceOf(IntegrityError);
+    expect(await generations(w.storage)).toEqual([0, 1]);
+  });
+});
+
+describe('an encrypted object under a cleartext row with a pointer', () => {
+  // A key is made only for a segment's first generation, onto no row or a row with no pointer and no key; a load onto a
+  // cleartext row with a pointer writes cleartext, a publish that would add a key to it is refused, and a rollback
+  // refuses an encrypted target on it. So an encrypted object there is a first load's that minted a key and crashed, or
+  // lost the race to a cleartext first load: no reader of the row can open it.
+  const plain = (w: W) => ({ storage: w.storage, registry: w.registry, codec: roaringCodec });
+
+  it('below the pointer: it is a holder the erasure cannot search, and goes', async () => {
+    const w = world();
+    await sealedElsewhere(w, 0, [X]); // an encrypted first load that crashed
+    await loadSegment(REF, [1, 2], plain(w), KEEP); // a cleartext first load publishes 1
+    expect((await w.registry.get(REF))!.wrappedDeks).toBeUndefined();
+    expect(await eraseIdFromSegment(REF, 4242, w.deps)).toMatchObject({
+      erased: false,
+      reason: 'not-member',
+      fromGeneration: 1,
+      collected: [0],
+    });
+    expect(await generations(w.storage)).toEqual([1]);
+  });
+
+  it('above the pointer: the object of an encrypted first load that lost the race goes under the fence', async () => {
+    const w = world();
+    await loadSegment(REF, [1, 2], plain(w), KEEP); // the cleartext first load that published 0
+    await sealedElsewhere(w, 1, [X]); // the encrypted one that lost
+    const before = (await w.registry.get(REF))!;
+    expect(await eraseIdFromSegment(REF, X, plain(w))).toMatchObject({
+      erased: false,
+      reason: 'not-member',
+      fromGeneration: 0,
+      collected: [1],
+    });
+    expect(await generations(w.storage)).toEqual([0]);
+    expect((await w.registry.get(REF))!.pointerId).not.toBe(before.pointerId);
+  });
+
+  it("the row's own cleartext object that is corrupt still throws IntegrityError, and nothing is deleted", async () => {
+    const w = world();
+    await loadSegment(REF, [1, X], plain(w), KEEP); // 0
+    await loadSegment(REF, [1, 2], plain(w), KEEP); // 1, current
+    await rewriteObject(w.storage, 0, flipIndexByte);
+    await expect(eraseIdFromSegment(REF, X, plain(w))).rejects.toBeInstanceOf(IntegrityError);
     expect(await generations(w.storage)).toEqual([0, 1]);
   });
 });

@@ -107,7 +107,9 @@ so, and so do the module headers in the code.
   segment, the object of a first load that lost the race to the one that published, or that crashed before its
   publish, is sealed under a key it made and never stored: no read of the segment opens it. An erasure that met one
   threw `IntegrityError` (AEAD authentication failed) on every run, for every id, until a load's collection took the
-  object, so `eraseSubject` reported the segment as an `error: …` entry. It now deletes it, above the pointer or below
+  object, so `eraseSubject` reported the segment as an `error: …` entry. On a cleartext segment with a generation, an
+  encrypted object (a first load's that made a key and crashed, or lost the race to a cleartext first load) made it
+  throw `ValidationError` the same way. It now deletes either, above the pointer or below
   it, under the renewal of the row and a read of the row before each delete, lists it in `collected`, and reports
   `erased: true` only when a searched generation held the id; with none, only those objects go, and the generations kept
   below the pointer stay. An object whose index the segment's key opens and whose chunk does not is still reported as
