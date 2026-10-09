@@ -435,6 +435,24 @@ describe('what forgets a resolution', () => {
     expect(await x.source.currentGeneration(A)).toBe(1);
   });
 
+  it('a read that finds its generation swept drops every snapshot on the resolution it read through: another read built a second one meanwhile', async () => {
+    const x = await world();
+    await x.open(A);
+    await x.letAGo(); // `a`'s resolution is kept
+    // Another process loads and sweeps the generation the kept resolution names.
+    await x.publish(A, 1, [3, HI + 3]);
+    await x.storage.delete({ ...A, generation: 0 });
+    const tail = x.holdNextTail();
+    const first = x.source.listChunkKeys(A); // a snapshot on the kept resolution, its open held at the tail read
+    await tail.reached;
+    await x.letAGo(); // the reader cache lets that snapshot go
+    expect(await x.source.currentGeneration(A)).toBe(0); // a second snapshot on the same resolution, which opens nothing
+    tail.release(); // the open meets the swept generation
+    expect(await first).toEqual([0, 1]); // the heal resolves afresh rather than opening the second snapshot's
+    expect(await x.source.currentGeneration(A)).toBe(1);
+    expect(remainder0(await x.source.getChunk({ ...A, chunkKey: 0 }))).toBe(3);
+  });
+
   it('a refresh that fails transiently, with the reader still open, keeps serving it and asks again after the retry interval', async () => {
     const x = await world();
     await x.open(A); // the reader cache holds `a`'s reader

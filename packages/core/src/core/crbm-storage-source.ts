@@ -1490,11 +1490,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * concurrent call's fresher snapshot or resolution is never clobbered. The identity guard is the whole point: `install`
    * and `remember` replace an entry wholesale, so comparing anything else would drop a good one on the floor. The
    * resolution goes too, or the read's retry would build its snapshot on it again and reopen the generation it just
-   * found gone.
+   * found gone; and so does a snapshot the reader cache holds on that same resolution, which another read built once the
+   * cache had let `snap` go, or the retry would open that one.
    */
   private dropStale(key: string, snap: Snapshot): void {
-    if (this.snapshots.get(key) === snap) this.snapshots.delete(key);
     const resolution = snap.resolution;
+    const held = this.snapshots.peek(key);
+    if (held === snap || (resolution !== undefined && held?.resolution === resolution)) {
+      this.snapshots.delete(key);
+    }
     if (resolution !== undefined && this.resolutions?.peek(key) === resolution) {
       this.resolutions.delete(key);
     }
