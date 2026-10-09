@@ -7,7 +7,7 @@ function store(): CloudRoaring {
 }
 
 describe('public API', () => {
-  // The five packages ship in lockstep, and each manifest is the one place its version is written. This fails
+  // The six packages ship in lockstep, and each manifest is the one place its version is written. This fails
   // the build the moment a version bump forgets one of them.
   //
   // EVERY package is asserted, derived from the workspace rather than listed here.
@@ -16,7 +16,7 @@ describe('public API', () => {
   // stays green, because no other test reads its version. The release workflow's tag check would catch it only at
   // tag-push time, after the approval, which is precisely the lateness this test exists to remove.
   //
-  // The list is read off the filesystem so a sixth package is covered on the day it is created, rather than
+  // The list is read off the filesystem so a seventh package is covered on the day it is created, rather than
   // on the day someone remembers to add it here.
   const PACKAGES = readdirSync(new URL('../packages', import.meta.url)).filter((d) =>
     existsSync(new URL(`../packages/${d}/package.json`, import.meta.url)),
@@ -24,10 +24,11 @@ describe('public API', () => {
 
   it('finds every workspace package', () => {
     // Without this, a bad glob would make the lockstep check below pass over an empty list.
-    expect(PACKAGES.length).toBeGreaterThanOrEqual(5);
+    expect(PACKAGES.length).toBeGreaterThanOrEqual(6);
     expect(PACKAGES).toContain('core');
     expect(PACKAGES).toContain('roaring');
     expect(PACKAGES).toContain('s3');
+    expect(PACKAGES).toContain('tools');
   });
 
   it('keeps every package at one version', () => {

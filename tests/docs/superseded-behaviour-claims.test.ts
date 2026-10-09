@@ -2193,8 +2193,10 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //   - a load (`store.load()`, `loadSegment`, "a load", "a steady load", "a first load", "a second load", "a reload"):
 //     its PUT-class and GET-class counts, and its total with the delete it makes; steady, first, second or one that
 //     lists, as the words around it say; with no such word, a steady load;
-//   - a cold `count()` or `stat()`: one request, one pointer read, or, where the clause says the row has no summary to
-//     use or that the index is read, the tail read it adds (two, or three on Azure Blob).
+//   - a cold `count()`: one request, one pointer read, or, where the clause says the row has no summary to use or that
+//     the index is read, the tail read it adds (two, or three on Azure Blob);
+//   - a cold `stat()`: one pointer read, and the tail read it always adds for the object's size (two requests, or
+//     three on Azure Blob).
 // It never reads: a number after "was", "were", "made", "took", "from" or a 0.11 release's name (history is
 // the changelog's, and says so), a range or a bound ("1 to 3", "two or three", "at most 4", "up to 8"), a count
 // of "more", "fewer" or "extra" requests, a clause about another operation nearer than the subject (an intersect, a
@@ -2388,11 +2390,23 @@ function requestCountHits(rel: string, text: string): string[] {
           continue;
         if (WARM.test(near) || kind === 'PUT') continue;
         const { pointer, withTail } = REQUEST_COUNTS.coldCount;
-        const allowed = NO_SUMMARY_TO_USE.test(near) ? [pointer, ...withTail] : [pointer];
+        // A stat always opens the object for its size, so its requests are a count's with the tail read added.
+        const stat = /stat/i.test([...head.matchAll(COLD_READ_SUBJECT)].at(-1)?.[0] ?? '');
+        const allowed =
+          kind === 'pointer'
+            ? [pointer]
+            : stat
+              ? withTail
+              : NO_SUMMARY_TO_USE.test(near)
+                ? [pointer, ...withTail]
+                : [pointer];
         if (allowed.includes(n)) continue;
         hits.push(
-          `${where} is not what a cold count() or stat() makes: ${pointer} request(s), a pointer read, ` +
-            `${withTail.join(' or ')} where the row has no summary to use`,
+          stat
+            ? `${where} is not what a cold stat() makes: ${pointer} pointer read and a tail read, ` +
+                `${withTail.join(' or ')} requests`
+            : `${where} is not what a cold count() makes: ${pointer} request(s), a pointer read, ` +
+                `${withTail.join(' or ')} where the row has no summary to use`,
         );
       }
     }
@@ -2424,7 +2438,8 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'a load makes 14 requests',
     'a cold count() makes 2 requests',
     'a cold count is two requests',
-    'count() is one request when cold, and a cold stat() is three requests',
+    'count() is one request when cold, and a cold stat() is one request',
+    'a cold stat() is 4 requests',
     'A cold `stat()` is 2 pointer reads',
     'a cold count on S3 and GCS makes 3 requests, with the row summary',
     'store.load() sends 3 PUTs.',
@@ -2446,6 +2461,9 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'a cold count() makes 1 request',
     'a cold count is one request',
     'count() is one request when cold, and a cold stat() is one pointer read',
+    // A stat reads the object's tail for its size: S3 and GCS two requests, Azure Blob three.
+    'a cold stat() makes 2 requests, and 3 on Azure Blob',
+    'count() is one request when cold, and a cold stat() is two requests',
     // Where the row has no summary to use, the tail read is added: S3 and GCS two, Azure Blob three.
     'a cold count() of a row with no summary makes 2 requests, and 3 on Azure Blob',
     // History is the changelog's.

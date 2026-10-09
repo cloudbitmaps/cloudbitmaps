@@ -130,6 +130,8 @@ describe('a dependency count says which package it counts', () => {
     expect(deps.size).toBeGreaterThanOrEqual(5);
     expect([...deps.values()].filter((d) => d.length > 0).length).toBeGreaterThan(1);
     expect(deps.get('@cloudbitmaps/core')).toEqual([]);
+    // The tools package's one dependency is core, which is ours: CONTRIBUTING.md's table says none.
+    expect(deps.get('@cloudbitmaps/tools')).toEqual([]);
     expect(FILES.length).toBeGreaterThan(50);
   });
 
