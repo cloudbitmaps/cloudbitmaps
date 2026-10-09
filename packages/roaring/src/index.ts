@@ -146,6 +146,18 @@ class SystemRng implements Rng {
 const DEFAULT_CACHE_MAX_CHUNKS = 1024;
 /** Default in-flight fan-out for the admin scans (`subjectReport`/`eraseSubject`) — bounded, no thundering herd. */
 const DEFAULT_ADMIN_CONCURRENCY = 8;
+/**
+ * The row version a live version from a `CrbmStorageChunkSource` names: the version up to its last `#`, which starts
+ * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every row token. It is
+ * core's `rowVersionOf` for this one caller, which is handed only that source's versions; core keeps that function
+ * off its public entry.
+ */
+function rowVersionOfLive(version: string | null): string | null {
+  if (version === null) return null;
+  const cut = version.lastIndexOf('#');
+  return cut < 0 ? version : version.slice(0, cut);
+}
+
 /** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
 function validateConcurrency(concurrency: number | undefined): void {
   if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
@@ -2031,12 +2043,13 @@ export class CloudRoaring {
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
         // version is `<generation>:<row token>` (invariant 1: the row's OCC token is the identity, the number
-        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too. Only a segment
-        // that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
+        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too, followed by `#` and
+        // the fingerprint of the object its reader opened, which a row does not name and is left out here. Only a
+        // segment that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
         if (this.crbmSource !== undefined) {
           const held = await this.crbmSource.currentVersion(ref);
           const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
-          if (held !== listed) this.engine.invalidate(ref);
+          if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
           ? { segment: rec.segment, namespace: rec.namespace }

@@ -48,6 +48,7 @@ import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError
 import type { Budget } from './budget';
 import { checkedGuard } from './load';
 import { checkedAuditSink } from './audit';
+import { rowVersionOf } from './crbm-storage-source';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -565,7 +566,10 @@ interface OperandState {
   endGeneration: number | null | undefined;
   /** The row the last read at the end of the call, or before a publish, found: `undefined` when none was read. */
   endRow: EndRow | null | undefined;
-  /** For an operand read live, the version (generation and row token) its index was read under, where the source says. */
+  /**
+   * For an operand read live, the version (generation and row token, and with the `.crbm` source the object) its index
+   * was read under, where the source says.
+   */
   startVersion: string | null | undefined;
   indexKeys: number;
   chunkReads: number;
@@ -1855,8 +1859,12 @@ class Run<R> {
   }
 }
 
-/** The token of a version (`<generation>:<token>`), or `undefined` where the version names no row. */
-function tokenOfVersion(version: string | null | undefined): string | undefined {
+/**
+ * The token of a row's version (`<generation>:<token>`, as a pin holds it), or `undefined` where the version names no
+ * row. A live version from the `.crbm` source ends with the opened object's fingerprint: read it through
+ * `rowVersionOf` first.
+ */
+export function tokenOfVersion(version: string | null | undefined): string | undefined {
   if (version == null) return undefined;
   const colon = version.indexOf(':');
   return colon < 0 ? undefined : version.slice(colon + 1);
@@ -1889,7 +1897,7 @@ function pinnedStillCurrent(spec: CombineManyOperand, now: EndRow | null): boole
 /** Whether an operand read live has changed row or generation since its index was read. */
 function liveMoved(op: OperandState): boolean | undefined {
   if (op.endRow === undefined || !op.read) return undefined;
-  const was = tokenOfVersion(op.startVersion);
+  const was = op.startVersion == null ? undefined : tokenOfVersion(rowVersionOf(op.startVersion));
   if (was !== undefined && op.endRow !== null && !sameRow(was, op.endRow.token)) return true;
   return op.startGeneration === undefined ? undefined : op.endGeneration !== op.startGeneration;
 }

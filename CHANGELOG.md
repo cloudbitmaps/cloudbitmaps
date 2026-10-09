@@ -13,6 +13,18 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A live read no longer mixes the ids of two objects stored under one generation number.** A number can be taken
+  again once its object is deleted: after a `rollback`, an erasure that deletes the generation above the pointer holding
+  the id, and a load. A store that had cached chunks of the earlier object, and that read the row before those writes,
+  as a `count()` answered from the row's summary does, opened the new object later under the version it had cached
+  the earlier one's chunks by. Inside `cache.genTtlMs` a read then returned ids of both objects, the erased id among
+  them, a set no generation ever held, and `has()` could answer for the erased id and a new one together. The store
+  now names each generation it reads by the object it opened as well, its size and footer checksum, which the open
+  reads anyway, so a chunk cached from one object is not served for another, as far as their sizes and footer checksums
+  tell them apart. It costs no request: a count answered from the row still opens nothing, and a segment reopened after
+  the reader cache let it go still reads its cached chunks. The version `CrbmStorageChunkSource.currentVersion()`
+  returns, and the one each chunk of `getChunks()` carries, end with that fingerprint; compare versions for equality,
+  as before.
 - **A load that found no registry row is refused when a row appears before its publish, guarded or not.** A load with
   `allowEmpty: true` and neither `guard.minRetained` nor `guard.maxGrowth`, into a segment with no row, published with
   no fence at all: when another writer made the row first (another first load, a `setRetention`, a drop), it moved the
