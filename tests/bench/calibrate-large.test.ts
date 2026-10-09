@@ -1538,6 +1538,27 @@ describe('the engine the suite is run against', () => {
     ]);
   });
 
+  it('reads an entry with the chunks it imports, each once, where a split build puts the shared constants', () => {
+    const files: Record<string, string> = {
+      '/r/packages/core/dist/index.js':
+        'import { a } from "./chunk-AB12.js";\nimport { b } from "./chunk-AB12.js";\nvar X = 1;',
+      '/r/packages/core/dist/chunk-AB12.js': 'var MAX_COALESCE_GAP_BYTES = 256 * 1024;',
+    };
+    const seen: string[] = [];
+    const sources = resources.installedSources('/r', (f) => {
+      seen.push(f);
+      const text = files[f];
+      if (text === undefined) throw new Error('ENOENT');
+      return text;
+    });
+    expect(sources.core).toContain('var X = 1;');
+    expect(sources.core).toContain('var MAX_COALESCE_GAP_BYTES = 256 * 1024;');
+    expect(large.constantsIn(sources.core, sources.s3).MAX_COALESCE_GAP_BYTES).toBe(256 * 1024);
+    expect(seen.filter((f) => f.includes('chunk-'))).toEqual([
+      '/r/packages/core/dist/chunk-AB12.js',
+    ]);
+  });
+
   it('is checked by the harness for a rehearsal and a run, before the library is imported or anything is created', () => {
     const main = harnessSrc.indexOf('async function main');
     const check = harnessSrc.indexOf('checkEngineConstants(constantsIn(', main);

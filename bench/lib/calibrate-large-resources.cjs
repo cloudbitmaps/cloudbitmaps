@@ -61,13 +61,22 @@ function resourcesNow() {
 /**
  * The text of the entry files of the installed `@cloudbitmaps/core` and `@cloudbitmaps/s3`: from a checkout's built
  * packages, or from the `node_modules` of the scratch directory the CloudShell script installs the published ones in.
- * A package that is in neither place reads as an empty text, which names nothing.
+ * An entry is read with the chunks it imports (`from "./chunk-….js"`), where the build puts the code two entry points
+ * share, so a constant the bundler moved into one is still read. A package that is in neither place reads as an empty
+ * text, which names nothing.
  */
 function installedSources(root, read = (f) => fs.readFileSync(f, 'utf8')) {
+  const withChunks = (file) => {
+    const text = read(file);
+    const chunks = new Set(
+      [...text.matchAll(/\bfrom\s*["'](\.\/chunk-[\w-]+\.js)["']/g)].map((m) => m[1]),
+    );
+    return [text, ...[...chunks].map((rel) => read(path.join(path.dirname(file), rel)))].join('\n');
+  };
   const first = (names) => {
     for (const rel of names) {
       try {
-        return read(path.join(root, rel));
+        return withChunks(path.join(root, rel));
       } catch {
         // Not there: the other place.
       }
