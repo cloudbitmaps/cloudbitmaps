@@ -400,7 +400,10 @@ describe('objects sealed under a key no row holds', () => {
     });
     expect(await generations(w.storage)).toEqual([]);
     expect((await w.registry.get(REF))!.pointerId).not.toBe(before.pointerId);
-    expect(audit.snapshot()).toEqual([]);
+    // The deletion is audited, with no generation the id was found in, since none was searched.
+    expect(audit.snapshot()).toEqual([
+      { kind: 'segment.collect', segment: 's', incarnation: expect.any(String), collected: [0] },
+    ]);
   });
 
   it('a sealed holder beside a cleartext one that holds the id: both go, and the answer is erased', async () => {
@@ -670,8 +673,19 @@ describe('an eraseSubject of an id no segment holds, beside first loads in fligh
     await Promise.all(loads.map((l) => l.at.reached));
 
     const unrelated = 4242;
-    const ledger = await store.eraseSubject(unrelated, { namespace: ns });
+    const audit = new RecordingAuditSink();
+    const ledger = await store.eraseSubject(unrelated, { namespace: ns, audit });
+    // The ledger lists no segment, since the id was found in none; the audit sink records the one deletion.
     expect(ledger.erasedFrom).toEqual([]);
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.collect',
+        namespace: ns,
+        segment: 'ahead',
+        incarnation: expect.any(String),
+        collected: [0],
+      },
+    ]);
     for (const l of loads) l.at.open();
     const outcomes = Object.fromEntries(
       await Promise.all(loads.map(async (l) => [l.name, await l.done] as const)),

@@ -26,7 +26,9 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 `ledger.erasedFrom` is your **erasure ledger**, the proof of deletion. It is a return value only, so persist it or
 route it to your audit sink. When you pass `audit`, the store also emits an event per segment it erased the id from:
 `segment.rewrite` when it rewrote the current generation, `segment.collect` when it only deleted other generations.
-Segments the id is not in are not listed. The two calls look in different places: `subjectReport` reads what a reader
+Segments the id is not in are not listed. A segment where the erasure found the id in nothing it could search, and
+deleted only objects no read of the segment can open ([below](#two-rules-while-you-erase)), is not listed either: the
+audit sink gets `segment.collect` for it with no `fromGeneration`, and that event is the only record of the deletion. The two calls look in different places: `subjectReport` reads what a reader
 reads, each segment's current generation, while `eraseSubject` also searches older generations, a tombstoned
 segment's objects and a first load's object that never published. So the ledger can name a segment the report did
 not.

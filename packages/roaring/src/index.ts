@@ -2057,7 +2057,9 @@ export class CloudRoaring {
    * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
    * persist it / route it to your audit sink as the proof of deletion (when you pass `audit`, an audit event is also
    * emitted per segment erased: `segment.rewrite` for a rewrite, `segment.collect` where only other generations held
-   * the id and nothing was rewritten).
+   * the id and nothing was rewritten). A segment where the erasure deleted only objects no read of it can open (a first
+   * load's sealed under a key no row holds) found the id in none, so the ledger does not list it; the audit sink gets
+   * `segment.collect` for it with no `fromGeneration`, which is the only record of that deletion.
    *
    * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
    * over the same generation. Requires the store built with a **backend** (throws

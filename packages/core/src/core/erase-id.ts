@@ -262,7 +262,8 @@ export interface EraseIdResult {
  *
  * Emits one `segment.rewrite` audit event at the publish (before the superseded generation is collected), so the
  * compliance record exists the moment the generation without the id is authoritative. An erasure that rewrites nothing,
- * because only other generations held the id, emits one `segment.collect` once no generation holds it.
+ * because only other generations held the id, emits one `segment.collect` once no generation holds it, and so does one
+ * that deleted only objects no read of the segment can open, which names no generation the id was found in.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -289,16 +290,21 @@ export async function eraseIdFromSegment(
   return recordCollect(ref, result, first, options);
 }
 
-/** What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, and the token of the
- * row it read when it finished by deleting the holders and rewriting none. */
+/**
+ * What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, the token of the row it
+ * read when it finished by deleting objects and rewriting none, and whether one of those it searched held the id.
+ */
 interface Pass {
   tombstoned?: boolean;
   collectedOn?: Token;
+  found?: boolean;
 }
 
 /**
  * Emit `segment.collect` for a call that finished by deleting the holders and rewriting none, from the report the call
- * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included.
+ * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included. It
+ * names the generation the id was found in only when a searched one held it: a call that deleted only objects it could
+ * not search found it in none.
  */
 function recordCollect(
   ref: SegmentRef,
@@ -306,13 +312,15 @@ function recordCollect(
   pass: Pass,
   options: { audit?: IAuditSink },
 ): EraseIdResult {
-  if (pass.collectedOn !== undefined && result.fromGeneration !== undefined) {
+  if (pass.collectedOn !== undefined) {
     safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
       kind: 'segment.collect',
       namespace: ref.namespace,
       segment: ref.segment,
       ...incarnationField(pass.collectedOn),
-      fromGeneration: result.fromGeneration,
+      ...(pass.found === true && result.fromGeneration !== undefined
+        ? { fromGeneration: result.fromGeneration }
+        : {}),
       collected: [...result.collected],
     });
   }
@@ -686,12 +694,23 @@ async function eraseOnce(
    */
   const collectedAll = (fromGeneration: number, collected: readonly number[]): EraseIdResult => {
     seen.collectedOn = record.token;
+    seen.found = true;
     return {
       ...base,
       erased: true,
       fromGeneration,
       collected: [...collected].sort((a, b) => a - b),
     };
+  };
+
+  /**
+   * The answer for an erasure that found no generation holding the id and deleted only objects it could not search,
+   * once a listing found none of those left: `answer`, with what it deleted. When it deleted any, the pass notes the
+   * row it read, so the call emits `segment.collect` for them, naming no generation the id was found in.
+   */
+  const sealedOnly = (answer: EraseIdResult, collected: readonly number[]): EraseIdResult => {
+    if (collected.length > 0) seen.collectedOn = record.token;
+    return { ...answer, collected: [...collected].sort((a, b) => a - b) };
   };
 
   /**
@@ -732,7 +751,7 @@ async function eraseOnce(
     const collected = [...deleted].sort((a, b) => a - b);
     const left = await holderLeft(clean);
     if (left === undefined) {
-      return newest === undefined ? { ...none, collected } : collectedAll(newest, collected);
+      return newest === undefined ? sealedOnly(none, collected) : collectedAll(newest, collected);
     }
     if (moved !== null) {
       return {
@@ -872,7 +891,7 @@ async function eraseOnce(
     const left = await holderLeft(clean);
     if (left === undefined) {
       if (newest !== undefined) return collectedAll(newest, collected);
-      return { ...notMember, collected: collected.sort((a, b) => a - b) };
+      return sealedOnly(notMember, collected);
     }
     if (moved !== null) {
       return { ...base, erased: false, reason: moved, fromGeneration: newest ?? from, collected };

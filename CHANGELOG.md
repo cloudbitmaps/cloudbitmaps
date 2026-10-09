@@ -91,11 +91,14 @@ so, and so do the module headers in the code.
   the row's token carries no incarnation id, for example from a registry of your own, and on a `segment.load-refused`
   from a load that found no row.
 - **A `segment.collect` audit event for an erasure that rewrites nothing.** When `eraseSubject` finds the id only
-  outside the current generation (a retained older generation, one above the pointer after a rollback, or an object
-  left under a tombstone), it deletes the generations holding it and now emits `segment.collect { fromGeneration,
-  collected }` once no generation holds the id. Every ledger entry with `erased: true` now has an event:
-  `segment.rewrite` or `segment.collect`. `AuditEvent` gains the member, so an exhaustive `switch` on `kind` needs a
-  case for it.
+  outside the current generation (a retained older generation, one above the pointer after a rollback, an object left
+  under a tombstone, or a first load's object on a segment with no generation yet), it deletes the generations holding
+  it and now emits `segment.collect { fromGeneration, collected }` once no generation holds the id. Every ledger entry
+  with `erased: true` now has an event: `segment.rewrite` or `segment.collect`. An erasure that deletes only objects no
+  read of the segment can open emits it too, with no `fromGeneration`, since it found the id in none and the ledger
+  does not list the segment, so the event is the record of that deletion. A call that ends `superseded` or throws
+  emits nothing, even when it had deleted a holder. `AuditEvent` gains the member, so an
+  exhaustive `switch` on `kind` needs a case for it.
 - **The export manifest lists the segments it skipped.** `ExportManifest.skipped` names each destroyed segment the
   export did not read, `{ segment, namespace?, reason: 'destroyed' }`, so `segments`, `failed` and `skipped` together
   account for every segment row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary

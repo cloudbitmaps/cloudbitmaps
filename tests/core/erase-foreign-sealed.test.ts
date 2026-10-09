@@ -130,7 +130,10 @@ describe('an object sealed under a key the row does not hold', () => {
     const row = (await w.registry.get(REF))!;
     expect(row.currentGen).toBe(2);
     expect(row.pointerId).not.toBe(before.pointerId);
-    expect(audit.snapshot()).toEqual([]);
+    // The deletion is audited, with no generation the id was found in, since none was.
+    expect(audit.snapshot()).toEqual([
+      { kind: 'segment.collect', segment: 's', incarnation: expect.any(String), collected: [1] },
+    ]);
   });
 
   it('below the pointer, beside a searched holder: the collection takes it with the rest, and the id is erased', async () => {
