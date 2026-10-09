@@ -1,8 +1,11 @@
 import { randomBytes } from 'node:crypto';
+import { RecordingAuditSink } from '@/core/audit';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { loadSegment } from '@/core/load';
+import { loadSegment, type LoadOptions } from '@/core/load';
 import { roaringCodec } from '@/roaring-codec';
-import type { SegmentRef } from '@/index';
+import { CloudRoaring, MemoryStorage } from '@/index';
+import type { IRegistryDriver, SegmentRef } from '@/index';
+import { collect } from '../helpers/loaded';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -117,10 +120,103 @@ describe('an erasure fences a load in flight before deleting its object', () => 
   });
 });
 
+/** A point a call stops at until the test opens it, and a promise that says it got there. */
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  let reach!: () => void;
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  return { open, opened, reach, reached };
+}
+
+describe('an erasure and a first load that found no row', () => {
+  // The load reads no row, another load creates the row at generation 0, and this load numbers past that object and
+  // writes generation 1 holding the id. The erasure finds the id only there, above the pointer, writes the row and
+  // deletes generation 1. The load then publishes: had it no fence, it would advance the pointer to 1 over the row
+  // that appeared, naming an object the erasure deleted, and every read of the segment would fail. It fences on the
+  // absence it found, guarded or not, so it is refused.
+  const X = 4242;
+  const REF_NS: SegmentRef = { namespace: 'ns', segment: 'g' };
+
+  it.each<[string, LoadOptions]>([
+    ['an unguarded', { allowEmpty: true }],
+    ['a guarded', {}],
+  ])(
+    '%s load is refused, the pointer stays on a generation in the bucket, and every read works',
+    async (_, options) => {
+      const backend = new MemoryStorage();
+      const store = new CloudRoaring({ storage: backend, retry: false });
+      const registry = backend.registry;
+      const afterRead = gate();
+      const atCreate = gate();
+      let reads = 0;
+      let creates = 0;
+      const gated = Object.create(registry) as IRegistryDriver;
+      gated.get = async (ref) => {
+        const row = await registry.get(ref);
+        if (reads++ === 0) {
+          afterRead.reach();
+          await afterRead.opened;
+        }
+        return row;
+      };
+      gated.create = async (ref, record, opts) => {
+        if (creates++ === 0) {
+          atCreate.reach();
+          await atCreate.opened;
+        }
+        return registry.create(ref, record, opts);
+      };
+      const audit = new RecordingAuditSink();
+      const load = loadSegment(
+        REF_NS,
+        [X, 7],
+        { storage: backend.storage, registry: gated, codec: roaringCodec },
+        { ...options, audit },
+      );
+
+      await afterRead.reached; // it read no row
+      expect((await store.load(REF_NS, [1])).generation).toBe(0); // another load creates the row
+      afterRead.open();
+      await atCreate.reached; // it wrote generation 1, holding X, and is about to create the row
+      const objects = async (): Promise<number[]> => {
+        const out: number[] = [];
+        for await (const k of backend.storage.list(REF_NS)) out.push(k.generation);
+        return out.sort((a, b) => a - b);
+      };
+      expect(await objects()).toEqual([0, 1]);
+
+      const erased = await store.eraseSubject(X, { namespace: 'ns' });
+      atCreate.open();
+      const loaded = await load;
+
+      // The erasure's ledger: it found X only in generation 1, above the pointer, and deleted it.
+      expect(erased.erasedFrom).toEqual([
+        { segment: 'g', namespace: 'ns', erased: true, fromGeneration: 1 },
+      ]);
+      expect(loaded).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+      expect(audit.snapshot()).toContainEqual(
+        expect.objectContaining({
+          kind: 'segment.load-refused',
+          generation: 1,
+          reason: 'superseded',
+        }),
+      );
+      expect((await registry.get(REF_NS))!.currentGen).toBe(0);
+      expect(await objects()).toEqual([0]);
+      const seg = new CloudRoaring({ storage: backend, retry: false }).segment('g', {
+        namespace: 'ns',
+      });
+      expect(await seg.has(X)).toBe(false);
+      expect(await collect(seg.iterate())).toEqual([1]);
+    },
+  );
+});
+
 describe('a row with no pointer, over an object a first load wrote and never published', () => {
   // A row minted by `setRetention` before the first load names no generation, and the first load's object is in the
-  // bucket until that load publishes. No row field can fence that publish, so an erasure cannot delete the object
-  // safely; it refuses, rather than report the segment as holding nothing.
+  // bucket until that load publishes. The erasure writes nothing to such a row, so that load may still publish the
+  // object, and deleting it is not safe; the erasure refuses, rather than report the segment as holding nothing.
   async function world() {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();

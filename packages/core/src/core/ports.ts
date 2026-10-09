@@ -205,6 +205,10 @@ export interface StorageChunkSource {
    * Note that putting the incarnation in the *object key* would not fix this: the new incarnation still starts
    * at generation 0, so the cache key collides either way. The identity has to reach the cache.
    *
+   * Within one incarnation a number can be taken again once its object is deleted, so two objects must never share
+   * a version either, however long after its pointer read a source opens the object: the `.crbm` source's version
+   * ends with the fingerprint of the object it opened.
+   *
    * Returns `null` when the segment resolves to no generation. A source that only ever serves one immutable
    * generation may omit this, and the engine falls back to the generation alone.
    */

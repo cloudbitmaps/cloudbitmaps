@@ -394,8 +394,8 @@
             </div>
             <p class="dgm-formula">
               The new generation is written <b>beside</b> the old one, and the pointer flips
-              <b>last</b>, by compare-and-swap, and only <b>forward</b>. A load's swap is also fenced on the row
-              it read, when there is one: if another write lands in between, the load reports
+              <b>last</b>, by compare-and-swap, and only <b>forward</b>. A load's swap is also fenced on what it
+              read, the row or its absence: if another write lands in between, the load reports
               <span class="m">superseded</span> rather than overwrite it. Until the flip, every reader still sees generation 6 &mdash; so a half-written publish cannot be observed, a crash
               between the two steps leaves 6 authoritative, and the superseded object stays readable for a grace
               window before the next load collects it. Every write of a segment's contents is this protocol; the
@@ -709,7 +709,7 @@
               <a class="btn" href="usage.html">The API</a>
               <a class="btn" href="benchmarks.html">Benchmarks</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.19.0 · zero-dependency core · 4 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.19.1 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
@@ -727,7 +727,7 @@
     <footer class="foot">
       <div class="foot-inner">
         <p class="meta">
-          CloudBitmaps · v0.19.0 · Apache-2.0 <a href="demo.html">Demo</a>
+          CloudBitmaps · v0.19.1 · Apache-2.0 <a href="demo.html">Demo</a>
           <a href="flavors.html">Flavors</a> <a href="usage.html">Usage</a>
           <a href="benchmarks.html">Benchmarks</a>
         </p>

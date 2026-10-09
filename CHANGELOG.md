@@ -30,6 +30,43 @@ so, and so do the module headers in the code.
   account for every segment row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary
   line counts them.
 
+## [0.19.1] — 2026-10-09
+
+### Fixed
+
+- **A live read no longer mixes the ids of two objects stored under one generation number.** A number can be taken
+  again once its object is deleted: after a `rollback`, an erasure that deletes the generation above the pointer holding
+  the id, and a load. A store that had cached chunks of the earlier object, and that read the row before those writes,
+  as a `count()` answered from the row's summary does, opened the new object later under the version it had cached
+  the earlier one's chunks by. Inside `cache.genTtlMs` a read then returned ids of both objects, the erased id among
+  them, a set no generation ever held, and `has()` could answer for the erased id and a new one together. The store
+  now names each generation it reads by the object it opened as well, its size and footer checksum, which the open
+  reads anyway, so a chunk cached from one object is not served for another, as far as their sizes and footer checksums
+  tell them apart. It costs no request: a count answered from the row still opens nothing, and a segment reopened after
+  the reader cache let it go still reads its cached chunks. The version `CrbmStorageChunkSource.currentVersion()`
+  returns, and the one each chunk of `getChunks()` carries, end with that fingerprint; compare versions for equality,
+  as before.
+- **A load that found no registry row is refused when a row appears before its publish, guarded or not.** A load with
+  `allowEmpty: true` and neither `guard.minRetained` nor `guard.maxGrowth`, into a segment with no row, published with
+  no fence at all: when another writer made the row first (another first load, a `setRetention`, a drop), it moved the
+  pointer over that row anyway. Racing a subject erasure, that could leave the pointer naming a generation that is not
+  in the bucket: the load's own object, which the erasure had just deleted because it held the erased id above the
+  pointer. Every read of the segment then failed with `NotFoundError`, the state `checkConsistency` reports as
+  `missing-storage-generation`. Every load that found no row now fences its publish on that absence, as a guarded load
+  already did: it is refused with `reason: 'superseded'` and audited as `segment.load-refused`, and an `*Into` throws
+  `WriteConflictError` for it, as a `materializeMany` output reports it. Of two first loads of one segment at once,
+  at most one lands. The refused load's object is deleted when the row that appeared is a tombstone, or holds key
+  material where the load wrote cleartext and the object's footer proves it the load's. Otherwise it stays in the
+  bucket, still billed, until a later load's collection deletes it (the next load whose check meets it, and at the
+  latest the listing a load runs every sixteenth generation: see
+  [how a load stays correct](docs/guide/loading.md#how-it-stays-correct)), or `dropSegment` or the retention sweep
+  removes the segment. A first load that meets another writer's row only at its publish, a drop's tombstone or a row whose keys
+  do not match the object it wrote, now reports `superseded` instead of throwing `ValidationError` or
+  `KeyUnavailableError`. One that meets that row before it writes still throws, as before, and writes nothing:
+  `ValidationError` for a tombstone, `KeyUnavailableError` for a row with key material when it has no keystore, and
+  `ValidationError` for a cleartext row under `requireEncryption`. The fence holds once every process that writes the segment runs this release: a process
+  on an earlier release still moves the pointer over a row that appeared while its load ran.
+
 ## [0.19.0] — 2026-10-08
 
 ### Added

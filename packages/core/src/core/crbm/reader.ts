@@ -141,6 +141,17 @@ export const fingerprintFor = (size: number, footerCrc: number): string =>
   `${sizePart(size)}${footerCrc}`;
 
 /**
+ * A fingerprint spelled short, for a key a read builds on every chunk: its size and its footer's CRC in base 36,
+ * `<size>.<crc>`. Two compact spellings are equal exactly when the fingerprints are.
+ */
+export function compactFingerprint(fingerprint: string): string {
+  const colon = fingerprint.indexOf(':');
+  const size = Number(fingerprint.slice(0, colon));
+  const crc = Number(fingerprint.slice(colon + 1));
+  return `${size.toString(36)}.${crc.toString(36)}`;
+}
+
+/**
  * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that
  * is not would turn off every bounds check an open makes against it.
  */

@@ -257,7 +257,7 @@ bitmap of up to 65,536 ids, and it is the unit of storage and transfer: you neve
 
 - **Storage** holds immutable, generation-keyed `.crbm` objects, each with a footer index that makes single-chunk reads cheap; the registry row's summary of the current generation makes `count()` one request.
 - **The registry** is one small row per segment saying which generation is current. A load moves it by compare-and-swap, and it is the only thing a write changes.
-- **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, so a new generation misses it instead of being answered with the old one's bytes. A reader moves to a new generation within [`cache.genTtlMs`](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load), 2 s by default.
+- **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, row token and the opened object, so a new generation misses it instead of being answered with the old one's bytes. A reader moves to a new generation within [`cache.genTtlMs`](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load), 2 s by default.
 
 **Intersection.** To find the ids in both of two huge segments, CloudBitmaps reads the two small chunk indexes,
 aligns their keys, and fetches only the chunks present in both. Two 100 MB segments overlapping in 5% of chunks

@@ -5,10 +5,9 @@
  * Storage generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
  * (`currentGen`). Every write path in the library — a load, an `*Into` materialisation, a subject-erasure rewrite —
  * writes a **new** object and then advances the pointer. Every load that finds a row fences its publish on the
- * row's token; a guarded load (the default, since the empty refusal needs the size of the current generation) also fences on
- * the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead. Only an unguarded
- * load (`allowEmpty: true`, with neither `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row
- * publishes bare forward-only. An `*Into` materialisation is a load, and publishes the same way. The rewrite is
+ * row's token, and every load that finds none on that absence, guarded or not; a guarded load (the default, since the
+ * empty refusal needs the size of the current generation) also fences on the pointer it judged (`expectFrom`). An
+ * `*Into` materialisation is a load, and publishes the same way. The rewrite is
  * fenced on its source generation and the row's token (see invariant 1). That leaves the superseded object in the bucket, still billed, so something has
  * to collect it: {@link gcOrphanGenerations}, or, for a load whose row records the generations it keeps, the names its
  * publish pushed out of that window ({@link deleteEvicted}). Pure orchestration over the driver ports — no I/O, time or
@@ -104,8 +103,8 @@ export interface LoadNumber {
  * `superseded`. The orphan above stays unpublished; the load whose check meets it numbers past it by the listing,
  * and collection takes it once a generation above it is current. Like a listing's, the number can be one whose
  * object was deleted (an erasure removes the generations above a rolled-back pointer that held the id), which is
- * why nothing identifies a generation by its number alone: the reader cache, the chunk cache and a pin all key on
- * the number and the row's token, and the token has moved on.
+ * why nothing identifies a generation by its number alone: the reader cache and the chunk cache key on the number and
+ * the row's token, checked against the object a reader opens, and a pin on its object's fingerprint.
  */
 export async function nextLoadGeneration(
   ref: SegmentRef,

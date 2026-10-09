@@ -18,6 +18,7 @@ import { SegmentEngine } from '@/core/engine';
 import { destroySegment } from '@/core/erasure';
 import { segmentKey } from '@/core/keys';
 import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
+import { rowVersionOf } from '@/core/crbm-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
@@ -584,7 +585,12 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
     const crbm = new CrbmStorageChunkSource(storage, { registry });
     // Typed without a `fingerprint`: if the field became required, this file would stop compiling.
-    const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF), ...extra };
+    // A real pin holds the row's version: the live one without the opened object's suffix.
+    const pin: PinnedAt = {
+      generation: 0,
+      version: rowVersionOf((await crbm.currentVersion(REF))!),
+      ...extra,
+    };
     const engine = new SegmentEngine({
       storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
       codec: roaringCodec,
@@ -886,16 +892,17 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
     const crbm = new CrbmStorageChunkSource(storage, { registry });
-    const version = await crbm.currentVersion(REF);
-    expect(version).not.toBeNull();
+    const live = await crbm.currentVersion(REF);
+    expect(live).not.toBeNull();
+    const version = rowVersionOf(live!);
     await registry.delete(REF);
     // A bare read of a generation is a lookup, and one with no row reads empty. A pin's read of it fails, since a
     // pin that went empty part-way through a call would have torn it.
     expect(await crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0)).toBeNull();
     expect(await crbm.listChunkKeysAt(REF, 0)).toEqual([]);
-    await expect(
-      crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, { version: version! }),
-    ).rejects.toThrow(NotFoundError);
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, { version })).rejects.toThrow(
+      NotFoundError,
+    );
   });
 
   it('shares one reader among pins of one generation with a registry, and opens the object for each pin without one', async () => {
@@ -1330,8 +1337,8 @@ describe('what a pin says when its object changes under it, and what pinning cos
   it("cannot tell a replacement without a fingerprint, so a pin built by hand without one keeps the chunk's error", async () => {
     const w = await purgeable(OLD);
     const crbm = new CrbmStorageChunkSource(w.backend.storage, { registry: w.backend.registry });
-    const version = await crbm.currentVersion(REF);
-    const pin: PinnedAt = { generation: 0, version: version! };
+    const version = rowVersionOf((await crbm.currentVersion(REF))!);
+    const pin: PinnedAt = { generation: 0, version };
     const engine = new SegmentEngine({
       storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
       codec: roaringCodec,

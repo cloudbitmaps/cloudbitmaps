@@ -417,10 +417,9 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
     expect(await idsOf(w.storage, row.currentGen!)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('an UNGUARDED load stays forward-only, so a concurrent publish does not make it refuse', async () => {
-    // The other half of the contract. Forward-only is right when nothing was derived: the ids come from
-    // upstream, so losing a race costs nothing the winner did not also bring. Fencing every load would make
-    // routine concurrent loading fail for no benefit.
+  it('an UNGUARDED load onto a row publishes: it judged no pointer, so only the row it read fences it', async () => {
+    // The other half of the contract. An unguarded load derived nothing from the current generation, so it carries
+    // no fence on the pointer; it is fenced on the row's token, as every load that found a row is.
     const w = world();
     await loadSegment(SEG, [1], w.deps);
     const r = await loadSegment(SEG, [2, 3], w.deps, { allowEmpty: true });
@@ -470,9 +469,10 @@ describe('loadSegment — validation', () => {
 });
 
 describe('two loads onto a segment with no row, under allowEmpty and no guard', () => {
-  // The guide's load-ordering passage: neither load reads anything to fence on, so each publish is a plain
-  // forward-only advance. Both loads write their object before either publishes (the gate holds each one right after
-  // its put), so they hold different numbers: the first takes 0, the second sees that object and takes 1.
+  // Invariant 1's fence on absence, for loads that judged nothing. Neither load found a row, so each fences its publish
+  // on that absence: the first to publish creates the row, and the other is refused, whichever number it holds. Both
+  // loads write their object before either publishes (the gate holds each one right after its put), so they hold
+  // different numbers: the first takes 0, the second sees that object and takes 1.
   async function raced(firstToPublish: 'lower' | 'higher') {
     const w = world();
     const held: { release: () => void; arrived: Promise<void> }[] = [];
@@ -495,10 +495,10 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
       },
     };
     const deps = { ...w.deps, storage };
-    const opts = { allowEmpty: true } as const;
-    const lower = loadSegment(SEG, [1], deps, opts);
+    const audits = { lower: new RecordingAuditSink(), higher: new RecordingAuditSink() };
+    const lower = loadSegment(SEG, [1], deps, { allowEmpty: true, audit: audits.lower });
     await until(() => held.length === 1);
-    const higher = loadSegment(SEG, [2], deps, opts);
+    const higher = loadSegment(SEG, [2], deps, { allowEmpty: true, audit: audits.higher });
     await until(() => held.length === 2);
 
     const [a, b] = firstToPublish === 'lower' ? [0, 1] : [1, 0];
@@ -506,27 +506,53 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
     const first = await (a === 0 ? lower : higher);
     held[b]!.release();
     const second = await (b === 0 ? lower : higher);
-    return { w, lower: a === 0 ? first : second, higher: a === 0 ? second : first };
+    return {
+      w,
+      audits,
+      lower: a === 0 ? first : second,
+      higher: a === 0 ? second : first,
+    };
   }
   const until = async (cond: () => boolean): Promise<void> => {
     for (let i = 0; i < 1000 && !cond(); i++) await new Promise((r) => setImmediate(r));
     expect(cond()).toBe(true);
   };
 
-  it('both land when the lower generation publishes first, and the higher stays current', async () => {
-    const { w, lower, higher } = await raced('lower');
+  it('the higher is refused when the lower publishes first: one lands, the refusal is audited, and the next load collects its object', async () => {
+    const { w, audits, lower, higher } = await raced('lower');
     expect([lower.generation, higher.generation]).toEqual([0, 1]);
     expect(lower.published).toBe(true);
-    expect(higher.published).toBe(true);
-    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    expect(higher).toMatchObject({ published: false, reason: 'superseded' });
+    expect(audits.higher.snapshot()).toEqual([
+      expect.objectContaining({
+        kind: 'segment.load-refused',
+        generation: 1,
+        reason: 'superseded',
+      }),
+    ]);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+    expect(await idsOf(w.storage, 0)).toEqual([1]);
+    // The row it met is another load's, so the refusal cannot prove the number its own: its object stays above the
+    // pointer, and the next load's check meets it, numbers past it by a listing, and that listing deletes it.
+    expect(await generations(w.storage)).toEqual([0, 1]);
+    expect(await loadSegment(SEG, [3], w.deps)).toMatchObject({ generation: 2, published: true });
+    expect(await generations(w.storage)).toEqual([0, 2]);
   });
 
   it('the lower one is superseded when the higher publishes first', async () => {
-    const { w, lower, higher } = await raced('higher');
+    const { w, audits, lower, higher } = await raced('higher');
     expect([lower.generation, higher.generation]).toEqual([0, 1]);
     expect(higher.published).toBe(true);
     expect(lower).toMatchObject({ published: false, reason: 'superseded' });
+    expect(audits.lower.snapshot()).toEqual([
+      expect.objectContaining({
+        kind: 'segment.load-refused',
+        generation: 0,
+        reason: 'superseded',
+      }),
+    ]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    expect(await idsOf(w.storage, 1)).toEqual([2]);
   });
 });
 

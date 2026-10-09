@@ -91,8 +91,9 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
   held, and the library cannot know that source was meant to exclude the id. Pause loads of the affected segments for
   the duration, or fix the source first and load after. A writer that lands during the rewrite is caught and
   reported as `'superseded'`, not as an error. A load still writing a generation above the pointer, when the id is
-  found only there, is refused: the erasure writes the segment's row before it deletes that generation, so the load's
-  publish meets another writer rather than naming an object that is gone.
+  found only there, is refused: the erasure writes the segment's row before it deletes that generation, and a load
+  that found no row is refused by any row at all, so the load's publish meets another writer rather than naming an
+  object that is gone.
 - **Never put a subject's id in a generation's metadata.** An erasure rewrites the ids and carries the metadata over as
   it is, without scanning it: it would copy an id there into the new generation, and the registry row holds a copy of
   the current generation's metadata too. Put a version, a time or a run id in it, and nothing that names a person.
@@ -245,11 +246,11 @@ driver authors) over every registered segment, and each ledger entry is that fun
   id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is
   `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
 - A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too. An
-  object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: its
-  load may still publish it, and no row write can refuse that publish. On an encrypted store such an object is sealed
-  under a key its load has not published yet, so it cannot be searched and is refused the same way. A row with nothing
-  in its bucket is `'no-generation'`, under `requireEncryption` too. In `eraseSubject`'s ledger it is an `error: …`
-  entry. Load the segment, which makes the object collectable, or drop it, and re-run.
+  object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: the
+  erasure writes nothing to such a row, so the load that wrote the object may still publish it. On an encrypted store
+  such an object is sealed under a key its load has not published yet, so it cannot be searched and is refused the
+  same way. A row with nothing in its bucket is `'no-generation'`, under `requireEncryption` too. In `eraseSubject`'s
+  ledger it is an `error: …` entry. Load the segment, which makes the object collectable, or drop it, and re-run.
 - `'superseded'` means another writer moved the pointer off `fromGeneration` while the call was in flight: a load,
   another erasure, or a rollback. It means this call did not erase the id, not that the id is still there. Re-run, and
   if a racing erasure of the same id got there first, the re-run reports `'not-member'`.
