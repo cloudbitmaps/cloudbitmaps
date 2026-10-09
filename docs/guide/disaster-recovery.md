@@ -586,7 +586,8 @@ only once the pointer is on the target — so keep the error with your incident 
 > pointer, and not one above it, which is where a rollback leaves the generations it rolled back from. An erasure
 > performed *after* a rollback deletes **every** generation up there that holds the id, so no rollback can bring
 > the id back. If the generation the pointer names does not hold the id, the ones up there that never held it stay
-> as rollback targets; if it does, the rewrite is numbered above everything and its `keep: 0` collection takes
+> as rollback targets, but for any object no read of the segment can open, which goes whatever the id; if it does, the
+> rewrite is numbered above everything and its `keep: 0` collection takes
 > every older generation, above the pointer or below. A rollback that lands *while* an
 > erasure is running is not attested over: that erasure reports `note: 'superseded'`, or an `error: …` note if
 > its rewrite had already published, and a re-run settles it. So if you roll back a segment while a subject

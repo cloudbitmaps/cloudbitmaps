@@ -112,11 +112,13 @@ so, and so do the module headers in the code.
   threw `IntegrityError` (AEAD authentication failed) on every run, for every id, until a load's collection took the
   object, so `eraseSubject` reported the segment as an `error: …` entry. On a cleartext segment with a generation, an
   encrypted object (a first load's that made a key and crashed, or lost the race to a cleartext first load) made it
-  throw `ValidationError` the same way. It now deletes either, above the pointer or below
-  it, under the renewal of the row and a read of the row before each delete, lists it in `collected`, and reports
-  `erased: true` only when a searched generation held the id; with none, only those objects go, and the generations kept
-  below the pointer stay. An object whose index the segment's key opens and whose chunk does not is still reported as
-  corruption with `IntegrityError`, and the current generation is never deleted for this
+  throw `ValidationError` the same way. It now deletes either as a holder it cannot search, except as the current
+  generation or under a tombstone: by name, under the renewal of the row and a read of the row before each delete,
+  above the pointer and wherever no searched generation holds the id, in which case the generations kept below the
+  pointer stay; and below the pointer beside a searched holder, with the `keep: 0` collection that takes every
+  generation there. It lists it in `collected`, and reports `erased: true` only when a searched generation held the
+  id. An object whose index the segment's key opens and whose chunk does not is still reported as corruption with
+  `IntegrityError`, and the current generation is never deleted for this
   ([erasure](docs/guide/erasure.md#two-rules-while-you-erase)).
 - **An erasure deletes a first load's object on a segment with no generation yet, and refuses the load that wrote
   it.** On a row with no pointer (one `setRetention` made before the first load), an erasure that finds an object

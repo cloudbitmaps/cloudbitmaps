@@ -2053,7 +2053,7 @@ export class CloudRoaring {
    * can still hold it, and so can one above the pointer after a {@link CloudRoaring.rollback}, which the rollback
    * could make current again. Each holder is deleted — below the pointer by a `keep: 0` collection, above it one
    * by one, re-proved against the row first — and the generations above the pointer that never held the id stay
-   * as rollback targets. An entry says `erased: true` only once the call has listed the bucket and read what is
+   * as rollback targets, but for any object no read of the segment can open, which goes whatever the id. An entry says `erased: true` only once the call has listed the bucket and read what is
    * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
    * persist it / route it to your audit sink as the proof of deletion (when you pass `audit`, an audit event is also
    * emitted per segment erased: `segment.rewrite` for a rewrite, `segment.collect` where only other generations held
@@ -2333,8 +2333,9 @@ export class CloudRoaring {
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
    * load whose number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is
    * below its pointer), {@link CloudRoaring.dropSegment}
-   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
-   * the id when the current generation does not. An operator who has just undone a bad load should not have the
+   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and, when the
+   * current generation does not hold the id, only those holding it and any no read of the segment can open, whatever
+   * the id. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
    * erasure undoable.
    *

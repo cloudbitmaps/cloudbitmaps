@@ -187,13 +187,15 @@ export interface EraseIdResult {
   readonly erased: boolean;
   /**
    * Why the id was not erased, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
-   * tombstone — already unreadable), `'no-generation'` (a row with no Storage data yet: no object in its bucket held
-   * the id, and `collected` names any object this call deleted unsearched, see below), `'not-member'` (no
+   * tombstone — already unreadable), `'no-generation'` (a row with no generation yet: its bucket can hold first loads'
+   * objects, none of them found to hold the id, and `collected` names any this call deleted unsearched, see below),
+   * `'not-member'` (no
    * generation in the bucket holds the id — the common case across a fleet scan — with the same note on `collected`),
    * or `'superseded'`.
    *
    * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
-   * load, another erasure, or a rollback — moved the pointer off the generation this call read, so what it was
+   * load, another erasure, or a rollback — moved the pointer off the generation this call read (on a row with no
+   * pointer, any other write of the row before this call renewed it, a `setRetention` included), so what it was
    * doing no longer follows from what is current: a rewrite derived from that generation is not a valid successor
    * to the new one, and a generation it meant to delete above the pointer may be the one the pointer now names.
    * Re-run against the new generation: if the id is still present it is erased then; if the racing writer was
@@ -669,10 +671,12 @@ async function eraseOnce(
    * the row's reason when the deletes stopped.
    *
    * One round trip remains between that read and its delete: a rollback that lands inside it onto the holder being
-   * deleted leaves the pointer naming a missing object. Above the pointer that is one with `allowForward`; below it, an
-   * object sealed under a key the row does not hold, which only a rollback with no key at hand moves onto, since one
-   * with the key refuses an object it cannot open. The rollback's own move-then-verify catches every such landing
-   * except one whose check runs before the delete, and no storage port offers a conditional delete to close it.
+   * deleted leaves the pointer naming a missing object. Above the pointer, and on a row with no pointer, that is one
+   * with `allowForward` onto an object the rollback accepts (on a row with no key, a cleartext one: it refuses an
+   * encrypted target there); below it, an object sealed under a key the row does not hold, which only a rollback with
+   * no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
+   * move-then-verify catches every such landing except one whose check runs before the delete, and the storage driver
+   * port has no conditional delete to close it.
    */
   const deleteFenced = async (
     holders: readonly number[],
@@ -807,7 +811,8 @@ async function eraseOnce(
    *  - **Below the pointer**, `gcOrphanGenerations` with `keep: 0` takes every generation at once, re-proving the
    *    row before each delete. It costs the segment its grace window and its older rollback targets, which is
    *    proportionate: only a segment that genuinely held the subject pays it.
-   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders: a
+   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders (an
+   *    object no read of the segment can open is one, whatever the id): a
    *    generation up there without the id is still an operator's rollback target and stays. This is the one place
    *    the library deletes an above-pointer object that it did not write, and it costs `rollbackSegment` a
    *    target, deliberately: a rollback point that still contains data we were required to erase is not a
