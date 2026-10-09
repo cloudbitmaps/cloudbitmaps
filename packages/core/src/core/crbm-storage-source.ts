@@ -64,6 +64,7 @@ import type {
 import { DEFAULT_TAIL_BYTES } from './crbm/format';
 import {
   CrbmReader,
+  compactFingerprint,
   fingerprintFor,
   footerSaysEncrypted,
   openCrbmReaderKeeping,
@@ -190,7 +191,7 @@ function versionOf(generation: number, lineage: unknown): string {
   return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
 }
 
-/** The version of each open reader, spelled once per reader: the hot path asks for it once per operand of every read. */
+/** The version of each open reader, spelled once per reader: the hot path asks for it once per operand of a read. */
 const readerVersions = new WeakMap<CrbmReader, string>();
 
 /**
@@ -202,18 +203,22 @@ const readerVersions = new WeakMap<CrbmReader, string>();
 function versionOfReader(reader: CrbmReader): string {
   let version = readerVersions.get(reader);
   if (version === undefined) {
-    version = `${versionOf(reader.generation, reader.lineage)}#${reader.fingerprint}`;
+    version = `${versionOf(reader.generation, reader.lineage)}#${compactFingerprint(reader.fingerprint)}`;
     readerVersions.set(reader, version);
   }
   return version;
 }
 
-/** The fingerprint {@link versionOfReader} ends a version with: an object's size and its footer's checksum. */
-const OBJECT_SUFFIX = /#\d+:\d+$/;
+/** What {@link versionOfReader} ends a version with: `#`, then the object's size and footer checksum in base 36. */
+const OBJECT_SUFFIX = /#[0-9a-z]+\.[0-9a-z]+$/;
 
 /**
  * What a live version's resolution named, without the object's fingerprint: `<generation>:<row token>`, or
- * `<generation>` with no registry. For a caller that compares a version with a row it read, which names no object.
+ * `<generation>` with no registry. For a caller that compares a live version, from
+ * {@link CrbmStorageChunkSource.currentVersion} or a chunk of its `getChunks`, with a row it read, which names no
+ * object; a pin's version has no suffix and is not passed here. Known limit: a version from another source, or one
+ * whose row token, from another registry, itself ends in `#<base 36>.<base 36>`, loses that end too. A shipped
+ * registry's tokens never hold a `#`.
  */
 export function rowVersionOf(version: string): string {
   return version.replace(OBJECT_SUFFIX, '');
@@ -283,15 +288,18 @@ const readerIsOf = (reader: CrbmReader, live: Live): boolean =>
   reader.generation === live.target.generation && reader.lineage === live.target.lineage;
 
 /**
- * Whether `snap` reads the object `reader` opened. Once the snapshot's reader is open, or opening, its version says,
- * which names the object. Until then its resolution says, by generation and row token, so no object is opened to learn
- * it; the snapshot's reader, opened later, can still turn out to be another object under that name, which the caller
- * checks when it opens.
+ * Whether `snap` reads the object `reader` opened. Once the snapshot's reader has opened, its version says, which names
+ * the object. Until then, while none has been asked for and while another read's open of it is under way, its
+ * resolution says, by generation and row token, so nothing is opened, and nothing waited on, to learn it; the
+ * snapshot's reader can still turn out to be another object under that name, which the caller checks once it settles.
+ * An open that failed is another read's failure, not a reason to fail the caller: it says the snapshot is not one the
+ * caller can go on with, and the caller resolves the segment again, meeting the error itself only if it persists.
  */
 async function readsObjectOf(snap: Snapshot, reader: CrbmReader): Promise<boolean> {
-  const opened = snap.openedReader;
-  if (opened !== undefined) {
-    const other = await opened;
+  const settled = snap.settled;
+  if (settled === 'failed') return false;
+  if (settled !== undefined) {
+    const other = settled.reader;
     return (
       other !== null && (other === reader || versionOfReader(other) === versionOfReader(reader))
     );
@@ -324,6 +332,7 @@ class Snapshot {
   /** Set by the cache, to hear of a reader as it is opened. */
   onReader: ((reader: Promise<CrbmReader | null>) => void) | undefined;
   private opened: Promise<CrbmReader | null> | undefined;
+  private outcome: { readonly reader: CrbmReader | null } | 'failed' | undefined;
 
   private constructor(
     /** What the pointer resolved to; absent on a pinned snapshot. */
@@ -343,7 +352,7 @@ class Snapshot {
 
   static eager(reader: Promise<CrbmReader | null>): Snapshot {
     const snap = new Snapshot(undefined, undefined, undefined);
-    snap.opened = reader;
+    snap.hold(reader);
     return snap;
   }
 
@@ -351,20 +360,45 @@ class Snapshot {
   get reader(): Promise<CrbmReader | null> {
     if (this.opened === undefined) {
       const target = this.target as Promise<Live | null>;
-      this.opened = target.then(async (live) => {
-        if (live === null) return null;
-        const kept = await this.reuse(live);
-        this.prior = undefined;
-        return kept ?? (this.open as (live: Live) => Promise<CrbmReader>)(live);
-      });
-      this.onReader?.(this.opened);
+      const opened = this.hold(
+        target.then(async (live) => {
+          if (live === null) return null;
+          const kept = await this.reuse(live);
+          this.prior = undefined;
+          return kept ?? (this.open as (live: Live) => Promise<CrbmReader>)(live);
+        }),
+      );
+      this.onReader?.(opened);
+      return opened;
     }
     return this.opened;
+  }
+
+  /** Take `reader` as this snapshot's, and note what it comes to once it settles. */
+  private hold(reader: Promise<CrbmReader | null>): Promise<CrbmReader | null> {
+    this.opened = reader;
+    reader.then(
+      (r) => {
+        this.outcome = { reader: r };
+      },
+      () => {
+        this.outcome = 'failed';
+      },
+    );
+    return reader;
   }
 
   /** The reader if one has been asked for, without asking for one. */
   get openedReader(): Promise<CrbmReader | null> | undefined {
     return this.opened;
+  }
+
+  /**
+   * What the open came to, once it has settled: the reader (`null` for no generation), or `'failed'`. Undefined while
+   * no reader has been asked for, and while the open is under way.
+   */
+  get settled(): { readonly reader: CrbmReader | null } | 'failed' | undefined {
+    return this.outcome;
   }
 
   /** The prior snapshot's reader, if it is of what this snapshot resolved. */
@@ -380,8 +414,7 @@ class Snapshot {
     const reader = await this.reuse(live);
     this.prior = undefined;
     if (reader !== null && this.opened === undefined) {
-      this.opened = Promise.resolve(reader);
-      this.onReader?.(this.opened);
+      this.onReader?.(this.hold(Promise.resolve(reader)));
     }
   }
 }
@@ -763,15 +796,16 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * `<generation>#<fingerprint>` for a registry-less source, or `<generation>:<row token>#<fingerprint>` with one: the
-   * generation the segment's snapshot resolved, and the object its reader opened, by that object's size and footer
-   * checksum, which the open read anyway. The token moves on every row write, so an unrelated write (a `setRetention`)
-   * costs the segment's decoded chunks once — bounded, and on an admin path. Two objects do not share a version string,
-   * as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second one: a name purged and loaded again (a new row, or with no registry
-   * the same bare number), a number taken again within one row once its object was deleted, or an object put back
-   * under its key from outside the library. That holds however long after its row read a reader opens: a snapshot that
-   * a `count()` resolved from the row opens its reader only when a later read needs it, and the object under the key
-   * may have changed in between. The version is opaque: compare two for equality.
+   * `<generation>#<object>` for a registry-less source, or `<generation>:<row token>#<object>` with one: the generation
+   * the segment's snapshot resolved, and the object its reader opened, by that object's size and footer checksum in
+   * base 36, which the open read anyway. The token moves on every row write, so an unrelated write (a `setRetention`)
+   * costs the segment's decoded chunks once — bounded, and on an admin path. Two objects do not share a version
+   * string, as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second
+   * one: a name purged and loaded again (a new row, or with no registry the same bare number), a number taken again
+   * within one row once its object was deleted, or an object put back under its key from outside the library. That
+   * holds however long after its row read a reader opens: a snapshot that a `count()` resolved from the row opens its
+   * reader only when a later read needs it, and the object under the key may have changed in between. The version is
+   * opaque: compare two for equality.
    *
    * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its
    * chunk cache, so it heals a swept generation exactly as {@link currentGeneration} does: unhealed, a cold read
@@ -1467,9 +1501,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // The version names the object this stream reads, as `currentVersion` does: chunks of an object replaced under
         // the same number and token, read after a heal, carry another version than the ones read before it.
         const version = versionOfReader(reader);
-        // The reader of the snapshot this stream last compared itself with: when that snapshot's reader is opened
-        // later, the stream compares again, since it can be another object under the same name.
-        let seen = snap.openedReader;
+        // What the open of the snapshot this stream last compared itself with had come to: when that snapshot's
+        // reader settles later, the stream compares again, since it can be another object under the same name.
+        let seen = snap.settled;
         chunks = reader.readChunks(keys.slice(yielded), {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
           ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
@@ -1488,18 +1522,19 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             // snapshot another read installed each leave the snapshot this stream was opened on no longer the live
             // one. If that moved the segment to another generation or incarnation, or to none, nothing more is served
             // from this stream: its ranges are dropped and the keys not yet yielded are read afresh. The live snapshot
-            // is compared by its reader where it has opened one, which names the object, and otherwise by its
-            // resolution (the registry's row, or a listing of the bucket with no registry), so no object is opened to
-            // learn it. A snapshot taken on by its resolution is compared again once its reader opens: a reader opened
-            // after its row read can be another object under the same name, which the rest of the read, a chunk served
-            // from the cache among it, reads from then on. A fault in resolving starts the stream over at the top,
-            // where a caller's retry runs the resolution.
-            if (this.mayHaveMoved(key, snap, epoch) || snap.openedReader !== seen) {
+            // is compared by its reader where one has opened, which names the object, and otherwise by its resolution
+            // (the registry's row, or a listing of the bucket with no registry), so the stream neither opens an object
+            // nor waits on another read's open to learn it. A snapshot taken on by its resolution is compared again
+            // once its reader settles: a reader opened after its row read can be another object under the same name,
+            // which the rest of the read, a chunk served from the cache among it, reads from then on, and an open that
+            // failed sends the stream back to resolve the segment itself. A fault in resolving starts the stream over
+            // at the top, where a caller's retry runs the resolution.
+            if (this.mayHaveMoved(key, snap, epoch) || snap.settled !== seen) {
               const live = this.liveSnapshot(ref);
-              if (live !== snap || live.openedReader !== seen) {
-                // What is compared is the reader as it stands now: one opened while the comparison waits is compared
-                // at the next chunk.
-                const looked = live.openedReader;
+              if (live !== snap || live.settled !== seen) {
+                // What is compared is the open as it stands now: one that settles while the comparison waits is
+                // compared at the next chunk.
+                const looked = live.settled;
                 let same: boolean;
                 try {
                   same = await readsObjectOf(live, reader);

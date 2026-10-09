@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { CloudRoaring, CrbmStorageChunkSource, InProcessKeystore, MemoryStorage } from '@/index';
 import type { Clock, IMetricsSink, SegmentRef } from '@/index';
 import { brandAsBackend } from '@/core/ports';
-import type { ChunkRead, IRegistryDriver, IStorageDriver } from '@/core/ports';
+import type { ChunkRead, GenKey, IRegistryDriver, IStorageDriver } from '@/core/ports';
+import { rowVersionOf } from '@/core/crbm-storage-source';
+import { compactFingerprint } from '@/core/crbm/reader';
+import { tokenOfVersion } from '@/core/combine-many';
+import { IntegrityError, NotFoundError } from '@/core/errors';
 import { counting } from '../helpers/counting';
 
 /**
@@ -126,14 +130,51 @@ async function warmLetGoAndCount(w: World): Promise<void> {
   expect(w.requests()).toEqual({ ...before, pointer: before.pointer + 1 });
 }
 
-/** Number 1 is taken again: a rollback onto 0, an erasure that deletes 1 above the pointer, and a load. */
-async function takeNumberAgain(w: World): Promise<void> {
+/** Number 1 is taken again: a rollback onto 0, an erasure that deletes 1 above the pointer, and a load of `fresh`. */
+async function takeNumberAgain(w: World, fresh: number[] = NEW): Promise<void> {
   await w.writer.rollback(A, 0);
   const erased = await w.writer.eraseSubject(20, { namespace: NS });
   expect(erased.erasedFrom).toEqual([
     expect.objectContaining({ segment: 'a', erased: true, fromGeneration: 1 }),
   ]);
-  expect(await w.writer.load(A, NEW)).toMatchObject({ generation: 1, published: true });
+  expect(await w.writer.load(A, fresh)).toMatchObject({ generation: 1, published: true });
+}
+
+/** The size of the object under generation 1 of `a`. */
+async function sizeOfGeneration1(storage: IStorageDriver): Promise<number> {
+  return (await storage.getTail({ ...A, generation: 1 }, 0)).size;
+}
+
+/**
+ * A source over the bucket of a writer store that has written generations 0 and 1 of `a`, and `b`, with a timed
+ * refresh (so a small generation's reader keeps its chunks) and room for one reader.
+ */
+async function sourceWorld(ids: { old: number[]; fresh: number[] }) {
+  const backend = new MemoryStorage();
+  const writer = new CloudRoaring({ storage: backend, retry: false });
+  const calls: Record<string, number> = {};
+  const source = new CrbmStorageChunkSource(counting<IStorageDriver>(backend.storage, calls), {
+    registry: backend.registry,
+    clock: manualClock(),
+    currentGenTtlMs: TTL,
+    maxOpenSegments: 1,
+  });
+  await writer.load(A, FIRST);
+  await writer.load(A, ids.old);
+  await writer.load({ namespace: NS, segment: 'b' }, [1]);
+  /** The reader cache lets `a` go, and a summary resolves it again from the row, opening nothing. */
+  const letGoAndSummarize = async (): Promise<void> => {
+    await source.listChunkKeys({ namespace: NS, segment: 'b' });
+    const tails = calls.getTail ?? 0;
+    expect((await source.summary(A))?.cardinality).toBe(ids.old.length);
+    expect(calls.getTail ?? 0).toBe(tails);
+  };
+  const takeAgain = async (): Promise<void> => {
+    await writer.rollback(A, 0);
+    await writer.eraseSubject(ids.old[0]!, { namespace: NS });
+    expect(await writer.load(A, ids.fresh)).toMatchObject({ generation: 1, published: true });
+  };
+  return { backend, source, letGoAndSummarize, takeAgain };
 }
 
 describe('a live read after its generation number is taken again inside the refresh window (invariant 3)', () => {
@@ -179,6 +220,24 @@ describe('a live read after its generation number is taken again inside the refr
     ]).toContainEqual(pair);
     expect(await w.a.has(20)).toBe(pair[0]);
     expect(await w.a.has(30)).toBe(pair[1]);
+  });
+
+  it('an object of the same size under the retaken number is told apart by its footer checksum', async () => {
+    // One id in each of two chunks, as before: the new object is the old one's size, so only its checksum differs.
+    // Only chunk 0 of the old object is cached, so a read that took the new object for the old one would mix them.
+    const same = [30, HI + 30];
+    const w = await world();
+    const before = await sizeOfGeneration1(w.backend.storage);
+    expect(await w.a.has(20)).toBe(true);
+    for (const s of w.evictors) expect(await s.has(1)).toBe(true);
+    expect(await w.a.count()).toBe(OLD.length);
+    await takeNumberAgain(w, same);
+    expect(await sizeOfGeneration1(w.backend.storage)).toBe(before);
+    expectOneGeneration(await collect(w.a.iterate()), OLD, same);
+    expect([
+      [true, false],
+      [false, true],
+    ]).toContainEqual([await w.a.has(20), await w.a.has(30)]);
   });
 
   it('an intersect with another segment reads one generation of each', async () => {
@@ -228,35 +287,6 @@ describe('a live read after its generation number is taken again inside the refr
 });
 
 describe('the source names the object a chunk was read from', () => {
-  /** A source over the bucket of a writer store that has written generations 0 and 1 of `a`, and `b`. */
-  async function sourceWorld(ids: { old: number[]; fresh: number[] }) {
-    const backend = new MemoryStorage();
-    const writer = new CloudRoaring({ storage: backend, retry: false });
-    const calls: Record<string, number> = {};
-    const source = new CrbmStorageChunkSource(counting<IStorageDriver>(backend.storage, calls), {
-      registry: backend.registry,
-      clock: manualClock(),
-      currentGenTtlMs: TTL,
-      maxOpenSegments: 1,
-    });
-    await writer.load(A, FIRST);
-    await writer.load(A, ids.old);
-    await writer.load({ namespace: NS, segment: 'b' }, [1]);
-    /** The reader cache lets `a` go, and a summary resolves it again from the row, opening nothing. */
-    const letGoAndSummarize = async (): Promise<void> => {
-      await source.listChunkKeys({ namespace: NS, segment: 'b' });
-      const tails = calls.getTail ?? 0;
-      expect((await source.summary(A))?.cardinality).toBe(ids.old.length);
-      expect(calls.getTail ?? 0).toBe(tails);
-    };
-    const takeAgain = async (): Promise<void> => {
-      await writer.rollback(A, 0);
-      await writer.eraseSubject(ids.old[0]!, { namespace: NS });
-      expect(await writer.load(A, ids.fresh)).toMatchObject({ generation: 1, published: true });
-    };
-    return { source, letGoAndSummarize, takeAgain };
-  }
-
   async function all(stream: AsyncIterable<ChunkRead>): Promise<ChunkRead[]> {
     const out: ChunkRead[] = [];
     for await (const item of stream) out.push(item);
@@ -276,6 +306,19 @@ describe('the source names the object a chunk was read from', () => {
     expect(now).not.toBe(old);
     const after = await all(w.source.getChunks!(A, [0, 1, 2]));
     expect(after.map((c) => c.version)).toEqual([now, now, now]);
+  });
+
+  it('an object of the same size under the retaken number has another version', async () => {
+    const same = [30, HI + 30];
+    const w = await sourceWorld({ old: OLD, fresh: same });
+    const old = await w.source.currentVersion(A);
+    const size = await sizeOfGeneration1(w.backend.storage);
+    await w.letGoAndSummarize();
+    await w.takeAgain();
+    expect(await sizeOfGeneration1(w.backend.storage)).toBe(size);
+    const now = await w.source.currentVersion(A);
+    expect(now).not.toBe(old);
+    expect((await all(w.source.getChunks!(A, [0, 1]))).map((c) => c.version)).toEqual([now, now]);
   });
 
   it('a running stream that took on the count’s snapshot moves on once that snapshot opens another object', async () => {
@@ -300,6 +343,163 @@ describe('the source names the object a chunk was read from', () => {
     expect(third.bytes).toEqual(await w.source.getChunk({ ...A, chunkKey: 2 }));
     expect((await stream.next()).value).toMatchObject({ key: 3, version: now });
     expect((await stream.next()).done).toBe(true);
+  });
+});
+
+describe('a running stream and another read opening its segment', () => {
+  const B: SegmentRef = { namespace: NS, segment: 'b' };
+  const KEYS = [0, 1, 2, 3];
+  const sleep = (ms: number): Promise<'stalled'> =>
+    new Promise((resolve) => setTimeout(() => resolve('stalled'), ms));
+
+  /**
+   * A source with no timed refresh and room for one reader, over `a` (four chunks) and `b`. The next tail read of `a`
+   * can be held, to be let go or failed later: another read's open of the segment, under way.
+   */
+  async function coupled() {
+    const backend = new MemoryStorage();
+    const writer = new CloudRoaring({ storage: backend, retry: false });
+    await writer.load(A, [20, HI + 20, 2 * HI + 20, 3 * HI + 20]);
+    await writer.load(B, [1]);
+    let armed = false;
+    const held: Array<{ release: () => void; fail: (err: Error) => void }> = [];
+    const storage = new Proxy(backend.storage, {
+      get(t, p, rx) {
+        const value = Reflect.get(t, p, rx) as unknown;
+        if (p !== 'getTail') return value;
+        return (key: GenKey, maxBytes: number) => {
+          if (!armed || key.segment !== 'a') return t.getTail(key, maxBytes);
+          armed = false;
+          return new Promise((resolve, reject) => {
+            held.push({
+              release: () => void t.getTail(key, maxBytes).then(resolve, reject),
+              fail: reject,
+            });
+          });
+        };
+      },
+    }) as IStorageDriver;
+    const source = new CrbmStorageChunkSource(storage, {
+      registry: backend.registry,
+      maxOpenSegments: 1,
+    });
+    /** A stream of `a` that has yielded its first chunk, then another read opening `a` whose tail read is held. */
+    const streamThenHeldOpen = async () => {
+      const stream = source.getChunks!(A, KEYS, { concurrency: 1 });
+      expect((await stream.next()).value).toMatchObject({ key: 0 });
+      await source.listChunkKeys(B); // the reader cache lets `a` go
+      armed = true;
+      const other = source.currentVersion(A);
+      other.catch(() => undefined);
+      while (held.length === 0) await sleep(1);
+      return { stream, other, open: held[0]! };
+    };
+    return { streamThenHeldOpen };
+  }
+
+  async function rest(stream: AsyncGenerator<ChunkRead>): Promise<number[]> {
+    const keys: number[] = [];
+    for (let r = await stream.next(); r.done !== true; r = await stream.next())
+      keys.push(r.value.key);
+    return keys;
+  }
+
+  it('the stream goes on yielding while the other open is under way', async () => {
+    const { stream, other, open } = await (await coupled()).streamThenHeldOpen();
+    const second = await Promise.race([stream.next(), sleep(200)]);
+    expect(second).not.toBe('stalled');
+    expect((second as IteratorResult<ChunkRead>).value).toMatchObject({ key: 1 });
+    open.release();
+    await other;
+    expect(await rest(stream)).toEqual([2, 3]);
+  });
+
+  it('the other open’s failure is not the stream’s: it goes on, and the error stays with the read that met it', async () => {
+    const { stream, other, open } = await (await coupled()).streamThenHeldOpen();
+    const second = stream.next();
+    await sleep(20);
+    open.fail(new Error('AccessDenied (simulated)'));
+    await expect(other).rejects.toThrow('AccessDenied (simulated)');
+    expect((await second).value).toMatchObject({ key: 1 });
+    expect(await rest(stream)).toEqual([2, 3]);
+  });
+
+  it('the other open’s failure, met before the stream asks again, is not the stream’s either', async () => {
+    const { stream, other, open } = await (await coupled()).streamThenHeldOpen();
+    open.fail(new Error('AccessDenied (simulated)'));
+    await expect(other).rejects.toThrow('AccessDenied (simulated)');
+    expect(await rest(stream)).toEqual([1, 2, 3]);
+  });
+
+  describe('when the object now under the number cannot be read', () => {
+    // The stream took on the count's snapshot, the number was taken again, and the new object is then gone or
+    // corrupt: the stream moves to what the row names now and meets that object's own typed error.
+    async function stalled(spoil: (storage: IStorageDriver) => Promise<void>) {
+      const old = [20, HI + 20, 2 * HI + 20, 3 * HI + 20];
+      const w = await sourceWorld({ old, fresh: [30, HI + 30, 2 * HI + 30, 3 * HI + 30] });
+      const stream = w.source.getChunks!(A, KEYS, { concurrency: 1 });
+      expect((await stream.next()).value).toMatchObject({ key: 0 });
+      await w.letGoAndSummarize();
+      expect((await stream.next()).value).toMatchObject({ key: 1 });
+      await w.takeAgain();
+      await spoil(w.backend.storage);
+      // Another read opens the count's snapshot: the open fails.
+      await expect(w.source.currentVersion(A)).rejects.toThrow();
+      return stream;
+    }
+
+    it('gone: the stream fails with NotFoundError', async () => {
+      const stream = await stalled((storage) => storage.delete({ ...A, generation: 1 }));
+      await expect(stream.next()).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it('corrupt: the stream fails with IntegrityError', async () => {
+      const stream = await stalled(async (storage) => {
+        await storage.delete({ ...A, generation: 1 });
+        await storage.putImmutable({ ...A, generation: 1 }, async (out) =>
+          out.write(new Uint8Array(256).fill(0xab)),
+        );
+      });
+      await expect(stream.next()).rejects.toBeInstanceOf(IntegrityError);
+    });
+  });
+});
+
+describe('the version’s spelling', () => {
+  it('a pin holds the row’s version, with no object suffix: what a live version names without it', async () => {
+    const w = await sourceWorld({ old: OLD, fresh: NEW });
+    const live = await w.source.currentVersion(A);
+    const pinned = await w.source.pinGeneration(A);
+    expect(pinned?.version).not.toContain('#');
+    expect(pinned?.version).toBe(rowVersionOf(live!));
+    expect(live).toBe(`${pinned!.version}#${compactFingerprint(pinned!.fingerprint)}`);
+    // And a store's pinned handle says the same.
+    const store = new CloudRoaring({ storage: w.backend, retry: false });
+    const handle = await store.segment('a', { namespace: NS }).pin();
+    expect(handle.pinnedAt?.version).toBe(pinned?.version);
+  });
+
+  it('rowVersionOf drops the object suffix of a live version, and only that', () => {
+    expect(rowVersionOf('1:tok#5h.1b8gqkl')).toBe('1:tok');
+    expect(rowVersionOf('0#5h.1b8gqkl')).toBe('0');
+    expect(rowVersionOf('1:a#b#5h.1b8gqkl')).toBe('1:a#b');
+  });
+
+  it('tokenOfVersion reads the token of a row version; a live one is read through rowVersionOf', () => {
+    expect(tokenOfVersion('1:tok')).toBe('tok');
+    expect(tokenOfVersion(rowVersionOf('1:tok#5h.1b8gqkl'))).toBe('tok');
+    expect(tokenOfVersion('0')).toBeUndefined();
+    expect(tokenOfVersion(rowVersionOf('0#5h.1b8gqkl'))).toBeUndefined();
+    expect(tokenOfVersion(null)).toBeUndefined();
+    // A pin's version is not stripped: a token that happens to end like a suffix is the token.
+    expect(tokenOfVersion('1:a#b.c')).toBe('a#b.c');
+  });
+
+  it('the compact fingerprint is the size and the footer checksum in base 36', () => {
+    expect(compactFingerprint('197:2858319717')).toBe(
+      `${(197).toString(36)}.${(2858319717).toString(36)}`,
+    );
+    expect(compactFingerprint('0:0')).toBe('0.0');
   });
 });
 

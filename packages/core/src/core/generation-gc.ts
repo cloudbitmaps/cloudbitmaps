@@ -104,8 +104,8 @@ export interface LoadNumber {
  * `superseded`. The orphan above stays unpublished; the load whose check meets it numbers past it by the listing,
  * and collection takes it once a generation above it is current. Like a listing's, the number can be one whose
  * object was deleted (an erasure removes the generations above a rolled-back pointer that held the id), which is
- * why nothing identifies a generation by its number alone: the reader cache, the chunk cache and a pin all key on
- * the number and the row's token, and the token has moved on.
+ * why nothing identifies a generation by its number alone: the reader cache and the chunk cache key on the number and
+ * the row's token, checked against the object a reader opens, and a pin on its object's fingerprint.
  */
 export async function nextLoadGeneration(
   ref: SegmentRef,

@@ -146,8 +146,18 @@ class SystemRng implements Rng {
 const DEFAULT_CACHE_MAX_CHUNKS = 1024;
 /** Default in-flight fan-out for the admin scans (`subjectReport`/`eraseSubject`) — bounded, no thundering herd. */
 const DEFAULT_ADMIN_CONCURRENCY = 8;
-/** The end of a live version from a `CrbmStorageChunkSource`: `#` and the opened object's size and footer checksum. */
-const OBJECT_FINGERPRINT = /#\d+:\d+$/;
+/**
+ * The row version a live version from a `CrbmStorageChunkSource` names: the version up to its last `#`, which starts
+ * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every row token. It is
+ * core's `rowVersionOf` for this one caller, which is handed only that source's versions; core keeps that function
+ * off its public entry.
+ */
+function rowVersionOfLive(version: string | null): string | null {
+  if (version === null) return null;
+  const cut = version.lastIndexOf('#');
+  return cut < 0 ? version : version.slice(0, cut);
+}
+
 /** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
 function validateConcurrency(concurrency: number | undefined): void {
   if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
@@ -2039,8 +2049,7 @@ export class CloudRoaring {
         if (this.crbmSource !== undefined) {
           const held = await this.crbmSource.currentVersion(ref);
           const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
-          const named = held === null ? null : held.replace(OBJECT_FINGERPRINT, '');
-          if (named !== listed) this.engine.invalidate(ref);
+          if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
           ? { segment: rec.segment, namespace: rec.namespace }

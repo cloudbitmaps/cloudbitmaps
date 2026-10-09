@@ -138,7 +138,7 @@ describe('a re-created name is a different segment, not the same one', () => {
 
     const source = new CrbmStorageChunkSource(storage, {});
     const version = await source.currentVersion(REF);
-    expect(version).toMatch(/^0#\d+:\d+$/); // the generation, then the object's size and footer checksum
+    expect(version).toMatch(/^0#[0-9a-z]+\.[0-9a-z]+$/); // the generation, then the object's size and footer checksum
 
     // The same name purged and loaded again out of band starts again at 0: another object, another version.
     await storage.delete({ ...REF, generation: 0 });
