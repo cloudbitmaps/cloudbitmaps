@@ -118,6 +118,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A read over a custom source that names generations but not versions no longer caches one generation's chunks as
+  another's.** For such a source (`getChunks` and `currentGeneration`, no `currentVersion`), a read that found its
+  segment had moved, on a chunk served from the cache, went on taking the rest of its open stream, which could still be
+  reading the earlier generation, and cached those chunks under the generation it had moved to. A later read at that
+  generation then served the earlier one's ids from the cache, an erased id among them, until the cache let them go.
+  This held for a combine, `iterate`, `iterateBatches`, `everyNth` and a streamed `exclude`. Once a read moves, nothing
+  more its open stream delivers is cached. The library's own sources name versions and were not affected.
 - **`setSegmentRetention` from `@cloudbitmaps/core` shows its documentation again** in editors and the published
   `.d.ts`: its doc comment sat above another declaration, and TypeScript attached it there instead. Eleven more doc comments
   inside the packages had come apart from their declarations the same way, and a test now holds every one to its own.
