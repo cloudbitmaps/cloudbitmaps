@@ -2270,9 +2270,27 @@ export async function provenObject(
   }
 }
 
-/** Whether the object under `key` says it is encrypted, from one read of its footer, with no key. */
-export function objectIsEncrypted(storage: IStorageDriver, key: GenKey): Promise<boolean> {
-  return footerSaysEncrypted(storageBlobReader(storage, key));
+/**
+ * Whether the object under `key` says it is encrypted, from one read of its footer, with no key. `noteVersion` is shown
+ * the version the driver reported on that read, when it reported one: a caller that deletes the object for what its
+ * footer says passes it as the delete's `ifVersion`.
+ */
+export function objectIsEncrypted(
+  storage: IStorageDriver,
+  key: GenKey,
+  noteVersion?: (version: string) => void,
+): Promise<boolean> {
+  return footerSaysEncrypted(
+    storageBlobReader(
+      storage,
+      key,
+      noteVersion === undefined
+        ? undefined
+        : (tail) => {
+            if (tail.version !== undefined) noteVersion(tail.version);
+          },
+    ),
+  );
 }
 
 /**
@@ -3446,12 +3464,37 @@ const openedVersions = new WeakMap<CrbmReader, string>();
  * `named`, the fingerprint the row's summary records, the object must be that one: another is {@link NotFoundError}.
  * The version of the object it opened, from the tail read the open made, is what {@link objectVersionOf} answers.
  */
-export async function openGenerationReader(
+export function openGenerationReader(
   storage: IStorageDriver,
   key: GenKey,
   crypto: CrbmCrypto | undefined,
   options: Omit<CrbmReaderOptions, 'crypto'> = {},
   named?: string,
+): Promise<CrbmReader> {
+  return openNoting(storage, key, crypto, options, named);
+}
+
+/**
+ * {@link openGenerationReader}, with `noteVersion` shown the version {@link objectVersionOf} would answer as soon as the
+ * tail read that carries it returns, before the open goes on: a caller whose open then fails, on an object sealed under
+ * another key, say, still knows which object it met, and can condition a delete of it on that read.
+ */
+export function openGenerationReaderNoting(
+  storage: IStorageDriver,
+  key: GenKey,
+  crypto: CrbmCrypto | undefined,
+  noteVersion: (version: string) => void,
+): Promise<CrbmReader> {
+  return openNoting(storage, key, crypto, {}, undefined, noteVersion);
+}
+
+async function openNoting(
+  storage: IStorageDriver,
+  key: GenKey,
+  crypto: CrbmCrypto | undefined,
+  options: Omit<CrbmReaderOptions, 'crypto'>,
+  named: string | undefined,
+  noteVersion?: (version: string) => void,
 ): Promise<CrbmReader> {
   let version: string | undefined;
   const reader = await openChecked(
@@ -3461,7 +3504,9 @@ export async function openGenerationReader(
     undefined,
     named,
     (tail) => {
-      version ??= tail.version;
+      if (version !== undefined || tail.version === undefined) return;
+      version = tail.version;
+      noteVersion?.(version);
     },
   );
   if (version !== undefined) openedVersions.set(reader, version);

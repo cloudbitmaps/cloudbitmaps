@@ -96,6 +96,7 @@ import type { Rng } from './determinism';
 import {
   objectIsEncrypted,
   objectVersionOf,
+  openGenerationReaderNoting,
   openGenerationReader,
   provesOwnObject,
   publishGeneration,
@@ -441,11 +442,12 @@ async function eraseOnce(
    */
   const sealed = new Set<number>();
   /**
-   * The version of the object `holds` last searched under each generation, as the driver reported it on the open's tail
-   * read: what a delete of that generation as a holder is conditioned on, so it removes the object that was searched and
-   * not one stored under the number since.
+   * The version of the object `holds` last met under each generation, as the driver reported it on the read that
+   * decided what the object is: the open of one it searched, the footer read that found one encrypted under a row with
+   * no key, or the open whose index failed its authentication under the row's key. It is what a delete of that
+   * generation as a holder is conditioned on, so it removes that object and not one stored under the number since.
    */
-  const searched = new Map<number, string | undefined>();
+  const versions = new Map<number, string | undefined>();
   /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
@@ -469,12 +471,16 @@ async function eraseOnce(
     try {
       let reader: CrbmReader;
       const index = { refused: false };
+      // The version the open's tail read reported, kept through a failed open: an object found sealed elsewhere is
+      // deleted on that read.
+      let opened: string | undefined;
       try {
         reader = await read(() =>
-          openGenerationReader(
+          openGenerationReaderNoting(
             deps.storage,
             key,
             crypto === undefined ? undefined : noticingIndex(crypto, index),
+            (version) => (opened = version),
           ),
         );
       } catch (err) {
@@ -484,7 +490,13 @@ async function eraseOnce(
         if (crypto === undefined) {
           // The footer is asked only after a fault that is an answer: one the read retry gave up on says nothing about
           // the object, and is thrown as it is, with no more reads.
-          if (!isTransientError(err) && (await read(() => objectIsEncrypted(deps.storage, key)))) {
+          let footer: string | undefined;
+          const encrypted =
+            !isTransientError(err) &&
+            (await read(() =>
+              objectIsEncrypted(deps.storage, key, (version) => (footer = version)),
+            ));
+          if (encrypted) {
             // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no
             // read through the library finds anything in it. Under a row with no pointer it is a first load's, sealed
             // under a key that load has not published yet; under a cleartext row with a pointer it is a first load's
@@ -493,12 +505,14 @@ async function eraseOnce(
             // way it cannot be searched, so it counts as a holder.
             if (tombstoned) return false;
             sealed.add(generation);
+            versions.set(generation, footer);
             return true;
           }
           throw err;
         }
         if (isIntegrityError(err) && index.refused) {
           sealed.add(generation);
+          versions.set(generation, opened);
           return true;
         }
         if (!isIntegrityError(err) || (await read(() => objectIsEncrypted(deps.storage, key)))) {
@@ -506,7 +520,7 @@ async function eraseOnce(
         }
         reader = await read(() => openGenerationReader(deps.storage, key, undefined));
       }
-      searched.set(generation, objectVersionOf(reader));
+      versions.set(generation, objectVersionOf(reader));
       const bytes = await read(() => reader.getChunk(chunkKey));
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
@@ -687,13 +701,15 @@ async function eraseOnce(
    * encrypted target there); below it, an object sealed under a key the row does not hold, which only a rollback with
    * no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
    * move-then-verify catches every such landing except one whose check runs before the delete, and a condition on the
-   * object cannot close it, since the pointer then names the very object that was searched.
+   * object cannot close it, since the pointer then names the very object this call read.
    *
-   * What the condition does close is another object under the number. In that round trip another erasure can delete
-   * the holder and a load take its number, write and publish. Each delete passes the version the search read
-   * (`searched`), so a driver that reports `conditionalDelete` refuses it for any other object, and the deletes stop
-   * there, with the row's reason, `'superseded'` when the row gives none. On a driver that does not, the delete
-   * removes whatever is under the number.
+   * What the condition does close is another object under the number. In that round trip another erasure of the id can
+   * delete the holder, and a load that read the row after both renewals take its number, write and publish: nothing
+   * refuses that publish. Each delete passes the version of the read that made the object a holder (`versions`): the
+   * open of one this call searched, the footer read that found one encrypted under a row with no key, or the open whose
+   * index failed its authentication under the row's key. So a driver that reports `conditionalDelete` refuses it for
+   * any other object, and the deletes stop there, with the row's reason, `'superseded'` when the row gives none. On a
+   * driver that does not, the delete removes whatever is under the number, the load's published object included.
    */
   const deleteFenced = async (
     holders: readonly number[],
@@ -705,7 +721,7 @@ async function eraseOnce(
       moved = rowVerdict(await deps.registry.get(ref));
       if (moved !== null) break;
       try {
-        await deps.storage.delete({ ...base, generation }, { ifVersion: searched.get(generation) });
+        await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
         // Another object is under the number now: the one searched was deleted, and the number taken again. What this
@@ -848,11 +864,12 @@ async function eraseOnce(
    *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}): a rollback that
    *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
    *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
-   *    the object cannot close that one, since the pointer then names the very object that was searched.
+   *    the object cannot close that one, since the pointer then names the very object this call read.
    *    What the condition does close is another object under the number: in that round trip another erasure can
-   *    delete the holder and a load take its number, write and publish. Each delete passes the version the search
-   *    read (`searched`), so a driver that reports `conditionalDelete` refuses it for any other object, and the deletes
-   *    stop as they do for a moved row. On a driver that does not, the delete removes whatever is under the number.
+   *    delete the holder and a load take its number, write and publish. Each delete passes the version of the read
+   *    that made the object a holder (`versions`), so a driver that reports `conditionalDelete` refuses it for any
+   *    other object, and the deletes stop as they do for a moved row. On a driver that does not, the delete removes
+   *    whatever is under the number.
    *
    * An object sealed under a key the row does not hold is a holder this call cannot search ({@link holds}). Beside a
    * generation that was searched and held the id, it goes as any holder does: above the pointer by name, below it with
