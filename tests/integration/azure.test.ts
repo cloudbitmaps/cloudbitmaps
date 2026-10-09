@@ -689,16 +689,14 @@ describe('Azure Blob (Azurite): a cold count is one request', () => {
     expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
     expect(proxy.requests[0]!.name).toContain('registry');
     proxy.requests.length = 0;
-    expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
-      generation: 0,
-      cardinality: chunks,
-    });
-    // A stat after it reads the object for its size, and not the row, which the count just read: one tail read, and a
-    // range read more for an index longer than the tail read.
-    expect(proxy.requests.map((r) => r.method)).toEqual(
-      chunks > 10_000 ? ['HEAD', 'GET', 'GET'] : ['HEAD', 'GET'],
-    );
-    expect(proxy.requests.filter((r) => r.name.includes('registry'))).toEqual([]);
+    const stat = await reader.segment('s', { namespace: 'ns' }).stat();
+    expect(stat).toMatchObject({ generation: 0, cardinality: chunks });
+    // A stat after it answers from the row the count just read, whose summary records the object's size: it sends
+    // nothing, however wide the index.
+    expect(proxy.requests).toEqual([]);
+    // And it is the size of the object in the bucket, which a pin opens.
+    const pinned = await reader.segment('s', { namespace: 'ns' }).pin();
+    expect(`${stat.sizeBytes}`).toBe(pinned.pinnedAt!.fingerprint!.split(':')[0]);
   });
 });
 
