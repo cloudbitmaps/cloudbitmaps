@@ -112,7 +112,7 @@ so, and so do the module headers in the code.
   object again after them.
 - **Every open of the row's generation, where the row carries a summary, holds the object's footer to the fingerprint
   the summary records**, before its index is read or decrypted and at no extra request. A row with no summary it can use
-  is not checked, and a reader already open is not checked again until it is resolved again, evicted or invalidated.
+  is not checked, and a reader already open is not checked again until the row changes, it is evicted or it is invalidated.
   An object that is another one under the number (put back from outside the library, or restored beside a row that
   names another) is refused with `NotFoundError`, which says it is another object than its registry row names, and the
   read resolves the segment again once. An erasure reads the generation it rewrites the same way, so it fails with

@@ -81,7 +81,7 @@ row's id count and metadata against the object, at no extra request; a disagreem
 over an object that has none, stops that store from using that row's summary for that generation, so its counts then
 read the object, and fails no read. `checkConsistency({ summaries: true })` finds the disagreement across a fleet. A
 segment whose pointer names an object that is gone (a torn restore) still counts the row's number, which is true of
-the generation the row names, while every read of the object throws: `checkConsistency()` is what finds it.
+the generation the row names, while every read that opens the object throws: `checkConsistency()` is what finds it.
 
 **The index**, which answers when the row has no summary it can use. Opening a generation checks the index once, and
 refuses with `IntegrityError` an index that is not internally consistent:
@@ -113,7 +113,7 @@ generation answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and 
 size answers `sizeBytes: null`. On a source of your own without `stat`, the size comes from its `sizeOf`, a second
 resolution that a publish between the two can make another generation's. Answered from the row, a `stat()` reports
 the row's figures even after a torn restore, when the object under the generation's number is missing or is another
-object: every read of the object refuses it, with `NotFoundError`, and
+object: every read that opens the object refuses it, with `NotFoundError`, and
 [`checkConsistency`](disaster-recovery.md) is what finds such a row.
 
 The count is the index's sum, checked for internal consistency when the object is opened, and the opened object is
@@ -203,8 +203,9 @@ What the check does not cover:
 - **A row with no summary it can use names no object**, and its generation's object is opened as it is: a row a
   rollback onto an encrypted target wrote when the store had no key to open the target, a row a registry of your own
   wrote without one, and a summary that does not open or names no object.
-- **A reader already open is not checked again.** It answers from the object it opened until its refresh resolves the
-  segment again, the reader cache lets it go, or `store.invalidate(ref)` drops it. After you put objects back under a
+- **A reader already open is not checked again.** It answers from the object it opened until the row names another
+  generation or `pointerId`, the reader cache lets it go, or `store.invalidate(ref)` drops it: a refresh that finds the
+  row unchanged keeps it. After you put objects back under a
   segment from outside the library, restart the processes reading it or invalidate it.
 - **A pin reads the object it pinned**, by that object's fingerprint, which `pinAt` takes from its caller: a pin is held
   to its own object, not to the row. A live `pin()` holds a reader it shares with an earlier pin to the row's summary

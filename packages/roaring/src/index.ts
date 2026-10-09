@@ -890,7 +890,7 @@ export interface MaterializeResult {
    * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with neither
    * `guard.minRetained` nor `guard.maxGrowth` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
    * carries a summary of its current generation the count comes from the row and the object is not read; a row with
-   * none (one a rollback left when it could not open the key, or one a registry of your own stores without one) costs
+   * none (one a rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) costs
    * one object-header fetch.
    */
   readonly cardinalityBefore: number | null;
@@ -3744,8 +3744,8 @@ export class Segment {
    * the generation holds the object to the fingerprint the summary records, so another object under the number is
    * refused when it is opened, and holds its count against the summary's; a disagreement in count makes this process
    * stop using that summary, so `stat()` then answers from the object, whose index is checked for internal consistency
-   * and whose count is the index's sum. A reader already open is not checked again until it is resolved again,
-   * evicted or invalidated.
+   * and whose count is the index's sum. A reader already open is not checked again until the row changes, it is
+   * evicted or it is invalidated.
    *
    * `sizeBytes` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *

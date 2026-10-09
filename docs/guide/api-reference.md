@@ -221,7 +221,7 @@ the segment's key on an encrypted segment. `MaterializeOptions` takes it too, so
 `store.generations()` read it back, with the generation's id count.
 
 **The guard's size.** A guarded load takes the size of the current generation from the row's summary of it when the
-row has a usable one, and opens no object for it; a row with none is read from the object's index, as before
+row has a usable one, and opens no object for it; a row with none is read from the object's index
 ([details](loading.md#where-the-guard-reads-the-size-of-the-current-generation)).
 
 **Branch on `published`.** `false` is a normal outcome, not a throw, and `reason` says why. Either a guard refused
@@ -483,8 +483,8 @@ payload bytes would differ. Roaring is the one codec that ships.
 **Format version.** Every object is format **1.0**: the preamble, the chunk payloads, the index and the fixed
 104-byte footer. A reader refuses an unknown major version, and refuses an object whose footer sets a flag bit it does
 not know. A generation written with metadata carries one **extension block** between the last payload and the index,
-and its footer sets the `FLAG_EXTENSION` bit (`1 << 3`); with no metadata the writer emits the same bytes as before the
-block existed, the flag clear. A reader before 0.12 does not know the bit, so it refuses an object with metadata.
+and its footer sets the `FLAG_EXTENSION` bit (`1 << 3`); with no metadata the writer emits no block and
+leaves the flag clear.
 
 - **Where the block is.** It is found from the index's offset alone: its last 12 bytes, just before the index, are
   its sections' length (u32), a CRC32C of the sections and that length (u32), and the magic `CRBX`. Payloads end
@@ -787,7 +787,7 @@ fingerprint: a load, the `*Into` verbs, `materializeMany`, an erasure's rewrite 
 target's. A reader holds every object it opens for the row's generation to that fingerprint, from the footer, before
 it reads the index: another object under the number is refused as a move (the read resolves the row again, and does
 not serve it). A row with no summary it can use is not checked, and a reader already open is not checked again until
-it is resolved again, evicted or invalidated ([what the check does not cover](reading.md#how-soon-a-reader-sees-a-new-load)). `stat()` reports the size from it. It names the generation it describes, and it follows the pointer and the
+the row changes, it is evicted or it is invalidated ([what the check does not cover](reading.md#how-soon-a-reader-sees-a-new-load)). `stat()` reports the size from it. It names the generation it describes, and it follows the pointer and the
 keys: a patch that changes the value of `currentGen`, or changes `wrappedDeks` so the summary's shape no longer agrees,
 without mentioning `summary` drops the old one, and a patch that names `currentGen` at the value it has keeps it; a
 patch or create that gives one must name the `currentGen` the row will have and agree with its keys (sealed with

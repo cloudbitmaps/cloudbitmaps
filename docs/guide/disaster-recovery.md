@@ -268,8 +268,8 @@ makes the coordinated restore point easy to hit rather than something you have t
    `pointerId` is the token of such a write, so a store keying a segment's cached chunks by generation and `pointerId`,
    checked against the object the row's summary names whenever it opens one, never takes them for a generation written
    since, nor for another object put back under the same number. A restored row whose summary names another object than
-   the one restored under its number (a row and a bucket restored from two points) has every read of that generation
-   refused with `NotFoundError`, while a `count()` and a `stat()` answer the row's figures:
+   the one restored under its number (a row and a bucket restored from two points) has every read that opens that
+   generation refused with `NotFoundError`, while a `count()` and a `stat()` answer the row's figures:
    `checkConsistency({ summaries: true })` finds it. A row with no summary has no fingerprint, so a torn restore there
    is guarded only by `pointerId`. A reader a process already holds open is not checked again: restart the process or
    `invalidate(ref)` it. Optionally run a targeted `subjectReport`/read spot-check on a few known segments.

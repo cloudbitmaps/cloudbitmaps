@@ -168,7 +168,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   ([the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made the requests above for each kind of load)
   and counted, not measured, at any other `keep` above 1; a segment's first two loads collect
   nothing and make fewer requests, and the first load onto a row with no summary of its current generation (one a
-  rollback left when it could not open the key, or one a registry of your own stores without one) reads that
+  rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) reads that
   generation's index, a tail read, in place of the check that its object is there. A publish
   that loses a race to another writer reads the pointer again, and a load whose check finds the number taken (a
   crashed load's object, or the generations a rollback left above the pointer) lists the segment to number past it

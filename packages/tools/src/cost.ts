@@ -233,7 +233,7 @@ export interface Workload {
    * sixteenth of each on average. That is a segment with two
    * generations behind it, whose row carries a summary; its first two loads make fewer requests and collect nothing,
    * and the first load onto a row with no summary of its current generation (one a rollback left when it could not
-   * open the key, or one a registry of your own stores without one) reads that generation's index, one tail read, in
+   * open the key, one a registry of your own stores without one, or one this store cannot use) reads that generation's index, one tail read, in
    * place of the check that its object is there. A publish that loses a race to another writer
    * reads the pointer again, and a load whose check finds the number taken (a crashed load's object, or the
    * generations a rollback left above the pointer) lists the segment's objects to number past them and to collect,
