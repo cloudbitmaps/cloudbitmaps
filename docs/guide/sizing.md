@@ -49,7 +49,7 @@ rates above. Both take memory, and the default chunk cache holds a small share o
 <!-- SIZING:READERS:END -->
 
 A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a tail read each when a
-read needs a chunk its chunk cache does not hold, which **neither the bill below nor the estimator's report prices**: the report warns only when there are more hot segments
+read needs the index or a chunk its chunk cache does not hold, which **neither the bill below nor the estimator's report prices**: the report warns only when there are more hot segments
 than the default `cache.readerMax`, since it sees neither your store's own setting nor how large each index is. It reads a segment's pointer again only when the segment's
 resolution, kept apart from its reader, lapses (the pointer refresh the bill prices) or is let go too; a store with no
 timed refresh keeps no resolution, and reads the pointer at every reopen. Two more things about these columns:
@@ -67,7 +67,7 @@ Raising the chunk cache is the price of these figures, paid in each reader's mem
 the hot set's indices at all three sizes.
 
 <!-- SIZING:RESOLUTIONS:START -->
-**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also keeps each segment's resolution (the fields of its row a read resolves through, never a key) for `cache.genTtlMs`, whether or not the segment's reader is still open: up to 8 × `cache.readerMax` of them, 8,192 by default, within `cache.readerMaxBytes` / 16, 4 MiB by default, whichever binds first. The cache counts an entry as 256 bytes plus its row's summary and wrapped keys as JSON, so at the defaults the count binds first while entries average under 512 bytes, as they do for segments without metadata, cleartext or encrypted, and the byte bound once they average more, as with a few hundred bytes of metadata on each. These figures are derived from the settings, not measured; lowering `cache.readerMax` and `cache.readerMaxBytes` for a small heap lowers this cache with them.
+**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also keeps each segment's resolution (the fields of its row a read resolves through: never an unwrapped key, though the wrapped keys are in it) for `cache.genTtlMs`, whether or not the segment's reader is still open: up to 8 × `cache.readerMax` of them, 8,192 by default, within `cache.readerMaxBytes` / 16, 4 MiB by default, whichever binds first. The cache counts an entry as 256 bytes plus its row's summary and wrapped keys as JSON, so at the defaults the count binds first while entries average under 512 bytes, as a segment without metadata whose key is wrapped once does, cleartext or encrypted, and the byte bound once they average more: with a few hundred bytes of metadata on each, or keys wrapped under several key-encryption keys or under long key ids. These bounds are derived from the settings, and they bound the bytes the cache counts, not the heap: measured on Node 24 by filling a cache at the default settings with each of four row shapes, cleartext and encrypted, with and without a few hundred bytes of metadata, the heap the entries took was about 1.2 to 1.5 times the weight counted for them. Lowering `cache.readerMax` and `cache.readerMaxBytes` for a small heap lowers this cache with them.
 <!-- SIZING:RESOLUTIONS:END -->
 
 ## The monthly bill

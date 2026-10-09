@@ -698,18 +698,25 @@ function render() {
   // stops binding first. Derived from the settings, not measured.
   const resolutionEntries = RESOLUTIONS_PER_OPEN_SEGMENT * READER_MAX;
   const resolutionBytes = READER_MAX_BYTES / RESOLUTION_BYTES_DIVISOR;
+  // The heap the entries take, measured on Node 24 by filling a cache at the default settings with each of four row
+  // shapes (cleartext and encrypted, without metadata and with 300 bytes of it), as a multiple of the weight the cache
+  // counted for them: 1.24 to 1.53.
+  const RESOLUTION_HEAP_RANGE = 'about 1.2 to 1.5 times';
   const resolutions =
     "**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also " +
-    "keeps each segment's resolution (the fields of its row a read resolves through, never a key) for " +
-    "`cache.genTtlMs`, whether or not the segment's reader is still open: up to " +
+    "keeps each segment's resolution (the fields of its row a read resolves through: never an unwrapped key, though " +
+    "the wrapped keys are in it) for `cache.genTtlMs`, whether or not the segment's reader is still open: up to " +
     `${int(RESOLUTIONS_PER_OPEN_SEGMENT)} × \`cache.readerMax\` of them, ${int(resolutionEntries)} by default, within ` +
     `\`cache.readerMaxBytes\` / ${int(RESOLUTION_BYTES_DIVISOR)}, ${mib(resolutionBytes)} by default, whichever binds ` +
     `first. The cache counts an entry as ${int(RESOLUTION_BASE_BYTES)} bytes plus its row's summary and wrapped keys ` +
     'as JSON, so at the defaults the count binds first while entries average under ' +
-    `${int(resolutionBytes / resolutionEntries)} bytes, as they do for segments without metadata, cleartext or ` +
-    'encrypted, and the byte bound once they average more, as with a few hundred bytes of metadata on each. These ' +
-    'figures are derived from the settings, not measured; lowering `cache.readerMax` and `cache.readerMaxBytes` for a ' +
-    'small heap lowers this cache with them.';
+    `${int(resolutionBytes / resolutionEntries)} bytes, as a segment without metadata whose key is wrapped once does, ` +
+    'cleartext or encrypted, and the byte bound once they average more: with a few hundred bytes of metadata on each, ' +
+    'or keys wrapped under several key-encryption keys or under long key ids. These bounds are derived from the ' +
+    'settings, and they bound the bytes the cache counts, not the heap: measured on Node 24 by filling a cache at the ' +
+    'default settings with each of four row shapes, cleartext and encrypted, with and without a few hundred bytes of ' +
+    `metadata, the heap the entries took was ${RESOLUTION_HEAP_RANGE} the weight counted for them. Lowering \`cache.readerMax\` ` +
+    'and `cache.readerMaxBytes` for a small heap lowers this cache with them.';
 
   const bill = [
     '| | cold intersects | point reads | pointer refresh | loads | storage | **a month** | the Redis that holds it | **against it** |',
