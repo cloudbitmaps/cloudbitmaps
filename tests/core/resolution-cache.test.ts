@@ -213,6 +213,8 @@ async function world(options: WorldOptions = {}) {
     resolution: (ref: SegmentRef) => inside(source).resolutions?.peek(segmentKey(ref)),
   };
 }
+type World = Awaited<ReturnType<typeof world>>;
+
 /** Which generation of `a` a chunk is from: `a`'s generation g holds `1 + 2g` in chunk 0. */
 const remainder0 = (bytes: Uint8Array | null): number =>
   SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()[0]!;
@@ -419,6 +421,21 @@ describe('what forgets a resolution', () => {
     await expect(x.source.currentGeneration(A)).rejects.toBeInstanceOf(NotFoundError);
     expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
   });
+
+  it.each([
+    ['listChunkKeys', (x: World) => x.source.listChunkKeys(A)],
+    ['summary', (x: World) => x.source.summary(A)],
+    ['currentVersion', (x: World) => x.source.currentVersion(A)],
+  ] as const)(
+    'a read that can open the object, %s, resolves once more on a NotFoundError from the registry, as on a swept generation',
+    async (_, read) => {
+      const x = await world();
+      x.rows.state.down = new NotFoundError('the row read was refused as not found');
+      x.reset();
+      await expect(read(x)).rejects.toBeInstanceOf(NotFoundError);
+      expect(x.sent()).toEqual({ rows: 2, tails: 0, ranges: 0 });
+    },
+  );
 
   it('a read that finds its generation swept drops the snapshot and the resolution, resolves afresh, and reads once more', async () => {
     const x = await world();

@@ -899,8 +899,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * The segment's current generation number, as its snapshot's resolution found it: no backend read within the TTL
    * window, and no open of the object, ever. `null` if the segment has no committed generation. A generation swept from
    * under the resolution is met by the read that fetches from it, which heals ({@link withFreshSnapshot}). Since it
-   * opens nothing, the only error it meets is the resolution's own, which fails it as it fails a cold resolve: there is
-   * nothing to heal.
+   * opens nothing, the only error it meets is the resolution's own, and it fails with that error at once: there is
+   * nothing to heal. The reads that can open the object (`listChunkKeys`, `summary`, `currentVersion` and the rest)
+   * resolve once more on any `NotFoundError`, a registry's among them, since theirs can be a swept generation.
    *
    * It is spelled out rather than delegated because a lookup like this runs once per operand of every
    * `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with no backend call at all.
