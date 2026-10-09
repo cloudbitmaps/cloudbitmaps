@@ -444,8 +444,10 @@ async function eraseOnce(
    * Which key an object is sealed under is read from where its open fails, since its footer names none. Every check
    * before the index's authentication passes for an object sealed under another key, and that authentication fails:
    * the index was not sealed under the row's key for this segment and generation, so no read through the row opens
-   * it. An object whose index opens under the row's key is the segment's own, and a chunk of it that then fails its
-   * checks is corruption, which throws. The row's key never changes while the row lives (a key is made only for a
+   * it. That is all "sealed elsewhere" means: an index altered and given new checksums fails the same way, opens for no
+   * read either, and is counted the same. An object whose index opens under the row's key is the segment's own, and a
+   * chunk of it that then fails its checks is corruption, which throws, as does a footer or checksum that does not
+   * match, or an object cut short, none of which reaches the index's authentication. The row's key never changes while the row lives (a key is made only for a
    * segment's first generation, a publish never adds one to a segment that has generations, and only a crypto-shred,
    * which tombstones the row, removes it), so no generation a reader of the row can open is ever counted here.
    */

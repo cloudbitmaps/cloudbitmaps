@@ -124,9 +124,13 @@ segment with a generation, so does any encrypted object: a key is made only for 
 a first load's that made one and crashed, or lost the race to a cleartext first load. The erasure cannot search it, so wherever it meets one, above the pointer or below it, it deletes it as a
 holder, under the same renewal of the row and read before the delete, and lists it in `collected`; it never makes the
 answer `erased: true`. When no generation is found to hold the id, only those objects go, and the generations kept below
-the pointer stay. Which objects those are is read from where the object fails to open: one whose index the segment's key
-opens is the segment's own, and when a chunk of it then does not open, that is corruption, which the erasure reports
-with `IntegrityError`, deleting nothing it could not search. The current generation is never deleted for this.
+the pointer stay. Which objects those are is read from where the object fails to open, since an object does not name
+its key: on a segment with a key, such an object is exactly one whose footer and checksums pass and whose index then
+fails authentication under the row's key for that segment and generation. So an index someone altered and gave new
+checksums counts as one too, and goes the same way. One whose index the segment's key opens is the segment's own, and
+when a chunk of it then does not open, that is corruption, which the erasure reports with `IntegrityError`, deleting
+nothing it could not search; so is a footer or a checksum that does not match, and an object cut short. The current
+generation is never deleted for this.
 
 ## Who stops seeing the id, and when
 

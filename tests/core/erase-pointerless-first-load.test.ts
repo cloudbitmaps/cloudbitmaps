@@ -309,6 +309,40 @@ describe('an erasure and a first load onto a row with no pointer', () => {
     expect(await generations(w.storage)).toEqual([]);
   });
 
+  it('a row changed by another writer before the renewal is superseded: nothing is written or deleted', async () => {
+    // A retention write lands between the erasure's first read of the row and the read its renewal is made against.
+    // The row is still without a pointer, but it is not the row the erasure read: it answers superseded, and a re-run
+    // erases.
+    const w = world();
+    await w.registry.create(REF, { currentGen: null });
+    await crashedFirstLoad(w.storage, w.registry, 0, [1, X]);
+    let reads = 0;
+    const changing = Object.create(w.registry) as IRegistryDriver;
+    changing.get = async (ref) => {
+      if (++reads === 2) {
+        const row = (await w.registry.get(ref))!;
+        await w.registry.compareAndSwap(ref, row.token, {
+          retention: { expiresAt: 4_102_444_800_000 },
+        });
+      }
+      return w.registry.get(ref);
+    };
+    const changed = await eraseIdFromSegment(REF, X, { ...w.deps, registry: changing });
+    expect(changed).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      fromGeneration: 0,
+      collected: [],
+    });
+    const row = (await w.registry.get(REF))!;
+    expect(row.retention).toEqual({ expiresAt: 4_102_444_800_000 });
+    expect(await generations(w.storage)).toEqual([0]);
+    expect(await eraseIdFromSegment(REF, X, w.deps)).toMatchObject({
+      erased: true,
+      collected: [0],
+    });
+  });
+
   it('a rollback onto a holder after the renewal is seen by the read before the delete: nothing is deleted', async () => {
     const w = world();
     await w.registry.create(REF, { currentGen: null });

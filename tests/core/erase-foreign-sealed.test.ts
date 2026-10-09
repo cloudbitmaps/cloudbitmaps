@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/core/audit';
 import type { CodecBitmap } from '@/core/codec';
 import { writeCrbmGenerationStream } from '@/core/crbm-storage-source';
-import { FOOTER, FOOTER_BYTES } from '@/core/crbm/format';
+import { crc32c } from '@/core/crbm/crc32c';
+import { FOOTER, FOOTER_BYTES, FOOTER_CRC_COVERAGE } from '@/core/crbm/format';
 import { aadFor } from '@/core/crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, WriteConflictError } from '@/core/errors';
@@ -78,6 +79,37 @@ const u64 = (bytes: Uint8Array, at: number): number =>
 /** A byte of the index flipped, its checksum left as it was. */
 function flipIndexByte(bytes: Uint8Array): Uint8Array {
   bytes[u64(bytes, footerAt(bytes) + FOOTER.indexOffset)]! ^= 0x01;
+  return bytes;
+}
+
+/** A byte of the footer flipped (its cardinality), its checksum left as it was. */
+function flipFooterByte(bytes: Uint8Array): Uint8Array {
+  bytes[footerAt(bytes) + FOOTER.totalCardinality]! ^= 0x01;
+  return bytes;
+}
+
+/** A byte of the index's authentication tag flipped, the footer's checksum left as it was. */
+function flipIndexTag(bytes: Uint8Array): Uint8Array {
+  bytes[footerAt(bytes) + FOOTER.indexTag]! ^= 0x01;
+  return bytes;
+}
+
+/** The index's checksum and the footer's computed again over what the object now holds, as a forger would. */
+function rechecksummed(bytes: Uint8Array): Uint8Array {
+  const at = footerAt(bytes);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const indexOffset = u64(bytes, at + FOOTER.indexOffset);
+  const indexLength = u64(bytes, at + FOOTER.indexLength);
+  view.setUint32(
+    at + FOOTER.indexCrc32c,
+    crc32c(bytes.subarray(indexOffset, indexOffset + indexLength)),
+    true,
+  );
+  view.setUint32(
+    at + FOOTER.footerCrc32c,
+    crc32c(bytes.subarray(at, at + FOOTER_CRC_COVERAGE)),
+    true,
+  );
   return bytes;
 }
 
@@ -239,6 +271,79 @@ describe("an object sealed under the row's own key that does not open is corrupt
     await loadSegment(REF, [1, 2, 3], w.deps, KEEP); // 2, current; 1 is below it
     await expect(eraseIdFromSegment(REF, X, w.deps)).rejects.toBeInstanceOf(IntegrityError);
     expect(await generations(w.storage)).toContain(1);
+  });
+
+  // Damage the segment's own object, sealed under its key, in every way its checks are there to catch: none of these
+  // reaches the index's authentication, so each is corruption, reported with IntegrityError, and nothing is deleted.
+  const damages: readonly [string, (bytes: Uint8Array) => Uint8Array][] = [
+    ['an index byte flipped, its checksum left', flipIndexByte],
+    ['a footer byte flipped, its checksum left', flipFooterByte],
+    ["the index's tag flipped, the footer's checksum left", flipIndexTag],
+    ['the last 10 bytes cut off', (b) => b.subarray(0, b.length - 10)],
+    ['cut to half its length', (b) => b.subarray(0, Math.floor(b.length / 2))],
+    ['cut to 50 bytes', (b) => b.subarray(0, 50)],
+  ];
+  /** Each place the erasure reads an object other than the current one, with the segment's own object at `at`. */
+  const places: readonly [string, (w: W) => Promise<number>][] = [
+    [
+      'above the pointer',
+      async (w) => {
+        await loadSegment(REF, [1, 2], w.deps, KEEP);
+        await loadSegment(REF, [1, 2, X], w.deps, KEEP);
+        await rollbackSegment(REF, 0, w.deps);
+        return 1;
+      },
+    ],
+    [
+      'below the pointer',
+      async (w) => {
+        await loadSegment(REF, [1, X], w.deps, KEEP);
+        await loadSegment(REF, [1, 2], w.deps, KEEP);
+        return 0;
+      },
+    ],
+    [
+      'on a row with no pointer that holds a key',
+      async (w) => {
+        const minted = await w.keystore.createDek();
+        await w.registry.create(REF, { currentGen: null, wrappedDeks: minted.wrapped });
+        await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 0 }, [1, X], {
+          registry: w.registry,
+          keystore: w.keystore,
+          publish: false,
+        });
+        return 0;
+      },
+    ],
+  ];
+  for (const [where, place] of places) {
+    it.each(damages)(`${where}, %s: IntegrityError, and nothing is deleted`, async (_, damage) => {
+      const w = world();
+      const at = await place(w);
+      await rewriteObject(w.storage, at, damage);
+      const present = await generations(w.storage);
+      const before = (await w.registry.get(REF))!;
+      await expect(eraseIdFromSegment(REF, X, w.deps)).rejects.toBeInstanceOf(IntegrityError);
+      expect(await generations(w.storage)).toEqual(present);
+      expect((await w.registry.get(REF))!.token).toBe(before.token);
+    });
+  }
+
+  it("an index altered with its checksums recomputed fails authentication under the row's key: it is counted sealed, and deleted", async () => {
+    // What "sealed elsewhere" means is that the index does not authenticate under the row's key for this segment and
+    // generation. An index someone altered and re-checksummed is indistinguishable from one sealed under another key,
+    // and opens for no read either: it goes as one, and the id is not reported erased from it.
+    const w = world();
+    await loadSegment(REF, [1, 2], w.deps, KEEP);
+    await loadSegment(REF, [1, 2, X], w.deps, KEEP);
+    await rollbackSegment(REF, 0, w.deps); // 1, the segment's own object, is above the pointer
+    await rewriteObject(w.storage, 1, (bytes) => rechecksummed(flipIndexByte(bytes)));
+    expect(await eraseIdFromSegment(REF, X, w.deps)).toMatchObject({
+      erased: false,
+      reason: 'not-member',
+      collected: [1],
+    });
+    expect(await generations(w.storage)).toEqual([0]);
   });
 
   it('the current generation is never deleted: one the row has no key for still throws', async () => {
