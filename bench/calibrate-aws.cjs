@@ -576,7 +576,7 @@ async function main() {
   let priced;
   if (MODE !== 'cleanup') {
     let AWS_US_EAST_1_ONDEMAND;
-    ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/roaring'));
+    ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/tools'));
     packageVersion = measuredVersion(ROOT);
     sdk = measuredSdk(ROOT);
     pricing = AWS_US_EAST_1_ONDEMAND;

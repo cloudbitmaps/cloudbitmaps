@@ -11,7 +11,7 @@
  * deletes for real, so a request count here is the count a cloud store would bill.
  */
 import { describe, expect, it } from 'vitest';
-import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
+import { RETENTION_SWEEP_REQUESTS } from '@/tools/cost';
 import { retireExpired, DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep';
 import { setSegmentRetention } from '@/core/retention';
 import { gcOrphanGenerations } from '@/core/generation-gc';

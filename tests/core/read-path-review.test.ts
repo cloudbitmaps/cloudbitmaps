@@ -161,7 +161,7 @@ describe('what stat() hands back', () => {
     const store = w.reader();
     const pinned = await store.segment('s', { namespace: 'ns' }).pin();
     await w.writer.load(SEG, [1, 2]);
-    expect(await pinned.stat()).toEqual({ generation: null, cardinality: 0 });
+    expect(await pinned.stat()).toEqual({ generation: null, cardinality: 0, sizeBytes: null });
     expect(await store.segment('s', { namespace: 'ns' }).stat()).toMatchObject({ generation: 0 });
   });
 

@@ -144,7 +144,7 @@ function slugify(heading: string): string {
  * WHY. The checks below deliberately skip absolute URLs, because resolving them would need the network. But
  * a `https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/...` link is not a foreign URL — it is a
  * relative link wearing an absolute spelling, and every one of it can be resolved on disk with no network at
- * all. The five package READMEs have to spell them this way: they are rendered on npmjs.com, where a relative
+ * all. The package READMEs have to spell them this way: they are rendered on npmjs.com, where a relative
  * link resolves against npm's own host and 404s. Without this, the repo's most-read pages — the npm landing
  * pages — would be the only ones whose links and heading fragments nothing checks, which is the narrower-gate
  * failure this suite exists to prevent.

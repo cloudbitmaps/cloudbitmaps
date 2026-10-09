@@ -1,7 +1,6 @@
 /**
- * The storage reader's defaults, stated once for the two modules that need them: the reader, which applies them,
- * and the cost model, which prices what they cause. The cost model once imported them from the reader itself,
- * which pulled the whole read path into a module that is otherwise arithmetic.
+ * The storage reader's defaults. `@cloudbitmaps/tools` prices what two of them cause and keeps its own copies, which
+ * `tests/tools/store-defaults.test.ts` holds equal to these.
  */
 
 /** Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-publish read staleness. */

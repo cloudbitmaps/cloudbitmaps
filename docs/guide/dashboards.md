@@ -6,7 +6,7 @@ different screens — don't collapse them into one:
 | Surface | Question it answers | Audience | Where it goes |
 | --- | --- | --- | --- |
 | **Metrics** (`IMetricsSink`) | *Is it healthy and fast?* — volume, latency, cache hit rate | on-call / SRE | ops dashboard (Grafana, Datadog, CloudWatch) |
-| **Cost** (`costReport()`) | *What is it costing vs. Redis?* — dollars, crossover | you / FinOps | a cost gauge, reviewed weekly |
+| **Cost** (`groundedReport()`, from `@cloudbitmaps/tools`) | *What is it costing vs. Redis?* — dollars, crossover | you / FinOps | a cost gauge, reviewed weekly |
 | **Audit** (`IAuditSink`) | *Who changed the data, when?* — publish / rewrite / **erase** / dispose | security / compliance | append-only audit log / SIEM |
 
 All three are **off by default**, **vendor-neutral** (CloudBitmaps ships no telemetry dependency — you write a
@@ -97,15 +97,16 @@ store is throttling).
 
 ---
 
-## 2. Cost gauge (costReport → a scheduled sample)
-
-`costReport()` keeps working, and moves to `@cloudbitmaps/tools` in a coming minor ([why](cost.md)).
+## 2. Cost gauge (groundedReport → a scheduled sample)
 
 Cost isn't an event stream — it's a *standing figure* you sample on a schedule (a cron, a Lambda) and push as a
-gauge. Because the library owns the objects, the grounded report uses each segment's **real** measured size:
+gauge. Because the library owns the objects, `stat()` reports each segment's **real** size in storage, and
+`groundedReport()` from `@cloudbitmaps/tools` prices it. Each sample of a segment the store has not opened reads its
+object's tail as well as its row: two requests on S3 and GCS, three on Azure Blob.
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
+import { groundedReport } from '@cloudbitmaps/tools';
 
 const meter = otel.getMeter('cloudbitmaps');
 const monthlyUsd = meter.createObservableGauge('cloudbitmaps.cost.monthly_usd');
@@ -118,7 +119,9 @@ meter.addBatchObservableCallback(
   async (obs) => {
     let storeUsd = 0;
     for (const name of SEGMENTS) {
-      const r = await store.segment(name).costReport({
+      const { sizeBytes } = await store.segment(name).stat();
+      const r = groundedReport({
+        storageBytes: sizeBytes,
         workload: { readsPerSec: 200, cacheHitRate: 0.8, loadsPerMonth: 30 },
       });
       obs.observe(monthlyUsd, r.monthlyUSD.total, { segment: name });
@@ -252,6 +255,6 @@ retention/lifecycle trail. Never substitute one for another.
 ## Putting it together
 
 A minimal production wiring: **metrics** → your existing OTel/Datadog pipeline (health), a **cron** sampling
-`costReport()` → a cost gauge (spend), and an **audit** sink on every lifecycle call → an append-only bucket
+`stat()` sizes through `groundedReport()` → a cost gauge (spend), and an **audit** sink on every lifecycle call → an append-only bucket
 (compliance). Three sinks, three screens, one library — and each stays a no-op until you opt in, so the default
 hot path pays nothing.

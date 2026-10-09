@@ -83,18 +83,11 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
   ) => AsyncIterable<ChunkRead>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly summary?: (ref: SegmentRef) => Promise<GenerationSummary | null>;
+  readonly stat?: (ref: SegmentRef) => Promise<(GenerationSummary & SegmentSize) | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
   readonly invalidate?: (ref: SegmentRef) => void;
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
   readonly currentVersion?: (ref: SegmentRef) => Promise<string | null>;
-
-  /**
-   * Forwarded, not retried: a property, with no request behind it. Without it the grounded cost report priced a
-   * retrying store's refresh at the default TTL whatever the store was configured with.
-   */
-  get pointerRefreshMs(): number | undefined {
-    return this.inner.pointerRefreshMs;
-  }
 
   constructor(inner: StorageChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -127,6 +120,10 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     if (innerSummary) {
       this.summary = (ref) =>
         withRetry(() => innerSummary.call(inner, ref), this.policy, this.deps);
+    }
+    const innerStat = inner.stat;
+    if (innerStat) {
+      this.stat = (ref) => withRetry(() => innerStat.call(inner, ref), this.policy, this.deps);
     }
     const innerCurrentGeneration = inner.currentGeneration;
     if (innerCurrentGeneration) {

@@ -15,7 +15,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, CloudRoaring, MemoryStorage } from '@/index';
+import { CloudRoaring, MemoryStorage } from '@/index';
+import { AWS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/tools';
 import { WriteConflictError } from '@/core/errors';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
@@ -1441,10 +1442,11 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         mkdirSync(join(scratch, dirname(rel)), { recursive: true });
         writeFileSync(join(scratch, rel), readFileSync(join(ROOT, rel)));
       }
-      // What `npm i` leaves: the SDK as installed, and the published library, which this stands in for with the
-      // checkout's version and the price table's shape. The tests run before the build, so the workspace's own
-      // package has no entry point to import yet; what is under test is what the harness finds here, not the library.
+      // What `npm i` leaves: the SDK as installed, and the published library and its tools, which this stands in for
+      // with the checkout's version and the price table's shape. The tests run before the build, so the workspace's own
+      // packages have no entry point to import yet; what is under test is what the harness finds here, not the library.
       mkdirSync(join(scratch, 'node_modules', '@cloudbitmaps', 'roaring'), { recursive: true });
+      mkdirSync(join(scratch, 'node_modules', '@cloudbitmaps', 'tools'), { recursive: true });
       symlinkSync(
         join(ROOT, 'node_modules', '@aws-sdk'),
         join(scratch, 'node_modules', '@aws-sdk'),
@@ -1461,8 +1463,18 @@ describe('a rehearsal cannot be committed as the evidence', () => {
           exports: './index.js',
         }),
       );
+      writeFileSync(join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'index.js'), '');
       writeFileSync(
-        join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'index.js'),
+        join(scratch, 'node_modules', '@cloudbitmaps', 'tools', 'package.json'),
+        JSON.stringify({
+          name: '@cloudbitmaps/tools',
+          version: roaring.version,
+          type: 'module',
+          exports: './index.js',
+        }),
+      );
+      writeFileSync(
+        join(scratch, 'node_modules', '@cloudbitmaps', 'tools', 'index.js'),
         "export const AWS_US_EAST_1_ONDEMAND = { name: 'aws-us-east-1-ondemand', storage: { getPerMillion: 0.4, putPerMillion: 5 } };\n",
       );
       const out = spawnSync(process.execPath, ['bench/calibrate-aws.cjs'], {

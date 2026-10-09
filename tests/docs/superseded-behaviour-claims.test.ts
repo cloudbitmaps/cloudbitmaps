@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/core';
+import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/tools';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 
 /**
@@ -1885,7 +1885,7 @@ function hitsIn(rel: string, text: string): string[] {
 // Known limits, stated rather than hidden: it does not read a figure that has no "per million" in its clause
 // (a table cell is its own clause), a ratio more than 40 characters after `store.load()`, or another backend's or
 // an encrypted segment's price, which the model does not derive. Those figures are held where they are derived,
-// `tests/bench/calibrate-guards.test.ts` and `tests/core/cost.test.ts`.
+// `tests/bench/calibrate-guards.test.ts` and `tests/tools/cost.test.ts`.
 // ---------------------------------------------------------------------------------------------------
 type Dollars = {
   first: number;
@@ -2234,7 +2234,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //
 // The prices above are held, and the counts behind them were not: a request count in prose (a guide, the bench README,
 // a doc-comment, the changelog) was restated by hand each time the engine's counts moved, and each time a copy was
-// missed. The counts here come from the cost model, which `tests/core/cost.test.ts` holds to the engine by counting
+// missed. The counts here come from the cost model, which `tests/tools/cost.test.ts` holds to the engine by counting
 // what it sends, and from the pricing the model gives a pointer read and a tail read, so a count that moves with the
 // engine moves the gate with it.
 //
@@ -2243,8 +2243,10 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //   - a load (`store.load()`, `loadSegment`, "a load", "a steady load", "a first load", "a second load", "a reload"):
 //     its PUT-class and GET-class counts, and its total with the delete it makes; steady, first, second or one that
 //     lists, as the words around it say; with no such word, a steady load;
-//   - a cold `count()` or `stat()`: one request, one pointer read, or, where the clause says the row has no summary to
-//     use or that the index is read, the tail read it adds (two, or three on Azure Blob).
+//   - a cold `count()`: one request, one pointer read, or, where the clause says the row has no summary to use or that
+//     the index is read, the tail read it adds (two, or three on Azure Blob);
+//   - a cold `stat()`: one pointer read, and the tail read it always adds for the object's size (two requests, or
+//     three on Azure Blob).
 // It never reads: a number after "was", "were", "made", "took", "from" or a 0.11 release's name (history is
 // the changelog's, and says so), a range or a bound ("1 to 3", "two or three", "at most 4", "up to 8"), a count
 // of "more", "fewer" or "extra" requests, a clause about another operation nearer than the subject (an intersect, a
@@ -2438,11 +2440,23 @@ function requestCountHits(rel: string, text: string): string[] {
           continue;
         if (WARM.test(near) || kind === 'PUT') continue;
         const { pointer, withTail } = REQUEST_COUNTS.coldCount;
-        const allowed = NO_SUMMARY_TO_USE.test(near) ? [pointer, ...withTail] : [pointer];
+        // A stat always opens the object for its size, so its requests are a count's with the tail read added.
+        const stat = /stat/i.test([...head.matchAll(COLD_READ_SUBJECT)].at(-1)?.[0] ?? '');
+        const allowed =
+          kind === 'pointer'
+            ? [pointer]
+            : stat
+              ? withTail
+              : NO_SUMMARY_TO_USE.test(near)
+                ? [pointer, ...withTail]
+                : [pointer];
         if (allowed.includes(n)) continue;
         hits.push(
-          `${where} is not what a cold count() or stat() makes: ${pointer} request(s), a pointer read, ` +
-            `${withTail.join(' or ')} where the row has no summary to use`,
+          stat
+            ? `${where} is not what a cold stat() makes: ${pointer} pointer read and a tail read, ` +
+                `${withTail.join(' or ')} requests`
+            : `${where} is not what a cold count() makes: ${pointer} request(s), a pointer read, ` +
+                `${withTail.join(' or ')} where the row has no summary to use`,
         );
       }
     }
@@ -2474,7 +2488,8 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'a load makes 14 requests',
     'a cold count() makes 2 requests',
     'a cold count is two requests',
-    'count() is one request when cold, and a cold stat() is three requests',
+    'count() is one request when cold, and a cold stat() is one request',
+    'a cold stat() is 4 requests',
     'A cold `stat()` is 2 pointer reads',
     'a cold count on S3 and GCS makes 3 requests, with the row summary',
     'store.load() sends 3 PUTs.',
@@ -2496,6 +2511,9 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'a cold count() makes 1 request',
     'a cold count is one request',
     'count() is one request when cold, and a cold stat() is one pointer read',
+    // A stat reads the object's tail for its size: S3 and GCS two requests, Azure Blob three.
+    'a cold stat() makes 2 requests, and 3 on Azure Blob',
+    'count() is one request when cold, and a cold stat() is two requests',
     // Where the row has no summary to use, the tail read is added: S3 and GCS two, Azure Blob three.
     'a cold count() of a row with no summary makes 2 requests, and 3 on Azure Blob',
     // History is the changelog's.
@@ -2547,7 +2565,7 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
       join('docs', 'guide', 'reading.md'),
       join('docs', 'ROADMAP.md'),
       join('site', 'usage.html'),
-      join('packages', 'core', 'src', 'core', 'cost.ts'),
+      join('packages', 'tools', 'src', 'cost.ts'),
     ])
       expect(pages).toContain(f);
     expect(pages.some((f) => f.startsWith('tests'))).toBe(false);

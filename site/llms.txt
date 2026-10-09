@@ -37,7 +37,9 @@ honours S3's conditional writes; MinIO is the one the integration suite runs aga
 and Azure Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real
 rather than as an optional peer, and the local filesystem (`LocalFsStorage`, from `@cloudbitmaps/roaring`, for
 development); plus the in-memory `MemoryStorage`, also from `@cloudbitmaps/roaring`, for tests. Each of the three clouds hosts both the storage generations and the registry, so a
-deployment needs exactly one cloud account.
+deployment needs exactly one cloud account. The cost model is a sixth package, `@cloudbitmaps/tools`: `estimateCost`
+prices a store you plan, and `groundedReport` one you run, from the size a segment's `stat()` reports
+(`groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`). It reads and writes no store.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
 carries both the generations and the currentGen pointer, from one bucket and one prefix. MemoryStorage
@@ -158,6 +160,8 @@ a minor bump until the .crbm format freezes at 1.0.
 
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
 - Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
+- Package (the cost model): https://www.npmjs.com/package/@cloudbitmaps/tools
+- Estimate your own cost: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/cost.md
 - Getting-started guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md
 - Before production (permissions, lifecycle rules, timeouts): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md
 - Loading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md

@@ -368,9 +368,10 @@ npm audit signatures</code></pre>
                   <td class="num">storage</td>
                 </tr>
                 <tr>
-                  <td><span class="m">CloudRoaring.estimateCost(input)</span></td>
+                  <td><span class="m">estimateCost(input)</span></td>
                   <td class="from">
-                    Your region and rates in, projected bill out. The
+                    Your region and rates in, projected bill out, from
+                    <span class="m">@cloudbitmaps/tools</span>. The
                     <a href="benchmarks.html">benchmarks page</a> is generated from this same function.
                   </td>
                   <td class="num">nothing — pure</td>
@@ -614,7 +615,9 @@ npm audit signatures</code></pre>
         <p class="lede">
           Our published numbers are <span class="m">us-east-1</span> on-demand. Yours are not. Feed your own
           rates in and get your own crossover — the site's modelled figures call this same function, so they
-          cannot drift ahead of the library. It counts the pointer too — the object beside your data that says
+          cannot drift ahead of it. It ships in <span class="m">@cloudbitmaps/tools</span>, a package of offline
+          tools beside the library, and a segment's <span class="m">stat()</span> reports the size its
+          <span class="m">groundedReport</span> prices a running store from. It counts the pointer too — the object beside your data that says
           which generation is current — and each operand's index, so pass
           <span class="m">chunksPerIntersect</span> as the chunk range requests your intersects make, summed over their operands,
           and <span class="m">hotSegments</span> for the segments each long-lived reader keeps reading, with
@@ -629,10 +632,10 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">estimate.ts</span><span class="label">Pure — touches nothing</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring, AWS_US_EAST_1_ONDEMAND }
-  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre class="code-plain"><code><span class="k">import</span> { estimateCost, AWS_US_EAST_1_ONDEMAND }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/tools'</span>;
 
-<span class="k">const</span> bill = CloudRoaring.estimateCost({
+<span class="k">const</span> bill = estimateCost({
   segments: [{ sizeBytes: <span class="n">60_000_000</span>, count: <span class="n">20</span> }],
   workload: { readsPerSec: <span class="n">800</span>, loadsPerMonth: <span class="n">900</span>, hotSegments: <span class="n">20</span> },
   pricing: AWS_US_EAST_1_ONDEMAND,  <span class="c">// or your own profile</span>
@@ -752,7 +755,8 @@ bill.redisCrossover.readsPerSec;  <span class="c">// against a Redis sized to th
             <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
 <span class="c"># the codec you want, and the storage you have.</span>
-<span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span></code></pre>
+<span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span>
+<span class="c"># to price a store: @cloudbitmaps/tools</span></code></pre>
             <p class="link-row"><a href="flavors.html">Compare flavors →</a></p>
           </div>
         </div>

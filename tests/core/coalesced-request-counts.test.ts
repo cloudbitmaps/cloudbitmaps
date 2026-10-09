@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { brandAsBackend } from '@/core/ports';
-import { estimateCost } from '@cloudbitmaps/core';
+import { estimateCost } from '@cloudbitmaps/tools';
 import { collect } from '../helpers/loaded';
 import { chunkReads } from '../helpers/chunk-reads';
 

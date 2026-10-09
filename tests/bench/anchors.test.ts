@@ -8,14 +8,17 @@ import {
   CloudRoaring,
   CountingMetricsSink,
   CrbmStorageChunkSource,
+  type MetricsSnapshot,
+} from '@/index';
+import {
   AWS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
-  type MetricsSnapshot,
+  estimateCost,
+  groundedReport,
   type PricingProfile,
-} from '@/index';
+} from '@cloudbitmaps/tools';
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
-import { estimateCost } from '@cloudbitmaps/core';
 import { MemoryStorageDriver } from '@/drivers/memory';
 
 /**
@@ -27,7 +30,7 @@ import { MemoryStorageDriver } from '@/drivers/memory';
  * Anchors covered here: count() → 0 payload reads (cheap count), intersection byte-savings, at-rest ≤10% of
  * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the chunk GETs the
  * engine actually issued for point reads — chunk reads only: a single-bucket store's pointer and tail reads are not
- * counted by the metrics sink. `tests/core/cost.test.ts` holds the estimator's count of those, and of what a load
+ * counted by the metrics sink. `tests/tools/cost.test.ts` holds the estimator's count of those, and of what a load
  * and the pointer refresh cost, to the requests the engine makes instead.
  */
 
@@ -154,11 +157,10 @@ describe('bench-as-test anchors', () => {
     const observedHitRate = snap.cache.hits / (snap.cache.hits + snap.cache.misses);
 
     const measuredUSD = priceSnapshot(snap, AWS_US_EAST_1_ONDEMAND, size);
-    const predicted = (
-      await seg.costReport({
-        workload: { readsPerSec: reads / SECONDS_PER_MONTH, cacheHitRate: observedHitRate },
-      })
-    ).monthlyUSD.total;
+    const predicted = groundedReport({
+      storageBytes: (await seg.stat()).sizeBytes,
+      workload: { readsPerSec: reads / SECONDS_PER_MONTH, cacheHitRate: observedHitRate },
+    }).monthlyUSD.total;
 
     expect(measuredUSD).toBeGreaterThan(0);
     expect(predicted).toBeGreaterThan(0);

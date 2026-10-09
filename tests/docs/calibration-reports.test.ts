@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@/index';
+import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@cloudbitmaps/tools';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/format';
 
 /**

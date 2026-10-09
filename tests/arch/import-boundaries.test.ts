@@ -27,6 +27,7 @@ const CORE = 'packages/core/src/core/some-module.ts';
 const CORE_ROOT = 'packages/core/src/some-barrel.ts';
 const ROARING_ROOT = 'packages/roaring/src/some-file.ts';
 const S3_PKG = 'packages/s3/src/storage.ts';
+const TOOLS_PKG = 'packages/tools/src/cost.ts';
 // A service package that does NOT exist yet. The generic driver block is scoped `packages/*/src/**` for
 // exactly this reason: a block naming the three packages matches nothing under `packages/r2/src/**`, which
 // then has no boundary rules at all. A case planted inside one of the three per-package blocks that override
@@ -236,6 +237,61 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
       ).toEqual([]);
     },
   );
+
+  // The tools block restates a narrower list than the generic block it overrides: core's main entry and nothing
+  // else of ours, and no node builtin. Each case below is one the generic block allows, so emptying the tools
+  // block turns these red, not just the ones both blocks refuse.
+  it("the tools package takes core's public entry and nothing internal, no SDK and no builtin", async () => {
+    // Core's internals, by every route: the `@/` alias (which this package's tsconfig maps onto core's source),
+    // a subpath of the package, and a relative path out of this package.
+    expect(
+      await boundaryErrors(
+        TOOLS_PKG,
+        "import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';\nLIST_COLLECTION_CADENCE;",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(
+        TOOLS_PKG,
+        "import { brandAsBackend } from '@cloudbitmaps/core/driver-kit';\nbrandAsBackend;",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(TOOLS_PKG, "import { x } from '../../core/src/core/ports';\nx;"),
+    ).toHaveLength(1);
+    // No flavor, no driver package, no cloud SDK, no node builtin.
+    expect(
+      await boundaryErrors(
+        TOOLS_PKG,
+        "import { CloudRoaring } from '@cloudbitmaps/roaring';\nCloudRoaring;",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(TOOLS_PKG, "import { S3Storage } from '@cloudbitmaps/s3';\nS3Storage;"),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(TOOLS_PKG, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(TOOLS_PKG, "import { readFile } from 'node:fs/promises';\nreadFile;"),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(TOOLS_PKG, "import { createHash } from 'crypto';\ncreateHash;"),
+    ).toHaveLength(1);
+    // What it is meant to import is still allowed: core's main entry, and its own modules.
+    expect(
+      await boundaryErrors(
+        TOOLS_PKG,
+        "import { ValidationError } from '@cloudbitmaps/core';\nValidationError;",
+      ),
+    ).toEqual([]);
+    expect(
+      await boundaryErrors(
+        TOOLS_PKG,
+        "import { LIST_COLLECTION_CADENCE } from './store-defaults';\nLIST_COLLECTION_CADENCE;",
+      ),
+    ).toEqual([]);
+  });
 
   it('the driver packages are where an SDK belongs', async () => {
     expect(

@@ -44,6 +44,9 @@ importers:
       '@cloudbitmaps/s3':
         specifier: workspace:*
         version: link:packages/s3
+      '@cloudbitmaps/tools':
+        specifier: workspace:*
+        version: link:packages/tools
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.10.0)
@@ -152,6 +155,19 @@ importers:
       '@aws-sdk/client-s3':
         specifier: '>=3.700.0 <4'
         version: 3.1132.0
+      '@cloudbitmaps/core':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
+  packages/tools:
+    dependencies:
       '@cloudbitmaps/core':
         specifier: workspace:^
         version: link:../core

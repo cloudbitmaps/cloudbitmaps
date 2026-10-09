@@ -16,8 +16,6 @@ async function exercise(label, m) {
   for (const name of ['CloudRoaring', 'MemoryStorage']) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  if (typeof m.CloudRoaring.estimateCost !== 'function')
-    throw new Error(`${label}: CloudRoaring.estimateCost is missing`);
   // Data enters a loaded store only as a published generation, so the round-trip IS the load: encode the ids
   // into one immutable `.crbm`, publish it, then read it back. The two ids sit in different 16-bit chunks, so
   // chunk routing and the native bitmap both run rather than a single-container no-op.
@@ -32,7 +30,8 @@ async function exercise(label, m) {
     (await seg.has(42)) &&
     (await seg.has(70_000)) &&
     !(await seg.has(1)) &&
-    (await seg.count()) === 2;
+    (await seg.count()) === 2 &&
+    (await seg.stat()).sizeBytes > 0;
   if (!ok) throw new Error(`${label}: roaring round-trip returned a wrong result`);
   console.log(
     `  ${label}: roaring loads + round-trips on ${process.platform}/${process.arch} (node ${process.versions.node})`,

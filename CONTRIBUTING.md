@@ -68,11 +68,11 @@ A fresh clone must pass `install → lint → lint:arch → format:check → typ
 **no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
 want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
 for `test:integration`).
-Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all five packages.
+Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all six packages.
 
-## Repo layout (a pnpm workspace of five packages)
+## Repo layout (a pnpm workspace of six packages)
 
-The `@cloudbitmaps` family is five packages, so this repo is a workspace
+The `@cloudbitmaps` family is six packages, so this repo is a workspace
 (`pnpm-workspace.yaml` → `packages/*`). Where code lives:
 
 | Path | Package | Holds |
@@ -80,15 +80,17 @@ The `@cloudbitmaps` family is five packages, so this repo is a workspace
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit` and nothing else of ours — never a flavor, never a sibling |
+| `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s public main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | the benchmarks ([`bench/README.md`](bench/README.md)), fuzz targets ([`fuzz/README.md`](fuzz/README.md)), the build, release and gate scripts ([`scripts/README.md`](scripts/README.md)), the static site ([`site/README.md`](site/README.md)), and the docs trees below |
 
 A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
 (`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
-directly. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
+directly. `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
 core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
-entry outside a driver package names an SDK or a driver package. `pnpm lint:arch` proves each of those lint rules
-fires.
+entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
+core's but its public main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a
+cloud SDK or a node builtin. `pnpm lint:arch` proves each of those lint rules fires.
 
 `core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there
 whatever its source), and
@@ -127,6 +129,13 @@ the ones marked **nothing** fail no gate at all, so this table is the only thing
 One thing to copy rather than invent: the package declares its SDK as a **real dependency**, never an optional
 peer.
 
+**A package that is not a driver**, as `@cloudbitmaps/tools` is, takes the rows above that are not about an SDK or a
+backend: the root `package.json`, `tsconfig.json`, both vitest configs, an `eslint.config.js` block of its own with
+planted violations in `tests/arch/import-boundaries.test.ts` (the generic package block is a driver's list, so the
+package restates the list that fits it), `EXPECTED_PACKAGES`, the docs and the API reference's export index, and
+bootstrapping its name; and a row in the [dependency policy](#dependency-policy) below. The issue template,
+`docker-compose.yml`, `tests/integration/`, the SDK range and `scripts/sdk-specifiers.cjs` are a driver's alone.
+
 ## Dependency policy
 
 Third-party runtime dependencies are counted **per package**, and each one is deliberate:
@@ -136,6 +145,7 @@ Third-party runtime dependencies are counted **per package**, and each one is de
 | `@cloudbitmaps/core` | **none** |
 | `@cloudbitmaps/roaring` | `roaring` — the native codec, the reason a flavor is a package |
 | `@cloudbitmaps/s3` · `/gcs` · `/azure-blob` | its own cloud SDK, and only its own |
+| `@cloudbitmaps/tools` | **none** — its one dependency is `@cloudbitmaps/core`, ours |
 
 A user therefore installs a flavor and the driver for the storage they actually have; nothing is an optional
 peer, and no package pulls an SDK for a service the user does not use. Keep it that way:
@@ -269,7 +279,7 @@ root-level project files. What each one is, and when it must be updated:
    is hand-written: `.changeset/` does **not** generate it, deliberately
    ([why](.changeset/README.md)).
 5. **Changeset** — `pnpm changeset`, if the change should move the version. It records the **bump type**
-   only; all five packages move together, and pre-`1.0` a breaking change is a **minor**. A change that ships
+   only; all six packages move together, and pre-`1.0` a breaking change is a **minor**. A change that ships
    no version move (docs, tests, tooling) needs none.
 6. **Roadmap** — update [`docs/ROADMAP.md`](docs/ROADMAP.md) after any meaningful change, not only at
    milestones. It must **never lag reality**.
@@ -300,7 +310,7 @@ hand. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
   (`WriteConflictError`, `IntegrityError`, …) over thrown strings — callers must learn *why* something failed.
 - Tests live at the **repo root under `tests/`, mirroring the package source trees** (e.g.
   `packages/core/src/core/lru.ts` → `tests/core/lru.test.ts`), not co-located with source and not split per
-  package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-five-packages)) keeps that
+  package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-six-packages)) keeps that
   mirror intact across the packages. Integration tests under `tests/integration/`. Property tests over loaded
   generations, and race tests for the write-then-publish path.
 - Pluggable drivers behind explicit interfaces; a driver **conformance suite**

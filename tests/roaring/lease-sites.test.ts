@@ -79,7 +79,6 @@ describe('every Segment method that reads checks a lease', () => {
         'intersectInto',
         'unionInto',
         'andNotInto',
-        'costReport',
         'everyNth',
         'pinAt',
       ]),

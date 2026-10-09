@@ -68,11 +68,6 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     private readonly pins: ReadonlyMap<string, PinnedAt>,
   ) {}
 
-  /** The unpinned segments refresh as the store's own source does; a pinned one never does. */
-  get pointerRefreshMs(): number {
-    return this.inner.pointerRefreshMs;
-  }
-
   /**
    * The pin for this segment, or `undefined` if it is not pinned here.
    *
@@ -158,6 +153,14 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return pin.generation === null
       ? Promise.resolve(null)
       : this.inner.summaryAt(ref, pin.generation, heldBy(pin));
+  }
+
+  stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
+    const pin = this.pinFor(ref);
+    if (pin === undefined) return this.inner.stat(ref);
+    return pin.generation === null
+      ? Promise.resolve(null)
+      : this.inner.statAt(ref, pin.generation, heldBy(pin));
   }
 
   currentGeneration(ref: SegmentRef): Promise<number | null> {

@@ -1,7 +1,8 @@
 # What it saves, and where it doesn't
 
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. [The short
-answer](#the-short-answer) is first. Every cost here comes from the library's own `estimateCost()`. The prices are AWS's
+answer](#the-short-answer) is first. Every cost here comes from `estimateCost()` in `@cloudbitmaps/tools`, the
+project's own cost model. The prices are AWS's
 `us-east-1` list prices, on demand unless a sentence says otherwise, and the three deployments are illustrative
 workloads, not anyone's measured system. The one latency figure is the [in-region run's](../benchmarks.md#real-cloud-calibration--aws), quoted where it
 applies.

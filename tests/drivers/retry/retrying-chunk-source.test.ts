@@ -68,11 +68,13 @@ describe('RetryingStorageChunkSource', () => {
   });
 
   // The optional reads, each present only when the inner source has it. The engine reads them in the middle of a
-  // segment read — `count()` reads `cardinalities`, and a combine checks an empty operand with `exists` — so an
-  // unretried one fails a read the store says it retries.
+  // segment read — `count()` reads `cardinalities` or `summary`, `stat()` reads `stat`, and a combine checks an empty
+  // operand with `exists` — so an unretried one fails a read the store says it retries.
   const OPTIONAL = [
     { member: 'sizeOf', value: { bytes: 10, chunks: 1 } },
     { member: 'cardinalities', value: new Map([[0, 3]]) },
+    { member: 'summary', value: { generation: 4, cardinality: 3 } },
+    { member: 'stat', value: { generation: 4, cardinality: 3, sizeBytes: 10 } },
     { member: 'currentGeneration', value: 4 },
     { member: 'exists', value: true },
     { member: 'currentVersion', value: 'v1' },

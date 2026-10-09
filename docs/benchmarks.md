@@ -1,9 +1,9 @@
 # CloudBitmaps — benchmarks & the Redis crossover
 
 > **Generated, not hand-written.** The chart and table below are produced by `pnpm bench` from the shipped
-> `estimateCost()` at the default `aws-us-east-1-ondemand` rates: the line against one three-node Redis-HA cluster,
+> `estimateCost()` in `@cloudbitmaps/tools` at the default `aws-us-east-1-ondemand` rates: the line against one three-node Redis-HA cluster,
 > `ONE_REDIS_HA_CLUSTER`, whatever the data size, and the table's last row against the Redis the default profile
-> sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the library's own numbers. The
+> sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the estimator's own numbers. The
 > polished, shareable version lives on the [site](../site/benchmarks.html)
 
 CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
@@ -40,7 +40,7 @@ requests**, and any always-on node crosses any per-request meter somewhere.
 
 Every number above is turned into a **deterministic, build-breaking CI assertion** in
 [`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts), and the estimator's request counts in
-[`tests/core/cost.test.ts`](../tests/core/cost.test.ts); `pnpm bench:check` holds the chart, the table and
+[`tests/tools/cost.test.ts`](../tests/tools/cost.test.ts); `pnpm bench:check` holds the chart, the table and
 `bench/results.json` to the same estimator — a regression or an overclaim fails the build:
 
 - **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, and a cold one is **one pointer
@@ -365,7 +365,7 @@ inside the region and not from a laptop.
 - **Default rates, one cluster** (`aws-us-east-1-ondemand` against `ONE_REDIS_HA_CLUSTER`, cache off). Your
   region, cloud, committed term and cache-hit rate all move the crossover, and so does your data's size: the
   estimator's default prices the Redis that would hold it, which [what it costs at your size](guide/sizing.md)
-  works through. Feed your own `PricingProfile` and workload to `CloudRoaring.estimateCost()`.
+  works through. Feed your own `PricingProfile` and workload to `estimateCost()` from `@cloudbitmaps/tools`.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
@@ -377,7 +377,7 @@ inside the region and not from a laptop.
   default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
   `ONE_REDIS_HA_CLUSTER`, and the stats table's last row against the Redis the default profile sizes for the
   reference set. Treat the _ratios_ as the durable
-  finding and re-derive any absolute figure from your own region and contract — `CloudRoaring.estimateCost()` takes a
+  finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
   `PricingProfile` so you can plug your real rates in rather than trusting ours.
 
 ## What is still owed
@@ -441,6 +441,6 @@ pnpm soak          # sustained loaded-store reads + combines + re-loads; heap/na
 pnpm rss-gate      # the same soak under a hard cgroup --memory ceiling (needs Docker)
 ```
 
-The formulas are in `packages/core/src/core/cost.ts` — every rate, the crossover derivation and what each term
+The formulas are in `packages/tools/src/cost.ts` — every rate, the crossover derivation and what each term
 does and does not model are stated there — and the
 [cost guide](guide/cost.md) covers the estimator API.

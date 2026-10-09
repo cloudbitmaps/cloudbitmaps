@@ -59,7 +59,7 @@ function publicFacingFiles(): string[] {
   walk('.github', (n) => n.endsWith('.md'));
   // The published source. Its doc-comments are user-facing twice over — on hover in an editor, and inside the
   // `.d.ts` files and sourcemaps that ship in the tarball.
-  // EVERY package's src, derived: all five publish `.d.ts` and sourcemaps, so all five are user-facing.
+  // EVERY package's src, derived: every one publishes `.d.ts` and sourcemaps, so every one is user-facing.
   for (const pkg of readdirSync(join(ROOT, 'packages'), { withFileTypes: true })) {
     if (pkg.isDirectory()) walk(`packages/${pkg.name}/src`, (n) => n.endsWith('.ts'));
   }

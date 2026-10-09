@@ -224,7 +224,7 @@ describe('a row with no summary it can use', () => {
 });
 
 describe('a torn restore', () => {
-  it('a cold count answers the row, while a read of the object throws', async () => {
+  it('a cold count answers the row, while a read of the object, and a stat that sizes it, throw', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3, 4]);
     await w.backend.storage.delete({ ...SEG, generation: 0 });
@@ -232,9 +232,9 @@ describe('a torn restore', () => {
     const seg = store.segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(4);
     await expect(seg.has(1)).rejects.toBeInstanceOf(NotFoundError);
-    await expect(store.segment('s', { namespace: 'ns' }).stat()).resolves.toMatchObject({
-      generation: 0,
-      cardinality: 4,
-    });
+    // `stat()` reports the object's size, which only the object has, so it opens it and fails as a read does.
+    await expect(store.segment('s', { namespace: 'ns' }).stat()).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 });

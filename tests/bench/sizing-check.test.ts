@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as core from '@cloudbitmaps/core';
+import * as tools from '@cloudbitmaps/tools';
 
 /**
  * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the cost guide, the explainer, the
@@ -33,9 +33,9 @@ function deepFreeze<T>(value: T): T {
  * the next case. A case that serves another estimator through `mods` does not go through this, and every page and
  * figure a case edits is still compared with the estimator's own answer.
  */
-const priced = new Map<string, ReturnType<typeof core.estimateCost>>();
-const cachedCore: typeof core = {
-  ...core,
+const priced = new Map<string, ReturnType<typeof tools.estimateCost>>();
+const cachedTools: typeof tools = {
+  ...tools,
   estimateCost: (input) => {
     // A non-finite number would otherwise print as `null`, the same key as an input that has a `null` there.
     const key = JSON.stringify(input, (_k, v: unknown) =>
@@ -43,7 +43,7 @@ const cachedCore: typeof core = {
     );
     let report = priced.get(key);
     if (report === undefined) {
-      report = deepFreeze(core.estimateCost(input));
+      report = deepFreeze(tools.estimateCost(input));
       priced.set(key, report);
     }
     return report;
@@ -138,7 +138,7 @@ function sizingCheck(
   const modules: Record<string, unknown> = {
     'node:fs': fs,
     'node:child_process': childProcess,
-    '@cloudbitmaps/core': cachedCore,
+    '@cloudbitmaps/tools': cachedTools,
     ...mods,
   };
   const lines: string[] = [];
@@ -1628,9 +1628,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       // With intersects half price whenever a cache is in play, the medium deployment's whole-bill break-even moves
       // past the chart's line, where the room it is given still holds: only the line's own premise refuses it.
       const halved = {
-        ...core,
-        estimateCost: (input: Parameters<typeof core.estimateCost>[0]) => {
-          const r = core.estimateCost(input);
+        ...tools,
+        estimateCost: (input: Parameters<typeof tools.estimateCost>[0]) => {
+          const r = tools.estimateCost(input);
           if (!input.workload?.cacheHitRate) return r;
           const cut = r.monthlyUSD.byOp.intersects / 2;
           return {
@@ -1646,7 +1646,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       const r = sizingCheck(
         {},
         {
-          mods: { '@cloudbitmaps/core': halved },
+          mods: { '@cloudbitmaps/tools': halved },
           source: (t) =>
             t.replace(
               'intersectsPerMonth: 2_628_000, // one a second',
@@ -1660,14 +1660,14 @@ describe('bench:sizing:check fails what it exists to catch', () => {
 
     it('fails bills that cross back inside the chart, where the pages say they cross once', () => {
       const cheapPast10TB = {
-        ...core,
-        estimateCost: (input: Parameters<typeof core.estimateCost>[0]) => {
-          const r = core.estimateCost(input);
+        ...tools,
+        estimateCost: (input: Parameters<typeof tools.estimateCost>[0]) => {
+          const r = tools.estimateCost(input);
           const size = input.segments.reduce((a, g) => a + (g.sizeBytes ?? 0) * (g.count ?? 1), 0);
           return size > 1e13 ? { ...r, redisBaseline: { ...r.redisBaseline, monthlyUSD: 1 } } : r;
         },
       };
-      const r = sizingCheck({}, { mods: { '@cloudbitmaps/core': cheapPast10TB } });
+      const r = sizingCheck({}, { mods: { '@cloudbitmaps/tools': cheapPast10TB } });
       expect(r.code, r.out).not.toBe(0);
       expect(r.out).toMatch(/cross more than once/);
     });

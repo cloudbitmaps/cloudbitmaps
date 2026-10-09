@@ -116,6 +116,146 @@
     "reason": "a form for dryRun held in a variable (boolean, optional or not) goes between the dry-run form and the publishing form, which moves unchanged to #3; a literal true, a literal false and a call without dryRun keep their types, dryRun typed any is typed as either result, and the utility types still read the publishing form; agreed with the maintainer"
   },
   {
+    "entry": "@cloudbitmaps/core AWS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core ELASTICACHE_REDIS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core ONE_REDIS_HA_CLUSTER",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core CostReport*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core EstimateInput*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core PricingProfile*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core RedisNodeType*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core RedisSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core Workload*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AWS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ELASTICACHE_REDIS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ONE_REDIS_HA_CLUSTER",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CostReport*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring EstimateInput*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PricingProfile*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RedisNodeType*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RedisSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Workload*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core estimateCost",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core groundedReport",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.estimateCost",
+    "reason": "removed (owner's decision): estimateCost from @cloudbitmaps/tools replaces the static, and groundedReport from there with stat().size replaces costReport; pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.costReport",
+    "reason": "removed (owner's decision): estimateCost from @cloudbitmaps/tools replaces the static, and groundedReport from there with stat().size replaces costReport; pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core StorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core CrbmStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core PinnedStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core RetryingStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.supportsStorageSize",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.segmentSize",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring StorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.stat",
+    "reason": "stat() reports the generation's byte size (owner's decision): the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentStat.sizeBytes",
+    "reason": "stat() reports the generation's byte size (owner's decision), named sizeBytes as the port, estimateCost's segments and the reader name it, since size means a count in Roaring and JavaScript: the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+  },
+  {
     "entry": "@cloudbitmaps/core AuditEvent",
     "reason": "every segment event gains an optional incarnation (the registry row's incarnation id), and the union gains segment.collect, emitted by an erasure that deletes the generations holding an id and rewrites none; an exhaustive switch on kind needs a case for it; agreed with the maintainer"
   },

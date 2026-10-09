@@ -26,7 +26,7 @@
 #     fails. The check keys on a tag ref, so a run started by hand on a branch skips it.
 # Prerequisites (one-time, outside this file — see RELEASING.md):
 #   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
-#      `@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) → Trusted Publisher:
+#      `@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`, `@cloudbitmaps/tools`) → Trusted Publisher:
 #      GitHub Actions, repo `cloudbitmaps/cloudbitmaps`, workflow `release.yml`, environment `release`.
 #      A publisher can only be bound to a package that ALREADY EXISTS on the registry, so each new name is
 #      created first, by hand with interactive 2FA, at a throwaway prerelease (`pnpm release:bootstrap`; see
@@ -54,7 +54,7 @@ permissions:
 
 # NEVER cancel a release in flight. `cancel-in-progress: false` is the opposite of the CI workflow's setting,
 # deliberately: cancelling a build is free, but cancelling a release is not — kill a run mid-run and npm holds
-# a half-published family, some of the five up and the rest not, which cannot be unpublished back out.
+# a half-published family, some of the six up and the rest not, which cannot be unpublished back out.
 #
 # The group includes the REF. In a group of the workflow alone, two different tags pushed together do not
 # queue: GitHub holds exactly ONE pending run per concurrency group and cancels any earlier pending one, so a
@@ -74,7 +74,7 @@ concurrency:
 # happen, not a smaller release. Stated once here; `tests/ci/release-workflow.test.ts` asserts it still equals
 # the number of packages in the workspace, so adding one fails the gate instead of silently under-releasing.
 env:
-  EXPECTED_PACKAGES: 5
+  EXPECTED_PACKAGES: 6
 
 jobs:
   publish:

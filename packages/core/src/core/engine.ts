@@ -27,13 +27,7 @@ import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
-import type {
-  ChunkRef,
-  GenerationMetadata,
-  StorageChunkSource,
-  SegmentRef,
-  SegmentSize,
-} from './ports';
+import type { ChunkRef, GenerationMetadata, StorageChunkSource, SegmentRef } from './ports';
 
 /**
  * Range requests a stream holds ahead of a combine or `iterate` by default (chunk keys, on a source that reads chunk by
@@ -441,34 +435,38 @@ export class SegmentEngine {
   }
 
   /**
-   * What the segment's current generation is: its number, its id count and its metadata, from one resolution, so the
-   * three cannot straddle a publish. A source with no summary answers from `count()` and the generation it resolves.
+   * What the segment's current generation is: its number, its id count, its metadata and the size of its object in
+   * bytes. A source with a `stat` (the `.crbm` source) answers all four from one resolution, so they cannot straddle
+   * a publish: from the opened generation's footer and index, with no payload read. A source without one answers
+   * from its other methods, each its own resolution: its summary when it has one, else `count()` and the generation
+   * it resolves, and its `sizeOf`, or `size: null` when it has none. A segment with no generation answers
+   * `{ generation: null, cardinality: 0, size: null }`.
    */
-  async stat(
-    seg: SegmentRef,
-  ): Promise<{ generation: number | null; cardinality: number; metadata?: GenerationMetadata }> {
+  async stat(seg: SegmentRef): Promise<{
+    generation: number | null;
+    cardinality: number;
+    metadata?: GenerationMetadata;
+    sizeBytes: number | null;
+  }> {
+    if (this.storage.stat) {
+      const found = await this.storage.stat(seg);
+      if (found === null) return { generation: null, cardinality: 0, sizeBytes: null };
+      return found;
+    }
     if (this.storage.summary) {
-      return (await this.storage.summary(seg)) ?? { generation: null, cardinality: 0 };
+      const summary = await this.storage.summary(seg);
+      if (summary === null) return { generation: null, cardinality: 0, sizeBytes: null };
+      return { ...summary, sizeBytes: await this.sizeOf(seg) };
     }
     const generation = this.storage.currentGeneration
       ? await this.storage.currentGeneration(seg)
       : null;
-    return { generation, cardinality: await this.count(seg) };
+    return { generation, cardinality: await this.count(seg), sizeBytes: await this.sizeOf(seg) };
   }
 
-  /** Whether the Storage source can measure segment size (for grounded cost); false ⇒ storage isn't grounded. */
-  get supportsStorageSize(): boolean {
-    return typeof this.storage.sizeOf === 'function';
-  }
-
-  /** How often the Storage source re-reads a pointer while reading (cost reporting); undefined if it does not say. */
-  get pointerRefreshMs(): number | undefined {
-    return this.storage.pointerRefreshMs;
-  }
-
-  /** Grounded Storage size of a segment's current generation (cost reporting), or null if it has no generation. */
-  segmentSize(seg: SegmentRef): Promise<SegmentSize | null> {
-    return this.storage.sizeOf ? this.storage.sizeOf(seg) : Promise.resolve(null);
+  /** The size of the segment's current generation from the source's `sizeOf`, or `null` when it cannot say. */
+  private async sizeOf(seg: SegmentRef): Promise<number | null> {
+    return this.storage.sizeOf ? ((await this.storage.sizeOf(seg))?.sizeBytes ?? null) : null;
   }
 
   /** The chunks of `seg` at `chunkKeys`, read through a window of {@link DEFAULT_INTERSECT_CONCURRENCY}. */

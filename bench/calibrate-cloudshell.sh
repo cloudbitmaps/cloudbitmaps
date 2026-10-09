@@ -7,7 +7,8 @@
 #
 # WHY THE PUBLISHED PACKAGES. This installs @cloudbitmaps/roaring and @cloudbitmaps/s3 from npm into a scratch
 # directory and runs the harness against those, not against a build of this checkout. The figures then describe
-# what a consumer actually installs, and CloudShell never needs this repository's toolchain.
+# what a consumer actually installs, and CloudShell never needs this repository's toolchain. It installs
+# @cloudbitmaps/tools of the same release too, whose default prices the run is billed at.
 #
 # Usage, from a clone of this repository inside CloudShell:
 #   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
@@ -271,7 +272,7 @@ echo "cloudshell: installing the published packages at ${PKG_VERSION}"
   # its native binary; without this the install exits 0 and the first import throws. npm 10 and 11 run it anyway.
   node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
   npm i --no-audit --no-fund --loglevel=error \
-    "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" \
+    "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" "@cloudbitmaps/tools@${PKG_VERSION}" \
     @aws-sdk/client-s3 @aws-sdk/client-sts
   # Fail here, before anything is created or spent, if the native binary did not arrive.
   node -e 'import("@cloudbitmaps/roaring").catch((e)=>{console.error("cloudshell: @cloudbitmaps/roaring does not load: "+e.message.split("\n")[0]);process.exit(2)})'

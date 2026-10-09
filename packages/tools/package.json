@@ -1,0 +1,62 @@
+{
+  "name": "@cloudbitmaps/tools",
+  "version": "0.19.1",
+  "description": "Offline tools for CloudBitmaps that need nothing internal from a store: the cost model, which prices a workload on object storage against an always-on Redis.",
+  "keywords": [
+    "cloudbitmaps",
+    "bitmap",
+    "roaring-bitmap",
+    "cost",
+    "cost-estimate",
+    "pricing",
+    "redis",
+    "serverless",
+    "object-storage",
+    "s3",
+    "typescript"
+  ],
+  "license": "Apache-2.0",
+  "author": "Sharvil Kadam",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git",
+    "directory": "packages/tools"
+  },
+  "homepage": "https://github.com/cloudbitmaps/cloudbitmaps#readme",
+  "bugs": {
+    "url": "https://github.com/cloudbitmaps/cloudbitmaps/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "pnpm run build",
+    "build": "node ../../scripts/build.mjs"
+  },
+  "dependencies": {
+    "@cloudbitmaps/core": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

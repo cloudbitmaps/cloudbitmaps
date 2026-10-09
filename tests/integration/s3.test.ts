@@ -317,7 +317,7 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 });
 
 // What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
-// counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
+// counts that the cost model is held to (`tests/tools/cost.test.ts`) are of the driver ports; these are of the wire,
 // command by command. A load reads its row once before the publish and checks the next generation number with one
 // HeadObject instead of listing, and sizes the current generation from the row's summary of it. Its publish is written
 // against the row it read, so the write makes no read of the row. It collects by name: it looks for the current object
@@ -714,7 +714,12 @@ describe('S3 (MinIO): a cold count is one request', () => {
         generation: 0,
         cardinality: chunks,
       });
-      expect(proxy.requests).toEqual([]);
+      // A stat after it reads the object for its size, and not the row, which the count just read: one tail read, and a
+      // range read more for an index longer than the tail read.
+      expect(proxy.requests.map((r) => r.method)).toEqual(
+        chunks > 10_000 ? ['GET', 'GET'] : ['GET'],
+      );
+      expect(proxy.requests.filter((r) => r.path.includes('registry'))).toEqual([]);
     } finally {
       await proxy.close();
     }

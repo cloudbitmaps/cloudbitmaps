@@ -1,13 +1,13 @@
 # Releasing CloudBitmaps
 
-New versions of all five packages — `@cloudbitmaps/core`, `@cloudbitmaps/roaring`, and the
-`@cloudbitmaps/s3` · `/gcs` · `/azure-blob` driver packages — are published by an **automated, tokenless,
+New versions of all six packages — `@cloudbitmaps/core`, `@cloudbitmaps/roaring`, the
+`@cloudbitmaps/s3` · `/gcs` · `/azure-blob` driver packages and `@cloudbitmaps/tools` — are published by an **automated, tokenless,
 human-gated** pipeline — you never run `npm publish` by hand. This is the map to that pipeline, which lives in
 [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-All five packages release **in lockstep**: one version number, one tag, everything published together —
-`core`, the `roaring` flavor, and the `s3` / `gcs` / `azure-blob` driver packages. Each of the four depends on
-`core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. None of the
+All six packages release **in lockstep**: one version number, one tag, everything published together —
+`core`, the `roaring` flavor, the `s3` / `gcs` / `azure-blob` driver packages and the `tools` package. Each of the
+five depends on `core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. None of the
 workflow's steps names a package: they glob `packages/*/package.json` and filter `./packages/**`, and the one
 count the workflow carries (`EXPECTED_PACKAGES`) is asserted against the real number of manifests by
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts).
@@ -40,7 +40,7 @@ change, and the tag goes on the commit that pull request makes on `main`.
 1. **Land everything on `main`** with the gate green, each change's entry under `## [Unreleased]` in
    `CHANGELOG.md`, and a [changeset](#the-version-bump) per change that needs one.
 2. **On a `chore/release-<version>` branch, bump every version with one command** — `pnpm version:packages`. It runs
-   `changeset version`, which moves all five `packages/*/package.json` together and deletes the changesets it
+   `changeset version`, which moves all six `packages/*/package.json` together and deletes the changesets it
    consumed, then refreshes the lockfile. They must all match the tag exactly;
    the workflow globs `packages/*/package.json` and refuses the release if any one disagrees, so a missed
    package costs a failed run rather than a partial publish.
@@ -57,9 +57,9 @@ change, and the tag goes on the commit that pull request makes on `main`.
 6. **Approve the deployment** — the run waits on the `release` environment before its job starts. Open the
    run → _Review deployments_ → approve `release`.
 7. The job re-runs the gate and the audit, checks the tag and that no package is private, probes the registry,
-   checks the notes and leak-scans the tarballs, and only then publishes all five packages, tokenlessly, with a
+   checks the notes and leak-scans the tarballs, and only then publishes all six packages, tokenlessly, with a
    signed provenance attestation. `pnpm -r publish` walks the workspace in topological order, so `core` lands
-   before the four that depend on it. A second job then creates the GitHub Release, with that changelog section
+   before the packages that depend on it. A second job then creates the GitHub Release, with that changelog section
    as its notes.
 
 The approval comes first: nothing in the job runs until it is given, and nothing reaches npm before it.
@@ -71,7 +71,7 @@ publish step is the one that cannot be taken back.
 `pnpm version:packages` is the whole bump:
 
 ```
-changeset version            # all five manifests move together
+changeset version            # all six manifests move together
 pnpm install --lockfile-only # the lockfile follows the manifests
 ```
 
@@ -88,7 +88,7 @@ off. The reasoning lives in [`.changeset/README.md`](.changeset/README.md); the 
   signed, human-gated, and carries pre-flight probes that `changeset publish` does not have — including the
   one that refuses a version already on the registry, because `pnpm publish` silently skips it and exits 0.
 
-All five packages are a **`fixed` group**, matched by the glob `@cloudbitmaps/*` rather than named
+All six packages are a **`fixed` group**, matched by the glob `@cloudbitmaps/*` rather than named
 individually, so a sixth package is covered on the day it is created rather than the day someone remembers
 this file. `tests/index.test.ts` enforces lockstep independently, reading the package list off the
 filesystem, and it fails if any one manifest lags a bump.
@@ -154,7 +154,7 @@ Release with the same changelog section as its notes. It holds the file's one `c
 publish job does not have.
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
-free; cancelling a release part-way through leaves npm holding a half-published family — some of the five
+free; cancelling a release part-way through leaves npm holding a half-published family — some of the six
 packages up, the rest not — that cannot be taken back.
 
 Every `uses:` is pinned to a full commit SHA, so a moved tag can't inject code. Dependabot bumps the SHA and
@@ -202,7 +202,7 @@ That matters for three reasons:
 Configured once, outside this file; documented here so the pipeline can be rebuilt or audited.
 
 **npm** — per published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
-`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`). **A newly created package name starts with none of this**,
+`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`, `@cloudbitmaps/tools`). **A newly created package name starts with none of this**,
 so the hardening below is part of first-publishing one, not an afterthought:
 
 - Account-level 2FA enabled — ideally a passkey or hardware key. Once tokens are gone, the account is the root
@@ -231,6 +231,8 @@ so the hardening below is part of first-publishing one, not an afterthought:
 **Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
 that does not exist yet.** `pnpm release:bootstrap` runs once for each new package name, **including one added to
 a family whose other packages are already on npm**, and publishes only the names the registry does not have.
+`@cloudbitmaps/tools` is such a name until the first release that ships it: run `pnpm release:bootstrap` and bind its
+Trusted Publisher before that release is tagged.
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
@@ -330,13 +332,13 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 
 | Symptom | Cause |
 | --- | --- |
-| `tag vX.Y.Z does not match <pkg> version …` | A package version and the tag disagree. Every package releases in lockstep, so all five must equal the tag. Fix the manifests through a pull request, delete the tag (`git push origin --delete vX.Y.Z && git tag -d vX.Y.Z`), and tag the merge commit. |
+| `tag vX.Y.Z does not match <pkg> version …` | A package version and the tag disagree. Every package releases in lockstep, so all six must equal the tag. Fix the manifests through a pull request, delete the tag (`git push origin --delete vX.Y.Z && git tag -d vX.Y.Z`), and tag the merge commit. |
 | `… still has "private": true` | Someone added `private` to a package manifest. Only the workspace root is private; every package under `packages/` publishes. |
 | Publish rejected: token not permitted | Something re-introduced token auth. The packages disallow tokens; the workflow must authenticate via OIDC. |
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
-| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all five together. Recovery is a **patch release of the whole family**: fix what failed first (the log names the package), then a patch changeset and the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
+| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all six together. Recovery is a **patch release of the whole family**: fix what failed first (the log names the package), then a patch changeset and the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
 | `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
 | `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^X.Y.Z` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^X.Y.Z` — a version the registry does not have until the real release, when the bootstrap runs after the version bump. (When core's version is already on the registry, the rc tarballs resolve.) The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |

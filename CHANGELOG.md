@@ -13,6 +13,24 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`@cloudbitmaps/tools`: the cost model, in a package of its own.** `estimateCost`, `groundedReport`, the price lists
+  `AWS_US_EAST_1_ONDEMAND`, `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` and `ONE_REDIS_HA_CLUSTER`, and their types
+  (`CostReport`, `PricingProfile`, `RedisSizing`, `RedisNodeType`, `Workload`, `SegmentSizing`, `EstimateInput`) are
+  here, unchanged in what they compute: `pnpm add @cloudbitmaps/tools`. It is offline tools that need nothing internal
+  from a store: it reads and writes none, runs with nothing else installed, and depends on `@cloudbitmaps/core` alone,
+  for the `ValidationError` it throws. It releases with the family, at the family's version. `groundedReport` takes
+  `{ storageBytes, workload?, pricing? }`, where `storageBytes` is a measured byte count or `null`, which prices storage
+  at $0 with `assumptions.grounded: false` and a note saying nothing was measured. The price lists are as old as the
+  release that ships them, as before: pass your own profile for a decision that turns on the price
+  ([the cost guide](docs/guide/cost.md)).
+- **`stat()` reports `sizeBytes`: the bytes of the generation's object in storage.** `SegmentStat` gains the required
+  `sizeBytes: number | null`, read from the object's footer and index with no payload read, and from the same opened
+  generation as the number, count and metadata beside it, so it is never another generation's. A pinned handle reports
+  its pinned generation's. It is `null` for a segment with no generation, and on a store whose source cannot report a
+  size. A grounded cost report is then `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`. A storage source
+  provides it through a new optional `StorageChunkSource.stat`, which the `.crbm` source, the pinned source and the
+  retrying wrapper implement; a source of your own without it reports its `sizeOf`, or `sizeBytes: null`
+  ([`stat()`](docs/guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)).
 - **Every `segment.*` audit event carries `incarnation`**, the id of the segment's registry row as the operation found
   or wrote it. A name whose row was purged and created again starts its generations at `0` again, so a segment and a
   generation number could belong to two lives of the segment; the incarnation tells them apart.
@@ -29,6 +47,29 @@ so, and so do the module headers in the code.
   export did not read, `{ segment, namespace?, reason: 'destroyed' }`, so `segments`, `failed` and `skipped` together
   account for every segment row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary
   line counts them.
+
+### Changed
+
+- **A cold `stat()` reads the object's tail, for its size.** It was one registry read and no read of the object; it is
+  now one registry read and one tail read (two requests on S3 and GCS, three on Azure Blob; a range read more for an
+  index longer than the tail), and nothing while the generation is open, as a read of the segment leaves it. A cold
+  `stat()` keeps the generation open in the reader cache, as a read does. `count()` is unchanged: one registry
+  read when cold. It answers from the opened object, so a pointer that names a missing object (a torn restore) makes
+  `stat()` throw `NotFoundError`, as a read of the object does, where it answered the row's number; `count()` still
+  answers it, and `checkConsistency()` finds it.
+
+### Removed
+
+- **The cost model from `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, with `CloudRoaring.estimateCost` and
+  `seg.costReport()`.** Core and the flavor no longer export `estimateCost`, `groundedReport`, the price lists or their
+  types: import them from `@cloudbitmaps/tools`. `CloudRoaring.estimateCost(input)` is `estimateCost(input)` from there.
+  `seg.costReport({ workload, pricing })` is `groundedReport({ storageBytes: (await seg.stat()).sizeBytes, workload,
+  pricing })`; it priced the pointer refresh at the store's own `cache.genTtlMs`, so pass that as `workload.genTtlMs`
+  if your store sets one. `groundedReport` no longer takes `grounded` or `extraNotes`: a `null` size is what marks a
+  report ungrounded. What only the cost report read goes with it: `StorageChunkSource.pointerRefreshMs` and the
+  `pointerRefreshMs` getters of `CrbmStorageChunkSource`, `PinnedStorageChunkSource` and `RetryingStorageChunkSource`,
+  and `SegmentEngine`'s `pointerRefreshMs`, `supportsStorageSize` and `segmentSize`; a storage source of your own can
+  drop its `pointerRefreshMs`.
 
 ## [0.19.1] — 2026-10-09
 

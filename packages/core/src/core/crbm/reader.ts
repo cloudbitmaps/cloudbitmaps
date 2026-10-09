@@ -267,7 +267,7 @@ export class CrbmReader {
     return fingerprintFor(this.objectSize, this.footerCrc);
   }
 
-  /** Total object bytes (from the one-GET tail read) — for grounded storage cost. */
+  /** Total object bytes (from the one-GET tail read): the `sizeBytes` a segment's `stat()` reports. */
   get sizeBytes(): number {
     return this.objectSize;
   }
