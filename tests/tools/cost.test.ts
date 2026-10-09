@@ -1217,7 +1217,8 @@ describe('pointer refresh cost term', () => {
       }).assumptions.notes.find((n) => /keeps open by default/.test(n));
     // A timed refresh: the store keeps the segment's resolution apart from its reader.
     expect(note()).toContain(
-      'opens it again, a tail read, and reads its pointer too once the store has let its resolution go as well',
+      'opens it again when the read needs its index or an uncached chunk, a tail read, and reads its pointer too once ' +
+        'the store has let its resolution go as well',
     );
     // None: every reopen reads the pointer.
     expect(note(0)).toContain('opens it again, a pointer and a tail read');
