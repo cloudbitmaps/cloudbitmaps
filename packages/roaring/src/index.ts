@@ -494,7 +494,8 @@ export interface CacheOptions {
    * segments' resolutions (what it read of each segment's row: never an unwrapped key, though the wrapped keys are in
    * it) for `genTtlMs`, apart from their readers. An evicted segment is then reopened with no registry read, on the
    * generation it had resolved, when a read needs its index or a chunk the chunk cache does not hold: `iterate` and the
-   * combines always do, and a `has()` of a cached chunk, a `count()` and a `stat()` do not. A reader of a small generation, one whose whole object came with its tail read,
+   * combines always do, and a `has()` of a cached chunk, a `count()` and a `stat()` do not, where the row has a summary
+   * the store can use. A reader of a small generation, one whose whole object came with its tail read,
    * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
    * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built

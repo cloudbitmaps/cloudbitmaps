@@ -388,10 +388,10 @@ between here and there:
     reader cache keeps (as on a small Lambda) no longer asks the registry again for a segment whose reader was let go,
     and every chunk of a read agrees on one generation until the refresh, unless the resolution cache lets the
     resolution go or a read of the segment heals it (finding its generation swept or another object under its number)
-    or fails to open it. An eviction costs only the reopen a read needs: the version a cached chunk is checked against
-    comes from the row's summary, which names the object, so a `has()` of a cached chunk, a `count()` and a `stat()`
-    open nothing, while `iterate` and the combines open the object for its index. On an encrypted segment the key is
-    unwrapped again. A store with no timed refresh keeps no resolution, and an eviction re-resolves there.
+    or fails to open it. An eviction costs only the reopen a read needs: where the row has a summary the store can use,
+    the version a cached chunk is checked against comes from it, since it names the object, so a `has()` of a cached
+    chunk, a `count()` and a `stat()` open nothing, while `iterate` and the combines open the object for its index. On
+    an encrypted segment the key is unwrapped again. A store with no timed refresh keeps no resolution, and an eviction re-resolves there.
 
 ## Planned / exploring
 
