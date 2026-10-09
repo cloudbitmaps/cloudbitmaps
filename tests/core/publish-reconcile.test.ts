@@ -598,7 +598,7 @@ describe('a publish whose registry write ends without a definite answer reads th
     ]);
   });
 
-  it('an unguarded first load whose create did not land advances over a row another writer created, with a new write', async () => {
+  it('an unguarded first load whose create did not land is refused by the row another writer created meanwhile', async () => {
     const w = world();
     w.arm({
       kind: 'transient-unapplied',
@@ -607,11 +607,11 @@ describe('a publish whose registry write ends without a definite answer reads th
       },
     });
     const r = await loadSegment(SEG, [5], w.deps, { allowEmpty: true });
-    expect(r).toMatchObject({ generation: 0, published: true });
-    // The create was sent once; the advance is a compare-and-swap against the row the other writer made.
+    // It found no row and fenced on that absence: the row read back is another writer's, so no fresh write is sent.
+    expect(r).toMatchObject({ generation: 0, published: false, reason: 'superseded' });
     expect(w.writes.create).toBe(1);
-    expect(w.writes.compareAndSwap).toBe(1);
-    expect((await w.base.get(SEG))!.currentGen).toBe(0);
+    expect(w.writes.compareAndSwap ?? 0).toBe(0);
+    expect((await w.base.get(SEG))!.currentGen).toBeNull();
   });
 
   it('a pointer at this number over another object is not this publish: superseded, and that object kept', async () => {
@@ -638,8 +638,8 @@ describe('a publish whose registry write ends without a definite answer reads th
     w.arm({
       kind: 'transient-unapplied',
       meanwhile: async () => {
-        // No fence names this load's number: it read no row, and it asked for no guard. Its object is replaced under
-        // that number, and another writer creates the row, pointing at its own.
+        // It read no row, so its fence is that absence, and nothing in it names this load's number. Its object is
+        // replaced under that number, and another writer creates the row, pointing at its own.
         await w.storage.delete({ ...SEG, generation: 0 });
         await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [42, 43], {
           registry: w.base,
