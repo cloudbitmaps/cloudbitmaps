@@ -120,12 +120,13 @@ The registry needs delete permission on its prefix for it.
 (`delete(key, { ifVersion })`, the version a tail read of the object reported) is sent under that precondition, so it
 removes the object only while it is the one that was read, and `backend.storage.capabilities().conditionalDelete`
 reports `true`; off, the version is ignored and the delete removes whatever is under the key. An erasure's delete of a
-holder above the pointer is the one the library sends that way, so a load that took the holder's number since keeps
-its generation ([a number taken again during an erasure](erasure.md#how-it-stays-correct)). A precondition that no
-longer holds is a `WriteConflictError` while an object is under the key, and an absent object is a no-op whichever of
-`404` or `412` the service answers for it. The S3 storage half reads its default from the client as the registry
-does, on its first conditional delete, and `capabilities().conditionalDelete` reads `false` until then unless you set
-the option.
+holder above the pointer, and a refused load's delete of the object its footer proved its own, are the ones the library
+sends that way, so a load that took the number since keeps its generation (within the limits in the erasure guide:
+[a number taken again during an erasure](erasure.md#how-it-stays-correct)). A precondition that no longer holds is a
+`WriteConflictError` while an object is under the key, and an absent object is a no-op whichever of `404` or `412` the
+service answers for it. The S3 storage half reads its default from the client as the registry does, on its first
+conditional delete: `capabilities().conditionalDelete` reads `false` until then unless you set the option, and stays
+`false` when the client cannot be resolved then (no region), in which case its deletes are unconditional.
 
 | Backend | Default | Why |
 |---|---|---|

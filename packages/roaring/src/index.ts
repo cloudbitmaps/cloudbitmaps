@@ -1384,9 +1384,12 @@ export class CloudRoaring {
    * object is reclaimed only when a re-read finds the row unchanged (the same token) or gone (hard invariant 1:
    * deleting it after a purge-and-recreate would put a live row over a missing generation).
    *
-   * That last check narrows the window rather than closing it: the row read and the delete are two round
-   * trips, and `IStorageDriver` has no conditional delete to make them one. the collection a load runs carries
-   * the same residual. The failure it leaves is an orphan object, which costs storage until
+   * Where the row is gone, the object is proved the load's own by its footer, and the delete passes the version
+   * that read reported, so on a storage driver that reports `conditionalDelete` an object put under the number
+   * since is kept. Where the row is unchanged, the check narrows the window rather than closing it: the row read
+   * and the delete are two round trips, and the delete is by number, since the write reports no version of the
+   * object it made. The collection a load runs carries the same residual, deleting by number what a listing
+   * names. The failure the checks leave when they refuse is an orphan object, which costs storage until
    * something collects it — deliberately the cheaper side of the trade.
    *
    * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
