@@ -181,11 +181,42 @@ const notThePinned = (ref: SegmentRef, generation: number): NotFoundError =>
   );
 
 /**
- * The version of one generation of one incarnation: `<generation>`, or `<generation>:<row token>` where there is
- * a row. One spelling, for the live lookup and for what a pin holds.
+ * What a resolution names: `<generation>`, or `<generation>:<row token>` where there is a row. One spelling, for the
+ * live lookup and for what a pin holds. It names an object only as of the row read that produced it: a number can be
+ * taken again once its object is deleted, and every row write that leads there moves the token, so an object opened
+ * after that row read can be another one under the same name. {@link versionOfReader} adds the object.
  */
 function versionOf(generation: number, lineage: unknown): string {
   return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
+}
+
+/** The version of each open reader, spelled once per reader: the hot path asks for it once per operand of every read. */
+const readerVersions = new WeakMap<CrbmReader, string>();
+
+/**
+ * The version a live reader's chunks are read and cached under: what its resolution named ({@link versionOf}), then
+ * `#` and the fingerprint of the object it opened, from the footer its open read. Two objects under one name do not
+ * share a version, as far as their sizes and footer checksums tell them apart, so chunks cached from one are not served
+ * for the other, however late the second was opened.
+ */
+function versionOfReader(reader: CrbmReader): string {
+  let version = readerVersions.get(reader);
+  if (version === undefined) {
+    version = `${versionOf(reader.generation, reader.lineage)}#${reader.fingerprint}`;
+    readerVersions.set(reader, version);
+  }
+  return version;
+}
+
+/** The fingerprint {@link versionOfReader} ends a version with: an object's size and its footer's checksum. */
+const OBJECT_SUFFIX = /#\d+:\d+$/;
+
+/**
+ * What a live version's resolution named, without the object's fingerprint: `<generation>:<row token>`, or
+ * `<generation>` with no registry. For a caller that compares a version with a row it read, which names no object.
+ */
+export function rowVersionOf(version: string): string {
+  return version.replace(OBJECT_SUFFIX, '');
 }
 
 /** What a pin that leases its generation does between reading the row and opening the object. */
@@ -252,16 +283,25 @@ const readerIsOf = (reader: CrbmReader, live: Live): boolean =>
   reader.generation === live.target.generation && reader.lineage === live.target.lineage;
 
 /**
- * The version `snap` names, `null` for no generation: from its resolution, so no object is opened to learn it, or from
- * its reader for a snapshot built around one.
+ * Whether `snap` reads the object `reader` opened. Once the snapshot's reader is open, or opening, its version says,
+ * which names the object. Until then its resolution says, by generation and row token, so no object is opened to learn
+ * it; the snapshot's reader, opened later, can still turn out to be another object under that name, which the caller
+ * checks when it opens.
  */
-async function versionNamed(snap: Snapshot): Promise<string | null> {
-  if (snap.target === undefined) {
-    const reader = await snap.reader;
-    return reader === null ? null : versionOf(reader.generation, reader.lineage);
+async function readsObjectOf(snap: Snapshot, reader: CrbmReader): Promise<boolean> {
+  const opened = snap.openedReader;
+  if (opened !== undefined) {
+    const other = await opened;
+    return (
+      other !== null && (other === reader || versionOfReader(other) === versionOfReader(reader))
+    );
   }
-  const live = await snap.target;
-  return live === null ? null : versionOf(live.target.generation, live.target.lineage);
+  const live = await (snap.target as Promise<Live | null>);
+  return (
+    live !== null &&
+    versionOf(live.target.generation, live.target.lineage) ===
+      versionOf(reader.generation, reader.lineage)
+  );
 }
 
 /** What a generation's object says of itself, which is what a summary is held against: its count and metadata. */
@@ -272,8 +312,11 @@ function describe(reader: CrbmReader): GenerationDescription {
 /**
  * A memoized per-segment snapshot plus the time it was installed, for the current-generation TTL refresh. A live
  * snapshot is a resolved target, and a reader that is opened only when a read needs one: one resolution serves a
- * `count` answered from the row and a `has` that follows it, which reads the generation the count saw. A pinned
- * snapshot is its reader alone.
+ * `count` answered from the row and a `has` that follows it, which reads the generation the count saw. The reader
+ * opens whatever object is under that generation's key when it opens, which is another object than the row named if
+ * the number has been taken again since the row was read; its version names the object it opened
+ * ({@link versionOfReader}), so nothing cached from the earlier object answers for it. A pinned snapshot is its reader
+ * alone.
  */
 class Snapshot {
   /** When the snapshot's refresh clock started. A refresh that failed transiently moves it back, so it lapses sooner. */
@@ -367,7 +410,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * needs a clock). Within the TTL a segment's Storage bytes are treated as an immutable snapshot; when the TTL
    * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a load published),
    * opens the new generation — so a long-lived source observes new generations within the TTL. The engine pairs
-   * this with a **generation-keyed** cache so a bump never serves a stale decoded chunk. Without a clock or a
+   * this with a cache keyed by {@link currentVersion}, which names the object a reader opened, so a bump never serves
+   * a stale decoded chunk, and neither does a number taken again by another object. Without a clock or a
    * registry there is no timed refresh, and a segment's reader is replaced only when it is evicted, when a read
    * has to fetch from a generation a sweep deleted, or when {@link invalidate} drops it. A segment with no generation yet is not memoized, so
    * it's re-checked until one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmStorageChunkSourceOptions.maxOpenSegments}, default
@@ -719,13 +763,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * `<generation>` for a registry-less source, or `<generation>:<row token>` with one. The token moves on every row
-   * write, so an unrelated write (a `setRetention`) costs the segment's decoded chunks once — bounded, and on an
-   * admin path. Exactness in the direction that matters: with a registry, two incarnations can never share a version
-   * string. Without one they can: a name purged and loaded again out of band restarts at the same bare number, and
-   * a live read that reopens it after an eviction reads the new object's chunks beside the old one's cached ones. A
-   * store with no registry cannot write, so that takes a change made from outside it; a pin is kept apart from it by
-   * the fingerprint it records.
+   * `<generation>#<fingerprint>` for a registry-less source, or `<generation>:<row token>#<fingerprint>` with one: the
+   * generation the segment's snapshot resolved, and the object its reader opened, by that object's size and footer
+   * checksum, which the open read anyway. The token moves on every row write, so an unrelated write (a `setRetention`)
+   * costs the segment's decoded chunks once — bounded, and on an admin path. Two objects do not share a version string,
+   * as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second one: a name purged and loaded again (a new row, or with no registry
+   * the same bare number), a number taken again within one row once its object was deleted, or an object put back
+   * under its key from outside the library. That holds however long after its row read a reader opens: a snapshot that
+   * a `count()` resolved from the row opens its reader only when a later read needs it, and the object under the key
+   * may have changed in between. The version is opaque: compare two for equality.
    *
    * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its
    * chunk cache, so it heals a swept generation exactly as {@link currentGeneration} does: unhealed, a cold read
@@ -743,7 +789,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       this.dropStale(segmentKey(ref), snap);
       reader = await this.resolvedReader(ref); // a second miss propagates
     }
-    return reader === null ? null : versionOf(reader.generation, reader.lineage);
+    return reader === null ? null : versionOfReader(reader);
   }
 
   /**
@@ -1418,10 +1464,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
           }
           return;
         }
-        // A version is the generation number and the row's token, which is how the reader cache and the chunk cache
-        // already tell generations apart: an object replaced under the same number and the same token reads under
-        // the same version on both sides of a heal.
-        const version = versionOf(reader.generation, reader.lineage);
+        // The version names the object this stream reads, as `currentVersion` does: chunks of an object replaced under
+        // the same number and token, read after a heal, carry another version than the ones read before it.
+        const version = versionOfReader(reader);
+        // The reader of the snapshot this stream last compared itself with: when that snapshot's reader is opened
+        // later, the stream compares again, since it can be another object under the same name.
+        let seen = snap.openedReader;
         chunks = reader.readChunks(keys.slice(yielded), {
           ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
           ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
@@ -1439,26 +1487,33 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             // `cache.genTtlMs` boundary, the reader cache having let the segment go, an invalidation, and a newer
             // snapshot another read installed each leave the snapshot this stream was opened on no longer the live
             // one. If that moved the segment to another generation or incarnation, or to none, nothing more is served
-            // from this stream: its ranges are dropped and the keys not yet yielded are read afresh. The version is
-            // compared from the resolution (the registry's row, or a listing of the bucket with no registry), so no
-            // object is opened to learn it, and a fault in resolving starts the stream over at the top, where a caller's
-            // retry runs the resolution.
-            if (this.mayHaveMoved(key, snap, epoch)) {
+            // from this stream: its ranges are dropped and the keys not yet yielded are read afresh. The live snapshot
+            // is compared by its reader where it has opened one, which names the object, and otherwise by its
+            // resolution (the registry's row, or a listing of the bucket with no registry), so no object is opened to
+            // learn it. A snapshot taken on by its resolution is compared again once its reader opens: a reader opened
+            // after its row read can be another object under the same name, which the rest of the read, a chunk served
+            // from the cache among it, reads from then on. A fault in resolving starts the stream over at the top,
+            // where a caller's retry runs the resolution.
+            if (this.mayHaveMoved(key, snap, epoch) || snap.openedReader !== seen) {
               const live = this.liveSnapshot(ref);
-              if (live !== snap) {
-                let now: string | null;
+              if (live !== snap || live.openedReader !== seen) {
+                // What is compared is the reader as it stands now: one opened while the comparison waits is compared
+                // at the next chunk.
+                const looked = live.openedReader;
+                let same: boolean;
                 try {
-                  now = await versionNamed(live);
+                  same = await readsObjectOf(live, reader);
                 } catch (err) {
                   if (!isTransientError(err)) throw err;
                   movedOn = true;
                   break;
                 }
-                if (now !== version) {
+                if (!same) {
                   movedOn = true;
                   break;
                 }
                 snap = live;
+                seen = looked;
               }
               epoch = this.invalidations;
             }

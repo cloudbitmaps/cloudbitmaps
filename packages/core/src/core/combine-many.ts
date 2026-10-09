@@ -48,6 +48,7 @@ import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError
 import type { Budget } from './budget';
 import { checkedGuard } from './load';
 import { checkedAuditSink } from './audit';
+import { rowVersionOf } from './crbm-storage-source';
 import type { LoadGuard } from './load';
 import { copiedMetadata } from './metadata';
 import { incarnationOf } from './token';
@@ -565,7 +566,10 @@ interface OperandState {
   endGeneration: number | null | undefined;
   /** The row the last read at the end of the call, or before a publish, found: `undefined` when none was read. */
   endRow: EndRow | null | undefined;
-  /** For an operand read live, the version (generation and row token) its index was read under, where the source says. */
+  /**
+   * For an operand read live, the version (generation and row token, and with the `.crbm` source the object) its index
+   * was read under, where the source says.
+   */
   startVersion: string | null | undefined;
   indexKeys: number;
   chunkReads: number;
@@ -1855,11 +1859,15 @@ class Run<R> {
   }
 }
 
-/** The token of a version (`<generation>:<token>`), or `undefined` where the version names no row. */
+/**
+ * The token of a version (`<generation>:<token>`, which the `.crbm` source follows with the opened object's
+ * fingerprint), or `undefined` where the version names no row.
+ */
 function tokenOfVersion(version: string | null | undefined): string | undefined {
   if (version == null) return undefined;
-  const colon = version.indexOf(':');
-  return colon < 0 ? undefined : version.slice(colon + 1);
+  const named = rowVersionOf(version);
+  const colon = named.indexOf(':');
+  return colon < 0 ? undefined : named.slice(colon + 1);
 }
 
 /** Whether two row tokens are one row: the same incarnation where they have one, else the same token. */
