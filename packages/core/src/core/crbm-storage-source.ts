@@ -878,9 +878,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * The segment's current generation number, as its snapshot's resolution found it: no backend read within the TTL
    * window, and no open of the object, ever. `null` if the segment has no committed generation. A generation swept from
-   * under the resolution is met by the read that fetches from it, which heals ({@link withFreshSnapshot}).
+   * under the resolution is met by the read that fetches from it, which heals ({@link withFreshSnapshot}). Since it
+   * opens nothing, the only error it meets is the resolution's own, which fails it as it fails a cold resolve: there is
+   * nothing to heal.
    *
-   * A resolution that fails with `NotFoundError` is resolved again once, then the error propagates, as for a read.
    * It is spelled out rather than delegated because a lookup like this runs once per operand of every
    * `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with no backend call at all.
    * Routing it through the generic helper cost ~115 ns/op on that path (a second async frame, a per-call closure, and
@@ -890,14 +891,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const snap = this.liveSnapshot(ref);
     const settled = snap.settled;
     if (settled !== undefined) return settled.reader?.generation ?? null;
-    try {
-      return (await (snap.target as Promise<Live | null>))?.target.generation ?? null;
-    } catch (err) {
-      if (!isNotFoundError(err)) throw err;
-      this.dropStale(segmentKey(ref), snap);
-      const again = this.liveSnapshot(ref).target as Promise<Live | null>;
-      return (await again)?.target.generation ?? null; // a second miss propagates
-    }
+    return (await (snap.target as Promise<Live | null>))?.target.generation ?? null;
   }
 
   /**

@@ -409,6 +409,14 @@ describe('what forgets a resolution', () => {
     expect(x.sent()).toMatchObject({ rows: 1, tails: 1 });
   });
 
+  it('a registry that answers NotFoundError fails the generation lookup at once: one row read, no retry', async () => {
+    const x = await world();
+    x.rows.state.fail = new NotFoundError('the row read was refused as not found');
+    x.reset();
+    await expect(x.source.currentGeneration(A)).rejects.toBeInstanceOf(NotFoundError);
+    expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
+  });
+
   it('a read that finds its generation swept drops the snapshot and the resolution, resolves afresh, and reads once more', async () => {
     const x = await world();
     await x.open(A);
