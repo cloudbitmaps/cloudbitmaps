@@ -362,9 +362,12 @@ so, and so do the module headers in the code.
   Before it hands out a chunk, a combine or `iterate` checks that its segment has not moved. Once the reader cache had
   let the segment go, that check opened the generation again (a tail read and an index parse of up to about 1.3 MB)
   only to learn a version the registry row already names, so a read over more segments than `cache.readerMax` or
-  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. The check now reads the row alone, as
-  a read of that chunk on its own would. A transient fault in it is retried through the store's retry, where it failed
-  the read.
+  `cache.readerMaxBytes` keeps (as on a small Lambda) paid that for every chunk. The check now learns the version from
+  the registry row alone (on a store with no registry, a listing of the bucket), as a read of that chunk on its own
+  would. A transient fault in it is retried through the store's retry, where it failed the read. A chunk served from
+  the decoded-chunk cache is still checked through the segment's current version, which opens a segment the reader
+  cache let go of again, so a warm read under reader-cache pressure still pays a registry read and an object open per
+  cached chunk.
 - **`cache.genTtlMs` that is not a finite number of 0 or more is refused.** `NaN` (from an unset environment variable),
   a negative number or a string turned the timed pointer refresh off as `0` does, silently, so another process's load
   or erasure never reached a long-lived reader. Each is now a `ValidationError` when the store is built. So is

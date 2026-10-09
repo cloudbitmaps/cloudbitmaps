@@ -303,6 +303,39 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     expect(storage.ranges).toHaveLength(2);
   });
 
+  it("an invalidation that lands while the stream's refresh is answered moves the rest of the read", async () => {
+    // The refresh reads the row before the store's own publish and invalidation, and its answer arrives after them, as
+    // a delayed reply does. The invalidation must still move the stream: it is how an erasure in this store reaches a
+    // read already in progress.
+    const { source, registry, clock, publishGen1 } = await world();
+    const it = source.getChunks!(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+    await it.next();
+    const realGet = registry.get.bind(registry);
+    let reach!: () => void;
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let armed = true;
+    registry.get = async (ref) => {
+      if (!armed) return realGet(ref);
+      armed = false;
+      const before = await realGet(ref);
+      reach();
+      await gate;
+      return before;
+    };
+    clock.advance(TTL + 1);
+    const second = it.next();
+    await reached;
+    await publishGen1();
+    source.invalidate(REF);
+    open();
+    expect(parityOf((await second).value.bytes)).toBe(0); // decided on the row the refresh read
+    const third = await it.next();
+    expect(parityOf(third.value.bytes)).toBe(1);
+    await it.return!(undefined);
+  });
+
   it('a segment the reader cache let go of is resolved again, from its row alone, and a stream whose generation is the same goes on', async () => {
     const { source, storage, clock, publishGen1 } = await world();
     const it = source.getChunks!(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
@@ -323,6 +356,30 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
     expect(parityOf(third.value.bytes)).toBe(1);
     await it.return!(undefined);
   });
+
+  it.each(['no registry', 'no clock'] as const)(
+    'with %s there is no timed refresh, and the reader cache letting a segment go moves the stream',
+    async (shape) => {
+      const storage = new CountingStorage();
+      const registry = new MemoryRegistryDriver();
+      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(0), { registry });
+      const source = new CrbmStorageChunkSource(
+        storage,
+        shape === 'no registry'
+          ? { clock: manualClock(), currentGenTtlMs: TTL }
+          : { registry, currentGenTtlMs: TTL },
+      );
+      const it = source.getChunks!(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+      expect(parityOf((await it.next()).value.bytes)).toBe(0);
+      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, idsOf(1), { registry });
+      // The clock, where there is one, never moves: nothing but the eviction can move the stream.
+      (
+        source as unknown as { snapshots: { deleteWhere(p: (k: string) => boolean): void } }
+      ).snapshots.deleteWhere((k) => k.endsWith('s'));
+      expect(parityOf((await it.next()).value.bytes)).toBe(1);
+      await it.return!(undefined);
+    },
+  );
 
   it('a read over more segments than the reader cache keeps opens no object per chunk to check them', async () => {
     const storage = new CountingStorage();
