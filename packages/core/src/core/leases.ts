@@ -48,10 +48,13 @@ export const MAX_STORED_LEASES = 256;
  */
 export const LEASE_CAS_ATTEMPTS = MAX_LEASES_PER_SEGMENT + 8;
 
-/** Fresh writes sent after one that got no answer and left the row as it was. */
-const UNANSWERED_RESENDS = 3;
+/**
+ * Fresh writes sent after one that got no answer and left the row as it was, by the lease writers and by an erasure's
+ * renewal of the row.
+ */
+export const UNANSWERED_RESENDS = 3;
 /** The upper bound of the first of those waits, in ms; each next one doubles it. */
-const UNANSWERED_BASE_MS = 500;
+export const UNANSWERED_BASE_MS = 500;
 /** The upper bound of the first wait after a lost race, in ms; each next doubles it, to the cap. */
 const CONFLICT_BASE_MS = 25;
 const CONFLICT_CAP_MS = 400;

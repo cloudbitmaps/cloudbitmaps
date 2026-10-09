@@ -103,6 +103,14 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The row write an erasure makes before it deletes a generation above the pointer renews the row's `pointerId`, and
+  one that gets no answer is settled by reading the row.** The write names the pointer at the value it has, where it
+  rewrote the row's kept window. A load in flight that wrote that generation is refused at its publish, as it was; a
+  warm reader opens the current generation again once after such an erasure. A write that gets no answer
+  is settled as a load's publish is: the erasure reads the row, goes on when a renewal landed after the row it wrote
+  against (its own or another erasure's), sends a fresh write after a wait, at most three, when the row is as it was,
+  and otherwise reports what the row says; one it cannot settle throws the registry's `TransientError`, and the
+  generations the write guards are not deleted ([erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **A reader's caches key on the generation with the row's `pointerId`, not its token.** A lease taken or released, a
   `setRetention` or a `clearRetention` leaves a warm reader's open object and decoded chunks in place: a warm `has()`
   after one, once `cache.genTtlMs` lapses, is the registry read alone, where it was a registry read, a tail read and a

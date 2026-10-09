@@ -54,7 +54,7 @@ there", and `note` says why:
 | `note` | Means | What to do |
 |---|---|---|
 | `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from. Usually a load; it can also be another erasure or an operator's `rollback`. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
-| `error: <message>`, a transient storage fault | The storage failed under it. | Re-run. |
+| `error: <message>`, a transient storage or registry fault | The storage failed under it, or a registry write got no answer that reading the row could settle; the generations that write was to guard were not deleted. | Re-run. |
 | `error: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
@@ -148,9 +148,10 @@ reason for a deleted-looking id to still be in storage that is easy to forget.
 Erasure ignores every lease. `eraseSubject` and `eraseIdFromSegment` delete the generations that hold the id, and the
 collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the rewrite
 clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes that
-generation, leased or not, and writes no row of its own, so an entry for a generation it deleted stays in the list until the
-entry's own time ends or the next publish or lease write prunes it: it spares nothing, since the object is gone, and it
-counts toward the 64 places until then. A `destroySegment`, a `dropSegment` and a retention expiry delete every generation
+generation, leased or not, and leaves the row's leases as they are (the one row write it makes, before it deletes a
+generation above the pointer, renews the row's `pointerId` and keeps them), so an entry for a generation it deleted stays
+in the list until the entry's own time ends or the next publish or lease write prunes it: it spares nothing, since the
+object is gone, and it counts toward the 64 places until then. A `destroySegment`, a `dropSegment` and a retention expiry delete every generation
 and leave no lease on the tombstone. So erasure, shred, drop and retention always win, and a lease never holds an erased
 subject's data past the bounds in the table above.
 

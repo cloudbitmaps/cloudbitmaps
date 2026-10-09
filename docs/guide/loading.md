@@ -1240,7 +1240,7 @@ without deriving its content again. The wait is a random time of up to 25 ms, gr
 store's clock; a writer given no clock `sleep` retries without waiting, and one given no `rng` waits the whole bound. A difference in anything else, the pointer, the kept window, the summary,
 a retention policy, the key wrappings, the status or the row's `pointerId` (another writer named the pointer, even at
 the value it had), refuses as it always has. This covers a load's publish, an erasure
-rewrite's publish and the re-proof before each delete above the pointer, a rollback's swap and its undo, a retention
+rewrite's publish, an erasure's renewal of the row and the re-proof before each delete above the pointer, a rollback's swap and its undo, a retention
 write, and a shred or a drop, which re-read the row on every attempt and do not count a lost race to a lease write. Each waits
 out at most 136 such changes (a take and a release by each of the 64 holders a row can hold, and a few more) and then
 reports what it would have: `superseded`, or `WriteConflictError`. The rule is what lets an erasure, a shred, a drop and a
