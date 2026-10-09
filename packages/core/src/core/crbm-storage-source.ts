@@ -805,21 +805,33 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     resolution: Resolution,
     before: Snapshot | undefined,
   ): Snapshot {
+    // The target is built in a function of its own. The snapshot keeps its `open` closure for life, and closures made in
+    // one call share what any of them reads from it: built here, the target's would have `open` keep `before`, and
+    // through it every snapshot before that, with their readers and keys, outside the reader cache's bounds.
+    return Snapshot.live(
+      resolution,
+      this.targetOn(ref, resolution, before),
+      (live) => this.openLive(ref, live),
+      before?.openedReader,
+    );
+  }
+
+  /** What the snapshot on `resolution` that replaces `before` reads: see {@link snapshotOn}. */
+  private targetOn(
+    ref: SegmentRef,
+    resolution: Resolution,
+    before: Snapshot | undefined,
+  ): Promise<Live | null> {
     const prior = before?.target;
-    const target = resolution.resolved.then(async (resolved) => {
+    const replaces = before?.resolution;
+    return resolution.resolved.then(async (resolved) => {
       if (resolved === null) return null;
       // A read that came while the refresh was in flight, after the reader cache let the snapshot it replaces go, built
       // on the refresh as the segment's resolution: a ride-out is not served to it ({@link resolveNow}).
       const rodeOut = resolution.rodeOut;
-      if (rodeOut !== undefined && before?.resolution !== rodeOut.from) throw rodeOut.fault;
+      if (rodeOut !== undefined && replaces !== rodeOut.from) throw rodeOut.fault;
       return this.liveOf(ref, resolved, prior === undefined ? null : await prior.catch(() => null));
     });
-    return Snapshot.live(
-      resolution,
-      target,
-      (live) => this.openLive(ref, live),
-      before?.openedReader,
-    );
   }
 
   /**

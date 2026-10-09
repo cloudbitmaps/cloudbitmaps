@@ -2,6 +2,9 @@ vi.mock('@/core/crbm/reader', async (original) =>
   (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
 );
 import { randomBytes } from 'node:crypto';
+import { setImmediate } from 'node:timers';
+import v8 from 'node:v8';
+import vm from 'node:vm';
 import { CrbmStorageChunkSource, InProcessKeystore, TransientError } from '@/index';
 import type { Clock, IKeystore, SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -596,6 +599,63 @@ describe('what forgets a resolution', () => {
     x.reset();
     expect(await x.source.currentGeneration(A)).toBe(0);
     expect(x.sent().rows).toBe(1);
+  });
+});
+
+/** A resolution as these cases follow it: what it rode out from, when a refresh failed transiently. */
+interface Followed {
+  readonly rodeOut?: { readonly from: Followed };
+}
+/** A snapshot as these cases follow it: its resolution, and its reader once it has opened. */
+interface Held {
+  readonly resolution: Followed;
+  readonly settled?: { readonly reader: object | null };
+}
+const held = (x: World): Held => inside(x.source).snapshots.peek(x.key(A)) as Held;
+
+/** How many of `refs` still reach an object after a full collection. */
+async function alive(refs: readonly WeakRef<object>[]): Promise<number> {
+  v8.setFlagsFromString('--expose_gc');
+  const gc = vm.runInNewContext('gc') as () => void;
+  // A WeakRef keeps its target until the job that made it ends: collect on a later turn, twice.
+  for (let i = 0; i < 2; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    gc();
+  }
+  return refs.filter((ref) => ref.deref() !== undefined).length;
+}
+
+describe('a refresh keeps nothing of what it replaced alive', () => {
+  it('2,000 refreshes that find the same generation leave one snapshot alive, the one the reader cache holds', async () => {
+    const x = await world();
+    await x.open(A);
+    const snapshots: WeakRef<object>[] = [];
+    for (let i = 0; i < 2_000; i++) {
+      x.clock.advance(TTL);
+      await x.open(A);
+      snapshots.push(new WeakRef(held(x)));
+    }
+    expect(await alive(snapshots)).toBe(1);
+    expect(snapshots.at(-1)!.deref()).toBe(held(x)); // control: the one alive is the one the reader cache holds
+  });
+
+  it('200 refreshes, each finding a new load, leave one snapshot and one reader alive', async () => {
+    const x = await world();
+    await x.open(A);
+    const snapshots: WeakRef<object>[] = [];
+    const readers: WeakRef<object>[] = [];
+    for (let g = 1; g <= 200; g++) {
+      await x.publish(A, g, [g, HI + g]);
+      x.clock.advance(TTL);
+      expect(await x.source.currentGeneration(A)).toBe(g);
+      await x.open(A);
+      const snap = held(x);
+      snapshots.push(new WeakRef(snap));
+      readers.push(new WeakRef(snap.settled!.reader!));
+    }
+    expect(await alive(snapshots)).toBe(1);
+    expect(await alive(readers)).toBe(1);
+    expect(readers.at(-1)!.deref()).toBe(held(x).settled!.reader); // control: the reader the cache holds
   });
 });
 
