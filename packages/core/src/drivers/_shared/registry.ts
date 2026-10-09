@@ -9,6 +9,7 @@
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
+import { fingerprintParts } from '@/core/crbm/reader';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import { renewsPointer } from '@/core/pointer-id';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
@@ -62,8 +63,11 @@ const MAX_WRAPPED_DEKS = 8;
 const MAX_WRAPPED_DEK_BYTES = 4 * 1024;
 /** Ids a generation can hold: every 32-bit id. */
 const MAX_SUMMARY_CARDINALITY = 2 ** 32;
-/** A sealed summary's fixed part: a 12-byte nonce, the u64 count, and a 16-byte tag. */
-const SEALED_SUMMARY_MIN_BYTES = 12 + 8 + 16;
+/**
+ * A sealed summary's fixed part: a 12-byte nonce, the u64 count, the object's fingerprint (a u64 size and a u32 footer
+ * checksum), and a 16-byte tag.
+ */
+const SEALED_SUMMARY_MIN_BYTES = 12 + 8 + 8 + 4 + 16;
 /** The fixed part plus metadata at its cap. */
 const SEALED_SUMMARY_MAX_BYTES = SEALED_SUMMARY_MIN_BYTES + MAX_METADATA_BYTES;
 /** Padded standard base64; canonical once its pad bits are checked too (see {@link base64PadBitsAreZero}). */
@@ -182,8 +186,10 @@ function base64PadBitsAreZero(text: string): boolean {
 /**
  * Validate a {@link RegistrySummary}'s shape at the write or read boundary, and return a frozen copy built from the
  * checked fields only: exactly one of the two shapes, a non-negative safe-integer generation, a cardinality from 0 to
- * 2^32, metadata by the metadata rules (never the empty object, which is never stored) with its keys in canonical
- * order, or a sealed blob in canonical base64 whose length fits a sealed count plus metadata at its cap. A writer
+ * 2^32, the fingerprint of an object (`<size>:<footer checksum>`, a size no smaller than a `.crbm` preamble and footer
+ * and a 32-bit checksum), metadata by the metadata rules (never the empty object, which is never stored) with its keys
+ * in canonical order, or a sealed blob in canonical base64 whose length fits a sealed count and fingerprint plus
+ * metadata at its cap. A writer
  * stores the copy, so a caller that changes its object after the call, while the driver awaits the row, changes
  * nothing that is written. Whether a summary may be *used* is the reader's rule, not this one: this only bounds what a
  * row can hold. `isStored` picks the error class (write = ValidationError; read = IntegrityError, invariant 5), and a
@@ -209,7 +215,9 @@ function validateSummary(
   const s = value as Record<string, unknown>;
   const keys = Object.keys(s);
   const isSealed = keys.includes('sealed');
-  const allowed = isSealed ? ['generation', 'sealed'] : ['generation', 'cardinality', 'metadata'];
+  const allowed = isSealed
+    ? ['generation', 'sealed']
+    : ['generation', 'cardinality', 'fingerprint', 'metadata'];
   const extra = keys.filter((k) => !allowed.includes(k));
   if (extra.length > 0) {
     fail(
@@ -230,7 +238,7 @@ function validateSummary(
     if (bytes < SEALED_SUMMARY_MIN_BYTES || bytes > SEALED_SUMMARY_MAX_BYTES) {
       fail(
         `sealed is ${bytes}B, outside ${SEALED_SUMMARY_MIN_BYTES}..${SEALED_SUMMARY_MAX_BYTES}B ` +
-          '(a nonce, a fixed-width count, a tag, and metadata up to its cap)',
+          '(a nonce, a fixed-width count and fingerprint, a tag, and metadata up to its cap)',
       );
     }
     return Object.freeze({ generation: generation as number, sealed: text });
@@ -239,8 +247,18 @@ function validateSummary(
   if (!Number.isInteger(n) || (n as number) < 0 || (n as number) > MAX_SUMMARY_CARDINALITY) {
     fail(`cardinality must be an integer from 0 to 2^32 (got ${String(n)})`);
   }
+  const fingerprint = s.fingerprint;
+  if (fingerprintParts(fingerprint) === undefined) {
+    fail(
+      `fingerprint must be an object's, <size>:<footer checksum> in decimal (got ${shown(JSON.stringify(fingerprint))})`,
+    );
+  }
   if (s.metadata === undefined) {
-    return Object.freeze({ generation: generation as number, cardinality: n as number });
+    return Object.freeze({
+      generation: generation as number,
+      cardinality: n as number,
+      fingerprint: fingerprint as string,
+    });
   }
   const canonical = canonicalMetadataJson(s.metadata, fail);
   if (canonical === '{}') fail('metadata is empty; a generation without metadata carries none');
@@ -249,7 +267,12 @@ function validateSummary(
   // Rebuilt from the canonical JSON, so its keys are in canonical order (JavaScript still lists integer-like keys
   // first, in numeric order, as it does in every object) and nothing of the caller's object is kept.
   const metadata = Object.freeze(JSON.parse(canonical) as Record<string, string | number>);
-  return Object.freeze({ generation: generation as number, cardinality: n as number, metadata });
+  return Object.freeze({
+    generation: generation as number,
+    cardinality: n as number,
+    fingerprint: fingerprint as string,
+    metadata,
+  });
 }
 
 /** A summary given at a write must describe the generation the row will point at. */

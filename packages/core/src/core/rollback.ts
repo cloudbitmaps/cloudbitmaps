@@ -261,15 +261,20 @@ export async function rollbackSegment(
         'never one of its generations. Roll back to another generation.',
     );
   }
-  // The target's own count and metadata, read from its object, in the same write that moves the pointer, so a reader that
-  // sees it as current sees them. None when the key was not at hand to open an encrypted target.
+  // The target's own count, metadata and fingerprint, read from its object, in the same write that moves the pointer, so a
+  // reader that sees it as current sees them, and holds the object it opens to the one read here. None when the key was
+  // not at hand to open an encrypted target.
   const summary: RegistrySummary | undefined =
     reader === undefined
       ? undefined
       : summaryOf(
           ref,
           toGeneration,
-          { cardinality: reader.count(), metadata: reader.metadata },
+          {
+            cardinality: reader.count(),
+            metadata: reader.metadata,
+            fingerprint: reader.fingerprint,
+          },
           aead,
         );
 

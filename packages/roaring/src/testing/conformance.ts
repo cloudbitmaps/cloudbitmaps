@@ -1016,11 +1016,12 @@ export function registryConformance(
     const clearSummary: RegistrySummary = {
       generation: 3,
       cardinality: 12_000_000,
+      fingerprint: '1572864:2864434397',
       metadata: { def: 'v41', landedAt: 1_790_000_000_000 },
     };
     const sealedSummary: RegistrySummary = {
       generation: 4,
-      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIj',
+      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v',
     };
 
     it('round-trips a summary of either shape through create, get, list and compare-and-swap', async () => {
@@ -1041,7 +1042,12 @@ export function registryConformance(
     // read refuses, or another write's metadata.
     it('stores the summary as it was when the write was called, whatever the caller changes after', async () => {
       const d = makeDriver();
-      const asCalled = { generation: 3, cardinality: 5, metadata: { day: 'mon' } };
+      const asCalled = {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: '4096:7',
+        metadata: { day: 'mon' },
+      };
       const mine = structuredClone(asCalled);
       const created = d.create(SEG, { currentGen: 3, summary: mine });
       mine.cardinality = -1;
@@ -1049,7 +1055,12 @@ export function registryConformance(
       const { token } = await created;
       expect((await d.get(SEG))!.summary).toEqual(asCalled);
 
-      const next = { generation: 4, cardinality: 6, metadata: { day: 'tue' } };
+      const next = {
+        generation: 4,
+        cardinality: 6,
+        fingerprint: '4100:8',
+        metadata: { day: 'tue' },
+      };
       const theirs = structuredClone(next);
       const swapped = d.compareAndSwap(SEG, token, { currentGen: 4, summary: theirs });
       theirs.generation = 9;
@@ -1072,8 +1083,14 @@ export function registryConformance(
 
     it('refuses a malformed summary and leaves the row unchanged', async () => {
       const d = makeDriver();
-      const bad = { generation: 3, cardinality: -1 } as RegistrySummary;
+      const bad = { generation: 3, cardinality: -1, fingerprint: '4096:7' } as RegistrySummary;
       await expectValidationReject(d.create(SEG, { currentGen: 3, summary: bad }));
+      expect(await d.get(SEG)).toBeNull();
+      // A summary names the object it describes: one without a fingerprint, or with one no object can have, is malformed.
+      for (const fingerprint of [undefined, '', '7', '0:1', '4096:4294967296']) {
+        const unnamed = { generation: 3, cardinality: 5, fingerprint } as RegistrySummary;
+        await expectValidationReject(d.create(SEG, { currentGen: 3, summary: unnamed }));
+      }
       expect(await d.get(SEG)).toBeNull();
       const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
       await expectValidationReject(d.compareAndSwap(SEG, token, { summary: bad }));

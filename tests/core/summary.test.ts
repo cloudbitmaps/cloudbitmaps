@@ -19,6 +19,8 @@ import { InProcessKeystore } from '@/drivers/crypto';
  */
 
 const REF = { namespace: 'ns', segment: 'seg' };
+/** The fingerprint of the object a summary describes: its size and footer checksum. */
+const FP = '4096:7';
 
 async function aeadOf(): Promise<Aead> {
   const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
@@ -49,54 +51,62 @@ const row = (over: Partial<RegistryRecord>): RegistryRecord => ({
 
 describe('a clear summary', () => {
   it('names the generation, the count and the metadata', () => {
-    expect(clearSummary(4, 10, { a: 'x' })).toEqual({
+    expect(clearSummary(4, 10, FP, { a: 'x' })).toEqual({
       generation: 4,
       cardinality: 10,
+      fingerprint: FP,
       metadata: { a: 'x' },
     });
   });
 
   it('carries no metadata key when there is none, or when it is empty', () => {
-    expect(clearSummary(4, 10)).toStrictEqual({ generation: 4, cardinality: 10 });
-    expect(clearSummary(4, 10, {})).toStrictEqual({ generation: 4, cardinality: 10 });
+    const bare = { generation: 4, cardinality: 10, fingerprint: FP };
+    expect(clearSummary(4, 10, FP)).toStrictEqual(bare);
+    expect(clearSummary(4, 10, FP, {})).toStrictEqual(bare);
   });
 });
 
 describe('a sealed summary', () => {
   it('opens to the count and the metadata it was sealed with', async () => {
     const aead = await aeadOf();
-    const sealed = sealSummary(aead, REF, 4, 123_456, { run: 'r1', n: 7 });
+    const sealed = sealSummary(aead, REF, 4, 123_456, FP, { run: 'r1', n: 7 });
     expect(sealed.generation).toBe(4);
     expect(openSummary(aead, REF, sealed)).toEqual({
       cardinality: 123_456,
+      fingerprint: FP,
       metadata: { n: 7, run: 'r1' },
     });
   });
 
   it('opens to no metadata when it was sealed with none, or with the empty record', async () => {
     const aead = await aeadOf();
-    expect(openSummary(aead, REF, sealSummary(aead, REF, 0, 0)).metadata).toBeUndefined();
-    expect(openSummary(aead, REF, sealSummary(aead, REF, 0, 9, {})).metadata).toBeUndefined();
-    expect(openSummary(aead, REF, sealSummary(aead, REF, 0, 2 ** 32)).cardinality).toBe(2 ** 32);
+    expect(openSummary(aead, REF, sealSummary(aead, REF, 0, 0, FP)).metadata).toBeUndefined();
+    expect(openSummary(aead, REF, sealSummary(aead, REF, 0, 9, FP, {})).metadata).toBeUndefined();
+    expect(openSummary(aead, REF, sealSummary(aead, REF, 0, 2 ** 32, FP)).cardinality).toBe(
+      2 ** 32,
+    );
   });
 
   it('is the same size for any count, so its length does not give the count away', async () => {
     const aead = await aeadOf();
     const sizes = new Set(
       [0, 9, 10, 99_999, 4_000_000_000, 2 ** 32].map(
-        (n) => bytesOf(sealSummary(aead, REF, 4, n, { a: 'x' }).sealed).length,
+        (n) => bytesOf(sealSummary(aead, REF, 4, n, FP, { a: 'x' }).sealed).length,
       ),
     );
     expect(sizes.size).toBe(1);
-    // A nonce, a u64, the metadata's 9 bytes and a tag.
-    expect([...sizes][0]).toBe(12 + 8 + '{"a":"x"}'.length + 16);
+    // A nonce, the count (u64), the fingerprint (a u64 size and a u32 checksum), the metadata's 9 bytes and a tag.
+    expect([...sizes][0]).toBe(12 + 8 + 8 + 4 + '{"a":"x"}'.length + 16);
   });
 
-  it('holds neither the count nor the metadata in the clear', async () => {
+  it('holds neither the count, the size nor the metadata in the clear', async () => {
     const aead = await aeadOf();
     const metadata = { owner: 'a-very-recognisable-owner-name' };
-    const sealed = sealSummary(aead, REF, 4, 0x01020304, metadata);
+    const sealed = sealSummary(aead, REF, 4, 0x01020304, `${0x0a0b0c0d}:${0x05060708}`, metadata);
     const framed = bytesOf(sealed.sealed);
+    expect(contains(framed, new Uint8Array([0x0d, 0x0c, 0x0b, 0x0a, 0, 0, 0, 0]))).toBe(false);
+    expect(contains(framed, new Uint8Array([8, 7, 6, 5]))).toBe(false);
+    expect(JSON.stringify(sealed)).not.toContain(String(0x0a0b0c0d));
     expect(contains(framed, new TextEncoder().encode('a-very-recognisable-owner-name'))).toBe(
       false,
     );
@@ -108,22 +118,35 @@ describe('a sealed summary', () => {
   it('opens metadata of exactly the cap, and a count alone, the largest and smallest it can be', async () => {
     const aead = await aeadOf();
     const metadata = { k: 'x'.repeat(1_016) };
-    const sealed = sealSummary(aead, REF, 4, 2 ** 32, metadata);
-    expect(bytesOf(sealed.sealed).length).toBe(12 + 8 + 1_024 + 16);
-    expect(openSummary(aead, REF, sealed)).toEqual({ cardinality: 2 ** 32, metadata });
-    const bare = sealSummary(aead, REF, 4, 0);
-    expect(bytesOf(bare.sealed).length).toBe(12 + 8 + 16);
-    expect(openSummary(aead, REF, bare)).toEqual({ cardinality: 0, metadata: undefined });
+    const sealed = sealSummary(aead, REF, 4, 2 ** 32, FP, metadata);
+    expect(bytesOf(sealed.sealed).length).toBe(12 + 20 + 1_024 + 16);
+    expect(openSummary(aead, REF, sealed)).toEqual({
+      cardinality: 2 ** 32,
+      fingerprint: FP,
+      metadata,
+    });
+    const bare = sealSummary(aead, REF, 4, 0, FP);
+    expect(bytesOf(bare.sealed).length).toBe(12 + 20 + 16);
+    expect(openSummary(aead, REF, bare)).toEqual({
+      cardinality: 0,
+      fingerprint: FP,
+      metadata: undefined,
+    });
+    // The largest size an object can have, and the largest checksum.
+    const largest = `${Number.MAX_SAFE_INTEGER}:${0xffff_ffff}`;
+    expect(openSummary(aead, REF, sealSummary(aead, REF, 4, 0, largest)).fingerprint).toBe(largest);
   });
 
   it('seals under a fresh nonce each time', async () => {
     const aead = await aeadOf();
-    expect(sealSummary(aead, REF, 4, 5).sealed).not.toBe(sealSummary(aead, REF, 4, 5).sealed);
+    expect(sealSummary(aead, REF, 4, 5, FP).sealed).not.toBe(
+      sealSummary(aead, REF, 4, 5, FP).sealed,
+    );
   });
 
   it('does not open moved onto another generation, another segment or another namespace', async () => {
     const aead = await aeadOf();
-    const sealed = sealSummary(aead, REF, 4, 5, { a: 'x' });
+    const sealed = sealSummary(aead, REF, 4, 5, FP, { a: 'x' });
     // The summary names a generation, and its blob is bound to the one it was sealed for.
     expect(() => openSummary(aead, REF, { generation: 5, sealed: sealed.sealed })).toThrow(
       IntegrityError,
@@ -134,7 +157,7 @@ describe('a sealed summary', () => {
   });
 
   it('does not open under another key', async () => {
-    const sealed = sealSummary(await aeadOf(), REF, 4, 5);
+    const sealed = sealSummary(await aeadOf(), REF, 4, 5, FP);
     const other = await aeadOf();
     expect(() => openSummary(other, REF, sealed)).toThrow(IntegrityError);
   });
@@ -147,7 +170,7 @@ describe('a sealed summary', () => {
 
   it('refuses bytes that were changed, cut off, padded or are not base64', async () => {
     const aead = await aeadOf();
-    const { generation, sealed } = sealSummary(aead, REF, 4, 5, { a: 'x' });
+    const { generation, sealed } = sealSummary(aead, REF, 4, 5, FP, { a: 'x' });
     const raw = bytesOf(sealed);
     const reseal = (b: Uint8Array): SealedRegistrySummary => ({
       generation,
@@ -183,13 +206,24 @@ describe('a sealed summary', () => {
       const { nonce, ciphertext, tag } = aead.seal(plain, aadFor(REF, 4, 'summary'));
       return { generation: 4, sealed: Buffer.concat([nonce, ciphertext, tag]).toString('base64') };
     };
-    const count = (n: bigint): Uint8Array => {
-      const b = new Uint8Array(8);
-      new DataView(b.buffer).setBigUint64(0, n, true);
+    /** The count, then a fingerprint of `size` and a checksum of 7. */
+    const count = (n: bigint, size = 4096n): Uint8Array => {
+      const b = new Uint8Array(20);
+      const view = new DataView(b.buffer);
+      view.setBigUint64(0, n, true);
+      view.setBigUint64(8, size, true);
+      view.setUint32(16, 7, true);
       return b;
     };
     expect(() => openSummary(aead, REF, sealRaw(count(2n ** 32n + 1n)))).toThrow(IntegrityError);
     expect(() => openSummary(aead, REF, sealRaw(count(2n ** 64n - 1n)))).toThrow(IntegrityError);
+    // A size no object can have: smaller than a preamble and a footer, or past 2^53.
+    for (const size of [0n, 111n, 2n ** 53n, 2n ** 64n - 1n]) {
+      expect(() => openSummary(aead, REF, sealRaw(count(1n, size))), String(size)).toThrow(
+        IntegrityError,
+      );
+    }
+    expect(openSummary(aead, REF, sealRaw(count(1n, 112n))).fingerprint).toBe('112:7');
     const withMeta = (text: string): Uint8Array =>
       new Uint8Array([...count(1n), ...new TextEncoder().encode(text)]);
     for (const text of ['{ "a": "x" }', '{"b":1,"a":2}', '[1]', '{}', 'nope']) {
@@ -197,54 +231,78 @@ describe('a sealed summary', () => {
     }
     expect(openSummary(aead, REF, sealRaw(withMeta('{"a":"x"}')))).toEqual({
       cardinality: 1,
+      fingerprint: FP,
       metadata: { a: 'x' },
     });
-    // Fewer bytes than a count.
-    expect(() => openSummary(aead, REF, sealRaw(new Uint8Array(7)))).toThrow(IntegrityError);
+    // Fewer bytes than a count and a fingerprint.
+    for (const n of [7, 8, 19]) {
+      expect(() => openSummary(aead, REF, sealRaw(new Uint8Array(n)))).toThrow(IntegrityError);
+    }
   });
 });
 
 describe('what a row lets a reader use of its summary', () => {
   it('is the clear count and metadata, for the generation the row names', () => {
-    const r = row({ summary: { generation: 4, cardinality: 9, metadata: { a: 'x' } } });
-    expect(usableSummary(REF, r, undefined)).toEqual({ cardinality: 9, metadata: { a: 'x' } });
-    const bare = row({ summary: { generation: 4, cardinality: 0 } });
-    expect(usableSummary(REF, bare, undefined)).toEqual({ cardinality: 0, metadata: undefined });
+    const r = row({
+      summary: { generation: 4, cardinality: 9, fingerprint: FP, metadata: { a: 'x' } },
+    });
+    expect(usableSummary(REF, r, undefined)).toEqual({
+      cardinality: 9,
+      fingerprint: FP,
+      metadata: { a: 'x' },
+    });
+    const bare = row({ summary: { generation: 4, cardinality: 0, fingerprint: FP } });
+    expect(usableSummary(REF, bare, undefined)).toEqual({
+      cardinality: 0,
+      fingerprint: FP,
+      metadata: undefined,
+    });
   });
 
   it('is nothing when the row has no summary, or its summary names another generation', () => {
     expect(usableSummary(REF, row({}), undefined)).toBeUndefined();
     expect(
-      usableSummary(REF, row({ summary: { generation: 3, cardinality: 9 } }), undefined),
+      usableSummary(
+        REF,
+        row({ summary: { generation: 3, cardinality: 9, fingerprint: FP } }),
+        undefined,
+      ),
     ).toBeUndefined();
     expect(
       usableSummary(
         REF,
-        row({ currentGen: null, summary: { generation: 4, cardinality: 9 } }),
+        row({ currentGen: null, summary: { generation: 4, cardinality: 9, fingerprint: FP } }),
         undefined,
       ),
     ).toBeUndefined();
   });
 
   it('is nothing on a destroyed row', () => {
-    const r = row({ status: 'destroyed', summary: { generation: 4, cardinality: 9 } });
+    const r = row({
+      status: 'destroyed',
+      summary: { generation: 4, cardinality: 9, fingerprint: FP },
+    });
     expect(usableSummary(REF, r, undefined)).toBeUndefined();
   });
 
   it('is nothing in the clear beside wrapped keys, or sealed on a row with none', async () => {
     const aead = await aeadOf();
     const wrappedDeks = [{ keyId: 'k1', wrapped: 'AAAA' }];
-    const clear = row({ wrappedDeks, summary: { generation: 4, cardinality: 9 } });
+    const clear = row({ wrappedDeks, summary: { generation: 4, cardinality: 9, fingerprint: FP } });
     expect(usableSummary(REF, clear, aead)).toBeUndefined();
-    const sealedOnCleartext = row({ summary: sealSummary(aead, REF, 4, 9) });
+    const sealedOnCleartext = row({ summary: sealSummary(aead, REF, 4, 9, FP) });
     expect(usableSummary(REF, sealedOnCleartext, aead)).toBeUndefined();
   });
 
   it('opens a sealed summary with the key, and uses nothing without it', async () => {
     const aead = await aeadOf();
     const wrappedDeks = [{ keyId: 'k1', wrapped: 'AAAA' }];
-    const r = row({ wrappedDeks, summary: sealSummary(aead, REF, 4, 9, { a: 'x' }) });
-    expect(usableSummary(REF, r, aead)).toEqual({ cardinality: 9, metadata: { a: 'x' } });
+    const r = row({ wrappedDeks, summary: sealSummary(aead, REF, 4, 9, FP, { a: 'x' }) });
+    expect(usableSummary(REF, r, aead)).toEqual({
+      cardinality: 9,
+      fingerprint: FP,
+      metadata: { a: 'x' },
+    });
     expect(usableSummary(REF, r, undefined)).toBeUndefined();
   });
 
@@ -254,18 +312,18 @@ describe('what a row lets a reader use of its summary', () => {
     // Sealed for generation 3, but the row says it describes generation 4.
     const moved = row({
       wrappedDeks,
-      summary: { generation: 4, sealed: sealSummary(aead, REF, 3, 9).sealed },
+      summary: { generation: 4, sealed: sealSummary(aead, REF, 3, 9, FP).sealed },
     });
     expect(usableSummary(REF, moved, aead)).toBeUndefined();
     // Another key.
-    const other = row({ wrappedDeks, summary: sealSummary(aead, REF, 4, 9) });
+    const other = row({ wrappedDeks, summary: sealSummary(aead, REF, 4, 9, FP) });
     expect(usableSummary(REF, other, await aeadOf())).toBeUndefined();
   });
 
   it('lets a failure that is not an integrity fault through', async () => {
     const aead = await aeadOf();
     const wrappedDeks = [{ keyId: 'k1', wrapped: 'AAAA' }];
-    const r = row({ wrappedDeks, summary: sealSummary(aead, REF, 4, 9) });
+    const r = row({ wrappedDeks, summary: sealSummary(aead, REF, 4, 9, FP) });
     const broken: Aead = {
       seal: aead.seal.bind(aead),
       open: () => {

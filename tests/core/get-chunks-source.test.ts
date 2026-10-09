@@ -244,9 +244,21 @@ describe('CrbmStorageChunkSource.getChunks', () => {
 });
 
 /** The object under generation 0 swapped for another with the same number: what a purge and a reload leaves. */
-async function replaceGen0(storage: CountingStorage): Promise<void> {
+/**
+ * Put another object under generation 0. With `registry`, the row is moved to name it, as a load that takes the number
+ * again after an erasure deleted the object above a rolled-back pointer leaves it: the write renews the row's
+ * `pointerId`, and its summary names the new object. Without, the row names the old object still, as a restore from
+ * outside the library leaves it.
+ */
+async function replaceGen0(
+  storage: CountingStorage,
+  registry?: MemoryRegistryDriver,
+): Promise<void> {
   await storage.delete({ ...REF, generation: 0 });
-  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(1), {});
+  const written = await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(1), {});
+  if (registry === undefined) return;
+  const row = (await registry.get(REF))!;
+  await registry.compareAndSwap(REF, row.token, { currentGen: 0, summary: written.summary });
 }
 
 describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment through each way it moves', () => {
@@ -263,11 +275,18 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
   });
 
   it('an object replaced under the same number mid-call heals to one generation', async () => {
-    const { source, storage } = await world();
-    const swapped = replaceGen0(storage);
+    const { source, storage, registry } = await world();
+    const swapped = replaceGen0(storage, registry);
     storage.beforeRange = () => swapped; // every request waits for the swap, as one that lands after it would
     const got = await read(source, REF, [0, 44]);
     expect(got.chunks.map(parityOf)).toEqual([1, 1]);
+  });
+
+  it('an object replaced under the same number mid-call, under a row that does not name it, is never served', async () => {
+    const { source, storage } = await world();
+    const swapped = replaceGen0(storage);
+    storage.beforeRange = () => swapped;
+    await expect(read(source, REF, [0, 44])).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('an invalidation mid-call re-resolves the segment before the next chunk is served, as a read of it alone would', async () => {
@@ -448,13 +467,13 @@ describe('CrbmStorageChunkSource.getChunks: the call re-resolves the segment thr
   });
 
   it('retries a transient fault in the check that the object was replaced', async () => {
-    const { source, storage } = await world();
+    const { source, storage, registry } = await world();
     const retrying = new RetryingStorageChunkSource(source, {
       clock: manualClock(),
       rng: { next: () => 0.5 },
     });
     let failures = 0;
-    const swapped = replaceGen0(storage);
+    const swapped = replaceGen0(storage, registry);
     storage.beforeRange = async (n) => {
       await swapped;
       if (n !== 1) return;

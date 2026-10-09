@@ -215,7 +215,10 @@ describe('a row with no summary it can use', () => {
   it('naming another generation: the object is opened, and the answer is the same', async () => {
     const w = world();
     await w.writer.load(SEG, spread(20));
-    w.tamper.row = (row) => ({ ...row, summary: { generation: 7, cardinality: 999 } });
+    w.tamper.row = (row) => ({
+      ...row,
+      summary: { generation: 7, cardinality: 999, fingerprint: '4096:1' },
+    });
     const store = w.reader();
     w.reset();
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(20);
@@ -224,17 +227,21 @@ describe('a row with no summary it can use', () => {
 });
 
 describe('a torn restore', () => {
-  it('a cold count answers the row, while a read of the object, and a stat that sizes it, throw', async () => {
+  it('a cold count and a stat answer the row, while a read of the object throws', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3, 4]);
+    const sizeBytes = (await w.backend.storage.getTail({ ...SEG, generation: 0 }, 0)).size;
     await w.backend.storage.delete({ ...SEG, generation: 0 });
     const store = w.reader();
     const seg = store.segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(4);
     await expect(seg.has(1)).rejects.toBeInstanceOf(NotFoundError);
-    // `stat()` reports the object's size, which only the object has, so it opens it and fails as a read does.
-    await expect(store.segment('s', { namespace: 'ns' }).stat()).rejects.toBeInstanceOf(
-      NotFoundError,
-    );
+    // `stat()` answers from the row's summary, whose fingerprint carries the object's size: the row's figures, which
+    // `checkConsistency` is what holds against the bucket.
+    expect(await store.segment('s', { namespace: 'ns' }).stat()).toEqual({
+      generation: 0,
+      cardinality: 4,
+      sizeBytes,
+    });
   });
 });

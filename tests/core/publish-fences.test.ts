@@ -15,6 +15,7 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { incarnationOf } from '@/core/token';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
  * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
@@ -702,7 +703,11 @@ describe('a summary never describes another generation than the one the row name
       expect(res).toMatchObject({ erased: false, reason: 'superseded' });
       const a = await agreement(w);
       expect(a.row.currentGen).toBe(1);
-      expect(a.described).toEqual({ cardinality: 4, metadata: META_B });
+      expect(a.described).toEqual({
+        cardinality: 4,
+        fingerprint: expect.stringMatching(FINGERPRINT),
+        metadata: META_B,
+      });
       expect(a.agrees).toBe(true);
     },
   );
@@ -737,7 +742,11 @@ describe('a summary never describes another generation than the one the row name
     );
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     const a = await agreement(w);
-    expect(a.described).toEqual({ cardinality: 2, metadata: META_A });
+    expect(a.described).toEqual({
+      cardinality: 2,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: META_A,
+    });
     expect(a.agrees).toBe(true);
   });
 
@@ -771,7 +780,11 @@ describe('a summary never describes another generation than the one the row name
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     const a = await agreement(w);
     expect(a.row.currentGen).toBe(0);
-    expect(a.described).toEqual({ cardinality: 3, metadata: META_A });
+    expect(a.described).toEqual({
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: META_A,
+    });
     expect(a.agrees).toBe(true);
   });
 
@@ -802,7 +815,11 @@ describe('a summary never describes another generation than the one the row name
     );
     const a = await agreement(w);
     expect(a.row.currentGen).toBe(2);
-    expect(a.described).toEqual({ cardinality: 5, metadata: { run: 'c' } });
+    expect(a.described).toEqual({
+      cardinality: 5,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: { run: 'c' },
+    });
     expect(a.agrees).toBe(true);
   });
 
@@ -836,7 +853,11 @@ describe('a summary never describes another generation than the one the row name
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     const a = await agreement(w);
     expect(a.row.currentGen).toBe(2);
-    expect(a.described).toEqual({ cardinality: 1, metadata: META_B });
+    expect(a.described).toEqual({
+      cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: META_B,
+    });
     expect(a.agrees).toBe(true);
   });
 });

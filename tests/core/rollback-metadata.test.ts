@@ -13,6 +13,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
  * A rollback writes the target's own count and metadata into the row, in the write that moves the pointer, so a reader
@@ -54,12 +55,21 @@ describe('a rollback of a cleartext segment', () => {
   it("writes the target's count and metadata into the row, and rolling forward writes the other's", async () => {
     const w = world();
     await twoGenerations(w);
-    expect(await describedBy(w)).toEqual({ cardinality: 1, metadata: B });
+    expect(await describedBy(w)).toEqual({
+      cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: B,
+    });
 
     await rollbackSegment(SEG, 0, w.deps);
     const row = (await w.registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
-    expect(row.summary).toEqual({ generation: 0, cardinality: 3, metadata: A });
+    expect(row.summary).toEqual({
+      generation: 0,
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: A,
+    });
     // And it is the target's own: the object holds the same.
     const reader = await openGenerationReader(w.storage, { ...SEG, generation: 0 }, undefined);
     expect(
@@ -73,6 +83,7 @@ describe('a rollback of a cleartext segment', () => {
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 1,
       cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: B,
     });
   });
@@ -82,7 +93,11 @@ describe('a rollback of a cleartext segment', () => {
     await loadSegment(SEG, [1, 2], w.load, { keep: 9 });
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9, metadata: B });
     await rollbackSegment(SEG, 0, w.deps);
-    expect((await w.registry.get(SEG))!.summary).toStrictEqual({ generation: 0, cardinality: 2 });
+    expect((await w.registry.get(SEG))!.summary).toStrictEqual({
+      generation: 0,
+      cardinality: 2,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+    });
   });
 
   it('writes the summary of a target a row of an earlier build left with none', async () => {
@@ -96,6 +111,7 @@ describe('a rollback of a cleartext segment', () => {
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 0,
       cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: A,
     });
   });
@@ -136,7 +152,11 @@ describe('a rollback of an encrypted segment', () => {
     expect(row.currentGen).toBe(0);
     expect(Object.keys(row.summary!).sort()).toEqual(['generation', 'sealed']);
     const aead = await keystore.openDek(row.wrappedDeks!);
-    expect(openSummary(aead, SEG, row.summary as never)).toEqual({ cardinality: 3, metadata: A });
+    expect(openSummary(aead, SEG, row.summary as never)).toEqual({
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: A,
+    });
     const reader = await openGenerationReader(
       w.storage,
       { ...SEG, generation: 0 },
@@ -273,7 +293,12 @@ describe('the undo of a rollback whose target was collected while the pointer mo
     const row = (await w.registry.get(SEG))!;
     expect(row.currentGen).toBe(1);
     expect(row.summary).toEqual(before.summary);
-    expect(row.summary).toEqual({ generation: 1, cardinality: 1, metadata: B });
+    expect(row.summary).toEqual({
+      generation: 1,
+      cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: B,
+    });
   });
 
   it('puts the old sealed summary back on an encrypted segment', async () => {
@@ -291,6 +316,7 @@ describe('the undo of a rollback whose target was collected while the pointer mo
       openSummary(await keystore.openDek(row.wrappedDeks!), SEG, row.summary as never),
     ).toEqual({
       cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: B,
     });
   });
@@ -377,6 +403,7 @@ describe('the store passes its keystore to a rollback', () => {
       openSummary(await keystore.openDek(row.wrappedDeks!), SEG, row.summary as never),
     ).toEqual({
       cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: A,
     });
   });
@@ -399,6 +426,7 @@ describe('a target whose index is longer than the tail read', () => {
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 0,
       cardinality: wide.length,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: A,
     });
   });
@@ -421,7 +449,12 @@ describe('a rollback on a store that holds a keystore', () => {
     await rollbackSegment(SEG, 0, { ...w.deps, keystore: spy });
     const row = (await w.registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
-    expect(row.summary).toEqual({ generation: 0, cardinality: 3, metadata: A });
+    expect(row.summary).toEqual({
+      generation: 0,
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: A,
+    });
     expect(opened).toBe(0); // a segment with no keys has none to open
   });
 
@@ -575,6 +608,7 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 2,
       cardinality: 9,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: B,
     });
   });

@@ -325,10 +325,12 @@ export type RegistryStatus = 'active' | 'destroyed';
 export type GovernanceMeta = Record<string, unknown>;
 
 /**
- * A cached description of one generation, carried on the registry row: how many ids it holds, and the metadata it
- * was loaded with. The generation's `.crbm` object stays the truth; this is a copy, written by the same write that
- * moves the pointer, and it names the generation it describes so a copy left behind by a writer that did not
- * carry it can never be taken for another generation's.
+ * A cached description of one generation, carried on the registry row: how many ids it holds, the metadata it was
+ * loaded with, and the fingerprint of its object (its size and footer checksum). The generation's `.crbm` object stays
+ * the truth; this is a copy, written by the same write that moves the pointer, and it names the generation it describes
+ * so a copy left behind by a writer that did not carry it can never be taken for another generation's. The fingerprint
+ * names the object too: a reader checks every object it opens for the row's generation against it, and refuses one
+ * that is another object under that number.
  *
  * Two shapes. On a cleartext segment the values are in the clear. On an encrypted segment (a row with
  * `wrappedDeks`) they are sealed under the segment's data key, as the generation's index is, so the row reveals
@@ -358,6 +360,12 @@ export interface ClearRegistrySummary {
   readonly generation: number;
   /** How many ids the generation holds: an integer from 0 to 2^32. */
   readonly cardinality: number;
+  /**
+   * The fingerprint of the generation's object, `<size>:<footer checksum>` in decimal, as `CrbmReader.fingerprint` and
+   * a pin's `pinnedAt.fingerprint` spell it: the object's size in bytes, which `stat()` reports, and the CRC32C its
+   * footer stores.
+   */
+  readonly fingerprint: string;
   /** The generation's metadata, when it has any. Never the empty object. */
   readonly metadata?: GenerationMetadata;
 }
@@ -367,8 +375,9 @@ export interface SealedRegistrySummary {
   /** The generation this describes. A non-negative safe integer. */
   readonly generation: number;
   /**
-   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64 followed by the
-   * metadata's canonical JSON, if any. The count is fixed-width, so the length reveals only the metadata's size.
+   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64, the object's size as a
+   * little-endian u64 and its footer checksum as a little-endian u32 (its fingerprint), then the metadata's canonical
+   * JSON, if any. The numbers are fixed-width, so the length reveals only the metadata's size.
    */
   readonly sealed: string;
 }

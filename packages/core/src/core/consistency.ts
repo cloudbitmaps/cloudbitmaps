@@ -21,7 +21,7 @@ import { mapWithConcurrency } from './concurrency';
 import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
-import { openGenerationReader } from './crbm-storage-source';
+import { openNamedGeneration } from './crbm-storage-source';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
 import { summaryAgrees, usableSummary } from './summary';
@@ -53,9 +53,10 @@ export interface ConsistencyIssue {
   readonly currentGen: number;
   /**
    * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
-   * `summary-mismatch` (only when asked for): the generation is there, but its row's summary says a different id
-   * count or metadata than the object holds (a row restored from another point than its bucket, or a number re-taken
-   * since). A count answers from that summary until a read opens the object, so it is what a restore leaves wrong.
+   * `summary-mismatch` (only when asked for): the generation is there, but its row's summary names another object
+   * than the one under its number, or says a different id count or metadata than the object holds (a row restored from
+   * another point than its bucket, or an object put back from outside the library). A count and a `stat()` answer from
+   * that summary, and every read of the object refuses it, so it is what a restore leaves wrong.
    */
   readonly issue: 'missing-storage-generation' | 'summary-mismatch';
 }
@@ -120,14 +121,23 @@ async function checkSummary(
   }
   const described = usableSummary(ref, live, aead);
   if (described === undefined) return { kind: 'ok', unchecked: keyed };
-  const reader = await openGenerationReader(
+  // The object must be the one the summary names, as well as hold what it says: another object under the number (a
+  // restore that put back an object the row does not name) is what every read of the segment refuses. Its footer says
+  // which, before its index is opened, so an object sealed under another key is found too.
+  const reader = await openNamedGeneration(
     deps.storage,
     { namespace: ref.namespace, segment: ref.segment, generation },
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
+    described.fingerprint,
   );
   let cardinality = 0;
-  for (const n of reader.cardinalities().values()) cardinality += n;
-  if (summaryAgrees(described, { cardinality, metadata: reader.metadata })) return { kind: 'ok' };
+  for (const n of reader?.cardinalities().values() ?? []) cardinality += n;
+  if (
+    reader !== undefined &&
+    summaryAgrees(described, { cardinality, metadata: reader.metadata })
+  ) {
+    return { kind: 'ok' };
+  }
   return {
     kind: 'issue',
     issue: {
@@ -146,7 +156,8 @@ async function checkSummary(
  * `errored`.
  *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
- * than it) and holds the row's summary against it, reporting `summary-mismatch` where they disagree. A sealed summary
+ * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata it
+ * says, reporting `summary-mismatch` where they disagree. A sealed summary
  * needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by default, since the
  * default check only lists.
  */

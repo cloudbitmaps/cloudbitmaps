@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IStorageDriver, SegmentRef } from '@/core/ports';
 import { runConsistencyCheck } from '@/core/consistency';
-import { sealSummary } from '@/core/summary';
+import { openSummary, sealSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { counting } from '../helpers/counting';
@@ -46,8 +46,9 @@ describe('checkConsistency with summaries', () => {
     const w = world(false);
     await w.store.load(SEG, [1, 2, 3], { metadata: { a: 1 } });
     const row = (await w.registry.get(SEG))!;
+    const fingerprint = (row.summary as { fingerprint: string }).fingerprint;
     await w.registry.compareAndSwap(SEG, row.token, {
-      summary: { generation: 0, cardinality: 99, metadata: { a: 1 } },
+      summary: { generation: 0, cardinality: 99, fingerprint, metadata: { a: 1 } },
     });
     const report = await w.store.checkConsistency({ summaries: true });
     expect(report.inconsistent).toEqual([
@@ -55,7 +56,19 @@ describe('checkConsistency with summaries', () => {
     ]);
     const again = (await w.registry.get(SEG))!;
     await w.registry.compareAndSwap(SEG, again.token, {
-      summary: { generation: 0, cardinality: 3, metadata: { a: 2 } },
+      summary: { generation: 0, cardinality: 3, fingerprint, metadata: { a: 2 } },
+    });
+    expect((await w.store.checkConsistency({ summaries: true })).inconsistent).toHaveLength(1);
+    // The count and metadata it says, of another object than the one under its number.
+    const third = (await w.registry.get(SEG))!;
+    const [size, crc] = fingerprint.split(':').map(Number) as [number, number];
+    await w.registry.compareAndSwap(SEG, third.token, {
+      summary: {
+        generation: 0,
+        cardinality: 3,
+        fingerprint: `${size}:${(crc ^ 1) >>> 0}`,
+        metadata: { a: 1 },
+      },
     });
     expect((await w.store.checkConsistency({ summaries: true })).inconsistent).toHaveLength(1);
     // Without asking, the check does not look.
@@ -75,7 +88,14 @@ describe('checkConsistency with summaries', () => {
     await w.store.load(SEG, [1, 2, 3]);
     const row = (await w.registry.get(SEG))!;
     const aead = await w.keystore.openDek(row.wrappedDeks!);
-    await w.registry.compareAndSwap(SEG, row.token, { summary: sealSummary(aead, SEG, 0, 99) });
+    const { fingerprint } = openSummary(
+      aead,
+      SEG,
+      row.summary as { generation: number; sealed: string },
+    );
+    await w.registry.compareAndSwap(SEG, row.token, {
+      summary: sealSummary(aead, SEG, 0, 99, fingerprint),
+    });
     const withKey = await w.store.checkConsistency({ summaries: true });
     expect(withKey.inconsistent.map((i) => i.issue)).toEqual(['summary-mismatch']);
     expect(withKey.summariesUnchecked).toBe(0);

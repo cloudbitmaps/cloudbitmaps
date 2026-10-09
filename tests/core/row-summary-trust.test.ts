@@ -3,8 +3,10 @@ import { KeyUnavailableError } from '@/core/errors';
 import type {
   IRegistryDriver,
   IStorageDriver,
+  ClearRegistrySummary,
   RegistryRecord,
   RegistrySummary,
+  SealedRegistrySummary,
   SegmentRef,
 } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
@@ -70,10 +72,22 @@ function world(
   return { keystore, backend, tamper, writer, reader, clock, calls, registry: backend.registry };
 }
 
-const withSummary = (summary: RegistrySummary | undefined) => (row: RegistryRecord) => ({
-  ...row,
-  summary,
-});
+/**
+ * The row with `summary` in place of its own: a clear one names the object the row's own summary named, so only what
+ * it says of that object differs.
+ */
+const withSummary =
+  (summary: Omit<ClearRegistrySummary, 'fingerprint'> | SealedRegistrySummary | undefined) =>
+  (row: RegistryRecord): RegistryRecord => ({
+    ...row,
+    summary:
+      summary === undefined || 'sealed' in summary
+        ? summary
+        : ({
+            ...summary,
+            fingerprint: (row.summary as { fingerprint?: string } | undefined)?.fingerprint,
+          } as RegistrySummary),
+  });
 
 describe('a summary that disagrees with its object', () => {
   it('is believed by a cold count, caught by the next open, and not used again: nothing fails', async () => {
@@ -109,8 +123,8 @@ describe('a summary that disagrees with its object', () => {
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 
-  // `stat()` opens the object for its size, so it says what the object says whatever the row claims; the row's word
-  // reaches a caller on the cold path through `generations()`, which reads the row and opens nothing.
+  // `stat()` answers from the row as a count does, so a cold one says what the row claims, and so does `generations()`,
+  // which reads the row and opens nothing; once an open has found the disagreement, `stat()` says what the object says.
   it('metadata that differs is the same disagreement', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3], { metadata: META });
@@ -118,6 +132,8 @@ describe('a summary that disagrees with its object', () => {
     const store = w.reader();
     const seg = store.segment('s', { namespace: 'ns' });
     expect((await store.generations(SEG)).at(-1)?.metadata).toEqual({ def: 'forged' });
+    expect((await seg.stat()).metadata).toEqual({ def: 'forged' });
+    expect(await seg.has(1)).toBe(true);
     expect((await seg.stat()).metadata).toEqual(META);
   });
 
@@ -128,6 +144,8 @@ describe('a summary that disagrees with its object', () => {
     const store = w.reader();
     const seg = store.segment('s', { namespace: 'ns' });
     expect((await store.generations(SEG)).at(-1)?.metadata).toEqual(META);
+    expect((await seg.stat()).metadata).toEqual(META);
+    expect(await seg.has(1)).toBe(true);
     expect(await seg.stat()).toEqual({
       generation: 0,
       cardinality: 3,

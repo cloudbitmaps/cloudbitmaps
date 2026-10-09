@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { opaqueTokens } from '../helpers/opaque-tokens';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
  * The driver sends a publish's registry write once. When it ends without a definite answer (a throttle, a lost
@@ -1058,7 +1059,11 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(r).toMatchObject({ generation: 0, published: true });
         expect(k.w.sent.map((x) => x.write)).toEqual(Array(sends).fill('create'));
         summariesSince(k, 0);
-        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 3,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: META,
+        });
       });
 
       it('a later load (a compare-and-swap) holds the summary', async () => {
@@ -1075,7 +1080,11 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 5, metadata: { run: 'r2' } });
+        expect(await described(k)).toEqual({
+          cardinality: 5,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: { run: 'r2' },
+        });
       });
 
       it('a load onto a row that has no pointer yet holds the summary', async () => {
@@ -1094,7 +1103,11 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 3,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: META,
+        });
       });
 
       it('an erasure rewrite holds the summary of the rewrite', async () => {
@@ -1108,7 +1121,11 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 4, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 4,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: META,
+        });
       });
     });
   });
@@ -1124,7 +1141,12 @@ describe('a publish that is settled by reading the row carries the generation su
     expect(r.becameCurrent).toBe(true);
     expect(w.sent.map((x) => x.write)).toEqual(['create', 'create']);
     for (const { patch } of w.sent) {
-      expect(patch.summary).toEqual({ generation: 0, cardinality: 2, metadata: META });
+      expect(patch.summary).toEqual({
+        generation: 0,
+        cardinality: 2,
+        fingerprint: expect.stringMatching(FINGERPRINT),
+        metadata: META,
+      });
     }
   });
 });

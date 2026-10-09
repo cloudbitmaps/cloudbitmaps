@@ -491,14 +491,25 @@ describe('a running stream and another read opening its segment', () => {
       await expect(stream.next()).rejects.toBeInstanceOf(NotFoundError);
     });
 
-    it('corrupt: the stream fails with IntegrityError', async () => {
+    it('corrupt, at the size the row names: the stream fails with IntegrityError', async () => {
+      const stream = await stalled(async (storage) => {
+        const { size } = await storage.getTail({ ...A, generation: 1 }, 0);
+        await storage.delete({ ...A, generation: 1 });
+        await storage.putImmutable({ ...A, generation: 1 }, async (out) =>
+          out.write(new Uint8Array(size).fill(0xab)),
+        );
+      });
+      await expect(stream.next()).rejects.toBeInstanceOf(IntegrityError);
+    });
+
+    it('replaced by bytes of another size: another object than the row names, NotFoundError', async () => {
       const stream = await stalled(async (storage) => {
         await storage.delete({ ...A, generation: 1 });
         await storage.putImmutable({ ...A, generation: 1 }, async (out) =>
           out.write(new Uint8Array(256).fill(0xab)),
         );
       });
-      await expect(stream.next()).rejects.toBeInstanceOf(IntegrityError);
+      await expect(stream.next()).rejects.toBeInstanceOf(NotFoundError);
     });
   });
 });

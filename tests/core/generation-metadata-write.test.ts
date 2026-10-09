@@ -11,6 +11,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 const { RoaringBitmap32 } = roaring;
 
@@ -50,7 +51,12 @@ describe('a cleartext load with metadata', () => {
     expect(result).toMatchObject({ generation: 0, published: true, cardinality: 4 });
 
     const row = (await registry.get(SEG))!;
-    expect(row.summary).toEqual({ generation: 0, cardinality: 4, metadata: META });
+    expect(row.summary).toEqual({
+      generation: 0,
+      cardinality: 4,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: META,
+    });
 
     const reader = await openGenerationReader(storage, { ...SEG, generation: 0 }, undefined);
     expect(reader.metadata).toEqual(META);
@@ -67,7 +73,11 @@ describe('a cleartext load with metadata', () => {
     const { store, storage, registry } = cleartext();
     await store.load(SEG, [1, 2, 3]);
     const row = (await registry.get(SEG))!;
-    expect(row.summary).toStrictEqual({ generation: 0, cardinality: 3 });
+    expect(row.summary).toStrictEqual({
+      generation: 0,
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+    });
     const reader = await openGenerationReader(storage, { ...SEG, generation: 0 }, undefined);
     expect(reader.metadata).toBeUndefined();
   });
@@ -91,7 +101,11 @@ describe('a cleartext load with metadata', () => {
     expect(empty.sha256).toBe(none.sha256);
     expect(empty.size).toBe(none.size);
     expect(some.size).toBeGreaterThan(none.size);
-    expect((await b.registry.get(SEG))!.summary).toStrictEqual({ generation: 0, cardinality: 2 });
+    expect((await b.registry.get(SEG))!.summary).toStrictEqual({
+      generation: 0,
+      cardinality: 2,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+    });
   });
 
   it('gives each generation its own metadata: a later load without it has none', async () => {
@@ -101,7 +115,11 @@ describe('a cleartext load with metadata', () => {
     await store.load(SEG, [1, 2, 3, 4]);
     const row = (await registry.get(SEG))!;
     expect(row.currentGen).toBe(2);
-    expect(row.summary).toStrictEqual({ generation: 2, cardinality: 4 });
+    expect(row.summary).toStrictEqual({
+      generation: 2,
+      cardinality: 4,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+    });
     // The generation the window kept is the one before it, with its own.
     const kept = await openGenerationReader(storage, { ...SEG, generation: 1 }, undefined);
     expect(kept.metadata).toEqual({ run: 'two' });
@@ -123,11 +141,13 @@ describe('a cleartext load with metadata', () => {
     expect((await registry.get(SEG))!.summary).toEqual({
       generation: 0,
       cardinality: 4,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: { from: 'bitmap' },
     });
     expect((await registry.get({ ...SEG, segment: 'b' }))!.summary).toEqual({
       generation: 0,
       cardinality: 4,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: { from: 'bytes' },
     });
     const reader = await openGenerationReader(storage, { ...SEG, generation: 0 }, undefined);
@@ -158,6 +178,7 @@ describe('a cleartext load with metadata', () => {
       expect(row.summary).toEqual({
         generation: r.generation,
         cardinality: count,
+        fingerprint: expect.stringMatching(FINGERPRINT),
         metadata: { verb },
       });
       const reader = await openGenerationReader(
@@ -180,12 +201,14 @@ describe('a cleartext load with metadata', () => {
     expect((await registry.get(SEG))!.summary).toEqual({
       generation: 0,
       cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: { n: 0 },
     });
     await loadSegment(SEG, [1, 2], deps, { metadata: { n: 1 } });
     expect((await registry.get(SEG))!.summary).toEqual({
       generation: 1,
       cardinality: 2,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: { n: 1 },
     });
     const fresh = { ...SEG, segment: 'fresh' };
@@ -193,6 +216,7 @@ describe('a cleartext load with metadata', () => {
     expect((await registry.get(fresh))!.summary).toEqual({
       generation: 0,
       cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: { n: 2 },
     });
   });
@@ -210,6 +234,7 @@ describe('an encrypted load with metadata', () => {
     const aead = await keystore.openDek(row.wrappedDeks!);
     expect(openSummary(aead, SEG, summary as never)).toEqual({
       cardinality: 7,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: { owner: 'a-recognisable-owner' },
     });
 
@@ -281,6 +306,7 @@ describe('an encrypted load with metadata', () => {
     const aead = await keystore.openDek(row.wrappedDeks!);
     expect(openSummary(aead, SEG, row.summary as never)).toEqual({
       cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: undefined,
     });
   });
@@ -315,7 +341,12 @@ describe('the loader that publishes by itself', () => {
       registry,
       metadata: META,
     });
-    expect(written.summary).toEqual({ generation: 0, cardinality: 3, metadata: META });
+    expect(written.summary).toEqual({
+      generation: 0,
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      metadata: META,
+    });
     expect((await registry.get(SEG))!.summary).toEqual(written.summary);
   });
 
@@ -335,6 +366,7 @@ describe('the loader that publishes by itself', () => {
       openSummary(await keystore.openDek(row.wrappedDeks!), SEG, row.summary as never),
     ).toEqual({
       cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
       metadata: META,
     });
   });
@@ -346,7 +378,11 @@ describe('the loader that publishes by itself', () => {
       registry,
       publish: false,
     });
-    expect(written.summary).toStrictEqual({ generation: 0, cardinality: 2 });
+    expect(written.summary).toStrictEqual({
+      generation: 0,
+      cardinality: 2,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+    });
     expect(await registry.get(SEG)).toBeNull();
   });
 });

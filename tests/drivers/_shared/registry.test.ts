@@ -171,6 +171,8 @@ const INC = '0123456789abcdef0123456789abcdef';
 const W = 'fedcba9876543210';
 /** A token of this build's form: every token a shipped registry writes has an incarnation and a write part. */
 const TK = `${INC}.1.${W}`;
+/** The fingerprint of the object a summary describes, `<size>:<footer checksum>`. */
+const FP = '4096:7';
 const WRAPPED = [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }];
 const baseRecord = {
   segment: 's',
@@ -384,36 +386,63 @@ describe('the summary field: every malformed shape is refused at both boundaries
     ['an array', [3, 5]],
     ['a string', 'summary'],
     ['a number', 5],
-    ['no generation', { cardinality: 5 }],
-    ['a negative generation', { generation: -1, cardinality: 5 }],
-    ['a fractional generation', { generation: 1.5, cardinality: 5 }],
-    ['a string generation', { generation: '3', cardinality: 5 }],
-    ['a generation past 2^53', { generation: 2 ** 53, cardinality: 5 }],
+    ['no generation', { cardinality: 5, fingerprint: FP }],
+    ['a negative generation', { generation: -1, cardinality: 5, fingerprint: FP }],
+    ['a fractional generation', { generation: 1.5, cardinality: 5, fingerprint: FP }],
+    ['a string generation', { generation: '3', cardinality: 5, fingerprint: FP }],
+    ['a generation past 2^53', { generation: 2 ** 53, cardinality: 5, fingerprint: FP }],
     ['no cardinality', { generation: 3 }],
-    ['a negative cardinality', { generation: 3, cardinality: -1 }],
-    ['a fractional cardinality', { generation: 3, cardinality: 0.5 }],
-    ['a cardinality past 2^32', { generation: 3, cardinality: 2 ** 32 + 1 }],
-    ['a string cardinality', { generation: 3, cardinality: '5' }],
-    ['an undeclared field', { generation: 3, cardinality: 5, note: 'x' }],
-    ['a clear field beside sealed', { generation: 3, sealed: sealedOf(36), cardinality: 5 }],
-    ['metadata beside sealed', { generation: 3, sealed: sealedOf(36), metadata: { a: 'b' } }],
+    ['a negative cardinality', { generation: 3, cardinality: -1, fingerprint: FP }],
+    ['a fractional cardinality', { generation: 3, cardinality: 0.5, fingerprint: FP }],
+    ['a cardinality past 2^32', { generation: 3, cardinality: 2 ** 32 + 1, fingerprint: FP }],
+    ['a string cardinality', { generation: 3, cardinality: '5', fingerprint: FP }],
+    ['an undeclared field', { generation: 3, cardinality: 5, fingerprint: FP, note: 'x' }],
+    ['no fingerprint', { generation: 3, cardinality: 5 }],
+    ['a fingerprint that is a number', { generation: 3, cardinality: 5, fingerprint: 4096 }],
+    ['a fingerprint with no checksum', { generation: 3, cardinality: 5, fingerprint: '4096' }],
+    [
+      'a fingerprint of no object (too small)',
+      { generation: 3, cardinality: 5, fingerprint: '111:7' },
+    ],
+    ['a fingerprint past 2^53', { generation: 3, cardinality: 5, fingerprint: `${2 ** 53}:7` }],
+    ['a checksum past 32 bits', { generation: 3, cardinality: 5, fingerprint: '4096:4294967296' }],
+    ['a fingerprint not canonical', { generation: 3, cardinality: 5, fingerprint: '04096:7' }],
+    ['a fingerprint in base 36', { generation: 3, cardinality: 5, fingerprint: '35s.7' }],
+    ['a fingerprint beside sealed', { generation: 3, sealed: sealedOf(48), fingerprint: FP }],
+    [
+      'a clear field beside sealed',
+      { generation: 3, sealed: sealedOf(48), cardinality: 5, fingerprint: FP },
+    ],
+    ['metadata beside sealed', { generation: 3, sealed: sealedOf(48), metadata: { a: 'b' } }],
     ['sealed not a string', { generation: 3, sealed: 36 }],
-    ['sealed not base64', { generation: 3, sealed: `${sealedOf(36).slice(0, -4)}!!!!` }],
-    ['sealed unpadded', { generation: 3, sealed: sealedOf(37).replace(/=+$/, '') }],
-    ['sealed shorter than its fixed part', { generation: 3, sealed: sealedOf(35) }],
-    ['sealed longer than metadata at its cap', { generation: 3, sealed: sealedOf(36 + 1024 + 1) }],
-    ['metadata null', { generation: 3, cardinality: 5, metadata: null }],
-    ['metadata an array', { generation: 3, cardinality: 5, metadata: ['a'] }],
-    ['metadata empty', { generation: 3, cardinality: 5, metadata: {} }],
-    ['metadata nested', { generation: 3, cardinality: 5, metadata: { a: { b: 1 } } }],
-    ['metadata boolean', { generation: 3, cardinality: 5, metadata: { a: true } }],
-    ['metadata null value', { generation: 3, cardinality: 5, metadata: { a: null } }],
-    ['metadata empty key', { generation: 3, cardinality: 5, metadata: { '': 'v' } }],
+    ['sealed not base64', { generation: 3, sealed: `${sealedOf(48).slice(0, -4)}!!!!` }],
+    ['sealed unpadded', { generation: 3, sealed: sealedOf(49).replace(/=+$/, '') }],
+    ['sealed shorter than its fixed part', { generation: 3, sealed: sealedOf(47) }],
+    ['sealed longer than metadata at its cap', { generation: 3, sealed: sealedOf(48 + 1024 + 1) }],
+    ['metadata null', { generation: 3, cardinality: 5, fingerprint: FP, metadata: null }],
+    ['metadata an array', { generation: 3, cardinality: 5, fingerprint: FP, metadata: ['a'] }],
+    ['metadata empty', { generation: 3, cardinality: 5, fingerprint: FP, metadata: {} }],
+    [
+      'metadata nested',
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { a: { b: 1 } } },
+    ],
+    ['metadata boolean', { generation: 3, cardinality: 5, fingerprint: FP, metadata: { a: true } }],
+    [
+      'metadata null value',
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { a: null } },
+    ],
+    [
+      'metadata empty key',
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { '': 'v' } },
+    ],
     [
       'metadata key over 128 bytes',
-      { generation: 3, cardinality: 5, metadata: { ['k'.repeat(129)]: 'v' } },
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { ['k'.repeat(129)]: 'v' } },
     ],
-    ['metadata over 1 KiB', { generation: 3, cardinality: 5, metadata: metadataOf(1025) }],
+    [
+      'metadata over 1 KiB',
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: metadataOf(1025) },
+    ],
   ];
 
   it.each(malformed)('refuses %s on read (IntegrityError)', (_, summary) => {
@@ -432,7 +461,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
   it('refuses what only stored bytes can carry: a __proto__ key and a lone surrogate', () => {
     const at = (metadataJson: string): string =>
       `{"schemaVersion":4,"deleted":false,"record":{"segment":"s","currentGen":3,"status":"active",` +
-      `"createdAt":1,"updatedAt":1,"token":"${TK}","pointerId":"${TK}","summary":{"generation":3,"cardinality":5,` +
+      `"createdAt":1,"updatedAt":1,"token":"${TK}","pointerId":"${TK}","summary":{"generation":3,"cardinality":5,"fingerprint":"${FP}",` +
       `"metadata":${metadataJson}}}}`;
     expect(() => parseRegistryEnvelope(at('{"a":1}'), 'ok')).not.toThrow();
     for (const bad of ['{"__proto__":"x"}', '{"\\ud800":"x"}', '{"a":"\\udc00"}']) {
@@ -450,22 +479,32 @@ describe('the summary field: every malformed shape is refused at both boundaries
         a = 'b';
       })(),
     ]) {
-      const summary = { generation: 3, cardinality: 5, metadata } as unknown as RegistrySummary;
+      const summary = {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        metadata,
+      } as unknown as RegistrySummary;
       expect(() => validateNewRegistryRecord({ currentGen: 3, summary })).toThrow(ValidationError);
     }
   });
 
   it('accepts each bound exactly at its edge', () => {
     const ok: unknown[] = [
-      { generation: 0, cardinality: 0 },
-      { generation: 3, cardinality: 2 ** 32 },
-      { generation: 3, cardinality: 5, metadata: metadataOf(1024) },
-      { generation: 3, cardinality: 5, metadata: { ['k'.repeat(128)]: 'v', n: -1.5 } },
-      { generation: 3, cardinality: 5, metadata: { '\u65e5': '\u{1F600}' } },
-      { generation: 3, sealed: sealedOf(36) },
-      { generation: 3, sealed: sealedOf(36 + 1024) },
-      { generation: 3, sealed: sealedOf(37) },
-      { generation: 3, sealed: sealedOf(38) },
+      { generation: 0, cardinality: 0, fingerprint: FP },
+      { generation: 3, cardinality: 2 ** 32, fingerprint: FP },
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: metadataOf(1024) },
+      {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        metadata: { ['k'.repeat(128)]: 'v', n: -1.5 },
+      },
+      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { '\u65e5': '\u{1F600}' } },
+      { generation: 3, sealed: sealedOf(48) },
+      { generation: 3, sealed: sealedOf(48 + 1024) },
+      { generation: 3, sealed: sealedOf(49) },
+      { generation: 3, sealed: sealedOf(50) },
     ];
     for (const summary of ok) {
       const generation = (summary as { generation: number }).generation;
@@ -488,7 +527,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
  * says nothing of the summary leaves a row with none, never one describing another generation.
  */
 describe('the summary follows the pointer', () => {
-  const summary: RegistrySummary = { generation: 3, cardinality: 5 };
+  const summary: RegistrySummary = { generation: 3, cardinality: 5, fingerprint: FP };
   const prev: RegistryRecord = {
     ...baseRecord,
     status: 'active',
@@ -510,7 +549,7 @@ describe('the summary follows the pointer', () => {
   });
 
   it("a patch can replace it with the new generation's, or clear it", () => {
-    const next: RegistrySummary = { generation: 4, cardinality: 6 };
+    const next: RegistrySummary = { generation: 4, cardinality: 6, fingerprint: FP };
     expect(applyRegistryPatch(prev, { currentGen: 4, summary: next }, 2, '2').summary).toEqual(
       next,
     );
@@ -519,7 +558,12 @@ describe('the summary follows the pointer', () => {
 
   it('refuses a summary naming another generation than the row will point at (ValidationError)', () => {
     expect(() =>
-      applyRegistryPatch(prev, { summary: { generation: 4, cardinality: 6 } }, 2, '2'),
+      applyRegistryPatch(
+        prev,
+        { summary: { generation: 4, cardinality: 6, fingerprint: FP } },
+        2,
+        '2',
+      ),
     ).toThrow(ValidationError);
     expect(() => applyRegistryPatch(prev, { currentGen: 5, summary }, 2, '2')).toThrow(
       ValidationError,
@@ -534,14 +578,14 @@ describe('a malformed summary names its row', () => {
   it('puts the row key in the IntegrityError', () => {
     const text = rowText(4, {
       ...stored(TK),
-      summary: { generation: 3, cardinality: -1 },
+      summary: { generation: 3, cardinality: -1, fingerprint: FP },
     });
     expect(() => parseRegistryEnvelope(text, 'registry/ns/seg.reg')).toThrow(
       /summary: cardinality .*: registry\/ns\/seg\.reg$/,
     );
     const meta = rowText(4, {
       ...stored(TK),
-      summary: { generation: 3, cardinality: 1, metadata: { a: true } },
+      summary: { generation: 3, cardinality: 1, fingerprint: FP, metadata: { a: true } },
     });
     expect(() => parseRegistryEnvelope(meta, 'registry/ns/seg.reg')).toThrow(
       /registry\/ns\/seg\.reg$/,
@@ -558,8 +602,8 @@ describe('a sealed summary is canonical base64', () => {
     rowText(4, { ...stored(TK), summary: { generation: 3, sealed } });
 
   it('refuses non-zero pad bits and the URL-safe alphabet', () => {
-    const twoPad = sealedOf(37); // 37 bytes: ends "AA==", 4 pad bits
-    const onePad = sealedOf(38); // 38 bytes: ends "AAA=", 2 pad bits
+    const twoPad = sealedOf(49); // 37 bytes: ends "AA==", 4 pad bits
+    const onePad = sealedOf(50); // 38 bytes: ends "AAA=", 2 pad bits
     expect(twoPad.endsWith('A==')).toBe(true);
     expect(onePad.endsWith('A=')).toBe(true);
     expect(() => parseRegistryEnvelope(sealedRow(twoPad), 'ok')).not.toThrow();
@@ -591,8 +635,8 @@ describe('a sealed summary is canonical base64', () => {
  * is one a reader must not use.
  */
 describe("the summary agrees with the row's encryption", () => {
-  const clear: RegistrySummary = { generation: 3, cardinality: 5 };
-  const sealed: RegistrySummary = { generation: 3, sealed: sealedOf(36) };
+  const clear: RegistrySummary = { generation: 3, cardinality: 5, fingerprint: FP };
+  const sealed: RegistrySummary = { generation: 3, sealed: sealedOf(48) };
 
   it('refuses a create whose summary disagrees with its keys (ValidationError)', () => {
     expect(() =>
@@ -653,7 +697,12 @@ describe("the summary agrees with the row's encryption", () => {
 /** The summary a write stores is a frozen copy, its metadata keys in canonical order. */
 describe('a written summary is a frozen, canonical copy', () => {
   it('copies, freezes and orders the metadata', () => {
-    const summary = { generation: 3, cardinality: 5, metadata: { b: 1, a: 'x', '10': 2, '2': 3 } };
+    const summary = {
+      generation: 3,
+      cardinality: 5,
+      fingerprint: FP,
+      metadata: { b: 1, a: 'x', '10': 2, '2': 3 },
+    };
     const checked = validateNewRegistryRecord({ currentGen: 3, summary }).summary as {
       metadata: Record<string, unknown>;
     };

@@ -789,7 +789,7 @@ async function eraseOnce(
       const summary = summaryOf(
         ref,
         generation,
-        { cardinality: tally.cardinality, metadata },
+        { cardinality: tally.cardinality, metadata, fingerprint: tally.fingerprint },
         aead,
       );
       return { generation, key, fingerprint: tally.fingerprint, summary };

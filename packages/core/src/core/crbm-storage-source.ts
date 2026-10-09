@@ -62,7 +62,7 @@ import type {
   SegmentSize,
   Token,
 } from './ports';
-import { DEFAULT_TAIL_BYTES } from './crbm/format';
+import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
 import {
   CrbmReader,
   compactFingerprint,
@@ -76,8 +76,8 @@ import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
 import { ChunkLoadInput, DecodedLoadInput } from './load-input';
-import { summaryAgrees, summaryOf, usableSummary } from './summary';
-import type { GenerationDescription } from './summary';
+import { sizeOfFingerprint, summaryAgrees, summaryOf, usableSummary } from './summary';
+import type { GenerationDescription, SummaryDescription } from './summary';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
@@ -249,7 +249,7 @@ interface Live {
   /** The segment's unwrapped key, shared with the next resolution while the row's wrapped keys are the same. */
   readonly unwrap: (() => Promise<Aead>) | undefined;
   /** What the row's summary says of the generation, when the row's summary is usable for it. */
-  readonly summary: () => Promise<GenerationDescription | undefined>;
+  readonly summary: () => Promise<SummaryDescription | undefined>;
   /** What the resolution weighs while no reader is open: the row's summary. */
   readonly bytes: number;
 }
@@ -411,11 +411,19 @@ class Snapshot {
     return this.outcome;
   }
 
-  /** The prior snapshot's reader, if it is of what this snapshot resolved. */
+  /**
+   * The prior snapshot's reader, if it is of what this snapshot resolved: the same generation and `pointerId`, and the
+   * object the row's summary names, where it names one. A registry renews `pointerId` with every write that changes the
+   * summary, so the last holds whenever the first two do; it is checked anyway, since it costs no request, and a reader
+   * kept across a write that should have renewed it would serve another object's chunks.
+   */
   async reuse(live: Live): Promise<CrbmReader | null> {
     const prior = this.prior;
     const reader = prior === undefined ? null : await prior.catch(() => null);
-    return reader !== null && readerIsOf(reader, live) ? reader : null;
+    if (reader === null || !readerIsOf(reader, live)) return null;
+    // A summary that cannot be had now (its key is unreachable) names nothing; the open that follows meets the same.
+    const named = await live.summary().catch(() => undefined);
+    return named === undefined || named.fingerprint === reader.fingerprint ? reader : null;
   }
 
   /** Keep the prior snapshot's reader when the refresh found its generation, so a count does not drop it. */
@@ -1310,6 +1318,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     target: Target,
     crypto: CrbmCrypto | undefined,
+    named?: string,
   ): Promise<CrbmReader> {
     const genKey: GenKey = {
       namespace: ref.namespace,
@@ -1321,17 +1330,22 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       genKey,
       { ...this.readerOptions, crypto, lineage: target.lineage },
       this.keepChunkBytesUpTo,
+      named,
     );
   }
 
   /**
-   * Open the generation a resolution found, and hold the row's summary against the object while it is open anyway:
-   * the same count and metadata, or the summary is not believed again in this process ({@link distrusted}). This
-   * costs no request; a mismatch is not an error, since the object is the truth and this read has it.
+   * Open the generation a resolution found, and hold the row's summary against the object: the object must be the one
+   * the summary names by its fingerprint, and is refused before its index is opened otherwise, as another object under
+   * the generation's number ({@link NotFoundError}, so the read resolves the row again, as for a swept generation); and
+   * it should hold the same count and metadata, or the summary is not believed again in this process
+   * ({@link distrusted}). Neither check costs a request. A row with no summary it can use names no object, and its
+   * generation's object is opened as it is.
    */
   private async openLive(ref: SegmentRef, live: Live): Promise<CrbmReader> {
-    const reader = await this.openGeneration(ref, live.target, await live.crypto());
+    const crypto = await live.crypto();
     const summary = await live.summary();
+    const reader = await this.openGeneration(ref, live.target, crypto, summary?.fingerprint);
     if (summary !== undefined && !summaryAgrees(summary, describe(reader))) {
       this.distrusted.set(this.distrustKey(ref, live.target.generation, live.target.lineage), true);
     }
@@ -1346,7 +1360,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   private async trustedSummary(
     ref: SegmentRef,
     live: Live,
-  ): Promise<GenerationDescription | undefined> {
+  ): Promise<SummaryDescription | undefined> {
     if (
       this.distrusted.peek(this.distrustKey(ref, live.target.generation, live.target.lineage)) !==
       undefined
@@ -1660,26 +1674,43 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * it can: the row's summary of the generation it names, on an active row, in the shape the row's keys call for
    * (a sealed one is opened with the segment's key), and one this process has not found to disagree with its
    * object. That is one registry read when the snapshot is cold, none when it is warm, and no read of the object.
-   * With no summary it can use (an older row, one for another generation, one that does not open), it opens the
-   * generation and answers from the object. A row that names an object that is gone still answers, while a read
-   * of the object throws: the number is true of the generation the row names.
+   * With no summary it can use (a row written without one, one for another generation, one that does not open), it
+   * opens the generation and answers from the object. A row that names an object that is gone, or another object
+   * under the number, still answers, while a read of the object throws: the number is true of the generation the row
+   * names.
    *
    * What the row says is not confirmed here: a summary edited to agree with itself by whoever can write the row is
    * believed until the next time the object is opened, which holds it against the summary.
    */
   async summary(ref: SegmentRef): Promise<GenerationSummary | null> {
     validateUserRef(ref);
+    return this.described(
+      ref,
+      (generation, row) => summaryOfGeneration(generation, row),
+      (reader) => summaryOfGeneration(reader.generation, describe(reader)),
+    );
+  }
+
+  /**
+   * What one resolution of the segment says of its generation: from the row's summary when this process may use it,
+   * else from the generation's object, opened. `null` for no generation. One heal, as a read of the object has: a
+   * generation swept from under the snapshot, or replaced under its number, is resolved again once.
+   */
+  private async described<T>(
+    ref: SegmentRef,
+    fromRow: (generation: number, row: SummaryDescription) => T,
+    fromObject: (reader: CrbmReader) => T,
+  ): Promise<T | null> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const snap = this.liveSnapshot(ref);
       try {
         const live = await (snap.target as Promise<Live | null>);
         if (live === null) return null;
         const row = await this.trustedSummary(ref, live);
-        if (row !== undefined) return summaryOfGeneration(live.target.generation, row);
+        if (row !== undefined) return fromRow(live.target.generation, row);
         const reader = await snap.reader;
-        return reader === null ? null : summaryOfGeneration(reader.generation, describe(reader));
+        return reader === null ? null : fromObject(reader);
       } catch (err) {
-        // The same healing a read of the object has: a generation swept from under the snapshot is resolved again.
         if (attempt === 1) throw err;
         // A fault that is neither a miss nor corruption (a keystore's, say) is not asked about again: reading the
         // snapshot's reader here would call the keystore a second time.
@@ -1708,18 +1739,23 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The current generation's number, id count and metadata, with its object's size, all from the one generation a
-   * single resolution opened: the object's footer and index, with no payload read. That is a registry read and a tail
-   * read of the object when cold, and nothing once the generation is open. It heals a generation swept from under the
-   * resolution as a read of the object does, and a pointer that names a missing object throws `NotFoundError`, as a
-   * read does, where {@link summary} answers from the row.
+   * The current generation's number, id count and metadata, with its object's size, all from one resolution. The answer
+   * comes from the row when it can, as {@link summary}'s does: the row's summary of the generation it names, whose
+   * fingerprint carries the object's size. That is one registry read when the snapshot is cold, none when it is warm,
+   * and no read of the object; on an encrypted segment the key is unwrapped to open the summary, as for a count. With no
+   * summary it can use, it opens the generation and answers from its footer and index, with no payload read: a tail read
+   * more when cold. A row that names an object that is gone, or another object, still answers from the row: the figures
+   * are the generation's the row names, and `checkConsistency` is what finds such a row.
    */
   async stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
     validateUserRef(ref);
-    return this.withFreshSnapshot<(GenerationSummary & SegmentSize) | null>(
+    return this.described<GenerationSummary & SegmentSize>(
       ref,
+      (generation, row) => ({
+        ...summaryOfGeneration(generation, row),
+        sizeBytes: sizeOfFingerprint(row.fingerprint),
+      }),
       (reader) => sizedSummary(reader),
-      null,
     );
   }
 
@@ -2927,7 +2963,7 @@ export async function bulkLoadAhead(
   const summary = summaryOf(
     key,
     key.generation,
-    { cardinality, metadata: options.metadata },
+    { cardinality, metadata: options.metadata, fingerprint },
     crypto?.aead,
   );
   // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
@@ -3147,21 +3183,81 @@ export function openGenerationReader(
 }
 
 /**
+ * {@link openGenerationReader}, of the object `fingerprint` names: `undefined` when the object under the key is another
+ * one, found from its footer before its index is opened, so an object sealed under another key is told apart as well.
+ */
+export async function openNamedGeneration(
+  storage: IStorageDriver,
+  key: GenKey,
+  crypto: CrbmCrypto | undefined,
+  fingerprint: string,
+): Promise<CrbmReader | undefined> {
+  return openHeldTo(storage, key, { crypto }, undefined, fingerprint);
+}
+
+/**
  * Open a reader on `key`, refusing an object whose footer names another generation. Every writer stamps the key's
  * number, and the chunk cache, the load guard and the erasure rewrite all trust it, so an object that disagrees
  * was written under another key or altered. Every open, the live read's, a pin's and the write paths', comes here.
+ * With `named`, the object must also be the one that fingerprint names: another one is {@link NotFoundError}, a move.
  */
 async function openChecked(
   storage: IStorageDriver,
   key: GenKey,
   options: CrbmReaderOptions,
   keepChunkBytesUpTo?: number,
+  named?: string,
 ): Promise<CrbmReader> {
-  const reader = await openCrbmReaderKeeping(
-    storageBlobReader(storage, key),
-    options,
-    keepChunkBytesUpTo,
-  );
+  const reader = await openHeldTo(storage, key, options, keepChunkBytesUpTo, named);
+  if (reader === undefined) {
+    throw new NotFoundError(
+      `segment "${key.segment}" generation ${key.generation} is another object than its registry row names`,
+    );
+  }
+  return reader;
+}
+
+/** {@link openChecked}'s open: `undefined` when `named` is given and the object under the key is another one. */
+async function openHeldTo(
+  storage: IStorageDriver,
+  key: GenKey,
+  options: CrbmReaderOptions,
+  keepChunkBytesUpTo: number | undefined,
+  named: string | undefined,
+): Promise<CrbmReader | undefined> {
+  const raw = storageBlobReader(storage, key);
+  let reader: CrbmReader;
+  if (named === undefined) {
+    reader = await openCrbmReaderKeeping(raw, options, keepChunkBytesUpTo);
+  } else {
+    // The object is held to the one the row names before its index is read, let alone decrypted: another object under
+    // the number is a move, never an error of the object's own, whoever sealed it. The open then reads what the footer
+    // check read, so this costs no request; and the reader keeps a blob that holds none of it, so what it retains is
+    // what the reader cache weighs.
+    let tail: { bytes: Uint8Array; size: number } | undefined = await raw.getTail(
+      Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES),
+    );
+    const blob: BlobReader = {
+      getRange: (offset, length) => raw.getRange(offset, length),
+      getTail: async (maxBytes) => {
+        const held = tail;
+        if (
+          held !== undefined &&
+          (maxBytes <= held.bytes.length || held.bytes.length === held.size)
+        ) {
+          const take = Math.min(maxBytes, held.bytes.length);
+          return { bytes: held.bytes.subarray(held.bytes.length - take), size: held.size };
+        }
+        return raw.getTail(maxBytes);
+      },
+    };
+    try {
+      if (!(await CrbmReader.sameObject(blob, named))) return undefined;
+      reader = await openCrbmReaderKeeping(blob, options, keepChunkBytesUpTo);
+    } finally {
+      tail = undefined;
+    }
+  }
   if (reader.generation !== key.generation) {
     throw new IntegrityError(
       `segment "${key.segment}" generation ${key.generation}: its footer says generation ${reader.generation}`,

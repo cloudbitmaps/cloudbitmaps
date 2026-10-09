@@ -1395,7 +1395,12 @@ describe('what a pin found out about its object, and how it forgets', () => {
   const NEW = [1, 2, C + 3, C + 4, 2 * C + 3];
   const NOT_PINNED = /no longer the object this handle pinned/;
 
-  /** A backend holding OLD as generation 0 of `s`, and a store on it: with its registry, or on its bare storage. */
+  /**
+   * A backend holding OLD as generation 0 of `s`, and a store on it: with its registry, or on its bare storage. The row
+   * carries no summary, so it names no object: a pin taken of it opens whatever is under the key, which is what these
+   * cases hold a pin's own bookkeeping to. Under a row whose summary names the object, a pin of another object under
+   * the number is refused (`tests/core/live-read-row-fingerprint.test.ts`).
+   */
   async function stored(withRegistry: boolean) {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
@@ -1405,6 +1410,10 @@ describe('what a pin found out about its object, and how it forgets', () => {
       OLD,
       withRegistry ? { registry } : undefined,
     );
+    if (withRegistry) {
+      const row = (await registry.get(REF))!;
+      await registry.compareAndSwap(REF, row.token, { summary: undefined });
+    }
     const store = new CloudRoaring({ storage: withRegistry ? backend : storage });
     return { storage, store, mine: await wholeOf(storage) };
   }
@@ -1677,12 +1686,17 @@ describe('what a pin found out about its object, and how it forgets', () => {
     await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
     expect(await snap.has(C + 1)).toBe(true);
   });
-  /** A backend holding OLD as generation 0 of `s` with its registry, and a store over it whose calls are recorded. */
+  /**
+   * A backend holding OLD as generation 0 of `s` with its registry, and a store over it whose calls are recorded. The
+   * row of `s` carries no summary, so it names no object, as in `stored`.
+   */
   async function recorded(cache?: CacheOptions) {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
       registry: backend.registry,
     });
+    const row = (await backend.registry.get(REF))!;
+    await backend.registry.compareAndSwap(REF, row.token, { summary: undefined });
     await bulkLoadCrbmGeneration(backend.storage, { segment: 'other', generation: 0 }, [7], {
       registry: backend.registry,
     });
@@ -2013,6 +2027,9 @@ describe('what a pin found out about its object, and how it forgets', () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    // A row with no summary names no object, so a pin opens whatever is under the key (see `stored`).
+    const row = (await registry.get(REF))!;
+    await registry.compareAndSwap(REF, row.token, { summary: undefined });
     const source = new CrbmStorageChunkSource(storage, { registry });
     const held = await source.pinGeneration(REF);
     if (held === null) throw new Error('no pin');
