@@ -154,9 +154,10 @@ bound is stated; other pages link here.
 - **The bound is timed on the store's clock**, the system clock unless `seams.clock` replaces it. A system clock
   stepped backwards keeps a generation fresh for longer by the size of the step.
 - **An outage of the registry stretches the bound.** A refresh that fails with a transient fault (throttling, a 5xx, a
-  dropped connection) keeps serving the generation the store resolved, whether or not its reader is still open, and
-  retries 500 ms later (or after the TTL, if that is shorter). The store converges within one retry of the registry
-  answering. A refresh that fails with anything else, such as an access denial or a row that will not parse, is not
+  dropped connection) keeps serving the generation of a segment still in the reader cache (its reader open, or its row
+  resolved for a count), and retries 500 ms later (or after the TTL, if that is shorter). The store converges within
+  one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL:
+  once that lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else, such as an access denial or a row that will not parse, is not
   ridden out: the call that meets it throws that error, and the next read resolves the segment afresh.
 - **`store.invalidate(ref)` forgets what this store derived about a segment**: its open reader and the key that reader
   unwrapped, its decoded chunks, and those of every pin of the segment, so its next read resolves the current

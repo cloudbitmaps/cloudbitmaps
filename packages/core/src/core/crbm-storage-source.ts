@@ -708,8 +708,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // Expired, or never resolved: the pointer is read now, and the resolution and the snapshot on it are installed
     // **synchronously** (before any await) so concurrent readers in this window coalesce onto the one read — ≤ one
     // registry read + at most one reopen per segment per window (no boundary thundering-herd). The refresh keeps the
-    // prior reader unless the generation moved.
-    const resolution = this.resolveNow(ref, kept ?? existing?.resolution);
+    // prior reader unless the generation moved. Only a snapshot the reader cache still holds rides out a transient
+    // fault in that read: a lapsed resolution kept with no snapshot on it is not served past its TTL, so with none the
+    // read fails as a cold resolve does, whatever wrapped keys the kept one still holds.
+    const resolution = this.resolveNow(ref, existing?.resolution);
     this.remember(key, resolution);
     return this.install(key, this.snapshotOn(ref, resolution, existing));
   }
@@ -720,9 +722,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * it says of the generation (its summary included) is what the row says now, never `prior`'s.
    *
    * A read that fails with a transient fault answers what `prior` found, when it found a generation, and is asked again
-   * soon ({@link retrySoon}): an outage of the registry keeps the generation the store resolved, and ends shortly after
-   * the registry answers. If `prior` found none or failed, the pointer is read once more rather than a dead resolution
-   * re-armed (else the segment reads empty for a whole TTL window). Anything else — an access denial, a corrupt row, a
+   * soon ({@link retrySoon}): `prior` is the resolution of the snapshot the reader cache still holds, so an outage of the
+   * registry keeps that snapshot's generation, and ends shortly after the registry answers. With no `prior` the fault
+   * fails the read, as a cold resolve's does. If `prior` found none or failed, the pointer is read once more rather than
+   * a dead resolution re-armed (else the segment reads empty for a whole TTL window). Anything else — an access denial, a corrupt row, a
    * registry that answers NotFound — fails the read exactly as a cold resolve of the segment would, and the resolution
    * and the snapshot on it are forgotten, so a reader and the key it unwrapped do not outlive a refresh that could not
    * be trusted.

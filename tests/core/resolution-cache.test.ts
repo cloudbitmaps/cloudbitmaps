@@ -305,22 +305,54 @@ describe('what forgets a resolution', () => {
     expect(await x.source.currentGeneration(A)).toBe(1);
   });
 
-  it('a refresh that fails transiently keeps the prior resolution, and asks again after the retry interval', async () => {
+  it('a refresh that fails transiently, with the reader still open, keeps serving it and asks again after the retry interval', async () => {
     const x = await world();
-    await x.open(A);
-    await x.letAGo(); // the reader is gone: the kept resolution is the prior one
+    await x.open(A); // the reader cache holds `a`'s reader
     x.clock.advance(TTL);
     await x.publish(A, 1, [3, HI + 3]);
     x.rows.state.fail = new TransientError('throttled');
     x.reset();
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1]);
     expect(await x.source.currentGeneration(A)).toBe(0);
-    expect(x.sent().rows).toBe(1);
+    expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
     x.clock.advance(REFRESH_RETRY_MS - 1);
     expect(await x.source.currentGeneration(A)).toBe(0);
     expect(x.sent().rows).toBe(1);
     x.clock.advance(1);
     expect(await x.source.currentGeneration(A)).toBe(1);
     expect(x.sent().rows).toBe(2);
+  });
+
+  it('a refresh that fails transiently, with the reader let go and the resolution lapsed, fails as a cold resolve does', async () => {
+    const x = await world();
+    await x.open(A);
+    await x.letAGo(); // the reader is gone; the resolution is kept, and lapses below
+    x.clock.advance(TTL);
+    x.rows.state.fail = new TransientError('throttled');
+    x.reset();
+    await expect(x.source.listChunkKeys(A)).rejects.toBeInstanceOf(TransientError);
+    expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
+    // The registry answers again: the next read reads the row.
+    expect(await x.source.currentGeneration(A)).toBe(0);
+    expect(x.sent().rows).toBe(2);
+  });
+
+  it("another store's crypto-shred, then a registry that fails transiently: a store whose reader was let go serves nothing of the segment", async () => {
+    const x = await world({ encrypted: true });
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1]);
+    await x.letAGo();
+    const shred = await destroySegment(A, { registry: x.base }, { confirmSegment: 'a' });
+    expect(shred).toMatchObject({ destroyed: true, cryptoShredded: true });
+    x.clock.advance(TTL);
+    x.rows.state.fail = new TransientError('throttled');
+    x.reset();
+    // The kept resolution still holds the wrapped keys the row no longer has: it must not be read from.
+    await expect(x.source.getChunk({ ...A, chunkKey: 0 })).rejects.toBeInstanceOf(TransientError);
+    expect(x.unwraps()).toBe(0);
+    expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
+    // Once the registry answers, the segment reads empty.
+    expect(await x.source.getChunk({ ...A, chunkKey: 0 })).toBeNull();
+    expect(x.unwraps()).toBe(0);
   });
 
   it('a refresh that fails otherwise fails the read, and forgets the snapshot and the resolution', async () => {

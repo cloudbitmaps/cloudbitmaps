@@ -471,9 +471,10 @@ export interface CacheOptions {
    * advanced.
    *
    * **While the registry cannot be read, the bound stretches.** A refresh that fails with a
-   * {@link TransientError} keeps serving the generation the store resolved, and the key its reader unwrapped, and is
-   * tried again 500 ms later (or after this TTL, if shorter), so the store converges within one retry of the registry
-   * answering. A refresh that fails with anything else, an access denial or a row that will not parse, is not
+   * {@link TransientError} keeps serving the generation of a segment still in the reader cache, and the key its reader
+   * unwrapped, and is tried again 500 ms later (or after this TTL, if shorter), so the store converges within one retry
+   * of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL: once that
+   * lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else, an access denial or a row that will not parse, is not
    * ridden out: the read that meets it throws that error, and the reader is dropped.
    *
    * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
