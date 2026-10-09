@@ -33,10 +33,19 @@ let outDir = '';
 let child = '';
 let home = '';
 
+const TOKEN = `${'0'.repeat(32)}.0.${'0'.repeat(16)}`;
 const ROW = JSON.stringify({
-  schemaVersion: 1,
+  schemaVersion: 4,
   deleted: false,
-  record: { segment: 's', currentGen: 0, status: 'active', createdAt: 1, updatedAt: 1, token: '0' },
+  record: {
+    segment: 's',
+    currentGen: 0,
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+    token: TOKEN,
+    pointerId: TOKEN,
+  },
 });
 const OBJECT = '12345678';
 

@@ -134,6 +134,8 @@ function readSources(root) {
   };
   const cost = read('packages/tools/src/cost.ts');
   const format = read('packages/core/src/core/crbm/format.ts');
+  // The two frame widths live in a module of their own, which `format.ts` re-exports.
+  const frame = read('packages/core/src/core/crbm/frame.ts');
   const readerDefaults = read('packages/core/src/core/reader-defaults.ts');
   const engine = read('packages/core/src/core/engine.ts');
   const profile = need(
@@ -159,8 +161,8 @@ function readSources(root) {
     format,
     'DEFAULT_TAIL_BYTES',
   );
-  const footer = need(/export const FOOTER_BYTES = (\d+);/, format, 'FOOTER_BYTES');
-  const preamble = need(/export const PREAMBLE_BYTES = (\d+);/, format, 'PREAMBLE_BYTES');
+  const footer = need(/export const FOOTER_BYTES = (\d+);/, frame, 'FOOTER_BYTES');
+  const preamble = need(/export const PREAMBLE_BYTES = (\d+);/, frame, 'PREAMBLE_BYTES');
   const ttl = need(
     /const DEFAULT_CURRENT_GEN_TTL_MS = (\d+);/,
     readerDefaults,

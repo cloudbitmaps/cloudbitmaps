@@ -419,7 +419,7 @@ interface CurrentSize {
  * against.
  *
  * A summary is used only for the generation it names, in the shape the row's keys call for, and a sealed one only if
- * it opens: anything else is no summary, and the tail is read exactly as it was before rows carried one. Using it
+ * it opens: anything else is no summary, and the tail is read. Using it
  * opens nothing, so a row that names an object that is gone is judged by what it remembers of it, and a caller that
  * must know the object is there (the collection after the publish) looks for itself.
  *

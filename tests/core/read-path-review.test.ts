@@ -4,7 +4,7 @@ import type { IKeystore } from '@/core/crypto';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { runConsistencyCheck } from '@/core/consistency';
-import { sealSummary } from '@/core/summary';
+import { openSummary, sealSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import type { Clock } from '@/index';
 import { CloudRoaring, MemoryStorage } from '@/index';
@@ -174,7 +174,11 @@ describe('what stat() hands back', () => {
 describe('distrust', () => {
   const lie = (row: RegistryRecord): RegistryRecord => ({
     ...row,
-    summary: { generation: row.currentGen as number, cardinality: 99 },
+    summary: {
+      generation: row.currentGen as number,
+      cardinality: 99,
+      fingerprint: (row.summary as { fingerprint: string }).fingerprint,
+    },
   });
 
   it('ends with the incarnation: a purged and re-created name is trusted again', async () => {
@@ -281,6 +285,7 @@ describe('checkConsistency with summaries', () => {
     const first = (await w.registry.get(SEG))!.summary as { sealed: string };
     await w.writer.load(SEG, [1, 2, 3, 4], { keep: 9 });
     const row = (await w.registry.get(SEG))!;
+    const good = row.summary as { generation: number; sealed: string };
     await w.registry.compareAndSwap(SEG, row.token, {
       summary: { generation: 1, sealed: first.sealed },
     });
@@ -293,7 +298,10 @@ describe('checkConsistency with summaries', () => {
     // A good summary, and a keystore that cannot open the segment's key.
     const again = (await w.registry.get(SEG))!;
     const aead = await w.real.openDek(again.wrappedDeks!);
-    await w.registry.compareAndSwap(SEG, again.token, { summary: sealSummary(aead, SEG, 1, 4) });
+    const { fingerprint } = openSummary(aead, SEG, good);
+    await w.registry.compareAndSwap(SEG, again.token, {
+      summary: sealSummary(aead, SEG, 1, 4, fingerprint),
+    });
     const cannotOpen = {
       openDek: async () => {
         throw new KeyUnavailableError('no such key');

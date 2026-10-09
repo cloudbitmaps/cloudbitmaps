@@ -153,9 +153,10 @@ export interface StorageChunkSource {
   /**
    * Optional: what {@link summary} answers, with the size of the generation's object, both from **one** resolution of
    * the segment, so the size is the size of the generation described; `null` if the segment has no Storage
-   * generation. The size comes from the object's footer and index, so this opens the generation (one tail read of
-   * the object when it is not open already, and a range read for an index longer than the tail) and reads no
-   * payload; the number, count and metadata come from the opened object. For a source that omits it, `stat()` asks
+   * generation. The `.crbm` source answers from the registry row's summary when it can use it, whose fingerprint
+   * carries the object's size: one registry read and no read of the object. When it cannot, it opens the generation
+   * (one tail read of the object when it is not open already, and a range read for an index longer than the tail) and
+   * answers from its footer and index, with no payload read. For a source that omits it, `stat()` asks
    * {@link summary} and {@link sizeOf}, two resolutions that can straddle a publish, and reports no size when
    * there is no `sizeOf` either.
    */
@@ -325,10 +326,12 @@ export type RegistryStatus = 'active' | 'destroyed';
 export type GovernanceMeta = Record<string, unknown>;
 
 /**
- * A cached description of one generation, carried on the registry row: how many ids it holds, and the metadata it
- * was loaded with. The generation's `.crbm` object stays the truth; this is a copy, written by the same write that
- * moves the pointer, and it names the generation it describes so a copy left behind by a writer that did not
- * carry it can never be taken for another generation's.
+ * A cached description of one generation, carried on the registry row: how many ids it holds, the metadata it was
+ * loaded with, and the fingerprint of its object (its size and footer checksum). The generation's `.crbm` object stays
+ * the truth; this is a copy, written by the same write that moves the pointer, and it names the generation it describes
+ * so a copy left behind by a writer that did not carry it can never be taken for another generation's. The fingerprint
+ * names the object too: a reader checks every object it opens for the row's generation against it, and refuses one
+ * that is another object under that number.
  *
  * Two shapes. On a cleartext segment the values are in the clear. On an encrypted segment (a row with
  * `wrappedDeks`) they are sealed under the segment's data key, as the generation's index is, so the row reveals
@@ -358,6 +361,12 @@ export interface ClearRegistrySummary {
   readonly generation: number;
   /** How many ids the generation holds: an integer from 0 to 2^32. */
   readonly cardinality: number;
+  /**
+   * The fingerprint of the generation's object, `<size>:<footer checksum>` in decimal, as `CrbmReader.fingerprint` and
+   * a pin's `pinnedAt.fingerprint` spell it: the object's size in bytes, which `stat()` reports, and the CRC32C its
+   * footer stores.
+   */
+  readonly fingerprint: string;
   /** The generation's metadata, when it has any. Never the empty object. */
   readonly metadata?: GenerationMetadata;
 }
@@ -367,8 +376,9 @@ export interface SealedRegistrySummary {
   /** The generation this describes. A non-negative safe integer. */
   readonly generation: number;
   /**
-   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64 followed by the
-   * metadata's canonical JSON, if any. The count is fixed-width, so the length reveals only the metadata's size.
+   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64, the object's size as a
+   * little-endian u64 and its footer checksum as a little-endian u32 (its fingerprint), then the metadata's canonical
+   * JSON, if any. The numbers are fixed-width, so the length reveals only the metadata's size.
    */
   readonly sealed: string;
 }
@@ -454,13 +464,24 @@ export interface RegistryRecord extends SegmentRef {
    * restored from a backup. It holds with overwhelming probability rather than by construction, since the token carries random parts: a
    * 128-bit incarnation id drawn when the row is created, and a 64-bit part drawn for each write. Two incarnations of one
    * name meet with probability 2^-128 for any pair (about n^2 / 2^129 among n of them), and two writes at one counter,
-   * after a restore, with probability 2^-64. A bare decimal token, on a row no 0.12 or later registry has written,
-   * carries neither part.
+   * after a restore, with probability 2^-64.
    */
   readonly token: Token;
+  /**
+   * The token of the most recent write that named a field a read resolves through: the row's create, or a compare-and-swap
+   * whose patch named `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary` (the resolved fields), at any value,
+   * the one the field already had included. A write that names only `leases`, `retention`, `residency` or `keptGens`
+   * leaves it. The registry sets it; a caller never does. Compared by equality only, and never reused under one name,
+   * since a token is not: a reader keys what it caches on a generation with it, so a lease or a policy write leaves a
+   * warm reader's cache standing, and a write that changes the resolution never does.
+   */
+  readonly pointerId: Token;
 }
 
-/** The caller-settable fields at {@link IRegistryDriver.create} (audit + token are driver-managed). */
+/**
+ * The caller-settable fields at {@link IRegistryDriver.create} (audit, `token` and `pointerId` are driver-managed: the new
+ * row's `pointerId` is the token the create returns).
+ */
 export interface NewRegistryRecord {
   /** `null` ⇒ the segment has no Storage generation yet — see {@link RegistryRecord.currentGen}. */
   readonly currentGen: number | null;
@@ -477,13 +498,18 @@ export interface NewRegistryRecord {
 }
 
 /**
- * Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity + audit + token are off-limits).
+ * Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity, audit, `token` and `pointerId` are
+ * off-limits).
  *
  * Presence-based: a field the patch does not mention is left as it was. `summary` is the one exception, because it
  * describes the current generation: a patch that moves `currentGen` and does not mention `summary` drops the old
  * one rather than keep a description of another generation. A `summary` the patch gives must name the
  * `currentGen` the row will have. `keptGens` follows the pointer the same way: a patch that moves `currentGen` and does
  * not mention it drops it, and one that gives it must name only generations below the `currentGen` the row will have.
+ * "Moves" means changes value: a patch that names `currentGen` at the value it has keeps both.
+ *
+ * A patch that names a resolved field (`currentGen`, `status`, `wrappedDeks`, `keyId`, `summary`), by presence and at any
+ * value, sets the row's {@link RegistryRecord.pointerId} to the token the write returns; any other patch leaves it.
  */
 export type RegistryPatch = Partial<
   Pick<
@@ -533,9 +559,7 @@ export interface RegCaps {
    * `true` when this registry's `delete` removes a row from its backend for good, so that no later `list` reads it, and
    * removes it only while it is still the exact version the delete read: by a delete the backend applies under a
    * precondition (an S3 or Azure Blob ETag, a GCS object generation), or under a lock no other writer of the backend
-   * can take. Only a row whose token carries an incarnation id is removed so. A row first written by a release before
-   * 0.12 has a bare decimal token, and a delete still tombstones it: a process on that release, re-creating the name
-   * over nothing, would issue those counters again from 0, so its row could not be told apart from the deleted one.
+   * can take.
    *
    * `false` or absent: every `delete` leaves a tombstone, which every later full `list` still reads. A shipped registry
    * says which it is.
@@ -710,6 +734,10 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   keeps going; where nothing of the earlier row is left, or the row is restored from a backup to an older counter, the
  *   random parts alone keep the tokens apart: with probability 1 - 2^-128 per pair of incarnations, and 1 - 2^-64 per
  *   pair of writes at one counter.
+ * - **Every row carries its `pointerId`** ({@link RegistryRecord.pointerId}): `create` sets it to the token it returns,
+ *   a `compareAndSwap` whose patch names a resolved field (`renewsPointer` in `@cloudbitmaps/core/driver-kit`) sets it
+ *   to the token that write returns, and every other write leaves it. `get` and `list` return it. A caller's write
+ *   never sets it. A row returned without one fails every read of the segment with {@link UnsupportedError}.
  * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
  *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws
  *   {@link WriteConflictError} and leaves the row.
@@ -768,8 +796,8 @@ export interface IRegistryDriver {
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /**
-   * Remove the row. A registry whose {@link RegCaps.conditionalDelete} is `true` removes a row whose token carries an
-   * incarnation id from its backend; every other row is tombstoned. Either way a later `create` gets a token no
+   * Remove the row. A registry whose {@link RegCaps.conditionalDelete} is `true` removes it from its backend; any other
+   * tombstones it. Either way a later `create` gets a token no
    * earlier incarnation of the name held, but for a collision of probability 2^-128 per pair of incarnations.
    *
    * Without `expected`, idempotent: deleting an absent row is a no-op.

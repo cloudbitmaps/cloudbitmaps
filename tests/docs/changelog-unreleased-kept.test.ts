@@ -50,6 +50,12 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
       'held operands are removed in the same unreleased minor; what stays true of the fix, a non-segment operand ' +
       'refused with a ValidationError, is an entry of its own',
   },
+  {
+    title: "A cold `stat()` reads the object's tail, for its size.",
+    reason:
+      "the row's summary records the object's size in the same unreleased minor, so a cold stat() stays one registry " +
+      'read; the entry that adds sizeBytes says where it comes from',
+  },
 ];
 
 const FETCH = `fetch the history and the base branch (\`git fetch --unshallow origin main\`, or check out with \`fetch-depth: 0\`)`;

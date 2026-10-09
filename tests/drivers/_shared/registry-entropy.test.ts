@@ -1,47 +1,38 @@
 import { mkdtemp, readFile, rm, unlink, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { IntegrityError, UnsupportedError, WriteConflictError } from '@/core/errors';
+import { UnsupportedError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import type { IRegistryDriver, SegmentRef, Token } from '@/core/ports';
+import { brandAsBackend } from '@/core/ports';
 import { destroySegment, dropSegment } from '@/core/erasure';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
-import { REGISTRY_SCHEMA_VERSION } from '@/drivers/_shared/registry';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
+import { webCryptoEntropy } from '@/drivers/_shared/entropy';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { registryRowPath } from '@/drivers/localfs/paths';
-import { MemoryRegistryDriver } from '@/drivers/memory';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../../helpers/counting';
 import { countingEntropy, CREATED_TOKEN, tokenParts } from '../../helpers/tokens';
-import { readAs011 } from '../../helpers/release-0-11';
-import { incarnationOf } from '@/drivers/_shared/registry';
-import { webCryptoEntropy } from '@/drivers/_shared/entropy';
-import { brandAsBackend } from '@/core/ports';
-import { MemoryStorageDriver } from '@/drivers/memory';
-import { CloudRoaring } from '@/index';
 
 /** `n` as lowercase hex, `width` digits: what a counting entropy source's draw of `width / 2` bytes reads as. */
 const hex = (n: number, width: number): string => n.toString(16).padStart(width, '0');
 
 /**
- * A fleet across the schema cut-overs. A 0.12 process must read every row 0.11 wrote; a 0.11 process must fail
- * closed, typed, on every row 0.12 writes, never misread one; and no token a re-created name is given may be one an
- * earlier incarnation held.
+ * Where a registry's tokens come from, and what happens without a source. Every shipped registry draws each row's
+ * incarnation id and each write's part from injected entropy, Web Crypto by default, so no token a re-created name is
+ * given is one an earlier incarnation held, and a row restored from a backup is never given a token it had before. On a
+ * runtime without Web Crypto a registry still reads, reports `canWrite: false`, and refuses every write; a load, an
+ * erasure's rewrite and a leased pin refuse before they write anything, so no object is left behind.
  */
 
 const REF: SegmentRef = { segment: 's' };
 
-/** A live row exactly as 0.11 serialized one: schema 1, a decimal token, the record's fields in its order. */
-const V1_ROW =
-  '{"schemaVersion":1,"deleted":false,"record":{"segment":"s","currentGen":4,"status":"active",' +
-  '"retention":{"expiresAt":99},"createdAt":10,"updatedAt":20,"token":"7"}}';
-/** The same row as 0.11 tombstoned it. */
-const V1_TOMBSTONE = V1_ROW.replace('"deleted":false', '"deleted":true');
-
 /** A registry over a store whose raw rows a test can plant, read and remove. */
 interface Harness {
   readonly registry: IRegistryDriver;
-  /** Whether its `delete` removes a row born with an incarnation id, rather than leaving a tombstone. */
+  /** Whether its `delete` removes a row, rather than leaving a tombstone. */
   readonly removes: boolean;
   plant(text: string): Promise<void>;
   raw(): Promise<string | undefined>;
@@ -50,7 +41,7 @@ interface Harness {
 
 let root: string;
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), 'crbm-reg-fleet-'));
+  root = await mkdtemp(join(tmpdir(), 'crbm-reg-entropy-'));
 });
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
@@ -94,106 +85,6 @@ const harnesses: ReadonlyArray<readonly [string, (entropy?: Entropy) => Harness]
   ],
 ];
 
-describe.each(harnesses)('%s across the schema cut-overs', (_, make) => {
-  it('reads a schema-1 row as 0.11 wrote it, through get, list and compare-and-swap', async () => {
-    const h = make();
-    await h.plant(V1_ROW);
-    expect(await h.registry.get(REF)).toMatchObject({ currentGen: 4, token: '7' });
-    const listed = [];
-    for await (const r of h.registry.list()) listed.push(r);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]).toMatchObject({ retention: { expiresAt: 99 }, token: '7' });
-
-    // The first write stamps the row with the current schema. The row gains no incarnation: its counter goes on, with a write part.
-    const { token } = await h.registry.compareAndSwap(REF, '7', { currentGen: 5 });
-    expect(token).toMatch(/^8\.[0-9a-f]{16}$/);
-    expect(incarnationOf(token)).toBeUndefined();
-    const stored = JSON.parse((await h.raw())!) as { schemaVersion: number };
-    expect(stored.schemaVersion).toBe(REGISTRY_SCHEMA_VERSION);
-    expect(await h.registry.get(REF)).toMatchObject({ currentGen: 5, createdAt: 10, token });
-  });
-
-  it('tombstones a schema-1-born row in its own form, and re-creates the name as a new incarnation', async () => {
-    const h = make(countingEntropy(41));
-    await h.plant(V1_ROW);
-    await h.registry.delete(REF, '7');
-    expect(await h.registry.get(REF)).toBeNull();
-    const tombstone = JSON.parse((await h.raw())!) as { record: { token: string } };
-    expect(tombstone.record.token).toBe(`8.${hex(41, 16)}`); // its own form: no incarnation
-    const { token } = await h.registry.create(REF, { currentGen: null });
-    // The tombstone took counter 8; the new incarnation carries the counter on, under its own id.
-    expect(token).toBe(`${hex(42, 32)}.9.${hex(43, 16)}`);
-    await expect(h.registry.compareAndSwap(REF, '7', { currentGen: 1 })).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
-  });
-
-  it('refuses a stamped row whose token is in no form, live or tombstoned, naming its key', async () => {
-    const h = make();
-    const record = { segment: 's', currentGen: 4, status: 'active', createdAt: 10, updatedAt: 20 };
-    for (const [schemaVersion, token] of [
-      [2, '8'], // a bare counter: every token this build writes has a write part
-      [1, `8.${'0'.repeat(16)}`], // a write part on a row no build of this one wrote
-      [2, '1e3'],
-      [2, `8.${'A'.repeat(16)}`], // a write part in upper-case hex
-      [2, `${'A'.repeat(32)}.8.${'0'.repeat(16)}`], // an incarnation in upper-case hex
-      [2, `${'0'.repeat(32)}.8.${'A'.repeat(16)}`], // an incarnation-form write part in upper-case hex
-      [2, `8.${'0'.repeat(15)}`], // a write part one digit short
-    ] as const) {
-      for (const deleted of [false, true]) {
-        await h.plant(JSON.stringify({ schemaVersion, deleted, record: { ...record, token } }));
-        const where = `schema ${schemaVersion} ${token} deleted=${deleted}`;
-        await expect(h.registry.get(REF), where).rejects.toThrow(/token is not one .*s\.reg$/);
-        const drain = async (): Promise<void> => {
-          for await (const r of h.registry.list()) void r;
-        };
-        await expect(drain(), where).rejects.toBeInstanceOf(IntegrityError);
-      }
-    }
-  });
-
-  it('re-creates over a tombstone 0.11 wrote', async () => {
-    const h = make(countingEntropy(1));
-    await h.plant(V1_TOMBSTONE);
-    expect(await h.registry.get(REF)).toBeNull();
-    const { token } = await h.registry.create(REF, { currentGen: 0 });
-    expect(tokenParts(token).counter).toBe(8);
-  });
-
-  it('writes nothing 0.11 can read: every row it writes is refused, typed, by 0.11', async () => {
-    const h = make();
-    // A control: the simulated check takes what 0.11 wrote, so its refusals below are about the rows.
-    expect(() => readAs011(V1_ROW)).not.toThrow();
-
-    const written: string[] = [];
-    const { token } = await h.registry.create(REF, { currentGen: 0 });
-    written.push((await h.raw())!);
-    const { token: t1 } = await h.registry.compareAndSwap(REF, token, {
-      currentGen: 1,
-      summary: { generation: 1, cardinality: 3 },
-    });
-    written.push((await h.raw())!);
-    await h.registry.delete(REF, t1);
-    const tombstone = await h.raw(); // a tombstone, or nothing where the delete removed the row
-    expect(tombstone === undefined).toBe(h.removes);
-    if (tombstone !== undefined) {
-      written.push(tombstone);
-      await h.purge();
-    }
-    await h.plant(V1_ROW);
-    await h.registry.compareAndSwap(REF, '7', { retention: { expiresAt: 100 } });
-    written.push((await h.raw())!); // a schema-1 row, written once by this build
-
-    for (const text of written) {
-      expect(() => readAs011(text), text).toThrow(UnsupportedError);
-    }
-  });
-});
-
-/**
- * Tokens never repeat across purge-and-recreate. The entropy is injected and deterministic, so the run replays
- * exactly; every incarnation draws a new id, whether the row it replaces left a tombstone or nothing at all.
- */
 describe('a re-created name never gets a token an earlier incarnation held', () => {
   /** Run `cycles` incarnations of one name, each written a few times, then deleted or removed outright. */
   async function incarnations(h: Harness, cycles: number): Promise<Token[]> {
@@ -206,7 +97,7 @@ describe('a re-created name never gets a token an earlier incarnation held', () 
         issued.push(token);
       }
       if (cycle % 2 === 0) {
-        // A tombstone, which the next create continues from, on a registry that keeps one; a removal on one that does.
+        // A tombstone, which the next create continues from, on a registry that keeps one; a removal on one that does not.
         await h.registry.delete(REF, token);
       } else {
         await h.purge(); // nothing left behind: what a hard purge leaves
@@ -238,7 +129,7 @@ describe('a re-created name never gets a token an earlier incarnation held', () 
   });
 
   it('the random parts are what separate them once nothing is left: a constant source repeats', async () => {
-    // Not a supported configuration: it shows the test above is not passing by accident.
+    // Not a supported configuration: it shows the tests above are not passing by accident.
     const h = harnesses[0]![1]((n) => new Uint8Array(n));
     const { token: first } = await h.registry.create(REF, { currentGen: null });
     await h.purge();
@@ -282,7 +173,7 @@ describe('a re-created name never gets a token an earlier incarnation held', () 
 
 /**
  * Every driver draws its incarnation ids from Web Crypto unless it is given a source: a re-created name gets a new id
- * whether the row it replaces left a tombstone or nothing at all, and a re-create over a tombstone carries the
+ * whether the row it replaces left a tombstone or nothing at all, and a create over a tombstone carries the
  * tombstone's counter on under the new id.
  */
 describe('every driver draws a new incarnation at each create, from Web Crypto by default', () => {
@@ -314,12 +205,21 @@ describe('every driver draws a new incarnation at each create, from Web Crypto b
     const { token: second } = await registry.create(REF, { currentGen: null });
     expect(tokenParts(second).incarnation).not.toBe(tokenParts(first).incarnation);
   });
+
+  it('the default source draws from Web Crypto', () => {
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues');
+    try {
+      expect(webCryptoEntropy(16)).toHaveLength(16);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 /**
  * A registry restored from a backup is back at an older counter. Every write after it is still given a token the row
- * never had, because each write draws its own part: a store that kept the pre-restore row's chunks cached by
- * `<generation>:<token>` can never take the restored row's later generation for them.
+ * never had, because each write draws its own part.
  */
 describe('a row restored from a backup is never given a token it had before', () => {
   it.each(harnesses)('%s', async (_, make) => {
@@ -347,8 +247,8 @@ describe('a row restored from a backup is never given a token it had before', ()
 });
 
 /**
- * A runtime without Web Crypto: a registry built there reads, and refuses only to write, and a load or an erasure
- * rewrite refuses before it writes its object, so nothing is left behind.
+ * A runtime without Web Crypto: a registry built there reads, and refuses only to write, and a load, an erasure's
+ * rewrite and a leased pin refuse before they write anything, so nothing is left behind.
  */
 describe('a runtime without Web Crypto', () => {
   afterEach(() => {
@@ -367,20 +267,33 @@ describe('a runtime without Web Crypto', () => {
   it.each(harnesses)(
     '%s: builds and reads, reports it cannot write, refuses to',
     async (_, make) => {
+      // A row a process with a source wrote, read by one built where there is none.
+      const writer = make(countingEntropy(5));
+      const { token } = await writer.registry.create(REF, { currentGen: 4 });
+      const row = (await writer.raw())!;
+
       noWebCrypto();
       const h = make();
-      await h.plant(V1_ROW);
-      expect(await h.registry.get(REF)).toMatchObject({ token: '7' });
+      await h.plant(row);
+      expect(await h.registry.get(REF)).toMatchObject({ currentGen: 4, token, pointerId: token });
       expect(h.registry.capabilities()).toEqual({
         strongRead: true,
         canWrite: false,
         conditionalDelete: h.removes,
       });
-      await expect(h.registry.compareAndSwap(REF, '7', { currentGen: 5 })).rejects.toBeInstanceOf(
+      await expect(h.registry.compareAndSwap(REF, token, { currentGen: 5 })).rejects.toBeInstanceOf(
         UnsupportedError,
       );
-      await expect(h.registry.delete(REF, '7')).rejects.toBeInstanceOf(UnsupportedError);
-      await h.purge();
+      if (h.removes) {
+        // A delete that removes the row draws no token, so it goes through.
+        await h.registry.delete(REF, token);
+      } else {
+        // One that leaves a tombstone draws one, and is refused with the row as it was.
+        await expect(h.registry.delete(REF, token)).rejects.toBeInstanceOf(UnsupportedError);
+        expect(await h.raw()).toBe(row);
+        await h.purge();
+      }
+      expect(await h.raw()).toBeUndefined();
       await expect(h.registry.create(REF, { currentGen: null })).rejects.toBeInstanceOf(
         UnsupportedError,
       );
@@ -408,57 +321,76 @@ describe('a runtime without Web Crypto', () => {
     );
   });
 
-  it('a load refuses before it writes anything, onto a new segment and onto an existing row', async () => {
+  /** A store over a registry whose rows a test can count, with one segment loaded while Web Crypto is there. */
+  async function loaded() {
     const store = new CountingObjectStore(0);
     const storage = new MemoryStorageDriver();
     const registry = new ObjectStoreRegistry(store, undefined, () => 1);
     const roaring = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
-    await roaring.load({ segment: 'old' }, [1, 2, 3]); // written while Web Crypto is there
+    await roaring.load({ segment: 'old' }, [1, 2, 3]);
+    const objects = async (): Promise<string[]> => {
+      const out: string[] = [];
+      for (const segment of ['new', 'old']) {
+        for await (const k of storage.list({ segment })) out.push(`${segment}.${k.generation}`);
+      }
+      return out;
+    };
+    return { store, roaring, objects };
+  }
 
+  it('a load refuses before it writes anything, onto a new segment and onto an existing row', async () => {
+    const { store, roaring, objects } = await loaded();
     noWebCrypto();
     const writes = store.writes;
     for (const segment of ['new', 'old']) {
       await expect(roaring.load({ segment }, [4, 5])).rejects.toBeInstanceOf(UnsupportedError);
     }
     expect(store.writes).toBe(writes);
-    const objects = [];
-    for (const segment of ['new', 'old']) {
-      for await (const k of storage.list({ segment })) objects.push(`${segment}.${k.generation}`);
-    }
-    expect(objects).toEqual(['old.0']);
+    expect(await objects()).toEqual(['old.0']);
   });
 
   it('an erasure rewrite refuses before it writes its object', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new ObjectStoreRegistry(new CountingObjectStore(0), undefined, () => 1);
-    const roaring = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
-    await roaring.load({ segment: 's' }, [1, 2, 3]);
-
+    const { roaring, objects } = await loaded();
     noWebCrypto();
     const result = await roaring.eraseSubject(2, { allNamespaces: true });
     expect(result.erasedFrom).toHaveLength(1);
-    expect(result.erasedFrom[0]).toMatchObject({ segment: 's', erased: false });
+    expect(result.erasedFrom[0]).toMatchObject({ segment: 'old', erased: false });
     expect(result.erasedFrom[0]!.note).toMatch(/canWrite is false/);
-    const generations = [];
-    for await (const k of storage.list({ segment: 's' })) generations.push(k.generation);
-    expect(generations).toEqual([0]);
-    expect(await roaring.segment('s').has(2)).toBe(true);
+    expect(await objects()).toEqual(['old.0']);
+    expect(await roaring.segment('old').has(2)).toBe(true);
+  });
+
+  it('a leased pin refuses before it reads the row or writes a lease', async () => {
+    const { store, roaring } = await loaded();
+    noWebCrypto();
+    const { reads, writes } = store;
+    await expect(roaring.segment('old').pin({ leaseUntil: Date.now() + 60_000 })).rejects.toThrow(
+      /pin\(\{ leaseUntil \}\) needs a registry that can write a row/,
+    );
+    expect({ reads: store.reads, writes: store.writes }).toEqual({ reads, writes });
+    // An unleased pin writes nothing, so it still pins.
+    expect(await (await roaring.segment('old').pin()).has(2)).toBe(true);
   });
 });
 
-/** A crypto-shred takes the summary with the wrapped keys: nothing of the generation's description survives it. */
 /** Every shipped registry, built fresh. */
 const everyRegistry: ReadonlyArray<readonly [string, () => IRegistryDriver]> = [
   ['MemoryRegistryDriver', () => new MemoryRegistryDriver()],
   ...harnesses.map(([name, make]) => [name, () => make().registry] as const),
 ];
 
+/** A crypto-shred takes the summary with the wrapped keys: nothing of the generation's description survives it. */
 describe.each(everyRegistry)('a crypto-shred clears the summary: %s', (_, makeRegistry) => {
   it('dropSegment of a cleartext segment leaves a tombstone with no summary', async () => {
     const registry = makeRegistry();
     await registry.create(REF, {
       currentGen: 2,
-      summary: { generation: 2, cardinality: 7, metadata: { who: 'a person' } },
+      summary: {
+        generation: 2,
+        cardinality: 7,
+        fingerprint: '4096:7',
+        metadata: { who: 'a person' },
+      },
     });
     const result = await dropSegment(
       REF,
@@ -476,7 +408,7 @@ describe.each(everyRegistry)('a crypto-shred clears the summary: %s', (_, makeRe
     await registry.create(REF, {
       currentGen: 2,
       wrappedDeks: [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }],
-      summary: { generation: 2, sealed: Buffer.alloc(36).toString('base64') },
+      summary: { generation: 2, sealed: Buffer.alloc(48).toString('base64') },
     });
     const result = await destroySegment(REF, { registry }, { confirmSegment: 's' });
     expect(result.cryptoShredded).toBe(true);

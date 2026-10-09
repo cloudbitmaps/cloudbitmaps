@@ -107,7 +107,8 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     if (!existing || existing.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
-    const token = this.nextToken(incarnationOf(existing.token) ?? drawIncarnation(this.entropy));
+    // Every row here was created by this driver, so its token carries an incarnation, which every write keeps.
+    const token = this.nextToken(incarnationOf(existing.token)!);
     this.rows.set(key, structuredClone(applyRegistryPatch(existing, checked, this.now(), token)));
     return { token };
   }

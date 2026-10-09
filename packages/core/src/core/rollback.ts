@@ -261,15 +261,20 @@ export async function rollbackSegment(
         'never one of its generations. Roll back to another generation.',
     );
   }
-  // The target's own count and metadata, read from its object, in the same write that moves the pointer, so a reader that
-  // sees it as current sees them. None when the key was not at hand to open an encrypted target.
+  // The target's own count, metadata and fingerprint, read from its object, in the same write that moves the pointer, so a
+  // reader that sees it as current sees them, and holds the object it opens to the one read here. None when the key was
+  // not at hand to open an encrypted target.
   const summary: RegistrySummary | undefined =
     reader === undefined
       ? undefined
       : summaryOf(
           ref,
           toGeneration,
-          { cardinality: reader.count(), metadata: reader.metadata },
+          {
+            cardinality: reader.count(),
+            metadata: reader.metadata,
+            fingerprint: reader.fingerprint,
+          },
           aead,
         );
 
@@ -348,9 +353,11 @@ export async function rollbackSegment(
         // read of the row says where the pointer is, so the message below says "may", not "does".
         //
         // A lost race is retried when the row is the one the swap wrote with only its leases changed: the pointer is
-        // at the target and every other field is the row's from before the swap, bar what the swap itself moved.
+        // at the target, the row's pointerId is the one the swap set (its own token, so no other writer has renewed
+        // what the row resolves to since), and every other field is the row's from before the swap, bar what the swap
+        // itself moved.
         if (!isWriteConflictError(err)) break;
-        const moved = ['currentGen', 'summary', 'keptGens'] as const;
+        const moved = ['currentGen', 'summary', 'keptGens', 'pointerId'] as const;
         let now: RegistryRecord | null;
         try {
           const seen = await deps.registry.get(ref);
@@ -363,6 +370,7 @@ export async function rollbackSegment(
         if (
           now === null ||
           now.currentGen !== toGeneration ||
+          now.pointerId !== token ||
           !onlyLeasesDiffer(record, now, moved)
         )
           break;

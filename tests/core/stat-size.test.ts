@@ -231,9 +231,34 @@ describe('stat().sizeBytes', () => {
     expect(stat).toHaveBeenCalledTimes(1);
   });
 
-  it('reads the footer and index once when cold and nothing while the generation is open; no payload', async () => {
+  it('reads the row alone when cold, its size from the summary, and nothing warm', async () => {
     const backend = new MemoryStorage();
     await new CloudRoaring({ storage: backend, retry: false }).load(SEG, ids(4));
+    const calls: Record<string, number> = {};
+    const rowCalls: Record<string, number> = {};
+    const reader = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: counting<IStorageDriver>(backend.storage, calls),
+        registry: counting<IRegistryDriver>(backend.registry, rowCalls),
+      }),
+      retry: false,
+    });
+    const seg = reader.segment('s', { namespace: 'ns' });
+    expect((await seg.stat()).sizeBytes).toBe(await objectBytes(backend.storage, 0));
+    expect(requests(calls)).toEqual({});
+    expect(requests(rowCalls)).toEqual({ get: 1 });
+    for (const k of Object.keys(rowCalls)) delete rowCalls[k];
+    await seg.stat();
+    await seg.count();
+    expect(requests(calls)).toEqual({});
+    expect(requests(rowCalls)).toEqual({});
+  });
+
+  it('with no summary on the row, reads the footer and index once when cold and nothing while the generation is open; no payload', async () => {
+    const backend = new MemoryStorage();
+    await new CloudRoaring({ storage: backend, retry: false }).load(SEG, ids(4));
+    const row = (await backend.registry.get(SEG))!;
+    await backend.registry.compareAndSwap(SEG, row.token, { summary: undefined });
     const calls: Record<string, number> = {};
     const rowCalls: Record<string, number> = {};
     const reader = new CloudRoaring({
@@ -329,6 +354,9 @@ describe('stat().sizeBytes', () => {
   it('is retried with the rest of a stat on a store that retries', async () => {
     const backend = new MemoryStorage();
     await new CloudRoaring({ storage: backend, retry: false }).load(SEG, ids(1));
+    // A row with no summary, so the stat opens the object for its size.
+    const row = (await backend.registry.get(SEG))!;
+    await backend.registry.compareAndSwap(SEG, row.token, { summary: undefined });
     let failNextTail = true;
     const flaky: IStorageDriver = Object.create(backend.storage, {
       getTail: {

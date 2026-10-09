@@ -36,7 +36,8 @@ const SMALL = Array.from({ length: 200 }, (_, i) => i);
 const spread = (chunks: number): number[] =>
   Array.from({ length: chunks * 3 }, (_, i) => Math.floor(i / 3) * 65_536 + (i % 3));
 
-function harness() {
+/** A writer and a reader over `memory`; a second harness over one backend is another process's store. */
+function harness(memory = new MemoryStorage()) {
   const state = { t: T0 };
   const clock = { now: () => state.t, sleep: () => Promise.resolve() };
   let n = 7;
@@ -46,7 +47,6 @@ function harness() {
       return n / 2_147_483_648;
     },
   };
-  const memory = new MemoryStorage();
   const storageCalls: Record<string, number> = {};
   const registryCalls: Record<string, number> = {};
   const readerBackend = brandAsBackend({
@@ -129,16 +129,30 @@ describe('pin({ leaseUntil }): the call', () => {
   it('costs one row read, one write and one tail read; an unleased pin costs the read and the tail read', async () => {
     const h = await seeded();
     h.reset();
-    await plain(h, REF).pin();
-    expect(h.registryCalls).toMatchObject({ get: 1 });
-    expect(h.registryCalls.compareAndSwap).toBeUndefined();
-    expect(h.storageCalls.getTail).toBe(1);
-    h.reset();
     await lease(h);
     expect(h.registryCalls.get).toBe(1);
     expect(h.registryCalls.compareAndSwap).toBe(1);
-    // The version names the row the write made, so this open is not the earlier pin's shared one.
     expect(h.storageCalls.getTail).toBe(1);
+    const u = await seeded();
+    u.reset();
+    await plain(u, REF).pin();
+    expect(u.registryCalls).toMatchObject({ get: 1 });
+    expect(u.registryCalls.compareAndSwap).toBeUndefined();
+    expect(u.storageCalls.getTail).toBe(1);
+  });
+
+  // A lease changes nothing the row resolves to, so a leased pin's version is the row's as read: it shares the open
+  // of an earlier pin of the generation, leased or not, and the store holds one reader for them all.
+  it('a leased pin shares the open of an earlier pin of the generation: one row read, one write, no tail read', async () => {
+    const h = await seeded();
+    const first = await plain(h, REF).pin();
+    h.reset();
+    const leased = await lease(h);
+    expect(h.registryCalls.get).toBe(1);
+    expect(h.registryCalls.compareAndSwap).toBe(1);
+    expect(h.storageCalls.getTail ?? 0).toBe(0);
+    expect(leased.pinnedAt?.version).toBe(first.pinnedAt?.version);
+    expect(await leased.count()).toBe(200);
   });
 
   it('takes the lease before it opens the object: the write precedes the tail read', async () => {
@@ -552,11 +566,18 @@ describe('pinAt(at, { leaseUntil })', () => {
   it('costs one row read, one write and one tail read, the write before the tail read', async () => {
     const h = await seeded();
     const at = await recorded(h);
+    // A store that holds no pin of the generation opens it; one that does shares that open (below).
+    // Its own holder: the two harnesses draw holders from one seed, and a second write of an equal entry is no write.
+    const fresh = harness(h.memory);
+    await leasedAt(fresh, at, 71 * HOUR);
+    expect(fresh.registryCalls.get).toBe(1);
+    expect(fresh.registryCalls.compareAndSwap).toBe(1);
+    expect(fresh.storageCalls.getTail).toBe(1);
     h.reset();
     await leasedAt(h, at);
     expect(h.registryCalls.get).toBe(1);
     expect(h.registryCalls.compareAndSwap).toBe(1);
-    expect(h.storageCalls.getTail).toBe(1);
+    expect(h.storageCalls.getTail ?? 0).toBe(0);
   });
 
   it('a fingerprint that is not the object releases the lease it took, and throws NotFoundError', async () => {

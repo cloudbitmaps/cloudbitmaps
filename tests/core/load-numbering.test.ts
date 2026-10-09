@@ -4,11 +4,9 @@ import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { TransientError } from '@/core/errors';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
-import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { CountingObjectStore } from '../helpers/counting';
 
 /**
  * How a load numbers its generation. It takes `currentGen + 1` from the row it already read when one existence
@@ -158,37 +156,6 @@ describe('a load numbers its generation from the row it read, with one existence
     const r = await loadSegment(SEG, [5], w.deps);
     expect(r).toMatchObject({ generation: 0, published: true });
     expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 0 }]);
-  });
-
-  it('numbers from a row a 0.11 writer left (registry schema 1) the same way', async () => {
-    // The bytes a 0.11.x writer stored for a segment two loads in: schema 1, a decimal token.
-    const store = new CountingObjectStore(0);
-    const row = {
-      schemaVersion: 1,
-      deleted: false,
-      record: {
-        namespace: 'ns',
-        segment: 's',
-        currentGen: 1,
-        status: 'active',
-        createdAt: 0,
-        updatedAt: 0,
-        token: '1',
-      },
-    };
-    await store.write('registry/ns/s.reg', new TextEncoder().encode(JSON.stringify(row)), 'absent');
-    const w = world(new ObjectStoreRegistry(store, undefined, () => 0));
-    await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 0 }, [1]);
-    await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 1 }, [1, 2]);
-    expect((await w.registry.get(SEG))?.currentGen).toBe(1);
-
-    const r = await loadSegment(SEG, [1, 2, 3], w.deps);
-    expect(r).toMatchObject({ generation: 2, published: true, cardinalityBefore: 2 });
-    expect(beforeWrite(w.calls)).toEqual([
-      { op: 'tail', generation: 1 },
-      { op: 'check', generation: 2 },
-    ]);
-    expect((await w.registry.get(SEG))?.currentGen).toBe(2);
   });
 
   it('a check that fails other than "not found" proves nothing, and the listing numbers', async () => {

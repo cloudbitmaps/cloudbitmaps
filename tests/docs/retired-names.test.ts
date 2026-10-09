@@ -42,11 +42,12 @@ const HELD_INSTEAD =
 
 /** What a reader who wanted the tombstone reaper uses instead. */
 const REAPER_INSTEAD =
-  "the retention guide's recipe, which runs the reaper the 0.18 releases ship, once, for a bucket a release before 0.12 wrote";
+  'nothing: this release refuses every row a release before 0.20 wrote, deleted ones included, and the upgrade the ' +
+  'changelog gives moves the segments to a new prefix and deletes the old prefix, its rows with it';
 
 /** What a reader who wanted a segment's cost report uses instead. */
 const COST_REPORT_INSTEAD =
-  '`groundedReport` from `@cloudbitmaps/tools`, given the size `seg.stat()` reports: `groundedReport({ storageBytes: (await seg.stat()).size })`';
+  '`groundedReport` from `@cloudbitmaps/tools`, given the size `seg.stat()` reports: `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`';
 
 /** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
 const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
@@ -128,6 +129,7 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'prepareHeld', instead: HELD_INSTEAD, code: true },
   { name: 'CombineManyHeld', instead: HELD_INSTEAD, code: true },
   { name: 'HeldChunks', instead: HELD_INSTEAD, code: true },
+  { name: 'reapRegistryTombstones', instead: REAPER_INSTEAD },
   { name: 'reapLegacyTombstones', instead: REAPER_INSTEAD, code: true },
   { name: 'ReapRegistryTombstonesOptions', instead: REAPER_INSTEAD, code: true },
   { name: 'ReapRegistryTombstonesResult', instead: REAPER_INSTEAD, code: true },
@@ -140,13 +142,11 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
 
 /**
  * Names that left a public entry but are still what a page or a sample legitimately names: `VERSION` is a word
- * the release docs use for other things, `reapRegistryTombstones` is what the retention guide's recipe calls on the
- * 0.18 releases, and the other three live on the `driver-kit` subpath now, where the API reference lists them. They
- * are held to the runtime surface only: off both main entries.
+ * the release docs use for other things, and the other three live on the `driver-kit` subpath now, where the API
+ * reference lists them. They are held to the runtime surface only: off both main entries.
  */
 const OFF_THE_MAIN_ENTRIES = [
   'VERSION',
-  'reapRegistryTombstones',
   'validateSegmentRef',
   'encodeNameForPath',
   'namespacePathPart',

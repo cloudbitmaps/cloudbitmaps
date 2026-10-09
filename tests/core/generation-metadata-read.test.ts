@@ -164,14 +164,13 @@ describe.each([
     });
   });
 
-  it('a cold stat is one row read and one tail read of the object, for its size; warm and pinned are none', async () => {
+  it('a cold stat is one row read, its size from the row; warm and pinned are none', async () => {
     const w = world(encrypted);
     await w.writer.load(SEG, [1, 2, 3], { metadata: A });
     const seg = w.reader().segment('s', { namespace: 'ns' });
     w.reset();
-    await seg.stat();
-    expect(w.sent()).toEqual({ rows: 1, objects: 1, lists: 0 });
-    expect(w.calls.getTail).toBe(1); // the footer and index, no payload
+    expect(await seg.stat()).toMatchObject({ generation: 0, cardinality: 3, metadata: A });
+    expect(w.sent()).toEqual({ rows: 1, objects: 0, lists: 0 });
     w.reset();
     await seg.stat();
     await seg.count();

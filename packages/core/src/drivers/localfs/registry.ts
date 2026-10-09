@@ -4,8 +4,8 @@
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
  * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation, and a
  * random part drawn for every write, so with overwhelming probability a deleted-then-recreated row, or one restored from a backup, never
- * re-issues an old token (ABA-safe). A `delete` unlinks a row born with an incarnation id, and **tombstones** one a release before
- * 0.12 wrote, whose bare counter a re-create carries on. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * re-issues an old token (ABA-safe). A `delete` unlinks the row's file: a re-create draws a new incarnation, so nothing
+ * of the old row is needed to keep its tokens apart. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
@@ -28,7 +28,6 @@ import type {
 } from '@/core/ports';
 import {
   applyRegistryPatch,
-  incarnationOf,
   newIncarnationToken,
   nextRegistryToken,
   parseRegistryEnvelope,
@@ -132,7 +131,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       }
       // A new incarnation, whose counter continues across a tombstone (ABA-safe).
       const token = newIncarnationToken(this.entropy, current?.record);
-      await this.writeRow(path, false, recordFromNew(ref, checked, this.now(), token));
+      await this.writeRow(path, recordFromNew(ref, checked, this.now(), token));
       return { token };
     });
   }
@@ -155,11 +154,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
       const token = nextRegistryToken(current.record, this.entropy);
-      await this.writeRow(
-        path,
-        false,
-        applyRegistryPatch(current.record, checked, this.now(), token),
-      );
+      await this.writeRow(path, applyRegistryPatch(current.record, checked, this.now(), token));
       return { token };
     });
   }
@@ -198,15 +193,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       } else if (current === null || current.deleted) {
         return; // idempotent
       }
-      if (incarnationOf(current.record.token) !== undefined) {
-        // Born with an incarnation id: a re-create draws a new one, so the file can go.
-        await this.unlinkRow(path);
-        return;
-      }
-      // A row a release before 0.12 wrote: tombstone it (advance the counter) rather than unlink, so a re-create
-      // carries the counter on, and a process still on that release cannot re-issue its tokens from 0.
-      const token = nextRegistryToken(current.record, this.entropy);
-      await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
+      await this.unlinkRow(path);
     });
   }
 
@@ -265,10 +252,10 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     }
   }
 
-  private async writeRow(path: string, deleted: boolean, record: RegistryRecord): Promise<void> {
+  private async writeRow(path: string, record: RegistryRecord): Promise<void> {
     await this.exactCase.refuseVariant(path);
     await mkdir(dirname(path), { recursive: true });
-    const out = Buffer.from(serializeRegistryEnvelope({ deleted, record }), 'utf8');
+    const out = Buffer.from(serializeRegistryEnvelope({ deleted: false, record }), 'utf8');
     // Cap on the write path too (the read path caps at the same size): never produce a row that would later
     // be unreadable. The governance fields are already capped by validate*, so this is a belt-and-braces guard.
     if (out.length > DEFAULT_MAX_ROW_BYTES) {

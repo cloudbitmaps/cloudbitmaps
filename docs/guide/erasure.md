@@ -59,6 +59,7 @@ there", and `note` says why:
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
 | `error: <message>`, a `WriteConflictError` saying the segment has no published generation | A first load's object that never published holds the id, or, on an encrypted store, is sealed under a key that load has not published and cannot be searched; its load may still publish it, so it is not deleted. | Load the segment, which makes the object collectable, or drop it, and re-run. |
+| `error: <message>`, a `NotFoundError` saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
 | `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all. | See what a re-run reports instead of assuming the job finished. |
 
@@ -165,16 +166,21 @@ pinned handle does until its lease ends, and then every read of it throws `Lease
 ## What an erasure does not reach
 
 The **metadata** of a generation: the rewrite carries it over unchanged, and the row's summary of the new generation
-holds it again, with the id count one smaller. Neither is scanned for the id. On an encrypted segment, an object whose
-metadata block is missing, with a sealed summary on the row that has metadata, is rewritten with the row's metadata, since
-the block's presence is not authenticated and the summary is.
+holds it again, with the id count one smaller. Neither is scanned for the id. An object whose metadata block was
+stripped is another object than the row's summary names, since its size is not the one the summary records, so the
+erasure refuses it with `NotFoundError` and writes nothing ([the ledger](#reading-the-ledger)). A fingerprint is a size
+and a checksum, which whoever can write the bucket can match on purpose: past a forged one, on an encrypted segment,
+the object is rewritten with the metadata of the row's sealed summary, since the block's presence is not authenticated
+and the summary is.
 
-A **deleted row**. When the S3, GCS, Azure Blob or local-file registry deletes a row, whether `registry.delete` or the
-retention sweep's purge of a tombstone, it keeps the row's record in a deleted marker, so the token counter survives a
-re-create. A tombstone
-from `dropSegment` or `destroySegment` holds no key and no summary, since both clear them, so what a purge keeps is the
-name, the pointer, the retention policy and the timestamps. A live row deleted directly with `registry.delete` keeps
-its summary too.
+A **deleted row**, where the registry cannot remove one. A registry that reports `conditionalDelete` (S3 when its
+client sends to an AWS S3 host, Azure Blob, the local filesystem and memory, by default) removes a row it deletes,
+whether by `registry.delete` or the retention sweep's purge of a tombstone. One that does not (an S3 client that sends to
+an S3-compatible store or an emulator, or a GCS client, by default, or `conditionalDelete: false`) keeps the row's record
+in a deleted marker, so the token counter survives a re-create. A tombstone from `dropSegment` or `destroySegment` holds
+no key and no summary, since both clear them, so what such a purge keeps is the name, the pointer, the retention policy
+and the timestamps. A live row deleted directly with `registry.delete` keeps its summary too, in a marker where one is
+written.
 
 Backups, replicas and noncurrent object versions hold the old object until their own lifecycle removes it. For an
 at-rest guarantee that survives those, encrypt and crypto-shred (`destroySegment` and `eraseNamespace`, see
@@ -258,8 +264,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
   just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` once the
   tombstone's objects are searched as a fresh call searches them (`erased: true` when one still held the id and was
   deleted), and one purged by the retention sweep reports `'absent'`.
-- A `NotFoundError` is raised only when the pointer still names the missing object, the forbidden
-  `missing-storage-generation` state, which no re-run fixes.
+- A `NotFoundError` is raised only when the pointer still names its generation and that generation's object is
+  missing, the forbidden `missing-storage-generation` state, or is another object than the row's summary names by its
+  fingerprint. No re-run fixes either: `checkConsistency({ summaries: true })` reports both.
 - `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what to
   keep if you build a proof-of-deletion artifact. It can legitimately be empty on a successful erasure, when a
   concurrent collector removed the holding generation first. `erased: true` is a claim about the bucket, not about who

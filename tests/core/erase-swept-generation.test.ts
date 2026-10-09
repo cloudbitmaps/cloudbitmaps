@@ -201,7 +201,7 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     await w.load(SEG, THREE_CHUNKS);
     const storage = afterFirstChunkRead(w.storage, async () => {
       const row = (await w.registry.get(SEG))!;
-      await w.registry.compareAndSwap(SEG, row.token, { ...row, status: 'destroyed' });
+      await w.registry.compareAndSwap(SEG, row.token, { status: 'destroyed' });
       await w.storage.delete({ ...SEG, generation: 0 });
     });
 

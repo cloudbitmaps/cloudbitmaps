@@ -21,7 +21,8 @@ import { mapWithConcurrency } from './concurrency';
 import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
-import { openGenerationReader } from './crbm-storage-source';
+import { openNamedGeneration } from './crbm-storage-source';
+import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
 import { summaryAgrees, usableSummary } from './summary';
@@ -53,9 +54,13 @@ export interface ConsistencyIssue {
   readonly currentGen: number;
   /**
    * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
-   * `summary-mismatch` (only when asked for): the generation is there, but its row's summary says a different id
-   * count or metadata than the object holds (a row restored from another point than its bucket, or a number re-taken
-   * since). A count answers from that summary until a read opens the object, so it is what a restore leaves wrong.
+   * `summary-mismatch` (only when asked for): the generation is there, but its row's summary names another object
+   * than the one under its number, says a different id count or metadata than the object holds (a row restored from
+   * another point than its bucket, or an object put back from outside the library), or records a fingerprint that
+   * names no object. A summary that names another object is what a count and a `stat()` answer from while every read
+   * that opens the object refuses it; one whose count or metadata disagrees is answered from until a read opens the
+   * object, which stops that store using it; one whose fingerprint names no object is not used, so every read opens the
+   * object unchecked.
    */
   readonly issue: 'missing-storage-generation' | 'summary-mismatch';
 }
@@ -118,17 +123,7 @@ async function checkSummary(
       throw err;
     }
   }
-  const described = usableSummary(ref, live, aead);
-  if (described === undefined) return { kind: 'ok', unchecked: keyed };
-  const reader = await openGenerationReader(
-    deps.storage,
-    { namespace: ref.namespace, segment: ref.segment, generation },
-    aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
-  );
-  let cardinality = 0;
-  for (const n of reader.cardinalities().values()) cardinality += n;
-  if (summaryAgrees(described, { cardinality, metadata: reader.metadata })) return { kind: 'ok' };
-  return {
+  const mismatch: Outcome = {
     kind: 'issue',
     issue: {
       segment: ref.segment,
@@ -137,6 +132,38 @@ async function checkSummary(
       issue: 'summary-mismatch',
     },
   };
+  const described = usableSummary(ref, live, aead);
+  if (described === undefined) {
+    // A clear summary of this generation whose fingerprint names no object (a registry of your own can hand one over)
+    // is not used by any read, so the object is opened unchecked: a row to report, not one that passes.
+    const summary = live.summary;
+    const unnamed =
+      !keyed &&
+      live.status === 'active' &&
+      summary !== undefined &&
+      !('sealed' in summary) &&
+      summary.generation === generation &&
+      fingerprintParts(summary.fingerprint) === undefined;
+    return unnamed ? mismatch : { kind: 'ok', unchecked: keyed };
+  }
+  // The object must be the one the summary names, as well as hold what it says: another object under the number (a
+  // restore that put back an object the row does not name) is what every read of the segment refuses. Its footer says
+  // which, before its index is opened, so an object sealed under another key is found too.
+  const reader = await openNamedGeneration(
+    deps.storage,
+    { namespace: ref.namespace, segment: ref.segment, generation },
+    aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
+    described.fingerprint,
+  );
+  let cardinality = 0;
+  for (const n of reader?.cardinalities().values() ?? []) cardinality += n;
+  if (
+    reader !== undefined &&
+    summaryAgrees(described, { cardinality, metadata: reader.metadata })
+  ) {
+    return { kind: 'ok' };
+  }
+  return mismatch;
 }
 
 /**
@@ -146,7 +173,9 @@ async function checkSummary(
  * `errored`.
  *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
- * than it) and holds the row's summary against it, reporting `summary-mismatch` where they disagree. A sealed summary
+ * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata it
+ * says, reporting `summary-mismatch` where they disagree, and for a clear summary whose fingerprint names no object,
+ * which no read uses. A sealed summary
  * needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by default, since the
  * default check only lists.
  */

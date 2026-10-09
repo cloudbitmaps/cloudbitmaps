@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { REGISTRY_SCHEMA_VERSION } from '@/drivers/_shared/registry';
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 
 let root: string;
@@ -29,24 +30,29 @@ describe('LocalFsRegistryDriver corruption + edge handling', () => {
 
     // Stamped and structurally complete, then one thing wrong at a time. The control first: the base row reads, so
     // each refusal below is about the one field it changes.
+    const token = `${'0'.repeat(32)}.0.${'0'.repeat(16)}`;
     const base = {
       segment: 's',
       currentGen: 0,
       status: 'active',
       createdAt: 1,
       updatedAt: 1,
-      token: '0',
+      token,
+      pointerId: token,
     };
     const stamped = (record: object, deleted = false): string =>
-      JSON.stringify({ schemaVersion: 1, deleted, record });
+      JSON.stringify({ schemaVersion: REGISTRY_SCHEMA_VERSION, deleted, record });
     await writeRaw('s.reg', stamped(base));
-    expect(await d.get({ segment: 's' })).toMatchObject({ currentGen: 0, token: '0' });
+    expect(await d.get({ segment: 's' })).toMatchObject({ currentGen: 0, token });
     for (const [record, why] of [
       [{ ...base, currentGen: -1 }, /invalid currentGen/],
       [{ ...base, status: 'huh' }, /unknown status/],
       [{ ...base, dirtyChunkCount: 0 }, /does not declare \(dirtyChunkCount\)/],
       // A token in no form the library writes fails the read, naming the file.
-      [{ ...base, token: '1e3' }, /token is not one a schema-1 row holds \("1e3"\): .*s\.reg$/],
+      [
+        { ...base, token: '1e3' },
+        /token is not one a shipped registry writes \("1e3"\): .*s\.reg$/,
+      ],
     ] as const) {
       await writeRaw('s.reg', stamped(record));
       await expect(d.get({ segment: 's' })).rejects.toThrow(why);
@@ -55,15 +61,20 @@ describe('LocalFsRegistryDriver corruption + edge handling', () => {
 
   it('reads a stamped row, and refuses an unstamped or future-stamped one (format freeze)', async () => {
     const d = new LocalFsRegistryDriver(root);
+    const token = `${'0'.repeat(32)}.0.${'0'.repeat(16)}`;
     const record = {
       segment: 's',
       currentGen: 2,
       status: 'active',
       createdAt: 1,
       updatedAt: 1,
-      token: '0',
+      token,
+      pointerId: token,
     };
-    await writeRaw('s.reg', JSON.stringify({ schemaVersion: 1, deleted: false, record }));
+    await writeRaw(
+      's.reg',
+      JSON.stringify({ schemaVersion: REGISTRY_SCHEMA_VERSION, deleted: false, record }),
+    );
     expect((await d.get({ segment: 's' }))!.currentGen).toBe(2);
     // a row with no stamp is not one this build wrote
     await writeRaw('s.reg', JSON.stringify({ deleted: false, record }));

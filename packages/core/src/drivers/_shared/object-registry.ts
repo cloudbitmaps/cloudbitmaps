@@ -10,12 +10,10 @@
  * conformance suite.
  *
  * **`delete` removes a row for good where the store vouches for a conditional delete** (`If-Match: <etag>`,
- * `ifGenerationMatch: <generation>`), and only a row whose token carries an incarnation id: a re-create draws a new
- * incarnation, so nothing of the old row is needed to keep its tokens apart, and a full `list()` no longer reads a
- * row for every name it ever held. Every other row is **tombstoned**: the object stays, its counter advanced, and a
- * re-create carries the counter on. A row a release before 0.12 wrote has a bare decimal token and is always
- * tombstoned, since a process still on that release, re-creating the name over nothing, would start its counter at 0
- * again and issue the old row's tokens.
+ * `ifGenerationMatch: <generation>`): a re-create draws a new incarnation, so nothing of the old row is needed to keep
+ * its tokens apart, and a full `list()` no longer reads a row for every name it ever held. On a store that cannot
+ * vouch for one, the row is **tombstoned**: the object stays, its counter advanced, and a re-create carries the counter
+ * on.
  *
  * **The atomic swap is offloaded to the store's conditional writes.** `create` writes only if absent (or
  * over a tombstone under its version), and `compareAndSwap`/`delete` write (or delete) only if the object still
@@ -85,7 +83,6 @@ import type { Entropy } from '@/core/determinism';
 import { mapWithConcurrency } from '@/core/concurrency';
 import {
   applyRegistryPatch,
-  incarnationOf,
   newIncarnationToken,
   nextRegistryToken,
   parseRegistryEnvelope,
@@ -218,7 +215,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete };
   }
 
-  /** Whether a delete removes a row born with an incarnation id: the store has a delete, and vouches for it. */
+  /** Whether a delete removes a row: the store has a delete, and vouches for it. */
   private removesRows(): boolean {
     return this.store.conditionalDelete === true && typeof this.store.delete === 'function';
   }
@@ -350,11 +347,11 @@ export class ObjectStoreRegistry implements IRegistryDriver {
 
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const key = registryObjectKey(this.prefix, ref);
-    // A row born with an incarnation id is removed from the store, by a delete the store applies only while the
-    // object is still the version read here: a later create draws a new incarnation, so nothing of this row is needed
-    // to keep its tokens apart. Any other row is tombstoned (the counter advanced, the object kept), so a re-create
-    // carries the counter on. Retry the read and the write on a cross-process race; it converges, then fails typed
-    // rather than silently leaving the row live.
+    // Where the store vouches for a conditional delete, the row is removed from it, by a delete the store applies only
+    // while the object is still the version read here: a later create draws a new incarnation, so nothing of this row
+    // is needed to keep its tokens apart. Otherwise it is tombstoned (the counter advanced, the object kept), so a
+    // re-create carries the counter on. Retry the read and the write on a cross-process race; it converges, then fails
+    // typed rather than silently leaving the row live.
     for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
       const current = await this.readRow(key);
       if (expected !== undefined) {
@@ -368,7 +365,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       }
       try {
         const remove = this.removesRows() ? this.store.delete : undefined;
-        if (remove !== undefined && incarnationOf(current.env.record.token) !== undefined) {
+        if (remove !== undefined) {
           // The version read above is the row the caller's token names, so this removes that row and no later one.
           await remove.call(this.store, key, { version: current.version });
           return;

@@ -6,7 +6,6 @@ import { IntegrityError, TransientError, WriteConflictError } from '@/core/error
 import type { AuditEvent } from '@/core/audit';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
-import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { setSegmentRetention } from '@/core/retention';
@@ -21,6 +20,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
+import { opaqueTokens } from '../helpers/opaque-tokens';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
  * The driver sends a publish's registry write once. When it ends without a definite answer (a throttle, a lost
@@ -874,63 +875,42 @@ describe('two incarnations created in the same millisecond are told apart by the
   });
 });
 
-describe('a row 0.11 wrote has no incarnation id, and its own write is still recognised', () => {
-  /** A live row as 0.11 serialized it: schema 1, a bare decimal token. */
-  const legacyRow = (currentGen: number, createdAt: number): string =>
-    `{"schemaVersion":1,"deleted":false,"record":{"segment":"s","namespace":"ns","currentGen":${currentGen},` +
-    `"status":"active","createdAt":${createdAt},"updatedAt":${createdAt},"token":"7"}}`;
-
-  /** A world over the object-store registry, with generations 0 to 2 loaded and the row then replaced by a legacy one. */
-  async function legacyWorld(): Promise<ReturnType<typeof world> & { store: CountingObjectStore }> {
-    const store = new CountingObjectStore(0);
+describe('a registry whose tokens carry no incarnation id: its own write is still recognised', () => {
+  /** A world over a registry of someone else's, whose tokens carry no id, with generations 0 to 2 loaded. */
+  async function opaqueWorld(): Promise<ReturnType<typeof world> & { at: (ms: number) => void }> {
+    let t = 30;
     const w = world(
-      () => 30,
-      (clock) => new ObjectStoreRegistry(store, undefined, clock),
+      () => t,
+      (clock) => opaqueTokens(new MemoryRegistryDriver({ now: clock })),
     );
     await threeLoads(w);
-    store.plant(registryObjectKey(undefined, SEG), legacyRow(2, 30));
-    expect((await w.base.get(SEG))!.token).toBe('7');
-    return { ...w, store };
+    expect(incarnationOf((await w.base.get(SEG))!.token)).toBeUndefined();
+    return { ...w, at: (ms) => void (t = ms) };
   }
 
-  it('a write of its own that landed and lost its response is published: both tokens have no id, so the stamp decides', async () => {
-    const w = await legacyWorld();
+  it('a write of its own that landed and lost its response is published: neither token has an id, so the stamp decides', async () => {
+    const w = await opaqueWorld();
     w.arm({ kind: 'land-then-transient' });
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: true });
-    // The row gained a write part and no incarnation.
-    expect((await w.base.get(SEG))!.token).toMatch(/^8\.[0-9a-f]{16}$/);
+    expect(incarnationOf((await w.base.get(SEG))!.token)).toBeUndefined();
   });
 
   it('a write throttled once and not applied is sent again from the row just read, and the load publishes', async () => {
-    const w = await legacyWorld();
+    const w = await opaqueWorld();
     w.arm({ kind: 'transient-unapplied' });
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(w.writes.compareAndSwap).toBe(2);
   });
 
-  it('another row with no id, created at another time and pointing at the rewrite object, is another incarnation: the stamp says so', async () => {
-    const w = await legacyWorld();
+  it('a name created again at another time, pointing at the rewrite object, is another incarnation: the stamp says so', async () => {
+    const w = await opaqueWorld();
     w.arm({
       kind: 'transient-unapplied',
       meanwhile: async () => {
-        // Another legacy-form row, stamped later, names the rewrite's number over the rewrite's own object.
-        w.store.plant(registryObjectKey(undefined, SEG), legacyRow(3, 99).replace('"7"', '"9"'));
-      },
-    });
-    const r = await eraseIdFromSegment(SEG, 2, w.deps);
-    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
-    expect(r.collected).toEqual([]);
-  });
-
-  it('a name created again over it in the same millisecond is another incarnation: the token form says so', async () => {
-    const w = await legacyWorld();
-    w.arm({
-      kind: 'transient-unapplied',
-      meanwhile: async () => {
-        // The legacy row is deleted and the name created again in the same millisecond (its stamp is 30 too),
-        // pointing at the rewrite's number over the rewrite's own object. The row is now born with an incarnation id.
+        // The name is deleted and created again later, naming the rewrite's number over the rewrite's own object.
+        w.at(99);
         await w.base.delete(SEG);
         await w.base.create(SEG, { currentGen: 3 });
       },
@@ -1079,7 +1059,11 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(r).toMatchObject({ generation: 0, published: true });
         expect(k.w.sent.map((x) => x.write)).toEqual(Array(sends).fill('create'));
         summariesSince(k, 0);
-        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 3,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: META,
+        });
       });
 
       it('a later load (a compare-and-swap) holds the summary', async () => {
@@ -1096,7 +1080,11 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 5, metadata: { run: 'r2' } });
+        expect(await described(k)).toEqual({
+          cardinality: 5,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: { run: 'r2' },
+        });
       });
 
       it('a load onto a row that has no pointer yet holds the summary', async () => {
@@ -1115,7 +1103,11 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 3,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: META,
+        });
       });
 
       it('an erasure rewrite holds the summary of the rewrite', async () => {
@@ -1129,7 +1121,11 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 4, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 4,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          metadata: META,
+        });
       });
     });
   });
@@ -1145,7 +1141,12 @@ describe('a publish that is settled by reading the row carries the generation su
     expect(r.becameCurrent).toBe(true);
     expect(w.sent.map((x) => x.write)).toEqual(['create', 'create']);
     for (const { patch } of w.sent) {
-      expect(patch.summary).toEqual({ generation: 0, cardinality: 2, metadata: META });
+      expect(patch.summary).toEqual({
+        generation: 0,
+        cardinality: 2,
+        fingerprint: expect.stringMatching(FINGERPRINT),
+        metadata: META,
+      });
     }
   });
 });

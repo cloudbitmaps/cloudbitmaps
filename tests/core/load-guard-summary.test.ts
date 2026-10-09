@@ -97,7 +97,7 @@ describe('a guarded load whose row carries a summary for its current generation'
     const w = world();
     await loadMany(w, 2);
     // The object holds 2 ids; the row says 1,000.
-    await plant(w, { generation: 1, cardinality: 1_000 });
+    await plant(w, { generation: 1, cardinality: 1_000, fingerprint: '4096:1' });
     const refused = await loadSegment(SEG, idsOf(10), w.deps, { guard: { minRetained: 0.5 } });
     expect(refused).toMatchObject({
       published: false,
@@ -155,7 +155,9 @@ describe('a guarded load whose row has no summary it can use reads the tail, as 
         if (p !== 'get') return value;
         return async (...args: Parameters<IRegistryDriver['get']>) => {
           const row = await (value as IRegistryDriver['get']).apply(t, args);
-          return row === null ? null : { ...row, summary: { generation: 1, cardinality: 1_000 } };
+          return row === null
+            ? null
+            : { ...row, summary: { generation: 1, cardinality: 1_000, fingerprint: '4096:1' } };
         };
       },
     });
@@ -200,7 +202,7 @@ describe('an encrypted segment', () => {
     await loadMany(w, 2);
     const row = (await w.registry.get(SEG))!;
     const aead = await keystore.openDek(row.wrappedDeks!);
-    await plant(w, sealSummary(aead, SEG, 1, 1_000));
+    await plant(w, sealSummary(aead, SEG, 1, 1_000, '4096:1'));
     const refused = await loadSegment(SEG, idsOf(10), w.deps, { guard: { minRetained: 0.5 } });
     expect(refused).toMatchObject({
       published: false,
@@ -216,7 +218,7 @@ describe('an encrypted segment', () => {
     const row = (await w.registry.get(SEG))!;
     const aead = await keystore.openDek(row.wrappedDeks!);
     // Sealed for generation 1, moved onto the row that names generation 2.
-    await plant(w, { generation: 2, sealed: sealSummary(aead, SEG, 1, 1_000).sealed });
+    await plant(w, { generation: 2, sealed: sealSummary(aead, SEG, 1, 1_000, '4096:1').sealed });
     w.reset();
     const r = await loadSegment(SEG, idsOf(10), w.deps, { guard: { minRetained: 0.5 } });
     expect(r).toMatchObject({ published: true, cardinalityBefore: 3 });

@@ -68,7 +68,7 @@ import {
   splitId,
   takeLease,
 } from '@cloudbitmaps/core';
-import { validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import { pointerIdOf, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
 import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
@@ -142,7 +142,7 @@ const DEFAULT_CACHE_MAX_CHUNKS = 1024;
 const DEFAULT_ADMIN_CONCURRENCY = 8;
 /**
  * The row version a live version from a `CrbmStorageChunkSource` names: the version up to its last `#`, which starts
- * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every row token. It is
+ * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every `pointerId`. It is
  * core's `rowVersionOf` for this one caller, which is handed only that source's versions; core keeps that function
  * off its public entry.
  */
@@ -889,8 +889,9 @@ export interface MaterializeResult {
    * What the destination held when the guard judged it — `null` when it had no current generation, **or when
    * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with neither
    * `guard.minRetained` nor `guard.maxGrowth` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
-   * carries a summary of its current generation the count comes from the row and the object is not read; a row
-   * written before rows carried a summary costs one object-header fetch.
+   * carries a summary of its current generation the count comes from the row and the object is not read; a row with
+   * none (one a rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) costs
+   * one object-header fetch.
    */
   readonly cardinalityBefore: number | null;
   /** Non-empty chunks in the generation. */
@@ -1958,7 +1959,7 @@ export class CloudRoaring {
       }
     }
     const row = await this.withRetries(() => registry.get(ref));
-    return row === null ? null : { generation: row.currentGen, token: row.token };
+    return row === null ? null : { generation: row.currentGen, token: pointerIdOf(row) };
   }
 
   /** Throw what a read of, or a publish to, `handle` must throw now: its lease error, if it has one. */
@@ -2020,13 +2021,14 @@ export class CloudRoaring {
         // The row this scan just listed is authoritative; the reader's snapshot may be up to `cache.genTtlMs` behind
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
-        // version is `<generation>:<row token>` (invariant 1: the row's OCC token is the identity, the number
-        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too, followed by `#` and
-        // the fingerprint of the object its reader opened, which a row does not name and is left out here. Only a
-        // segment that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
+        // version is `<generation>:<pointerId>` (invariant 2: the number restarts at 0 once a row is purged, and is taken
+        // again once its object is deleted, and every write that leads there renews the row's pointerId), so a retired
+        // name loaded again is told apart too, followed by `#` and the fingerprint of the object its reader opened, which
+        // is left out here. Only a segment whose resolution differs is re-resolved: one whose row has not moved, or has
+        // moved only by a lease or a policy write, keeps its snapshot and costs no extra read.
         if (this.crbmSource !== undefined) {
           const held = await this.crbmSource.currentVersion(ref);
-          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
+          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${pointerIdOf(rec)}`;
           if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
@@ -2626,8 +2628,8 @@ export class CloudRoaring {
    * Pass `purgeTombstones: false` to keep every tombstone, that row included. On a backend whose registry reports
    * `conditionalDelete` (AWS S3, Azure Blob, the local filesystem and memory, by default; GCS when you set `conditionalDelete: true`)
    * the purge removes the row from the bucket for good, by a delete the store applies only to the version it judged,
-   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere,
-   * and for a row a release before 0.12 wrote, it leaves a tombstone. Each retirement files a pointer in the due index
+   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere it
+   * leaves a tombstone. Each retirement files a pointer in the due index
    * under the day its tombstone's grace ends, so `scan: 'index'` purges as well as retires.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
@@ -2886,7 +2888,8 @@ export class CloudRoaring {
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
    * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
    * `summaries: true` it also opens each segment's current object (one tail read each) and reports a segment whose
-   * row's summary says another id count or metadata than the object holds as `summary-mismatch`, which is what a
+   * row's summary names another object by its fingerprint, or says another id count or metadata than the object holds,
+   * as `summary-mismatch`, which is what a
    * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
    * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
    *
@@ -3286,8 +3289,9 @@ export interface SegmentStat {
   /** The metadata the generation was loaded with; absent when it has none. */
   readonly metadata?: GenerationMetadata;
   /**
-   * The generation's object in storage, in bytes, from its footer and index (no payload read): what the segment
-   * stores. `null` when the segment has no generation, or when the store's source cannot report a size.
+   * The generation's object in storage, in bytes: what the segment stores. From the registry row's summary, which
+   * records the object's size with its checksum, or from the object's footer when the row has no summary to use.
+   * `null` when the segment has no generation, or when the store's source cannot report a size.
    */
   readonly sizeBytes: number | null;
 }
@@ -3703,8 +3707,8 @@ export class Segment {
    * Cardinality of the generation this handle reads: **one registry read when cold, none when warm, and no read of the
    * object**, with **zero payload reads**. The registry row records the id count of the generation it names, written
    * by the write that made it current, and a count answers from that. A row with no summary it can use (one written
-   * before rows carried it, one that names another generation, a sealed one that does not open) sends the count to the
-   * `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
+   * without it, as a registry of your own may, one that names another generation, a sealed one that does not open)
+   * sends the count to the `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
    * restore) still counts the row's number, while a read of the object throws; `checkConsistency` is what finds it.
    *
    * What this trusts: the row's summary, or the index's sum, and no payload is decoded to confirm it. The summary is
@@ -3725,16 +3729,23 @@ export class Segment {
   /**
    * What the generation this handle reads is, from one resolution: its number, its id count, the metadata it was
    * loaded with (absent when it has none), and `sizeBytes`, its object's bytes in storage. All four come from the
-   * generation's object, opened once: its footer and index, with no payload read. That is one registry read and
-   * one tail read of the object when cold (and a range read for an index longer than the tail), and none while the
-   * generation is open (a read of the segment opens it, and so does this, which keeps it in the reader cache as a
-   * read does); on a pinned handle it answers for the generation it pinned. A segment with no generation
-   * answers `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size
-   * answers `sizeBytes: null`. A pointer that names a missing object throws `NotFoundError`, as a read of the object does.
+   * registry row when it has a summary this store can use, as `count()`'s do: the summary records the object's
+   * fingerprint, its size with its checksum. That is **one registry read when cold, none when warm, and no read of the
+   * object**. With no summary it can use, they come from the generation's object, opened once: its footer and index,
+   * with no payload read, which is a tail read of the object more when cold (and a range read for an index longer than
+   * the tail) and keeps the generation in the reader cache as a read does. On a pinned handle it answers for the
+   * generation it pinned, from the pinned object. A segment with no generation answers
+   * `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size answers
+   * `sizeBytes: null`. A pointer that names a missing object (a torn restore) still answers from the row's summary, as
+   * `count()` does, while a read of the object throws `NotFoundError`; with no summary to use, `stat()` throws it too.
+   * `checkConsistency` is what finds such a row.
    *
-   * Trust is as for the index on `count()`'s cold path: the index is checked for internal consistency when the
-   * object is opened, and the count is its sum. The opened object is held against the registry row's summary, and a
-   * disagreement makes this process stop using that summary, so `count()` then answers what this does.
+   * Trust is as for `count()`: what the row's summary says is believed until the object is next opened. Every open of
+   * the generation holds the object to the fingerprint the summary records, so another object under the number is
+   * refused when it is opened, and holds its count against the summary's; a disagreement in count makes this process
+   * stop using that summary, so `stat()` then answers from the object, whose index is checked for internal consistency
+   * and whose count is the index's sum. A reader already open is not checked again until the row changes, it is
+   * evicted or it is invalidated.
    *
    * `sizeBytes` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *

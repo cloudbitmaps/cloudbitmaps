@@ -279,10 +279,10 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
 - **A deleted row keeps its record only where the registry cannot remove it.** Where the registry reports
   `conditionalDelete` (the default for S3 when its client sends to an AWS S3 host, for
   Azure Blob, the local filesystem and memory), `registry.delete` and the retention sweep's purge of a tombstone remove
-  a row created by 0.12 from the bucket, and its token's random incarnation id keeps a re-create apart from it. Where it
-  does not (an S3 client that sends to an S3-compatible store or an emulator, or a GCS client, by default, or
-  `conditionalDelete: false`), and for a row written by a release before 0.12 on any backend, a delete writes a deleted marker that holds
-  the record, so the row's token counter survives a re-create. A tombstone left by `dropSegment` or `destroySegment`
+  the row from the bucket, and a re-create's random incarnation id keeps it apart from the removed row. Where it does not
+  (an S3 client that sends to an S3-compatible store or an emulator, or a GCS client, by default, or
+  `conditionalDelete: false`), a delete writes a deleted marker that holds the record, so the row's token counter
+  survives a re-create. A tombstone left by `dropSegment` or `destroySegment`
   holds no wrapped key and no summary, since both clear them, so a purge that leaves a tombstone keeps the name, the
   pointer, the retention policy and the timestamps. A **live** row deleted directly with `registry.delete` keeps its
   summary, the current generation's id count and your metadata, in a marker where one is written.
@@ -311,12 +311,11 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > ⚠️ **Never let a lifecycle rule expire a registry row's current version, a tombstone, or a due-index pointer** —
 > a separate trap, and a worse one. A rule cannot tell a live row from a tombstone, and an expired live row is a
 > segment whose pointer is gone: its generations look unreferenced, and nothing reads or collects them. The library
-> removes a row only by a delete the store applies to the exact version it judged, and only a row whose token
-> carries a random incarnation id, so a name re-created later is told apart from it with overwhelming probability.
-> A tombstone of a row written by a release before 0.12 carries the row's token counter on instead, and that counter
-> is what keeps the name's tokens unique against a process still on that release. That token is the segment's
-> **identity**: it is what a cached reader, a fenced publish and a generation-collection pass each compare to decide
-> whether two observations describe the same segment. Re-issue one and they can all answer "yes" about a segment that
+> removes a row only by a delete the store applies to the exact version it judged, and every row's token carries a
+> random incarnation id, so a name re-created later is told apart from it with overwhelming probability. That token is
+> the segment's **identity**: a fenced publish and a generation-collection pass compare it, and a cached reader
+> compares the row's `pointerId`, itself one of the row's tokens, to decide whether two observations describe the same
+> segment. Re-issue one and they can all answer "yes" about a segment that
 > no longer exists — serving a deleted incarnation's data, or collecting a live one's objects. A rule on
 > *noncurrent* versions of the registry prefix touches neither the current row nor its tombstone; what it shortens is
 > the history a registry restore picks from, and the time a crypto-shred takes to complete (above).
@@ -335,8 +334,7 @@ response, a removal the registry refused (`purgeFaults` counts it), or a pointer
 it reads, and an unscoped fleet scan, one given no `namespace`, from every day. A deployment that scopes every sweep to a
 namespace, or runs only index scans, keeps such a pointer until an unscoped fleet scan runs. Where the registry does not
 report `conditionalDelete` (an S3 client that sends to an S3-compatible store or an emulator, or a GCS client, by default, or
-`conditionalDelete: false`), and for a row written by a release before 0.12 on any backend, the purge leaves a tombstone
-instead: every one of those fields, in the bucket, indefinitely, read by every full listing. A registry that does not
+`conditionalDelete: false`), the purge leaves a tombstone instead: every one of those fields, in the bucket, indefinitely, read by every full listing. A registry that does not
 report it files no pointer to begin with. A removed
 row stays recoverable wherever the storage keeps a copy of it: with object versioning on, its earlier versions stay until
 a noncurrent-version rule expires them, as an overwritten row's do; with soft delete on, it stays for the retention

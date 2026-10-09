@@ -119,11 +119,12 @@ describe('onlyLeasesDiffer', () => {
     currentGen: 3,
     status: 'active',
     keptGens: [1, 2],
-    summary: { generation: 3, cardinality: 5 },
+    summary: { generation: 3, cardinality: 5, fingerprint: '4096:1' },
     retention: { expiresAt: 5 },
     createdAt: 1,
     updatedAt: 1,
     token: tokenOf(INC, 0),
+    pointerId: tokenOf(INC, 0),
   } as RegistryRecord;
   const next = (over: Partial<RegistryRecord>): RegistryRecord =>
     ({
@@ -143,12 +144,14 @@ describe('onlyLeasesDiffer', () => {
   it.each([
     ['the pointer', { currentGen: 4 }],
     ['the kept window', { keptGens: [2] }],
-    ['the summary', { summary: { generation: 3, cardinality: 6 } }],
+    ['the summary', { summary: { generation: 3, cardinality: 6, fingerprint: '4096:1' } }],
     ['a retention policy', { retention: { expiresAt: 6 } }],
     ['the status', { status: 'destroyed' as const }],
     ['the key wrappings', { wrappedDeks: [{ keyId: 'k', wrapped: 'AA==' }] }],
     ['the external key reference', { keyId: 'other-key' }],
     ['the residency', { residency: { region: 'x' } }],
+    // Another writer renewed what the row resolves to, with every value as it was: a write a lease never makes.
+    ['the pointerId', { pointerId: tokenOf(INC, 1) }],
   ])('is false when %s changed', (_name, over) => {
     expect(onlyLeasesDiffer(base, next(over as Partial<RegistryRecord>))).toBe(false);
   });
@@ -158,6 +161,16 @@ describe('onlyLeasesDiffer', () => {
       onlyLeasesDiffer(base, next({ token: tokenOf('ffffffffffffffffffffffffffffffff', 0) })),
     ).toBe(false);
     expect(onlyLeasesDiffer(base, next({ currentGen: 4 }), ['currentGen'])).toBe(true);
+  });
+
+  // A caller that ignores the pointerId its own write renewed still compares incarnations: a name deleted and created
+  // again carries a new pointerId too, so with it ignored only the incarnation tells the two rows apart.
+  it('is false for another incarnation even when the caller ignores the pointerId it renewed', () => {
+    const other = tokenOf('ffffffffffffffffffffffffffffffff', 0);
+    expect(onlyLeasesDiffer(base, next({ token: other, pointerId: other }), ['pointerId'])).toBe(
+      false,
+    );
+    expect(onlyLeasesDiffer(base, next({ pointerId: tokenOf(INC, 1) }), ['pointerId'])).toBe(true);
   });
 });
 
@@ -565,6 +578,53 @@ describe('a lease write during a writer fenced on the row token does not starve 
     );
     expect(err).toBeInstanceOf(NotFoundError);
     expect((err as Error).message).toContain('the pointer may still name 1');
+  });
+
+  // The undo ignores the pointerId its own swap renewed, so it holds the row's pointerId to that swap's token: another
+  // writer that renewed it since, with every value left as it was and a lease written after, is not lease churn.
+  it("(f) and an undo that meets another writer's renewal of the pointer leaves the pointer and says so", async () => {
+    const w = world();
+    await loadN(w, 4);
+    let phase: 'swap' | 'undo' | 'done' = 'swap';
+    let lists = 0;
+    const storage = new Proxy(w.memory, {
+      get(t, p, rx) {
+        const v: unknown = Reflect.get(t, p, rx);
+        if (typeof v !== 'function') return v;
+        const fn = (v as (...a: unknown[]) => unknown).bind(t);
+        if (p !== 'list') return fn;
+        return (...a: unknown[]) =>
+          (async function* () {
+            if (++lists === 2) {
+              phase = 'undo';
+              await t.delete({ ...SEG, generation: 1 });
+            }
+            yield* fn(...a) as AsyncIterable<unknown>;
+          })();
+      },
+    }) as IStorageDriver;
+    let renewedTo: string | undefined;
+    const racing = hooked(
+      w.registry,
+      'compareAndSwap',
+      () => phase === 'undo',
+      async () => {
+        phase = 'done';
+        const row = (await w.registry.get(SEG))!;
+        ({ token: renewedTo } = await w.registry.compareAndSwap(SEG, row.token, {
+          currentGen: row.currentGen,
+        }));
+        await leaseWrite(w, 7);
+      },
+    );
+    const err = await rollbackSegment(SEG, 1, { storage, registry: racing, clock: w.clock }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((err as Error).message).toContain('the pointer may still name 1');
+    const row = (await w.registry.get(SEG))!;
+    expect(row.currentGen).toBe(1);
+    expect(row.pointerId).toBe(renewedTo);
   });
 
   it('(g) setRetention and clearRetention complete through more lease writes than their 5 attempts', async () => {

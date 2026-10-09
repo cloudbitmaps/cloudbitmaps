@@ -7,7 +7,7 @@ import { nextGeneration } from '@/core/generation-gc';
 import { holdsObject } from '@/core/crbm-storage-source';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, NotFoundError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';
@@ -78,8 +78,23 @@ describe('a cleartext object under an encrypted segment', () => {
     await putCleartext(storage, { ...SEG, generation });
     const seg = store().segment('s');
     // A cold count is the row's word and does not open the object, so it still says 3; every read of the object
-    // is refused.
+    // is refused: it is not the object the row's summary names, which its footer says before any key is used.
     expect(await seg.count()).toBe(3);
+    await expect(seg.has(1)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(seg.has(1)).rejects.toThrow(
+      new RegExp(`generation ${generation} is another object than its registry row names`),
+    );
+    await expect(seg.pin()).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('a forgery in place of the current generation of a row with no summary is refused as cleartext under a key', async () => {
+    const { storage, registry, store, load } = world();
+    const generation = await load([1, 2, 3]);
+    const row = (await registry.get(SEG))!;
+    await registry.compareAndSwap(SEG, row.token, { summary: undefined });
+    await storage.delete({ ...SEG, generation });
+    await putCleartext(storage, { ...SEG, generation });
+    const seg = store().segment('s');
     await expect(seg.has(1)).rejects.toThrow(
       new RegExp(`generation ${generation} is not encrypted, but it was opened with a key`),
     );

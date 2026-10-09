@@ -11,6 +11,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { roaringCodec } from '@/roaring-codec';
+import { objectFingerprint } from '../helpers/fingerprint';
 
 /**
  * The write paths' summary, on the local-filesystem backend: the row on disk carries the summary of the current
@@ -86,11 +87,19 @@ describe.each([
     const { row } = first;
     expect(row.summary).toBeDefined();
     expect('sealed' in row.summary!).toBe(keystore !== undefined);
-    expect(first.described).toEqual({ cardinality: 4, metadata: META });
+    expect(first.described).toEqual({
+      cardinality: 4,
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 0 }),
+      metadata: META,
+    });
 
     await loadSegment(SEG, idsOf(7), w.deps, { keep: 9, metadata: { def: 'v4' } });
     const second = await describedOnDisk(keystore);
-    expect(second.described).toEqual({ cardinality: 7, metadata: { def: 'v4' } });
+    expect(second.described).toEqual({
+      cardinality: 7,
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 1 }),
+      metadata: { def: 'v4' },
+    });
   });
 
   it('is sized by a guarded load from the row: no object is opened for it', async () => {
@@ -124,12 +133,20 @@ describe.each([
     await rollbackSegment(SEG, 0, { storage: w.storage, registry: w.registry, keystore });
     let seen = await describedOnDisk(keystore);
     expect(seen.row.currentGen).toBe(0);
-    expect(seen.described).toEqual({ cardinality: 3, metadata: META });
+    expect(seen.described).toEqual({
+      cardinality: 3,
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 0 }),
+      metadata: META,
+    });
 
     const result = await eraseIdFromSegment(SEG, 1, w.deps);
     expect(result).toMatchObject({ erased: true });
     seen = await describedOnDisk(keystore);
     expect(seen.row.currentGen).toBe(result.generation);
-    expect(seen.described).toEqual({ cardinality: 2, metadata: META });
+    expect(seen.described).toEqual({
+      cardinality: 2,
+      fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: result.generation! }),
+      metadata: META,
+    });
   });
 });

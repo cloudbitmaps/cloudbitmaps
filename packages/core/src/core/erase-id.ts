@@ -11,9 +11,11 @@
  *
  * The rewrite is the same generation without one id, so it keeps everything else: the new object carries the source's
  * metadata as it is, and the row's summary of it, built from what was written, counts one id fewer and holds the same
- * metadata. Metadata is not scanned for the id. On an encrypted segment, a source object with no metadata block whose
- * row's sealed summary of it has metadata is rewritten with the row's: the block's presence is not authenticated, so
- * the authenticated copy decides, and the erasure still goes through.
+ * metadata. Metadata is not scanned for the id. A source object whose metadata block was stripped is another object
+ * than the row's summary names: its size is not the one the summary records, so the fingerprint check refuses it
+ * before the erasure reads any of its ids. Only one forged to match that fingerprint gets past, and on an encrypted
+ * segment it is rewritten with the metadata of the row's sealed summary: the block's presence is not authenticated, so
+ * the authenticated copy decides.
  *
  * **`erased: true` is a claim about every generation of the segment, not only the one it replaced.** A rollback
  * leaves generations above the pointer that were once current and can be made current again, so a holder can sit
@@ -48,9 +50,9 @@
  * Which reason comes from **re-reading the row**, not from assuming a supersession: a moved pointer is
  * `'superseded'`, a tombstoned row `'destroyed'`, a purged row `'absent'`, a row with no pointer
  * `'no-generation'`. A pointer still on `from` means the object it names is genuinely gone — the forbidden
- * `missing-storage-generation` state — and that throws, because no re-run fixes it. That `NotFoundError` is the only
- * signal of that state, so a faulting re-read rethrows it rather than replacing it with a transient-looking
- * registry error.
+ * `missing-storage-generation` state — or is another object than the row's summary names by its fingerprint, and that
+ * throws, because no re-run fixes either. That `NotFoundError` is the only signal of those states, so a faulting
+ * re-read rethrows it rather than replacing it with a transient-looking registry error.
  *
  * **A refused rewrite deletes its own object when it would outlive the winner above the pointer.** `putImmutable`
  * commits atomically, so a rewrite whose stream throws leaves no object at all. One that completed is either
@@ -727,8 +729,9 @@ async function eraseOnce(
    *
    * **A `NotFoundError` is translated only after re-reading the row, and the row decides which answer.** The
    * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
-   * `missing-storage-generation` state a failed publish leaves behind — and that **throws**, because it is an
-   * integrity problem rather than a race and no re-run fixes it. A pointer that moved is `'superseded'`. The
+   * `missing-storage-generation` state a failed publish leaves behind — or is another object than the row's summary
+   * names by its fingerprint, and that **throws**, because it is an integrity problem rather than a race and no
+   * re-run fixes it. A pointer that moved is `'superseded'`. The
    * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
    * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
    * `'no-generation'` — the same answers this function gives when it reads either state up front, so a caller
@@ -745,8 +748,13 @@ async function eraseOnce(
   > => {
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
+    // The row's summary of `from`, when it has one this call can use: the rewrite reads only the object it names, as a
+    // live read does, so an object put under the number from outside the library is never published as the rewrite.
+    const described = usableSummary(ref, record, aead);
     try {
-      const reader = await read(() => openGenerationReader(deps.storage, fromKey, cryptoAt(from)));
+      const reader = await read(() =>
+        openGenerationReader(deps.storage, fromKey, cryptoAt(from), {}, described?.fingerprint),
+      );
       const bytes = await read(() => reader.getChunk(chunkKey));
       // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
       // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
@@ -764,11 +772,9 @@ async function eraseOnce(
       // carries the source's metadata as it is, and the row's summary of it says so. An erasure does not scan the
       // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
       // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
-      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite.
-      const metadata = metadataToCarry(
-        reader.metadata,
-        aead === undefined ? undefined : usableSummary(ref, record, aead),
-      );
+      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite. Such a source gets
+      // here only past a fingerprint forged to match the row's, since stripping the block changes the object's size.
+      const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
       const tally = await writeCrbmGenerationStream(
         deps.storage,
         key,
@@ -789,7 +795,7 @@ async function eraseOnce(
       const summary = summaryOf(
         ref,
         generation,
-        { cardinality: tally.cardinality, metadata },
+        { cardinality: tally.cardinality, metadata, fingerprint: tally.fingerprint },
         aead,
       );
       return { generation, key, fingerprint: tally.fingerprint, summary };
@@ -806,7 +812,9 @@ async function eraseOnce(
       }
       const verdict = rowVerdict(now);
       if (verdict !== null) return refused(verdict, written);
-      throw err; // the pointer still names the missing object: genuinely absent, not a race
+      // The pointer still names the object, and it is missing or is another object than the row's summary names:
+      // neither is a race, and nothing was published from it.
+      throw err;
     }
   };
 

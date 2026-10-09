@@ -82,8 +82,7 @@ export interface S3RegistryDriverOptions {
   readonly readTimeoutMs?: number;
   /**
    * Whether a delete removes a row for good, by a `DeleteObject` sent with `If-Match: <the ETag it read>`, rather than
-   * leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before 0.12 wrote is
-   * always tombstoned.
+   * leaving a tombstone.
    *
    * Defaults to `true` when the host the client resolves is an AWS S3 host (`*.amazonaws.com`, `*.amazonaws.com.cn`: the
    * FIPS, dual-stack, access-point and VPC interface forms included), where `If-Match` on `DeleteObject` is documented
