@@ -78,6 +78,19 @@ const READER_MAX_BYTES = sourceConstant(
   'packages/core/src/core/reader-defaults.ts',
   'DEFAULT_MAX_OPEN_INDEX_BYTES',
 );
+/** The resolution cache's bounds, in multiples of the reader cache's, and the fixed part of what an entry weighs. */
+const RESOLUTIONS_PER_OPEN_SEGMENT = sourceConstant(
+  'packages/core/src/core/reader-defaults.ts',
+  'RESOLUTIONS_PER_OPEN_SEGMENT',
+);
+const RESOLUTION_BYTES_DIVISOR = sourceConstant(
+  'packages/core/src/core/reader-defaults.ts',
+  'RESOLUTION_BYTES_DIVISOR',
+);
+const RESOLUTION_BASE_BYTES = sourceConstant(
+  'packages/core/src/core/crbm-storage-source.ts',
+  'SNAPSHOT_BASE_BYTES',
+);
 const INDEX_BYTES_PER_CHUNK = sourceConstant(
   'packages/core/src/core/crbm/reader.ts',
   'RETAINED_BYTES_PER_INDEX_ENTRY',
@@ -680,6 +693,23 @@ function render() {
       );
     }),
   ];
+
+  // The resolution cache, from the reader cache's defaults: its two ceilings, and the average entry at which the count
+  // stops binding first. Derived from the settings, not measured.
+  const resolutionEntries = RESOLUTIONS_PER_OPEN_SEGMENT * READER_MAX;
+  const resolutionBytes = READER_MAX_BYTES / RESOLUTION_BYTES_DIVISOR;
+  const resolutions =
+    "**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also " +
+    "keeps each segment's resolution (the fields of its row a read resolves through, never a key) for " +
+    "`cache.genTtlMs`, whether or not the segment's reader is still open: up to " +
+    `${int(RESOLUTIONS_PER_OPEN_SEGMENT)} × \`cache.readerMax\` of them, ${int(resolutionEntries)} by default, within ` +
+    `\`cache.readerMaxBytes\` / ${int(RESOLUTION_BYTES_DIVISOR)}, ${mib(resolutionBytes)} by default, whichever binds ` +
+    `first. The cache counts an entry as ${int(RESOLUTION_BASE_BYTES)} bytes plus its row's summary and wrapped keys ` +
+    'as JSON, so at the defaults the count binds first while entries average under ' +
+    `${int(resolutionBytes / resolutionEntries)} bytes, as they do for segments without metadata, cleartext or ` +
+    'encrypted, and the byte bound once they average more, as with a few hundred bytes of metadata on each. These ' +
+    'figures are derived from the settings, not measured; lowering `cache.readerMax` and `cache.readerMaxBytes` for a ' +
+    'small heap lowers this cache with them.';
 
   const bill = [
     '| | cold intersects | point reads | pointer refresh | loads | storage | **a month** | the Redis that holds it | **against it** |',
@@ -1339,6 +1369,7 @@ function render() {
     REFRESH: refresh,
     INPUTS: inputs.join('\n'),
     READERS: readers.join('\n'),
+    RESOLUTIONS: resolutions,
     BILL: bill.join('\n'),
     REDIS: redis,
     HEADROOM: headroom.join('\n'),

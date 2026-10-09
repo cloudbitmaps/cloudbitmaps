@@ -66,15 +66,9 @@ timed refresh keeps no resolution, and reads the pointer at every reopen. Two mo
 Raising the chunk cache is the price of these figures, paid in each reader's memory. The default index budget holds
 the hot set's indices at all three sizes.
 
-**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also keeps
-each segment's resolution (the fields of its row a read resolves through, never a key) for `cache.genTtlMs`, whether or
-not the segment's reader is still open: up to 8 × `cache.readerMax` of them (8,192 by default) and
-`cache.readerMaxBytes` / 16 bytes (4 MiB by default), whichever binds first. The cache counts an entry as 256 bytes
-plus its row's summary and wrapped keys as JSON: 328 bytes for a cleartext segment without metadata and 461 for an
-encrypted one, so at the defaults the count binds first, at about 2.6 MiB and 3.6 MiB; a segment with about 900 bytes
-of metadata counts 1,250 bytes cleartext and 1,677 encrypted, and the byte bound then holds about 3,300 or 2,500 of
-them. These are derived: the counted weights of rows the library writes, at the default settings, not the heap
-measured. Lowering `cache.readerMax` and `cache.readerMaxBytes` for a small heap lowers this bound with them.
+<!-- SIZING:RESOLUTIONS:START -->
+**The resolution cache is small, and follows the reader cache's settings.** A reader with a timed refresh also keeps each segment's resolution (the fields of its row a read resolves through, never a key) for `cache.genTtlMs`, whether or not the segment's reader is still open: up to 8 × `cache.readerMax` of them, 8,192 by default, within `cache.readerMaxBytes` / 16, 4 MiB by default, whichever binds first. The cache counts an entry as 256 bytes plus its row's summary and wrapped keys as JSON, so at the defaults the count binds first while entries average under 512 bytes, as they do for segments without metadata, cleartext or encrypted, and the byte bound once they average more, as with a few hundred bytes of metadata on each. These figures are derived from the settings, not measured; lowering `cache.readerMax` and `cache.readerMaxBytes` for a small heap lowers this cache with them.
+<!-- SIZING:RESOLUTIONS:END -->
 
 ## The monthly bill
 

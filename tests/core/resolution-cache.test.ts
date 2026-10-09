@@ -7,7 +7,13 @@ import type { Clock, IKeystore, SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/ports';
 import type { BoundedLru } from '@/core/lru';
-import { REFRESH_RETRY_MS } from '@/core/reader-defaults';
+import {
+  DEFAULT_MAX_OPEN_INDEX_BYTES,
+  DEFAULT_MAX_OPEN_SEGMENTS,
+  REFRESH_RETRY_MS,
+  RESOLUTION_BYTES_DIVISOR,
+  RESOLUTIONS_PER_OPEN_SEGMENT,
+} from '@/core/reader-defaults';
 import { segmentKey } from '@/core/keys';
 import { destroySegment } from '@/core/erasure';
 import { SafeBitmap } from '@/roaring-codec';
@@ -430,6 +436,45 @@ describe('the bound: 8 x readerMax entries and readerMaxBytes / 16 bytes', () =>
     const row = (await x.base.get(A))!;
     expect(row.wrappedDeks?.length).toBeGreaterThan(0);
     expect(inside(x.source).resolutions!.weightBytes).toBe(weightOf(row));
+  });
+
+  it('at the default settings the count binds first for segments without metadata, the bytes with metadata', async () => {
+    // What the sizing guide says of the defaults: the average entry at which the count stops binding first.
+    const share =
+      DEFAULT_MAX_OPEN_INDEX_BYTES /
+      RESOLUTION_BYTES_DIVISOR /
+      (RESOLUTIONS_PER_OPEN_SEGMENT * DEFAULT_MAX_OPEN_SEGMENTS);
+    expect(share).toBe(512);
+    // A wide segment at a high generation number, so its summary's numbers are long ones.
+    const ids = Array.from({ length: 2_000 }, (_, c) => c * HI + 1);
+    for (const [encrypted, metadata, over] of [
+      [false, undefined, false],
+      [true, undefined, false],
+      [false, { def: 'x'.repeat(300) }, true],
+      [true, { def: 'x'.repeat(300) }, true],
+    ] as const) {
+      const registry = new MemoryRegistryDriver();
+      const storage = new MemoryStorageDriver();
+      const keystore = encrypted
+        ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
+        : undefined;
+      await bulkLoadCrbmGeneration(storage, { ...A, generation: 123_456 }, ids, {
+        registry,
+        keystore,
+        ...(metadata === undefined ? {} : { metadata }),
+      });
+      const source = new CrbmStorageChunkSource(storage, {
+        registry,
+        clock: manualClock(),
+        ...(keystore === undefined ? {} : { keystore }),
+      });
+      expect((await source.summary(A))?.cardinality).toBe(ids.length);
+      const weight = inside(source).resolutions!.weightBytes;
+      expect(
+        weight > share,
+        `encrypted ${encrypted}, metadata ${metadata !== undefined}: ${weight}`,
+      ).toBe(over);
+    }
   });
 
   it('an entry heavier than the byte ceiling is kept alone, as the reader cache keeps one', async () => {
