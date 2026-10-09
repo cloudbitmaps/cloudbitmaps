@@ -43,6 +43,7 @@ const row = (over: Partial<RegistryRecord>): RegistryRecord => ({
   createdAt: 1,
   updatedAt: 1,
   token: 't',
+  pointerId: 't',
   ...over,
 });
 

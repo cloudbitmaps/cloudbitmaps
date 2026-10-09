@@ -584,20 +584,6 @@ describe('ObjectStoreRegistry: removing a row for good', () => {
     expect(await reg.get(ref)).toBeNull();
   });
 
-  it('a row born before 0.12 is tombstoned even when the store vouches for its delete', async () => {
-    const { store, a } = pair();
-    store.plant(
-      key,
-      '{"schemaVersion":1,"deleted":false,"record":{"segment":"s:v1","currentGen":2,"status":"destroyed",' +
-        '"createdAt":10,"updatedAt":20,"token":"7"}}',
-    );
-    await a.delete(ref, '7');
-    expect(store.deletes).toBe(0);
-    expect(store.has(key)).toBe(true);
-    // A re-create over that tombstone carries the counter on, as it always has.
-    expect(tokenParts((await a.create(ref, { currentGen: null })).token).counter).toBe(9);
-  });
-
   it('a name removed and created again starts a new incarnation at counter 0', async () => {
     const { a } = pair();
     const { token } = await a.create(ref, { currentGen: null });

@@ -72,8 +72,7 @@ export interface GcsRegistryDriverOptions {
   readonly readTimeoutMs?: number;
   /**
    * Whether a delete removes a row for good, by an object delete sent with `ifGenerationMatch: <the generation it
-   * read>`, rather than leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before
-   * 0.12 wrote is always tombstoned. Defaults to `false`, on the public endpoint too: whether real GCS applies
+   * read>`, rather than leaving a tombstone. Defaults to `false`, on the public endpoint too: whether real GCS applies
    * `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server accepts the
    * precondition and ignores it, so CI cannot show it. Set `true` to remove rows for good.
    */

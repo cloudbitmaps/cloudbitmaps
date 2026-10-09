@@ -68,8 +68,7 @@ export interface AzureBlobRegistryDriverOptions {
   readonly readTimeoutMs?: number;
   /**
    * Whether a delete removes a row for good, by a Delete Blob sent with `ifMatch: <the ETag it read>`, rather than
-   * leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before 0.12 wrote is
-   * always tombstoned. Defaults to `true`: Azure Blob applies `If-Match` on a delete, and Azurite does too.
+   * leaving a tombstone. Defaults to `true`: Azure Blob applies `If-Match` on a delete, and Azurite does too.
    */
   readonly conditionalDelete?: boolean;
 }

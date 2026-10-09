@@ -10,6 +10,7 @@ import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors
 import type { Entropy } from '@/core/determinism';
 import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
+import { renewsPointer } from '@/core/pointer-id';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
 import {
   MAX_KEPT_GENERATIONS,
@@ -30,9 +31,10 @@ import type {
 const STATUSES: readonly string[] = ['active', 'destroyed'];
 /**
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
- * through is refused on read-back like any other corruption (invariant 5), rather than ignored.
+ * through is refused on read-back like any other corruption (invariant 5), rather than ignored. A field that joins
+ * schema 4 before it is released is appended here, with its validator, and needs no new schema version.
  */
-const BASE_FIELDS = [
+export const RECORD_FIELDS = [
   'namespace',
   'segment',
   'currentGen',
@@ -45,19 +47,12 @@ const BASE_FIELDS = [
   'createdAt',
   'updatedAt',
   'token',
+  'keptGens',
+  'leases',
+  'pointerId',
 ] as const;
-/**
- * The fields schema 3 added. A schema-2 row carrying one is refused as undeclared. A field that joins schema 3 before
- * it is released is appended here, with its validator, and needs no new schema version.
- */
-const SCHEMA_3_FIELDS = ['keptGens', 'leases'] as const;
-export const RECORD_FIELDS = [...BASE_FIELDS, ...SCHEMA_3_FIELDS] as const;
-/** The record fields a row of `schemaVersion` may carry: each schema adds to the one before. */
-function fieldsOf(schemaVersion: number): readonly string[] {
-  if (schemaVersion >= 3) return RECORD_FIELDS;
-  const base: readonly string[] = BASE_FIELDS;
-  return schemaVersion === 2 ? base : base.filter((f) => f !== 'summary');
-}
+/** The fields the registry sets on a row and a caller's write never does. */
+const DRIVER_MANAGED: readonly string[] = ['token', 'pointerId'];
 /** The fields of the persisted envelope around a record. */
 const ENVELOPE_FIELDS: readonly string[] = ['schemaVersion', 'deleted', 'record'];
 /** Cap on a serialized governance blob (retention/residency) — bounds row size so a row can't be bricked. */
@@ -421,10 +416,25 @@ function validateKeptGensBelow(
 }
 
 /**
+ * A write that names a field the registry sets (`token`, `pointerId`) is refused rather than stored or ignored: the
+ * type does not allow either, so one arrives only from a caller in JavaScript, or a whole record passed as a patch, and
+ * either would read as if it had set the row's identity.
+ */
+function refuseDriverManaged(write: object, what: string): void {
+  const named = DRIVER_MANAGED.filter((field) => field in write);
+  if (named.length > 0) {
+    throw new ValidationError(
+      `${what} names ${named.join(' and ')}, which the registry sets on every write and a caller never does`,
+    );
+  }
+}
+
+/**
  * Validate the caller-settable fields at `create`, and return the record to store: the caller's, with its summary
  * replaced by the checked, frozen copy {@link validateSummary} builds.
  */
 export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRecord {
+  refuseDriverManaged(rec, 'a new record');
   validateGeneration(rec.currentGen);
   if (rec.status !== undefined) validateStatus(rec.status);
   validateWrappedDeks(rec.wrappedDeks, false);
@@ -446,6 +456,7 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRe
  * and agrees with its resulting keys, needs the stored row, so {@link applyRegistryPatch} checks both.
  */
 export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
+  refuseDriverManaged(patch, 'a patch');
   validatePatchGeneration(patch);
   if (patch.status !== undefined) validateStatus(patch.status);
   if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, false);
@@ -483,33 +494,34 @@ export interface RegistryEnvelope {
 /**
  * Current registry-row schema version — a pre-1.0 format-freeze prerequisite. Every persistent
  * registry driver — every one of which persists the `{ deleted, record }` envelope — stamps its rows
- * with this so a reader can fail-closed on a future, incompatible layout instead of misparsing it. Bump only
- * on a backward-incompatible change. Policy: a **higher** stamp than this build knows → `UnsupportedError`
- * (fail-closed); an **absent** or malformed stamp → `IntegrityError`, since every row this build writes has one.
+ * with this so a reader can fail-closed on a layout it does not read instead of misparsing it. Bump only
+ * on a backward-incompatible change. Policy: any stamp but this one → `UnsupportedError` (fail-closed); an
+ * **absent** or malformed stamp → `IntegrityError`, since every row this build writes has one.
  *
- * Schema 2 added the record's `summary` and the incarnation-form token; schema 3 adds `keptGens`. Every row this
- * build writes is stamped 3, whatever it holds, and a build that reads only schema 2 refuses it, so a fleet cannot go
- * back once one has been written.
+ * Schema 4 is the record with `pointerId`, the incarnation-form token and a summary that names its object. This build
+ * reads schema 4 and nothing else: a row stamped 1 to 3 carries no `pointerId`, so nothing could say which write set
+ * what it resolves to.
  */
-export const REGISTRY_SCHEMA_VERSION = 3;
-
-/**
- * The oldest schema this build reads. A schema-1 or schema-2 row is read as it was written; the first write to it
- * stamps it 3.
- */
-const OLDEST_REGISTRY_SCHEMA_VERSION = 1;
+export const REGISTRY_SCHEMA_VERSION = 4;
 
 /**
  * Validate a persisted registry row's `schemaVersion` (untrusted bytes, invariant 5) and return it: an absent or
- * malformed value → `IntegrityError`; a version newer than this build → `UnsupportedError` (fail-closed rather than
- * misread a format we don't understand).
+ * malformed value → `IntegrityError`; any version but {@link REGISTRY_SCHEMA_VERSION} → `UnsupportedError`
+ * (fail-closed rather than misread a format this build does not read), naming what to do for an earlier one.
  */
 export function assertRegistrySchemaVersion(raw: unknown, ctx: string): number {
   if (raw === undefined) {
     throw new IntegrityError(`registry row has no schemaVersion: ${ctx}`);
   }
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < OLDEST_REGISTRY_SCHEMA_VERSION) {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
     throw new IntegrityError(`registry row has a malformed schemaVersion (${shown(raw)}): ${ctx}`);
+  }
+  if (raw < REGISTRY_SCHEMA_VERSION) {
+    throw new UnsupportedError(
+      `registry row schemaVersion ${raw} is one this build does not read: it reads schema ` +
+        `${REGISTRY_SCHEMA_VERSION} only. Export the segments with the release that wrote the row and load them ` +
+        `with this one into a new prefix (the CHANGELOG gives the steps): ${ctx}`,
+    );
   }
   if (raw > REGISTRY_SCHEMA_VERSION) {
     throw new UnsupportedError(
@@ -536,53 +548,54 @@ export function serializeRegistryEnvelope(env: RegistryEnvelope): string {
 // canonical decimal that every write of the row advances by one, and carries on across a tombstone, so while a row's
 // history is intact its tokens are apart by construction. The write part is 16 lowercase hex digits drawn afresh for
 // every write: a row restored from a backup is back at an older counter, and without it the writes after the restore
-// would be given the tokens the writes after the backup already had.
-//
-// A row first written by a schema-1 build has a bare decimal counter (`"7"`), and gains no incarnation for as long as
-// it lives: a write to it advances the counter and adds a write part (`"8.<write>"`). Only a create starts a new
-// incarnation. So a token's form says which kind of row issued it, and no two forms ever compare equal: they differ
-// in how many `.` they hold. Tokens are compared only by equality; nothing orders them.
+// would be given the tokens the writes after the backup already had. Only a create starts a new incarnation. Tokens
+// are compared only by equality; nothing orders them. A row's `pointerId` is the token of one of its writes, so it has
+// the same form, the row's incarnation, and a counter no higher than the token's.
 
-/** A schema-1 row's token: a canonical decimal counter. */
-const COUNTER_TOKEN = /^(0|[1-9]\d*)$/;
-/** A schema-1-born row's token once this build has written it: the counter, a `.`, and a write part. */
-const WRITTEN_COUNTER_TOKEN = /^(0|[1-9]\d*)\.([0-9a-f]{16})$/;
 /** The incarnation id's width, in bytes. */
 const INCARNATION_BYTES = 16;
 /** The write part's width, in bytes. */
 const WRITE_BYTES = 8;
 
-/** A token taken apart: its incarnation (absent on a schema-1-born row) and its counter. */
+/** A token taken apart: its incarnation and its counter. */
 interface TokenParts {
-  readonly incarnation: string | undefined;
+  readonly incarnation: string;
   readonly counter: number;
 }
 
 /**
- * Take a token apart, refusing anything that is not a form a shipped driver writes (invariant 5): `"1e3"`, `"0x10"`,
- * `" 5 "`, `""`, a counter past 2^53, upper-case hex. A stored row of `schemaVersion` 1 holds only a bare counter, and
- * one of 2 only a form with a write part; a record already read (`schemaVersion` undefined) may hold any of them.
+ * Take a token apart, refusing anything that is not the form a shipped driver writes (invariant 5): `"7"`, `"1e3"`,
+ * `"0x10"`, `" 5 "`, `""`, a counter past 2^53, upper-case hex. `what` names the field in the message.
  */
-function tokenParts(token: string, schemaVersion: number | undefined, ctx: string): TokenParts {
-  const bare =
-    schemaVersion === undefined || schemaVersion === 1 ? COUNTER_TOKEN.exec(token) : null;
-  const written =
-    schemaVersion === undefined || schemaVersion >= 2
-      ? (WRITTEN_COUNTER_TOKEN.exec(token) ?? INCARNATION_TOKEN.exec(token))
-      : null;
-  const match = bare ?? written;
+function tokenParts(token: unknown, ctx: string, what = 'token'): TokenParts {
+  const match = typeof token === 'string' ? INCARNATION_TOKEN.exec(token) : null;
   if (match === null) {
     throw new IntegrityError(
-      `registry row token is not one a schema-${schemaVersion ?? REGISTRY_SCHEMA_VERSION} row holds ` +
-        `(${shown(JSON.stringify(token))}): ${ctx}`,
+      `registry row ${what} is not one a shipped registry writes (${shown(JSON.stringify(token))}): ${ctx}`,
     );
   }
-  const born = match.length === 4; // the incarnation form has three groups
-  const counter = Number(born ? match[2] : match[1]);
+  const counter = Number(match[2]);
   if (!Number.isSafeInteger(counter)) {
-    throw new IntegrityError(`registry row token's counter is out of safe-integer range: ${ctx}`);
+    throw new IntegrityError(`registry row ${what}'s counter is out of safe-integer range: ${ctx}`);
   }
-  return { incarnation: born ? match[1] : undefined, counter };
+  return { incarnation: match[1]!, counter };
+}
+
+/**
+ * Refuse a stored `pointerId` a shipped registry cannot have written (invariant 5): one in another form, of another
+ * incarnation than the row's token, or with a higher counter than the token's. One of another incarnation was spliced
+ * from another row, and a reader trusting it would key a cache on another incarnation's identity.
+ */
+function checkPointerId(pointerId: unknown, token: TokenParts, ctx: string): void {
+  const parts = tokenParts(pointerId, ctx, 'pointerId');
+  if (parts.incarnation !== token.incarnation) {
+    throw new IntegrityError(
+      `registry row pointerId names another incarnation than its token: ${ctx}`,
+    );
+  }
+  if (parts.counter > token.counter) {
+    throw new IntegrityError(`registry row pointerId is a write after its token: ${ctx}`);
+  }
 }
 
 export { usableKeptGens };
@@ -614,13 +627,12 @@ export function drawWrite(entropy: Entropy): string {
 }
 
 /**
- * The token for the write after `record`'s: the same incarnation, if it has one, the counter one on, and a fresh write
- * part. For a compare-and-swap or a tombstone.
+ * The token for the write after `record`'s: the same incarnation, the counter one on, and a fresh write part. For a
+ * compare-and-swap or a tombstone.
  */
 export function nextRegistryToken(record: RegistryRecord, entropy: Entropy): Token {
-  const { incarnation, counter } = tokenParts(record.token, undefined, record.segment);
-  const tail = `${counter + 1}.${drawWrite(entropy)}`;
-  return incarnation === undefined ? tail : `${incarnation}.${tail}`;
+  const { incarnation, counter } = tokenParts(record.token, record.segment);
+  return `${incarnation}.${counter + 1}.${drawWrite(entropy)}`;
 }
 
 /**
@@ -632,9 +644,7 @@ export function newIncarnationToken(
   tombstone: RegistryRecord | undefined,
 ): Token {
   const counter =
-    tombstone === undefined
-      ? 0
-      : tokenParts(tombstone.token, undefined, tombstone.segment).counter + 1;
+    tombstone === undefined ? 0 : tokenParts(tombstone.token, tombstone.segment).counter + 1;
   return `${drawIncarnation(entropy)}.${counter}.${drawWrite(entropy)}`;
 }
 
@@ -667,7 +677,7 @@ export function parseRegistryEnvelope(
     throw new IntegrityError(`registry row has a malformed envelope: ${ctx}`);
   }
   const env = parsed as { schemaVersion?: unknown; deleted?: unknown; record?: unknown };
-  const schemaVersion = assertRegistrySchemaVersion(env.schemaVersion, ctx);
+  assertRegistrySchemaVersion(env.schemaVersion, ctx);
   const extra = Object.keys(env).filter((k) => !ENVELOPE_FIELDS.includes(k));
   if (extra.length > 0) {
     throw new IntegrityError(
@@ -678,11 +688,11 @@ export function parseRegistryEnvelope(
     throw new IntegrityError(`registry row has a malformed envelope: ${ctx}`);
   }
   const r = env.record as Record<string, unknown>;
-  assertStoredRecordShape(r, ctx, schemaVersion);
+  assertStoredRecordShape(r, ctx);
   if (typeof r.token !== 'string') {
     throw new IntegrityError(`registry row is missing its token: ${ctx}`);
   }
-  tokenParts(r.token, schemaVersion, ctx);
+  checkPointerId(r.pointerId, tokenParts(r.token, ctx), ctx);
   // A row is the row of the name it is stored under. One copied or restored under another name would read as that
   // segment while naming this one, and every sweep that acts on the name it carries (an erasure, a report, a retention
   // pass) would act on the wrong segment, or on this one twice.
@@ -698,7 +708,10 @@ export function parseRegistryEnvelope(
   return { deleted: env.deleted, record: env.record as RegistryRecord };
 }
 
-/** Build a full record from a {@link NewRegistryRecord} plus identity, audit timestamps, and an OCC token. */
+/**
+ * Build a full record from a {@link NewRegistryRecord} plus identity, audit timestamps, and an OCC token. The create
+ * sets what the row resolves to, so its `pointerId` is its own token.
+ */
 export function recordFromNew(
   ref: SegmentRef,
   rec: NewRegistryRecord,
@@ -721,22 +734,20 @@ export function recordFromNew(
     createdAt: now,
     updatedAt: now,
     token,
+    pointerId: token,
   };
 }
 
 /**
  * Fail-fast structural check on a record read back from a persistent tier (untrusted bytes, invariant 5):
  * a published row is always whole, so a missing/mistyped required field means corruption/tampering — reject
- * it rather than silently report "absent". A row of an older `schemaVersion` may carry only that schema's
- * fields. `token` is checked by the caller.
+ * it rather than silently report "absent". The form of `token` and `pointerId`, and how the two relate, is checked by
+ * the caller.
  */
-export function assertStoredRecordShape(
-  r: Record<string, unknown>,
-  ctx: string,
-  schemaVersion: number = REGISTRY_SCHEMA_VERSION,
-): void {
+export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string): void {
   if (
     typeof r.segment !== 'string' ||
+    typeof r.pointerId !== 'string' ||
     (r.namespace !== undefined && typeof r.namespace !== 'string') ||
     (r.currentGen !== null && typeof r.currentGen !== 'number') ||
     typeof r.status !== 'string' ||
@@ -755,11 +766,11 @@ export function assertStoredRecordShape(
   if (!STATUSES.includes(r.status)) {
     throw new IntegrityError(`registry record has an unknown status (${shown(r.status)}): ${ctx}`);
   }
-  const declared = fieldsOf(schemaVersion);
+  const declared: readonly string[] = RECORD_FIELDS;
   const extra = Object.keys(r).filter((k) => !declared.includes(k));
   if (extra.length > 0) {
     throw new IntegrityError(
-      `registry record has fields a schema-${schemaVersion} row does not declare (${shown(extra.join(', '))}): ${ctx}`,
+      `registry record has fields a schema-${REGISTRY_SCHEMA_VERSION} row does not declare (${shown(extra.join(', '))}): ${ctx}`,
     );
   }
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
@@ -789,7 +800,8 @@ export function assertStoredRecordShape(
 /**
  * Apply a patch to an existing record, returning a new one with a fresh `updatedAt` + `token` (identity and
  * `createdAt` are preserved). Optional fields use `'k' in patch` so a patch can *clear* them (set to
- * `undefined`, e.g. dropping `keyId` on crypto-shred); required fields use `??` (they always have a value).
+ * `undefined`, e.g. dropping `keyId` on crypto-shred); required fields use `??` (they always have a value). A patch
+ * that names a resolved field ({@link renewsPointer}) sets `pointerId` to this write's token; any other keeps it.
  *
  * `summary` describes the current generation, so it follows the pointer and the keys: a patch that moves
  * `currentGen`, or changes `wrappedDeks` so the summary's shape no longer agrees, without mentioning `summary` drops
@@ -856,5 +868,6 @@ export function applyRegistryPatch(
     createdAt: prev.createdAt,
     updatedAt: now,
     token,
+    pointerId: renewsPointer(patch) ? token : prev.pointerId,
   };
 }

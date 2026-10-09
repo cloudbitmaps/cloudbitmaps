@@ -27,7 +27,9 @@
  *    `getRange`/`getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail` returns
  *    the true total size; `delete` is idempotent; `list` is strongly consistent, read-after-delete.
  *  - Registry: `create` and `compareAndSwap` are atomic conditional writes that throw `WriteConflictError` when
- *    they lose; a token is not reused (2^-128 per pair of incarnations of a name); `delete` is idempotent, and `delete(ref, expected)` lands only while the
+ *    they lose; a token is not reused (2^-128 per pair of incarnations of a name); every row carries `pointerId`, the
+ *    token of its create or of the last compare-and-swap that named a resolved field (`renewsPointer`); `delete` is
+ *    idempotent, and `delete(ref, expected)` lands only while the
  *    row still carries `expected`, else it throws `WriteConflictError`; `list` yields tombstones and every field.
  *  - Either: never replay a conditional write without telling the replay apart (send it once, or recognise your
  *    own write on the read-back), and raise a transient fault as `TransientError`.
@@ -72,6 +74,11 @@ export {
   ValidationError,
   WriteConflictError,
 } from './core/errors';
+
+// A row's `pointerId`: the fields a read resolves through, whether a patch renews it, the patch that renews it alone,
+// and the read of it that refuses a row without one. A registry that builds its own records applies the same rule:
+// `pointerId` is the token of the create, or of the last compare-and-swap for which `renewsPointer(patch)` is true.
+export { RESOLVED_FIELDS, pointerIdOf, renewPointer, renewsPointer } from './core/pointer-id';
 
 // Validation a driver applies at its own boundary, and the sink `putImmutable` hands the writer: the object's
 // bytes arrive through its `write`, and the driver commits them once the writer returns.

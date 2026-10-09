@@ -71,7 +71,6 @@ export const ROUTED: readonly string[] = [
   'tests/core/subject-erasure.test.ts',
   'tests/core/summary-lifecycle.test.ts',
   'tests/core/summary-localfs.test.ts',
-  'tests/core/kept-generations-legacy.test.ts',
   'tests/core/lease-churn.test.ts',
   'tests/core/leases.test.ts',
   'tests/core/pin-lease.property.test.ts',
@@ -141,9 +140,6 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/drivers/gcs/read-timeout.test.ts':
     'a GCS driver test: its one load builds a fixture generation in a memory store for the stub server to serve, ' +
     'so a second run under the serialized input would exercise no part of the load path',
-  'tests/drivers/_shared/registry-fleet.test.ts':
-    "tests the registry drivers' tokens and stamps; its three loads only seed rows for those checks, so a second " +
-    'run under the serialized input would repeat 72 registry tests and exercise no part of the load path',
   'tests/bench/calibrate-large.test.ts':
     'its loads seed the in-memory backend whose requests it counts for the large suite, from layouts of up to 20 million ids; ' +
     'a second run under the serialized input would repeat those counts and exercise no part of the load path',

@@ -18,7 +18,7 @@ import { gcOrphanGenerations } from '@/core/generation-gc';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { loadSegment } from '@/core/load';
 import { dueBucket, dueBucketsAt, dueIndexRef, dueNamespace } from '@/core/due-index';
-import { TransientError, UnsupportedError, WriteConflictError } from '@/core/errors';
+import { TransientError, WriteConflictError } from '@/core/errors';
 import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { segmentKey, shardOf } from '@/core/keys';
@@ -28,7 +28,6 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../helpers/counting';
-import { readAs011 } from '../helpers/release-0-11';
 import { tokenParts } from '../helpers/tokens';
 
 const DAY = 86_400_000;
@@ -80,7 +79,7 @@ async function readsOf<T>(w: World, call: () => Promise<T>): Promise<{ reads: nu
 /** The objects the store holds under the registry prefix: rows, tombstones and due pointers alike. */
 const registryObjects = (w: World): number => w.store.size(registryListPrefix(undefined));
 
-/** The pointers a due bucket holds, as a 0.12 listing yields them. */
+/** The pointers a due bucket holds, as a listing yields them. */
 async function bucketRows(w: World, bucket: number): Promise<RegistryRecord[]> {
   const rows: RegistryRecord[] = [];
   for await (const row of w.registry.list(dueNamespace(bucket))) rows.push(row);
@@ -258,58 +257,8 @@ describe('the purge keeps what is inside its grace', () => {
   });
 });
 
-describe('only a row born with an incarnation id is removed', () => {
-  /** A `destroyed` row as 0.11 retired one: schema 1, a decimal token, stamped by its sweep long ago. */
-  const legacyTombstone = (ref: SegmentRef): string =>
-    JSON.stringify({
-      schemaVersion: 1,
-      deleted: false,
-      record: {
-        namespace: ref.namespace,
-        segment: ref.segment,
-        currentGen: 0,
-        status: 'destroyed',
-        retention: { expiresAt: T0 - 30 * DAY, retiredBySweepAt: T0 - 20 * DAY },
-        createdAt: T0 - 40 * DAY,
-        updatedAt: T0 - 20 * DAY,
-        token: '7',
-      },
-    });
-
-  it('a tombstone 0.11 left is purged as a tombstone: the object stays, and a full scan still reads it', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'old' };
-    const key = registryObjectKey(undefined, ref);
-    w.store.plant(key, legacyTombstone(ref));
-
-    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(res.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
-    expect(w.store.deletes).toBe(0);
-    const stored = JSON.parse(w.store.text(key)!) as {
-      deleted: boolean;
-      record: { token: string };
-    };
-    expect(stored.deleted).toBe(true);
-    expect(stored.record.token).toMatch(/^8\.[0-9a-f]{16}$/); // its own form: no incarnation
-    const next = await readsOf(w, () => retireExpired(w.deps, { namespace: 'n', now: w.now() }));
-    expect(next.reads).toBe(1); // the envelope, read and skipped
-  });
-
-  it('a row 0.11 created and 0.12 has since written is tombstoned too', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'old' };
-    const key = registryObjectKey(undefined, ref);
-    w.store.plant(key, legacyTombstone(ref).replace('"status":"destroyed"', '"status":"active"'));
-    const { token } = await w.registry.compareAndSwap(ref, '7', { status: 'destroyed' });
-    expect(token).toMatch(/^8\.[0-9a-f]{16}$/); // still no incarnation
-    await w.registry.delete(ref, token);
-    expect(w.store.deletes).toBe(0);
-    expect(w.store.text(key)).toBeDefined();
-  });
-});
-
 describe('the gate', () => {
-  it('off, the purge tombstones as it did before 0.12, and reports the same ledger entry', async () => {
+  it('off, the purge tombstones the row, and reports the same ledger entry', async () => {
     const w = world({ conditionalDelete: false });
     expect(w.registry.capabilities().conditionalDelete).toBe(false);
     const ref = { namespace: 'n', segment: 'day' };
@@ -325,7 +274,7 @@ describe('the gate', () => {
     };
     expect(stored.deleted).toBe(true);
     expect(w.store.deletes).toBe(0);
-    // A name purged as a tombstone carries its counter on into the next incarnation, as before.
+    // A name purged as a tombstone carries its counter on into the next incarnation.
     const { token } = await w.registry.create(ref, { currentGen: null });
     expect(tokenParts(token).counter).toBeGreaterThan(0);
   });
@@ -730,43 +679,6 @@ describe('the purge pointer in the due index', () => {
       tombstoneGraceMs: GRACE,
     });
     expect(fleet.tombstonesPurged).toBe(1);
-  });
-
-  it('a 0.11 index scan meets a purge pointer as it meets every row 0.12 writes: it fails closed, typed', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'day' };
-    await seed(w, ref, T0 + RETENTION);
-    w.advance(RETENTION + 1);
-    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    const purgeDay = dueBucket(w.now() + GRACE);
-
-    // 0.11's `list(cbm.due.<day>)`: one listing, then each row parsed, the stamp checked first.
-    const scanAs011 = async (bucket: number): Promise<void> => {
-      for await (const key of w.store.listKeys(
-        registryListPrefix(undefined, dueNamespace(bucket)),
-      )) {
-        readAs011(w.store.text(key)!);
-      }
-    };
-    await expect(scanAs011(purgeDay)).rejects.toBeInstanceOf(UnsupportedError);
-    // A control: the same scan reads a bucket holding a pointer 0.11 wrote.
-    const older = purgeDay - 1000;
-    w.store.plant(
-      registryObjectKey(undefined, dueIndexRef(older, ref)),
-      JSON.stringify({
-        schemaVersion: 1,
-        deleted: false,
-        record: {
-          ...dueIndexRef(older, ref),
-          currentGen: null,
-          status: 'active',
-          createdAt: 1,
-          updatedAt: 1,
-          token: '0',
-        },
-      }),
-    );
-    await expect(scanAs011(older)).resolves.toBeUndefined();
   });
 
   it('the lookback reaches a purge pointer the sweep missed for a week, and no further', async () => {

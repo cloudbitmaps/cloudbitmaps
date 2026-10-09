@@ -47,7 +47,7 @@ registryConcurrency('LocalFsRegistryDriver (two instances, one root)', () => {
 });
 
 // What a delete leaves behind. The in-memory registry keeps nothing once a row is gone; the local-filesystem one
-// unlinks a row born with an incarnation id, under its row lock, and tombstones one a release before 0.12 wrote.
+// unlinks the row's file, under its row lock.
 registryDeleteConformance('MemoryRegistryDriver', () => {
   const driver = new MemoryRegistryDriver({ now: ticking() });
   return { driver, stored: async (ref) => (await driver.get(ref)) !== null };

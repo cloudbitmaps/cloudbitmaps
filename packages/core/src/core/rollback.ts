@@ -348,9 +348,11 @@ export async function rollbackSegment(
         // read of the row says where the pointer is, so the message below says "may", not "does".
         //
         // A lost race is retried when the row is the one the swap wrote with only its leases changed: the pointer is
-        // at the target and every other field is the row's from before the swap, bar what the swap itself moved.
+        // at the target, the row's pointerId is the one the swap set (its own token, so no other writer has renewed
+        // what the row resolves to since), and every other field is the row's from before the swap, bar what the swap
+        // itself moved.
         if (!isWriteConflictError(err)) break;
-        const moved = ['currentGen', 'summary', 'keptGens'] as const;
+        const moved = ['currentGen', 'summary', 'keptGens', 'pointerId'] as const;
         let now: RegistryRecord | null;
         try {
           const seen = await deps.registry.get(ref);
@@ -363,6 +365,7 @@ export async function rollbackSegment(
         if (
           now === null ||
           now.currentGen !== toGeneration ||
+          now.pointerId !== token ||
           !onlyLeasesDiffer(record, now, moved)
         )
           break;
