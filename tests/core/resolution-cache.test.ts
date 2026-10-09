@@ -5,7 +5,8 @@ import { randomBytes } from 'node:crypto';
 import { CrbmStorageChunkSource, InProcessKeystore, TransientError } from '@/index';
 import type { Clock, IKeystore, SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
-import type { IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/ports';
+import type { GenKey, IRegistryDriver, IStorageDriver, RegistryRecord } from '@/core/ports';
+import { NotFoundError } from '@/core/errors';
 import type { BoundedLru } from '@/core/lru';
 import {
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -51,14 +52,18 @@ interface Inside {
 }
 const inside = (source: CrbmStorageChunkSource): Inside => source as unknown as Inside;
 
+/** What a held read does once it is let go: answer the row it read, answer no row, or fail. */
+type Outcome = 'row' | 'null' | Error;
+
 /**
  * A registry whose row reads are counted, and the next of which can be held after it has read the row (it answers what
- * the row was when it was sent), or failed.
+ * the row was when it was sent, unless told otherwise), or failed.
  */
 function scripted(base: IRegistryDriver) {
   const state = {
     reads: 0,
-    hold: undefined as { reached: () => void; gate: Promise<void> } | undefined,
+    hold: undefined as
+      { reached: () => void; gate: Promise<void>; outcome: () => Outcome } | undefined,
     fail: undefined as Error | undefined,
     tamper: (row: RegistryRecord): RegistryRecord => row,
   };
@@ -77,18 +82,35 @@ function scripted(base: IRegistryDriver) {
         if (hold !== undefined) {
           hold.reached();
           await hold.gate;
+          const outcome = hold.outcome();
+          if (outcome === 'null') return null;
+          if (outcome instanceof Error) throw outcome;
         }
         return row === null ? null : state.tamper(row);
       };
     },
   });
-  /** Hold the next row read once it has read the row: `reached` settles then, and `release` lets it answer. */
-  const holdNext = (): { reached: Promise<void>; release: () => void } => {
+  /**
+   * Hold the next row read once it has read the row: `reached` settles then, and `release` lets it answer, as `outcome`
+   * says (the row it read, by default).
+   */
+  const holdNext = (): { reached: Promise<void>; release: (outcome?: Outcome) => void } => {
     let reached!: () => void;
-    let release!: () => void;
+    let open!: () => void;
+    let outcome: Outcome = 'row';
     const r = new Promise<void>((resolve) => (reached = resolve));
-    state.hold = { reached, gate: new Promise<void>((resolve) => (release = resolve)) };
-    return { reached: r, release };
+    state.hold = {
+      reached,
+      gate: new Promise<void>((resolve) => (open = resolve)),
+      outcome: () => outcome,
+    };
+    return {
+      reached: r,
+      release: (answer = 'row') => {
+        outcome = answer;
+        open();
+      },
+    };
   };
   return { registry, state, holdNext };
 }
@@ -121,7 +143,32 @@ async function world(options: WorldOptions = {}) {
   const keyCalls: Record<string, number> = {};
   const rows = scripted(base);
   const clock = manualClock();
-  const source = new CrbmStorageChunkSource(counting<IStorageDriver>(storage, calls), {
+  /** The next tail read of `a` held until let go, which then fails with the error given, or reads. */
+  let heldTail: { reached: () => void; gate: Promise<Error | undefined> } | undefined;
+  const holding = new Proxy(storage, {
+    get(t, p, rx) {
+      const value: unknown = Reflect.get(t, p, rx);
+      if (p !== 'getTail') return typeof value === 'function' ? value.bind(t) : value;
+      return async (key: GenKey, maxBytes: number) => {
+        const hold = key.segment === 'a' ? heldTail : undefined;
+        if (hold !== undefined) {
+          heldTail = undefined;
+          hold.reached();
+          const err = await hold.gate;
+          if (err !== undefined) throw err;
+        }
+        return t.getTail(key, maxBytes);
+      };
+    },
+  });
+  const holdNextTail = (): { reached: Promise<void>; release: (err?: Error) => void } => {
+    let reached!: () => void;
+    let release!: (err?: Error) => void;
+    const r = new Promise<void>((resolve) => (reached = resolve));
+    heldTail = { reached, gate: new Promise<Error | undefined>((resolve) => (release = resolve)) };
+    return { reached: r, release };
+  };
+  const source = new CrbmStorageChunkSource(counting<IStorageDriver>(holding, calls), {
     ...(options.registry === false ? {} : { registry: rows.registry }),
     ...(options.clock === false ? {} : { clock }),
     currentGenTtlMs: options.ttl ?? TTL,
@@ -153,6 +200,8 @@ async function world(options: WorldOptions = {}) {
     reset,
     publish,
     key,
+    holdNextTail,
+    keystore,
     unwraps: () => keyCalls.openDek ?? 0,
     /** Open `ref`'s reader, as a read of its shape does. */
     open: (ref: SegmentRef) => source.listChunkKeys(ref),
@@ -304,6 +353,60 @@ describe('what forgets a resolution', () => {
     x.reset();
     expect(await x.source.currentGeneration(A)).toBe(1);
     expect(x.sent().rows).toBe(1);
+  });
+
+  it.each([
+    ['answers no row', 'null'],
+    ['fails', new TransientError('throttled')],
+  ] as const)(
+    "a held read that %s after an invalidate and a newer read does not forget the newer read's resolution",
+    async (_, outcome) => {
+      const x = await world();
+      const held = x.rows.holdNext();
+      const first = x.source.currentGeneration(A); // R1, held at the registry
+      first.catch(() => undefined);
+      await held.reached;
+      x.source.invalidate(A);
+      expect(await x.source.currentGeneration(A)).toBe(0); // R2, kept
+      held.release(outcome);
+      await first.catch(() => undefined); // R1 lands, as no generation or a fault: it forgets only itself
+      await x.letAGo();
+      x.reset();
+      expect(await x.source.currentGeneration(A)).toBe(0);
+      expect(x.sent().rows).toBe(0); // R2's resolution is still kept
+    },
+  );
+
+  it("an older snapshot's open that fails after a newer resolution is kept does not forget the newer one", async () => {
+    const x = await world();
+    const tail = x.holdNextTail();
+    const first = x.source.listChunkKeys(A); // R1, then its open, held at the tail read
+    await tail.reached;
+    x.source.invalidate(A);
+    expect(await x.source.currentGeneration(A)).toBe(0); // R2, kept: it opens nothing
+    tail.release(new NotFoundError('no such generation: a.0'));
+    expect(await first).toEqual([0, 1]); // R1's open failed: the read moves to R2's snapshot, and reads once more
+    await x.letAGo();
+    x.reset();
+    expect(await x.source.currentGeneration(A)).toBe(0);
+    expect(x.sent().rows).toBe(0); // R2's resolution is still kept
+  });
+
+  it('a purge and a re-create under new wrapped keys: the refresh unwraps the new key, and keeps nothing of the old', async () => {
+    const x = await world({ encrypted: true });
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1]); // the old key, unwrapped once
+    await x.base.delete(A);
+    await x.storage.delete({ ...A, generation: 0 });
+    await bulkLoadCrbmGeneration(x.storage, { ...A, generation: 0 }, [7, HI + 7, 2 * HI + 7], {
+      registry: x.base,
+      keystore: x.keystore,
+    });
+    x.clock.advance(TTL);
+    x.reset();
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1, 2]);
+    expect(remainder0(await x.source.getChunk({ ...A, chunkKey: 0 }))).toBe(7);
+    expect(x.unwraps()).toBe(1);
+    expect(x.sent()).toMatchObject({ rows: 1, tails: 1 });
   });
 
   it('a read that finds its generation swept drops the snapshot and the resolution, resolves afresh, and reads once more', async () => {
