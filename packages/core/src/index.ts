@@ -97,6 +97,7 @@ export type {
   LoadDeps,
   LoadOptions,
   LoadGuard,
+  GuardRefusal,
   LoadJudgement,
   LoadResult,
   LoadRefusal,
@@ -168,6 +169,10 @@ export {
   isLeaseExpiredError,
   isLeaseLimitError,
   isStaleOperandError,
+  isUnsupportedError,
+  isCapabilityError,
+  isBudgetExceededError,
+  isKeyUnavailableError,
 } from './core/errors';
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM

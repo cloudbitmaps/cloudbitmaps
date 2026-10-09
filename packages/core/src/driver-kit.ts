@@ -62,7 +62,9 @@ export type { IMetricsSink, MetricEvent } from './core/metrics';
 // by prototype identity. Prefer them in library code that cannot see how it will be bundled.
 export {
   IntegrityError,
+  isIntegrityError,
   isNotFoundError,
+  isTransientError,
   isValidationError,
   isWriteConflictError,
   NotFoundError,

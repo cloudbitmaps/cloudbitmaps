@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { expectTypeOf } from 'vitest';
+import type { GuardRefusal, LoadJudgement, LoadRefusal } from '@cloudbitmaps/core';
 import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-storage-source';
 import { ValidationError } from '@/core/errors';
@@ -522,5 +524,12 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
     expect(higher.published).toBe(true);
     expect(lower).toMatchObject({ published: false, reason: 'superseded' });
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+  });
+});
+
+describe('judgeLoad — the refusal it reports', () => {
+  it('has a type a caller can name: every load refusal but a lost race', () => {
+    expectTypeOf<NonNullable<LoadJudgement['wouldRefuse']>>().toEqualTypeOf<GuardRefusal>();
+    expectTypeOf<GuardRefusal>().toEqualTypeOf<Exclude<LoadRefusal, 'superseded'>>();
   });
 });
