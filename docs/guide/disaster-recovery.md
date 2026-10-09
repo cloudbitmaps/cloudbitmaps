@@ -227,8 +227,14 @@ makes the coordinated restore point easy to hit rather than something you have t
 5. **Restore the keystore** (if encryption is on), and check it can open the key of every restored segment:
    [Encryption & DR](#encryption--dr) has the check.
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
-7. If it reports `inconsistent` segments, resolve them (restore the missing generations, or roll the registry
-   back to a generation that exists — see below) and re-run until clean.
+7. If it reports `inconsistent` segments, resolve them (restore the missing generations, or roll the registry back to
+   a generation that exists — see below) and re-run until clean. It does not look in the bucket of a row with no
+   generation, so before step 8 also list `store.generations(ref)` for each restored row whose `currentGen` is `null`.
+   Objects there are what is left of a state of the row the restore went back past (a first load that landed after
+   `T`, say), and step 8's erasures treat them as a first load's: each that holds an erased id goes, and every one it
+   cannot open (on a row with no key, every encrypted one), whatever the id. Keep what you need of them first, by
+   restoring the row to the state that names them or loading their ids again
+   ([erasure](erasure.md#two-rules-while-you-erase)).
 8. **Re-apply every erasure made after `T`.** The restore undid them: a crypto-shred's row has its wrapped key back,
    and a dropped or erased segment has its generations back, with the registry pointing at them. Take the segments
    from the events your audit sink stamped after `T`, and the subjects from your own record of erasure requests,

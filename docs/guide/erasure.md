@@ -137,6 +137,22 @@ index the segment's key opens is the segment's own, and when a chunk of it then 
 which the erasure reports with `IntegrityError`, deleting nothing on account of that error; so is a footer or a
 checksum that does not match, and an object cut short.
 
+**While encrypted first loads run, such a segment can keep an erasure asking for a re-run.** An encrypted first load
+onto a segment with no generation yet that writes its object between the erasure's listing and its last look at the
+bucket leaves an object the erasure cannot search, so the erasure throws `WriteConflictError` and asks for a re-run,
+even when that load read the row after the renewal and is not refused by it. A re-run that runs before such a load
+publishes renews the row again, refuses the load and deletes its object; one that runs after reads the generation the
+load published like any other. A steady stream of such loads can keep that up: pause loads of the segments you erase
+from, as the first rule says, and re-run the loads an erasure refused.
+
+**After a registry restore, look before you erase.** Run `checkConsistency({ summaries: true })`: it reports a row
+whose pointer names a missing object, or another object than the row's summary names ([disaster
+recovery](disaster-recovery.md#restore-procedure)). It does not look in the bucket of a row with no generation, so
+also list `store.generations(ref)` for each row whose `currentGen` is `null`. Objects there are a first load's in
+flight, or what is left of a state of the row the restore went back past: an erasure treats them all as a first
+load's, and deletes each that holds the id, and every one it cannot open (on a row with no key, every encrypted one),
+whatever the id. Restore the row to the state that names them, or load them again, before you erase.
+
 ## Who stops seeing the id, and when
 
 The erasure is immediate in storage, and immediate in the store that performed it for every read that starts after it
