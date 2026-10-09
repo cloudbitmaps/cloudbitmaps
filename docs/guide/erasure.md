@@ -166,9 +166,12 @@ pinned handle does until its lease ends, and then every read of it throws `Lease
 ## What an erasure does not reach
 
 The **metadata** of a generation: the rewrite carries it over unchanged, and the row's summary of the new generation
-holds it again, with the id count one smaller. Neither is scanned for the id. On an encrypted segment, an object whose
-metadata block is missing, with a sealed summary on the row that has metadata, is rewritten with the row's metadata, since
-the block's presence is not authenticated and the summary is.
+holds it again, with the id count one smaller. Neither is scanned for the id. An object whose metadata block was
+stripped is another object than the row's summary names, since its size is not the one the summary records, so the
+erasure refuses it with `NotFoundError` and writes nothing ([the ledger](#reading-the-ledger)). A fingerprint is a size
+and a checksum, which whoever can write the bucket can match on purpose: past a forged one, on an encrypted segment,
+the object is rewritten with the metadata of the row's sealed summary, since the block's presence is not authenticated
+and the summary is.
 
 A **deleted row**, where the registry cannot remove one. A registry that reports `conditionalDelete` (S3 when its
 client sends to an AWS S3 host, Azure Blob, the local filesystem and memory, by default) removes a row it deletes,

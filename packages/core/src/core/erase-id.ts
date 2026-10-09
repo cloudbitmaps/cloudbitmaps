@@ -11,9 +11,11 @@
  *
  * The rewrite is the same generation without one id, so it keeps everything else: the new object carries the source's
  * metadata as it is, and the row's summary of it, built from what was written, counts one id fewer and holds the same
- * metadata. Metadata is not scanned for the id. On an encrypted segment, a source object with no metadata block whose
- * row's sealed summary of it has metadata is rewritten with the row's: the block's presence is not authenticated, so
- * the authenticated copy decides, and the erasure still goes through.
+ * metadata. Metadata is not scanned for the id. A source object whose metadata block was stripped is another object
+ * than the row's summary names: its size is not the one the summary records, so the fingerprint check refuses it
+ * before the erasure reads any of its ids. Only one forged to match that fingerprint gets past, and on an encrypted
+ * segment it is rewritten with the metadata of the row's sealed summary: the block's presence is not authenticated, so
+ * the authenticated copy decides.
  *
  * **`erased: true` is a claim about every generation of the segment, not only the one it replaced.** A rollback
  * leaves generations above the pointer that were once current and can be made current again, so a holder can sit
@@ -770,7 +772,8 @@ async function eraseOnce(
       // carries the source's metadata as it is, and the row's summary of it says so. An erasure does not scan the
       // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
       // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
-      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite.
+      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite. Such a source gets
+      // here only past a fingerprint forged to match the row's, since stripping the block changes the object's size.
       const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
       const tally = await writeCrbmGenerationStream(
         deps.storage,

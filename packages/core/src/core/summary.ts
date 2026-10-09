@@ -276,7 +276,8 @@ export function summaryAgrees(
  * metadata block is not authenticated, so a block stripped from one reads as none, and the sealed summary on the row is
  * the one copy that says there was a block; carrying it keeps the rewrite from erasing the record of what it dropped.
  * Pass `authenticated` only for a summary that was opened (a clear one has no more authority than the block it sits
- * beside). Never refuses: a rewrite over a stripped block is still an erasure.
+ * beside). Never refuses. The erasure reaches this with a stripped block only past a fingerprint forged to match the
+ * row's, since stripping the block changes the object's size and the open is held to the row's fingerprint.
  */
 export function metadataToCarry(
   object: GenerationMetadata | undefined,
