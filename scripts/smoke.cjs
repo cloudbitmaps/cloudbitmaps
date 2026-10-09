@@ -240,7 +240,9 @@ function exerciseTools(label, tools, core, storageBytes) {
     throw new Error(
       `${label}: ${TOOLS}'s refusal is not core's ValidationError, so it carries its own copy of core`,
     );
-  console.log(`  ${label}: ${TOOLS} prices a stat().sizeBytes and refuses with core's ValidationError`);
+  console.log(
+    `  ${label}: ${TOOLS} prices a stat().sizeBytes and refuses with core's ValidationError`,
+  );
 }
 
 /** The size of a one-segment store's generation, through the built flavor's `stat()`. */

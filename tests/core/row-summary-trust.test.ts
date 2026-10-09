@@ -89,7 +89,7 @@ describe('a summary that disagrees with its object', () => {
       generation: 0,
       cardinality: 3,
       metadata: META,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     // A later resolution of the same row, after the TTL, does not trust it again.
     w.clock.advance(TTL + 1);
@@ -128,7 +128,11 @@ describe('a summary that disagrees with its object', () => {
     const store = w.reader();
     const seg = store.segment('s', { namespace: 'ns' });
     expect((await store.generations(SEG)).at(-1)?.metadata).toEqual(META);
-    expect(await seg.stat()).toEqual({ generation: 0, cardinality: 3, size: expect.any(Number) });
+    expect(await seg.stat()).toEqual({
+      generation: 0,
+      cardinality: 3,
+      sizeBytes: expect.any(Number),
+    });
   });
 
   it('an agreeing summary stays in use after the open', async () => {
@@ -142,7 +146,7 @@ describe('a summary that disagrees with its object', () => {
       generation: 0,
       cardinality: 3,
       metadata: META,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(w.calls.getTail ?? 0).toBe(0);
   });
@@ -196,7 +200,7 @@ describe('a row that names nothing to read', () => {
     await destroySegment(SEG, { registry: w.registry }, { confirmSegment: 's' });
     const seg = w.reader().segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(0);
-    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0, size: null });
+    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0, sizeBytes: null });
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 
@@ -205,7 +209,7 @@ describe('a row that names nothing to read', () => {
     await w.writer.setRetention(SEG, { expiresAt: 4_102_444_800_000 });
     const seg = w.reader().segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(0);
-    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0, size: null });
+    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0, sizeBytes: null });
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 });

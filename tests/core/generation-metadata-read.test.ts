@@ -86,7 +86,7 @@ describe.each([
       generation: 0,
       cardinality: 3,
       metadata: A,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(await store.generations(SEG)).toEqual([
       { generation: 0, current: true, cardinality: 3, metadata: A },
@@ -96,7 +96,7 @@ describe.each([
       generation: 0,
       cardinality: 3,
       metadata: A,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     // A later load moves the live handle and leaves the pin where it was.
     await w.writer.load(SEG, [1, 2, 3, 4], { metadata: B, keep: 9 });
@@ -105,13 +105,13 @@ describe.each([
       generation: 1,
       cardinality: 4,
       metadata: B,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(await pinned.stat()).toEqual({
       generation: 0,
       cardinality: 3,
       metadata: A,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(await store.generations(SEG)).toEqual([
       { generation: 0, current: false },
@@ -133,19 +133,19 @@ describe.each([
       generation: 0,
       cardinality: 2,
       metadata: A,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(await dest('u').stat()).toEqual({
       generation: 0,
       cardinality: 5,
       metadata: A,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(await dest('n').stat()).toEqual({
       generation: 0,
       cardinality: 2,
       metadata: A,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
   });
 
@@ -155,12 +155,12 @@ describe.each([
     expect(await w.reader().segment('s', { namespace: 'ns' }).stat()).toEqual({
       generation: 0,
       cardinality: 1,
-      size: expect.any(Number),
+      sizeBytes: expect.any(Number),
     });
     expect(await w.reader().segment('missing', { namespace: 'ns' }).stat()).toEqual({
       generation: null,
       cardinality: 0,
-      size: null,
+      sizeBytes: null,
     });
   });
 
@@ -209,7 +209,7 @@ describe.each([
         generation: 0,
         cardinality: 3,
         metadata: A,
-        size: expect.any(Number),
+        sizeBytes: expect.any(Number),
       });
       expect(await seg.count()).toBe(3);
       expect(await store.generations(SEG)).toEqual([
@@ -233,7 +233,7 @@ describe.each([
         generation: 0,
         cardinality: 3,
         metadata: A,
-        size: expect.any(Number),
+        sizeBytes: expect.any(Number),
       });
       expect(await seg.count()).toBe(3);
       expect(w.sent().objects).toBeGreaterThan(0); // read from the object, as the row has nothing to say
