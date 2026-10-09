@@ -1,5 +1,5 @@
 /**
- * A registry's conditional delete, against the three emulators the integration lane runs.
+ * A registry's conditional delete, and a storage driver's, against the three emulators the integration lane runs.
  *
  * A registry removes a row for good only by a delete its backend applies under a precondition: S3 `DeleteObject` with
  * `If-Match: <etag>`, GCS with `ifGenerationMatch: <generation>`, Azure Blob with `ifMatch: <etag>`. Each driver must
@@ -31,6 +31,9 @@ import { registryDeleteConformance, type RegistryDeleteHarness } from '@/testing
 import { S3RegistryDriver, S3RegistryStore } from '@/s3/registry';
 import { GcsRegistryDriver, GcsRegistryStore } from '@/gcs/registry';
 import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
+import { S3StorageDriver } from '@/s3/storage';
+import { storageObjectKey } from '@/s3/keys';
+import type { GenKey } from '@/core/ports';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
@@ -434,6 +437,57 @@ describe('Azure Blob (Azurite): the precondition is applied', () => {
     expect(next.purgeFaults).toBe(0);
     expect(await backend.registry.get(stuck)).toBeNull();
     expect(await azureExists(registryObjectKey(p, stuck))).toBe(false);
+  });
+});
+
+// ── Storage: a delete given the version a tail read reported ──────────────────────────────────────────────────────
+
+const GEN: GenKey = { segment: 's', generation: 0 };
+const writeText = (driver: { putImmutable: S3StorageDriver['putImmutable'] }, text: string) =>
+  driver.putImmutable(GEN, (sink) => sink.write(encoder.encode(text)));
+
+describe('S3 storage (MinIO): the driver sends If-Match with the ETag its tail read reported; MinIO ignores it', () => {
+  it('the gate is off by default for a client with a custom endpoint', async () => {
+    const driver = new S3StorageDriver({ client: s3, bucket: BUCKET, prefix: prefix('st-gate') });
+    await driver.delete(GEN, { ifVersion: '"settles the client"' });
+    expect(driver.capabilities().conditionalDelete).toBe(false);
+    expect(
+      new S3Storage({ bucket: BUCKET, client: s3 }).storage.capabilities().conditionalDelete,
+    ).toBe(false);
+  });
+
+  it('vouched for, the DeleteObject carries the ETag the tail read reported, and a stale one deletes anyway', async () => {
+    const p = prefix('st-header');
+    const sent: Array<string | undefined> = [];
+    const watched = minio();
+    watched.middlewareStack.add(
+      (next, context) => async (args) => {
+        if (context.commandName === 'DeleteObjectCommand') {
+          sent.push((args.request as { headers: Record<string, string> }).headers['if-match']);
+        }
+        return next(args);
+      },
+      { step: 'finalizeRequest', name: 'watchStorageDeleteIfMatch' },
+    );
+    const driver = new S3StorageDriver({
+      client: watched,
+      bucket: BUCKET,
+      prefix: p,
+      conditionalDelete: true,
+    });
+    await writeText(driver, 'one');
+    const { version } = await driver.getTail(GEN, 3);
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: BUCKET, Key: storageObjectKey(p, GEN) }),
+    );
+    expect(version).toBe(head.ETag);
+    await driver.delete(GEN);
+    await writeText(driver, 'two');
+    expect(await staleDeleteOutcome(() => driver.delete(GEN, { ifVersion: version }))).toBe(
+      'deleted',
+    );
+    expect(sent).toEqual([undefined, version]);
+    expect(await s3Exists(storageObjectKey(p, GEN))).toBe(false);
   });
 });
 

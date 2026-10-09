@@ -17,6 +17,7 @@ export type Operation =
   | 'CompleteMultipartUpload'
   | 'AbortMultipartUpload'
   | 'GetObject'
+  | 'HeadObject'
   | 'ListObjectsV2'
   | 'DeleteObject';
 
@@ -42,6 +43,7 @@ function operationOf(req: StubRequest): Operation {
     return 'uploads' in q ? 'CreateMultipartUpload' : 'CompleteMultipartUpload';
   if (req.method === 'DELETE') return 'uploadId' in q ? 'AbortMultipartUpload' : 'DeleteObject';
   if (req.method === 'GET') return 'list-type' in q ? 'ListObjectsV2' : 'GetObject';
+  if (req.method === 'HEAD') return 'HeadObject';
   throw new Error(`the stub does not serve ${req.method} ${req.path}`);
 }
 
@@ -236,6 +238,20 @@ export class StubBucket {
       case 'GetObject': {
         const current = this.objects.get(key);
         if (current === undefined) return s3Error(404, 'NoSuchKey');
+        const suffix = /^bytes=-(\d+)$/.exec(header('range') ?? '');
+        if (suffix !== null && current.body.length > 0) {
+          const take = Math.min(Number(suffix[1]), current.body.length);
+          const start = current.body.length - take;
+          return {
+            statusCode: 206,
+            headers: {
+              etag: current.etag,
+              'content-length': String(take),
+              'content-range': `bytes ${start}-${current.body.length - 1}/${current.body.length}`,
+            },
+            body: Readable.from([current.body.subarray(start)]),
+          };
+        }
         const range = /^bytes=(\d+)-(\d+)$/.exec(header('range') ?? '');
         if (range === null) {
           return {
@@ -255,6 +271,14 @@ export class StubBucket {
           },
           body: Readable.from([slice]),
         };
+      }
+      case 'HeadObject': {
+        const current = this.objects.get(key);
+        if (current === undefined) return respond(404, {});
+        return respond(200, {
+          etag: current.etag,
+          'content-length': String(current.body.length),
+        });
       }
       case 'DeleteObject': {
         // `If-Match` on a delete is applied as on a write; a delete without one removes whatever is there.

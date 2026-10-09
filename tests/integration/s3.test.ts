@@ -101,6 +101,8 @@ storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, {
   largeBytes: 6 * 1024 * 1024,
   missingLocation: () => new S3StorageDriver({ client, bucket: MISSING, prefix: `${RUN}/missing` }),
   pagedListSize: PAST_ONE_PAGE,
+  // A custom endpoint: MinIO accepts If-Match on a DeleteObject and ignores it (conditional-delete.test.ts records it).
+  conditionalDelete: false,
 });
 
 storageChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {

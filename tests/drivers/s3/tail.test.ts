@@ -26,7 +26,8 @@ describe('S3StorageDriver.getTail on an empty object', () => {
     const bucket = new StubS3Bucket();
     store(bucket, new Uint8Array(0));
     const tail = await driverOver(bucket).getTail(GEN, 64);
-    expect(tail).toEqual({ bytes: new Uint8Array(0), size: 0 });
+    // The version is the ETag the HEAD that settled it carried.
+    expect(tail).toEqual({ bytes: new Uint8Array(0), size: 0, version: expect.any(String) });
     expect(bucket.count('GetObject')).toBe(1);
     expect(bucket.count('HeadObject')).toBe(1);
   });

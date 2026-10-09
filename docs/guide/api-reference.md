@@ -116,6 +116,17 @@ full listing reads. `backend.registry.capabilities()`
 reports which (`conditionalDelete: true` or `false`). A value that is not a boolean is refused with `ValidationError`.
 The registry needs delete permission on its prefix for it.
 
+**The same option covers the storage half.** Where it is on, a delete the storage driver is given a version for
+(`delete(key, { ifVersion })`, the version a tail read of the object reported) is sent under that precondition, so it
+removes the object only while it is the one that was read, and `backend.storage.capabilities().conditionalDelete`
+reports `true`; off, the version is ignored and the delete removes whatever is under the key. An erasure's delete of a
+holder above the pointer is the one the library sends that way, so a load that took the holder's number since keeps
+its generation ([a number taken again during an erasure](erasure.md#how-it-stays-correct)). A precondition that no
+longer holds is a `WriteConflictError` while an object is under the key, and an absent object is a no-op whichever of
+`404` or `412` the service answers for it. The S3 storage half reads its default from the client as the registry
+does, on its first conditional delete, and `capabilities().conditionalDelete` reads `false` until then unless you set
+the option.
+
 | Backend | Default | Why |
 |---|---|---|
 | `S3Storage` | `true` when the host the client resolves is an AWS S3 host; `false` for any other host, or one that cannot be resolved | AWS documents `If-Match` on `DeleteObject` for general purpose and directory buckets. An S3-compatible store may accept the header and ignore it, and MinIO does, so a client that sends to one keeps tombstones until you set `true`. The host is the one the SDK resolves for a request, so an endpoint set by `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file counts as a constructor `endpoint` does; an AWS regional, FIPS, dual-stack or VPC interface host is AWS, as is an access point's, a multi-region access point's, an Object Lambda's, an Outpost's and a directory bucket's; another AWS service's host whose name starts with `s3` (a load balancer, an API Gateway, a website endpoint) is not |
@@ -1091,7 +1102,10 @@ object with its own id is a success and any other a `WriteConflictError`; with n
 upload is an unknown outcome, a `TransientError`. A bare `429`, which AWS S3 does not send but some S3-compatible
 services do, is not retried and is not classified transient: it surfaces as the SDK's own error, so a layer that keys on
 `TransientError` will not retry it. A transient failure of a conditional write throws `TransientError`, and the write may
-or may not have landed ([why](production.md#reliability-retries-backoff--timeouts)).
+or may not have landed ([why](production.md#reliability-retries-backoff--timeouts)). The storage half's `DeleteObject` under `If-Match`, which with `conditionalDelete` deletes an erasure's holder only
+while it is the object the erasure read, keeps the client's retry: a copy that meets its own landed delete finds
+nothing, which is its success (a `412` on it is looked at with a `HeadObject` before it is called a conflict), and one
+that meets an object stored since is refused.
 
 With `readTimeoutMs` set (it is off by default), each read the backend makes, every `GetObject` and `HeadObject` of a
 generation or a pointer, is aborted if it has not finished, body included, after that many ms, and throws
