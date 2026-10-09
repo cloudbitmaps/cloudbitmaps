@@ -496,6 +496,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * the disagreement again.
    */
   private readonly distrusted: BoundedLru<string, true>;
+  /**
+   * The readers a live open held to the row's summary ({@link openLive}). A pin that finds one memoised under its
+   * version shares it as it is: the version names the row's `pointerId`, and every write of the summary renews it, so
+   * the summary it was held to is the one the row has now. Any other memoised reader (a `pinAt`'s, held to the
+   * fingerprint its caller named) is held to the row's summary before a live pin shares it.
+   */
+  private readonly rowChecked = new WeakSet<CrbmReader>();
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
@@ -994,13 +1001,23 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // A pinned read's reopen of this version, already under way, found the row gone or destroyed: the segment
       // resolves no generation now, so this pin pins nothing, as one taken a moment later would.
       if (reader === null) return null;
-      const replaced = (r: CrbmReader) =>
-        this.replacedPins.get(this.heldKey(ref, version, r.fingerprint)) !== undefined;
+      // A memoised reader can have been opened by `pinAt`, which holds the object to the fingerprint its caller names
+      // and not to the row: before this pin shares one, it is held to the fingerprint the row's summary records. One a
+      // live open made was held to it already ({@link rowChecked}), so the common pin unwraps no key for it.
+      let named: Promise<string | undefined> | undefined;
+      const replaced = async (r: CrbmReader): Promise<boolean> => {
+        if (this.replacedPins.get(this.heldKey(ref, version, r.fingerprint)) !== undefined)
+          return true;
+        if (this.rowChecked.has(r)) return false;
+        const fingerprint = await (named ??= live.summary().then((d) => d?.fingerprint));
+        return fingerprint !== undefined && r.fingerprint !== fingerprint;
+      };
       // A memoised reader is of the object that was under the key when it was opened. One the store has since found
-      // replaced is not what is there now, so this pin opens the object afresh rather than pin a replaced one, and
-      // pins taken at the same moment share that one open. The replaced pin's reader goes from the memo with it, so
-      // that pin's index answers, its `count()` among them, end here: what is under its key is another object now.
-      const known = !opened && replaced(reader);
+      // replaced, or one of another object than the row names, is not what this pin may hold, so this pin opens the
+      // object afresh, against the row, and pins taken at the same moment share that one open. The replaced pin's
+      // reader goes from the memo with it, so that pin's index answers, its `count()` among them, end here: what is
+      // under its key is another object now.
+      const known = !opened && (await replaced(reader));
       // The open this pin shared can be gone by now: a replaced pin's reopen removes the reader it opened, and the
       // reader cache can evict it. With no invalidation in between, and no replacement found, that reader is still of
       // the object under the key, and this pin keeps it memoised.
@@ -1017,7 +1034,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // A reopen of this version, already under way, found the row gone or destroyed.
         if (reader === null) return null;
         // What another pin put there can be the replaced reader too, put back before its verdict was known.
-        if (fresh === current && replaced(reader)) {
+        if (fresh === current && (await replaced(reader))) {
           fresh = this.install(key, Snapshot.eager(this.openLive(ref, live)));
           reader = await fresh.reader;
           if (reader === null) return null;
@@ -1346,6 +1363,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const crypto = await live.crypto();
     const summary = await live.summary();
     const reader = await this.openGeneration(ref, live.target, crypto, summary?.fingerprint);
+    this.rowChecked.add(reader);
     if (summary !== undefined && !summaryAgrees(summary, describe(reader))) {
       this.distrusted.set(this.distrustKey(ref, live.target.generation, live.target.lineage), true);
     }
