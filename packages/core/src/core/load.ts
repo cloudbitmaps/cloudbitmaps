@@ -769,7 +769,7 @@ async function runLoad(
       // load, `before` was `null` and its bounds passed vacuously, so an empty generation would land over the ids
       // another writer had just loaded. For an unguarded one, the pointer would move over another first load's
       // generation or onto a row `setRetention` made, and, where an erasure had already deleted this load's object
-      // above that row's pointer, onto an object that is gone, so that every read of the segment failed.
+      // above that row's pointer, onto an object that is gone, so that every read of the segment would fail.
       ...(row === null ? { expectAbsent: true } : {}),
       // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
       // is this load's publish only over the object this load wrote, which one footer read proves.
