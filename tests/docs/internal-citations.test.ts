@@ -36,8 +36,8 @@ const EXTS = ['.ts', '.md', '.html', '.cjs', '.mjs', '.js', '.yml', '.yaml', '.j
 
 /**
  * Every tracked text file in the repo: this rule is about the repo being public, not about the tarball. Listed from
- * git's index rather than by walking the disk, so a file another test writes and removes while this one runs (a
- * calibration run id it plants, say) is never listed and then found gone.
+ * git's index rather than by walking the disk, so a file something else writes into the tree and removes while this
+ * runs is never listed and then found gone. A new file is checked once it is staged.
  */
 function publicFiles(): string[] {
   const out = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
@@ -231,8 +231,8 @@ describe('no pointer the public cannot reach', () => {
     expect(files.some((f) => f.startsWith(join('packages', 'core', 'src')))).toBe(true);
     expect(files.some((f) => f.startsWith(join('packages', 'roaring', 'src')))).toBe(true);
     // The three driver packages publish `.d.ts` exactly like the two above, so they are named here rather
-    // than left to the walk. A guard that reaches a tree only by accident stops reaching it the day the walk
-    // changes.
+    // than left to the listing. A guard that reaches a tree only by accident stops reaching it the day the
+    // listing changes.
     for (const pkg of ['s3', 'gcs', 'azure-blob']) {
       expect(
         files.some((f) => f.startsWith(join('packages', pkg, 'src'))),
