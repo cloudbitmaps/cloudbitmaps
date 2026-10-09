@@ -2021,19 +2021,25 @@ async function writeEncodedChunks(
 }
 
 /**
- * Whether the object under `key` is provably the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one
- * read of its footer. False when it is another object, when it is gone, and when the read fails in any way: a caller
- * that deletes on `true` deletes nothing it cannot prove is its own.
+ * The object under `key`, when it is provably the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one
+ * read of its footer, with the version the driver reported on that read (`undefined` from a driver that reports none).
+ * `null` when it is another object, when it is gone, and when the read fails in any way: a caller that deletes what
+ * this proves deletes nothing it cannot prove is its own, and passes the version as the delete's `ifVersion`, so a
+ * number taken again between the read and the delete keeps the object put under it since.
  */
-export async function holdsObject(
+export async function provenObject(
   storage: IStorageDriver,
   key: GenKey,
   fingerprint: string,
-): Promise<boolean> {
+): Promise<{ readonly version: string | undefined } | null> {
+  let version: string | undefined;
   try {
-    return await CrbmReader.sameObject(storageBlobReader(storage, key), fingerprint);
+    const blob = storageBlobReader(storage, key, (tail) => {
+      version ??= tail.version;
+    });
+    return (await CrbmReader.sameObject(blob, fingerprint)) ? { version } : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -2718,7 +2724,7 @@ function outcomeUnknown(key: GenKey, cause: unknown): TransientError {
 
 /**
  * Whether the object under `key` is the one `fingerprint` names, from one read of its footer: false when it is another
- * object or gone. Unlike {@link holdsObject}, a read that cannot tell throws, for a caller that must not take "could
+ * object or gone. Unlike {@link provenObject}, a read that cannot tell throws, for a caller that must not take "could
  * not look" for "not this object".
  */
 export async function provesOwnObject(

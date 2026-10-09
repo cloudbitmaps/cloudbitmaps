@@ -6,7 +6,7 @@ import { openGenerationReader } from '@/core/crbm-storage-source';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { RecordingAuditSink } from '@/index';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, SegmentRef, StorageDeleteOptions } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
@@ -301,6 +301,63 @@ describe('loadSegment — racing writers', () => {
     const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing });
     expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect(await generations(w.storage)).toEqual([0]);
+  });
+
+  /**
+   * With no row to prove the number its own, the refusal proves its object by the fingerprint its footer read, and
+   * deletes it only while it is the object that read saw: its delete passes the version the driver reported on it. A
+   * number can be taken again once its object is deleted, so `beforeDelete` runs between that read and the delete.
+   */
+  function reclaimWatched(
+    storage: MemoryStorageDriver,
+    registry: MemoryRegistryDriver,
+    beforeDelete: () => Promise<void>,
+  ): { driver: IStorageDriver; sent: { generation: number; ifVersion: string | undefined }[] } {
+    const sent: { generation: number; ifVersion: string | undefined }[] = [];
+    const racing = around(storage, 'after', () => registry.delete(SEG));
+    const driver = new Proxy(racing, {
+      get(t, p, rx) {
+        if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
+        return async (key: GenKey, options?: StorageDeleteOptions) => {
+          sent.push({ generation: key.generation, ifVersion: options?.ifVersion });
+          await beforeDelete();
+          return storage.delete(key, options);
+        };
+      },
+    }) as IStorageDriver;
+    return { driver, sent };
+  }
+
+  it('a refusal whose row was deleted conditions its delete on the version its footer read reported', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    let seen: string | undefined;
+    const { driver, sent } = reclaimWatched(w.storage, w.registry, async () => {
+      seen = (await w.storage.getTail({ ...SEG, generation: 1 }, 0)).version;
+    });
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(seen).toEqual(expect.any(String));
+    expect(sent).toEqual([{ generation: 1, ifVersion: seen }]);
+    expect(await generations(w.storage)).toEqual([0]);
+  });
+
+  it('a refusal whose number was taken again since its footer read keeps the object now there, and still answers', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const { driver, sent } = reclaimWatched(w.storage, w.registry, async () => {
+      // Its object is deleted, and another writer puts its own under the number.
+      await w.storage.delete({ ...SEG, generation: 1 });
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [77], {
+        codec: roaringCodec,
+      });
+    });
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
+    // The refusal is the answer: the refused delete raises nothing out of the load.
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(sent).toHaveLength(1);
+    expect(await generations(w.storage)).toEqual([0, 1]);
+    expect(await idsOf(w.storage, 1)).toEqual([77]);
   });
 
   it('reports superseded rather than publishing a generation no reader will resolve', async () => {
