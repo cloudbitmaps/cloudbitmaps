@@ -166,7 +166,7 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
         calls += 1;
         return calls === 1 ? Promise.reject(new Error('transient')) : driver.getTail(k, m);
       },
-      delete: (k) => driver.delete(k),
+      delete: (k, o) => driver.delete(k, o),
       list: (r) => driver.list(r),
     };
     const storage = new CrbmStorageChunkSource(flaky);

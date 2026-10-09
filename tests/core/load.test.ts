@@ -538,7 +538,7 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
       list: (ref) => w.storage.list(ref),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
         let arrive!: () => void;

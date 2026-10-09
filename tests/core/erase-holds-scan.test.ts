@@ -68,7 +68,7 @@ async function build(
     getTail: (key, max) => visit(key, () => inner.getTail(key, max)),
     putImmutable: (key, fn) => inner.putImmutable(key, fn),
     list: (ref) => inner.list(ref),
-    delete: (key) => inner.delete(key),
+    delete: (key, o) => inner.delete(key, o),
   };
   return { storage, registry, stats };
 }

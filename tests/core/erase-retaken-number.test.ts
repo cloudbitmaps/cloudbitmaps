@@ -89,8 +89,10 @@ function replacingBeforeDelete(storage: MemoryStorageDriver, n: number, ids: num
   driver.delete = async (key, options) => {
     sent.push(key.generation);
     if (sent.length === n) {
-      await storage.delete(key);
-      await bulkLoadCrbmGeneration(storage, key, ids, { codec: roaringCodec });
+      // Another writer, by number: the object goes, and its own takes the number.
+      const theirs: GenKey = { ...key };
+      await storage.delete(theirs);
+      await bulkLoadCrbmGeneration(storage, theirs, ids, { codec: roaringCodec });
     }
     return storage.delete(key, options);
   };

@@ -76,7 +76,7 @@ function faultyStorage(base: IStorageDriver, overrides: Partial<IStorageDriver>)
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getRange: (k, o, l) => base.getRange(k, o, l),
     getTail: (k, m) => base.getTail(k, m),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (ref) => base.list(ref),
     ...overrides,
   };

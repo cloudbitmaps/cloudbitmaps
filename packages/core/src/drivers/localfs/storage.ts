@@ -20,7 +20,14 @@ import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
-import type { StorageCaps, GenKey, IStorageDriver, SegmentRef, TailRead } from '@/core/ports';
+import type {
+  StorageCaps,
+  GenKey,
+  IStorageDriver,
+  SegmentRef,
+  StorageDeleteOptions,
+  TailRead,
+} from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { ExactCase } from './exact-case';
 import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
@@ -125,8 +132,12 @@ export class LocalFsStorageDriver implements IStorageDriver {
     }
   }
 
-  /** Idempotent. Takes no `ifVersion`: see the note on the class for why it cannot apply one. */
-  async delete(key: GenKey): Promise<void> {
+  /**
+   * Idempotent. Ignores `options.ifVersion`, as `conditionalDelete: false` says: see the note on the class for why it
+   * cannot apply one. The parameter is declared so that a wrapper of this driver can hand the port's options on.
+   */
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    void options;
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
     const path = storageObjectPath(this.root, key);
     if (await this.exactCase.differs(path)) return; // another case's object is not this one

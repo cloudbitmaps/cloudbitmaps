@@ -236,9 +236,9 @@ describe('the purge keeps what is inside its grace', () => {
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
       list: (r) => w.storage.list(r),
-      delete: async (k) => {
+      delete: async (k, o) => {
         order.push(`storage ${k.generation}`);
-        await w.storage.delete(k);
+        await w.storage.delete(k, o);
       },
     };
     w.store.beforeDelete = async () => {
@@ -400,7 +400,7 @@ describe('races and faults: the purge removes only the row it judged', () => {
         getRange: (k, o, l) => w.storage.getRange(k, o, l),
         getTail: (k, m) => w.storage.getTail(k, m),
         list: (r) => w.storage.list(r),
-        delete: (k) => w.storage.delete(k),
+        delete: (k, o) => w.storage.delete(k, o),
         putImmutable: async (k, f) => {
           if (!straddled) {
             straddled = true;
@@ -438,7 +438,7 @@ describe('races and faults: the purge removes only the row it judged', () => {
       putImmutable: (k, f) => w.storage.putImmutable(k, f),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) =>
         (async function* () {
           // Mid-listing, the tombstone is purged and the name created again with a generation of its own.
@@ -545,7 +545,7 @@ describe('the purge pointer in the due index', () => {
       putImmutable: (k, f) => w.storage.putImmutable(k, f),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) =>
         (async function* () {
           if ((await w.registry.get(reused)) === null) {
@@ -989,7 +989,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
         putImmutable: (k, f) => w.storage.putImmutable(k, f),
         getRange: (k, o, l) => w.storage.getRange(k, o, l),
         getTail: (k, m) => w.storage.getTail(k, m),
-        delete: (k) => w.storage.delete(k),
+        delete: (k, o) => w.storage.delete(k, o),
         list: () => ({
           [Symbol.asyncIterator]: () => ({
             next: () => Promise.reject(new Error('storage list unavailable')),
@@ -1205,7 +1205,7 @@ describe('a purge pointer that outlives its row is removed by the unscoped fleet
         putImmutable: (k, f) => w.storage.putImmutable(k, f),
         getRange: (k, o, l) => w.storage.getRange(k, o, l),
         getTail: (k, m) => w.storage.getTail(k, m),
-        delete: (k) => w.storage.delete(k),
+        delete: (k, o) => w.storage.delete(k, o),
         list: (r) =>
           (async function* () {
             if ((await w.registry.get(reused)) === null) {
