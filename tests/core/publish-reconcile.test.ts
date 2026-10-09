@@ -225,6 +225,19 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect((await w.base.get(SEG))!.currentGen).toBe(0);
   });
 
+  it('an unguarded first load whose create landed and lost its response is published, written once', async () => {
+    // Its fence is the absence it found, and the row read back is its own create's: the publish recognises its own
+    // write before it asks whether a row appeared.
+    const w = world();
+    w.arm({ kind: 'land-then-transient' });
+    const r = await loadSegment(SEG, [7, 8], w.deps, { allowEmpty: true });
+    expect(r).toMatchObject({ generation: 0, published: true });
+    expect(w.writes.create).toBe(1);
+    expect(writesTotal(w)).toBe(1);
+    expect((await w.base.get(SEG))!.currentGen).toBe(0);
+    expect(await idsOf(w.storage, 0)).toEqual([7, 8]);
+  });
+
   it('a compare-and-swap that landed and reported a conflict is published, not superseded', async () => {
     const w = world();
     await threeLoads(w);
