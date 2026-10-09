@@ -148,9 +148,10 @@ describe('a cold read of a small generation', () => {
     for (const s of ['a', 'b', 'c']) await store.segment(s).has(0);
     expect(calls.tails).toBe(3);
     expect(calls.ranges).toBe(0); // all three kept their chunks
-    await store.segment('c').has(0);
+    // Each read below is of a chunk the store's chunk cache does not hold yet, so only the segment's reader answers it.
+    expect(await store.segment('c').has(7 * K)).toBe(true);
     expect(calls.tails).toBe(3); // the newest is resident
-    await store.segment('a').has(0);
+    expect(await store.segment('a').has(K)).toBe(true);
     expect(calls.tails).toBe(4); // the first was evicted by bytes, though the count ceiling of 3 was not reached
   });
 

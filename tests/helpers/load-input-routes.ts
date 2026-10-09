@@ -143,6 +143,9 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/core/streamed-real-source.test.ts':
     'counts the range requests of reads over segments of chunks it lays out itself; the load only builds them, so a ' +
     'second run under the serialized input would repeat the counts and exercise no part of the load path',
+  'tests/core/resolution-cache-reads.test.ts':
+    'counts the requests of reads after the reader cache let a segment go, over segments its loads only seed; a second ' +
+    'run under the serialized input would repeat those counts and exercise no part of the load path',
   'tests/core/coalesced-request-counts.test.ts':
     'counts the storage requests of reads over segments of chunks it lays out itself; the load only builds them, so a ' +
     'second run under the serialized input would repeat the counts and exercise no part of the load path',

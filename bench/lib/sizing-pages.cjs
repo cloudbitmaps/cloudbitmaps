@@ -13,6 +13,7 @@ const DOCS = {
     'REFRESH',
     'INPUTS',
     'READERS',
+    'RESOLUTIONS',
     'BILL',
     'REDIS',
     'HEADROOM',

@@ -140,8 +140,8 @@ A call with a feed reads operands the library never stores, which no erasure can
 
 Erasure and crypto-shred are **immediate in storage and immediate in the store whose verb performed them**, for
 every read that starts after the verb returns. A read already in progress in that store can still yield an erased id
-from a chunk it had requested before the verb ran: up to 32 chunks for `iterate` and `count`, and up to `concurrency`
-keys (32 by default) for a combine. A combine or `iterate` reads ranges of the object, and resolves the segment again before it serves each chunk, one held in its cache included, as a read of that chunk alone does, so the ranges it had already requested are dropped, not served. They are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
+from a chunk it had requested before the verb ran: up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1
+keys (33 by default) for a combine, the key it is handing out and the `concurrency` keys it had already requested. A combine or `iterate` reads ranges of the object, and resolves the segment again before it serves each chunk, one held in its cache included, as a read of that chunk alone does, so the ranges it had already requested are dropped, not served. They are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
 make them so — there is no daemon, no bus, and no connection between two stores that happen to point at the same
 bucket.
 
@@ -157,11 +157,15 @@ bucket.
 | a leased pinned handle (`seg.pin({ leaseUntil })`) in another store | until its lease ends, at most 14 days after it was taken: its reads then throw `LeaseExpiredError`, whether or not its reader still holds the chunks. Until then, as for any pinned handle in the row above |
 
 **An outage of the registry extends that bound.** A refresh that cannot read the row because of a transient fault
-(throttling, a 5xx, a dropped connection) keeps serving the generation the reader already holds, and the key it
-unwrapped, and asks again 500 ms later, or after `cache.genTtlMs` if that is shorter. So while the registry cannot
-be read, a shred or a drop is not seen, and the store converges within one retry of the registry answering. Any
-other failure of the refresh (an access denial, a row that will not parse) is not ridden out: the read that finds it
-fails with that error, and the reader is dropped with the key it held.
+(throttling, a 5xx, a dropped connection) keeps serving what the store resolved before the outage, for a segment
+still in its reader cache: its open reader and the key that reader unwrapped, or, where no reader is open (a
+`count()` answered from the row opens none), the row it resolved. A read during the outage that needs the key,
+where none was unwrapped before it, unwraps it from that row's wrapped keys. The refresh asks again 500 ms later, or
+after `cache.genTtlMs` if that is shorter. So while the registry cannot be read, a shred or a drop is not seen, and
+the store converges within one retry of the registry answering. A segment the reader cache has let go is served only
+until its resolution lapses: after that its next read fails with the fault, as a cold read does. Any other failure
+of the refresh (an access denial, a row that will not parse) is not ridden out: the read that finds it fails with
+that error, and the reader is dropped with the key it held.
 
 `destroySegment` and `eraseNamespace` are free functions over raw drivers, not verbs of a store, so for them every
 store is another store, one in the same process included.
