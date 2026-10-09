@@ -7,6 +7,8 @@ import { AzureBlobStorage } from '@/azure-blob/backend';
 import { GcsStorage } from '@/gcs/backend';
 import { S3Storage } from '@/s3/backend';
 import type { StorageBackend } from '@cloudbitmaps/core';
+import { storageDriverConformance } from '@/testing/conformance';
+import type { StorageDriverCase } from '@/testing/conformance';
 import {
   expectMissingLocationFails,
   expectMissingObjectIsAbsent,
@@ -20,6 +22,21 @@ import {
  * still read as absent.
  */
 const LIMIT = { timeout: 30_000 };
+
+/** Every case of the storage suite but `missing location`, which is the only one these stubs model. */
+const OTHER_CASES: readonly StorageDriverCase[] = [
+  'write-once round trip',
+  'collision',
+  'missing object',
+  'out-of-range read',
+  'tail size',
+  'idempotent delete',
+  'delete of an absent key beside its neighbours',
+  'list read-after-delete',
+  'names and namespaces kept apart',
+  'generations by number',
+  'failed write',
+];
 
 type Mode = 'bucket' | 'object';
 type Answer = (req: IncomingMessage, res: ServerResponse, mode: Mode) => void;
@@ -159,6 +176,12 @@ for (const service of SERVICES) {
     it('control: a missing object in a bucket that exists still reads as absent', async () => {
       mode = 'object';
       await expectMissingObjectIsAbsent(() => service.backend(url));
+    });
+
+    // The conformance suite's own case over the same stub: what a third-party driver is held to.
+    storageDriverConformance(`${service.name} (stub)`, () => service.backend(url).storage, {
+      skip: OTHER_CASES,
+      missingLocation: () => service.backend(url).storage,
     });
   });
 }

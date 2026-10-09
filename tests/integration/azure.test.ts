@@ -81,6 +81,10 @@ const ticking = (): (() => number) => {
   let t = 1_000;
   return () => (t += 1);
 };
+// Never created: the emulator answers as the service does for a container that is not there.
+const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+// Azure Blob lists 5,000 blobs a page.
+const PAST_ONE_PAGE = 5_001;
 registryConformance(
   'AzureBlobRegistryDriver (Azurite)',
   () =>
@@ -89,6 +93,15 @@ registryConformance(
       prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
+  {
+    missingLocation: () =>
+      new AzureBlobRegistryDriver({
+        containerClient: service.getContainerClient(MISSING),
+        prefix: `${RUN}/missing`,
+        now: ticking(),
+      }),
+    pagedListSize: PAST_ONE_PAGE,
+  },
 );
 
 // The cross-process half of the contract: two drivers over one container, racing the same row. Azurite
@@ -109,7 +122,14 @@ const freshDriver = (): AzureBlobStorageDriver =>
 // The Azure driver must pass the SAME storage-source contract as in-memory + LocalFs + S3 + GCS.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
-storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver);
+storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver, {
+  missingLocation: () =>
+    new AzureBlobStorageDriver({
+      containerClient: service.getContainerClient(MISSING),
+      prefix: `${RUN}/missing`,
+    }),
+  pagedListSize: PAST_ONE_PAGE,
+});
 // The same cases with 64-byte blocks, so every object is staged blocks and a conditional commit.
 storageDriverConformance(
   'AzureBlobStorageDriver, blocks (Azurite)',
@@ -678,9 +698,6 @@ describe('Azure Blob (Azurite): a cold count is one request', () => {
 });
 
 describe('a container that does not exist', () => {
-  // Never created: the emulator answers as the service does for a container that is not there.
-  const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
-
   it("fails every read and a delete with the service's own error, not as an absent object", async () => {
     await expectMissingLocationFails(
       () =>

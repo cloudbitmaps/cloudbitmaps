@@ -17,7 +17,9 @@ const ticking = (): (() => number) => {
 };
 
 // Every IRegistryDriver must pass the same contract.
-registryConformance('MemoryRegistryDriver', () => new MemoryRegistryDriver({ now: ticking() }));
+registryConformance('MemoryRegistryDriver', () => new MemoryRegistryDriver({ now: ticking() }), {
+  pagedListSize: 25,
+});
 
 let root: string;
 let n = 0;
@@ -31,6 +33,7 @@ afterAll(async () => {
 registryConformance(
   'LocalFsRegistryDriver',
   () => new LocalFsRegistryDriver(join(root, `d${n++}`), { now: ticking() }),
+  { pagedListSize: 25 },
 );
 
 // Two instances over ONE root — the configuration in which a per-instance lock lets both pass the token check.
