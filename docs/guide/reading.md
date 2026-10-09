@@ -182,12 +182,13 @@ encrypted segment, the key it unwrapped) until it moves on or ends, outside the 
 when that matters.
 
 **A cached chunk is one object's.** The store caches each decoded chunk, and keeps each open reader, under the
-generation's number and its registry row's `pointerId`: the token of the last write that changed what the row
-resolves to (a load's publish, a rollback, an erasure's rewrite, a shred), which a lease or a policy write leaves as
-it was. So a `setRetention`, or a lease taken or released, costs a store reading the segment nothing more than the
-pointer read its refresh makes anyway: it keeps its open reader and its cached chunks. It checks the object itself
-whenever it opens one for a row whose summary it can use, against the fingerprint the summary names: the object's size
-and footer checksum, which the open reads anyway, so the check costs no request. The check is needed because a number can be taken again once
+generation's number and its registry row's `pointerId`: the token of the last write that named a field a read resolves
+through (the pointer, the status, the keys or the summary), at any value, as a load's publish, a rollback, an erasure's
+rewrite and a shred do, and a lease or a policy write does not. So a `setRetention`, or a lease taken or released, costs
+a store reading the segment nothing more than the pointer read its refresh makes anyway: it keeps its open reader and
+its cached chunks. It checks the object itself whenever it opens one for a row whose summary it can use, against the
+fingerprint the summary names: the object's size and footer checksum, which the open reads anyway, so the check costs
+no request. The check is needed because a number can be taken again once
 its object is deleted, as after a `rollback`, an `eraseSubject` that deletes the generation above the pointer holding
 the id, and a load, and because the store can open a generation some time after it read the row: a `count()` answered
 from the row opens nothing, and the read after it opens whatever object is under the number by then. An object that is

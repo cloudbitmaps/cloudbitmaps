@@ -1181,7 +1181,7 @@ export function registryConformance(
       expect((await d.get(SEG))!.leases).toBeUndefined();
     });
 
-    // ── `pointerId`: the token of the write that set what the row resolves to ───────────────────────────────
+    // ── `pointerId`: the token of the last write that named a field a read resolves through ──────────────────────────
     // A reader keys its caches on a generation with this. A driver that kept it across a write that changed what the
     // row resolves to would let a reader serve one resolution's chunks for another; one that renewed it on a lease or
     // policy write would make every warm reader of the segment open it again.
@@ -1509,7 +1509,7 @@ export function registryConcurrency(
       const after = await a.get(SEG);
       expect([1, 2]).toContain(after!.currentGen);
       expect(after!.token).not.toBe(token);
-      // The row's pointerId is the winner's token: the write that set what the row resolves to.
+      // The row's pointerId is the winner's token: the last write that named a field a read resolves through.
       expect(after!.pointerId).toBe(after!.token);
       // And the winner's token is the only one that can swap again.
       await expect(a.compareAndSwap(SEG, token, { currentGen: 9 })).rejects.toBeInstanceOf(

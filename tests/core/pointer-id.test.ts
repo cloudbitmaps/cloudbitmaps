@@ -1,5 +1,5 @@
 /**
- * A registry row's `pointerId`: the token of the most recent write that changed what the row resolves to. A create sets
+ * A registry row's `pointerId`: the token of the most recent write that named a field a read resolves through. A create sets
  * it, and so does a compare-and-swap whose patch names `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary`, at
  * any value, the one it already has included; a write of the leases, the retention or residency policy or the kept
  * window leaves it. The shipped registries apply the rule in the two shared record builders, and a third-party

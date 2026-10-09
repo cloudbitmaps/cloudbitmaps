@@ -312,7 +312,8 @@ await store.load({ segment: 'audience:active' }, ids, {
   takes to run and whatever you do to your object meanwhile. Key order never changes the bytes, so the same record
   gives the same object.
 - **Published with the pointer, and immutable.** The metadata is in the generation's object, and the segment's row
-  carries a summary of the current generation (its id count and its metadata), written by the same compare-and-swap that
+  carries a summary of the current generation (its id count, its metadata and its object's fingerprint), written by the
+  same compare-and-swap that
   moves the pointer to it. A reader that sees generation N as current therefore sees N's metadata, never a later
   generation's and never none. Nothing edits it afterwards: a new generation is how it changes, and a load does not
   inherit the previous generation's.
@@ -1098,8 +1099,9 @@ writer consulting only the pointer would pick that same number and conflict on e
 number below an object above the pointer, such as one a rollback left there, but never onto one: write-once refuses a
 put to a number an object holds, and a load that loses that race reports `superseded`. A number whose object was
 deleted can be taken again, so nothing identifies a generation by its number alone: caches key on the number and the
-row's `pointerId` (the token of the last write that changed what the row resolves to, which every publish renews),
-checked against the object the row's summary names whenever a reader opens it for a row with a summary, and a reader
+row's `pointerId` (the token of the last write that named a field a read resolves through, at any value, as every
+publish does), checked against the object the row's summary names whenever a reader opens it for a row with a summary
+the store can use, and a reader
 that finds another object under the number re-reads the segment rather than serve it.
 
 **A load overlaps its round trips with its encoding.** The existence check, and the keystore's unwrap of an encrypted

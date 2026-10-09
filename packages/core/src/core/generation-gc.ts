@@ -104,8 +104,8 @@ export interface LoadNumber {
  * and collection takes it once a generation above it is current. Like a listing's, the number can be one whose
  * object was deleted (an erasure removes the generations above a rolled-back pointer that held the id), which is
  * why nothing identifies a generation by its number alone: the reader cache and the chunk cache key on the number and
- * the row's `pointerId`, which every write that takes a number again renews, and an open of a row with a summary holds
- * the object to the fingerprint the summary records; a pin keys on its object's fingerprint.
+ * the row's `pointerId`, which every write that takes a number again renews, and an open of a row with a usable
+ * summary holds the object to the fingerprint the summary records; a pin keys on its object's fingerprint.
  */
 export async function nextLoadGeneration(
   ref: SegmentRef,

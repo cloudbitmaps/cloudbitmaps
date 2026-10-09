@@ -468,7 +468,7 @@ export interface RegistryRecord extends SegmentRef {
    */
   readonly token: Token;
   /**
-   * The token of the most recent write that changed what this row resolves to: the row's create, or a compare-and-swap
+   * The token of the most recent write that named a field a read resolves through: the row's create, or a compare-and-swap
    * whose patch named `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary` (the resolved fields), at any value,
    * the one the field already had included. A write that names only `leases`, `retention`, `residency` or `keptGens`
    * leaves it. The registry sets it; a caller never does. Compared by equality only, and never reused under one name,

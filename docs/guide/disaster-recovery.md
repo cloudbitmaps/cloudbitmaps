@@ -263,11 +263,12 @@ makes the coordinated restore point easy to hit rather than something you have t
    touched** (`store.invalidate(ref)`), then route traffic. Until then a store answers from what it resolved before
    the restore: for up to `cache.genTtlMs` if it refreshes on a timer, and for as long as
    [readers still on an old generation](#readers-still-on-an-old-generation) says if it does not. A restored row
-   carries the token and the `pointerId` it had at `T`, and every write after the restore that changes what the row
-   resolves to gives it a `pointerId` it never had, because each write draws a random part of its token and the
-   `pointerId` is the token of such a write, so a store keying a segment's cached chunks by generation and `pointerId`,
-   checked against the object the row's summary names whenever it opens one, never takes them for a generation written
-   since, nor for another object put back under the same number. A restored row whose summary names another object than
+   carries the token and the `pointerId` it had at `T`, and every write after the restore that names a field a read
+   resolves through (the pointer, the status, the keys or the summary) gives it a `pointerId` it never had, because
+   each write draws a random part of its token and the `pointerId` is the token of such a write, so a store keying a
+   segment's cached chunks by generation and `pointerId`, checked against the object the row's summary names whenever
+   it opens one, never takes them for a generation written since, nor for another object put back under the same
+   number. A restored row whose summary names another object than
    the one restored under its number (a row and a bucket restored from two points) has every read that opens that
    generation refused with `NotFoundError`, while a `count()` and a `stat()` answer the row's figures:
    `checkConsistency({ summaries: true })` finds it. A row with no summary has no fingerprint, so a torn restore there

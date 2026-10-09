@@ -151,8 +151,8 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
 
 /**
  * A resolved read target, as `resolveLive` produces it: which generation is current, and its DEK wrappings if it
- * is encrypted. `lineage` is the registry row's `pointerId`: the token of the write that last set what the row resolves
- * to, which a shipped registry never gives two writes under one name, but for a collision of probability 2^-128 per pair
+ * is encrypted. `lineage` is the registry row's `pointerId`: the token of the last write that named a field a read
+ * resolves through, at any value, which a shipped registry never gives two writes under one name, but for a collision of probability 2^-128 per pair
  * of incarnations. It is what separates two *incarnations* of one name, which a generation number cannot: the numbering
  * restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created segment presents different
  * data at the same `currentGen`; and it separates two resolutions of one number within an incarnation, since every write
@@ -796,9 +796,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * `<generation>#<object>` for a registry-less source, or `<generation>:<pointerId>#<object>` with one: the generation
    * the segment's snapshot resolved, and the object its reader opened, by that object's size and footer checksum in
-   * base 36, which the open read anyway. The row's `pointerId` moves only with a write that changes what the row
-   * resolves to, so a lease or a policy write (a `setRetention`) leaves the version, the open reader and the decoded
-   * chunks as they were. Two objects do not share a version
+   * base 36, which the open read anyway. The row's `pointerId` moves only with a write that names a field a read resolves
+   * through, at any value, so a lease or a policy write (a `setRetention`) leaves the version, the open reader and the
+   * decoded chunks as they were. Two objects do not share a version
    * string, as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second
    * one: a name purged and loaded again (a new row, or with no registry the same bare number), a number taken again
    * within one row once its object was deleted, or an object put back under its key from outside the library. That

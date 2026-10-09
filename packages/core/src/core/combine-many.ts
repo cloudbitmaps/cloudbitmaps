@@ -94,7 +94,8 @@ export interface CombineManyOperand {
   readonly pinnedFingerprint?: string | null;
   /**
    * A fresh read of the segment's registry row: its current generation and, as `token`, its `pointerId` (the token of the
-   * write that last set what the row resolves to, so a lease or a policy write does not change it), or `null` when it
+   * last write that named a field a read resolves through, so a lease or a policy write does not change it), or `null`
+   * when it
    * has no row. Read for every subtracted pinned operand just before the publishes, and once more at the end of the call
    * for the rest.
    */

@@ -1,5 +1,5 @@
 /**
- * A registry row's `pointerId`: which write set what the row resolves to.
+ * A registry row's `pointerId`: which write last named a field a read resolves through.
  *
  * A read resolves a segment through five fields of its row: `currentGen` (the generation), `status` (a destroyed row
  * reads empty), `wrappedDeks` and `keyId` (the key), and `summary` (a count answered from the row). `pointerId` is the

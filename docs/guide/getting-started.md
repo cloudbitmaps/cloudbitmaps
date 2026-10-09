@@ -419,7 +419,7 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
 | **pin** | `segment.pin()` returns a handle that keeps reading the generation that was current when you pinned it. |
 | **tombstone** | The row a dropped or crypto-shredded segment leaves behind, marking it as gone. |
 | **token** | An opaque value the registry row carries. Every write to the row changes it, so a write can tell whether the row moved since it read it. |
-| **`pointerId`** | The token of the last write that changed what a reader resolves from the row: its generation, its status, its keys or its summary. A reader keys what it caches on the generation with it, so a lease or a retention write leaves its caches warm. |
+| **`pointerId`** | The token of the last write that named a field a read resolves through (the generation, the status, the keys or the summary), at any value. A reader keys what it caches on the generation with it, so a lease or a retention write leaves its caches warm. |
 | **fence** | A write that names the generation and token it expects to replace, and is refused if either moved. Loads do this for you. |
 
 ## Where next

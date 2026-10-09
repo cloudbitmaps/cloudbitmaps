@@ -110,9 +110,10 @@ so, and so do the module headers in the code.
   pins of one generation share one open of its object. A publish, a rollback, an erasure's rewrite, a status or key
   change, and a compare-and-swap that names `currentGen` at the value it has renew `pointerId`, and a reader opens the
   object again after them.
-- **Every open of the row's generation, where the row carries a summary, holds the object's footer to the fingerprint
-  the summary records**, before its index is read or decrypted and at no extra request. A row with no summary it can use
-  is not checked, and a reader already open is not checked again until the row changes, it is evicted or it is invalidated.
+- **Every open of the row's generation, where the row has a summary the store can use, holds the object's footer to
+  the fingerprint the summary records**, before its index is read or decrypted and at no extra request. A row with no
+  summary it can use is not checked, and a reader already open is not checked again until the row changes, it is
+  evicted or it is invalidated.
   An object that is another one under the number (put back from outside the library, or restored beside a row that
   names another) is refused with `NotFoundError`, which says it is another object than its registry row names, and the
   read resolves the segment again once. An erasure reads the generation it rewrites the same way, so it fails with
