@@ -166,9 +166,10 @@ bound is stated; other pages link here.
   dropped connection) keeps serving the generation of a segment still in the reader cache (its reader open, or its row
   resolved for a count), and retries 500 ms later (or after the TTL, if that is shorter). The store converges within
   one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL:
-  once that lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else,
-  such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that error,
-  and the next read resolves the segment afresh.
+  once that lapses, a read of it fails with the fault, as a cold read does. One let go while it rode the outage out
+  fails at its next read, and at the next chunk of a stream already reading it. A refresh that fails with anything
+  else, such as an access denial or a row that will not parse, is not ridden out: the call that meets it throws that
+  error, and the next read resolves the segment afresh.
 - **`store.invalidate(ref)` forgets what this store derived about a segment**: its kept resolution, its open reader
   and the key that reader unwrapped, its decoded chunks, and those of every pin of the segment, so its next read
   resolves the current generation afresh. It also drops the segment's open chunk reads: a caller already waiting on one still gets its

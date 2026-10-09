@@ -65,6 +65,8 @@ function scripted(base: IRegistryDriver) {
     hold: undefined as
       { reached: () => void; gate: Promise<void>; outcome: () => Outcome } | undefined,
     fail: undefined as Error | undefined,
+    /** Fails every row read while set, as a registry in an outage does. */
+    down: undefined as Error | undefined,
     tamper: (row: RegistryRecord): RegistryRecord => row,
   };
   const registry = new Proxy(base, {
@@ -73,6 +75,7 @@ function scripted(base: IRegistryDriver) {
       if (p !== 'get') return typeof value === 'function' ? value.bind(t) : value;
       return async (ref: SegmentRef) => {
         state.reads += 1;
+        if (state.down !== undefined) throw state.down;
         const fail = state.fail;
         state.fail = undefined;
         if (fail !== undefined) throw fail;
@@ -479,6 +482,71 @@ describe('what forgets a resolution', () => {
     expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
     // Once the registry answers, the segment reads empty.
     expect(await x.source.getChunk({ ...A, chunkKey: 0 })).toBeNull();
+    expect(x.unwraps()).toBe(0);
+  });
+
+  it("another store's crypto-shred, then a registry outage: the reader still open rides it out, and once the reader cache lets it go the segment serves nothing more", async () => {
+    const x = await world({ encrypted: true });
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1]); // `a`'s reader is open, and holds its key
+    await destroySegment(A, { registry: x.base }, { confirmSegment: 'a' });
+    x.clock.advance(TTL);
+    x.rows.state.down = new TransientError('throttled');
+    x.reset();
+    // A read every 250 ms for 10 s, and the reader cache made to let `a` go every 500 ms (a read of `b`, which fails).
+    const outcomes: string[] = [];
+    for (let step = 0; step < 40; step++) {
+      if (step > 0) x.clock.advance(250);
+      if (step % 2 === 1) await x.letAGo().catch(() => undefined);
+      try {
+        expect(remainder0(await x.source.getChunk({ ...A, chunkKey: 0 }))).toBe(1);
+        outcomes.push('served');
+      } catch (err) {
+        outcomes.push(err instanceof TransientError ? 'transient' : String(err));
+      }
+    }
+    // The first read is served by the reader the cache still holds, and every read after it let that reader go fails,
+    // as a cold resolve does: no key is unwrapped again from the wrapped keys the row no longer has.
+    expect(outcomes).toEqual(['served', ...Array<string>(39).fill('transient')]);
+    expect(x.unwraps()).toBe(0);
+    x.rows.state.down = undefined;
+    expect(await x.source.getChunk({ ...A, chunkKey: 0 })).toBeNull();
+  });
+
+  it("a crypto-shred, then a refresh in flight when the reader cache lets the segment go: the read that comes after it does not join the refresh's ride-out", async () => {
+    const x = await world({ encrypted: true });
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1]);
+    await destroySegment(A, { registry: x.base }, { confirmSegment: 'a' });
+    x.clock.advance(TTL);
+    const held = x.rows.holdNext();
+    const first = x.source.getChunk({ ...A, chunkKey: 0 }); // the refresh, held at the registry
+    await held.reached;
+    x.rows.state.down = new TransientError('throttled');
+    await x.letAGo().catch(() => undefined); // the reader cache lets `a` go while the refresh is in flight
+    x.reset();
+    const second = x.source.getChunk({ ...A, chunkKey: 0 });
+    second.catch(() => undefined);
+    held.release(new TransientError('throttled'));
+    // The read that began on the open reader is served from it; the one that began after it was let go is not.
+    expect(remainder0(await first)).toBe(1);
+    await expect(second).rejects.toBeInstanceOf(TransientError);
+    expect(x.unwraps()).toBe(0);
+    expect(
+      await x.source.getChunk({ ...A, chunkKey: 0 }).catch((err: unknown) => err),
+    ).toBeInstanceOf(TransientError);
+  });
+
+  it('a stream on the reader that rides out an outage re-checks once the reader cache lets it go, and fails as a cold resolve does', async () => {
+    const x = await world({ encrypted: true });
+    expect(await x.source.listChunkKeys(A)).toEqual([0, 1]);
+    await destroySegment(A, { registry: x.base }, { confirmSegment: 'a' });
+    x.clock.advance(TTL);
+    x.rows.state.down = new TransientError('throttled');
+    x.reset();
+    const it = x.source.getChunks!(A, [0, 1], { concurrency: 1 })[Symbol.asyncIterator]();
+    const head = await it.next();
+    expect(remainder0(head.done ? null : head.value.bytes)).toBe(1); // the reader still open rides the outage out
+    await x.letAGo().catch(() => undefined);
+    await expect(it.next()).rejects.toBeInstanceOf(TransientError);
     expect(x.unwraps()).toBe(0);
   });
 

@@ -138,7 +138,7 @@ Within that time a store whose reader was evicted builds its next read on the ke
 those wrapped keys through the keystore again, so another store's crypto-shred reaches it once the resolution lapses:
 within `cache.genTtlMs`, as the table says. A lapsed resolution is never read from: if the registry read that should
 replace it fails with a transient fault, the read fails too, unless the store still holds the segment in its reader
-cache, which rides out the outage as above.
+cache, which rides out the outage as above until the reader cache lets it go: what it rides out on is not kept.
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off. It is a reasonable setting for a read-only replica of immutable
 data, but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)`

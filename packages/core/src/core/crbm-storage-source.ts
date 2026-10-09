@@ -187,6 +187,11 @@ interface Resolved extends Target {
 interface Resolution {
   readonly resolved: Promise<Resolved | null>;
   sentAtMs: number;
+  /**
+   * Set when the read failed transiently and this answers what the resolution `from` found instead: only the snapshot
+   * that replaces one on `from` is served it, and any other fails with the read's `fault`, as a cold resolve does.
+   */
+  rodeOut?: { readonly from: Resolution; readonly fault: unknown };
 }
 
 /**
@@ -711,8 +716,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // **synchronously** (before any await) so concurrent readers in this window coalesce onto the one read — ≤ one
     // registry read + at most one reopen per segment per window (no boundary thundering-herd). The refresh keeps the
     // prior reader unless the generation moved. Only a snapshot the reader cache still holds rides out a transient
-    // fault in that read: a lapsed resolution kept with no snapshot on it is not served past its TTL, so with none the
-    // read fails as a cold resolve does, whatever wrapped keys the kept one still holds.
+    // fault in that read, and what it rides out on is not kept: a lapsed resolution kept with no snapshot on it is not
+    // served past its TTL, so once the reader cache lets the snapshot go the read fails as a cold resolve does,
+    // whatever wrapped keys the lapsed resolution held.
     const resolution = this.resolveNow(ref, existing?.resolution);
     this.remember(key, resolution);
     return this.install(key, this.snapshotOn(ref, resolution, existing));
@@ -725,7 +731,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * A read that fails with a transient fault answers what `prior` found, when it found a generation, and is asked again
    * soon ({@link retrySoon}): `prior` is the resolution of the snapshot the reader cache still holds, so an outage of the
-   * registry keeps that snapshot's generation, and ends shortly after the registry answers. With no `prior` the fault
+   * registry keeps that snapshot's generation, and the key it unwrapped, and ends shortly after the registry answers.
+   * That answer is the snapshot's alone ({@link Resolution.rodeOut}): it is not kept as the segment's resolution, and a
+   * snapshot built on it after the reader cache let that one go fails with the fault. With no `prior` the fault
    * fails the read, as a cold resolve's does. If `prior` found none or failed, the pointer is read once more rather than
    * a dead resolution re-armed (else the segment reads empty for a whole TTL window). Anything else — an access denial, a corrupt row, a
    * registry that answers NotFound — fails the read exactly as a cold resolve of the segment would, and the resolution
@@ -743,6 +751,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         const before = await prior.resolved.catch(() => null);
         if (before === null) return this.resolve(ref);
         this.retrySoon(resolution);
+        // What `prior` found is served to the snapshot that held it, and to nothing else. Kept as the segment's
+        // resolution, it would be built on again once the reader cache let that snapshot go, unwrapping the key again
+        // from the wrapped keys of a row the registry was not asked about; and a stream on the snapshot, once let go,
+        // would not re-check. Not kept, both resolve afresh, as a cold read does.
+        const key = this.keyOf(ref);
+        if (this.resolutions?.peek(key) === resolution) this.resolutions.delete(key);
+        resolution.rodeOut = { from: prior, fault: err };
         return before;
       }),
     };
@@ -791,11 +806,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     before: Snapshot | undefined,
   ): Snapshot {
     const prior = before?.target;
-    const target = resolution.resolved.then(async (resolved) =>
-      resolved === null
-        ? null
-        : this.liveOf(ref, resolved, prior === undefined ? null : await prior.catch(() => null)),
-    );
+    const target = resolution.resolved.then(async (resolved) => {
+      if (resolved === null) return null;
+      // A read that came while the refresh was in flight, after the reader cache let the snapshot it replaces go, built
+      // on the refresh as the segment's resolution: a ride-out is not served to it ({@link resolveNow}).
+      const rodeOut = resolution.rodeOut;
+      if (rodeOut !== undefined && before?.resolution !== rodeOut.from) throw rodeOut.fault;
+      return this.liveOf(ref, resolved, prior === undefined ? null : await prior.catch(() => null));
+    });
     return Snapshot.live(
       resolution,
       target,
