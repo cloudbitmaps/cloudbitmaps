@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,29 +27,27 @@ const SKIP_DIRS = new Set([
   '.pack-tmp',
   '.rss-stage',
   'golden',
-  // Sibling working trees live under `.worktrees/`. This is the only doc gate that walks from the repo ROOT,
-  // so without this it would scan a DIFFERENT commit's files and fail on content this commit already fixed —
-  // or pass because a stale tree happened to be clean. The other doc gates walk named directories and cannot
-  // reach in.
+  // Sibling working trees live under `.worktrees/`, which git does not track; named here as well so a tree
+  // added to the index by mistake is still not read as this commit's content.
   '.worktrees',
 ]);
 
 const EXTS = ['.ts', '.md', '.html', '.cjs', '.mjs', '.js', '.yml', '.yaml', '.json', '.txt'];
 
-/** Every tracked text file in the repo: this rule is about the repo being public, not about the tarball. */
+/**
+ * Every tracked text file in the repo: this rule is about the repo being public, not about the tarball. Listed from
+ * git's index rather than by walking the disk, so a file another test writes and removes while this one runs (a
+ * calibration run id it plants, say) is never listed and then found gone.
+ */
 function publicFiles(): string[] {
-  const out: string[] = [];
-  const walk = (rel: string): void => {
-    const abs = join(ROOT, rel);
-    if (!existsSync(abs)) return;
-    for (const entry of readdirSync(abs)) {
-      if (SKIP_DIRS.has(entry)) continue;
-      const childRel = rel === '.' ? entry : join(rel, entry);
-      if (statSync(join(ROOT, childRel)).isDirectory()) walk(childRel);
-      else if (EXTS.some((e) => entry.endsWith(e))) out.push(childRel);
-    }
-  };
-  walk('.');
+  const out = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter((f) => f !== '')
+    .map((f) => join(...f.split('/')))
+    .filter((f) => !f.split(/[\\/]/).some((segment) => SKIP_DIRS.has(segment)))
+    .filter((f) => EXTS.some((e) => f.endsWith(e)))
+    // A tracked file deleted in the working tree and not yet committed has nothing to read.
+    .filter((f) => existsSync(join(ROOT, f)));
   // Two files must spell the forbidden forms out as literals, because their job is to DEFINE the rule: this
   // one (the patterns, and the examples explaining what each costs a reader) and `CONTRIBUTING.md`, which
   // teaches it. The exemption is deliberately a two-entry list rather than a rule — "anything in backticks"
