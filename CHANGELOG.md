@@ -60,6 +60,14 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`GcsStorage` refuses, when it is built, a `client` it cannot send downloads through safely, where it used it as it
+  was.** Its downloads now go through a second client built from the same class and settings (see Fixed), so:
+  - a test double that is not a `Storage` client needs `retryOptions: { autoRetry: false }`, and is used as it is with
+    it; with the SDK's module mocked, pass the mock as `client`;
+  - a `Storage` whose `bucket` is stubbed on the instance, or whose class overrides `bucket` (a test double built on
+    `Storage`), is refused: stub `Storage.prototype` instead, or use a double that does not extend `Storage`;
+  - a `Storage` subclass whose constructor builds from its own configuration rather than the options it is given is
+    refused, even with `autoRetry: false`: pass a plain `Storage`, or have the constructor pass its options on.
 - **The driver contract says two more things a driver must do**, which the conformance suites the shipped drivers
   run now hold them to: a listing, of generations or of registry rows, yields every entry however many pages the
   service splits it into; and a registry over a bucket or container that does not exist fails a read, a listing and a
@@ -118,6 +126,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A GCS client you pass no longer crashes the process on a retried download.** `@google-cloud/storage` 7.x and 8.x
+  can throw `ERR_STREAM_UNABLE_TO_PIPE` outside any promise when they retry a download and the retry succeeds, which
+  ends the process. `GcsStorage` sent the downloads of a supplied `client` on that client, so one built with the SDK's
+  default retries could crash on any 503. Downloads now go through a twin of the client, built from its own class with the same credentials object, endpoint and settings and
+  the SDK's retries off, and the driver retries them itself, as it does for the client it builds. The client's other
+  requests keep its retries. A `Storage` client is always used through its twin, even one whose retries read off, since
+  the SDK turns them off while a delete or an upload with no precondition is in flight. The twin's own retry settings
+  are turned off over any its class set, and a twin that would use other credentials or another endpoint, as from a
+  subclass that builds from options of its own, is refused when the backend is built. The client `GcsStorage` builds
+  shares one credentials object with its download twin, so one token fetch serves both.
 - **A read over a custom source that names generations but not versions no longer caches one generation's chunks as
   another's.** For such a source (`getChunks` and `currentGeneration`, no `currentVersion`), a read that found its
   segment had moved, on a chunk served from the cache, went on taking the rest of its open stream, which could still be

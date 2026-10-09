@@ -1029,13 +1029,24 @@ SDK's own retries of that request fall inside it and nothing else the client sen
 also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, which reads as
 this library's word for the durable tier, so the backend takes it as `client`.
 
-The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
-and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
-`ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff, after
-a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its other requests keep
-the SDK's retries. A `client` you pass is used as given, so build it with `retryOptions: { autoRetry: false }`, which also
-turns off the SDK's retries of listings, metadata reads and resumable uploads on that client
-([why](production.md#reliability-retries-backoff--timeouts)).
+The client the backend builds sends each download once, because in `@google-cloud/storage` 7.x and 8.x (checked on
+7.22.0 and 8.1.0) a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the
+process with `ERR_STREAM_UNABLE_TO_PIPE`. The driver retries a download itself, up to three more times with backoff,
+after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504,
+and after nothing else (not a missing credentials file or a TLS failure); what still fails is a `TransientError`. Its
+listings, deletes, resumable uploads and the metadata read that settles a write keep its retry settings (under which the
+SDK sends a delete with no precondition once); a single-request conditional write is sent without them. A client you
+pass as `client` keeps its own retries for those requests: its downloads go through a twin of it, built from its own
+class with the same credentials object, endpoint, project, user agent, timeout, checksum generator and interceptors and
+the SDK's retries off ([why](production.md#reliability-retries-backoff--timeouts)). A `Storage` client is always used
+through its twin, which must have taken the settings that decide where and how a download goes: the same credentials
+object, URL and endpoint, and retry settings of its own, which are then turned off over any its class set. The backend
+refuses, when it is built, a client whose twin would not (a subclass that builds from options of its own), one whose
+class overrides `bucket` (as a test double built on `Storage` does), and one whose `bucket` is replaced on the instance
+(as by a test stub). Stub `Storage.prototype` (or `Bucket.prototype`, `File.prototype`) instead, which reaches the twin;
+a stub on the client's instance does not. A test double that is not a `Storage` client is used as it is when it has
+`retryOptions: { autoRetry: false }`, and refused without it; with the SDK's module mocked, pass the mock as `client`.
+What is set on a client after the backend was built, other than an interceptor, is not carried to the twin.
 
 A client's `timeout` does not bound a download on 8.x; `readTimeoutMs` does, and it is off (`0`) unless set. It bounds
 one read as a whole (a tail with the metadata read it falls back on for an empty object, a range, a registry row): one
