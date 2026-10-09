@@ -115,8 +115,10 @@ so, and so do the module headers in the code.
   is not checked, and a reader already open is not checked again until it is resolved again, evicted or invalidated.
   An object that is another one under the number (put back from outside the library, or restored beside a row that
   names another) is refused with `NotFoundError`, which says it is another object than its registry row names, and the
-  read resolves the segment again once. `checkConsistency({ summaries: true })` reports such a row as
-  `summary-mismatch`.
+  read resolves the segment again once. An erasure reads the generation it rewrites the same way, so it fails with
+  that `NotFoundError` and writes nothing rather than publish such an object as its rewrite, and a live `pin()` holds a
+  reader an earlier `pinAt` opened to the row's summary before it shares it. `checkConsistency({ summaries: true })`
+  reports such a row as `summary-mismatch`.
 
 ### Removed
 
