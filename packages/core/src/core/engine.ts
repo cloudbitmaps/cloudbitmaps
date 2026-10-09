@@ -23,7 +23,7 @@ import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
-import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
+import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
@@ -372,6 +372,11 @@ export class SegmentEngine {
   private readonly openStreams = new Set<StreamedChunks>();
   /** How many times {@link invalidate} has been called: a read compares it with the count it began under. */
   private invalidations = 0;
+  /**
+   * The cache-key prefixes ({@link segmentPrefix}) of the segments this engine reads, kept rather than encoded for each
+   * chunk. A kept prefix is the one {@link invalidate} finds the segment's chunks by.
+   */
+  private readonly prefixes = new KeptSegmentKeys(segmentPrefix);
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -1288,7 +1293,7 @@ export class SegmentEngine {
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
   private chunkCacheKey(ref: ChunkRef, version: string | number | undefined): string {
-    return version === undefined ? chunkRefKey(ref) : chunkGenKey(ref, version);
+    return chunkKeyUnder(this.prefixes.of(ref), ref.chunkKey, version);
   }
 
   /** The segment's chunk keys, ascending, checked as untrusted tier data. */

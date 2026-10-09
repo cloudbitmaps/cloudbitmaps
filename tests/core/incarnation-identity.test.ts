@@ -131,13 +131,21 @@ describe('a re-created name is a different segment, not the same one', () => {
     expect(after).not.toBe(before); // …the version is not
   });
 
-  it('a registry-less source has no incarnation to confuse, and says so', async () => {
+  it('a registry-less source has no row token, so its version is the generation and the object', async () => {
     const storage = new MemoryStorageDriver();
     const { CrbmStorageChunkSource } = await import('@/index');
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], {});
 
     const source = new CrbmStorageChunkSource(storage, {});
-    expect(await source.currentVersion(REF)).toBe('0'); // the generation alone
+    const version = await source.currentVersion(REF);
+    expect(version).toMatch(/^0#[0-9a-z]+\.[0-9a-z]+$/); // the generation, then the object's size and footer checksum
+
+    // The same name purged and loaded again out of band starts again at 0: another object, another version.
+    await storage.delete({ ...REF, generation: 0 });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [9], {});
+    const after = await new CrbmStorageChunkSource(storage, {}).currentVersion(REF);
+    expect(after).toMatch(/^0#/);
+    expect(after).not.toBe(version);
   });
 
   it('a segment with no generation has no version', async () => {

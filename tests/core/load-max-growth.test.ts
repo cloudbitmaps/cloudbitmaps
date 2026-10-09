@@ -192,10 +192,10 @@ describe('guard.maxGrowth with allowEmpty: true', () => {
   });
 
   it('fences the publish on what it judged: a segment that appears in between makes it superseded', async () => {
-    // A load that finds a row is fenced on that row's token whatever its options, so the case the bound itself
-    // fences is the one with no row. The guarded load judged "no current generation", so no ceiling applied; a
-    // writer then creates the segment with 10 ids. Publishing 1,000 over them on the strength of the stale verdict is
-    // what the fence on that absence refuses.
+    // A load that finds a row is fenced on that row's token whatever its options, and one that finds none on that
+    // absence. The guarded load judged "no current generation", so no ceiling applied; a writer then creates the
+    // segment with 10 ids. Publishing 1,000 over them on the strength of the stale verdict is what the fence on that
+    // absence refuses.
     const run = async (guard: { maxGrowth?: number }) => {
       const w = world();
       const realGet = w.registry.get.bind(w.registry);
@@ -219,10 +219,11 @@ describe('guard.maxGrowth with allowEmpty: true', () => {
     expect(guarded.r).toMatchObject({ published: false, reason: 'superseded' });
     expect(guarded.current).toBe(10);
 
-    // Control: without the bound, `allowEmpty: true` onto a segment with no row is the one bare forward-only publish.
+    // Without the bound the load judged nothing, and it is refused all the same: it found no row, and its publish is
+    // fenced on that absence whatever its options.
     const unguarded = await run({});
-    expect(unguarded.r.published).toBe(true);
-    expect(unguarded.current).toBe(1000);
+    expect(unguarded.r).toMatchObject({ published: false, reason: 'superseded' });
+    expect(unguarded.current).toBe(10);
   });
 });
 

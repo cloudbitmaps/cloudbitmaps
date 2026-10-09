@@ -140,6 +140,18 @@ class SystemRng implements Rng {
 const DEFAULT_CACHE_MAX_CHUNKS = 1024;
 /** Default in-flight fan-out for the admin scans (`subjectReport`/`eraseSubject`) — bounded, no thundering herd. */
 const DEFAULT_ADMIN_CONCURRENCY = 8;
+/**
+ * The row version a live version from a `CrbmStorageChunkSource` names: the version up to its last `#`, which starts
+ * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every row token. It is
+ * core's `rowVersionOf` for this one caller, which is handed only that source's versions; core keeps that function
+ * off its public entry.
+ */
+function rowVersionOfLive(version: string | null): string | null {
+  if (version === null) return null;
+  const cut = version.lastIndexOf('#');
+  return cut < 0 ? version : version.slice(0, cut);
+}
+
 /** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
 function validateConcurrency(concurrency: number | undefined): void {
   if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
@@ -1357,10 +1369,9 @@ export class CloudRoaring {
   /**
    * Write `ids` as a **new generation of `dest`** and publish it — the shared body of the `*Into` verbs. An `*Into`
    * materialisation is a load, and publishes the same way (hard invariant 1): every load that finds a row fences its
-   * publish on the row's token; a guarded load (the default, since the empty refusal needs the size of the current generation)
-   * also fences on the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead.
-   * Only an unguarded load (`allowEmpty: true`, with neither `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row publishes bare
-   * forward-only. The destination's previous generation stays readable until the publish lands (readers re-resolve
+   * publish on the row's token, and every load that finds none on that absence, guarded or not; a guarded load (the
+   * default, since the empty refusal needs the size of the current generation) also fences on the pointer it judged
+   * (`expectFrom`). The destination's previous generation stays readable until the publish lands (readers re-resolve
    * within `cache.genTtlMs`).
    *
    * This routes through `loadSegment` rather than writing the generation itself, and that is the whole point
@@ -1387,9 +1398,10 @@ export class CloudRoaring {
    * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
    * before you write the retry. `'superseded'` covers five different causes — the write-once PUT collided,
    * the pointer moved, a row appeared where the load found none, the row's token changed, the row was purged —
-   * and only the first three are the "somebody beat us" the name suggests. A token can also change on a write
-   * that is not a supersession at all, such as a `setRetention` on the destination. On top of that, the collection pass that runs AFTER a
-   * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
+   * and only the first two are always the "somebody beat us" the name suggests. A row can appear, and a token can
+   * change, on a write that is not a supersession at all: a `setRetention` on the destination creates its row when it
+   * has none, and rewrites it when it has one. On top of that, the collection pass that runs AFTER a successful
+   * publish can raise the same error. So: treat it as "re-read the destination and decide",
    * never as "the write did not happen".
    *
    * **And by default it collects nothing**, unlike `load()`. See the `keep` default below.
@@ -1459,8 +1471,8 @@ export class CloudRoaring {
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
-          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
-          `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
+          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
+          `(a retention policy does either), dropped or purged. Re-read the destination and re-run.`,
       );
     }
     return {
@@ -2009,12 +2021,13 @@ export class CloudRoaring {
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
         // version is `<generation>:<row token>` (invariant 1: the row's OCC token is the identity, the number
-        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too. Only a segment
-        // that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
+        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too, followed by `#` and
+        // the fingerprint of the object its reader opened, which a row does not name and is left out here. Only a
+        // segment that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
         if (this.crbmSource !== undefined) {
           const held = await this.crbmSource.currentVersion(ref);
           const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
-          if (held !== listed) this.engine.invalidate(ref);
+          if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
           ? { segment: rec.segment, namespace: rec.namespace }

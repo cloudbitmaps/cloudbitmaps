@@ -263,14 +263,15 @@ makes the coordinated restore point easy to hit rather than something you have t
    the restore: for up to `cache.genTtlMs` if it refreshes on a timer, and for as long as
    [readers still on an old generation](#readers-still-on-an-old-generation) says if it does not. A restored row
    carries the token it had at `T`, and every write after the restore gives it a token it never had, because each
-   write draws a random part of its token, so a store keying a segment's cached chunks by generation and token never
-   takes them for a generation written since. Optionally run a targeted `subjectReport`/read spot-check on a few
+   write draws a random part of its token, so a store keying a segment's cached chunks by generation and token, checked
+   against the object it opens, never takes them for a generation written since, nor for another object put back under
+   the same number. Optionally run a targeted `subjectReport`/read spot-check on a few
    known segments.
 
 ## Quiesce writers during a restore
 
 Writers are safe *against each other* without any coordination. A load publishes with a compare-and-swap fenced
-on the row it read (an unguarded load onto a segment with no row publishes forward-only instead), and a
+on the row it read (a load that read no row creates the row, which fails when one appeared meanwhile), and a
 subject-erasure rewrite on the generation it streamed, so the one that loses a race
 reports `superseded` rather than clobbering the newer generation: a load as `published: false, reason:
 'superseded'`, a rewrite as `erased: false, note: 'superseded'`. A load that finds its generation number already

@@ -7,7 +7,7 @@ import { nextGeneration } from '@/core/generation-gc';
 import { holdsObject } from '@/core/crbm-storage-source';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { IntegrityError, KeyUnavailableError } from '@/core/errors';
+import { IntegrityError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { roaringCodec } from '@/roaring-codec';
@@ -89,7 +89,9 @@ describe('a cleartext object under an encrypted segment', () => {
   it("a cleartext load racing the segment's first keyed load is refused at its publish, so reads go on", async () => {
     // An unguarded load with no keystore reads "no row", writes its cleartext object, and only then does the other
     // writer's keyed first load publish, creating the row with its key. The cleartext publish onto that row is the
-    // one way a cleartext generation could become current under a key; it is refused before its compare-and-swap.
+    // one way a cleartext generation could become current under a key. The load found no row and fences on that
+    // absence, so the row that appeared refuses it before its compare-and-swap, and the refusal deletes its cleartext
+    // object, which its footer proves its own: a cleartext object has no place in an encrypted segment's bucket.
     const { storage, registry } = world();
     const keystore = new InProcessKeystore({ keys: { k2: randomBytes(32) }, activeKeyId: 'k2' });
     const keyed = await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7, 8], {
@@ -112,17 +114,20 @@ describe('a cleartext object under an encrypted segment', () => {
         };
       },
     });
-    await expect(
-      loadSegment(
+    expect(
+      await loadSegment(
         SEG,
         [1, 2, 3],
         { storage: racing, registry, codec: roaringCodec },
         { allowEmpty: true },
       ),
-    ).rejects.toBeInstanceOf(KeyUnavailableError);
+    ).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     const row = (await registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
     expect(row.wrappedDeks?.length).toBeGreaterThan(0);
+    const left: number[] = [];
+    for await (const k of storage.list(SEG)) left.push(k.generation);
+    expect(left).toEqual([0]);
     // The segment reads as the keyed load wrote it: no cleartext generation became current.
     const reader = new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore }),
