@@ -15,9 +15,11 @@
  *
  * Refusing therefore has to clean up after itself. The object is already durable at that point, and it sits
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
- * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged, gone
- * or `destroyed`. Once another write has changed the row, the object's number may name a re-created segment's live
- * object, so it stays, and collection takes it like any other generation once one above it is current.
+ * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged (or
+ * differs only in its leases), gone or `destroyed`, or has key material when the load wrote cleartext. Under a row
+ * that is gone or keyed, a read of the object's footer must prove it the load's own first. Once another write has
+ * otherwise changed the row, the object's number may name a re-created segment's live object, so it stays, and
+ * collection takes it like any other generation once one above it is current.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';

@@ -168,10 +168,12 @@ so, and so do the module headers in the code.
   host other than AWS S3 unless set) the window remains. The condition names the object, not the row, so a rollback
   onto the generation being deleted still leaves the pointer on a missing object; on S3, whose ETag is computed from
   the bytes of an object stored without SSE-KMS or SSE-C, a load that writes exactly the holder's bytes under its
-  number, stored the same way, is not told apart; and three deletes stay unconditioned, each by number: a refused
-  rewrite's of its own object above the winner's pointer and a refused load's of its own object under an unchanged
-  row, since a write reports no version, and generation collection's, decided from a listing below the pointer, where
-  a number is taken again only after the pointer moves down
+  number, stored the same way, is not told apart; and every other delete stays unconditioned, by number: a refused
+  rewrite's of its own object above the winner's pointer, and a refused load's of its own object under a row that is
+  unchanged, changed only in its leases, or `destroyed`, since a write reports no version; generation collection's,
+  decided below the pointer from a listing or from the row's list of kept generations, where a number is taken again
+  only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a listing
+  names under a `destroyed` row, which every writer refuses until it is purged
   ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 
 ## [0.19.1] — 2026-10-09

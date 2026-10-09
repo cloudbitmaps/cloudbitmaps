@@ -270,11 +270,15 @@ missing object, which `checkConsistency()` reports. These limits hold on every d
 - A refused rewrite that deletes its own object again above the winner's pointer (see racing writers above) does not
   condition that delete, since the write returns no version: if another erasure deletes that object as a holder and a
   load takes its number in the same window, that delete removes the load's generation. A refused load that finds its
-  row unchanged deletes its own object by number for the same reason, in the same window.
-- Generation collection, the `keep: 0` collection an erasure runs among it, deletes by number what a listing names,
-  below the pointer, with no object read behind the decision. A number below the pointer is taken again only after the
-  pointer moves down (a rollback, or a purge and re-create), inside the round trip between the collection's re-read of
-  the row and its delete, which is the rollback case above.
+  row unchanged, changed only in its leases, or `destroyed` deletes its own object by number for the same reason, in
+  the same window.
+- Generation collection, the `keep: 0` collection an erasure runs among it, deletes by number what a listing or the
+  row's list of kept generations names, below the pointer, with no object read behind the decision. A number below the
+  pointer is taken again only after the pointer moves down (a rollback, or a purge and re-create), inside the round
+  trip between the collection's re-read of the row and its delete, which is the rollback case above.
+- `dropSegment`'s sweep, and the retention sweep's collection of a tombstoned segment, delete by number every object a
+  listing names under a `destroyed` row. Every writer refuses that row, so a number there is taken again only once the
+  row is purged and the name re-created.
 
 **The result of erasing one segment.** `eraseSubject` runs `eraseIdFromSegment` (on `@cloudbitmaps/core`, for flavor and
 driver authors) over every registered segment, and each ledger entry is that function's result.

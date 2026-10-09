@@ -1382,16 +1382,20 @@ export class CloudRoaring {
    * of it. A materialisation is a load whose ids happen to come from a combine instead of from upstream, so
    * everything `load()` learned the hard way applies unchanged: the generation is written UNPUBLISHED, the
    * guard runs while the old generation is still authoritative, the publish is fenced as above, and a refused
-   * object is reclaimed only when a re-read finds the row unchanged (the same token) or gone (hard invariant 1:
-   * deleting it after a purge-and-recreate would put a live row over a missing generation).
+   * object is reclaimed only when a re-read finds the row unchanged (the same token, or one that differs only in
+   * its leases), `destroyed`, or gone, or finds key material on it when the load wrote cleartext; under any other
+   * row it is kept (hard invariant 1: deleting it after a purge-and-recreate would put a live row over a missing
+   * generation).
    *
-   * Where the row is gone, the object is proved the load's own by its footer, and the delete passes the version
-   * that read reported, so on a storage driver that reports `conditionalDelete` an object put under the number
-   * since is kept. Where the row is unchanged, the check narrows the window rather than closing it: the row read
-   * and the delete are two round trips, and the delete is by number, since the write reports no version of the
-   * object it made. The collection a load runs carries the same residual, deleting by number what a listing
-   * names. The failure the checks leave when they refuse is an orphan object, which costs storage until
-   * something collects it — deliberately the cheaper side of the trade.
+   * Where the row is gone, or keyed over a cleartext write, the object is proved the load's own by its footer, and
+   * the delete passes the version that read reported, so on a storage driver that reports `conditionalDelete` an
+   * object put under the number since is kept. Where the row is unchanged or `destroyed`, the check narrows the
+   * window rather than closing it: the row read and the delete are two round trips, and the delete is by number,
+   * since the write reports no version of the object it made. Every other delete is by number too: a load's
+   * collection deletes what a listing, or the row's list of kept generations, names below the pointer, and a drop's
+   * sweep and a tombstoned segment's collection delete what a listing names under a `destroyed` row. The failure the
+   * checks leave when they refuse is an orphan object, which costs storage until something collects it —
+   * deliberately the cheaper side of the trade.
    *
    * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
    * swallowed everything, an operand that had not loaded yet — would silently replace `dest` with an empty
@@ -2407,10 +2411,12 @@ export class CloudRoaring {
    * published, a retention change, a rollback or an erasure wrote the row, or the row was deleted.
    *
    * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
-   * collection deliberately never looks — but only while the segment's registry row is unchanged or gone. Once
-   * another write has changed the row, the generation number it holds may name another incarnation's live object,
-   * so it leaves the orphan rather than risk deleting live data. No row's list names it, so it takes no place in a
-   * window, and a listing deletes it once a later generation is current above it.
+   * collection deliberately never looks — but only while the segment's registry row is unchanged (or differs only
+   * in its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
+   * encrypted segment's bucket. Under a row that is gone or keyed, a read of the object's footer must prove it the
+   * load's own first. Once another write has otherwise changed the row, the generation number it holds may name
+   * another incarnation's live object, so it leaves the orphan rather than risk deleting live data. No row's list
+   * names it, so it takes no place in a window, and a listing deletes it once a later generation is current above it.
    *
    * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
    * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists
