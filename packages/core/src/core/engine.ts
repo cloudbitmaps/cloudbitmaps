@@ -23,7 +23,7 @@ import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
-import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
+import { chunkKeyUnder, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
@@ -49,6 +49,8 @@ const COMBINE_RANGE_START = 4;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
+/** How many segments' cache-key prefixes a {@link SegmentEngine} keeps at hand: a few operands of one combine. */
+const RECENT_PREFIXES = 8;
 
 export interface EngineDeps {
   readonly storage: StorageChunkSource;
@@ -378,6 +380,18 @@ export class SegmentEngine {
   private readonly openStreams = new Set<StreamedChunks>();
   /** How many times {@link invalidate} has been called: a read compares it with the count it began under. */
   private invalidations = 0;
+  /**
+   * The last few segments' cache-key prefixes ({@link segmentPrefix}), newest first. Every chunk a read looks up is
+   * keyed under its segment's prefix, and encoding the segment's names again for each lookup cost about a third of a
+   * warm `has()`; comparing the two names is cheaper. A combine alternates between a few operands, which all fit. A
+   * prefix is the segment's names encoded and nothing else, so a kept one is what an encoding would give now, and the
+   * one {@link invalidate} finds the segment's chunks by.
+   */
+  private readonly recentPrefixes: Array<{
+    namespace: string | undefined;
+    segment: string;
+    prefix: string;
+  }> = [];
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -1290,7 +1304,18 @@ export class SegmentEngine {
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
   private chunkCacheKey(ref: ChunkRef, version: string | number | undefined): string {
-    return version === undefined ? chunkRefKey(ref) : chunkGenKey(ref, version);
+    return chunkKeyUnder(this.prefixOf(ref), ref.chunkKey, version);
+  }
+
+  /** The segment's {@link segmentPrefix}, from the last few the engine encoded when it is one of them. */
+  private prefixOf(ref: SegmentRef): string {
+    for (const k of this.recentPrefixes) {
+      if (k.segment === ref.segment && k.namespace === ref.namespace) return k.prefix;
+    }
+    const prefix = segmentPrefix(ref);
+    this.recentPrefixes.unshift({ namespace: ref.namespace, segment: ref.segment, prefix });
+    if (this.recentPrefixes.length > RECENT_PREFIXES) this.recentPrefixes.pop();
+    return prefix;
   }
 
   /** The segment's chunk keys, ascending, checked as untrusted tier data. */

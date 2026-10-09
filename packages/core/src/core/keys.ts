@@ -40,7 +40,15 @@ export function segmentPrefix(ref: SegmentRef): string {
 }
 
 export function chunkRefKey(ref: ChunkRef): string {
-  return `${segmentPrefix(ref)}${ref.chunkKey}`;
+  return chunkKeyUnder(segmentPrefix(ref), ref.chunkKey);
+}
+
+/**
+ * {@link chunkRefKey}, or {@link chunkGenKey} with a `version`, from the segment's {@link segmentPrefix} already
+ * encoded: for a caller that looks up many chunks of a few segments and keeps their prefixes.
+ */
+export function chunkKeyUnder(prefix: string, chunkKey: number, version?: string | number): string {
+  return version === undefined ? `${prefix}${chunkKey}` : `${prefix}${chunkKey}${FIELD}${version}`;
 }
 
 /**
@@ -56,7 +64,7 @@ export function chunkRefKey(ref: ChunkRef): string {
  * hands the new incarnation the old one's decoded chunks.
  */
 export function chunkGenKey(ref: ChunkRef, version: string | number): string {
-  return `${chunkRefKey(ref)}${FIELD}${version}`;
+  return chunkKeyUnder(segmentPrefix(ref), ref.chunkKey, version);
 }
 
 /**
