@@ -777,8 +777,10 @@ backend's `conditionalDelete` option says. A version names the object, not the k
 from the bytes, as an S3 ETag of an object stored without SSE-KMS or SSE-C is: two objects with the same bytes, each
 stored whole in one request, or each in parts of the same sizes, share one there. It is optional and additive: a driver
 of your own that omits it is read as `false`, and keeps deleting unconditionally. A driver that wraps another forwards
-`ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`: `tests/arch/storage-delete-forwarding.test.ts`
-holds every wrapper in this repository to it. The in-repo conformance suite's `conditional delete` case holds a driver to what it reports, and
+`ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`. In this repository
+`tests/arch/storage-delete-forwarding.test.ts` checks the first half, that a storage wrapper's `delete` takes and
+forwards the options, for the wrapper shapes it recognises; its header lists the shapes it does not see, and nothing
+checks that a wrapper hands on the tail read's `version`. The in-repo conformance suite's `conditional delete` case holds a driver to what it reports, and
 `storageDriverConformance`'s `conditionalDelete` option states at the call site what that must be.
 
 **`RegCaps.conditionalDelete` says what `delete` leaves behind.** `true`: a delete removes the row from the backend for

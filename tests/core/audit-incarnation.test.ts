@@ -433,8 +433,8 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     let fired = false;
     const racing: IStorageDriver = {
       ...denied,
-      delete: async (k) => {
-        await w.storage.delete(k);
+      delete: async (k, o) => {
+        await w.storage.delete(k, o);
         if (!fired && k.generation === 3) {
           fired = true;
           await dropSegment(
