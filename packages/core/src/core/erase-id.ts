@@ -460,7 +460,9 @@ async function eraseOnce(
         // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
         // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
         if (crypto === undefined) {
-          if (await read(() => objectIsEncrypted(deps.storage, key))) {
+          // The footer is asked only after a fault that is an answer: one the read retry gave up on says nothing about
+          // the object, and is thrown as it is, with no more reads.
+          if (!isTransientError(err) && (await read(() => objectIsEncrypted(deps.storage, key)))) {
             // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no
             // read through the library finds anything in it. Under a row with no pointer it is a first load's, sealed
             // under a key that load has not published yet; under a cleartext row with a pointer it is a first load's
