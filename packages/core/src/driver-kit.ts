@@ -40,7 +40,8 @@
  * other. A parameter added to a port method is optional, so an existing driver keeps compiling and keeps its old
  * behaviour until it implements the parameter: `IRegistryDriver.delete`'s optional expected token, and
  * `IStorageDriver.delete`'s optional `ifVersion` with `StorageCaps.conditionalDelete` and `getTail`'s optional
- * `version`, are the current examples: a driver that ignores them deletes unconditionally, as before.
+ * `version`, are the current examples: a driver that ignores them deletes unconditionally, as before. A driver that
+ * wraps another forwards `ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`.
  */
 
 // The ports a driver implements, and the brand that marks a pair of halves as a backend. `brandAsBackend` also

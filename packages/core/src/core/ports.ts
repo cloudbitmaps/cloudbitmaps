@@ -236,6 +236,10 @@ export interface StorageCaps {
    * the key with {@link WriteConflictError}, and reports a `version` on every {@link IStorageDriver.getTail} of an
    * object. `false` or absent: `delete` ignores `ifVersion` and removes whatever is under the key, and a caller that
    * decided to delete one object can remove another stored under the key since.
+   *
+   * A driver that learns this from its client may report `false` until its first delete given `ifVersion`; what the
+   * delete does is what it states. The S3 driver does: it reads where the client sends its requests, and whether the
+   * SDK sends the header, on its first such delete, and reports `false` for good when that cannot be found out.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -251,8 +255,9 @@ export interface TailRead {
    * taken from the response that carried `bytes`, or from the metadata read when no bytes were asked for. Opaque, and
    * compared by equality only, by the driver that reported it. It names the object, not the key: two objects stored
    * one after the other under one key carry different versions, except where the backend's version is computed from
-   * the bytes (an S3 ETag of an object stored without SSE-KMS or SSE-C is), where two objects with the same bytes share
-   * one. A driver that reports `conditionalDelete: true` reports it on every read; another may omit it.
+   * the bytes (an S3 ETag of an object stored without SSE-KMS or SSE-C is), where two objects with the same bytes, each
+   * stored whole in one request, or each in parts of the same sizes, share one. A driver that reports
+   * `conditionalDelete: true` reports it on every read; another may omit it.
    */
   readonly version?: string;
 }
@@ -308,7 +313,11 @@ export interface StorageDeleteOptions {
  *   absent object stays a no-op. A driver that reports `false`, or omits it, ignores `ifVersion` and deletes whatever is
  *   under the key. A number can be taken again once its object is deleted, so this is what keeps a delete decided from
  *   one read, and delayed, from removing an object stored under the number since: the erasure's delete of a holder
- *   above the pointer passes the version it read when it searched that object.
+ *   above the pointer passes the version it read when it searched that object, and a refused load's delete of an
+ *   object it proved its own by a footer read passes the version of that read.
+ * - **A driver that wraps another forwards `ifVersion` and the `version` of a tail read, or reports
+ *   `conditionalDelete: false`.** A wrapper that hands `delete` the key alone, and reports the inner driver's
+ *   capability, makes every conditional delete through it unconditional without a word.
  * - **A conditional delete may be sent again**, by the backend client's retry, after a lost response: a copy that meets
  *   its own landed delete finds the object absent, which is its success, and one that meets an object stored since is
  *   refused. It can remove nothing the first copy could not.

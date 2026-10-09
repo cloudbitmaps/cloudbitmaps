@@ -723,6 +723,9 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   followed by a delete is two steps, and does not qualify. A conditional delete may be sent again after a lost
   response: a copy that meets its own landed delete finds nothing, which is its success, so a service that answers a
   failed precondition for a key with no object is looked at again before the driver reports a conflict.
+- A driver that wraps another forwards `ifVersion` and the `version` of a tail read, or reports
+  `conditionalDelete: false`: a wrapper that hands `delete` the key alone, and reports the inner driver's capability,
+  makes every conditional delete through it unconditional without a word.
 - `list` is strongly consistent, read-after-delete: once `delete` resolves, the generation is no longer listed. The
   erasure's re-check for a generation still holding the id, `generationsRemaining`, the retention sweep's check that a
   tombstone's storage is gone, and rollback's post-move check prove a deletion or a presence by listing.
@@ -765,12 +768,16 @@ the row, which is correct.
 `version` for every object it reads, and `delete(key, { ifVersion })` removes the object only while it is the one that
 version names, refusing another with `WriteConflictError`, so a delete decided from one read and delayed cannot
 remove an object stored under the key since: a generation number can be taken again once its object is deleted. The
-erasure passes the version it read when it searched each holder above the pointer. `false` or absent: the version is
-ignored. The in-memory driver reports `true`, the local-filesystem one `false`, the cloud ones as their backend's
-`conditionalDelete` option says. A version names the object, not the key, except where the backend computes it from the
-bytes, as an S3 ETag of an object stored without SSE-KMS or SSE-C is: two objects with the same bytes share one there.
-It is optional and additive: a driver of your own that omits it is read as `false`, and keeps deleting
-unconditionally. The in-repo conformance suite's `conditional delete` case holds a driver to what it reports, and
+erasure passes the version it read when it searched each holder above the pointer, and a refused load the version of
+the footer read that proved its object its own. `false` or absent: the version is ignored. A driver that learns this
+from its client may report `false` until its first delete given `ifVersion`; what the delete does is what it states,
+and the S3 driver is one. The in-memory driver reports `true`, the local-filesystem one `false`, the cloud ones as their
+backend's `conditionalDelete` option says. A version names the object, not the key, except where the backend computes it
+from the bytes, as an S3 ETag of an object stored without SSE-KMS or SSE-C is: two objects with the same bytes, each
+stored whole in one request, or each in parts of the same sizes, share one there. It is optional and additive: a driver
+of your own that omits it is read as `false`, and keeps deleting unconditionally. A driver that wraps another forwards
+`ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`: `tests/arch/storage-delete-forwarding.test.ts`
+holds every wrapper in this repository to it. The in-repo conformance suite's `conditional delete` case holds a driver to what it reports, and
 `storageDriverConformance`'s `conditionalDelete` option states at the call site what that must be.
 
 **`RegCaps.conditionalDelete` says what `delete` leaves behind.** `true`: a delete removes the row from the backend for
