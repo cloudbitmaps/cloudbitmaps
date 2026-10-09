@@ -491,7 +491,8 @@ export interface CacheOptions {
    * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. With a
    * timed refresh ({@link CacheOptions.genTtlMs} above 0, and a backend) the store also keeps up to 8 times this many
    * segments' resolutions (what it read of each segment's row, never a key) for `genTtlMs`, apart from their readers: an
-   * evicted segment is then reopened with no registry read, on the generation it had resolved. A reader of a small generation, one whose whole object came with its tail read,
+   * evicted segment is then reopened with no registry read, only when a read needs a chunk the chunk cache does not hold,
+   * and on the generation it had resolved. A reader of a small generation, one whose whole object came with its tail read,
    * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
    * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built

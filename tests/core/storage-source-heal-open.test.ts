@@ -32,6 +32,7 @@ const freshStorage = (): LocalFsStorageDriver => new LocalFsStorageDriver(join(r
 function sweepingRegistry(
   inner: MemoryRegistryDriver,
   sweep: () => Promise<void>,
+  options: { summary?: boolean } = {},
 ): IRegistryDriver {
   let armed = true;
   return new Proxy(inner, {
@@ -43,10 +44,15 @@ function sweepingRegistry(
           armed = false;
           await sweep(); // gen 1 published and gen 0 deleted, while we are about to return "gen 0"
         }
-        return rec;
+        return options.summary === false ? withoutSummary(rec) : rec;
       };
     },
   }) as unknown as IRegistryDriver;
+}
+
+/** A row as a registry that keeps no summary returns it: nothing on it names the generation's object. */
+function withoutSummary(rec: RegistryRecord | null): RegistryRecord | null {
+  return rec === null ? null : { ...rec, summary: undefined };
 }
 
 describe('CrbmStorageChunkSource heals a generation swept before the reader opens', () => {
@@ -69,7 +75,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
   });
 
-  it('currentGeneration does not surface NotFoundError in the same race', async () => {
+  it('currentGeneration answers from the resolution and opens nothing, so the read after it meets the race, and heals', async () => {
     const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
@@ -82,10 +88,13 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     });
 
     const source = new CrbmStorageChunkSource(storage, { registry });
+    await expect(source.currentGeneration(SEG)).resolves.toBe(0); // what the row named when it was read
+    const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
+    expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
     await expect(source.currentGeneration(SEG)).resolves.toBe(1);
   });
 
-  it('currentVersion, which the engine calls before every read, heals the same race', async () => {
+  it("currentVersion answers from the row's summary and opens nothing: the read after it heals the race", async () => {
     const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
@@ -96,6 +105,30 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
       });
       await storage.delete({ ...SEG, generation: 0 });
     });
+
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    // The version the row read names: generation 0's, under which nothing of generation 1 is ever read.
+    await expect(source.currentVersion(SEG)).resolves.toMatch(/^0:/);
+    const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
+    expect(SafeBitmap.safeDeserialize(healed!, 1 << 20).toArray()).toEqual([1, 2, 3]);
+    await expect(source.currentVersion(SEG)).resolves.toMatch(/^1:/);
+  });
+
+  it('currentVersion over a row with no summary opens the object to name it, and heals the same race', async () => {
+    const storage = freshStorage();
+    const inner = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
+
+    const registry = sweepingRegistry(
+      inner,
+      async () => {
+        await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], {
+          registry: inner,
+        });
+        await storage.delete({ ...SEG, generation: 0 });
+      },
+      { summary: false },
+    );
 
     const source = new CrbmStorageChunkSource(storage, { registry });
     // Generation 1's version, of the one incarnation there is: `<generation>:<pointerId>`.
@@ -145,7 +178,11 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
  * pays it per operand. A retry bounded at 1,000 answers exactly as one bounded at two does, so only a count of
  * round trips can see the bound — which is what these tests are.
  */
-function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver) {
+function counting(
+  storage: LocalFsStorageDriver,
+  registry: MemoryRegistryDriver,
+  options: { summary?: boolean } = {},
+) {
   const calls = { regGet: 0, getTail: 0 };
   const countedStorage: IStorageDriver = {
     capabilities: () => storage.capabilities(),
@@ -163,7 +200,8 @@ function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver)
       if (prop !== 'get') return Reflect.get(target, prop, receiver) as unknown;
       return async (ref: SegmentRef): Promise<RegistryRecord | null> => {
         calls.regGet++;
-        return registry.get(ref);
+        const rec = await registry.get(ref);
+        return options.summary === false ? withoutSummary(rec) : rec;
       };
     },
   }) as unknown as IRegistryDriver;
@@ -171,12 +209,14 @@ function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver)
 }
 
 /** The pointer names a generation whose object is gone for good — the forbidden `missing-storage-generation` state. */
-async function tornSegment(): Promise<ReturnType<typeof counting>> {
+async function tornSegment(
+  options: { summary?: boolean } = {},
+): Promise<ReturnType<typeof counting>> {
   const storage = freshStorage();
   const registry = new MemoryRegistryDriver();
   await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
   await storage.delete({ ...SEG, generation: 0 });
-  return counting(storage, registry);
+  return counting(storage, registry, options);
 }
 
 describe('the heal is bounded to exactly two resolve-and-open round trips', () => {
@@ -189,15 +229,27 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
   });
 
-  it('currentGeneration against a permanently absent generation: two attempts, then propagate', async () => {
+  it('currentGeneration against a permanently absent generation answers the row, and opens nothing', async () => {
     const c = await tornSegment();
     const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
-    await expect(source.currentGeneration(SEG)).rejects.toThrow(/no such generation/);
+    await expect(source.currentGeneration(SEG)).resolves.toBe(0);
+    expect(c.calls).toEqual({ regGet: 1, getTail: 0 });
+  });
+
+  it("currentVersion against a permanently absent generation answers the row's summary; the read after it propagates", async () => {
+    const c = await tornSegment();
+    const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
+    await expect(source.currentVersion(SEG)).resolves.toMatch(/^0:/);
+    expect(c.calls).toEqual({ regGet: 1, getTail: 0 });
+    // The read meets it: the snapshot and the resolution are dropped, the row read once more, and the error stands.
+    await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(
+      /no such generation/,
+    );
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
   });
 
-  it('currentVersion against a permanently absent generation: two attempts, then propagate', async () => {
-    const c = await tornSegment();
+  it('currentVersion over a row with no summary, against a permanently absent generation: two attempts, then propagate', async () => {
+    const c = await tornSegment({ summary: false });
     const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
     await expect(source.currentVersion(SEG)).rejects.toThrow(/no such generation/);
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });

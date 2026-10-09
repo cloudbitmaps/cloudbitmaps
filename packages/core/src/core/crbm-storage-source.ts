@@ -122,7 +122,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
    * generations are immutable). Raise it for a big cache working set of small segments. A source with a timed refresh
    * also keeps up to 8 times this many segments' resolutions apart from their readers, for the TTL: the re-open then
-   * reads no row.
+   * reads no row, and comes only when a read needs the reader.
    */
   readonly maxOpenSegments?: number;
   /**
@@ -301,6 +301,12 @@ interface Live {
   readonly unwrap: (() => Promise<Aead>) | undefined;
   /** What the row's summary says of the generation, when the row's summary is usable for it. */
   readonly summary: () => Promise<SummaryDescription | undefined>;
+  /**
+   * The version any reader opened for this resolution names ({@link versionOfReader}), when the row's summary names the
+   * object: every live open is held to that object, so no reader that opens names another. `undefined` when the row has
+   * no summary it can use: only an open then says which object is under the number.
+   */
+  readonly version: () => Promise<string | undefined>;
   /** What the resolution weighs while no reader is open ({@link weightOf}). */
   readonly bytes: number;
 }
@@ -523,8 +529,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * Each segment's resolution, kept apart from its reader, by segment: what a read of its row found, for the TTL from
    * the instant that read was sent, whether or not the reader cache still holds the segment's reader. So letting a reader
-   * go moves nothing: the next read builds a snapshot on the resolution, reads no row, and opens the object again on
-   * the generation it had resolved. It holds the resolved fields only ({@link Resolved}), never a key, and
+   * go moves nothing: the next read builds a snapshot on the resolution, reads no row, and opens the object only when it
+   * needs a chunk the chunk cache does not hold. It holds the resolved fields only ({@link Resolved}), never a key, and
    * never a resolution that found no generation, which is read again by the next read as it always was.
    *
    * Only a source with a timed refresh has one: without it, letting a reader go is one of the few things that ever moves
@@ -708,11 +714,6 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return this.install(key, this.snapshotOn(ref, resolution, existing));
   }
 
-  /** The current resolved reader for a segment, refreshing on the TTL. */
-  private resolvedReader(ref: SegmentRef): Promise<CrbmReader | null> {
-    return this.liveSnapshot(ref).reader;
-  }
-
   /**
    * Read the segment's pointer now. The read is sent before this returns, and the TTL counts from this instant: a read
    * that answers late does not lengthen the life of what it found. The row read is always fresh, so what a snapshot on
@@ -872,27 +873,27 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The segment's current generation number — the engine keys its chunk cache by this so a generation bump
-   * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
-   * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
+   * The segment's current generation number, as its snapshot's resolution found it: no backend read within the TTL
+   * window, and no open of the object, ever. `null` if the segment has no committed generation. A generation swept from
+   * under the resolution is met by the read that fetches from it, which heals ({@link withFreshSnapshot}).
    *
-   * Heals a swept generation exactly like {@link withFreshSnapshot}: a caller that resolves the generation once
-   * per op, before any chunk fetch, would otherwise fail the whole operation rather than one chunk. The engine
-   * keys by {@link currentVersion} instead, which heals the same way, and falls back to this for a source that
-   * cannot report a version. It is spelled out rather than delegated because a lookup like this runs once per
-   * operand of every `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with
-   * no backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
-   * frame, a per-call closure, and an `await` on a plain number) for a race that fires only during a
-   * concurrent sweep. One retry, then propagate — same contract, same eviction rule.
+   * A resolution that fails with `NotFoundError` is resolved again once, then the error propagates, as for a read.
+   * It is spelled out rather than delegated because a lookup like this runs once per operand of every
+   * `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with no backend call at all.
+   * Routing it through the generic helper cost ~115 ns/op on that path (a second async frame, a per-call closure, and
+   * an `await` on a plain number).
    */
   async currentGeneration(ref: SegmentRef): Promise<number | null> {
     const snap = this.liveSnapshot(ref);
+    const settled = snap.settled;
+    if (settled !== undefined) return settled.reader?.generation ?? null;
     try {
-      return (await snap.reader)?.generation ?? null;
+      return (await (snap.target as Promise<Live | null>))?.target.generation ?? null;
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
       this.dropStale(segmentKey(ref), snap);
-      return (await this.resolvedReader(ref))?.generation ?? null; // a second miss propagates
+      const again = this.liveSnapshot(ref).target as Promise<Live | null>;
+      return (await again)?.target.generation ?? null; // a second miss propagates
     }
   }
 
@@ -927,33 +928,51 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * `<generation>#<object>` for a registry-less source, or `<generation>:<pointerId>#<object>` with one: the generation
-   * the segment's snapshot resolved, and the object its reader opened, by that object's size and footer checksum in
-   * base 36, which the open read anyway. The row's `pointerId` moves only with a write that names a field a read resolves
-   * through, at any value, so a lease or a policy write (a `setRetention`) leaves the version, the open reader and the
-   * decoded chunks as they were. Two objects do not share a version
-   * string, as far as their sizes and footer checksums tell them apart, whichever way a number came to name a second
-   * one: a name purged and loaded again (a new row, or with no registry the same bare number), a number taken again
-   * within one row once its object was deleted, or an object put back under its key from outside the library. That
-   * holds however long after its row read a reader opens: a snapshot that a `count()` resolved from the row opens its
-   * reader only when a later read needs it, and the object under the key may have changed in between. The version is
-   * opaque: compare two for equality.
+   * the segment's snapshot resolved, and the object a reader of it opens, by that object's size and footer checksum in
+   * base 36. The row's `pointerId` moves only with a write that names a field a read resolves through, at any value, so
+   * a lease or a policy write (a `setRetention`) leaves the version, the open reader and the decoded chunks as they were.
+   * Two objects do not share a version string, as far as their sizes and footer checksums tell them apart, whichever way
+   * a number came to name a second one: a name purged and loaded again (a new row, or with no registry the same bare
+   * number), a number taken again within one row once its object was deleted, or an object put back under its key from
+   * outside the library. The version is opaque: compare two for equality.
    *
-   * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its
-   * chunk cache, so it heals a swept generation exactly as {@link currentGeneration} does: unhealed, a cold read
-   * racing a publish and a `keep: 0` sweep failed the whole operation with `NotFoundError`, where the same race
-   * on a chunk fetch heals. Spelled out rather than delegated for the reason `currentGeneration` gives: it is
-   * almost always served from the cached snapshot with no backend call at all. One retry, then propagate.
+   * Where the row's summary names the object, the version is answered from the resolution, with no open: every live
+   * open of the generation is held to that object ({@link openLive}), refused as a move otherwise, so the one object any
+   * reader of this resolution can name is the one the summary names, and a version named from it is the one that
+   * reader's would be. So a read whose chunks are all in the chunk cache opens nothing, after the reader cache let the
+   * segment go included; an object under the number that is not the row's is met by the read that fetches from it,
+   * which refuses it and heals. Where the row has no summary it can use, or there is no registry, nothing names the
+   * object but the object: the reader is opened, and the version names what it opened, however long after its row read
+   * that is.
+   *
+   * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its chunk
+   * cache, so an open it makes heals a swept generation as a read does: unhealed, a cold read racing a publish and a
+   * `keep: 0` sweep failed the whole operation with `NotFoundError`, where the same race on a chunk fetch heals. Spelled
+   * out rather than delegated for the reason `currentGeneration` gives: it is almost always served from the cached
+   * snapshot with no backend call at all. One retry, then propagate.
    */
   async currentVersion(ref: SegmentRef): Promise<string | null> {
     const snap = this.liveSnapshot(ref);
-    let reader: CrbmReader | null;
+    const settled = snap.settled;
+    if (settled !== undefined) {
+      return settled.reader === null ? null : versionOfReader(settled.reader);
+    }
     try {
-      reader = await snap.reader;
+      return await this.versionOn(snap);
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
       this.dropStale(segmentKey(ref), snap);
-      reader = await this.resolvedReader(ref); // a second miss propagates
+      return await this.versionOn(this.liveSnapshot(ref)); // a second miss propagates
     }
+  }
+
+  /** {@link currentVersion} of one snapshot: named by the row's summary when it can be, else by the reader, opened. */
+  private async versionOn(snap: Snapshot): Promise<string | null> {
+    const live = await (snap.target as Promise<Live | null>);
+    if (live === null) return null;
+    const named = await live.version();
+    if (named !== undefined) return named;
+    const reader = await snap.reader;
     return reader === null ? null : versionOfReader(reader);
   }
 
@@ -1573,10 +1592,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         crypto: () => Promise.resolve(undefined),
         unwrap: undefined,
         summary: () => Promise.resolve(undefined),
+        version: () => Promise.resolve(undefined),
         bytes: weightOf(resolved),
       };
     }
-    const { generation, wrappedDeks: keys, summary } = resolved;
+    const { generation, lineage, wrappedDeks: keys, summary } = resolved;
     const unwrap =
       keys === undefined || keys.length === 0 || this.keystore === undefined
         ? undefined
@@ -1599,6 +1619,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       crypto,
       unwrap,
       summary: described,
+      version: once(async () => {
+        const named = (await described())?.fingerprint;
+        return named === undefined
+          ? undefined
+          : `${versionOf(generation, lineage)}#${compactFingerprint(named)}`;
+      }),
       bytes: weightOf(resolved),
     };
   }

@@ -108,12 +108,17 @@ so, and so do the module headers in the code.
   keeps what it read of each segment's row (the generation, its `pointerId`, the wrapped keys and the summary, never a
   key) for `cache.genTtlMs` from the instant that registry read was sent, in a cache of its own bounded at
   8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default; there is no new
-  option). After an eviction inside the TTL, a read sends no registry read: a `count()` sends nothing, and a read of the
-  object opens it again, a tail read, on the generation the store had resolved. A long read under reader-cache
-  pressure, as on a small Lambda, stays on the generation it resolved until the TTL lapses, as any read does, which is
-  within the written bound. `invalidate()` forgets the resolution, and so do a read that finds its generation swept and
-  any open that fails. A store with no timed refresh keeps no resolution, and an eviction resolves the segment again
-  there.
+  option). After an eviction inside the TTL, a `has()` whose chunk is cached and a `count()` send no request, where a
+  `has()` sent a registry read and a tail read and a `count()` the registry read; a read that needs a chunk sends the
+  tail read and the chunk's range, and no registry read. A long read under reader-cache pressure, as on a small Lambda,
+  stays on the generation it resolved until the TTL lapses, as any read does, and after an eviction a store can serve a
+  cached chunk of a generation another store erased from, up to the same `cache.genTtlMs`: both within the written
+  bound. The `.crbm` source's `currentVersion()` and `currentGeneration()` answer from the resolution and open nothing:
+  the version names the object the row's summary names, and a generation swept or an object replaced under the number
+  is met by the first read that opens the object, which resolves the row again; a row with no summary it can use still
+  has its object opened to name it. `invalidate()` forgets the resolution, and so do a read that finds its generation
+  swept and any open that fails. A store with no timed refresh keeps no resolution, and an eviction resolves the
+  segment again there.
 - **A reader's caches key on the generation with the row's `pointerId`, not its token.** A lease taken or released, a
   `setRetention` or a `clearRetention` leaves a warm reader's open object and decoded chunks in place: a warm `has()`
   after one, once `cache.genTtlMs` lapses, is the registry read alone, where it was a registry read, a tail read and a

@@ -443,3 +443,33 @@ describe('the bound: 8 x readerMax entries and readerMaxBytes / 16 bytes', () =>
     expect(x.resolution(A)).toBeUndefined();
   });
 });
+
+describe('the version and the generation answer from the resolution', () => {
+  it('without opening the object, and the version is the one the opened reader names', async () => {
+    const x = await world();
+    x.reset();
+    const version = await x.source.currentVersion(A);
+    expect(await x.source.currentGeneration(A)).toBe(0);
+    expect(x.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
+    await x.open(A);
+    expect(x.sent().tails).toBe(1);
+    expect(await x.source.currentVersion(A)).toBe(version);
+    // and after the reader is let go, from the kept resolution again
+    await x.letAGo();
+    x.reset();
+    expect(await x.source.currentVersion(A)).toBe(version);
+    expect(x.sent()).toEqual({ rows: 0, tails: 0, ranges: 0 });
+  });
+
+  it('a row with no summary it can use names no object: the version opens it, as before', async () => {
+    const x = await world();
+    x.rows.state.tamper = (row) => ({ ...row, summary: undefined });
+    x.reset();
+    const version = await x.source.currentVersion(A);
+    expect(x.sent()).toEqual({ rows: 1, tails: 1, ranges: 0 });
+    await x.letAGo();
+    x.reset();
+    expect(await x.source.currentVersion(A)).toBe(version);
+    expect(x.sent()).toEqual({ rows: 0, tails: 1, ranges: 0 });
+  });
+});

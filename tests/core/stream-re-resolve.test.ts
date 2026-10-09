@@ -448,25 +448,31 @@ describe('under reader-cache pressure, an erasure while a read is open', () => {
   );
 
   it.each(MODES)(
-    "warm (%s): another store's erasure stops the read serving the erased id once cache.genTtlMs lapses",
+    "warm (%s): another store's erasure stops the read serving the erased id once cache.genTtlMs lapses, and only then",
     async (mode) => {
-      inMode(mode);
-      const w = await world({ ttl: TTL, readerMax: 1 });
-      await addMirror(w);
-      for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
-      for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
-      const victim = 60 * CHUNK + 1; // past the window: chunk 60 of 120
-      const got = await reach(w.store, 'intersect', async () => {
-        const ledger = await w.open().eraseSubject(victim, { namespace: 'ns' });
-        expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
-        w.clock.advance(TTL + 1);
-      });
-      expect(got.error).toBeNull();
-      expect(got.after.includes(victim)).toBe(false);
-      expect(
-        got.after.some((id) => id > victim),
-        'control: the read went on past the victim',
-      ).toBe(true);
+      const served: Record<'lapse' | 'no lapse', boolean> = { lapse: true, 'no lapse': false };
+      for (const lapse of [true, false]) {
+        inMode(mode);
+        const w = await world({ ttl: TTL, readerMax: 1 });
+        await addMirror(w);
+        for await (const id of w.store.segment('s', { namespace: 'ns' }).iterate()) void id;
+        for await (const id of w.store.segment('mirror', { namespace: 'ns' }).iterate()) void id;
+        const victim = 60 * CHUNK + 1; // past the window: chunk 60 of 120
+        const got = await reach(w.store, 'intersect', async () => {
+          const ledger = await w.open().eraseSubject(victim, { namespace: 'ns' });
+          expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
+          if (lapse) w.clock.advance(TTL + 1);
+        });
+        expect(got.error).toBeNull();
+        served[lapse ? 'lapse' : 'no lapse'] = got.after.includes(victim);
+        expect(
+          got.after.some((id) => id > victim),
+          'control: the read went on past the victim',
+        ).toBe(true);
+      }
+      // Within the bound: inside the TTL the warm read still serves the chunk it cached, readers let go or not, and
+      // the lapse is what stops it.
+      expect(served).toEqual({ lapse: false, 'no lapse': true });
     },
     60_000,
   );

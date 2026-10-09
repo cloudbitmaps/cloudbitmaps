@@ -386,8 +386,9 @@ between here and there:
     was sent, whether or not the segment's reader is still open, in a cache bounded by 8 × `cache.readerMax` entries and
     `cache.readerMaxBytes` / 16 bytes. A store reading more segments at once than its reader cache keeps (as on a small
     Lambda) no longer asks the registry again for a segment whose reader was let go, and every chunk of a read agrees on
-    one generation until the refresh. An eviction costs the reopen of the object, and no registry read. A store with no
-    timed refresh keeps no resolution, and an eviction re-resolves there.
+    one generation until the refresh. An eviction costs only the reopen a chunk actually needs: the version a cached
+    chunk is checked against comes from the row's summary, which names the object, so a read whose chunks are all
+    cached opens nothing. A store with no timed refresh keeps no resolution, and an eviction re-resolves there.
 
 ## Planned / exploring
 

@@ -139,9 +139,10 @@ bound is stated; other pages link here.
 - **An eviction moves nothing on a store with a timed refresh.** The store keeps each segment's resolution (the fields
   of its row a read resolves through: the generation, the `pointerId`, the wrapped keys and the summary, never a key)
   apart from its reader, for `cache.genTtlMs` from the instant the registry read that made it was sent. When the reader
-  cache evicts a segment's reader, the next read builds on that resolution: it reads no row, and opens the object again
-  on the generation it had resolved. So a read under reader-cache pressure, as on a small Lambda, agrees on one
-  generation until the TTL lapses, as any read does: within
+  cache evicts a segment's reader, the next read builds on that resolution: it reads no row, and opens the object only
+  when it needs a chunk the chunk cache does not hold. So a read under reader-cache pressure, as on a small Lambda,
+  agrees on one generation until the TTL lapses, as any read does, and after an eviction a store can serve a cached
+  chunk of a generation another store erased from, up to the same `cache.genTtlMs`: both within
   [the bound an erasure gives another store](erasure.md#who-stops-seeing-the-id-and-when). The resolutions are bounded
   apart from the readers: up to 8 × `cache.readerMax` segments and `cache.readerMaxBytes` / 16 bytes, so 8,192 and
   4 MiB by default ([what they hold](sizing.md#what-each-reader-holds)), and a segment whose resolution went too is
@@ -210,7 +211,11 @@ the other object, so a load that was refused, or whose publish
 earlier generation. A chunk cached from one object is never served for another, as far as their sizes and footer
 checksums tell them apart, so a read does not mix the two. A segment reopened after the reader cache let it go is the
 same object, and its cached chunks still answer; with a timed refresh it is reopened from the resolution the store
-kept, with no row read.
+kept, with no row read. The version a cached chunk is looked up under comes from the row's summary, which names the
+object, so a read whose chunks are all in the chunk cache opens nothing. An object under the number that is not the
+one the row names is met by the first read that opens the generation, which refuses it and resolves the row again;
+until then the cached chunks answer for the object the row named, as they would had the reader stayed open. A row
+with no summary the store can use names no object, so there the version comes from the object, opened.
 
 What the check does not cover:
 

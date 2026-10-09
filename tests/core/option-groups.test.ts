@@ -107,7 +107,9 @@ describe('grouped options reach the thing they configure', () => {
   // ceiling someone had deliberately lowered for a small heap, and nothing else would notice.
   //
   // The effect: one reader, two segments, read alternately. At a ceiling of 1 each read evicts the other's
-  // reader and must re-open it with a fresh tail GET; at the default both stay open.
+  // reader and must re-open it with a fresh tail GET; at the default both stay open. Each read is an `iterate`, which
+  // needs the generation's index, so only an open reader answers it: a `has()` of a cached chunk would open nothing
+  // either way, since the store keeps a segment's resolution when its reader goes.
   // Re-opening an evicted reader costs a TAIL read, not a chunk GET, so count at the driver rather than
   // through the metrics sink (which counts chunk gets and is identical either way, so an assertion on it
   // cannot tell the two ceilings apart).
@@ -135,8 +137,11 @@ describe('grouped options reach the thing they configure', () => {
       cache,
     });
     for (let i = 0; i < 4; i++) {
-      await store.segment('a').has(1);
-      await store.segment('b').has(1);
+      for (const seg of ['a', 'b']) {
+        const ids: number[] = [];
+        for await (const id of store.segment(seg).iterate()) ids.push(id);
+        expect(ids).toEqual([1]);
+      }
     }
     return tails;
   };

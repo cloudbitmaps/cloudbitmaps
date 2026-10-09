@@ -48,8 +48,8 @@ rates above. Both take memory, and the default chunk cache holds a small share o
 | **Large** | 38 MiB | fits | 2,000,000 | 10 GB | 1,953× it | 0.051% |
 <!-- SIZING:READERS:END -->
 
-A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a tail read each, which
-**neither the bill below nor the estimator's report prices**: the report warns only when there are more hot segments
+A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a tail read each when a
+read needs a chunk its chunk cache does not hold, which **neither the bill below nor the estimator's report prices**: the report warns only when there are more hot segments
 than the default `cache.readerMax`, since it sees neither your store's own setting nor how large each index is. It reads a segment's pointer again only when the segment's
 resolution, kept apart from its reader, lapses (the pointer refresh the bill prices) or is let go too; a store with no
 timed refresh keeps no resolution, and reads the pointer at every reopen. Two more things about these columns:

@@ -209,18 +209,20 @@ describe('a live read after its generation number is taken again inside the refr
     expectOneGeneration(await collect(w.a.iterate()), OLD, NEW);
   });
 
-  it('a has() after the count answers from one generation: never the erased id and a new id both', async () => {
+  it('has() after the count: each answer is one generation, the first open moves the store on, and it never goes back', async () => {
     const w = await world();
     await warmLetGoAndCount(w);
     await takeNumberAgain(w);
-    // 20 is only in the old object's chunk 0, and 131102 only in the new object's chunk 2.
-    const pair = [await w.a.has(20), await w.a.has(2 * HI + 30)];
-    expect([
-      [true, false],
-      [false, true],
-    ]).toContainEqual(pair);
-    expect(await w.a.has(20)).toBe(pair[0]);
-    expect(await w.a.has(30)).toBe(pair[1]);
+    // 20 is only in the old object's chunk 0, which the store cached, and 131102 only in the new object's chunk 2.
+    // Inside the TTL the cached chunk answers for the generation the store resolved, the old object, as it would had
+    // the reader stayed open: another store's erasure reaches it within cache.genTtlMs. A chunk it does not hold opens
+    // the generation, and the open refuses the new object, as another than the row the store resolved names: the store
+    // reads the row again, and the new object.
+    expect(await w.a.has(20)).toBe(true);
+    expect(await w.a.has(2 * HI + 30)).toBe(true);
+    // From then on, the new object's answers only: never the old one's again.
+    expect(await w.a.has(20)).toBe(false);
+    expect(await w.a.has(30)).toBe(true);
   });
 
   it('an object of the same size under the retaken number is told apart by its footer checksum', async () => {
@@ -317,6 +319,11 @@ describe('the source names the object a chunk was read from', () => {
     await w.letGoAndSummarize();
     await w.takeAgain();
     expect(await sizeOfGeneration1(w.backend.storage)).toBe(size);
+    // Until something opens the generation, the version is the one the kept resolution names: the old object's, under
+    // which only the old object's chunks were ever read. The first open refuses the new object, as another than the row
+    // it was resolved from names, and resolves the row again.
+    expect(await w.source.currentVersion(A)).toBe(old);
+    expect(await w.source.listChunkKeys(A)).toEqual([0, 1]);
     const now = await w.source.currentVersion(A);
     expect(now).not.toBe(old);
     expect((await all(w.source.getChunks!(A, [0, 1]))).map((c) => c.version)).toEqual([now, now]);
@@ -333,10 +340,12 @@ describe('the source names the object a chunk was read from', () => {
     const was = await w.source.currentVersion(A);
     expect(first.value).toMatchObject({ key: 0, version: was });
     await w.letGoAndSummarize();
-    // The row has not moved, so the stream takes on the count's snapshot and goes on with the object it has.
+    // The count's snapshot is on the resolution the stream reads by, so the stream goes on with the object it has.
     expect((await stream.next()).value).toMatchObject({ key: 1, version: was });
     await w.takeAgain();
-    // Another read opens the snapshot's reader: the object now under number 1.
+    // Another read opens the count's snapshot: it refuses the object now under number 1, as another than the row it was
+    // resolved from names, and resolves the row again.
+    expect(await w.source.listChunkKeys(A)).toEqual([0, 1, 2, 3]);
     const now = await w.source.currentVersion(A);
     expect(now).not.toBe(was);
     const third = (await stream.next()).value as ChunkRead;
@@ -390,7 +399,7 @@ describe('a running stream and another read opening its segment', () => {
       expect((await stream.next()).value).toMatchObject({ key: 0 });
       await source.listChunkKeys(B); // the reader cache lets `a` go
       armed = true;
-      const other = source.currentVersion(A);
+      const other = source.listChunkKeys(A);
       other.catch(() => undefined);
       while (held.length === 0) await sleep(1);
       return { stream, other, open: held[0]! };
@@ -483,7 +492,7 @@ describe('a running stream and another read opening its segment', () => {
       await w.takeAgain();
       await spoil(w.backend.storage);
       // Another read opens the count's snapshot: the open fails.
-      await expect(w.source.currentVersion(A)).rejects.toThrow();
+      await expect(w.source.listChunkKeys(A)).rejects.toThrow();
       return stream;
     }
 
@@ -557,7 +566,7 @@ describe('the version’s spelling', () => {
 });
 
 describe('a reopen of the same object costs what it did', () => {
-  it('after the reader cache lets a segment go, its cached chunks still answer: a tail read, no pointer read and no range', async () => {
+  it('after the reader cache lets a segment go, its cached chunks still answer: a has() sends nothing, an iterate a tail read', async () => {
     const w = await world();
     expect(await w.a.has(20)).toBe(true);
     expect(await w.a.has(HI + 20)).toBe(true);
@@ -565,10 +574,15 @@ describe('a reopen of the same object costs what it did', () => {
     expect(await w.evictors[0]!.has(1)).toBe(true);
     let before = w.requests();
     let hits = w.cacheHits();
-    // The resolution was kept: the reopen reads no row.
+    // The resolution was kept, and the row's summary names the object: nothing is read or opened.
     expect(await w.a.has(20)).toBe(true);
-    expect(w.requests()).toEqual({ ...before, tail: before.tail + 1 });
+    expect(w.requests()).toEqual(before);
     expect(w.cacheHits()).toBe(hits + 1);
+    // An iterate opens the object for its shape, from the kept resolution: a tail read, and no row read.
+    before = w.requests();
+    expect(await w.a.has(HI + 20)).toBe(true);
+    expect(await collect(w.a.iterate())).toEqual(OLD);
+    expect(w.requests()).toEqual({ ...before, tail: before.tail + 1 });
     // Warm: nothing at all.
     before = w.requests();
     expect(await w.a.has(HI + 20)).toBe(true);

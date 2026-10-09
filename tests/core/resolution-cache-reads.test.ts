@@ -13,9 +13,10 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * What a read costs, and what it serves, once the reader cache has let its segment go inside `cache.genTtlMs`. The store
- * keeps the segment's resolution apart from its reader, so the read sends no registry read: it opens the object again
- * on the generation it had resolved. Each count is the reader store's requests, against a world of two segments and a
- * reader cache of one, so reading `b` lets `a`'s reader go.
+ * keeps the segment's resolution apart from its reader, so the read sends no registry read, and opens the object only
+ * when a chunk it needs is not in the chunk cache: the version a cached chunk is checked against comes from the row's
+ * summary, which names the object by its fingerprint. Each count is the reader store's requests, against a world of two
+ * segments and a reader cache of one, so reading `b` lets `a`'s reader go.
  */
 
 const NS = 'ns';
@@ -111,10 +112,10 @@ async function letGo(options: { ttl?: number; encrypted?: boolean } = {}) {
 }
 
 describe('after the reader cache lets a segment go, inside cache.genTtlMs', () => {
-  it('a has() whose chunk is cached reopens the object, and reads no row', async () => {
+  it('a has() whose chunk is cached sends nothing', async () => {
     const w = await letGo();
     expect(await w.a.has(1)).toBe(true);
-    expect(w.sent()).toEqual({ rows: 0, tails: 1, ranges: 0 });
+    expect(w.sent()).toEqual({ rows: 0, tails: 0, ranges: 0 });
   });
 
   it('a has() that needs a chunk sends one tail read and its range, and no row read', async () => {
@@ -135,26 +136,26 @@ describe('after the reader cache lets a segment go, inside cache.genTtlMs', () =
     expect(w.sent()).toEqual({ rows: 0, tails: 1, ranges: 1 });
   });
 
-  it('encrypted: a has() whose chunk is cached reopens the object with the key, and reads no row', async () => {
+  it('encrypted: a has() whose chunk is cached sends nothing, and opens the sealed summary with the key', async () => {
     const w = await letGo({ encrypted: true });
     expect(await w.a.has(1)).toBe(true);
-    expect(w.sent()).toEqual({ rows: 0, tails: 1, ranges: 0 });
+    expect(w.sent()).toEqual({ rows: 0, tails: 0, ranges: 0 });
     expect(w.unwraps()).toBe(1);
   });
 
-  it('once the TTL lapses, the row is read again', async () => {
+  it('once the TTL lapses, the row is read again, and only the row', async () => {
     const w = await letGo();
     w.clock.advance(TTL);
     expect(await w.a.has(1)).toBe(true);
-    expect(w.sent()).toEqual({ rows: 1, tails: 1, ranges: 0 });
+    expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
   });
 });
 
 describe('a store with no timed refresh resolves a segment the reader cache let go again', () => {
-  it('genTtlMs 0: a has() whose chunk is cached reads the row, and reopens the object', async () => {
+  it('genTtlMs 0: a has() whose chunk is cached reads the row, and opens nothing', async () => {
     const w = await letGo({ ttl: 0 });
     expect(await w.a.has(1)).toBe(true);
-    expect(w.sent()).toEqual({ rows: 1, tails: 1, ranges: 0 });
+    expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
   });
 });
 
@@ -197,9 +198,9 @@ describe('an object replaced under the same generation and pointerId, under read
       // The reopen read the row once more, as for a swept generation, and refused the object again.
       expect(w.sent().rows).toBe(1);
       await expect(collect(w.a.iterate())).rejects.toBeInstanceOf(NotFoundError);
-      // A read of a cached chunk reopens the object too, for its version, and is refused the same way.
-      await expect(w.a.has(20)).rejects.toBeInstanceOf(NotFoundError);
-      await expect(w.a.has(999)).rejects.toBeInstanceOf(NotFoundError);
+      // The chunk cached from the object the row names still answers for it, and nothing of the replacement does.
+      expect(await w.a.has(20)).toBe(true);
+      expect(await w.a.has(999)).toBe(false);
       expect(await w.a.count()).toBe(OLD.length);
       // Put back, the object is the row's again, and the read serves it.
       if (!encrypted) {

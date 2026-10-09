@@ -212,8 +212,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 
   It assumes each hot segment stays open in the reader's cache: 1,024 segments by default (`cache.readerMax`), and
   64 MiB of parsed indices, and of the chunk bytes a reader keeps of a small generation (`cache.readerMaxBytes`). A read
-  of a segment the cache evicted opens it again, a tail read, which the model does not price, and the report says so
-  when `hotSegments` is past 1,024. Its pointer is not read again for the eviction: the store keeps the segment's
+  of a segment the cache evicted opens it again when it needs a chunk the chunk cache does not hold, a tail read, which
+  the model does not price, and the report says so when `hotSegments` is past 1,024. Its pointer is not read again for the eviction: the store keeps the segment's
   resolution apart from its reader (up to 8 × `cache.readerMax` segments), and reads the pointer when that lapses, which
   is the refresh priced here. A store with no timed refresh keeps none, and reads the pointer at every reopen, unpriced.
   Nor does the model price the index each reader opens again after every load. Size the caches to keep the hot set
