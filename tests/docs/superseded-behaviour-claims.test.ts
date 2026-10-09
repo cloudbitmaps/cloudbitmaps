@@ -822,6 +822,19 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: "an erasure that finds a holder on a row with no pointer renews the row's `pointerId` and deletes it: the first load that wrote it is refused at its publish. Only an erasure that finds no holder writes nothing",
   },
+  // The storage driver port has a conditional delete: `delete(key, { ifVersion })`, which a driver that reports
+  // `conditionalDelete` applies. No page may say the port has none; one may say which drivers do not report it.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:the )?storage(?: driver)? port (?:has|offers|provides) no conditional delete\b` +
+          String.raw`|\bno storage(?: driver)? port (?:has|offers|provides) (?:a|any) conditional delete\b` +
+          String.raw`|\bIStorageDriver\b\`?,? (?:has|offers|provides) no conditional delete\b`,
+      ),
+      'i',
+    ),
+    why: "a storage driver's `delete` takes `{ ifVersion }`, and one that reports `conditionalDelete` removes only the object that version names: say which deletes pass it, or which drivers do not report it",
+  },
 ];
 
 /**
@@ -1372,6 +1385,9 @@ describe('no document claims behaviour this library does not have', () => {
     'An object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: the\n  erasure writes nothing to such a row',
     'is reported as an `error: …` note and not deleted: the erasure writes nothing to such a row, so the load that wrote the object may still publish it.',
     'The erasure refuses an unpublished holder instead of deleting it.',
+    'one round trip remains between that read and the delete, and the\n  storage driver port has no conditional delete to close it.',
+    'except one whose check runs before the delete, and no storage port offers a conditional delete to close it.',
+    'trips, and `IStorageDriver` has no conditional delete to make them one.',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1561,6 +1577,10 @@ describe('no document claims behaviour this library does not have', () => {
     'A publish that may still land must not find its object gone.',
     'Its object is kept, since the write may still land; re-run the write, which numbers past it.',
     'A refused load keeps its object when the row has changed, and the next erasure deletes it.',
+    'It has no conditional delete (`conditionalDelete: false`), and `delete` ignores `ifVersion`.',
+    'the counting store vouches for no conditional delete',
+    'The local-filesystem driver has no conditional delete, so the window stays open there.',
+    'On a driver that does not report `conditionalDelete`, the delete removes whatever is under the number.',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
