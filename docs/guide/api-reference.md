@@ -337,7 +337,7 @@ that holds one can run it. Every other verb is a store method; the standalone fo
 |---|---|---|
 | `new InProcessKeystore({ keys, activeKeyId, recoveryKeyId? })` | `encryption.keystore` (store) | encryption-at-rest + crypto-shred (BYOK) |
 | `new CountingMetricsSink()` (or your own `IMetricsSink`; omit the option for the no-op) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` / `advisory` events |
-| `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit`, on each call that writes: `store.load`, the `*Into` verbs, `store.rollback`, `store.eraseSubject`, `store.dropSegment`, `destroySegment`, `eraseNamespace` and `store.retireExpired` | compliance trail — `segment.publish` / `segment.load-refused` / `segment.rollback` / `segment.rewrite` / `segment.erase` / `segment.dispose` / `namespace.erase` |
+| `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit`, on each call that writes: `store.load`, the `*Into` verbs, `store.rollback`, `store.eraseSubject`, `store.dropSegment`, `destroySegment`, `eraseNamespace` and `store.retireExpired` | compliance trail — `segment.publish` / `segment.load-refused` / `segment.rollback` / `segment.rewrite` / `segment.collect` / `segment.erase` / `segment.dispose` / `namespace.erase`; each `segment.*` event carries the row's `incarnation` |
 
 ### CLIs (run as binaries, env-configured)
 
@@ -397,7 +397,7 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 ### Export / eject
 
 `ExportSink` · `ExportWriter` · `ExportFormat` · `ExportOptions` · `ExportedSegment` · `ExportFailure` ·
-`ExportManifest`
+`ExportSkipped` · `ExportManifest`
 
 ### Cost & observability
 
@@ -950,7 +950,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 · `LoadResult` · `LoadRefusal` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `SegmentStat` · `PinAt`
 · `CrbmStorageChunkSourceOptions` · `PinOptions` · `Lease` · `LeaseEntry` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
-`ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
+`ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
 · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
 · `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `GenerationMetadata`

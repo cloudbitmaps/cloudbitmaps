@@ -91,6 +91,7 @@ describe('export-segments CLI', () => {
         generatedAt: string;
         segments: Array<{ segment: string }>;
         failed: unknown[];
+        skipped: unknown[];
       };
       expect(mani.version).toBe(1);
       expect(mani.format).toBe('roaring');
@@ -98,6 +99,7 @@ describe('export-segments CLI', () => {
       expect(mani.generatedAt).toBe(new Date(0).toISOString());
       expect(mani.segments.map((s) => s.segment).sort()).toEqual(['a', 'b']);
       expect(mani.failed).toEqual([]); // happy path: nothing failed
+      expect(mani.skipped).toEqual([]); // and no row was a tombstone
 
       // No leftover `.part` temp files anywhere — segment files AND the manifest use atomic temp→rename.
       const defaultDir = await readdir(join(out, '_default'));

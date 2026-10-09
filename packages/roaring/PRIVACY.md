@@ -76,8 +76,11 @@ It reuses the store's own drivers (so build the store with a backend). It return
 **erasure ledger** — one entry per segment the id was found in, `{ segment, namespace?, erased, fromGeneration,
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
 one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id found only
-outside the current generation (a retained *superseded* one, or one above the pointer after a rollback) is
-collected rather than rewritten, so it emits no event and its ledger entry carries no `generation`. Segments the id is
+outside the current generation (a retained *superseded* one, one above the pointer after a rollback, or an object
+left under a tombstone) is collected rather than rewritten, so it emits `segment.collect { fromGeneration, collected }`
+instead and its ledger entry carries no `generation`. Each `segment.*` event also names the segment's `incarnation`
+when its registry token carries one, so a segment created again under the same name is told apart from the one
+erased. Segments the id is
 not in are not listed. `store.subjectReport(id, { namespace })` answers the read side (Art. 15 — which segments
 an id is in).
 
@@ -382,8 +385,11 @@ Wire the **audit sink** (`IAuditSink`) to get an append-only, vendor-neutral rec
 state changes — `segment.publish` (a loaded generation became current), `segment.load-refused` (a load that did
 not publish, because its guard refused it or another writer got there first), `segment.rollback` (an operator moved
 the pointer to a generation it named), `segment.rewrite` (a subject-erasure
-rewrite: `fromGeneration` → `generation`), `segment.erase` (a genuine crypto-shred), `segment.dispose` (a
-`dropSegment`, including every retirement the sweep performs) and `namespace.erase` — for your audit log / SIEM.
+rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasure that found the id only outside the
+current generation and deleted the generations holding it, rewriting none), `segment.erase` (a genuine
+crypto-shred), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
+`namespace.erase` — for your audit log / SIEM. Each `segment.*` event names the segment's `incarnation` when its
+registry token carries one, so a segment created again under the same name is told apart from the one before.
 It is off by default and exception-safe. See the [dashboards guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/dashboards.md), which also says
 which event is the receipt for which claim. An erasure *ledger* — per-subject-request proof of physical deletion
 — is returned by **`eraseSubject`**. `subjectReport` is the read side and returns only which segments an id is

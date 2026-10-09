@@ -11,6 +11,7 @@ import { openGenerationReader } from '@/core/crbm-storage-source';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `listGenerations` / `rollbackSegment` — see what a segment has been, and put it back.
@@ -236,6 +237,7 @@ describe('rollbackSegment', () => {
         kind: 'segment.rollback',
         namespace: 'ns',
         segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
         fromGeneration: 1,
         generation: 0,
       },
@@ -623,7 +625,14 @@ describe('rollback — the facade, and the validation the core owes', () => {
     expect(r).toEqual({ fromGeneration: 0, generation: 1 });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // same instance
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rollback', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rollback',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
+        fromGeneration: 0,
+        generation: 1,
+      },
     ]);
   });
 

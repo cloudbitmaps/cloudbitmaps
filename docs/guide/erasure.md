@@ -24,7 +24,8 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 ```
 
 `ledger.erasedFrom` is your **erasure ledger**, the proof of deletion. It is a return value only, so persist it or
-route it to your audit sink. When you pass `audit`, the store also emits a `segment.rewrite` event per rewrite.
+route it to your audit sink. When you pass `audit`, the store also emits an event per segment it erased the id from:
+`segment.rewrite` when it rewrote the current generation, `segment.collect` when it only deleted other generations.
 Segments the id is not in are not listed. The two calls look in different places: `subjectReport` reads what a reader
 reads, each segment's current generation, while `eraseSubject` also searches older generations, a tombstoned
 segment's objects and a first load's object that never published. So the ledger can name a segment the report did
@@ -45,7 +46,7 @@ aborts the ledger.
 
 `erased: true` means the call listed the segment's bucket and read what is left, and **no generation of the segment
 holds the id**, above the pointer or below it. When the current generation did not hold the id, nothing was
-rewritten, so that entry has no `generation` and no `segment.rewrite` event is emitted.
+rewritten, so that entry has no `generation`, and the audit event is `segment.collect` rather than `segment.rewrite`.
 
 `erased: false` means this run did not erase the id from that segment. That is not the same as "the id is still
 there", and `note` says why:

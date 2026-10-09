@@ -220,6 +220,7 @@ export async function main(
     totalSegments: manifest.totalSegments,
     totalIds: manifest.totalIds,
     failed: manifest.failed.length,
+    skipped: manifest.skipped.length,
   });
   return manifest;
 }

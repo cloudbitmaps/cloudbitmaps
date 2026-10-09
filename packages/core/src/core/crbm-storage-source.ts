@@ -32,7 +32,7 @@ import type { BlobReader } from './blob';
 import { yieldEvery } from './cooperative';
 import type { Yielder } from './cooperative';
 import type { Clock, Rng } from './determinism';
-import { sameIncarnation } from './token';
+import { incarnationField, sameIncarnation } from './token';
 import { nextKept } from './kept-generations';
 import { isLive, leaseChurn, onlyLeasesDiffer } from './leases';
 import type { KeptAfter } from './kept-generations';
@@ -2306,6 +2306,7 @@ export async function publishGenerationKept(
         return {
           published: true,
           kept: { ...nextKept(failedOn, key.generation, options.keep), token: undefined },
+          token: record?.token,
         };
       // The pointer names this number, but not over this publish's write: another writer's object under it, or
       // another incarnation of the name. That is not an already-current re-publish, which the branch below would
@@ -2429,7 +2430,8 @@ export async function publishGenerationKept(
         return REFUSED; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {
         if (reused) continue; // only a fresh read can show the pointer already there
-        return { published: true }; // already exactly current (an idempotent re-publish) — nothing to advance
+        // Already exactly current (an idempotent re-publish): nothing to advance.
+        return { published: true, token: record.token };
       } else {
         // Advancing over an existing generation. `wrappedDeks` is deliberately NOT carried here, and a caller
         // that supplies it is refused rather than served.
@@ -2472,6 +2474,7 @@ export async function publishGenerationKept(
       return {
         published: true,
         kept: { ...(next ?? { list: undefined, evict: [] }), token: wrote },
+        token: wrote,
       }; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {
       if (isWriteConflictError(err)) {
@@ -2516,13 +2519,12 @@ export async function publishGenerationKept(
   // is published, so it falls through to the conflict below rather than being read as "a newer gen won".
   if (final !== null && final.currentGen !== null && final.currentGen >= key.generation) {
     if (final.currentGen !== key.generation) return REFUSED;
-    if (!sawUnanswered) return { published: true };
+    if (!sawUnanswered) return { published: true, token: final.token };
     // A write that went unanswered may have landed during the last wait, or the number may be another writer's, or
     // another incarnation's: the incarnation and the object under it decide, as after any unanswered write.
     try {
-      return {
-        published: await landedHere(final, lastRecord ?? null, key, options.holdsOwnObject),
-      };
+      const published = await landedHere(final, lastRecord ?? null, key, options.holdsOwnObject);
+      return published ? { published, token: final.token } : REFUSED;
     } catch (proofErr) {
       throw outcomeUnknown(key, proofErr);
     }
@@ -2543,6 +2545,12 @@ export interface PublishResult {
    * was settled without knowing which write it was), and a collection then lists.
    */
   readonly kept?: PublishedKept;
+  /**
+   * A token of the row whose pointer is at the generation, when it is published: the one the write was given, or the
+   * row read that showed the pointer there. Every write of a row keeps its incarnation, so this names the incarnation
+   * the publish landed in, for the audit event.
+   */
+  readonly token?: Token;
 }
 
 const REFUSED: PublishResult = { published: false };
@@ -2896,13 +2904,14 @@ export async function bulkLoadAhead(
   // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
   // never point at a generation that isn't fully written. A freshly minted DEK is stored on this publish.
   if (options.registry !== undefined && options.publish !== false) {
-    const becameCurrent = await publishGeneration(options.registry, key, {
+    const published = await publishGenerationKept(options.registry, key, {
       wrappedDeks: newWrapped,
       summary,
       cleartext: crypto === undefined,
       holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
       clock: options.clock,
     });
+    const becameCurrent = published.published;
     // Audit the publish only when this generation actually *became* the current one — not when a
     // forward-only publish no-oped because a newer generation was already current (the event's contract is
     // "became the segment's current generation"). Needs a registry to have a "current generation" at all.
@@ -2911,6 +2920,7 @@ export async function bulkLoadAhead(
         kind: 'segment.publish',
         namespace: key.namespace,
         segment: key.segment,
+        ...incarnationField(published.token),
         generation: key.generation,
       });
     }

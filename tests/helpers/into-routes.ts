@@ -13,6 +13,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { aadFor } from '@/core/crypto';
 import { openGenerationReader } from '@/core/crbm-storage-source';
+import { incarnationOf } from '@/core/token';
 import type { MetricEvent } from '@/core/metrics';
 
 const { RoaringBitmap32 } = roaring;
@@ -224,11 +225,20 @@ export async function observe(w: World, call: Call, route: 'chunks' | 'ids'): Pr
         : await decrypted(w, key.generation);
   }
   const row = await w.backend.registry.get(DEST);
+  // Each run's row has its own random incarnation: an event that names it is recorded as naming "the row", so two runs
+  // compare equal exactly when each names its own.
+  const own = row === null ? undefined : incarnationOf(row.token);
   return {
     outcome,
     requests: [...w.log].sort(),
     events: w.metrics.map(untimed).sort(),
-    audit: w.audit.snapshot(),
+    audit: w.audit
+      .snapshot()
+      .map((e) =>
+        'incarnation' in e && e.incarnation !== undefined && e.incarnation === own
+          ? { ...e, incarnation: 'the row' }
+          : e,
+      ),
     objects,
     pointer: row === null ? null : { currentGen: row.currentGen, status: row.status },
   };

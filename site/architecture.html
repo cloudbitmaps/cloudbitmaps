@@ -619,10 +619,10 @@
               threshold, the client's own retry can replay it and the driver settles that by reading the write id back.
               A registry row is sent once and reconciled by its effect: a publish that gets no answer, or loses its
               compare-and-swap, re-reads the row and advances only if its fences still hold, and otherwise says so to
-              its caller. Seven kinds of
+              its caller. Eight kinds of
               change are audit events beside it, on the sink the call was given: <span class="m">segment.publish</span>,
               <span class="m">segment.rollback</span>, <span class="m">segment.load-refused</span>,
-              <span class="m">segment.rewrite</span>, <span class="m">segment.erase</span>,
+              <span class="m">segment.rewrite</span>, <span class="m">segment.collect</span>, <span class="m">segment.erase</span>,
               <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
               policy's write (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a
               collection pass and the retention sweep's purge of its own tombstones emit none.

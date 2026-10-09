@@ -195,7 +195,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   one's current generation without the id (read through the coalesced chunk stream, at most 4 ranges ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
   and deletes every generation that held the bit before returning, above the pointer as well as below it —
   **physical deletion on return**, with a
-  per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a
+  per-segment ledger and an audit event per segment: `segment.rewrite`, or `segment.collect` where only other
+  generations held the id. `subjectReport` is the read side (access). What a
   rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for.
 - **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
   destruction that survives immutable backups and WORM.

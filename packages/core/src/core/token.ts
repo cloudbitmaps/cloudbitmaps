@@ -23,6 +23,12 @@ export function incarnationOf(token: Token): string | undefined {
   return INCARNATION_TOKEN.exec(token)?.[1];
 }
 
+/** An audit event's `incarnation`, from the token of the row it is about: absent for a token that carries none. */
+export function incarnationField(token: Token | undefined): { readonly incarnation?: string } {
+  const incarnation = token === undefined ? undefined : incarnationOf(token);
+  return incarnation === undefined ? {} : { incarnation };
+}
+
 /**
  * Whether two reads of one name's row are one incarnation of it.
  *

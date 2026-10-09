@@ -11,6 +11,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `loadSegment` — replace a segment's contents with one immutable generation.
@@ -208,6 +209,7 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
         kind: 'segment.load-refused',
         namespace: 'ns',
         segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
         generation: 1,
         reason: 'empty',
         cardinality: 0,
@@ -264,6 +266,7 @@ describe('loadSegment — racing writers', () => {
         kind: 'segment.load-refused',
         namespace: 'ns',
         segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
         generation: 1,
         reason: 'superseded',
         cardinality: 0,

@@ -150,19 +150,49 @@ describe('store.exportSegments', () => {
     expect(roaringIds(files.get('ns/a.roaring')!.bytes)).toEqual([1]);
   });
 
-  it('skips crypto-shredded (destroyed) segments', async () => {
+  it('skips crypto-shredded (destroyed) segments, and names each one in the manifest', async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'live', generation: 0 }, [1, 2], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'gone', generation: 0 }, [3, 4], { registry });
-    // Mark 'gone' destroyed (crypto-shred tombstone) directly in the registry.
-    const rec = (await registry.get({ segment: 'gone' }))!;
-    await registry.compareAndSwap({ segment: 'gone' }, rec.token, { status: 'destroyed' });
+    await bulkLoadCrbmGeneration(
+      storage,
+      { namespace: 'ns', segment: 'gone', generation: 0 },
+      [5],
+      {
+        registry,
+      },
+    );
+    // Mark both 'gone' rows destroyed (crypto-shred tombstones) directly in the registry.
+    for (const ref of [{ segment: 'gone' }, { namespace: 'ns', segment: 'gone' }]) {
+      const rec = (await registry.get(ref))!;
+      await registry.compareAndSwap(ref, rec.token, { status: 'destroyed' });
+    }
 
     const { sink, files } = captureSink();
     const manifest = await freshStore(registry, storage).exportSegments(sink);
     expect(manifest.segments.map((s) => s.segment)).toEqual(['live']);
     expect([...files.keys()]).toEqual(['_default/live.roaring']);
+    // A dump says which rows it did not cover and why, so a total below the registry's row count is explained.
+    const byName = (a: { namespace?: string }, b: { namespace?: string }): number =>
+      (a.namespace ?? '').localeCompare(b.namespace ?? '');
+    expect([...manifest.skipped].sort(byName)).toEqual([
+      { segment: 'gone', reason: 'destroyed' },
+      { segment: 'gone', namespace: 'ns', reason: 'destroyed' },
+    ]);
+
+    const scoped = await freshStore(registry, storage).exportSegments(captureSink().sink, {
+      namespace: 'ns',
+    });
+    expect(scoped.skipped).toEqual([{ segment: 'gone', namespace: 'ns', reason: 'destroyed' }]);
+  });
+
+  it('skips nothing, and says so, when no row is a tombstone', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
+    const manifest = await freshStore(registry, storage).exportSegments(captureSink().sink);
+    expect(manifest.skipped).toEqual([]);
   });
 
   it('exports an empty segment as an empty (but valid) bitmap', async () => {

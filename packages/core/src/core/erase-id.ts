@@ -75,6 +75,7 @@
  * the id in it refuses instead of deleting it.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
+import { incarnationField } from './token';
 import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
@@ -112,6 +113,7 @@ import type {
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
+  Token,
 } from './ports';
 import { type ReadRetry, retryRead } from './retry';
 import { metadataToCarry, summaryOf, usableSummary } from './summary';
@@ -233,7 +235,8 @@ export interface EraseIdResult {
  * it. See the module note for the contract.
  *
  * Emits one `segment.rewrite` audit event at the publish (before the superseded generation is collected), so the
- * compliance record exists the moment the generation without the id is authoritative.
+ * compliance record exists the moment the generation without the id is authoritative. An erasure that rewrites nothing,
+ * because only other generations held the id, emits one `segment.collect` once no generation holds it.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -241,30 +244,62 @@ export async function eraseIdFromSegment(
   deps: EraseIdDeps,
   options: { audit?: IAuditSink } = {},
 ): Promise<EraseIdResult> {
-  const first: { tombstoned?: boolean } = {};
+  const first: Pass = {};
   const result = await eraseOnce(ref, id, deps, options, first);
   // A row tombstoned while this call ran is searched as a fresh call searches one: a cleartext destroy, or a drop whose
   // sweep left an object, leaves objects that can still hold the id. Once: the second pass starts on the tombstone.
   if (result.reason === 'destroyed' && first.tombstoned === false) {
-    const again = await eraseOnce(ref, id, deps, options, {});
+    const second: Pass = {};
+    const again = await eraseOnce(ref, id, deps, options, second);
     // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
     if (again.reason === 'destroyed') return result;
     if (!again.erased) return again;
     // Erased under the tombstone: the report covers both passes, what each deleted and the newest holder either read.
     const collected = [...new Set([...result.collected, ...again.collected])].sort((a, b) => a - b);
     const newest = Math.max(result.fromGeneration ?? -1, again.fromGeneration ?? -1);
-    return { ...again, collected, ...(newest >= 0 ? { fromGeneration: newest } : {}) };
+    const merged = { ...again, collected, ...(newest >= 0 ? { fromGeneration: newest } : {}) };
+    return recordCollect(ref, merged, second, options);
+  }
+  return recordCollect(ref, result, first, options);
+}
+
+/** What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, and the token of the
+ * row it read when it finished by deleting the holders and rewriting none. */
+interface Pass {
+  tombstoned?: boolean;
+  collectedOn?: Token;
+}
+
+/**
+ * Emit `segment.collect` for a call that finished by deleting the holders and rewriting none, from the report the call
+ * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included.
+ */
+function recordCollect(
+  ref: SegmentRef,
+  result: EraseIdResult,
+  pass: Pass,
+  options: { audit?: IAuditSink },
+): EraseIdResult {
+  if (pass.collectedOn !== undefined && result.fromGeneration !== undefined) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.collect',
+      namespace: ref.namespace,
+      segment: ref.segment,
+      ...incarnationField(pass.collectedOn),
+      fromGeneration: result.fromGeneration,
+      collected: [...result.collected],
+    });
   }
   return result;
 }
 
-/** One pass of {@link eraseIdFromSegment}. It records in `seen` whether the row it read first was a tombstone. */
+/** One pass of {@link eraseIdFromSegment}. It records in `seen` what {@link Pass} says. */
 async function eraseOnce(
   ref: SegmentRef,
   id: number,
   deps: EraseIdDeps,
   options: { audit?: IAuditSink },
-  seen: { tombstoned?: boolean },
+  seen: Pass,
 ): Promise<EraseIdResult> {
   validateUserRef(ref);
   checkedAuditSink(options.audit, 'eraseIdFromSegment');
@@ -272,6 +307,7 @@ async function eraseOnce(
   const codec = requireCodec(deps.codec, 'eraseIdFromSegment');
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
   const base = { segment: ref.segment, namespace: ref.namespace };
+  const audit = safeAudit(options.audit ?? NOOP_AUDIT);
   /** A read this call makes, under the store's read retry when it was given one. */
   const read = <T>(op: () => Promise<T>): Promise<T> => retryRead(op, deps.readRetry);
 
@@ -512,6 +548,21 @@ async function eraseOnce(
   };
 
   /**
+   * The answer for an erasure that deleted the generations holding the id and rewrote none, once a listing found no
+   * holder left. The pass notes the row it read, the active one or the tombstone, for the `segment.collect` event the
+   * call emits once it has its whole report.
+   */
+  const collectedAll = (fromGeneration: number, collected: readonly number[]): EraseIdResult => {
+    seen.collectedOn = record.token;
+    return {
+      ...base,
+      erased: true,
+      fromGeneration,
+      collected: [...collected].sort((a, b) => a - b),
+    };
+  };
+
+  /**
    * The row names no generation, so nothing has been published, but a first load's object can be in the bucket: its
    * load still running, or one that wrote and never published (a crash, or a registry write that got no answer, after
    * which the object is kept by design). Each object is searched. One that holds the id is not deleted: this path
@@ -551,7 +602,7 @@ async function eraseOnce(
     const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
     const left = await holderLeft(new Set());
     if (left !== undefined) throw cannotRemove(left);
-    return { ...base, erased: true, fromGeneration: holder.generation, collected };
+    return collectedAll(holder.generation, collected);
   };
 
   /**
@@ -650,7 +701,7 @@ async function eraseOnce(
     }
 
     const left = await holderLeft(clean);
-    if (left === undefined) return { ...base, erased: true, fromGeneration: newest, collected };
+    if (left === undefined) return collectedAll(newest, collected);
     if (moved !== null) {
       return { ...base, erased: false, reason: moved, fromGeneration: newest, collected };
     }
@@ -848,10 +899,11 @@ async function eraseOnce(
       collected: [],
     };
   }
-  safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+  audit.onEvent({
     kind: 'segment.rewrite',
     namespace: ref.namespace,
     segment: ref.segment,
+    ...incarnationField(fromToken),
     fromGeneration: from,
     generation,
   });

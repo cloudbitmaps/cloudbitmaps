@@ -122,14 +122,23 @@ await store.eraseSubject(userId, { namespace: 'eu', audit });
 await destroySegment({ segment: 'users' }, { registry: backend.registry }, { confirmSegment: 'users', audit });
 
 audit.snapshot();
-// [ { kind: 'segment.publish', segment: 'users', generation: 0 },
-//   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', fromGeneration: 4, generation: 5 },
-//   { kind: 'segment.erase',   segment: 'users' } ]
+// [ { kind: 'segment.publish', segment: 'users', incarnation: '3f9c…', generation: 0 },
+//   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', incarnation: 'a71e…', fromGeneration: 4, generation: 5 },
+//   { kind: 'segment.erase',   segment: 'users', incarnation: '3f9c…' } ]
 // (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
 ```
 
-The events are vendor-neutral. There are seven kinds, each carrying the segment's name and namespace, or, for
-`namespace.erase`, the namespace's:
+The events are vendor-neutral. There are eight kinds, each carrying the segment's name and namespace, or, for
+`namespace.erase`, the namespace's.
+
+Every `segment.*` event also carries `incarnation`, the id of the segment's registry row as the operation found or
+wrote it. A segment whose row was purged and created again starts its generations at `0` again, so a name and a
+generation number can belong to two different lives of the segment; the incarnation tells them apart. Every write of a
+row keeps its incarnation, so all the events of one life of a segment share it. Within one life a generation number
+still does not name one object for good: a number whose object was deleted, such as a refused load's or one an erasure
+deleted above the pointer, can be taken again by a later load, so read a segment's events in the order they arrived.
+It is absent when the row's token carries no incarnation id, for example from a registry of your own that issues
+tokens in another form, and on a `segment.load-refused` from a load that found no row.
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
@@ -137,6 +146,7 @@ The events are vendor-neutral. There are seven kinds, each carrying the segment'
 | `segment.load-refused` | a load did not publish (a `materializeMany` dry run emits none, nor any other audit event): a guard refused its result, the segment's row changed while it wrote or appeared where it found none, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal that follows a registry write that got no answer: that write may have landed first, so the generation may have been current for a while before it was replaced | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
 | `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
+| `segment.collect` | an erasure (`eraseSubject`) found the id only outside the current generation, in a retained older generation, above the pointer after a rollback, or in an object left under a tombstone, and deleted the generations holding it without rewriting any; emitted once a listing of the bucket shows no generation holding the id | `fromGeneration` (the newest generation that held it), `collected` (every generation the call deleted, ascending) |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs, after every segment is done; also one `segment.erase` per segment actually shredded, emitted as each finishes (segments are shredded eight at a time, so those arrive in no fixed order) | `segmentsShredded` |

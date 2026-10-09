@@ -2073,8 +2073,9 @@ export class CloudRoaring {
    * by one, re-proved against the row first — and the generations above the pointer that never held the id stay
    * as rollback targets. An entry says `erased: true` only once the call has listed the bucket and read what is
    * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
-   * persist it / route it to your audit sink as the proof of deletion (a `segment.rewrite` audit event is also
-   * emitted per rewrite when you pass `audit`).
+   * persist it / route it to your audit sink as the proof of deletion (when you pass `audit`, an audit event is also
+   * emitted per segment erased: `segment.rewrite` for a rewrite, `segment.collect` where only other generations held
+   * the id and nothing was rewritten).
    *
    * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
    * over the same generation. Requires the store built with a **backend** (throws
@@ -4230,6 +4231,7 @@ export type {
   ExportManifest,
   ExportOptions,
   ExportSink,
+  ExportSkipped,
   ExportWriter,
   ExportedSegment,
   GenKey,
