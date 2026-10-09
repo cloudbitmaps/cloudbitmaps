@@ -48,9 +48,9 @@
  * Which reason comes from **re-reading the row**, not from assuming a supersession: a moved pointer is
  * `'superseded'`, a tombstoned row `'destroyed'`, a purged row `'absent'`, a row with no pointer
  * `'no-generation'`. A pointer still on `from` means the object it names is genuinely gone — the forbidden
- * `missing-storage-generation` state — and that throws, because no re-run fixes it. That `NotFoundError` is the only
- * signal of that state, so a faulting re-read rethrows it rather than replacing it with a transient-looking
- * registry error.
+ * `missing-storage-generation` state — or is another object than the row's summary names by its fingerprint, and that
+ * throws, because no re-run fixes either. That `NotFoundError` is the only signal of those states, so a faulting
+ * re-read rethrows it rather than replacing it with a transient-looking registry error.
  *
  * **A refused rewrite deletes its own object when it would outlive the winner above the pointer.** `putImmutable`
  * commits atomically, so a rewrite whose stream throws leaves no object at all. One that completed is either
@@ -727,8 +727,9 @@ async function eraseOnce(
    *
    * **A `NotFoundError` is translated only after re-reading the row, and the row decides which answer.** The
    * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
-   * `missing-storage-generation` state a failed publish leaves behind — and that **throws**, because it is an
-   * integrity problem rather than a race and no re-run fixes it. A pointer that moved is `'superseded'`. The
+   * `missing-storage-generation` state a failed publish leaves behind — or is another object than the row's summary
+   * names by its fingerprint, and that **throws**, because it is an integrity problem rather than a race and no
+   * re-run fixes it. A pointer that moved is `'superseded'`. The
    * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
    * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
    * `'no-generation'` — the same answers this function gives when it reads either state up front, so a caller

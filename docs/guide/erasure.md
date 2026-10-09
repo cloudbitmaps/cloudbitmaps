@@ -59,6 +59,7 @@ there", and `note` says why:
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
 | `error: <message>`, a `WriteConflictError` saying the segment has no published generation | A first load's object that never published holds the id, or, on an encrypted store, is sealed under a key that load has not published and cannot be searched; its load may still publish it, so it is not deleted. | Load the segment, which makes the object collectable, or drop it, and re-run. |
+| `error: <message>`, a `NotFoundError` saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
 | `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all. | See what a re-run reports instead of assuming the job finished. |
 
@@ -260,8 +261,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
   just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` once the
   tombstone's objects are searched as a fresh call searches them (`erased: true` when one still held the id and was
   deleted), and one purged by the retention sweep reports `'absent'`.
-- A `NotFoundError` is raised only when the pointer still names the missing object, the forbidden
-  `missing-storage-generation` state, which no re-run fixes.
+- A `NotFoundError` is raised only when the pointer still names its generation and that generation's object is
+  missing, the forbidden `missing-storage-generation` state, or is another object than the row's summary names by its
+  fingerprint. No re-run fixes either: `checkConsistency({ summaries: true })` reports both.
 - `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what to
   keep if you build a proof-of-deletion artifact. It can legitimately be empty on a successful erasure, when a
   concurrent collector removed the holding generation first. `erased: true` is a claim about the bucket, not about who
