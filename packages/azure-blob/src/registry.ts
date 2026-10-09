@@ -34,6 +34,7 @@
  */
 import {
   IntegrityError,
+  isIntegrityError,
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
@@ -107,7 +108,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       try {
         return await readRow(res, key, new URL(blob.url).host);
       } catch (err) {
-        throw err instanceof IntegrityError ? err : mapError(err);
+        throw isIntegrityError(err) ? err : mapError(err);
       }
     });
   }
