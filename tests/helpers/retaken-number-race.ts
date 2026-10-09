@@ -13,14 +13,14 @@ import { collect } from './loaded';
  * deleted (invariant 2), so an erasure that decided to delete the object under a number, and then stalled, can meet
  * another object under that number when it resumes. Above the pointer:
  *
- *   E1 searches generation 1, finds the id, fences the row, re-reads it ── stalls ──────────────────▶ deletes 1
- *   E2 (the same id)        searches 1, fences, deletes 1 │
+ *   first erasure    searches generation 1, finds the id, fences the row, re-reads it ── stalls ────────▶ deletes 1
+ *   second erasure   (the same id)  searches 1, fences, deletes 1 │
  *   a load                                   numbers 1 afresh (it is free), writes it, publishes │
  *
- * Without the condition E1's delete removes the generation the pointer now names, and the row names an object that is
- * not in the bucket (invariant 1). With it, the delete names the object E1 searched, the store refuses it for the one
- * put since, and the pointer keeps its object. Gated promises hold E1 between its re-read of the row and its delete, and
- * the clock never waits, so a run is the same every time.
+ * Without the condition the first erasure's delete removes the generation the pointer now names, and the row names an
+ * object that is not in the bucket (invariant 1). With it, the delete names the object the first erasure searched, the
+ * store refuses it for the one put since, and the pointer keeps its object. Gated promises hold the first erasure
+ * between its re-read of the row and its delete, and the clock never waits, so a run is the same every time.
  */
 
 export const REF: SegmentRef = { segment: 's' };
@@ -109,14 +109,14 @@ export async function raceStaleHolderDelete(
   await rollbackSegment(REF, 0, deps); // 1 is above the pointer now, and holds X
   expect(await generations(storage)).toEqual([0, 1]);
 
-  // E1 searches generation 1, fences the row, re-reads it, and stops there.
+  // The first erasure searches generation 1, fences the row, re-reads it, and stops there.
   const atDelete = gate();
-  const e1 = stalled(storage, stallingAfterFence(registry, atDelete));
+  const first = stalled(storage, stallingAfterFence(registry, atDelete));
   await atDelete.reached;
 
-  // E2 erases the same id to the end: it deletes generation 1.
-  const e2 = await eraseIdFromSegment(REF, X, deps);
-  expect(e2).toMatchObject({ erased: true, collected: [1] });
+  // The second erasure erases the same id to the end: it deletes generation 1.
+  const second = await eraseIdFromSegment(REF, X, deps);
+  expect(second).toMatchObject({ erased: true, collected: [1] });
   expect(await generations(storage)).toEqual([0]);
 
   // A load takes number 1 afresh, since it is free, and publishes it.
@@ -124,7 +124,7 @@ export async function raceStaleHolderDelete(
   expect(loaded).toMatchObject({ generation: 1, published: true });
 
   atDelete.open();
-  const reported = await e1;
+  const reported = await first;
 
   // The pointer names generation 1, the load's, and it is in the bucket and reads as the load wrote it.
   const row = await registry.get(REF);
@@ -132,7 +132,7 @@ export async function raceStaleHolderDelete(
   expect(await generations(storage)).toEqual([0, 1]);
   const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }), retry: false });
   expect(await collect(store.segment(REF.segment).iterate())).toEqual([7, 8, 9]);
-  // And no generation holds X: E2 erased it, and nothing put it back.
+  // And no generation holds X: the second erasure erased it, and nothing put it back.
   expect(await store.segment(REF.segment).has(X)).toBe(false);
   reported();
 }
