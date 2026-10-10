@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] Full gate green locally: `lint` · `lint:arch` · `format:check` · `typecheck` · `test` · `build` · `smoke`
+- [ ] Full gate green locally: `lint` · `lint:arch` · `format:check` · `typecheck` · `test` · `build` · `api:surface:check` · `smoke`
 - [ ] Touches a driver? `pnpm test:integration` green against the docker-compose backends
 - [ ] **Adversarial review gate run** — multiple parallel subagents, one per lens, against the whole
       component end to end; real findings fixed here, or recorded with a severity and a deferral
