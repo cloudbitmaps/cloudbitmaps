@@ -31,10 +31,11 @@ const isRewritePublish = (patch: RegistryPatch): boolean =>
 
 /**
  * Where the first erasure is refused: at its publish, or at its re-read of the row before it verifies what it wrote.
- * And where its discard stalls: at its first read or write of the rewrite's object after the refusal, or at its delete.
+ * And where its discard stalls, after the refusal: before its first read or delete of the rewrite's object, after
+ * that first read has answered (before a delete, when the delete comes first), or before its delete.
  */
 type Refused = 'at publish' | 'before verify';
-type Stall = 'first touch' | 'delete';
+type Stall = 'before its first touch' | 'after its first read' | 'before its delete';
 
 async function race(refusedAt: Refused, stallAt: Stall) {
   const storage = new MemoryStorageDriver();
@@ -68,12 +69,14 @@ async function race(refusedAt: Refused, stallAt: Stall) {
     return registry.compareAndSwap(ref, expected, patch, options);
   };
 
-  // The first erasure's discard stalls at its first touch of generation 2 after the refusal, or at its delete.
+  // The first erasure's discard stalls at its touch of generation 2 after the refusal that `stallAt` names.
   const atDiscard = gate();
   let stalled = false;
-  const stall = async (key: GenKey, call: 'read' | 'delete'): Promise<void> => {
+  const stall = async (key: GenKey, call: 'read' | 'answered' | 'delete'): Promise<void> => {
     if (!refused || stalled || key.generation !== 2) return;
-    if (stallAt === 'delete' && call !== 'delete') return;
+    if (stallAt === 'before its delete' && call !== 'delete') return;
+    if (stallAt === 'before its first touch' && call === 'answered') return;
+    if (stallAt === 'after its first read' && call === 'read') return;
     stalled = true;
     atDiscard.reach();
     await atDiscard.opened;
@@ -86,11 +89,15 @@ async function race(refusedAt: Refused, stallAt: Stall) {
   };
   firstStorage.getTail = async (key, maxBytes) => {
     await stall(key, 'read');
-    return storage.getTail(key, maxBytes);
+    const tail = await storage.getTail(key, maxBytes);
+    await stall(key, 'answered');
+    return tail;
   };
   firstStorage.getRange = async (key, offset, length) => {
     await stall(key, 'read');
-    return storage.getRange(key, offset, length);
+    const bytes = await storage.getRange(key, offset, length);
+    await stall(key, 'answered');
+    return bytes;
   };
   firstStorage.delete = async (key, options) => {
     await stall(key, 'delete');
@@ -122,12 +129,14 @@ async function race(refusedAt: Refused, stallAt: Stall) {
 
 describe('a refused rewrite whose discard meets another object under its number', () => {
   it.each<[Refused, Stall]>([
-    ['at publish', 'first touch'],
-    ['at publish', 'delete'],
-    ['before verify', 'first touch'],
-    ['before verify', 'delete'],
+    ['at publish', 'before its first touch'],
+    ['at publish', 'after its first read'],
+    ['at publish', 'before its delete'],
+    ['before verify', 'before its first touch'],
+    ['before verify', 'after its first read'],
+    ['before verify', 'before its delete'],
   ])(
-    'refused %s, its discard stalled at its %s: the load keeps its generation',
+    'refused %s, its discard stalled %s: the load keeps its generation',
     async (refusedAt, stallAt) => {
       const { first, storage, registry } = await race(refusedAt, stallAt);
 
