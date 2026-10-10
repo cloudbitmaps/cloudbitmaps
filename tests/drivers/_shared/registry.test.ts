@@ -210,6 +210,10 @@ describe('registry row schemas: only schema 4 is read', () => {
       expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(
         new RegExp(`schemaVersion ${v}.*reads schema 4 only.*new prefix`),
       );
+      // The steps are named by a public URL: the CHANGELOG is not in an installed package.
+      expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(
+        /https:\/\/github\.com\/cloudbitmaps\/cloudbitmaps\/blob\/main\/CHANGELOG\.md#0200--2026-10-09/,
+      );
     }
   });
 

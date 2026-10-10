@@ -3,7 +3,7 @@
  *
  * The cost model: {@link estimateCost} prices a store you plan, from the segment sizes and the workload you give it,
  * and {@link groundedReport} one you run, from the bytes it stores, which a segment handle's `stat()` reports as
- * `size`. Each report compares the store's monthly cost on object storage with an always-on Redis, and says where
+ * `sizeBytes`. Each report compares the store's monthly cost on object storage with an always-on Redis, and says where
  * Redis wins. It is a planning tool: the price lists here are as old as the release that ships them, so pass your
  * own for your region, your cloud or a committed term.
  *

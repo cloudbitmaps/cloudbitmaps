@@ -467,8 +467,8 @@ export interface CacheOptions {
    * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
    * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies when
    * `storage` is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. Lazy — no
-   * timer; ≤ one registry read per segment per window, opening a new reader only when the generation actually
-   * advanced.
+   * timer; ≤ one registry read per segment per window, opening a new reader only when the row's pointer was
+   * renewed (a publish, a rollback, an erasure's rewrite, a status or key change); a lease or retention write does not.
    *
    * **While the registry cannot be read, the bound stretches.** A refresh that fails with a
    * {@link TransientError} keeps serving the generation of a segment still in the reader cache, and the key its reader
@@ -2979,7 +2979,7 @@ export interface BaseCombineOptions extends IdRange {
    * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
    * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
    * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
-   * reads chunk by chunk (a custom one) is read as before: `concurrency` chunk keys at once, opening 8 wide. A running
+   * reads chunk by chunk (a custom one) is read `concurrency` chunk keys at once, opening 8 wide. A running
    * stream holds its operand's reader outside the reader cache's bounds until it ends or the segment moves on.
    */
   readonly concurrency?: number;
@@ -3072,9 +3072,9 @@ export interface MaterializeOptions extends CombineOptions {
  * What a streaming read returns: the ids, ascending, one at a time under `for await`, or one chunk at a time from
  * {@link IdStream.batches}.
  *
- * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as it always did. A live read is the
+ * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable. A live read is the
  * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
- * `throw()`, exactly as before, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
+ * `throw()`, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
  * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
  * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
  * fetched until a read is first pulled.
@@ -3730,7 +3730,11 @@ export class Segment {
     }
   }
 
-  /** Membership: one chunk — the cache, else one ranged GET. Throws {@link ValidationError} on a bad id. */
+  /**
+   * Membership: one chunk. A chunk in the cache answers with no request when the segment's resolution is still warm;
+   * otherwise a registry read (cold) and a tail read, plus a range read unless the tail carried the chunk. Throws
+   * {@link ValidationError} on a bad id.
+   */
   has(id: number): Promise<boolean> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
