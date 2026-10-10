@@ -835,6 +835,20 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
     ),
     why: "a storage driver's `delete` takes `{ ifVersion }`, and one that reports `conditionalDelete` removes only the object that version names: say which deletes pass it, or which drivers do not report it",
   },
+  // An erasure that deletes only objects no read of the segment can open emits `segment.collect` with no
+  // `fromGeneration`, and the ledger has no entry for it. No page may define the event as one that always found the id,
+  // or count every one as a per-subject receipt.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bsegment\.collect\`? \(a subject erasure that found the id only outside the current generation\b` +
+          String.raw`|\bnothing was rewritten: the id was only in generations no reader resolves\b` +
+          String.raw`|\bsegment\.collect\`? \(with its ledger\) for a per-subject erasure\b`,
+      ),
+      'i',
+    ),
+    why: '`segment.collect` is also emitted, with no `fromGeneration` and no ledger entry, by an erasure that found the id in nothing it could search and deleted only objects no read of the segment can open: define the event so it covers that case, and count only one that names a `fromGeneration` as a per-subject receipt',
+  },
 ];
 
 /**
@@ -1388,6 +1402,10 @@ describe('no document claims behaviour this library does not have', () => {
     'one round trip remains between that read and the delete, and the\n  storage driver port has no conditional delete to close it.',
     'except one whose check runs before the delete, and no storage port offers a conditional delete to close it.',
     'trips, and `IStorageDriver` has no conditional delete to make them one.',
+    // The collect event defined as one that always found the id, or counted whole as a receipt.
+    '`segment.collect` (a subject erasure that found the id only outside the\ncurrent generation and deleted the generations holding it, rewriting none)',
+    '| `segment.collect` | No generation in the bucket holds the erased id, and nothing was rewritten: the id was only in generations no reader resolves |',
+    '`segment.rewrite` or `segment.collect` (with its ledger) for a per-subject\nerasure',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1581,6 +1599,10 @@ describe('no document claims behaviour this library does not have', () => {
     'the counting store vouches for no conditional delete',
     'The local-filesystem driver has no conditional delete, so the window stays open there.',
     'On a driver that does not report `conditionalDelete`, the delete removes whatever is under the number.',
+    // The collect event as it is.
+    '`segment.collect` (a subject erasure that rewrote nothing and deleted objects no reader resolves: the generations holding the id, when it found the id only outside the current generation)',
+    'No generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves.',
+    '`segment.rewrite`, or a `segment.collect` that names a `fromGeneration`, with its ledger entry, for a per-subject erasure',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
