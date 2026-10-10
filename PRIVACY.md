@@ -39,7 +39,7 @@ from constructing a cross-region topology. The points where personal data moves 
 | Location | What's there | Residency note |
 |---|---|---|
 | **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected. Azure Blob objects, and GCS objects above the simple-upload threshold, also carry a random write id in their metadata (`cbwid`): 128 random bits, no data from the bitmap or the source | the region of the bucket you wire |
-| **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata, and the current generation's id count and your metadata (sealed when the segment is encrypted) — no IDs, unless you put one in the metadata, which you must not. An Azure Blob row also carries the random write id in its metadata | the region of the bucket you wire |
+| **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata, and the current generation's id count, its object's size and checksum, and your metadata (sealed when the segment is encrypted), the generations its loads keep and any leases, and a token and `pointerId` — no IDs, unless you put one in the metadata, which you must not. An Azure Blob row also carries the random write id in its metadata | the region of the bucket you wire |
 | **cache** (process RAM) | decoded chunks, and the stored chunk bytes (ciphertext on an encrypted segment) a reader keeps of a small generation it read whole; bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
 | **Loads and rewrites** (`store.load()`, the `*Into` verbs, `store.materializeMany()`, `eraseSubject`) | read your source (or existing generations), write a new generation; a fed operand of `materializeMany` is read from your own process's memory | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
@@ -209,8 +209,9 @@ leased handle stops answering when its lease ends, and its reads then throw `Lea
 registry row is a random holder id, a generation number and an instant, with no id and no count.
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
-{ format })` (and the `export-segments` CLI) dumps every registered segment's current generation to a portable
-file — `roaring` (loadable by any roaring library) or `ndjson` (newline ids) — readable without CloudBitmaps.
+{ format })` (and the `export-segments` CLI) dumps the current generation of every registered segment that is not
+crypto-shredded to a portable
+file — `roaring` (loadable by any roaring library) or `ndjson` (newline ids) — readable without CloudBitmaps. A crypto-shredded segment has no readable bytes, so it is not exported: the manifest's `skipped` lists it, and `segments`, `failed` and `skipped` together account for every segment row the registry listed.
 It's a **controller-side bulk dump** (all segments, opaque ids), not a per-subject deliverable — the per-subject
 rights are `subjectReport` (Art. 15) / `eraseSubject` (Art. 17). Encrypted segments are decrypted transparently
 if the store has the keystore, so the **export is cleartext — protect it** (the CLI writes owner-only files;

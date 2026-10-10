@@ -89,7 +89,7 @@ off. The reasoning lives in [`.changeset/README.md`](.changeset/README.md); the 
   one that refuses a version already on the registry, because `pnpm publish` silently skips it and exits 0.
 
 All six packages are a **`fixed` group**, matched by the glob `@cloudbitmaps/*` rather than named
-individually, so a sixth package is covered on the day it is created rather than the day someone remembers
+individually, so a seventh package is covered on the day it is created rather than the day someone remembers
 this file. `tests/index.test.ts` enforces lockstep independently, reading the package list off the
 filesystem, and it fails if any one manifest lags a bump.
 
@@ -209,7 +209,11 @@ so the hardening below is part of first-publishing one, not an afterthought:
   of trust.
 - Publishing access set to **"Require two-factor authentication and disallow tokens"**.
 - A **Trusted Publisher** bound to repo `cloudbitmaps/cloudbitmaps`, workflow `release.yml`, environment
-  `release`, action `npm publish`.
+  `release`, with **Allowed actions** set to publish: npm's form always allows `npm stage publish`, and **"Allow
+  npm publish" is a separate checkbox that must be ticked**, because this pipeline publishes directly. With it
+  unticked, the run publishes the packages pnpm reaches first and then fails at that name, leaving part of the
+  family on the registry. Leave **"Allow npm dist-tag" off**. Verify each name with `npm trust list <name>`,
+  which needs a fresh 2FA approval and must show `permissions: publish, stage publish`.
 
 > **Bootstrap: the package must exist before you can bind a publisher to it.** A Trusted Publisher is a
 > per-package setting, so there is nothing to configure until the name is on the registry: **publish the
@@ -231,8 +235,8 @@ so the hardening below is part of first-publishing one, not an afterthought:
 **Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
 that does not exist yet.** `pnpm release:bootstrap` runs once for each new package name, **including one added to
 a family whose other packages are already on npm**, and publishes only the names the registry does not have.
-`@cloudbitmaps/tools` is such a name until the first release that ships it: run `pnpm release:bootstrap` and bind its
-Trusted Publisher before that release is tagged.
+Any package added to the family after `@cloudbitmaps/tools` is such a name until the first release that ships it: run
+`pnpm release:bootstrap` and bind its Trusted Publisher before that release is tagged.
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
@@ -285,10 +289,16 @@ packages' `repository`/`homepage` links resolve and provenance has a public sour
 
    It reports each name it created, and verifies the dist-tag landed. Confirm with
    `npm access get status <name>` rather than `npm view` — `npm view` reads a replica that lags for minutes
-   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way.
+   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way. If the verification fails with `rc is (unset)` after a `PUT 200`, that is
+   replica lag, not a failed publish (see the troubleshooting table).
+
+   A first publish through npm's browser-approval flow also creates a `0.0.0-stage` version on the name: a stub with
+   `"stub": true` and no code, npm's placeholder for staged publishing. It is harmless: leave it, and do not try to
+   remove it.
 3. **Bind a Trusted Publisher to each new name** and set its publishing access to *require 2FA and disallow
    tokens* — the [one-time setup](#one-time-setup), per package. **Until this is done the tokenless pipeline
-   cannot publish that name**, so creating the name is only half the job.
+   cannot publish that name**, so creating the name is only half the job. Tick "Allow npm publish" (see the
+   one-time setup) and check it with `npm trust list <name>` before tagging.
 4. **Ship the real release** by tag — the normal [TL;DR](#tldr--cutting-a-release) flow. The run waits for your
    approval, then runs the full gate, re-probes the registry, and publishes **tokenlessly with provenance**.
 
@@ -347,3 +357,6 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | `<pkg> does not exist on the registry` during a release | A package was added to the workspace without bootstrapping its name. The tokenless pipeline cannot create a name. Run `pnpm release:bootstrap`, bind the Trusted Publisher, then re-tag. The guard fired *before* anything was published, which is the point. |
 | `<pkg>@<version> is already on the registry` during a release | That version was published before — most likely by hand. pnpm would skip it silently and the run would go green having published nothing for it. Bump the version. |
 | A publish logs `PUT 200` but `npm view` 404s for minutes | npm ACKs on the write path and serves reads from a replica that lags — **measured at ~7 minutes** for a brand-new package. The publish succeeded. Confirm with `npm access get status <pkg>`, which reads the authoritative API; `npm view --prefer-online` only defeats npm's *local* cache, not the replica. The bootstrap waits this out rather than reporting a failure. |
+| The run publishes some packages, then fails at one with an authentication error | That name's Trusted Publisher has "Allow npm publish" unticked (npm's form always allows `npm stage publish`; publish is a separate checkbox). Tick it, check with `npm trust list <name>` (fresh 2FA; must show `permissions: publish, stage publish`), then follow the part-way recovery row above: the packages already published cannot be re-published. |
+| `pnpm release:bootstrap` ends with `✗ <name>: rc is (unset), expected …` after a successful publish | The registry's read replica lags the write: it knows the name but not yet the dist-tag, so the verification fails although `PUT 200` was returned. Confirm the name exists with `npm access get status <name>`, and re-check the tag with `npm view <name> dist-tags --prefer-online` a few minutes later. Do not publish again: the version is already there. |
+| `npm view <name> versions` lists `0.0.0-stage` | npm's placeholder for staged publishing, created by a first publish through the browser-approval flow: a stub with `"stub": true` and no code. Harmless; leave it. |
