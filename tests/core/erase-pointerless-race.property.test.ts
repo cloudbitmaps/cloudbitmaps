@@ -33,8 +33,6 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  *
  *  1. a row with a pointer names an object in the bucket. The row is read before and after the bucket is listed, and
  *     only a row that did not change in between is judged, so a write between the reads is never taken for a tear.
- *     Except for a number an erasure wrote and then deleted: its discard of its own refused rewrite, which is decided
- *     from the row and not conditioned on the object, so it removes whatever is under the number by then.
  *
  * After the run:
  *
@@ -332,7 +330,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
             renewedRow: () => void = () => undefined,
             held: () => Promise<void> = () => Promise.resolve(),
           ) => {
-            const did = { renewed: false, deleted: new Set<number>(), wrote: new Set<number>() };
+            const did = { renewed: false, deleted: new Set<number>() };
             const at: { id?: number; everyLoadRead?: boolean } = {};
             const outcome = chosen.then((idToErase) => {
               at.id = idToErase;
@@ -345,10 +343,8 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                   who,
                   check,
                   (method, a) => {
-                    const generation = (a[0] as { generation: number }).generation;
-                    if (method === 'putImmutable') did.wrote.add(generation);
                     if (method !== 'delete') return;
-                    did.deleted.add(generation);
+                    did.deleted.add((a[0] as { generation: number }).generation);
                     deleted();
                   },
                 ),
@@ -433,14 +429,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
           await check();
 
           // 1.
-          // Except where an erasure deleted a number it wrote itself: the discard of its refused rewrite, decided from
-          // the row and not conditioned on the object, which removes whatever is under the number by then (another
-          // erasure deleted the rewrite as a holder above the pointer, and a load took the number and published).
-          const discarded = (generation: number): boolean =>
-            [first, second].some(
-              (e) => e.did.wrote.has(generation) && e.did.deleted.has(generation),
-            );
-          expect([...torn].filter(([generation]) => !discarded(generation))).toEqual([]);
+          expect([...torn.values()]).toEqual([]);
 
           // 3. Each load published or was refused as superseded; each erasure answered, or threw a write conflict.
           [...outcomes, ...(lateOutcome === undefined ? [] : [lateOutcome])].forEach((o, i) => {
