@@ -304,8 +304,7 @@ await store.load({ segment: 'audience:active' }, ids, {
 - **What it may hold.** A flat object of string keys and string or finite-number values. Nothing nested, and no boolean,
   `null`, `NaN`, `Infinity`, array or class instance. A key is at most 128 bytes and the whole record at most 1,024 bytes
   as canonical JSON: keys sorted by UTF-16 code unit, no whitespace, braces and quotes counted. Text has to be
-  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing, and a
-  generation without metadata is byte for byte the object a load without metadata writes. Anything that breaks a rule is a
+  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing: a load given either writes byte for byte the object a load given no `metadata` writes. Anything that breaks a rule is a
   `ValidationError`, thrown **before the load makes a request**: nothing is read and nothing is written.
 - **It is copied when you call.** What is stored is the record as it was at the call, whatever the load's id source
   takes to run and whatever you do to your object meanwhile. Key order never changes the bytes, so the same record
@@ -429,7 +428,7 @@ object storage, not 40. That is the cost of a wide window, and the reason the de
 **A pin is a hold, and a lease makes it a bounded one.** A pin is never re-resolved. Once its generation is collected, a
 chunk it has not already fetched fails with `NotFoundError`. So does every chunk once the pin's own store writes the
 segment (a load, a `rollback` or an `*Into` write), since that drops what the store has cached. No value of `keep`
-survives an erasure that rewrites the segment, which collects every generation below its new pointer, and neither does a lease; an erasure that finds the id only outside the current generation deletes the generations that hold it and leaves the clean ones below the pointer.
+survives an erasure that finds the id, and neither does a lease: one that rewrites the segment collects every generation below its new pointer, and one that finds the id only in a generation other than the current one deletes every generation below the pointer and each one above it that holds the id.
 [Reading in depth](reading.md#read-one-fixed-point-in-time) covers pins and
 [leases](reading.md#hold-a-generation-for-a-job-a-lease).
 
@@ -468,8 +467,8 @@ A load lists the segment's objects instead in these cases:
   summary opened nothing, so a load with a `keep` of 1 or more that is about to delete by name looks for the current
   object with one zero-byte read first, and lists unless it finds it. A `keep` of 0 deletes the generation it
   superseded, which is the object in question, so it makes no such read;
-- when the row records no list: a `keep` above 64, which a row cannot record, and the first load of a row that
-  records none (one `setRetention` made before the first load, or one a rollback moved). That load keeps the newest `keep` generations it finds
+- when the row records no list: a `keep` above 64, which a row cannot record, and the first load after a rollback,
+  which leaves the row recording none. That load keeps the newest `keep` generations it finds
   below the pointer and records them, so the next one collects by name. A `keep` above 64 lists on every load.
 
 The row's list is a cache of what a listing would keep, and the listing repairs it. A name in it can be missing from
@@ -1137,7 +1136,7 @@ same compare-and-swap as the pointer, derived from the very row that write is co
 by is the list that row held and no other. It names only generations that were current, never the number a refused load
 took. Anything else that moves the pointer (a `rollback`, a purge and re-create) leaves the row recording no list, which
 only makes the next load list; a write that leaves the pointer where it is (`setRetention`, a crypto-shred) keeps it. A
-row that records no list (one `setRetention` made before its first load, or one a rollback moved) makes the next load list once and record it.
+row a rollback moved records no list, so the next load lists once and records it.
 
 **Which fence a publish carries.** Forward-only is right for a writer whose content does not depend on what was
 current: a load's ids come from upstream, so winning a race loses nothing it knew about. It is wrong for a writer that

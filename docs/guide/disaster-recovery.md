@@ -612,7 +612,7 @@ lowercase hex digits of incarnation id, a decimal counter and a write part (16 l
 `wrappedDeks` list. Rows are stamped `schemaVersion` 4, and the registry reads rows stamped 4 only. A row with another
 `schemaVersion` is refused with `UnsupportedError` naming its key: a higher one was written by a newer release, and the
 fix is to upgrade the process reading it, not to touch the row; one stamped 1, 2 or 3 cannot be read, deleted or dropped
-by the library, and the fix is to load the bucket's segments into a new prefix and delete the old one. A process that
+by the library, and the fix is to move the bucket's segments to a new prefix by the steps in the [CHANGELOG](../../CHANGELOG.md#0200--2026-10-09), then delete the old one. A process that
 reads an older schema refuses a schema-4 row the same way.
 
 One refused row costs far more than its own segment:

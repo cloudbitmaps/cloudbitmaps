@@ -102,8 +102,7 @@ store is throttling).
 Cost isn't an event stream — it's a *standing figure* you sample on a schedule (a cron, a Lambda) and push as a
 gauge. Because the library owns the objects, `stat()` reports each segment's **real** size in storage, and
 `groundedReport()` from `@cloudbitmaps/tools` prices it. Each sample of a segment the store has not opened is one registry read, since the
-row's summary records the object's size; a row with no summary it can use adds a tail read of the object (two requests
-on S3 and GCS, three on Azure Blob).
+row's summary records the object's size; a row with no summary it can use adds a tail read of the object, for two requests in all on S3 and GCS and three on Azure Blob.
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';

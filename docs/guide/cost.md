@@ -174,8 +174,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   crashed load's object, or the generations a rollback left above the pointer) lists the segment to number past it
   and lists again to collect, two PUT-class requests and two more pointer reads. So does every load with a `keep`
   above 64, which a row cannot record and which therefore lists to collect: one more PUT-class request and two more
-  pointer reads than the model counts. The first load of a row that records no list (one `setRetention` made before its first
-  load, or a rollback moved) lists once and records it with one more write.
+  pointer reads than the model counts. The first load after a rollback, whose row records no list, lists once and records it with one more write.
   These are a cleartext segment's counts: an encrypted segment's load reads its row once more, after its ids and
   before it unwraps the key, one more GET ($0.40 per million at the default prices), which the model leaves out, as
   it leaves out the key-management calls an encrypted load makes. Loads are cheap by construction: a thousand

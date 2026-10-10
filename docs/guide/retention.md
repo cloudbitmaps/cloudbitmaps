@@ -331,8 +331,7 @@ The registry reads rows stamped `schemaVersion` 4 only. A row stamped 1, 2 or 3,
 `UnsupportedError` naming its key, by every read and write of its segment and by every listing that reaches it, so the
 library can neither delete, drop nor retire one, and a sweep of a namespace that holds one fails. A deleted row is kept
 as a `{ deleted: true }` envelope, and a segment name that was personal data survives in its record. Remove such rows
-with your storage's own tools, or point the store at a new prefix and delete the old one, its noncurrent versions
-included.
+with your storage's own tools, or move the store's segments to a new prefix by the steps in the [changelog](../../CHANGELOG.md#0200--2026-10-09) and then delete the old prefix, its noncurrent versions included.
 
 ## There is no per-id TTL
 
