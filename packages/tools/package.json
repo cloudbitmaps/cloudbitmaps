@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/tools",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "description": "Offline tools for CloudBitmaps that need nothing internal from a store: the cost model, which prices a workload on object storage against an always-on Redis.",
   "keywords": [
     "cloudbitmaps",
