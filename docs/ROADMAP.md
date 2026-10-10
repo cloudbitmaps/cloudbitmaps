@@ -36,7 +36,7 @@ registry row per segment, no background process. Every roaring-based engine that
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.19.1` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.20.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
@@ -56,10 +56,10 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | `load()` with the empty guard and `guard: { minCardinality, minRetained, maxGrowth }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and at any `keep` up to 64 collects by name, deleting the generations its publish pushed out of the window that its row records and listing the segment only every 16th generation: a steady load on S3 is counted at 2 PUT-class requests, 4 GET-class and a delete, 7 requests, and held by a test; only `keep: 12` is measured on S3 |
 | `guard.maxGrowth`: a ceiling on how much a load may grow a segment | **shipped** — the ceiling to `minRetained`'s floor, for a source that lands duplicated or joined on the wrong key: a generation larger than `maxGrowth` times the current one is refused with `reason: 'max-growth'`, on `load`, the `*Into` verbs and each `materializeMany` output. It does not judge a first load or a load onto an empty segment, and setting it reads the current size and fences the publish on it, `allowEmpty: true` or not ([when a load is refused](guide/loading.md#when-a-load-is-refused)) |
 | A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. `deserializePortable(bytes)` decodes portable bytes through the same check, for bytes that crossed a process boundary. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
-| Registry rows at schema 4: a random token for every write, and the row's `pointerId` | **on `main`, unreleased, to ship in `0.20.0`** — a row carries an optional summary of its current generation that names the generation's object by its fingerprint (its size and checksum), the generations its loads keep (`keptGens`), its live leases (`leases`), a token with a random incarnation id and a random part for every write, and `pointerId`, the token of the last write that named a field a read resolves through (the pointer, the status, the keys or the summary), at any value. A reader keys what it caches on the generation with the row's `pointerId`, so a lease or a retention write leaves its caches warm, and every open of a row with a summary holds the object to its fingerprint. This release reads rows stamped 4 only, and a release before it refuses them, so a store moves to it by loading its segments into a new prefix ([the changelog](../CHANGELOG.md) gives the steps) |
+| Registry rows at schema 4: a random token for every write, and the row's `pointerId` | **shipped** — a row carries an optional summary of its current generation that names the generation's object by its fingerprint (its size and checksum), the generations its loads keep (`keptGens`), its live leases (`leases`), a token with a random incarnation id and a random part for every write, and `pointerId`, the token of the last write that named a field a read resolves through (the pointer, the status, the keys or the summary), at any value. A reader keys what it caches on the generation with the row's `pointerId`, so a lease or a retention write leaves its caches warm, and every open of a row with a summary holds the object to its fingerprint. This release reads rows stamped 4 only, and a release before it refuses them, so a store moves to it by loading its segments into a new prefix ([the changelog](../CHANGELOG.md) gives the steps) |
 | A generation's metadata, and a row that describes its current generation — `metadata` on `load` and the `*Into` verbs | **shipped** — [below](#the-loaded-store) |
 | A cold `count()` in one request, and `seg.stat()` | **shipped** — [below](#the-loaded-store) |
-| The cost model in a package of its own, `@cloudbitmaps/tools`, and `stat()` reporting the generation's size | **on `main`, unreleased, to ship in `0.20.0`** — `estimateCost`, `groundedReport` and the price lists are in `@cloudbitmaps/tools`, offline tools that need nothing internal from a store, released with the family; the library carries no prices. `stat()` reports `sizeBytes`, the bytes of the current generation's object, which the row's summary records, so a grounded report is `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })` and a cold `stat()` is one registry read ([the cost guide](guide/cost.md), [`stat()`](guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)) |
+| The cost model in a package of its own, `@cloudbitmaps/tools`, and `stat()` reporting the generation's size | **shipped** — `estimateCost`, `groundedReport` and the price lists are in `@cloudbitmaps/tools`, offline tools that need nothing internal from a store, released with the family; the library carries no prices. `stat()` reports `sizeBytes`, the bytes of the current generation's object, which the row's summary records, so a grounded report is `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })` and a cold `stat()` is one registry read ([the cost guide](guide/cost.md), [`stat()`](guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)) |
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
@@ -137,7 +137,7 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **A one-request cold `count()`, and `stat()`**. A cold `count()` is the pointer read and nothing else: the row records
   the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
   from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
-  returns the generation's number, count and metadata, and (on `main`, unreleased, to ship in `0.20.0`) its object's
+  returns the generation's number, count and metadata, and its object's
   size beside them, from the same row: a cold `stat()` is the pointer read too, and a row with no summary to use adds a
   tail read of the object; the current entry of `store.generations()` carries the number, count and metadata from the
   row it already reads. A snapshot is a
@@ -238,7 +238,7 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **Observability without telemetry** — an injected metrics sink and a separate, off-by-default audit sink
   emitting compliance state changes. Nothing is sent anywhere by default; there is no phone-home.
 - **Honest cost tooling** — `estimateCost` for planning and `groundedReport` for a segment's measured size, which
-  `stat()` reports, in `@cloudbitmaps/tools` (on `main`, unreleased, to ship in `0.20.0`), with a pluggable pricing
+  `stat()` reports, in `@cloudbitmaps/tools`, with a pluggable pricing
   profile that will tell you when CloudBitmaps *loses* to flat Redis. The crossover is a **read rate** at a given
   cache-hit rate, net of storage and the pointer refresh a long-lived reader pays, with a loads term that counts what
   `store.load()` sends. Each request count is held to the engine by a test. The published crossover chart is in
@@ -354,7 +354,7 @@ between here and there:
    code, and another refuses a count of third-party dependencies that does not name the package it counts.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
-   4 (on `main`, unreleased, to ship in `0.20.0`): an optional cached summary of the current generation (its id count,
+   4: an optional cached summary of the current generation (its id count,
    its object's fingerprint and its metadata, sealed on an encrypted segment), the generations its loads keep and its
    live leases, a token that carries a random 128-bit incarnation id and a random part for every write, so a
    re-created name is told apart from its earlier incarnations even once their rows are gone, and a row restored from
@@ -382,12 +382,12 @@ between here and there:
      index and metadata before it moves the pointer, and refuses one that does not open.)
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
-10. **The cost model in a package of its own — on `main`, unreleased, to ship in `0.20.0`.** `estimateCost`,
+10. **The cost model in a package of its own — ✅ Shipped.** `estimateCost`,
     `groundedReport` and the price lists are in `@cloudbitmaps/tools`, a package of offline tools that need nothing
     internal from a store, and the library carries none of them. `stat()` reports the generation's byte size, so a
     grounded report needs nothing internal, and a price list for S3, GCS or Azure is a change to that package alone,
     which ships with the family's next release.
-11. **A segment's resolution kept apart from its reader — on `main`, unreleased, to ship in `0.20.0`.** A store with
+11. **A segment's resolution kept apart from its reader — ✅ Shipped.** A store with
     a timed refresh keeps each segment's resolution (the fields of its row a read resolves through: the generation, the
     `pointerId`, the wrapped keys and the summary, never an unwrapped key) for `cache.genTtlMs` from the instant the
     registry read was sent, whether or not the segment's reader is still open, in a cache bounded by
