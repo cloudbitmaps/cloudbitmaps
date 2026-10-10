@@ -110,12 +110,16 @@ And a store loads one straight back, with no per-id work:
   finished, not that every segment succeeded. Always check `failed`.
 - **An export carries ids, not the segment's other state.** A file holds the ids of the segment's current generation and
   nothing else: not its generation metadata, its `retention` and `residency` policy, its leases, nor the older
-  generations `keep` retained. If you will load the files into a new prefix, save beside each file the segment's generation metadata
-  (`seg.stat()`) and its row's whole `retention` and `residency` objects (`backend.registry.get(ref)`), and after each
-  load write them back with `backend.registry.compareAndSwap(ref, row.token, { retention, residency })`, since
-  `store.setRetention` writes `expiresAt` alone. A destroyed segment (crypto-shredded or dropped) is skipped
-  (`manifest.skipped`), and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it. A file also holds what the segment held when it
-  was read, so run again every erasure processed since the export began.
+  generations `keep` retained. If you will load the files into a new prefix, save beside each file the segment's
+  generation metadata (`seg.stat()`) and its row's whole `retention` and `residency` objects
+  (`backend.registry.get(ref)`). After each load, read the row the load created (`const row = await
+  backend.registry.get(ref)`) and write back the ones the old row had with `backend.registry.compareAndSwap(ref,
+  row.token, { retention, residency })`, since `store.setRetention` writes `expiresAt` alone; then, for a policy with an
+  `expiresAt`, call `store.setRetention(ref, { expiresAt })` as well, which keeps your other keys and files the segment
+  in the retention sweep's due index. A destroyed segment (crypto-shredded or dropped) is skipped (`manifest.skipped`),
+  and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it.
+  A file also holds what the segment held when it was read, so run again every erasure processed since the export
+  began.
 - **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
   disappeared.** Export to a fresh directory for a clean dump.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds
