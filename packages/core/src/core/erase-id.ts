@@ -624,7 +624,9 @@ async function eraseOnce(
 
   const cannotRemove = (generation: number): WriteConflictError =>
     new WriteConflictError(
-      `erasure of segment ${ref.segment} could not remove generation ${generation}, which still holds the id and is still in the bucket; re-run`,
+      `erasure of segment ${ref.segment} could not remove generation ${generation}, which ${
+        sealed.has(generation) ? 'cannot be searched, so may hold the id,' : 'still holds the id'
+      } and is still in the bucket; re-run`,
     );
 
   /**

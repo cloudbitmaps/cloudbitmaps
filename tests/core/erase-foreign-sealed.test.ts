@@ -246,7 +246,9 @@ describe('the last look at the bucket counts an object it cannot search', () => 
       }
     };
     await expect(eraseIdFromSegment(REF, X, { ...w.deps, storage })).rejects.toSatisfy(
-      (e: unknown) => e instanceof WriteConflictError && /generation 5\b.*re-run/.test(e.message),
+      (e: unknown) =>
+        e instanceof WriteConflictError &&
+        /generation 5, which cannot be searched, so may hold the id, .*re-run/.test(e.message),
     );
     expect(planted).toBe(true);
     expect(await generations(w.storage)).toEqual([5]);
