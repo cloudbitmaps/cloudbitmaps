@@ -8,7 +8,7 @@ import ts from 'typescript';
  * a delete decided from one read from removing an object stored under the number since, and a wrapper that takes or
  * forwards only the key turns it back into a delete of whatever is there, silently, while it still reports the inner
  * driver's `conditionalDelete`. That happened twice: the store's own budget wrapper for `eraseSubject` dropped the
- * options, and so did some forty test wrappers, which left the conditional path unexercised wherever they stood.
+ * options, and so did test wrappers across the suite, which left the conditional path unexercised wherever they stood.
  *
  * So every `.ts` file under `tests/` and `packages/<package>/src/` is parsed, and each implementation of a storage
  * driver's `delete` that forwards to another `delete` is held to forwarding the options:
