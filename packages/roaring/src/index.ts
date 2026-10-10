@@ -3731,9 +3731,9 @@ export class Segment {
   }
 
   /**
-   * Membership: one chunk. A chunk in the cache answers with no request when the segment's resolution is still warm;
-   * otherwise a registry read (cold) and a tail read, plus a range read unless the tail carried the chunk. Throws
-   * {@link ValidationError} on a bad id.
+   * Membership: one chunk. A cold resolution of the segment is one registry read and a warm one none; then a cached
+   * chunk answers with no request, and an uncached one is one range read, after a tail read when no reader of the
+   * generation is open, unless that tail carried the chunk. Throws {@link ValidationError} on a bad id.
    */
   has(id: number): Promise<boolean> {
     const lease = this.leaseError();

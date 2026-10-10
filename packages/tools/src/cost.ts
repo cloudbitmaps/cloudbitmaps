@@ -4,7 +4,8 @@
  *
  * - {@link estimateCost} — **planning** mode: pure what-if from segment sizes + a workload (sizing/sales).
  * - {@link groundedReport} — **grounded** mode: a segment's real size, which its handle's `stat()` reports as
- *   `sizeBytes` from the `.crbm` footer and index (no payload reads), + a supplied workload for request rates.
+ *   `sizeBytes` (from the registry row's summary, else the `.crbm` footer and index, with no payload read), + a
+ *   supplied workload for request rates.
  *
  * Guiding split: **formulas are the spec; rates are a pluggable {@link PricingProfile}.** The report always emits
  * a {@link CostReport.verdict} that includes the lose-zone — it never hides where an always-on cache (Redis)
@@ -16,8 +17,8 @@
  * it makes); the requests of a load (the object's write, and the pointer reads and write, the checks of the next
  * generation number and of the current generation's object, and the listing of every 16th generation that
  * `store.load()` makes around it); and storage. Same-region egress is
- * treated as free and internet egress is not modeled; request cost is derived from the supplied workload rates
- *. There is no per-write term because the loaded
+ * treated as free and internet egress is not modeled; request cost is derived from the supplied workload rates.
+ * There is no per-write term because the loaded
  * store has no per-id write: data arrives as generations, and a generation is a load.
  *
  * Every request count below is one the engine makes, and `tests/tools/cost.test.ts` holds each to the engine by
@@ -1002,7 +1003,8 @@ const GROUNDED_KEYS: ReadonlySet<string> = new Set(['storageBytes', 'workload', 
 
 /**
  * **Grounded** report from a measured byte total + a supplied workload. A segment handle's `stat()` reports the
- * size of its current generation as `sizeBytes`, read from the `.crbm` footer and index with no payload reads:
+ * size of its current generation as `sizeBytes`, from the registry row's summary when it records one and from the
+ * `.crbm` footer and index otherwise, with no payload read either way:
  *
  * ```ts
  * const report = groundedReport({ storageBytes: (await seg.stat()).sizeBytes, workload: { readsPerSec: 50 } });

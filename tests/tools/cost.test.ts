@@ -757,7 +757,7 @@ async function reportOf(
   });
 }
 
-describe('groundedReport (from stat().size)', () => {
+describe('groundedReport (from stat().sizeBytes)', () => {
   it('grounded storage cost matches a direct byte count of the real chunk payload', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
     const r = await reportOf(store, 's');

@@ -382,7 +382,7 @@ export interface PublishedKept {
  * publish pushed out of that window ({@link deleteEvicted}) and lists the segment ({@link gcOrphanGenerations}'s
  * pass) only when it cannot rely on the row or must catch what a name does not:
  *
- *  - the row recorded no list (a `keep` above {@link MAX_KEPT_GENERATIONS}, a row an earlier schema wrote, one a
+ *  - the row recorded no list (a `keep` above {@link MAX_KEPT_GENERATIONS}, one a
  *    rollback or an erasure moved, or a publish whose write was settled by reading the row): the pass keeps the
  *    newest `keep` generations present below the pointer, and records them with one compare-and-swap, fenced on the
  *    publish's own token, so the next load collects by name;
