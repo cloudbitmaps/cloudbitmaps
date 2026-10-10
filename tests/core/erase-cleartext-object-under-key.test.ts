@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
 import { aadFor } from '@/core/crypto';
-import { IntegrityError } from '@/core/errors';
 import { NodeAead } from '@/drivers/crypto';
 import { writeCrbm } from '../helpers/crbm-extension';
 import { eraseIdFromSegment } from '@/core/erase-id';
@@ -82,9 +81,10 @@ describe.each(['below', 'above'] as const)(
 );
 
 describe('erasure with an encrypted object the segment key does not open', () => {
-  it('still refuses with the integrity error, and does not read it as cleartext', async () => {
+  it('counts it a holder it cannot search and deletes it, and does not read it as cleartext', async () => {
     // Sealed under a key no row holds, below an encrypted pointer: only the footer says it is encrypted, so the
-    // erasure must not take its refusal for a cleartext object's.
+    // erasure must not take its refusal for a cleartext object's, which it would search in the clear and keep when it
+    // did not hold the id. No read of the segment can open it: it is deleted, and the id was not found.
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
@@ -95,8 +95,11 @@ describe('erasure with an encrypted object the segment key does not open', () =>
     await storage.putImmutable({ ...SEG, generation: 0 }, async (out) => out.write(sealed));
     const generation = await nextGeneration(SEG, { storage, registry });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, [7, 8], { registry, keystore });
-    await expect(
-      eraseIdFromSegment(SEG, 99, { storage, registry, keystore, codec: roaringCodec }),
-    ).rejects.toBeInstanceOf(IntegrityError);
+    expect(
+      await eraseIdFromSegment(SEG, 99, { storage, registry, keystore, codec: roaringCodec }),
+    ).toMatchObject({ erased: false, reason: 'not-member', collected: [0] });
+    const left: number[] = [];
+    for await (const key of storage.list(SEG)) left.push(key.generation);
+    expect(left).toEqual([generation]);
   });
 });

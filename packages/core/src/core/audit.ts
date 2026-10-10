@@ -93,7 +93,8 @@ export type AuditEvent =
        * emitted at the publish — before the superseded generation is collected — so the record exists the moment
        * the generation without the id is authoritative. A `segment.publish` is NOT also emitted for a rewrite: a
        * rewrite derives its content from the segment itself, a publish brings content in from outside. An erasure
-       * that finds the id only outside the current generation rewrites nothing and emits `segment.collect`.
+       * that finds the id only outside the current generation, or deletes only objects no read of the segment can
+       * open, rewrites nothing and emits `segment.collect`.
        */
       readonly kind: 'segment.rewrite';
       readonly namespace?: string;
@@ -105,26 +106,32 @@ export type AuditEvent =
     }
   | {
       /**
-       * An erasure of one id found it only in generations no reader resolves, **deleted them**, and rewrote none. Two
-       * cases reach it: an id that only generations other than the current one hold (someone who left the segment,
-       * whose bit the reader grace window or a rollback target keeps), and objects left under a tombstone (a cleartext
-       * destroy, or a drop whose sweep left one). The one emitter is `eraseIdFromSegment`, once a listing of the bucket
-       * shows no generation holding the id, so the record exists only for a finished erasure. A call that ends
-       * otherwise throws or reports `erased: false` and emits nothing, even when it had deleted a holder; its re-run
-       * emits when it finishes, and reports `'not-member'` with no event when another collection deleted the last
-       * holder meanwhile, as its ledger entry does.
+       * An erasure of one id **deleted objects** no reader resolves, and rewrote none. It found the id only in such
+       * objects, or deleted only objects no read of the segment can open, which it cannot search and deletes whatever
+       * the id. The cases: an id that only generations other than the current one hold (someone who left the segment,
+       * whose bit the reader grace window or a rollback target keeps); objects left under a tombstone (a cleartext
+       * destroy, or a drop whose sweep left one); a first load's object on a segment with no generation yet (its load
+       * still running, or one that crashed before its publish); and an object sealed under a key the segment's row does
+       * not hold, or an encrypted one under a cleartext row (a first load's that lost the race, or crashed). The one
+       * emitter is `eraseIdFromSegment`, once a listing of the bucket shows nothing left holding the id, so the record
+       * exists only for a finished erasure. A call that ends otherwise throws or reports `erased: false` with another
+       * reason and emits nothing, even when it had deleted a holder; its re-run emits when it finishes, and reports
+       * `'not-member'` with no event when another collection deleted the last holder meanwhile, as its ledger entry
+       * does.
        *
-       * `fromGeneration` is the newest generation the call found holding the id. `collected` is every generation the
-       * call deleted, ascending, and the same list as its ledger entry: below the pointer that is every generation,
-       * holder or not, since the deletion takes them all, and above it only the holders. A holder another collection
-       * deleted first is not in it, so the list can be empty.
+       * `fromGeneration` is the newest generation the call found holding the id, and is absent when it found the id in
+       * none and deleted only objects it could not search: then the ledger lists no entry for the segment, and this
+       * event is the record of the deletion. `collected` is every generation the call deleted, ascending, and the same
+       * list as its result's: below the pointer, when a searched generation held the id, that is every generation,
+       * holder or not, since the deletion takes them all; above it, and wherever none did, only the holders and the
+       * objects it could not search. A holder another collection deleted first is not in it, so the list can be empty.
        */
       readonly kind: 'segment.collect';
       readonly namespace?: string;
       readonly segment: string;
       /** The incarnation of the row the erasure read: the active row, or the tombstone. */
       readonly incarnation?: string;
-      readonly fromGeneration: number;
+      readonly fromGeneration?: number;
       readonly collected: readonly number[];
     }
   | {

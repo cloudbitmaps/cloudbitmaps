@@ -104,11 +104,14 @@ so, and so do the module headers in the code.
   the row's token carries no incarnation id, for example from a registry of your own, and on a `segment.load-refused`
   from a load that found no row.
 - **A `segment.collect` audit event for an erasure that rewrites nothing.** When `eraseSubject` finds the id only
-  outside the current generation (a retained older generation, one above the pointer after a rollback, or an object
-  left under a tombstone), it deletes the generations holding it and now emits `segment.collect { fromGeneration,
-  collected }` once no generation holds the id. Every ledger entry with `erased: true` now has an event:
-  `segment.rewrite` or `segment.collect`. `AuditEvent` gains the member, so an exhaustive `switch` on `kind` needs a
-  case for it.
+  outside the current generation (a retained older generation, one above the pointer after a rollback, an object left
+  under a tombstone, or a first load's object on a segment with no generation yet), it deletes the generations holding
+  it and now emits `segment.collect { fromGeneration, collected }` once no generation holds the id. Every ledger entry
+  with `erased: true` now has an event: `segment.rewrite` or `segment.collect`. An erasure that deletes only objects no
+  read of the segment can open emits it too, with no `fromGeneration`, since it found the id in none and the ledger
+  does not list the segment, so the event is the record of that deletion. A call that ends `superseded` or throws
+  emits nothing, even when it had deleted a holder. `AuditEvent` gains the member, so an
+  exhaustive `switch` on `kind` needs a case for it.
 - **The export manifest lists the segments it skipped.** `ExportManifest.skipped` names each destroyed segment the
   export did not read, `{ segment, namespace?, reason: 'destroyed' }`, so `segments`, `failed` and `skipped` together
   account for every segment row the registry listed. `ExportSkipped` is exported, and the `export-segments` command's summary
@@ -116,6 +119,45 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An erasure deletes an object its segment's key does not open, as a holder it cannot search.** On an encrypted
+  segment, the object of a first load that lost the race to the one that published, or that crashed before its
+  publish, is sealed under a key it made and never stored: no read of the segment opens it. An erasure that met one
+  threw `IntegrityError` (AEAD authentication failed) on every run, for every id, until a load's collection took the
+  object, so `eraseSubject` reported the segment as an `error: …` entry. On a cleartext segment with a generation, an
+  encrypted object (a first load's that made a key and crashed, or lost the race to a cleartext first load) made it
+  throw `ValidationError` the same way. It now deletes either as a holder it cannot search, except as the current
+  generation or under a tombstone: by name, under the renewal of the row and a read of the row before each delete,
+  passing the version of the read that found it (its footer's, or the open whose index failed under the segment's
+  key), above the pointer and wherever no searched generation holds the id, in which case the generations kept below the
+  pointer stay; and below the pointer beside a searched holder, with the `keep: 0` collection that takes every
+  generation there. It lists it in `collected`, and reports `erased: true` only when a searched generation held the
+  id. An object whose index the segment's key opens and whose chunk does not is still reported as corruption with
+  `IntegrityError`, and the current generation is never deleted for this
+  ([erasure](docs/guide/erasure.md#two-rules-while-you-erase)).
+- **An erasure deletes a first load's object on a segment with no generation yet, and refuses the load that wrote
+  it.** On a row with no pointer (one `setRetention` made before the first load), an erasure that finds an object
+  holding the id first renews the row's `pointerId`, as it does before it deletes a generation above the pointer, so a
+  first load still in flight that wrote the object is refused `superseded` at its publish. Then it deletes each
+  holder, reading the row before each delete, and reports `erased: true` with them in `collected`, where it threw
+  `WriteConflictError` and kept them; a crashed first load's object is erased like any other holder. Each delete
+  passes the version of the read that made the object a holder, so on a storage driver that reports
+  `conditionalDelete` the race of two erasures of the id and a load that takes the number the first delete freed is
+  closed as it is above the pointer: the other erasure's delete is refused, it deletes nothing more and answers from
+  the row, and the load's generation stays; on a driver that does not, that delete removes it, and the row names a
+  missing object. An object sealed under a key no row holds, an encrypted first load's, cannot be searched, so it is
+  deleted whatever the id; with only such objects the result is `erased: false`, `reason: 'no-generation'`, with them
+  in `collected`. **So on an encrypted store, `eraseSubject` of any id refuses each encrypted first load in flight
+  that has written its object onto a segment whose row was made ahead of its data, in the namespaces it scans**:
+  re-run those loads, or pause loads while you erase. An erasure that finds no holder writes nothing
+  ([erasure](docs/guide/erasure.md#how-it-stays-correct)).
+- **The row write an erasure makes before it deletes a generation above the pointer renews the row's `pointerId`, and
+  one that gets no answer is settled by reading the row.** The write names the pointer at the value it has, where it
+  rewrote the row's kept window. A load in flight that wrote that generation is refused at its publish, as it was; a
+  warm reader opens the current generation again once after such an erasure. A write that gets no answer
+  is settled as a load's publish is: the erasure reads the row, goes on when a renewal landed after the row it wrote
+  against (its own or another erasure's), sends a fresh write after a wait, at most three, when the row is as it was,
+  and otherwise reports what the row says; one it cannot settle throws the registry's `TransientError`, and the
+  generations the write guards are not deleted ([erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **The written bound on what a read already in progress can yield after an erasure counts the key a combine is
   handing out.** A combine can still yield an id the store's own erasure removed from up to `concurrency` + 1 keys of
   each operand (33 by default): the key it is handing out when the erasure returns and the `concurrency` keys it had
@@ -185,26 +227,46 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused erasure rewrite no longer deletes a load's generation stored under its number since.** A rewrite refused
+  by a winner whose pointer stopped below it deletes its own object, which no collection would take. Another erasure
+  of an id that object holds could delete it as a holder above the pointer, and a load take its number and publish,
+  before that delete reached the storage; the delete then removed the load's generation, and the pointer named a
+  missing object. The rewrite now first proves the object under its number is the one it wrote, by a read of its
+  footer, keeps one that is gone, is another object or cannot be read, and deletes it under the version that read
+  reported, so on a storage driver that reports `conditionalDelete` the load's generation stays; a delete the driver
+  refuses is a fault of the cleanup, and the call reports what the row says as before. Under a `destroyed` row the
+  delete stays by number, since every writer refuses that row ([a number taken again during an
+  erasure](docs/guide/erasure.md#how-it-stays-correct)).
+- **An erasure no longer reports corruption for an object replaced under a number while it searched it.** An erasure
+  that opened an object's index and then read another object's bytes for its chunk (the object deleted, by another
+  erasure as a holder, and the number taken again by a load) threw `IntegrityError`, so `eraseSubject` reported an
+  `error: …` entry that read as corruption. A chunk read that fails now asks the object's footer whether it is still
+  the object that was opened; when it is not, the generation it listed is gone, as when a collector takes it, and the
+  call's last look at the bucket searches what is there. The same object with a damaged chunk still throws
+  `IntegrityError`.
 - **On a storage driver that reports `conditionalDelete`, an erasure no longer deletes a generation a load put, since
   its search, under the number of a holder above the pointer, and a refused load no longer deletes one put under its
-  number since its footer read.** A number can be taken again once its object is deleted. While one erasure re-read the
-  row before deleting a holder above the pointer, a second erasure of the same id could delete that holder, and a load
-  take its number, write and publish; the first erasure's delete then removed the load's generation, and the pointer
-  named a missing object. Each delete of a holder above the pointer now passes the version the erasure read when it
-  searched that object, and on a driver that reports `conditionalDelete` the delete of another object is refused: the
-  erasure stops deleting and reports `erased: true` when nothing left holds the id, or `'superseded'`. A load refused
-  after its row was purged, which proves its object its own by a footer read before deleting it, passes the version of
-  that read the same way. On a driver that does not report it (the local-filesystem driver, GCS by default, S3 on a
-  host other than AWS S3 unless set) the window remains. The condition names the object, not the row, so a rollback
-  onto the generation being deleted still leaves the pointer on a missing object; on S3, whose ETag is computed from
-  the bytes of an object stored without SSE-KMS or SSE-C, a load that writes exactly the holder's bytes under its
-  number, stored the same way, is not told apart; and every other delete stays unconditioned, by number: a refused
-  rewrite's of its own object above the winner's pointer or under a `destroyed` row, and a refused load's of its own object under a row that is
-  unchanged, changed only in its leases, or `destroyed`, since a write reports no version; generation collection's,
-  decided below the pointer from a listing or from the row's list of kept generations, where a number is taken again
-  only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a listing
-  names under a `destroyed` row, which every writer refuses until it is purged
-  ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
+  number since its footer read.** A number can be taken again once its object is deleted. While one erasure re-read
+  the row before deleting a holder above the pointer, a second erasure of the same id could delete that holder, and a
+  load take its number, write and publish; the first erasure's delete then removed the load's generation, and the
+  pointer named a missing object. Each delete of a holder by name, above the pointer or on a segment with no
+  generation yet, now passes the version of the read that made the object a holder (the read that searched it, or for
+  one the erasure cannot search, the read that found it sealed), and on a driver that reports `conditionalDelete` the
+  delete of another object is refused: the erasure stops deleting and reports `erased: true` when nothing left holds
+  the id, or `'superseded'`. A load refused after its row was purged, which proves its object its own by a footer read
+  before deleting it, passes the version of that read the same way, and so does a refused rewrite that discards its
+  own object above the winner's pointer, which now proves it its own by a footer read first. On a driver that does not
+  report it (the local-filesystem driver, GCS by default, S3 on a host other than AWS S3 unless set) the window
+  remains. The condition names the object, not the row, so a rollback onto the generation being deleted still leaves
+  the pointer on a missing object; on S3, whose ETag is computed from the bytes of an object stored without SSE-KMS or
+  SSE-C, a load that writes exactly the holder's bytes under its number, stored the same way, is not told apart; and
+  every other delete stays unconditioned, by number: a refused rewrite's of its own object under a `destroyed` row,
+  and a refused load's of its own object under a row that is unchanged, changed only in its leases, or `destroyed`,
+  since a write reports no version; generation collection's, and a load's eviction of generations from its kept
+  window, decided below the pointer from a listing or from the row's list of kept generations, where a number is taken
+  again only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a
+  listing names under a `destroyed` row, which every writer refuses until it is purged ([a number taken again during
+  an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 
 ## [0.19.1] — 2026-10-09
 

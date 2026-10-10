@@ -1400,7 +1400,7 @@ export class CloudRoaring {
    * the delete passes the version that read reported, so on a storage driver that reports `conditionalDelete` an
    * object put under the number since is kept. Where the row is unchanged or `destroyed`, the check narrows the
    * window rather than closing it: the row read and the delete are two round trips, and the delete is by number,
-   * since the write reports no version of the object it made. Every other delete is by number too: a load's
+   * since the write reports no version of the object it made. The other deletes a load leads to are by number too: its
    * collection deletes what a listing, or the row's list of kept generations, names below the pointer, and a drop's
    * sweep and a tombstoned segment's collection delete what a listing names under a `destroyed` row. The failure the
    * checks leave when they refuse is an orphan object, which costs storage until something collects it —
@@ -2070,11 +2070,14 @@ export class CloudRoaring {
    * can still hold it, and so can one above the pointer after a {@link CloudRoaring.rollback}, which the rollback
    * could make current again. Each holder is deleted — below the pointer by a `keep: 0` collection, above it one
    * by one, re-proved against the row first — and the generations above the pointer that never held the id stay
-   * as rollback targets. An entry says `erased: true` only once the call has listed the bucket and read what is
-   * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
+   * as rollback targets, but for any object no read of the segment can open, which goes whatever the id. An entry
+   * says `erased: true` only once the call has listed the bucket and read what is left: **no generation of the
+   * segment holds the id**. The returned per-segment record is your **erasure ledger** —
    * persist it / route it to your audit sink as the proof of deletion (when you pass `audit`, an audit event is also
    * emitted per segment erased: `segment.rewrite` for a rewrite, `segment.collect` where only other generations held
-   * the id and nothing was rewritten).
+   * the id and nothing was rewritten). A segment where the erasure deleted only objects no read of it can open (a first
+   * load's sealed under a key no row holds) found the id in none, so the ledger does not list it; the audit sink gets
+   * `segment.collect` for it with no `fromGeneration`, which is the only record of that deletion.
    *
    * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
    * over the same generation. Requires the store built with a **backend** (throws
@@ -2096,7 +2099,15 @@ export class CloudRoaring {
    * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
    * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger. A tombstoned
    * segment is still searched: a cleartext object left under it that holds the id is deleted, with everything under
-   * the tombstone, and the entry reads `erased: true`.
+   * the tombstone, and the entry reads `erased: true`. So is a segment whose row names no generation yet (a retention
+   * policy set before its first load): a first load's object that holds the id is deleted, once the row's `pointerId`
+   * is renewed so that the load, if still running, is refused at its publish, and the entry reads `erased: true`. An
+   * encrypted first load's object there cannot be searched, so it is deleted whatever the id: on an encrypted store,
+   * an erasure of any id refuses an encrypted first load in flight that has written its object onto a segment made
+   * ahead of its data. Each such delete, and each of a holder above the pointer, names the object the erasure read:
+   * on a storage driver that reports `conditionalDelete`, another erasure of the id that deletes it first, followed by
+   * a load that takes the number freed and publishes, does not lose that load's generation to this erasure's delete,
+   * which is refused, and the entry says what the row says; on one that does not, it can.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
    * another writer (a load, another erasure, or a rollback) moved the pointer, or replaced an object the call meant to
@@ -2343,8 +2354,9 @@ export class CloudRoaring {
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
    * load whose number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is
    * below its pointer), {@link CloudRoaring.dropSegment}
-   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
-   * the id when the current generation does not. An operator who has just undone a bad load should not have the
+   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and, when the
+   * current generation does not hold the id, only those holding it and any no read of the segment can open, whatever
+   * the id. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
    * erasure undoable.
    *

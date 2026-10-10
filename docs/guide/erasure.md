@@ -26,10 +26,12 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 `ledger.erasedFrom` is your **erasure ledger**, the proof of deletion. It is a return value only, so persist it or
 route it to your audit sink. When you pass `audit`, the store also emits an event per segment it erased the id from:
 `segment.rewrite` when it rewrote the current generation, `segment.collect` when it only deleted other generations.
-Segments the id is not in are not listed. The two calls look in different places: `subjectReport` reads what a reader
-reads, each segment's current generation, while `eraseSubject` also searches older generations, a tombstoned
-segment's objects and a first load's object that never published. So the ledger can name a segment the report did
-not.
+Segments the id is not in are not listed. A segment where the erasure found the id in nothing it could search, and
+deleted only objects no read of the segment can open ([below](#two-rules-while-you-erase)), is not listed either: the
+audit sink gets `segment.collect` for it with no `fromGeneration`, and that event is the only record of the deletion.
+The two calls look in different places: `subjectReport` reads what a reader reads, each segment's current generation,
+while `eraseSubject` also searches older generations, a tombstoned segment's objects and a first load's object that
+never published. So the ledger can name a segment the report did not.
 
 `eraseSubject` needs a store built on a backend, because it writes generations. `subjectReport` needs one too, for
 the registry it lists. A store missing what a call needs throws `UnsupportedError`: a store built on a bare storage
@@ -42,6 +44,20 @@ pays for every one. The per-op budget is charged for them. The scan runs at a bo
 `{ concurrency }`), so it is quick over a large fleet without stampeding your backend. A fault on one segment never
 aborts the ledger.
 
+An erasure that deletes an object a load may still publish (one above the pointer, a first load's object on a segment
+with no generation yet, or one no read of the segment can open) writes the segment's registry row first, to renew its
+`pointerId`, and reads the row again before each such delete. On a segment with no generation yet, with `n` objects to
+delete, that is `3 + n` registry reads and 1 write where an erasure that deletes nothing reads the row once (counted
+at the registry the S3, GCS and Azure Blob drivers share, which reads a row's version before it writes it). The cost
+is paid once per affected segment: the objects are gone, so the next run reads the row once and writes nothing. A
+segment whose objects no read can open is affected whatever id is erased, so the first `eraseSubject` over a fleet
+pays one renewal and the deletes for each such segment, and the next pays nothing for them. A renewal that gets no
+answer waits before each fresh write, under 500 ms, then 1 s, then 2 s, so up to 3.5 s in all, one wait after another
+within a segment; `eraseSubject` erases `concurrency` segments at once (8 by default), so up to 8 segments can wait
+side by side. A renewal on a segment with a generation moves its row's `pointerId`, so every store reading that
+segment opens its current generation again once, at its next refresh: one more tail read each where the generation's
+index fits in that read, and a range read for the index as well where it does not.
+
 ## Reading the ledger
 
 `erased: true` means the call listed the segment's bucket and read what is left, and **no generation of the segment
@@ -53,15 +69,14 @@ there", and `note` says why:
 
 | `note` | Means | What to do |
 |---|---|---|
-| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, or replaced an object the call meant to delete. Usually a load; it can also be another erasure or an operator's `rollback`. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
-| `error: <message>`, a transient storage fault | The storage failed under it. | Re-run. |
+| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, or replaced an object the call meant to delete. Usually a load; it can also be another erasure or an operator's `rollback`. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
+| `error: <message>`, a transient storage or registry fault | The storage failed under it, or a registry write got no answer that reading the row could settle; the generations that write was to guard were not deleted. | Re-run. |
 | `error: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
-| `error: <message>`, a `WriteConflictError` saying the segment has no published generation | A first load's object that never published holds the id, or, on an encrypted store, is sealed under a key that load has not published and cannot be searched; its load may still publish it, so it is not deleted. | Load the segment, which makes the object collectable, or drop it, and re-run. |
 | `error: <message>`, a `NotFoundError` saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
-| `error: <message>`, an `IntegrityError` naming a chunk | That segment is corrupt. The rewrite refused to copy the corruption into a new generation, and no erasure happened on it. | Investigate; re-running will not help. |
-| `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all. | See what a re-run reports instead of assuming the job finished. |
+| `error: <message>`, an `IntegrityError` naming a chunk, or saying authentication failed | That segment is corrupt: a chunk holds a value no chunk can, or a generation sealed under the segment's own key has a chunk that does not open under it, or the current generation does not open under it at all. The rewrite refused to copy the corruption into a new generation, the erasure deletes nothing on account of that error, and no erasure happened on it. | Investigate; re-running will not help. |
+| `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all, and on a segment with no generation yet, when the erasure found a first load's object to delete and a first load wrote another, holding the id or sealed under its own key, after the erasure listed the bucket; when that load published before the erasure's last read of the row, the entry is `'superseded'` instead. | See what a re-run reports instead of assuming the job finished. |
 
 A fault can also land after a rewrite published. Examples are a storage `delete` fault, a collect that could not prove
 the segment was still the same one, and a generation still holding the id when the bucket is listed at the end (such
@@ -92,9 +107,10 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
   held, and the library cannot know that source was meant to exclude the id. Pause loads of the affected segments for
   the duration, or fix the source first and load after. A writer that lands during the rewrite is caught and
   reported as `'superseded'`, not as an error. A load still writing a generation above the pointer, when the id is
-  found only there, is refused: the erasure writes the segment's row before it deletes that generation, and a load
-  that found no row is refused by any row at all, so the load's publish meets another writer rather than naming an
-  object that is gone.
+  found only there, is refused, and so is a first load still writing onto a segment with no generation yet, when the
+  id is found in its object: the erasure renews the segment's row (its `pointerId`) before it deletes that object, and
+  a load that found no row is refused by any row at all, so the load's publish meets another writer rather than
+  naming an object that is gone.
 - **Never put a subject's id in a generation's metadata.** An erasure rewrites the ids and carries the metadata over as
   it is, without scanning it: it would copy an id there into the new generation, and the registry row holds a copy of
   the current generation's metadata too. Put a version, a time or a run id in it, and nothing that names a person.
@@ -102,6 +118,56 @@ the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means f
   a generation the erasure did not rewrite. Roll back before the erasure starts or after it returns, and re-run an
   erasure that reports otherwise once the pointer is where you want it.
   [How it stays correct](#how-it-stays-correct) says what each landing point reports.
+
+**On an encrypted store, an erasure of any id refuses an encrypted first load in flight that has written its object onto
+a segment made ahead of its data.** A segment whose row `setRetention` made before its first load holds no key until
+that load publishes, so the erasure holds none either, and cannot search the object such a load has written: it counts
+that object as a holder, whatever id it is erasing. So `eraseSubject` of any id, over the namespaces it scans, renews
+each such segment's row, deletes the object, and the load is refused `superseded`, whether or not its data held the id;
+the segment is not listed in the ledger, since the id was not found there. Re-run the load. It does not reach a first
+load onto a segment with no row (`eraseSubject` scans rows), a load onto a segment that has a generation (its object is
+under the row's key, so it is searched), or a cleartext first load whose object does not hold the id. And once it has
+found such an object, an encrypted first load that writes its object onto that segment before the erasure's last look at
+the bucket makes the entry an `error: …` note (`WriteConflictError`), or `'superseded'` when that load published before
+the erasure's last read of the row: re-run the erasure. Pausing loads while you erase, as the first rule says, avoids
+both.
+
+**An object no read of the segment can open goes too, whatever id is erased.** On a segment with a key, an object
+sealed under a key its row does not hold opens for no read of the segment: the object of a first load that lost the
+race to the one that published, or that crashed before its publish, each under a key it made and never stored. On a
+cleartext segment with a generation, so does any encrypted object: a key is made only for a segment's first
+generation, so it is a first load's that made one and crashed, or lost the race to a cleartext first load. The erasure
+cannot search it, so it counts it as a holder wherever it meets one, except as the current generation, which is never
+deleted for this, and under a tombstone, where it is no holder and goes only with everything there, when another
+object under the tombstone holds the id. Above the pointer, and below it when no searched generation holds the id, it
+deletes each one by name, under the same renewal of the row and read of the row before each delete as any holder above
+the pointer, and the generations kept below the pointer that were searched and found clean stay; below the pointer
+beside a searched holder, it goes with the `keep: 0` collection that takes every generation there. Each is listed in
+`collected`, and on its own it does not make the answer `erased: true`. Which objects those are is read from where the
+object fails to open, since an object does not name its key: on a segment with a key, such an object is exactly one
+whose footer and checksums pass and whose index then fails authentication under the row's key for that segment and
+generation. So an index someone altered and gave new checksums counts as one too, and goes the same way. One whose
+index the segment's key opens is the segment's own, and when a chunk of it then does not open, that is corruption,
+which the erasure reports with `IntegrityError`, deleting nothing on account of that error; so is a footer or a
+checksum that does not match, and an object cut short.
+
+**While encrypted first loads run, such a segment can keep an erasure asking for a re-run.** Once an erasure has found
+an
+object to delete on a segment with no generation yet, it looks at the bucket again before it answers, and an encrypted
+first load that writes its object between the erasure's listing and that last look leaves an object the erasure cannot
+search, so the erasure throws `WriteConflictError` and asks for a re-run, even when that load read the row after the
+renewal and is not refused by it. A re-run that runs before such a load
+publishes renews the row again, refuses the load and deletes its object; one that runs after reads the generation the
+load published like any other. A steady stream of such loads can keep that up: pause loads of the segments you erase
+from, as the first rule says, and re-run the loads an erasure refused.
+
+**After a registry restore, look before you erase.** Run `checkConsistency({ summaries: true })`: it reports a row
+whose pointer names a missing object, or another object than the row's summary names ([disaster
+recovery](disaster-recovery.md#restore-procedure)). It does not look in the bucket of a row with no generation, so
+also list `store.generations(ref)` for each row whose `currentGen` is `null`. Objects there are a first load's in
+flight, or what is left of a state of the row the restore went back past: an erasure treats them all as a first
+load's, and deletes each that holds the id, and every one it cannot open (on a row with no key, every encrypted one),
+whatever the id. Restore the row to the state that names them, or load them again, before you erase.
 
 ## Who stops seeing the id, and when
 
@@ -155,13 +221,15 @@ does, the bucket holds a generation that a newer load has superseded, including 
 reason for a deleted-looking id to still be in storage that is easy to forget.
 
 Erasure ignores every lease. `eraseSubject` and `eraseIdFromSegment` delete the generations that hold the id, and the
-collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the rewrite
-clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes that
-generation, leased or not, and writes no row of its own, so an entry for a generation it deleted stays in the list until the
-entry's own time ends or the next publish or lease write prunes it: it spares nothing, since the object is gone, and it
-counts toward the 64 places until then. A `destroySegment`, a `dropSegment` and a retention expiry delete every generation
-and leave no lease on the tombstone. So erasure, shred, drop and retention always win, and a lease never holds an erased
-subject's data past the bounds in the table above.
+collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the
+rewrite clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes
+that generation, leased or not, and leaves the row's leases as they are (the row writes it makes, the renewals before
+it deletes a generation above the pointer or an object it cannot search, renew the row's `pointerId` and keep them),
+so an entry for a generation it deleted stays in the list until the entry's own time ends or the next publish or lease
+write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
+`destroySegment`, a `dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone.
+So erasure, shred, drop and retention always win, and a lease never holds an erased subject's data past the bounds in
+the table above.
 
 A lease written while an erasure is under way does not delay it. A lease write moves the row's token, which an erasure
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on
@@ -226,14 +294,16 @@ in the generation `keep` retains. A `store.rollback` leaves the generations it r
 where a later rollback can make them current again. So the call searches every generation in the segment's bucket. A
 holder below the pointer goes with the `keep: 0` collection, and each holder above it is deleted one by one. A
 generation up there that never held the id stays as a rollback target when the current generation does not hold the
-id. A rewrite is numbered above everything, so its `keep: 0` collection takes every older generation, above the
-pointer or below.
+id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
+fleet](#two-rules-while-you-erase)). A rewrite is numbered above everything, so its `keep: 0` collection takes every
+older generation, above the pointer or below.
 
 **Racing writers.** Another writer that moves the pointer off the generation the rewrite derived from can be a load,
 another erasure, or an operator's `rollback`. Another erasure collects with `keep: 0`, so it can delete the generation
 this rewrite was still streaming, or the object it had just written. Two erasures of different ids racing on one
 segment are safe: the loser's rewrite still holds the winner's id, and when it sits above the winner's pointer the
-loser deletes it before returning. The outcome is read off the registry row. A segment whose row is tombstoned
+loser deletes it before returning, once its footer proves it the loser's own object.
+The outcome is read off the registry row. A segment whose row is tombstoned
 mid-rewrite is searched as a fresh call searches a tombstone, so a cleartext object a drop left that still holds the
 id is deleted; one whose row is purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
 not forward-only, for the reason given in [which fence a publish carries](loading.md#how-it-stays-correct).
@@ -246,17 +316,37 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   `error: ...` note instead of `erased: true`.
 - When the id was not in the current generation and nothing was published, a rollback while the call deletes
   generations above the pointer is reported as `'superseded'` if a holder is left, and one while it collects is an
-  `error: ...` note.
+  `error: ...` note. On a segment with no generation yet, a rollback (with `allowForward`) onto a first load's object
+  while the call deletes those objects is reported as `'superseded'` too, and the object stays. On a row with no key,
+  which is how `setRetention` makes one, such a rollback accepts only a cleartext object: it refuses an encrypted
+  target there.
 - In the last instant before a delete, a rollback onto the generation being deleted leaves the pointer on a missing
-  object, which `checkConsistency()` reports.
+  object, which `checkConsistency()` reports: a generation above the pointer; on a segment with no generation yet, a
+  first load's object that a rollback with `allowForward` accepts (on a row with no key, only a cleartext one); or an
+  object below the pointer that the segment's key does not open, which only a rollback with no key at hand moves onto.
+  The call reads the row just before each delete; one round trip remains between that read and the delete, and a
+  condition on the object cannot close it, since the pointer then names the very object the call read. Neither call
+  reports it: the rollback's own check ran before the delete, so it returns success, and the erasure answers as it
+  would have without the rollback (`erased: true` when the object held the id and nothing left in the bucket holds it,
+  which is true of the bucket). Reads that open the segment's current generation then fail with `NotFoundError` until
+  a rollback moves the pointer to a generation in the bucket, which `store.generations(ref)` lists.
 
 **A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
-a call deletes a holder above the pointer, another erasure of the same id can delete that holder first, and a load can
-then take the number, write its own generation under it and publish it. So each delete above the pointer names the
-object the call searched: it passes the version the storage driver reported when the call read that object
-(`delete(key, { ifVersion })`), and a driver that reports `conditionalDelete` deletes only that object. The load's
-generation stays, and the call reports `erased: true` when nothing left holds the id, or the reason the row gives,
-`'superseded'` as a rule. Which drivers report it:
+a call deletes a holder by name, above the pointer or on a segment with no generation yet, another erasure of the same
+id can delete that holder first, and a load that read the row after both erasures renewed it can then take the
+number, write its own generation under it and publish it: nothing refuses that publish. So each such delete names the
+object the call read: it passes the version the storage driver reported on the read that made the object a holder
+(`delete(key, { ifVersion })`), the read of an object the call searched, or, for one it cannot search, the read of its
+footer that found it encrypted under a row with no key, or the open whose index failed its authentication under the
+segment's key. A driver that reports `conditionalDelete` deletes only that object. The load's generation stays, the
+call deletes nothing more, and it reports `erased: true` when nothing left holds the id, or the reason the row gives,
+`'superseded'` as a rule. A refused rewrite that deletes its own object again above the winner's pointer (see racing
+writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
+does the same: it first proves the object under its number is the one it wrote, by a read of its footer, keeps one
+that is gone, is another object or cannot be read, and passes the version that read reported, so the load's
+generation stays. A delete the driver refuses there is a fault of the cleanup, and the call reports what the row says.
+Any other fault of that delete is thrown in place of the answer, as any storage delete fault of an erasure is. Which
+drivers report it:
 
 | Storage | `conditionalDelete` |
 |---|---|
@@ -267,20 +357,23 @@ generation stays, and the call reports `erased: true` when nothing left holds th
 | `LocalFsStorage` | no: a filesystem has no delete conditioned on which file is under a path |
 
 On a driver that does not report it, a delete in that window removes the load's generation, and the pointer names a
-missing object, which `checkConsistency()` reports. These limits hold on every driver:
+missing object, which `checkConsistency()` reports: the race of two erasures and a load stays open there, above the
+pointer, on a segment with no generation yet and at a refused rewrite's discard alike. These limits hold on every
+driver:
 
 - The condition names the object, not the row, so it does not cover the rollback in the last bullet above: the pointer
-  then names the very object that was searched.
+  then names the very object the call read.
 - On S3 the version is the object's ETag, which for an object stored without SSE-KMS or SSE-C is computed from its
   bytes. Two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes, share
   one, so a load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
   in the clear) is not told apart from it. An encrypted generation written through the shipped keystore seals every
   chunk under a fresh random nonce, so its bytes differ from any other write's.
-- A refused rewrite that deletes its own object again above the winner's pointer (see racing writers above) does not
-  condition that delete, since the write returns no version: if another erasure deletes that object as a holder and a
-  load takes its number in the same window, that delete removes the load's generation. A refused load that finds its
-  row unchanged, changed only in its leases, or `destroyed` deletes its own object by number for the same reason, in
-  the same window.
+- A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
+  its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
+  no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load
+  takes the number again. Under a row that is unchanged or changed only in its leases, the round trip between the
+  load's read of the row and its delete remains: if another erasure deletes that object as a holder and a load takes
+  its number in it, that delete removes the load's generation.
 - Generation collection, the `keep: 0` collection an erasure runs among it, deletes by number what a listing or the
   row's list of kept generations names, below the pointer, with no object read behind the decision. A number below the
   pointer is taken again only after the pointer moves down (a rollback, or a purge and re-create), inside the round
@@ -299,19 +392,41 @@ driver authors) over every registered segment, and each ledger entry is that fun
   drop whose sweep left something, or a write that landed after it leaves objects anyone can read: when one holds the
   id, every object under the tombstone is deleted and the entry reads `erased: true`. Otherwise the result is
   `'destroyed'`, and the objects are left to the retention sweep's purge or a re-run of the drop.
-- A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too. An
-  object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: the
-  erasure writes nothing to such a row, so the load that wrote the object may still publish it. On an encrypted store
-  such an object is sealed under a key its load has not published yet, so it cannot be searched and is refused the
-  same way. A row with nothing in its bucket is `'no-generation'`, under `requireEncryption` too. In `eraseSubject`'s
-  ledger it is an `error: …` entry. Load the segment, which makes the object collectable, or drop it, and re-run.
+- An object no read of the segment can open (on an encrypted segment, one sealed under a key the row does not hold; on
+  a cleartext one with a generation, an encrypted one) is deleted as a holder whatever the id, wherever the call meets
+  it but as the current generation or under a tombstone, and listed in `collected`; only a searched generation that
+  held the id makes the entry `erased: true` ([the effect across a fleet](#two-rules-while-you-erase)). An object the
+  segment's own key opens whose chunk does not is corrupt: `IntegrityError`. One whose chunk read fails because another
+  object is under the number by then (a load took it after another erasure deleted the one listed) is not: the object
+  the call listed is gone, as when a collector takes it.
+- A row with no generation yet (one `setRetention` created before the first load) has its bucket searched too, since a
+  first load's object can be there: its load still running, or one that crashed between its write and its publish.
+  When objects hold the id, the call first renews the row's `pointerId`, with a write that names the pointer at the
+  value it has, none, so a load that wrote one is refused `superseded` at its publish. Then it deletes each object
+  that holds the id, reading the row before each delete and stopping if anything but its leases has changed, and the
+  entry reads `erased: true`, with those generations in `collected`. Each delete passes the version of the read that
+  made the object a holder: another erasure of the id can delete it first, and a load that read the row after both
+  renewals take its number and publish, and on a storage driver that reports `conditionalDelete` this call's delete is
+  then refused, the call deletes nothing more, and the load's generation stays; on one that does not, the delete
+  removes it ([a number taken again during an erasure](#how-it-stays-correct)). So a crashed first load's object is
+  erased as any other holder is. On an encrypted store such an object is sealed under a key its load has not published, so it cannot
+  be searched: it counts as a holder whatever the id, and is deleted too, and with only such objects the result is
+  `'no-generation'` with them in `collected` ([the effect across a fleet](#two-rules-while-you-erase)). A row with no
+  object that holds the id is `'no-generation'`, under `requireEncryption` too, and the call writes nothing. A load
+  that read the row before the renewal is refused at its publish whenever it writes its object. One that writes it
+  between the call's listing and its last look at the bucket leaves a holder that look finds: that throws
+  `WriteConflictError`, and a re-run renews the row again and deletes it. One that writes it after the last look
+  leaves it in the bucket, where no pointer names it and the next erasure of that id finds it: `erased: true` was true
+  at the call's last look at the bucket, and is not a promise about objects written later. A load that read the row
+  after the renewal publishes its own object, which the call never deletes: do not load the id while erasing it.
 - `'superseded'` means another writer moved the pointer off `fromGeneration`, or replaced an object this call meant to
-  delete, while the call was in flight: a load, another erasure, or a rollback. In the second case the object this call
-  searched was deleted, as a holder above the pointer by another erasure or by the refused load that wrote it, and a
-  load stored another object under its number, so the storage driver's
-  conditional delete refused this call's delete, whether or not the pointer moved. It means this call did not erase
-  the id, not that the id is still there. Re-run, and if a racing erasure of the same id got there first, the re-run
-  reports `'not-member'`.
+  delete, while the call was in flight: a load, another erasure, or a rollback. On a segment with no generation yet it
+  also means another write of the row (a `setRetention`, say) landed before the call renewed it. When an object was
+  replaced, the object this call meant to delete was deleted, as a holder by another erasure (above the pointer, or on
+  a segment with no generation yet) or by the refused load that wrote it, and a load stored another object under its
+  number, so the storage driver's conditional delete refused this call's delete, whether or not the pointer moved. It means this call did not erase the id, not
+  that the id is still there. Re-run, and if a racing erasure of the same id got there first, the re-run reports
+  `'not-member'`.
 - A racing erasure collects with `keep: 0`, so it can delete the generation this call was streaming or the object it had
   just written. The reason is read off the row, so a row tombstoned mid-rewrite reports `'destroyed'` once the
   tombstone's objects are searched as a fresh call searches them (`erased: true` when one still held the id and was
@@ -319,10 +434,12 @@ driver authors) over every registered segment, and each ledger entry is that fun
 - A `NotFoundError` is raised only when the pointer still names its generation and that generation's object is
   missing, the forbidden `missing-storage-generation` state, or is another object than the row's summary names by its
   fingerprint. No re-run fixes either: `checkConsistency({ summaries: true })` reports both.
-- `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what to
-  keep if you build a proof-of-deletion artifact. It can legitimately be empty on a successful erasure, when a
-  concurrent collector removed the holding generation first. `erased: true` is a claim about the bucket, not about who
-  emptied it.
+- `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what
+  to keep if you build a proof-of-deletion artifact. `eraseSubject`'s ledger entry does not carry it: the
+  `segment.collect` audit event does, for a segment where the call deleted generations and rewrote none, and that
+  event is also the only record of a segment where the call deleted only objects it could not search, which the ledger
+  does not list. It can legitimately be empty on a successful erasure, when a concurrent collector removed the holding
+  generation first. `erased: true` is a claim about the bucket, not about who emptied it.
 - A call that could not collect throws instead of reporting `erased: true` over bytes still there:
   `WriteConflictError` when the collect could not prove the segment was still the same one (re-created, or its row
   purged), or when a generation still holding the id is left in the bucket. A chunk holding an out-of-range value throws

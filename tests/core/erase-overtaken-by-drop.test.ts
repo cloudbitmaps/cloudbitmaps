@@ -155,7 +155,7 @@ describe('a segment tombstoned while its rewrite runs is searched as a fresh cal
     let fired = false;
     const racing = Object.create(registry) as MemoryRegistryDriver;
     racing.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
-      if (!fired && 'keptGens' in patch) {
+      if (!fired && 'currentGen' in patch) {
         fired = true;
         await dropSegment(REF, { storage: denied, registry }, { confirmSegment: 's' }).catch(
           () => undefined,

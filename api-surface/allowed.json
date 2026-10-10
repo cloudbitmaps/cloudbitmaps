@@ -288,6 +288,14 @@
     "reason": "registry schema 4: a clear summary records the fingerprint (size and footer checksum) of the object it describes, so stat() answers its size from the row and every open holds the object to the row; every shipped summary writer writes it and the shipped registries refuse a summary without it; only a registry implementation or a test double builds one; agreed with the maintainer"
   },
   {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "the segment.collect event's fromGeneration becomes optional: an erasure that deletes only objects no read of the segment can open (sealed under a key the row does not hold, or encrypted under a cleartext row) found the id in none, so the event it now emits for that deletion names no generation; every other segment.collect carries it as before, and a sink that reads it as a number checks for undefined; segment.collect is unreleased (added after 0.19.1); agreed with the maintainer (owner's decision)"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "the segment.collect event's fromGeneration becomes optional: an erasure that deletes only objects no read of the segment can open (sealed under a key the row does not hold, or encrypted under a cleartext row) found the id in none, so the event it now emits for that deletion names no generation; every other segment.collect carries it as before, and a sink that reads it as a number checks for undefined; segment.collect is unreleased (added after 0.19.1); agreed with the maintainer (owner's decision)"
+  },
+  {
     "entry": "@cloudbitmaps/core IStorageDriver.delete",
     "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
   },

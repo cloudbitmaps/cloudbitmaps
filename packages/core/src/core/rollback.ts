@@ -167,7 +167,8 @@ export interface RollbackResult {
  * `currentGen`, where generation collection never looks. They stay until loads pass them (the first load whose
  * number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is below its
  * pointer), `dropSegment` deletes them, or a subject erasure
- * deletes them: all of those present when it rewrites, and only those holding the id when the current generation does not.
+ * deletes them: all of those present when it rewrites, and, when the current generation does not hold the id, only those
+ * holding it and any no read of the segment can open, whatever the id.
  * Not collecting them is a deliberate trade: an operator who has just undone a bad load should not have the
  * evidence collected out from under them, while a rollback target that still holds erased data would make the
  * erasure undoable by an ordinary operator action.

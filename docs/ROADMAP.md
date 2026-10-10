@@ -74,7 +74,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **shipped** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
-| Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention` and shred writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
 
@@ -196,12 +196,15 @@ is a dependency of both and is never installed directly. The storage drivers are
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
   one's current generation without the id (read through the coalesced chunk stream, at most 4 ranges ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
-  and deletes every generation that held the bit before returning, above the pointer as well as below it —
+  and deletes every generation that held the bit before returning, above the pointer as well as below it, and a
+  first load's object on a segment with no generation yet —
   **physical deletion on return**, with a
-  per-segment ledger and an audit event per segment: `segment.rewrite`, or `segment.collect` where only other
-  generations held the id. `subjectReport` is the read side (access). What a
-  rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder above the
-  pointer is deleted only while it is the object the erasure searched, on a storage driver that reports
+  per-segment ledger and an audit event per segment erased: `segment.rewrite`, or `segment.collect` where only other
+  generations held the id, which is also emitted, with no `fromGeneration`, for a segment where the erasure deleted only
+  objects no read of it can open. `subjectReport` is the read side (access). What a
+  rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder an erasure
+  deletes by name, above the pointer or on a segment with no generation yet, is deleted only while it is the object
+  the erasure read, on a storage driver that reports
   `conditionalDelete` (in-memory, Azure Blob, S3 on an AWS host, GCS when set), so a load that took its number since
   keeps its generation ([the limits](guide/erasure.md#how-it-stays-correct)); the local-filesystem driver cannot.
 - **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
@@ -368,8 +371,9 @@ between here and there:
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
    - an `op` metric for `store.load`, which the metrics sink does not time;
-   - the reconcile of an unanswered registry write, for the writes of `rollback`, `setRetention`, a crypto-shred and
-     `eraseSubject`; the publish of a load, an `*Into` or an erasure's rewrite settles one by reading the row;
+   - the reconcile of an unanswered registry write, for the writes of `rollback`, `setRetention` and a crypto-shred;
+     the publish of a load, an `*Into` or an erasure's rewrite, and the write an erasure makes to the row before it
+     deletes an object a load may still publish, settle one by reading the row;
    - the parts stretch, under [Planned](#planned--exploring);
    - a `rollback` onto an encrypted target on a store with no keystore, which opens nothing: it checks that the object
      is in the bucket, and from its footer that it is encrypted exactly when the row has keys, so it can still move

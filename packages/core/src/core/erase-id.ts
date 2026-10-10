@@ -59,7 +59,8 @@
  * below the winner's pointer, where the winner's collection takes it, or above it: the case where this call took
  * its number after the winner's object was already in the bucket. Up there nothing collects it, and it was derived
  * from a generation the winner has replaced, so when the winner was another erasure it still holds the id that
- * erasure has just reported gone. That object is deleted before this call returns — see `discardRefused`.
+ * erasure has just reported gone. That object is deleted before this call returns, once its footer proves it the
+ * rewrite's own, under the version that read reported — see `discardRefused`.
  *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
  * number above everything in the bucket, so a forward-only publish here always won — discarding a concurrent
@@ -70,11 +71,21 @@
  * A live read still fetching from the collected generation heals forward to the rewrite, and a pin of it fails with
  * `NotFoundError` for any chunk it has yet to read: that is the documented cost of physical deletion on return. **Do not re-load the id while erasing it**: a load that lands after this rewrite
  * carries whatever its source held, and the library cannot know that source was meant to exclude the id.
- * A load already in flight writes its object above the pointer before it publishes. An erasure that finds the id in that
- * object writes the row before deleting it, so the load's publish, fenced on the row it read, is refused
- * (`published: false`) and the pointer never names a missing object (see `fenceInFlight`). On a row with no pointer
- * the erasure writes nothing to the row, so a first load's object there may still be published; an erasure that finds
- * the id in it refuses instead of deleting it.
+ * A load already in flight writes its object above the pointer before it publishes, or, as a first load onto a row with
+ * no pointer, before there is a pointer at all. An erasure that finds the id in that object renews the row's `pointerId`
+ * before deleting it, so the load's publish, fenced on the row it read, is refused (`published: false`) and the pointer
+ * never names a missing object (see `fenceInFlight`). An erasure that finds no holder writes nothing.
+ *
+ * An object sealed under a key its row does not hold cannot be searched, and no read of the segment can open it: a
+ * first load's on a row with no pointer, whose key that load has not published; on a segment with a key, a first
+ * load's that lost the race to the one that published, or crashed, under a key it made and never stored; and on a
+ * cleartext segment with a pointer, any encrypted object, since a key is made only for a segment's first generation
+ * and a publish never adds one to a segment that has generations: a first load's that minted a key and crashed, or
+ * lost the race to a cleartext first load. It counts as
+ * a holder whatever the id: an erasure of any id that finds one deletes it, under the same renewal of the row and read
+ * before the delete, and lists it in `collected`, and a first load still in flight that wrote it is refused. Only a
+ * searched object that held the id makes the answer `erased: true`. The current generation is never one of them: one
+ * the row's key does not open throws, as every read of the segment does.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
@@ -86,7 +97,10 @@ import type { Rng } from './determinism';
 import {
   objectIsEncrypted,
   objectVersionOf,
+  openGenerationReaderNoting,
+  sameObjectUnder,
   openGenerationReader,
+  provenObject,
   provesOwnObject,
   publishGeneration,
   verifyGeneration,
@@ -104,10 +118,12 @@ import {
   WriteConflictError,
   isIntegrityError,
   isNotFoundError,
+  isTransientError,
   isWriteConflictError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
-import { leaseChurn, onlyLeasesDiffer } from './leases';
+import { UNANSWERED_BASE_MS, UNANSWERED_RESENDS, leaseChurn, onlyLeasesDiffer } from './leases';
+import { renewPointer } from './pointer-id';
 import { assertRegistryCanWrite } from './ports';
 import type {
   GenKey,
@@ -142,11 +158,15 @@ export interface EraseIdDeps {
   readonly keystore?: IKeystore;
   /** When true, refuse to rewrite a **cleartext** segment (the same guard the read path and a load offer). */
   readonly requireEncryption?: boolean;
-  /** Supplying a clock that can yield makes the rewrite cooperative, as it makes a load. */
+  /**
+   * Supplying a clock that can yield makes the rewrite cooperative, as it makes a load. Its `sleep` is what a registry
+   * write that got no answer waits on before a fresh one is sent; with no `sleep`, such a write is not sent again and
+   * its `TransientError` is thrown.
+   */
   readonly clock?: Yielder;
   /**
-   * The random source that spreads the waits between the rewrite's fresh compare-and-swaps. Absent, the read retry's
-   * source is used if it has one, and otherwise each wait is its bound.
+   * The random source that spreads the waits between the fresh compare-and-swaps of the rewrite and of the row's
+   * renewal. Absent, the read retry's source is used if it has one, and otherwise each wait is its bound.
    */
   readonly rng?: Rng;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
@@ -155,7 +175,7 @@ export interface EraseIdDeps {
    * The store's read retry, for the reads the rewrite makes along the way: the generation it rewrites and each of its
    * chunks, the read-back that verifies the generation it wrote, and any other generation it checks for the id. A
    * transient fault on one is run again under it rather than failing the erasure. Absent, each read is made once.
-   * The deletes are not retried, and the rewrite's registry write is settled as a load's is.
+   * The deletes are not retried, and the rewrite's registry write and the row's renewal are settled as a load's is.
    */
   readonly readRetry?: ReadRetry;
 }
@@ -172,16 +192,20 @@ export interface EraseIdResult {
   readonly erased: boolean;
   /**
    * Why the id was not erased, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
-   * tombstone — already unreadable), `'no-generation'` (a row with no Storage data yet), `'not-member'` (no
-   * generation in the bucket holds the id — the common case across a fleet scan), or `'superseded'`.
+   * tombstone — already unreadable), `'no-generation'` (a row with no generation yet: its bucket can hold first loads'
+   * objects, none of them found to hold the id, and `collected` names any this call deleted unsearched, see below),
+   * `'not-member'` (no
+   * generation in the bucket holds the id — the common case across a fleet scan — with the same note on `collected`),
+   * or `'superseded'`.
    *
    * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
-   * load, another erasure, or a rollback — moved the pointer off the generation this call read, or replaced an
-   * object it meant to delete (another erasure deleted a holder above the pointer and a load stored another object
-   * under its number, so the storage driver's conditional delete refused this call's, whether or not the pointer
-   * moved). What it was doing no longer follows from what is current: a rewrite derived from that generation is not
-   * a valid successor to the new one, and a generation it meant to delete above the pointer may be the one the
-   * pointer now names, or another object than the one it searched.
+   * load, another erasure, or a rollback — moved the pointer off the generation this call read (on a row with no
+   * pointer, any other write of the row before this call renewed it, a `setRetention` included), or replaced an
+   * object it meant to delete (another erasure deleted a holder above the pointer, or on a row with no pointer, and a
+   * load stored another object under its number, so the storage driver's conditional delete refused this call's,
+   * whether or not the pointer moved). What it was doing no longer follows from what is current: a rewrite derived
+   * from that generation is not a valid successor to the new one, and a generation it meant to delete may be the one
+   * the pointer now names, or another object than the one it read.
    * Re-run against the new generation: if the id is still present it is erased then; if the racing writer was
    * another erasure of the *same* id, the re-run reports `'not-member'` because it is already gone. Either way the
    * re-run settles it, which is why it is the documented action for this reason and for no other.
@@ -199,14 +223,20 @@ export interface EraseIdResult {
   readonly fromGeneration?: number;
   /**
    * The generation written without the id (present whenever one was written, even if `superseded`). A refused
-   * rewrite whose object sits above the winner's pointer deletes that object again before it returns.
+   * rewrite whose object sits above the winner's pointer deletes that object again before it returns, when its footer
+   * proves it the rewrite's own.
    */
   readonly generation?: number;
   /**
    * Generations this call deleted. On a rewrite that is normally `[fromGeneration]`, plus any older orphans. When
-   * the current generation did not hold the id, it is every generation below the pointer (`keep: 0` takes them
-   * together) and each one above the pointer that held the id; the ones above it that did not hold the id stay,
-   * because they are an operator's rollback targets. Empty when nothing was deleted.
+   * the current generation did not hold the id and a generation this call searched did, it is every generation below
+   * the pointer (`keep: 0` takes them together) and each one above the pointer that held the id; the ones above it
+   * that did not hold the id stay, because they are an operator's rollback targets. On a row with no pointer it is
+   * each first load's object that held the id. Wherever it found them, it is also each object sealed under a key the
+   * row does not hold, which this call cannot search and deletes whatever the id. When those are the only holders, it
+   * is only those, deleted one by one, and every generation this call searched stays: `reason` is then
+   * `'no-generation'` on a row with no pointer and `'not-member'` on one with a pointer. Empty when nothing was
+   * deleted.
    *
    * **It is what THIS call deleted, not the proof that the id is gone** — those differ: a concurrent collector can
    * take a generation holding the id first, and then `erased: true` is returned without it in `collected`, because
@@ -218,7 +248,10 @@ export interface EraseIdResult {
    * collection pass that could not prove the segment was still the same one (which an ordinary retirement landing
    * mid-call is enough to cause); the same refusal on the path where the current generation did not hold the id
    * and nothing was published at all; and a generation still holding the id when the bucket is listed at the end
-   * — one an operator rolled the pointer onto while a rewrite was collecting, say.
+   * — one an operator rolled the pointer onto while a rewrite was collecting, say, or, on a row with no pointer, the
+   * object of a first load that read the row before this call renewed it and wrote it after this call listed the
+   * bucket. The row write an erasure makes before deleting a holder a load may still publish, when it gets no answer
+   * that reading the row can settle, throws the registry's `TransientError`, and that holder is not deleted.
    *
    * **Re-run it**, and read what the re-run says rather than assuming it finished the job. The re-run looks for
    * the id in every generation in the bucket, not only the current one, and there are three outcomes:
@@ -242,7 +275,8 @@ export interface EraseIdResult {
  *
  * Emits one `segment.rewrite` audit event at the publish (before the superseded generation is collected), so the
  * compliance record exists the moment the generation without the id is authoritative. An erasure that rewrites nothing,
- * because only other generations held the id, emits one `segment.collect` once no generation holds it.
+ * because only other generations held the id, emits one `segment.collect` once no generation holds it, and so does one
+ * that deleted only objects no read of the segment can open, which names no generation the id was found in.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -269,16 +303,21 @@ export async function eraseIdFromSegment(
   return recordCollect(ref, result, first, options);
 }
 
-/** What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, and the token of the
- * row it read when it finished by deleting the holders and rewriting none. */
+/**
+ * What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, the token of the row it
+ * read when it finished by deleting objects and rewriting none, and whether one of those it searched held the id.
+ */
 interface Pass {
   tombstoned?: boolean;
   collectedOn?: Token;
+  found?: boolean;
 }
 
 /**
  * Emit `segment.collect` for a call that finished by deleting the holders and rewriting none, from the report the call
- * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included.
+ * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included. It
+ * names the generation the id was found in only when a searched one held it: a call that deleted only objects it could
+ * not search found it in none.
  */
 function recordCollect(
   ref: SegmentRef,
@@ -286,13 +325,15 @@ function recordCollect(
   pass: Pass,
   options: { audit?: IAuditSink },
 ): EraseIdResult {
-  if (pass.collectedOn !== undefined && result.fromGeneration !== undefined) {
+  if (pass.collectedOn !== undefined) {
     safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
       kind: 'segment.collect',
       namespace: ref.namespace,
       segment: ref.segment,
       ...incarnationField(pass.collectedOn),
-      fromGeneration: result.fromGeneration,
+      ...(pass.found === true && result.fromGeneration !== undefined
+        ? { fromGeneration: result.fromGeneration }
+        : {}),
       collected: [...result.collected],
     });
   }
@@ -376,75 +417,132 @@ async function eraseOnce(
 
   /**
    * What the row says about the premise this call was working from — `null` when the premise still holds
-   * (the pointer is exactly `from`, so nothing raced us), otherwise the reason to report.
+   * (the pointer is exactly `from`, or still absent on a row that had none, on the same row, so nothing raced us),
+   * otherwise the reason to report.
    *
    * Each state gets the answer this function already gives when it reads that state *up front*, so a caller
    * branching on `reason` never has to care at which point in the call it was discovered: a tombstoned row is
    * `'destroyed'` (a concurrent `dropSegment` leaves `currentGen` where it was, so testing the pointer alone
    * would miss it and report an error for a segment the operator deliberately dropped), a vanished row is
    * `'absent'` (the retention sweep purged a tombstone while we worked), a row with no pointer is
-   * `'no-generation'`, and a pointer that moved is `'superseded'`.
+   * `'no-generation'`, and a pointer that moved is `'superseded'`. On a row that had no pointer, a pointer that
+   * appeared is `'superseded'`: a load published, or a rollback moved onto an object.
    */
   const rowVerdict = (
     row: RegistryRecord | null,
   ): 'superseded' | 'absent' | 'no-generation' | 'destroyed' | null => {
     if (row === null) return 'absent';
     if (row.status === 'destroyed') return 'destroyed';
-    if (row.currentGen === null) return 'no-generation';
     // A different row is a different lineage even at the same pointer value — see `fromToken`.
     // A write of the row's leases alone, which readers make, is not another writer's: the premise still holds.
-    return row.currentGen === from && (row.token === premiseToken || onlyLeasesDiffer(premise, row))
-      ? null
-      : 'superseded';
+    const same = row.token === premiseToken || onlyLeasesDiffer(premise, row);
+    if (pointerless) return row.currentGen === null && same ? null : 'superseded';
+    if (row.currentGen === null) return 'no-generation';
+    return row.currentGen === from && same ? null : 'superseded';
   };
 
-  /** Unpublished generations `holds` could not search, because their first load has not published the key yet. */
-  const sealedUnpublished = new Set<number>();
   /**
-   * The version of the object `holds` last searched under each generation, as the driver reported it on the open's tail
-   * read: what a delete of that generation as a holder is conditioned on, so it removes the object that was searched and
-   * not one stored under the number since.
+   * Generations `holds` could not search and counts as holders: objects sealed under a key the row does not hold. On a
+   * row with no pointer, a first load's whose key that load has not published; on a row with a key, one whose index
+   * does not open under it, which no read of the segment can open either.
    */
-  const searched = new Map<number, string | undefined>();
+  const sealed = new Set<number>();
+  /**
+   * The version of the object `holds` last met under each generation, as the driver reported it on the read that
+   * decided what the object is: the open of one it searched, the footer read that found one encrypted under a row with
+   * no key, or the open whose index failed its authentication under the row's key. It is what a delete of that
+   * generation as a holder is conditioned on, so it removes that object and not one stored under the number since.
+   */
+  const versions = new Map<number, string | undefined>();
   /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
-   * but the outcome it wants. Any other fault propagates: it must never be swallowed into a clean receipt.
+   * but the outcome it wants — and when the chunk's read fails because another object is under the number by then:
+   * the object listed is gone in that case too. `true`, and the generation noted in `sealed`, for an object sealed
+   * under a key the row does not hold: it cannot be searched, so it is treated as one that may hold the id. Any other
+   * fault propagates: it must never be swallowed into a clean receipt.
+   *
+   * Which key an object is sealed under is read from where its open fails, since its footer names none. Every check
+   * before the index's authentication passes for an object sealed under another key, and that authentication fails:
+   * the index was not sealed under the row's key for this segment and generation, so no read through the row opens
+   * it. That is all "sealed elsewhere" means: an index altered and given new checksums fails the same way, opens for no
+   * read either, and is counted the same. An object whose index opens under the row's key is the segment's own, and a
+   * chunk of it that then fails its checks is corruption, which throws, as does a footer or checksum that does not
+   * match, or an object cut short, none of which reaches the index's authentication. The row's key never changes while the row lives (a key is made only for a
+   * segment's first generation, a publish never adds one to a segment that has generations, and only a crypto-shred,
+   * which tombstones the row, removes it), so no generation a reader of the row can open is ever counted here.
    */
   const holds = async (generation: number): Promise<boolean | null> => {
     const key: GenKey = { ...base, generation };
-    const chunkIn = (crypto: CrbmCrypto | undefined): Promise<Uint8Array | null> =>
-      read(async () => {
-        const reader = await openGenerationReader(deps.storage, key, crypto);
-        searched.set(generation, objectVersionOf(reader));
-        return reader.getChunk(chunkKey);
-      });
+    const crypto = cryptoAt(generation);
     try {
-      let bytes: Uint8Array | null;
+      let reader: CrbmReader;
+      const index = { refused: false };
+      // The version the open's tail read reported, kept through a failed open: an object found sealed elsewhere is
+      // deleted on that read.
+      let opened: string | undefined;
       try {
-        bytes = await chunkIn(cryptoAt(generation));
+        reader = await read(() =>
+          openGenerationReaderNoting(
+            deps.storage,
+            key,
+            crypto === undefined ? undefined : noticingIndex(crypto, index),
+            (version) => (opened = version),
+          ),
+        );
       } catch (err) {
         // A cleartext object under an encrypted segment was never one of its generations, so no read believes it.
         // It may still hold the subject in the clear, so the erasure looks in it without the key, and deletes it
         // when it holds the id, as it does any holder. Only its footer is asked first, on this path alone.
-        if (cryptoAt(generation) === undefined) {
-          if (
-            (tombstoned || pointerless) &&
-            (await read(() => objectIsEncrypted(deps.storage, key)))
-          ) {
+        if (crypto === undefined) {
+          // The footer is asked only after a fault that is an answer: one the read retry gave up on says nothing about
+          // the object, and is thrown as it is, with no more reads.
+          let footer: string | undefined;
+          const encrypted =
+            !isTransientError(err) &&
+            (await read(() =>
+              objectIsEncrypted(deps.storage, key, (version) => (footer = version)),
+            ));
+          if (encrypted) {
             // Under a tombstone an encrypted object is sealed under a key that was shredded or is not held, and no
             // read through the library finds anything in it. Under a row with no pointer it is a first load's, sealed
-            // under a key that load has not published yet: it cannot be searched, so it counts as a holder.
+            // under a key that load has not published yet; under a cleartext row with a pointer it is a first load's
+            // that minted a key and crashed, or lost the race to a cleartext first load, since a key is made only for
+            // a segment's first generation and a publish never adds one to a segment that has generations. Either
+            // way it cannot be searched, so it counts as a holder.
             if (tombstoned) return false;
-            sealedUnpublished.add(generation);
+            sealed.add(generation);
+            versions.set(generation, footer);
             return true;
           }
           throw err;
         }
+        if (isIntegrityError(err) && index.refused) {
+          sealed.add(generation);
+          versions.set(generation, opened);
+          return true;
+        }
         if (!isIntegrityError(err) || (await read(() => objectIsEncrypted(deps.storage, key)))) {
           throw err;
         }
-        bytes = await chunkIn(undefined);
+        reader = await read(() => openGenerationReader(deps.storage, key, undefined));
+      }
+      versions.set(generation, objectVersionOf(reader));
+      let bytes: Uint8Array | null;
+      try {
+        bytes = await read(() => reader.getChunk(chunkKey));
+      } catch (err) {
+        // A chunk that fails its checks, or a range the object does not have, is corruption only in the object its
+        // index was read from. One stored under the number since (that object deleted, by another erasure as a
+        // holder, say, and the number taken again by a load) answers the range read with its own bytes, and then the
+        // object this call searched is gone, as the generation it listed is.
+        if (
+          !isTransientError(err) &&
+          !(await read(() => sameObjectUnder(deps.storage, key, reader.fingerprint)))
+        ) {
+          return null;
+        }
+        throw err;
       }
       return bytes !== null && codec.safeDeserialize(bytes, maxBytes).has(remainder);
     } catch (err) {
@@ -453,11 +551,15 @@ async function eraseOnce(
     }
   };
 
+  /** Whether `holds` found the id in `generation`, as opposed to counting it a holder it could not search. */
+  const found = (generation: number, held: boolean | null): boolean =>
+    held === true && !sealed.has(generation);
+
   /**
    * `holds` over `generations`, read a few at a time, with the outcomes the serial scan would have produced: they
-   * come back in the order given, ending at the first holder when `stopAtHolder` is set (a generation read beyond
-   * it is read for nothing and dropped), and the first fault in that order is the one thrown, so a fault past a
-   * holder never surfaces, as it never did.
+   * come back in the order given, ending at the first generation found to hold the id when `stopAtHolder` is set (a
+   * generation read beyond it is read for nothing and dropped; one that could not be searched does not end it), and
+   * the first fault in that order is the one thrown, so a fault past a holder never surfaces, as it never did.
    */
   const holdsEach = async (
     generations: readonly number[],
@@ -476,7 +578,7 @@ async function eraseOnce(
         }
         try {
           const held = await holds(generation);
-          if (held === true && index < firstHolder) firstHolder = index;
+          if (found(generation, held) && index < firstHolder) firstHolder = index;
           return { generation, held, fault: undefined };
         } catch (fault) {
           return { generation, held: null, fault: { error: fault } };
@@ -487,7 +589,7 @@ async function eraseOnce(
     for (const { generation, held, fault } of settled) {
       if (fault !== undefined) throw fault.error;
       outcomes.push({ generation, held });
-      if (stopAtHolder && held === true) break;
+      if (stopAtHolder && found(generation, held)) break;
     }
     return outcomes;
   };
@@ -522,45 +624,138 @@ async function eraseOnce(
 
   const cannotRemove = (generation: number): WriteConflictError =>
     new WriteConflictError(
-      `erasure of segment ${ref.segment} could not remove generation ${generation}, which still holds the id and is still in the bucket; re-run`,
+      `erasure of segment ${ref.segment} could not remove generation ${generation}, which ${
+        sealed.has(generation) ? 'cannot be searched, so may hold the id,' : 'still holds the id'
+      } and is still in the bucket; re-run`,
     );
 
   /**
-   * Write the row before deleting a holder above the pointer, so a publish already in flight is refused rather than
-   * landing on the object this call is about to delete.
+   * Renew the row's `pointerId` before deleting a holder that a load in flight may still publish, so that load is
+   * refused rather than landing on the object this call is about to delete: a holder above the pointer, or any holder
+   * on a row with no pointer, where every object is a first load's.
    *
-   * A load numbers its object above the pointer and publishes it with a compare-and-swap fenced on the row it read,
-   * which a write of the row's leases alone does not refuse. Re-proving the row before each delete does not fence it:
-   * the load can publish at any time after the delete, and its row would then name an object that is not there. So
-   * this call changes a field the load's fence compares: `keptGens`, to `[]`, which is true once the `keep: 0` pass
-   * has run, or, when it already is `[]`, to absent, which says the row does not know and is always valid. Either way
-   * the load sees another writer and is refused. If the load published first, this write loses and the row says why.
-   * A write of leases alone that lands in between is waited out and written over, within the lease writers' bound.
+   * A load numbers its object above the pointer (above everything in the bucket, on a row with no pointer) and
+   * publishes it with a compare-and-swap fenced on the row it read, which a write of the row's leases alone does not
+   * refuse. Re-proving the row before each delete does not fence it: the load can publish at any time after the delete,
+   * and its row would then name an object that is not there. So this call writes the row first, naming the pointer at
+   * the value it has ({@link renewPointer}). That changes nothing a read resolves, and renews the row's `pointerId`,
+   * which the load's fence compares: the load sees another writer and is refused. If the load published first, this
+   * write loses and the row says why. A write of leases alone that lands in between is waited out and written over,
+   * within the lease writers' bound.
+   *
+   * The licence is a renewal that lands after this call listed the bucket. A load that wrote a holder the listing found
+   * read the row before it wrote, so before that renewal, and its fence refuses it. That is why the row this write is
+   * made against is read here, after the listing, and why a renewal that landed after that read, this call's or a
+   * concurrent erasure's, licenses the deletes alike, while one that landed before it does not: a load could have read
+   * that one and written a holder since.
+   *
+   * A write that gets no answer is settled by reading the row, and nothing is deleted until it is. A row that is gone,
+   * a tombstone, or one another writer changed gives its reason, as anywhere else in this function; a renewal that
+   * landed after the row the write was made against goes on, as above. A row still as the write found it gets a fresh
+   * compare-and-swap from the row just read, a request of its own carrying the same version, so at most one of the two
+   * lands, after a wait on the injected clock under 500 ms, then 1 s, then 2 s (spread by the rng), at most three
+   * times, as a load's publish does; then, or at once with no clock to wait on, or when the row cannot be read, the
+   * registry's `TransientError` is thrown.
    */
   const fenceInFlight = async (): Promise<ReturnType<typeof rowVerdict>> => {
-    const churn = leaseChurn({ clock: deps.clock, rng: deps.rng ?? deps.readRetry?.rng });
+    const rng = deps.rng ?? deps.readRetry?.rng;
+    const churn = leaseChurn({ clock: deps.clock, rng });
+    let resends = 0;
     let row = await deps.registry.get(ref);
     for (;;) {
       const verdict = rowVerdict(row);
       if (verdict !== null) return verdict;
       const current = row!;
-      const keptGens: readonly number[] | undefined =
-        current.keptGens !== undefined && current.keptGens.length === 0 ? undefined : [];
+      let failure: unknown;
       try {
-        const { token } = await deps.registry.compareAndSwap(ref, current.token, { keptGens });
-        premise = { ...current, keptGens, token };
+        const { token } = await deps.registry.compareAndSwap(
+          ref,
+          current.token,
+          renewPointer(current),
+        );
+        // The row as this write left it: the same, its pointerId renewed to the token the write was given.
+        premise = { ...current, token, pointerId: token };
         premiseToken = token;
         return null;
       } catch (err) {
-        if (!isWriteConflictError(err)) throw err;
+        if (!isWriteConflictError(err) && !isTransientError(err)) throw err;
+        failure = err;
+      }
+      const unanswered = isTransientError(failure);
+      let now: RegistryRecord | null;
+      try {
+        now = await deps.registry.get(ref);
+      } catch (readErr) {
+        // A write that got no answer stays unsettled, and the registry's own error says so. A row that is not one the
+        // library wrote says more than that, and is thrown as it is.
+        if (!unanswered || isIntegrityError(readErr)) throw readErr;
+        throw failure;
+      }
+      if (now !== null && renewedSince(current, now)) {
+        premise = now;
+        premiseToken = now.token;
+        return null;
+      }
+      if (unanswered && now !== null && now.token === current.token) {
+        // Not landed, or still on its way: a fresh write from the row just read, a bounded number of times.
+        const sleep = deps.clock?.sleep;
+        if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw failure;
+        const bound = UNANSWERED_BASE_MS * 2 ** resends;
+        resends += 1;
+        await sleep.call(deps.clock, Math.floor((rng?.next() ?? 1) * bound));
+        row = now;
+        continue;
       }
       // A write of leases alone is waited out, as every lease-aware writer waits it out; any other write is read for
       // what it says, and one that leaves the premise standing past the wait's bound is reported as a race.
-      const now = await deps.registry.get(ref);
       const settled = await churn.settle(current, now, () => deps.registry.get(ref));
       if (settled === undefined) return rowVerdict(now) ?? 'superseded';
       row = settled.row;
     }
+  };
+
+  /**
+   * Delete `holders`, newest first, each after reading the row and finding it still the one {@link fenceInFlight}
+   * renewed (or that row with only its leases changed), and stop at the first that is not. Returns what was deleted, and
+   * the row's reason when the deletes stopped.
+   *
+   * One round trip remains between that read and its delete: a rollback that lands inside it onto the holder being
+   * deleted leaves the pointer naming a missing object. Above the pointer, and on a row with no pointer, that is one
+   * with `allowForward` onto an object the rollback accepts (on a row with no key, a cleartext one: it refuses an
+   * encrypted target there); below it, an object sealed under a key the row does not hold, which only a rollback with
+   * no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
+   * move-then-verify catches every such landing except one whose check runs before the delete, and a condition on the
+   * object cannot close it, since the pointer then names the very object this call read.
+   *
+   * What the condition does close is another object under the number. In that round trip another erasure of the id can
+   * delete the holder, and a load that read the row after both renewals take its number, write and publish: nothing
+   * refuses that publish. Each delete passes the version of the read that made the object a holder (`versions`): the
+   * open of one this call searched, the footer read that found one encrypted under a row with no key, or the open whose
+   * index failed its authentication under the row's key. So a driver that reports `conditionalDelete` refuses it for
+   * any other object, and the deletes stop there, with the row's reason, `'superseded'` when the row gives none. On a
+   * driver that does not, the delete removes whatever is under the number, the load's published object included.
+   */
+  const deleteFenced = async (
+    holders: readonly number[],
+  ): Promise<{ deleted: number[]; moved: ReturnType<typeof rowVerdict> }> => {
+    const deleted: number[] = [];
+    let moved = await fenceInFlight();
+    for (const generation of holders) {
+      if (moved !== null) break;
+      moved = rowVerdict(await deps.registry.get(ref));
+      if (moved !== null) break;
+      try {
+        await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
+      } catch (err) {
+        if (!isWriteConflictError(err)) throw err;
+        // Another object is under the number now: the one searched was deleted, and the number taken again. What this
+        // call was doing no longer follows from what is there, so it deletes nothing more, and the row says why.
+        moved = rowVerdict(await deps.registry.get(ref)) ?? 'superseded';
+        break;
+      }
+      deleted.push(generation);
+    }
+    return { deleted, moved };
   };
 
   /**
@@ -570,6 +765,7 @@ async function eraseOnce(
    */
   const collectedAll = (fromGeneration: number, collected: readonly number[]): EraseIdResult => {
     seen.collectedOn = record.token;
+    seen.found = true;
     return {
       ...base,
       erased: true,
@@ -579,27 +775,65 @@ async function eraseOnce(
   };
 
   /**
+   * The answer for an erasure that found no generation holding the id and deleted only objects it could not search,
+   * once a listing found none of those left: `answer`, with what it deleted. When it deleted any, the pass notes the
+   * row it read, so the call emits `segment.collect` for them, naming no generation the id was found in.
+   */
+  const sealedOnly = (answer: EraseIdResult, collected: readonly number[]): EraseIdResult => {
+    if (collected.length > 0) seen.collectedOn = record.token;
+    return { ...answer, collected: [...collected].sort((a, b) => a - b) };
+  };
+
+  /**
    * The row names no generation, so nothing has been published, but a first load's object can be in the bucket: its
    * load still running, or one that wrote and never published (a crash, or a registry write that got no answer, after
-   * which the object is kept by design). Each object is searched. One that holds the id is not deleted: this path
-   * writes nothing to the row, so the load that wrote the object may still publish it, and the row would then name an
-   * object that is not there. So that is refused, loudly, rather than reported as a segment holding nothing.
+   * which the object is kept by design). Each object is searched, and each one that holds the id is a holder. So is each
+   * one sealed under a key no row holds yet, a first load's of an encrypted segment: this call holds no key for it, so it
+   * cannot search it, and, whatever id it is asked to erase, it treats it as one that may hold it.
+   *
+   * With no holder it writes nothing, and a first load in flight publishes as it would have. With one, it renews the
+   * row's `pointerId` ({@link fenceInFlight}) before it deletes any, so the load that wrote it, fenced on the row it read
+   * (or on there being no row, once a row appeared), is refused at its publish and never names an object that is gone;
+   * then it deletes each holder while the row is still the one it renewed. A load that read the row after the renewal
+   * writes an object of its own, numbered above every holder, which this call never deletes.
+   *
+   * `erased: true` only when a searched object held the id, as anywhere else. With only sealed holders the answer is
+   * `'no-generation'`, with the generations it deleted in `collected`: the id was never found, and those objects can no
+   * longer be published. Then {@link holderLeft} decides, as it does above the pointer: a holder written after the
+   * listing, by a load that read the row before the renewal, is left, and that throws for a re-run, which renews again
+   * and deletes it.
    */
   const unpublished = async (): Promise<EraseIdResult> => {
     const generations: number[] = [];
     for await (const key of deps.storage.list(ref)) generations.push(key.generation);
     const newestFirst = generations.sort((a, b) => b - a);
-    const holder = (await holdsEach(newestFirst, true)).find((h) => h.held === true);
-    if (holder === undefined)
-      return { ...base, erased: false, reason: 'no-generation', collected: [] };
-    const what = sealedUnpublished.has(holder.generation)
-      ? 'is sealed under a key that load has not published, so it cannot be searched'
-      : 'holds the id';
-    throw new WriteConflictError(
-      `eraseIdFromSegment: segment "${ref.segment}" has no published generation, and an object a first load wrote and ` +
-        `never published (generation ${holder.generation}) ${what}. It cannot be deleted while that load may still ` +
-        'publish it: re-run once the segment is loaded, which makes the object collectable, or drop the segment',
-    );
+    const holders: number[] = []; // newest first
+    const clean = new Set<number>();
+    for (const { generation, held } of await holdsEach(newestFirst, false)) {
+      if (held === true) holders.push(generation);
+      else if (held === false) clean.add(generation);
+    }
+    const none: EraseIdResult = { ...base, erased: false, reason: 'no-generation', collected: [] };
+    if (holders.length === 0) return none;
+    // The newest object that was searched and held the id; a sealed one could not be searched.
+    const newest = holders.find((generation) => !sealed.has(generation));
+
+    const { deleted, moved } = await deleteFenced(holders);
+    const collected = [...deleted].sort((a, b) => a - b);
+    const left = await holderLeft(clean);
+    if (left === undefined) {
+      return newest === undefined ? sealedOnly(none, collected) : collectedAll(newest, collected);
+    }
+    if (moved !== null) {
+      return {
+        ...base,
+        erased: false,
+        reason: moved,
+        ...(newest === undefined ? {} : { fromGeneration: newest }),
+        collected,
+      };
+    }
+    throw cannotRemove(left);
   };
 
   /**
@@ -642,7 +876,8 @@ async function eraseOnce(
    *  - **Below the pointer**, `gcOrphanGenerations` with `keep: 0` takes every generation at once, re-proving the
    *    row before each delete. It costs the segment its grace window and its older rollback targets, which is
    *    proportionate: only a segment that genuinely held the subject pays it.
-   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders: a
+   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders (an
+   *    object no read of the segment can open is one, whatever the id): a
    *    generation up there without the id is still an operator's rollback target and stays. This is the one place
    *    the library deletes an above-pointer object that it did not write, and it costs `rollbackSegment` a
    *    target, deliberately: a rollback point that still contains data we were required to erase is not a
@@ -650,14 +885,21 @@ async function eraseOnce(
    *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
    *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
    *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
-   *    exactly as in collection's own loop: a rollback that lands inside it onto the generation being deleted
-   *    leaves the pointer naming a missing object. The rollback's own move-then-verify catches every such landing
-   *    except one whose check runs before the delete. A condition on the object cannot close that one, since the
-   *    pointer then names the very object that was searched.
+   *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}): a rollback that
+   *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
+   *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
+   *    the object cannot close that one, since the pointer then names the very object this call read.
    *    What the condition does close is another object under the number: in that round trip another erasure can
-   *    delete the holder and a load take its number, write and publish. Each delete passes the version the search
-   *    read (`searched`), so a driver that reports `conditionalDelete` refuses it for any other object, and the deletes
-   *    stop as they do for a moved row. On a driver that does not, the delete removes whatever is under the number.
+   *    delete the holder and a load take its number, write and publish. Each delete passes the version of the read
+   *    that made the object a holder (`versions`), so a driver that reports `conditionalDelete` refuses it for any
+   *    other object, and the deletes stop as they do for a moved row. On a driver that does not, the delete removes
+   *    whatever is under the number.
+   *
+   * An object sealed under a key the row does not hold is a holder this call cannot search ({@link holds}). Beside a
+   * generation that was searched and held the id, it goes as any holder does: above the pointer by name, below it with
+   * the collection. With no such generation, nothing proves the segment held the subject, so the collection does not
+   * run: each of those objects is deleted by name, above the pointer or below it, under the same renewal of the row and
+   * read before each delete, and the generations below the pointer that were searched and found clean stay.
    *
    * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
    * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection
@@ -689,7 +931,7 @@ async function eraseOnce(
     const newestFirst = [...others].sort((a, b) => b - a);
 
     const clean = new Set<number>([from]);
-    const holdersAbove: number[] = []; // newest first
+    const holdersAbove: number[] = []; // newest first, those that could not be searched included
     for (const { generation, held } of await holdsEach(
       newestFirst.filter((g) => g > from),
       false,
@@ -697,45 +939,48 @@ async function eraseOnce(
       if (held === true) holdersAbove.push(generation);
       else if (held === false) clean.add(generation);
     }
+    const foundAbove = holdersAbove.find((generation) => !sealed.has(generation));
     let holderBelow: number | undefined;
-    if (holdersAbove.length === 0) {
+    const sealedBelow: number[] = [];
+    if (foundAbove === undefined) {
       for (const { generation, held } of await holdsEach(
         newestFirst.filter((g) => g < from),
         true,
       )) {
-        if (held === true) holderBelow = generation;
+        if (found(generation, held)) holderBelow = generation;
+        else if (held === true) sealedBelow.push(generation);
         else if (held === false) clean.add(generation);
       }
     }
-    const newest = holdersAbove[0] ?? holderBelow;
-    if (newest === undefined) return notMember;
+    const newest = foundAbove ?? holderBelow;
+    // Where a searched generation held the id, the collection takes every generation below the pointer, those that
+    // could not be searched with them. Where none did, those are deleted one by one, under the fence, and the
+    // generations below the pointer that were searched and found clean stay.
+    const fenced = newest === undefined ? [...holdersAbove, ...sealedBelow] : holdersAbove;
+    if (newest === undefined && fenced.length === 0) return notMember;
 
-    const collected = [...(await gcOrphanGenerations(ref, deps, { keep: 0 }))];
-    let moved: ReturnType<typeof rowVerdict> =
-      holdersAbove.length > 0 ? await fenceInFlight() : null;
-    for (const generation of holdersAbove) {
-      if (moved !== null) break;
-      moved = rowVerdict(await deps.registry.get(ref));
-      if (moved !== null) break;
-      try {
-        await deps.storage.delete({ ...base, generation }, { ifVersion: searched.get(generation) });
-      } catch (err) {
-        if (!isWriteConflictError(err)) throw err;
-        // Another object is under the number now: the one searched was deleted, and the number taken again. What this
-        // call was doing no longer follows from what is there, so it deletes nothing more, and the row says why.
-        moved = rowVerdict(await deps.registry.get(ref)) ?? 'superseded';
-        break;
-      }
-      collected.push(generation);
+    const collected =
+      newest === undefined ? [] : [...(await gcOrphanGenerations(ref, deps, { keep: 0 }))];
+    let moved: ReturnType<typeof rowVerdict> = null;
+    if (fenced.length > 0) {
+      const deleted = await deleteFenced(fenced);
+      collected.push(...deleted.deleted);
+      moved = deleted.moved;
     }
 
     const left = await holderLeft(clean);
-    if (left === undefined) return collectedAll(newest, collected);
+    if (left === undefined) {
+      if (newest !== undefined) return collectedAll(newest, collected);
+      return sealedOnly(notMember, collected);
+    }
     if (moved !== null) {
-      return { ...base, erased: false, reason: moved, fromGeneration: newest, collected };
+      return { ...base, erased: false, reason: moved, fromGeneration: newest ?? from, collected };
     }
     throw cannotRemove(left);
   };
+
+  /** The object this call's rewrite wrote, once it exists: its number, and its fingerprint, which tells it apart. */
+  let rewrote: { readonly generation: number; readonly fingerprint: string } | undefined;
 
   /**
    * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
@@ -809,6 +1054,7 @@ async function eraseOnce(
         { crypto: cryptoAt(generation), clock: deps.clock, metadata },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
+      rewrote = { generation, fingerprint: tally.fingerprint };
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
       // correct; this only saves a round trip on the common race, which the catch reports either way.
       const beforeVerify = await deps.registry.get(ref);
@@ -866,23 +1112,41 @@ async function eraseOnce(
    * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone or without a pointer
    * is not one this call can reason about. The position is read from a fresh row, just before the delete. A name
    * re-created since would have had to lose this object and then write that many generations of its own, and only its
-   * pointer landing on `written` could make the delete unsafe, which the bound excludes. Within the incarnation the
-   * number can be taken again in the round trip between that read and the delete: another erasure, of an id this
-   * object still holds, deletes it as a holder above the pointer, and a load numbers `currentGen + 1`, which can be
-   * `written`, and publishes. This delete is not conditioned on the object, since the write returns no version of it,
-   * so in that window it removes the load's generation.
+   * pointer landing on `written` could make the delete unsafe, which the bound excludes.
+   *
+   * Within the incarnation the number can be taken again after that read: another erasure, of an id this object still
+   * holds, deletes it as a holder above the pointer, and a load numbers `currentGen + 1`, which can be `written`, and
+   * publishes. So above the winner's pointer the object is first proved this rewrite's own by its fingerprint, from one
+   * read of its footer, and one that is gone, is another object, or cannot be read is kept. The delete passes the
+   * version that read reported, so on a storage driver that reports `conditionalDelete` it removes that object and no
+   * other: an object put under the number between the read and the delete stays, and that refusal is swallowed, since
+   * the object this call wrote is gone. Any other fault of the discard is thrown in place of the refusal, unlike a
+   * refused load's reclaim, which swallows every fault: the object this call would leave above the pointer can hold an
+   * id that another erasure has reported gone. On a driver that does not report `conditionalDelete`, that window
+   * remains, and there the delete removes the load's generation. Under a tombstone the delete is by number,
+   * with no read: every writer refuses a `destroyed` row until it is purged, so no load takes the number again.
    *
    * Returns the row it read, so a refused publish reports what that row says.
    */
-  const discardRefused = async (written: number): Promise<RegistryRecord | null> => {
+  const discardRefused = async (own: {
+    readonly generation: number;
+    readonly fingerprint: string;
+  }): Promise<RegistryRecord | null> => {
+    const key: GenKey = { ...base, generation: own.generation };
     const row = await deps.registry.get(ref);
     if (row !== null && row.status === 'destroyed') {
-      await deps.storage.delete({ ...base, generation: written });
+      await deps.storage.delete(key);
       return row;
     }
     if (row === null || row.status !== 'active' || row.currentGen === null) return row;
-    if (row.currentGen <= from || row.currentGen >= written) return row;
-    await deps.storage.delete({ ...base, generation: written });
+    if (row.currentGen <= from || row.currentGen >= own.generation) return row;
+    const proven = await provenObject(deps.storage, key, own.fingerprint);
+    if (proven === null) return row;
+    try {
+      await deps.storage.delete(key, { ifVersion: proven.version });
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+    }
     return row;
   };
 
@@ -890,7 +1154,9 @@ async function eraseOnce(
   if (pointerless) return await unpublished();
   const staged = await stage();
   if ('erased' in staged) {
-    if (!staged.erased && staged.generation !== undefined) await discardRefused(staged.generation);
+    if (!staged.erased && staged.generation !== undefined && rewrote !== undefined) {
+      await discardRefused(rewrote);
+    }
     return staged;
   }
   const { generation, key, fingerprint, summary } = staged;
@@ -927,7 +1193,7 @@ async function eraseOnce(
   if (!published) {
     // The publish refuses on the row's token before it looks at the row's status, so the row read here says why:
     // a concurrent `dropSegment` is `'destroyed'`, not a race a re-run would win.
-    const now = await discardRefused(generation);
+    const now = await discardRefused({ generation, fingerprint });
     return {
       ...base,
       erased: false,
@@ -957,6 +1223,44 @@ async function eraseOnce(
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
+}
+
+/**
+ * `crypto`, noting in `index.refused` when the object's index fails its authentication under it: the AAD it is opened
+ * with is the one `crypto` gives the index of this segment and generation. The reader authenticates the index after
+ * every check of the footer and of the index's checksum, and before anything else it decrypts, so a refusal there says
+ * the object was not sealed under this key for this generation, rather than that it is damaged.
+ */
+function noticingIndex(crypto: CrbmCrypto, index: { refused: boolean }): CrbmCrypto {
+  const indexAad = crypto.aadFor('index');
+  return {
+    aadFor: crypto.aadFor,
+    aead: {
+      seal: (plaintext, aad) => crypto.aead.seal(plaintext, aad),
+      open: (sealed, aad) => {
+        try {
+          return crypto.aead.open(sealed, aad);
+        } catch (err) {
+          if (sameBytes(aad, indexAad)) index.refused = true;
+          throw err;
+        }
+      },
+    },
+  };
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+/**
+ * Whether `now` is `held` with its `pointerId` renewed and nothing else changed but its leases: a write that names a
+ * field a read resolves through at the value it had, as an erasure's fence does, landed after `held` was read.
+ * The same incarnation is required ({@link onlyLeasesDiffer} checks it), so a row purged and made again is never taken
+ * for one.
+ */
+function renewedSince(held: RegistryRecord, now: RegistryRecord): boolean {
+  return now.pointerId !== held.pointerId && onlyLeasesDiffer(held, now, ['pointerId']);
 }
 
 /** How many ranges the erasure rewrite keeps open or landed ahead of the writer. */
