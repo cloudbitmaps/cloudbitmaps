@@ -227,6 +227,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused erasure rewrite no longer deletes a load's generation stored under its number since.** A rewrite refused
+  by a winner whose pointer stopped below it deletes its own object, which no collection would take. Another erasure
+  of an id that object holds could delete it as a holder above the pointer, and a load take its number and publish,
+  before that delete reached the storage; the delete then removed the load's generation, and the pointer named a
+  missing object. The rewrite now first proves the object under its number is the one it wrote, by a read of its
+  footer, keeps one that is gone, is another object or cannot be read, and deletes it under the version that read
+  reported, so on a storage driver that reports `conditionalDelete` the load's generation stays; a delete the driver
+  refuses is a fault of the cleanup, and the call reports what the row says as before. Under a `destroyed` row the
+  delete stays by number, since every writer refuses that row ([a number taken again during an
+  erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **An erasure no longer reports corruption for an object replaced under a number while it searched it.** An erasure
   that opened an object's index and then read another object's bytes for its chunk (the object deleted, by another
   erasure as a holder, and the number taken again by a load) threw `IntegrityError`, so `eraseSubject` reported an
@@ -244,18 +254,19 @@ so, and so do the module headers in the code.
   one the erasure cannot search, the read that found it sealed), and on a driver that reports `conditionalDelete` the
   delete of another object is refused: the erasure stops deleting and reports `erased: true` when nothing left holds
   the id, or `'superseded'`. A load refused after its row was purged, which proves its object its own by a footer read
-  before deleting it, passes the version of that read the same way. On a driver that does not report it (the
-  local-filesystem driver, GCS by default, S3 on a host other than AWS S3 unless set) the window remains. The
-  condition names the object, not the row, so a rollback onto the generation being deleted still leaves the pointer on
-  a missing object; on S3, whose ETag is computed from the bytes of an object stored without SSE-KMS or SSE-C, a load
-  that writes exactly the holder's bytes under its number, stored the same way, is not told apart; and every other
-  delete stays unconditioned, by number: a refused rewrite's of its own object above the winner's pointer or under a
-  `destroyed` row, and a refused load's of its own object under a row that is unchanged, changed only in its leases,
-  or `destroyed`, since a write reports no version; generation collection's, decided below the pointer from a listing
-  or from the row's list of kept generations, where a number is taken again only after the pointer moves down; and a
-  drop's sweep, and the retention sweep's collection, of every object a listing names under a `destroyed` row, which
-  every writer refuses until it is purged ([a number taken again during an
-  erasure](docs/guide/erasure.md#how-it-stays-correct)).
+  before deleting it, passes the version of that read the same way, and so does a refused rewrite that discards its
+  own object above the winner's pointer, which now proves it its own by a footer read first. On a driver that does not
+  report it (the local-filesystem driver, GCS by default, S3 on a host other than AWS S3 unless set) the window
+  remains. The condition names the object, not the row, so a rollback onto the generation being deleted still leaves
+  the pointer on a missing object; on S3, whose ETag is computed from the bytes of an object stored without SSE-KMS or
+  SSE-C, a load that writes exactly the holder's bytes under its number, stored the same way, is not told apart; and
+  every other delete stays unconditioned, by number: a refused rewrite's of its own object under a `destroyed` row,
+  and a refused load's of its own object under a row that is unchanged, changed only in its leases, or `destroyed`,
+  since a write reports no version; generation collection's, and a load's eviction of generations from its kept
+  window, decided below the pointer from a listing or from the row's list of kept generations, where a number is taken
+  again only after the pointer moves down; and a drop's sweep, and the retention sweep's collection, of every object a
+  listing names under a `destroyed` row, which every writer refuses until it is purged ([a number taken again during
+  an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 
 ## [0.19.1] — 2026-10-09
 

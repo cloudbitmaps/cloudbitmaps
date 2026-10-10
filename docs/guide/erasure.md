@@ -299,7 +299,8 @@ older generation, above the pointer or below.
 another erasure, or an operator's `rollback`. Another erasure collects with `keep: 0`, so it can delete the generation
 this rewrite was still streaming, or the object it had just written. Two erasures of different ids racing on one
 segment are safe: the loser's rewrite still holds the winner's id, and when it sits above the winner's pointer the
-loser deletes it before returning. The outcome is read off the registry row. A segment whose row is tombstoned
+loser deletes it before returning, once its footer proves it the loser's own object.
+The outcome is read off the registry row. A segment whose row is tombstoned
 mid-rewrite is searched as a fresh call searches a tombstone, so a cleartext object a drop left that still holds the
 id is deleted; one whose row is purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
 not forward-only, for the reason given in [which fence a publish carries](loading.md#how-it-stays-correct).
@@ -332,7 +333,12 @@ object the call read: it passes the version the storage driver reported on the r
 footer that found it encrypted under a row with no key, or the open whose index failed its authentication under the
 segment's key. A driver that reports `conditionalDelete` deletes only that object. The load's generation stays, the
 call deletes nothing more, and it reports `erased: true` when nothing left holds the id, or the reason the row gives,
-`'superseded'` as a rule. Which drivers report it:
+`'superseded'` as a rule. A refused rewrite that deletes its own object again above the winner's pointer (see racing
+writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
+does the same: it first proves the object under its number is the one it wrote, by a read of its footer, keeps one
+that is gone, is another object or cannot be read, and passes the version that read reported, so the load's
+generation stays. A delete the driver refuses there is a fault of the cleanup, and the call reports what the row says
+as before. Which drivers report it:
 
 | Storage | `conditionalDelete` |
 |---|---|
@@ -344,7 +350,8 @@ call deletes nothing more, and it reports `erased: true` when nothing left holds
 
 On a driver that does not report it, a delete in that window removes the load's generation, and the pointer names a
 missing object, which `checkConsistency()` reports: the race of two erasures and a load stays open there, above the
-pointer and on a segment with no generation yet alike. These limits hold on every driver:
+pointer, on a segment with no generation yet and at a refused rewrite's discard alike. These limits hold on every
+driver:
 
 - The condition names the object, not the row, so it does not cover the rollback in the last bullet above: the pointer
   then names the very object the call read.
@@ -353,11 +360,12 @@ pointer and on a segment with no generation yet alike. These limits hold on ever
   one, so a load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
   in the clear) is not told apart from it. An encrypted generation written through the shipped keystore seals every
   chunk under a fresh random nonce, so its bytes differ from any other write's.
-- A refused rewrite that deletes its own object again above the winner's pointer (see racing writers above) does not
-  condition that delete, since the write returns no version: if another erasure deletes that object as a holder and a
-  load takes its number in the same window, that delete removes the load's generation. A refused load that finds its
-  row unchanged, changed only in its leases, or `destroyed` deletes its own object by number for the same reason, in
-  the same window.
+- A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
+  its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
+  no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load
+  takes the number again. Under a row that is unchanged or changed only in its leases, the round trip between the
+  load's read of the row and its delete remains: if another erasure deletes that object as a holder and a load takes
+  its number in it, that delete removes the load's generation.
 - Generation collection, the `keep: 0` collection an erasure runs among it, deletes by number what a listing or the
   row's list of kept generations names, below the pointer, with no object read behind the decision. A number below the
   pointer is taken again only after the pointer moves down (a rollback, or a purge and re-create), inside the round

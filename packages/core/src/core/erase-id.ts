@@ -59,7 +59,8 @@
  * below the winner's pointer, where the winner's collection takes it, or above it: the case where this call took
  * its number after the winner's object was already in the bucket. Up there nothing collects it, and it was derived
  * from a generation the winner has replaced, so when the winner was another erasure it still holds the id that
- * erasure has just reported gone. That object is deleted before this call returns — see `discardRefused`.
+ * erasure has just reported gone. That object is deleted before this call returns, once its footer proves it the
+ * rewrite's own, under the version that read reported — see `discardRefused`.
  *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
  * number above everything in the bucket, so a forward-only publish here always won — discarding a concurrent
@@ -973,6 +974,9 @@ async function eraseOnce(
     throw cannotRemove(left);
   };
 
+  /** The object this call's rewrite wrote, once it exists: its number, and its fingerprint, which tells it apart. */
+  let rewrote: { readonly generation: number; readonly fingerprint: string } | undefined;
+
   /**
    * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
    * still at `from`. Returns a staged generation, or the result to report if the premise stopped holding.
@@ -1005,9 +1009,6 @@ async function eraseOnce(
    * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
    * the one written *without* it, for an object that was never written.
    */
-  /** The object this call's rewrite wrote, once it exists: its number, and its fingerprint, which tells it apart. */
-  let rewrote: { readonly generation: number; readonly fingerprint: string } | undefined;
-
   const stage = async (): Promise<
     | EraseIdResult
     | { generation: number; key: GenKey; fingerprint: string; summary: RegistrySummary }

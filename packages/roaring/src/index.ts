@@ -1400,7 +1400,7 @@ export class CloudRoaring {
    * the delete passes the version that read reported, so on a storage driver that reports `conditionalDelete` an
    * object put under the number since is kept. Where the row is unchanged or `destroyed`, the check narrows the
    * window rather than closing it: the row read and the delete are two round trips, and the delete is by number,
-   * since the write reports no version of the object it made. Every other delete is by number too: a load's
+   * since the write reports no version of the object it made. The other deletes a load leads to are by number too: its
    * collection deletes what a listing, or the row's list of kept generations, names below the pointer, and a drop's
    * sweep and a tombstoned segment's collection delete what a listing names under a `destroyed` row. The failure the
    * checks leave when they refuse is an orphan object, which costs storage until something collects it —
