@@ -99,6 +99,7 @@ import {
   openGenerationReaderNoting,
   sameObjectUnder,
   openGenerationReader,
+  provenObject,
   provesOwnObject,
   publishGeneration,
   verifyGeneration,
@@ -1004,6 +1005,9 @@ async function eraseOnce(
    * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
    * the one written *without* it, for an object that was never written.
    */
+  /** The object this call's rewrite wrote, once it exists: its number, and its fingerprint, which tells it apart. */
+  let rewrote: { readonly generation: number; readonly fingerprint: string } | undefined;
+
   const stage = async (): Promise<
     | EraseIdResult
     | { generation: number; key: GenKey; fingerprint: string; summary: RegistrySummary }
@@ -1044,6 +1048,7 @@ async function eraseOnce(
         { crypto: cryptoAt(generation), clock: deps.clock, metadata },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
+      rewrote = { generation, fingerprint: tally.fingerprint };
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
       // correct; this only saves a round trip on the common race, which the catch reports either way.
       const beforeVerify = await deps.registry.get(ref);
@@ -1101,23 +1106,39 @@ async function eraseOnce(
    * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone or without a pointer
    * is not one this call can reason about. The position is read from a fresh row, just before the delete. A name
    * re-created since would have had to lose this object and then write that many generations of its own, and only its
-   * pointer landing on `written` could make the delete unsafe, which the bound excludes. Within the incarnation the
-   * number can be taken again in the round trip between that read and the delete: another erasure, of an id this
-   * object still holds, deletes it as a holder above the pointer, and a load numbers `currentGen + 1`, which can be
-   * `written`, and publishes. This delete is not conditioned on the object, since the write returns no version of it,
-   * so in that window it removes the load's generation.
+   * pointer landing on `written` could make the delete unsafe, which the bound excludes.
+   *
+   * Within the incarnation the number can be taken again after that read: another erasure, of an id this object still
+   * holds, deletes it as a holder above the pointer, and a load numbers `currentGen + 1`, which can be `written`, and
+   * publishes. So above the winner's pointer the object is first proved this rewrite's own by its fingerprint, from one
+   * read of its footer, and one that is gone, is another object, or cannot be read is kept. The delete passes the
+   * version that read reported, so on a storage driver that reports `conditionalDelete` it removes that object and no
+   * other: an object put under the number between the read and the delete stays, and the refused delete is a fault of
+   * the cleanup, which is swallowed, as a refused load's reclaim swallows it. On a driver that does not report it, that
+   * window remains, and there the delete removes the load's generation. Under a tombstone the delete is by number,
+   * with no read: every writer refuses a `destroyed` row until it is purged, so no load takes the number again.
    *
    * Returns the row it read, so a refused publish reports what that row says.
    */
-  const discardRefused = async (written: number): Promise<RegistryRecord | null> => {
+  const discardRefused = async (own: {
+    readonly generation: number;
+    readonly fingerprint: string;
+  }): Promise<RegistryRecord | null> => {
+    const key: GenKey = { ...base, generation: own.generation };
     const row = await deps.registry.get(ref);
     if (row !== null && row.status === 'destroyed') {
-      await deps.storage.delete({ ...base, generation: written });
+      await deps.storage.delete(key);
       return row;
     }
     if (row === null || row.status !== 'active' || row.currentGen === null) return row;
-    if (row.currentGen <= from || row.currentGen >= written) return row;
-    await deps.storage.delete({ ...base, generation: written });
+    if (row.currentGen <= from || row.currentGen >= own.generation) return row;
+    const proven = await provenObject(deps.storage, key, own.fingerprint);
+    if (proven === null) return row;
+    try {
+      await deps.storage.delete(key, { ifVersion: proven.version });
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+    }
     return row;
   };
 
@@ -1125,7 +1146,9 @@ async function eraseOnce(
   if (pointerless) return await unpublished();
   const staged = await stage();
   if ('erased' in staged) {
-    if (!staged.erased && staged.generation !== undefined) await discardRefused(staged.generation);
+    if (!staged.erased && staged.generation !== undefined && rewrote !== undefined) {
+      await discardRefused(rewrote);
+    }
     return staged;
   }
   const { generation, key, fingerprint, summary } = staged;
@@ -1162,7 +1185,7 @@ async function eraseOnce(
   if (!published) {
     // The publish refuses on the row's token before it looks at the row's status, so the row read here says why:
     // a concurrent `dropSegment` is `'destroyed'`, not a race a re-run would win.
-    const now = await discardRefused(generation);
+    const now = await discardRefused({ generation, fingerprint });
     return {
       ...base,
       erased: false,
