@@ -1,6 +1,7 @@
 import { brandAsBackend } from '@/core/ports';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
+import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
 import type { GenKey, IRegistryDriver, IStorageDriver, RegistryPatch } from '@/index';
@@ -28,6 +29,10 @@ const Y = 77;
 
 const isRewritePublish = (patch: RegistryPatch): boolean =>
   'currentGen' in patch && patch.currentGen === 2;
+
+/** The rewrite's publish when it writes generation 1: nothing else was in the bucket above generation 0. */
+const isRewritePublish1 = (patch: RegistryPatch): boolean =>
+  'currentGen' in patch && patch.currentGen === 1;
 
 /**
  * Where the first erasure is refused: at its publish, or at its re-read of the row before it verifies what it wrote.
@@ -202,4 +207,34 @@ describe('a refused rewrite whose object is still its own', () => {
       expect(await generations(storage)).toEqual([0, 1]);
     },
   );
+});
+
+describe('a refused rewrite whose winner left the pointer where it was', () => {
+  it('a retention write refuses the publish: the pointer is still on the generation the rewrite read, and its object is left alone', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry: IRegistryDriver = new MemoryRegistryDriver();
+    const deps = { storage, registry, codec: roaringCodec, clock };
+    await loadSegment(REF, [1, 2, X], deps); // generation 0
+    let written = false;
+    const refusing = Object.create(registry) as IRegistryDriver;
+    refusing.compareAndSwap = async (ref, expected, patch, options) => {
+      if (!written && isRewritePublish1(patch)) {
+        written = true;
+        await setSegmentRetention(REF, { registry }, { expiresAt: clock.now() + 86_400_000 });
+      }
+      return registry.compareAndSwap(ref, expected, patch, options);
+    };
+
+    const result = await eraseIdFromSegment(REF, X, { ...deps, registry: refusing });
+
+    expect(result).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      fromGeneration: 0,
+      generation: 1,
+    });
+    expect((await registry.get(REF))?.currentGen).toBe(0);
+    // At or below `from` nothing replaced `from`, so the discard does not run: a later load numbers past it.
+    expect(await generations(storage)).toEqual([0, 1]);
+  });
 });
