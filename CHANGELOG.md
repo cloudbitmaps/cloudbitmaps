@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-10-09
+
 ### Breaking
 
 - **Registry rows are schema 4, and a store moves to 0.20 by loading its segments into a new prefix.** Every row 0.20
