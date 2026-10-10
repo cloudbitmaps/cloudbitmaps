@@ -630,9 +630,9 @@
               <span class="m">segment.rewrite</span>, <span class="m">segment.collect</span>, <span class="m">segment.erase</span>,
               <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
               policy's write (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a
-              collection pass and the retention sweep's purge of its own tombstones emit none. Every
+              collection pass and the retention sweep's purge of its own tombstones emit none. Each
               <span class="m">segment.*</span> event carries <span class="m">incarnation</span>, the id of the registry
-              row it found or wrote, so a purged-and-recreated segment's generation numbers are told apart.
+              row it found or wrote (absent on a refused first load that found no row), so a purged-and-recreated segment's generation numbers are told apart.
             </span>
           </li>
           <li>

@@ -286,7 +286,8 @@ npm audit signatures</code></pre>
                   <td class="from">
                     The generation, its count, its metadata and its size (<span class="m">sizeBytes</span>,
                     <span class="m">null</span> when the segment has no generation or the source cannot report a
-                    size), all from one resolution. A cold call is one registry read and a warm one sends nothing.
+                    size), all from one resolution. A cold call is one registry read when the row's summary describes the generation, and a tail read of the
+                    object more when it does not; a warm one sends nothing.
                     Feed the size to <span class="m">groundedReport</span> from
                     <span class="m">@cloudbitmaps/tools</span> to price a running store.
                   </td>
@@ -375,9 +376,9 @@ npm audit signatures</code></pre>
                 <tr>
                   <td><span class="m">store.exportSegments(sink)</span></td>
                   <td class="from">
-                    Writes every registered segment that still has data out as cross-language
+                    Writes every registered segment that is not destroyed out as cross-language
                     <span class="m">roaring</span> or newline-delimited <span class="m">ndjson</span>, using
-                    only public read APIs; a crypto-shredded segment is listed in <span class="m">manifest.skipped</span>,
+                    only public read APIs; a crypto-shredded or dropped segment is listed in <span class="m">manifest.skipped</span>,
                     not read. The one-command exit, and there is a CLI that wraps it.
                   </td>
                   <td class="num">storage</td>
