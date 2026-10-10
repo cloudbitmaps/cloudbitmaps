@@ -56,7 +56,7 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
-| **Subject erasure** | `store.eraseSubject(id, { namespace })` | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. So is every other generation still holding the id: a retained *superseded* one (an ex-member dropped by a re-seed), and each one above the pointer after a `rollback` — generations a rollback can move the pointer onto again — while, when the current generation does not hold the id, the ones there that never held it stay as rollback targets, but for any object no read of the segment can open, which goes whatever the id (a rewrite is numbered above everything, so its `keep: 0` collection takes every older generation, above the pointer or below). Before it says `erased: true` the call lists the bucket and reads what is left, so **`erased: true` means no generation of the segment holds the id**, above the pointer or below it. `eraseSubject` reports a per-segment fault as an `error: …` ledger entry rather than throwing it, and a call that a racing writer overtook (a load, another erasure, or a rollback) as `erased: false, note: 'superseded'`, so "on return" is a claim about every segment whose entry says **`erased: true`** (a fault is an `error: …` entry, never `erased: true`). The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. It carries a generation's metadata over unchanged and does **not** scan it, so **never put a subject's id in metadata**. | "forget this person" — GDPR Art. 17 |
+| **Subject erasure** | `store.eraseSubject(id, { namespace })` | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. So is every other generation still holding the id: a retained *superseded* one (an ex-member dropped by a re-seed), and each one above the pointer after a `rollback` — generations a rollback can move the pointer onto again — while, when the current generation does not hold the id, the ones there that never held it stay as rollback targets, but for any object no read of the segment can open, which goes whatever the id. (When the current generation holds the id, the rewrite is numbered above everything, so its `keep: 0` collection takes every older generation, above the pointer or below.) Before it says `erased: true` the call lists the bucket and reads what is left, so **`erased: true` means no generation of the segment holds the id**, above the pointer or below it. `eraseSubject` reports a per-segment fault as an `error: …` ledger entry rather than throwing it, and a call that a racing writer overtook (a load, another erasure, or a rollback) as `erased: false, note: 'superseded'`, so "on return" is a claim about every segment whose entry says **`erased: true`** (a fault is an `error: …` entry, never `erased: true`). The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. It carries a generation's metadata over unchanged and does **not** scan it, so **never put a subject's id in metadata**. | "forget this person" — GDPR Art. 17 |
 | **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the space. **Check `generationsRemaining`:** if it is non-empty the space was *not* fully reclaimed and the drop should be re-run (a load that had read the segment before the tombstone landed, even one still consuming its ids, or an `eraseSubject` rewrite already under way, can write its object after the drop's sweep; it deletes that object itself once its publish is refused, and only one whose process stops in between, or whose publish fails without a definite answer (a lost response, a timeout), leaves it, for a re-run of the drop). Works on cleartext; on an encrypted segment it *also* crypto-shreds, on the terms in the next row. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than removing a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *At rest, complete once no copy of the wrapped key survives* — removes the segment's wrapped DEK(s) from its registry row in one compare-and-swap, without touching the bytes or any KEK. **Every** copy of the objects (current, prior generations, backups, WORM-locked objects) is then unreadable once no retained copy of that row still holds the wrapped key — noncurrent object versions, backups and PITR copies of the row included — or once every KEK that wrapped it is destroyed. Until then, a retained copy of the row and a KEK that wrapped it decrypt the segment, and a registry restore to a point before the shred makes it readable again; see *Erasure vs. backups / WORM* below, and [an optional registry expiry rule](docs/guide/disaster-recovery.md#optional-make-a-shred-durable-with-a-registry-expiry-rule) that makes a shred durable after a set number of days. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
@@ -72,12 +72,16 @@ It reuses the store's own drivers (so build the store with a backend). It return
 **erasure ledger** — one entry per segment the id was found in, `{ segment, namespace?, erased, fromGeneration,
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
 one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id found only
-outside the current generation (a retained *superseded* one, one above the pointer after a rollback, or an object
-left under a tombstone) is collected rather than rewritten, so it emits `segment.collect { fromGeneration, collected }`
+outside the current generation (a retained *superseded* one, one above the pointer after a rollback, an object left
+under a tombstone, or a first load's object on a segment with no generation yet) is collected rather than rewritten,
+so it emits `segment.collect { fromGeneration, collected }`
 instead and its ledger entry carries no `generation`. Each `segment.*` event also names the segment's `incarnation`
 when its registry token carries one, so a segment created again under the same name is told apart from the one
 erased. Segments the id is
-not in are not listed. `store.subjectReport(id, { namespace })` answers the read side (Art. 15 — which segments
+not in are not listed. A segment where the erasure found the id in nothing it could search, and deleted only objects
+no read of it can open, is not listed either: the audit sink gets `segment.collect { collected }` for it, with no
+`fromGeneration`, and that event is the only record of the deletion. `store.subjectReport(id, { namespace })` answers
+the read side (Art. 15 — which segments
 an id is in).
 
 Two rules. **Do not load a segment while erasing from it**: a load that lands after the rewrite carries whatever
@@ -128,8 +132,8 @@ be searched until its load publishes the key, so it is deleted whatever id is er
 encrypted first load in flight that has written its object onto a segment whose row was made ahead of its data, and
 that load is re-run ([the erasure guide](docs/guide/erasure.md#two-rules-while-you-erase)). On an encrypted segment,
 an object sealed under a key its row does not hold, and on a cleartext segment with a generation, an encrypted object,
-opens for no read of the segment (the object of a first load that lost the race to the one that published, or
-crashed): it is deleted the same way, whatever id is erased, wherever an erasure meets it, except as the current
+open for no read of the segment (the object of a first load that lost the race to the one that published, or
+crashed): each is deleted the same way, whatever id is erased, wherever an erasure meets it, except as the current
 generation, which is never deleted for this, and under a tombstone, where it is no holder and goes only with
 everything there, when another object under the tombstone holds the id.
 
@@ -394,8 +398,10 @@ Wire the **audit sink** (`IAuditSink`) to get an append-only, vendor-neutral rec
 state changes — `segment.publish` (a loaded generation became current), `segment.load-refused` (a load that did
 not publish, because its guard refused it or another writer got there first), `segment.rollback` (an operator moved
 the pointer to a generation it named), `segment.rewrite` (a subject-erasure
-rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasure that found the id only outside the
-current generation and deleted the generations holding it, rewriting none), `segment.erase` (a genuine
+rewrite: `fromGeneration` → `generation`), `segment.collect` (a subject erasure that rewrote nothing and deleted what
+no reader resolves: the generations holding the id, when it found the id only outside the current generation, or, with
+no `fromGeneration`, only objects no read of the segment can open, which it deletes whatever the id), `segment.erase`
+(a genuine
 crypto-shred), `segment.dispose` (a `dropSegment`, including every retirement the sweep performs) and
 `namespace.erase` — for your audit log / SIEM. Each `segment.*` event names the segment's `incarnation` when its
 registry token carries one, so a segment created again under the same name is told apart from the one before.

@@ -199,8 +199,9 @@ is a dependency of both and is never installed directly. The storage drivers are
   and deletes every generation that held the bit before returning, above the pointer as well as below it, and a
   first load's object on a segment with no generation yet —
   **physical deletion on return**, with a
-  per-segment ledger and an audit event per segment: `segment.rewrite`, or `segment.collect` where only other
-  generations held the id. `subjectReport` is the read side (access). What a
+  per-segment ledger and an audit event per segment erased: `segment.rewrite`, or `segment.collect` where only other
+  generations held the id, which is also emitted, with no `fromGeneration`, for a segment where the erasure deleted only
+  objects no read of it can open. `subjectReport` is the read side (access). What a
   rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder an erasure
   deletes by name, above the pointer or on a segment with no generation yet, is deleted only while it is the object
   the erasure read, on a storage driver that reports

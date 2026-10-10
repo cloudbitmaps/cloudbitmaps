@@ -2070,8 +2070,9 @@ export class CloudRoaring {
    * can still hold it, and so can one above the pointer after a {@link CloudRoaring.rollback}, which the rollback
    * could make current again. Each holder is deleted — below the pointer by a `keep: 0` collection, above it one
    * by one, re-proved against the row first — and the generations above the pointer that never held the id stay
-   * as rollback targets, but for any object no read of the segment can open, which goes whatever the id. An entry says `erased: true` only once the call has listed the bucket and read what is
-   * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
+   * as rollback targets, but for any object no read of the segment can open, which goes whatever the id. An entry
+   * says `erased: true` only once the call has listed the bucket and read what is left: **no generation of the
+   * segment holds the id**. The returned per-segment record is your **erasure ledger** —
    * persist it / route it to your audit sink as the proof of deletion (when you pass `audit`, an audit event is also
    * emitted per segment erased: `segment.rewrite` for a rewrite, `segment.collect` where only other generations held
    * the id and nothing was rewritten). A segment where the erasure deleted only objects no read of it can open (a first

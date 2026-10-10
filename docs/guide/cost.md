@@ -230,7 +230,8 @@ erasure that deletes nothing reads the row once (counted at the registry the S3,
 That is paid once per affected segment, since the next run finds nothing to delete. A renewal that gets no answer
 waits up to 3.5 s in all before it gives up, within one segment, and `eraseSubject` erases 8 segments at once by
 default. A renewal on a segment with a generation moves its `pointerId`, so each store reading it opens its current
-generation again once, one tail read, at its next refresh. See [what an erasure
+generation again once, at its next refresh: one tail read where the generation's index fits in it, and a range
+read for the index as well where it does not. See [what an erasure
 costs](erasure.md#find-an-id-and-erase-it).
 
 **`checkConsistency({ summaries: true })` costs one tail read per segment**, on top of the listing the default check

@@ -223,17 +223,20 @@ export interface EraseIdResult {
   readonly fromGeneration?: number;
   /**
    * The generation written without the id (present whenever one was written, even if `superseded`). A refused
-   * rewrite whose object sits above the winner's pointer deletes that object again before it returns.
+   * rewrite whose object sits above the winner's pointer deletes that object again before it returns, when its footer
+   * proves it the rewrite's own.
    */
   readonly generation?: number;
   /**
    * Generations this call deleted. On a rewrite that is normally `[fromGeneration]`, plus any older orphans. When
-   * the current generation did not hold the id, it is every generation below the pointer (`keep: 0` takes them
-   * together) and each one above the pointer that held the id; the ones above it that did not hold the id stay,
-   * because they are an operator's rollback targets. On a row with no pointer it is each first load's object that
-   * held the id. Wherever it found them, it is also each object sealed under a key the row does not hold, which this
-   * call cannot search and deletes whatever the id: with only those, `reason` is `'no-generation'` on a row with no
-   * pointer and `'not-member'` on one with a pointer, and they are listed here. Empty when nothing was deleted.
+   * the current generation did not hold the id and a generation this call searched did, it is every generation below
+   * the pointer (`keep: 0` takes them together) and each one above the pointer that held the id; the ones above it
+   * that did not hold the id stay, because they are an operator's rollback targets. On a row with no pointer it is
+   * each first load's object that held the id. Wherever it found them, it is also each object sealed under a key the
+   * row does not hold, which this call cannot search and deletes whatever the id. When those are the only holders, it
+   * is only those, deleted one by one, and every generation this call searched stays: `reason` is then
+   * `'no-generation'` on a row with no pointer and `'not-member'` on one with a pointer. Empty when nothing was
+   * deleted.
    *
    * **It is what THIS call deleted, not the proof that the id is gone** — those differ: a concurrent collector can
    * take a generation holding the id first, and then `erased: true` is returned without it in `collected`, because
@@ -1114,8 +1117,10 @@ async function eraseOnce(
    * publishes. So above the winner's pointer the object is first proved this rewrite's own by its fingerprint, from one
    * read of its footer, and one that is gone, is another object, or cannot be read is kept. The delete passes the
    * version that read reported, so on a storage driver that reports `conditionalDelete` it removes that object and no
-   * other: an object put under the number between the read and the delete stays, and the refused delete is a fault of
-   * the cleanup, which is swallowed, as a refused load's reclaim swallows it. On a driver that does not report it, that
+   * other: an object put under the number between the read and the delete stays, and that refusal is swallowed, since
+   * the object this call wrote is gone. Any other fault of the discard is thrown in place of the refusal, unlike a
+   * refused load's reclaim, which swallows every fault: the object this call would leave above the pointer can hold an
+   * id that another erasure has reported gone. On a driver that does not report it, that
    * window remains, and there the delete removes the load's generation. Under a tombstone the delete is by number,
    * with no read: every writer refuses a `destroyed` row until it is purged, so no load takes the number again.
    *
