@@ -4,7 +4,7 @@
 > `estimateCost()` in `@cloudbitmaps/tools` at the default `aws-us-east-1-ondemand` rates: the line against one three-node Redis-HA cluster,
 > `ONE_REDIS_HA_CLUSTER`, whatever the data size, and the table's last row against the Redis the default profile
 > sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the estimator's own numbers. The
-> polished, shareable version lives on the [site](../site/benchmarks.html)
+> polished, shareable version lives on the [site](../site/benchmarks.html).
 
 CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
 sustained read rate, pay-per-use is far cheaper; above it, the cluster wins. This is that crossover.
@@ -277,7 +277,7 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that also
   folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), so it grows with
   fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column is the bound. Live
-  heap plus the soak's native-memory watch prove **no leak** on the read path.
+  heap plus the soak's native-memory watch prove **no leak** on the read path. A store with a timed refresh also keeps each segment's resolution in a second cache bounded at 8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes (8,192 and 4 MiB by default), a few hundred bytes an entry; [what each reader holds](guide/sizing.md#what-each-reader-holds) gives the heap it takes.
 - **The hard RSS ceiling — measured.** A sustained read + combine + re-load workload over **400 segments**
   completes inside a hard **384 MiB** cgroup ceiling with swap disabled (`--memory-swap == --memory`), so the
   limit is a true RSS bound rather than a heap one, and it covers the roaring addon's **off-heap** memory that

@@ -54,7 +54,7 @@ The essentials, in order:
 2. **Build with tests, not after** — new behavior ships with tests in the same commit; each
    [hard invariant](#hard-correctness-invariants) gets named tests (property tests over loaded generations, and
    crash/race tests for the write-then-publish path).
-3. **Run the full local gate green** — `lint · lint:arch · format:check · typecheck · test · build · smoke`, and
+3. **Run the full local gate green** — `lint · lint:arch · format:check · typecheck · test · build · api:surface:check · smoke`, and
    `test:integration` against the docker-compose backends ([the gate](CONTRIBUTING.md#commands-the-gate)). CI runs
    all of them. **`pnpm typecheck` is required exactly like `test`/`lint`**: zero errors and zero editor red
    squiggles, never deferred or `@ts-ignore`-d.

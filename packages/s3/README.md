@@ -57,8 +57,9 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   MinIO, 3.640.0 silently overwrites an existing object, which loses a published generation. `If-Match` on
   `PutObject`, which the registry's compare-and-swap is built on, is modelled from 3.700.0: 3.699.0's serializer
   omits it, so a fenced row write goes out unconditionally and can land over a concurrent writer's. This package's
-  own range never resolves below 3.700.0. The registry also checks, before its first request, that the client it is given sends `If-Match` on
-  `PutObject` and `DeleteObject`, and refuses a write it would send without its precondition.
+  own range never resolves below 3.700.0. The registry also checks, before its first request, that the client it is given sends `If-None-Match` and
+  `If-Match` on `PutObject`, and refuses a registry write it would send without its precondition; a client that does
+  not send `If-Match` on `DeleteObject` turns `conditionalDelete` off.
 - **Grant `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload` and `s3:ListBucket`.** Without
   `s3:ListBucket`, S3 answers a missing key with `403` instead of `404`.
 - **Add a lifecycle rule that aborts incomplete multipart uploads**, and never one that expires current objects or the

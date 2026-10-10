@@ -32,8 +32,8 @@ import type {
 const STATUSES: readonly string[] = ['active', 'destroyed'];
 /**
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
- * through is refused on read-back like any other corruption (invariant 5), rather than ignored. A field that joins
- * schema 4 before it is released is appended here, with its validator, and needs no new schema version.
+ * through is refused on read-back like any other corruption (invariant 5), rather than ignored. A field the record
+ * gains is listed here with its validator.
  */
 export const RECORD_FIELDS = [
   'namespace',
@@ -527,6 +527,10 @@ export interface RegistryEnvelope {
  */
 export const REGISTRY_SCHEMA_VERSION = 4;
 
+// The public page that says how to move a store written by an earlier registry schema.
+const UPGRADE_STEPS_URL =
+  'https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md#0200--2026-10-09';
+
 /**
  * Validate a persisted registry row's `schemaVersion` (untrusted bytes, invariant 5) and return it: an absent or
  * malformed value → `IntegrityError`; any version but {@link REGISTRY_SCHEMA_VERSION} → `UnsupportedError`
@@ -543,7 +547,7 @@ export function assertRegistrySchemaVersion(raw: unknown, ctx: string): number {
     throw new UnsupportedError(
       `registry row schemaVersion ${raw} is one this build does not read: it reads schema ` +
         `${REGISTRY_SCHEMA_VERSION} only. Export the segments with the release that wrote the row and load them ` +
-        `with this one into a new prefix (the CHANGELOG gives the steps): ${ctx}`,
+        `with this one into a new prefix (steps: ${UPGRADE_STEPS_URL}): ${ctx}`,
     );
   }
   if (raw > REGISTRY_SCHEMA_VERSION) {

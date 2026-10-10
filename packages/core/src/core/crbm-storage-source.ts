@@ -113,7 +113,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * How long (ms) a resolved `currentGen` is trusted before the next read re-resolves it (default 2000) — the
    * bound on read staleness after a load publishes: a reader may serve the prior generation for up to this long,
    * then converges. Lazy (checked on read — no timer); ≤ one cheap registry read per segment per window, and a
-   * new {@link CrbmReader} is opened only when the generation actually changed. `0` turns the refresh off, as a
+   * new {@link CrbmReader} is opened only when the row's pointer was renewed. `0` turns the refresh off, as a
    * missing clock or registry does: {@link clock} says what that changes, and what it does not.
    */
   readonly currentGenTtlMs?: number;

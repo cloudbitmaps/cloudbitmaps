@@ -364,7 +364,10 @@
               verifies the result and publishes it <b>fenced</b> on the generation it streamed &mdash; if a load
               or another erasure moves the pointer meanwhile, the fence refuses the rewrite and the ledger says
               <span class="m">superseded</span>, so you re-run. Then it collects the generation that held the
-              bit. There is no tombstone to honour on the read path, and nothing to compact later: for every
+              bit. An id found only outside the current generation (a retained older generation, one above the
+              pointer, a first load's object on a segment with no generation yet) is deleted with those
+              generations, and the ledger reports <span class="m">erased: true</span> all the same. There is no
+              tombstone to honour on the read path, and nothing to compact later: for every
               segment the ledger reports <span class="m">erased: true</span>, the bit is <b>physically gone</b>
               from the bucket when the call returns. A noncurrent version, a soft-deleted copy, a replica or a
               backup keeps the old object until its own lifecycle removes it.
@@ -477,7 +480,7 @@
                what the panel is a selection OF instead, so a reader knows five is not the whole set. -->
           <div class="tpanel-head">
             <span class="label">What you will catch</span>
-            <span class="label">5 of 11 exported types</span>
+            <span class="label">5 of 12 error classes</span>
           </div>
           <div class="tscroll">
             <table>
@@ -520,7 +523,7 @@
                 <tr>
                   <td><span class="m">IntegrityError</span></td>
                   <td class="from">
-                    Bytes came back that do not match their checksum. Something is corrupt; the same request
+                    Bytes came back that do not match their checksum, or a stored registry row is malformed. Something is corrupt; the same request
                     will return the same corruption.
                   </td>
                   <td><span class="status is-never">Never</span></td>
@@ -627,7 +630,9 @@
               <span class="m">segment.rewrite</span>, <span class="m">segment.collect</span>, <span class="m">segment.erase</span>,
               <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
               policy's write (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a
-              collection pass and the retention sweep's purge of its own tombstones emit none.
+              collection pass and the retention sweep's purge of its own tombstones emit none. Each
+              <span class="m">segment.*</span> event carries <span class="m">incarnation</span>, the id of the registry
+              row it found or wrote (absent on a refused first load that found no row), so a purged-and-recreated segment's generation numbers are told apart.
             </span>
           </li>
           <li>

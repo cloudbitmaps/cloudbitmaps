@@ -757,7 +757,7 @@ async function reportOf(
   });
 }
 
-describe('groundedReport (from stat().size)', () => {
+describe('groundedReport (from stat().sizeBytes)', () => {
   it('grounded storage cost matches a direct byte count of the real chunk payload', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
     const r = await reportOf(store, 's');
@@ -824,10 +824,10 @@ describe('groundedReport (from stat().size)', () => {
         typeof groundedReport
       >[0]),
     ).toThrow(/groundedReport: unknown option "worklaod"/);
-    // `stat()`'s result has `size`, not `storageBytes`.
-    const stat = { generation: 0, cardinality: 3, size: 120 };
+    // `stat()`'s result has `sizeBytes`, not `storageBytes`, and the message names the field that exists.
+    const stat = { generation: 0, cardinality: 3, sizeBytes: 120 };
     expect(() => groundedReport(stat as unknown as Parameters<typeof groundedReport>[0])).toThrow(
-      /groundedReport: unknown option "generation"/,
+      /groundedReport: unknown option "generation".*pass a stat\(\)'s `sizeBytes` as storageBytes/,
     );
     expect(() => groundedReport({} as unknown as Parameters<typeof groundedReport>[0])).toThrow(
       /groundedReport: storageBytes must be a byte count .* or null .*; got undefined/,

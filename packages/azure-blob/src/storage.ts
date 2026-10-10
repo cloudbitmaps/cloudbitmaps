@@ -452,7 +452,7 @@ class AzureBlockBlobSink implements BlobSink {
     // its buffer after `write()` resolves, so a shared reference could let the committed content diverge from
     // the already-hashed bytes. `new Uint8Array(bytes)` copies UNCONDITIONALLY — note `bytes.slice()` would NOT:
     // the payload is a `Buffer` (roaring serialize), whose `slice()` returns an aliasing view, not a copy.
-    // (S3/GCS + `BufferSink` share this retain-by-reference pattern; tracked as a cross-driver follow-up.)
+    // (S3/GCS + `BufferSink` retain by reference the same way.)
     this.pending.push(new Uint8Array(bytes));
     this.pendingLen += bytes.length;
     if (this.pendingLen >= this.blockBytes) await this.flushBlock();

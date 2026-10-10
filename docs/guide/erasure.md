@@ -27,7 +27,7 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 route it to your audit sink. When you pass `audit`, the store also emits an event per segment it erased the id from:
 `segment.rewrite` when it rewrote the current generation, `segment.collect` when it only deleted other generations.
 Segments the id is not in are not listed. A segment where the erasure found the id in nothing it could search, and
-deleted only objects no read of the segment can open ([below](#two-rules-while-you-erase)), is not listed either: the
+deleted only objects no read of the segment can open ([below](#three-rules-while-you-erase)), is not listed either: the
 audit sink gets `segment.collect` for it with no `fromGeneration`, and that event is the only record of the deletion.
 The two calls look in different places: `subjectReport` reads what a reader reads, each segment's current generation,
 while `eraseSubject` also searches older generations, a tombstoned segment's objects and a first load's object that
@@ -87,7 +87,7 @@ all if a racing collector took that generation first (gone, but unreceipted).
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. But "not listed" is not by
 itself proof the id is gone. A segment whose registry row was purged is not scanned either, and its objects outlive it
 as orphans. `store.generations(ref)` lists those, since it reads the bucket whether or not a row exists, and
-`store.dropSegment(ref, { confirmSegment })` deletes them, writing a `destroyed` row first as it always does, which
+`store.dropSegment(ref, { confirmSegment })` deletes them, writing a `destroyed` row first, which
 then fences the name. `store.checkConsistency()` and the collection a load runs start from the rows, so neither
 reaches them.
 
@@ -101,7 +101,9 @@ A dry run (`dryRun: true`) publishes nothing, so no id reaches a generation thro
 as it read them: an erasure between a dry run and the publish that follows it changes what that publish writes, and
 the [re-run recipe](loading.md#publish-what-you-reviewed) says what that means for a replayed feed.
 
-## Two rules while you erase
+<a id="two-rules-while-you-erase"></a>
+
+## Three rules while you erase
 
 - **Do not load the segment while erasing from it.** A load that lands after the rewrite carries whatever its source
   held, and the library cannot know that source was meant to exclude the id. Pause loads of the affected segments for
@@ -235,7 +237,7 @@ A lease written while an erasure is under way does not delay it. A lease write m
 rewrite is fenced on, but a row that differs from the one the rewrite read only in its leases does not refuse it: it goes on
 against the row it finds, without streaming the object again, and so does the re-proof before each delete above the pointer
 ([how a load stays correct](loading.md#how-it-stays-correct) states the rule). A change of anything else refuses, and
-`eraseSubject` reports `superseded` as it always has: run it again.
+`eraseSubject` reports `superseded`: run it again.
 
 What a lease does not change is when a reader stops seeing the id. A leased handle in another store answers as any
 pinned handle does until its lease ends, and then every read of it throws `LeaseExpiredError`.
@@ -295,7 +297,7 @@ where a later rollback can make them current again. So the call searches every g
 holder below the pointer goes with the `keep: 0` collection, and each holder above it is deleted one by one. A
 generation up there that never held the id stays as a rollback target when the current generation does not hold the
 id, unless no read of the segment can open it, and then it goes whatever the id ([the effect across a
-fleet](#two-rules-while-you-erase)). A rewrite is numbered above everything, so its `keep: 0` collection takes every
+fleet](#three-rules-while-you-erase)). A rewrite is numbered above everything, so its `keep: 0` collection takes every
 older generation, above the pointer or below.
 
 **Racing writers.** Another writer that moves the pointer off the generation the rewrite derived from can be a load,
@@ -395,7 +397,7 @@ driver authors) over every registered segment, and each ledger entry is that fun
 - An object no read of the segment can open (on an encrypted segment, one sealed under a key the row does not hold; on
   a cleartext one with a generation, an encrypted one) is deleted as a holder whatever the id, wherever the call meets
   it but as the current generation or under a tombstone, and listed in `collected`; only a searched generation that
-  held the id makes the entry `erased: true` ([the effect across a fleet](#two-rules-while-you-erase)). An object the
+  held the id makes the entry `erased: true` ([the effect across a fleet](#three-rules-while-you-erase)). An object the
   segment's own key opens whose chunk does not is corrupt: `IntegrityError`. One whose chunk read fails because another
   object is under the number by then (a load took it after another erasure deleted the one listed) is not: the object
   the call listed is gone, as when a collector takes it.
@@ -411,7 +413,7 @@ driver authors) over every registered segment, and each ledger entry is that fun
   removes it ([a number taken again during an erasure](#how-it-stays-correct)). So a crashed first load's object is
   erased as any other holder is. On an encrypted store such an object is sealed under a key its load has not published, so it cannot
   be searched: it counts as a holder whatever the id, and is deleted too, and with only such objects the result is
-  `'no-generation'` with them in `collected` ([the effect across a fleet](#two-rules-while-you-erase)). A row with no
+  `'no-generation'` with them in `collected` ([the effect across a fleet](#three-rules-while-you-erase)). A row with no
   object that holds the id is `'no-generation'`, under `requireEncryption` too, and the call writes nothing. A load
   that read the row before the renewal is refused at its publish whenever it writes its object. One that writes it
   between the call's listing and its last look at the bucket leaves a holder that look finds: that throws

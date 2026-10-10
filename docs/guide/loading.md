@@ -2,8 +2,7 @@
 
 [Getting started](getting-started.md#load-real-data) shows one load. This page covers the rest of the write side:
 why a load is refused, what a load accepts, how many old generations to keep, how to roll back, how to write a
-result into another segment, and how to write many results from one pass, with operands that arrive as records or
-that you hold in memory. How loads stay correct under crashes and races is at the end.
+result into another segment, and how to write many results from one pass, with operands that arrive as records, a set you hold included. How loads stay correct under crashes and races is at the end.
 
 ## Load a segment
 
@@ -42,7 +41,7 @@ refused.
 
 **A bound is judged after the write, before the publish.** The load writes the new generation's object first, unpublished,
 then judges it, and only then moves the pointer. A refused load has written its object and deletes it, one write and one
-delete, unless another write changed the segment's row meanwhile, in which case collection takes it. Nothing a reader sees
+delete, unless another write changed the segment's row meanwhile in more than its leases, in which case collection takes it. Nothing a reader sees
 changes. To judge the outputs of a `materializeMany` call without writing anything, use a
 [dry run](#look-before-you-publish-a-dry-run).
 
@@ -305,8 +304,7 @@ await store.load({ segment: 'audience:active' }, ids, {
 - **What it may hold.** A flat object of string keys and string or finite-number values. Nothing nested, and no boolean,
   `null`, `NaN`, `Infinity`, array or class instance. A key is at most 128 bytes and the whole record at most 1,024 bytes
   as canonical JSON: keys sorted by UTF-16 code unit, no whitespace, braces and quotes counted. Text has to be
-  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing, and a
-  generation without metadata is byte for byte the object it always was. Anything that breaks a rule is a
+  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing: a load given either writes byte for byte the object a load given no `metadata` writes. Anything that breaks a rule is a
   `ValidationError`, thrown **before the load makes a request**: nothing is read and nothing is written.
 - **It is copied when you call.** What is stored is the record as it was at the call, whatever the load's id source
   takes to run and whatever you do to your object meanwhile. Key order never changes the bytes, so the same record
@@ -430,7 +428,7 @@ object storage, not 40. That is the cost of a wide window, and the reason the de
 **A pin is a hold, and a lease makes it a bounded one.** A pin is never re-resolved. Once its generation is collected, a
 chunk it has not already fetched fails with `NotFoundError`. So does every chunk once the pin's own store writes the
 segment (a load, a `rollback` or an `*Into` write), since that drops what the store has cached. No value of `keep`
-survives an erasure, which collects every generation below its new pointer, and neither does a lease.
+survives an erasure that finds the id, and neither does a lease: one that rewrites the segment collects every generation below its new pointer, and one that finds the id only in a generation other than the current one deletes every generation below the pointer and each one above it that holds the id.
 [Reading in depth](reading.md#read-one-fixed-point-in-time) covers pins and
 [leases](reading.md#hold-a-generation-for-a-job-a-lease).
 
@@ -469,8 +467,8 @@ A load lists the segment's objects instead in these cases:
   summary opened nothing, so a load with a `keep` of 1 or more that is about to delete by name looks for the current
   object with one zero-byte read first, and lists unless it finds it. A `keep` of 0 deletes the generation it
   superseded, which is the object in question, so it makes no such read;
-- when the row records no list: a `keep` above 64, which a row cannot record, and the first load of a row that no
-  load of this release has written, or that a rollback moved. That load keeps the newest `keep` generations it finds
+- when the row records no list: a `keep` above 64, which a row cannot record, and the first load after a rollback,
+  which leaves the row recording none. That load keeps the newest `keep` generations it finds
   below the pointer and records them, so the next one collects by name. A `keep` above 64 lists on every load.
 
 The row's list is a cache of what a listing would keep, and the listing repairs it. A name in it can be missing from
@@ -1138,7 +1136,7 @@ same compare-and-swap as the pointer, derived from the very row that write is co
 by is the list that row held and no other. It names only generations that were current, never the number a refused load
 took. Anything else that moves the pointer (a `rollback`, a purge and re-create) leaves the row recording no list, which
 only makes the next load list; a write that leaves the pointer where it is (`setRetention`, a crypto-shred) keeps it. A
-row a load of an earlier release wrote records none, so the first load of this release lists once and records it.
+row a rollback moved records no list, so the next load lists once and records it.
 
 **Which fence a publish carries.** Forward-only is right for a writer whose content does not depend on what was
 current: a load's ids come from upstream, so winning a race loses nothing it knew about. It is wrong for a writer that
@@ -1222,7 +1220,7 @@ that asks for a listing) deletes every generation below the pointer that the row
 names it as the publish wrote it or as it reads after the listing (a load that published meanwhile keeps its own window),
 and re-proves before each delete that the row still names a list and still does not name the generation. Where it cannot
 prove a delete it stops, and the load returns. Where the row records none, it keeps the
-newest `keep` generations it finds, as a listing always has, and records them with one compare-and-swap on the row it
+newest `keep` generations it finds, and records them with one compare-and-swap on the row it
 just published: that write moves the row's token, so a derived writer in flight on the row, an erasure rewrite, meets a
 lost fence and re-derives, and it happens once for each row that records no list. A lost race there is not an error.
 
@@ -1245,7 +1243,7 @@ object again and without deriving its content again. The wait is a random time o
 to up to 400 ms, taken on the store's clock; a writer given no clock `sleep` retries without waiting, and one given no
 `rng` waits the whole bound. A difference in anything else, the pointer, the kept window, the summary, a retention
 policy, the key wrappings, the status or the row's `pointerId` (another writer named the pointer, even at the value it
-had), refuses as it always has. This covers a load's publish, an erasure rewrite's publish, an erasure's renewal of
+had), refuses. This covers a load's publish, an erasure rewrite's publish, an erasure's renewal of
 the row and the re-proof before each delete above the pointer, a rollback's swap and its undo, a retention write, and
 a shred or a drop, which re-read the row on every attempt and do not count a lost race to a lease write. Each waits
 out at most 136 such changes (a take and a release by each of the 64 holders a row can hold, and a few more) and then

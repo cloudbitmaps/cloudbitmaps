@@ -282,6 +282,18 @@ npm audit signatures</code></pre>
                   <td class="num">the shared chunks</td>
                 </tr>
                 <tr>
+                  <td><span class="m">seg.stat()</span></td>
+                  <td class="from">
+                    The generation, its count, its metadata and its size (<span class="m">sizeBytes</span>,
+                    <span class="m">null</span> when the segment has no generation or the source cannot report a
+                    size), all from one resolution. A cold call is one registry read when the row's summary describes the generation, and a tail read of the
+                    object more when it does not; a warm one sends nothing.
+                    Feed the size to <span class="m">groundedReport</span> from
+                    <span class="m">@cloudbitmaps/tools</span> to price a running store.
+                  </td>
+                  <td class="num">the row, else the tail</td>
+                </tr>
+                <tr>
                   <td><span class="m">seg.pin()</span></td>
                   <td class="from">
                     A handle held at the generation that is current now, for as long as you keep it — for an
@@ -327,7 +339,10 @@ npm audit signatures</code></pre>
                   <td><span class="m">store.eraseSubject(id, { namespace })</span></td>
                   <td class="from">
                     Rewrites every segment in the namespace that holds the id without it, and deletes the
-                    generation that held the bit — so for each entry its ledger reports
+                    generation that held the bit. An id found only outside the current generation (a retained older
+                    generation, one above the pointer, a first load's object on a segment with no generation yet)
+                    is deleted with those generations, and the ledger reports <span class="m">erased: true</span>
+                    all the same. So for each entry its ledger reports
                     <span class="m">erased: true</span>, the bit is <strong>physically gone from the
                     bucket</strong> when the call returns; a noncurrent version, a replica or a backup keeps the
                     old object until its own lifecycle removes it. It needs a scope: a <span class="m">namespace</span>,
@@ -361,9 +376,10 @@ npm audit signatures</code></pre>
                 <tr>
                   <td><span class="m">store.exportSegments(sink)</span></td>
                   <td class="from">
-                    Writes every registered segment out as cross-language
+                    Writes every registered segment that is not destroyed out as cross-language
                     <span class="m">roaring</span> or newline-delimited <span class="m">ndjson</span>, using
-                    only public read APIs. The one-command exit, and there is a CLI that wraps it.
+                    only public read APIs; a crypto-shredded or dropped segment is listed in <span class="m">manifest.skipped</span>,
+                    not read. The one-command exit, and there is a CLI that wraps it.
                   </td>
                   <td class="num">storage</td>
                 </tr>
@@ -604,7 +620,11 @@ npm audit signatures</code></pre>
             given its <span class="m">endpoint</span> — most also need <span class="m">pathStyle</span> and
             <span class="m">credentials</span> — if it honours S3's conditional writes: the write-once put
             and the pointer's compare-and-swap are built on them. MinIO is the one the integration suite runs
-            against.
+            against. Deletes decided from a read are conditional (<span class="m">If-Match</span> or
+            <span class="m">ifGenerationMatch</span>) where the backend reports
+            <span class="m">conditionalDelete</span>: on by default for S3 on an AWS host and for Azure Blob, off by
+            default for GCS and for an S3-compatible endpoint, where the
+            <span class="m">conditionalDelete</span> option turns it on.
           </p>
         </div>
       </section>
@@ -616,8 +636,11 @@ npm audit signatures</code></pre>
           Our published numbers are <span class="m">us-east-1</span> on-demand. Yours are not. Feed your own
           rates in and get your own crossover — the site's modelled figures call this same function, so they
           cannot drift ahead of it. It ships in <span class="m">@cloudbitmaps/tools</span>, a package of offline
-          tools beside the library, and a segment's <span class="m">stat()</span> reports the size its
-          <span class="m">groundedReport</span> prices a running store from. It counts the pointer too — the object beside your data that says
+          tools beside the library. A segment's <span class="m">stat()</span> reports the size that
+          <span class="m">groundedReport</span> prices a running store from:
+          <span class="m">groundedReport({ storageBytes: (await seg.stat()).sizeBytes })</span>, where a
+          <span class="m">null</span> size prices storage at nothing and sets <span class="m">assumptions.grounded</span>
+          to <span class="m">false</span>. The estimate counts the pointer too — the object beside your data that says
           which generation is current — and each operand's index, so pass
           <span class="m">chunksPerIntersect</span> as the chunk range requests your intersects make, summed over their operands,
           and <span class="m">hotSegments</span> for the segments each long-lived reader keeps reading, with

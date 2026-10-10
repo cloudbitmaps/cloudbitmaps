@@ -98,7 +98,7 @@ export interface CombineOptions extends IdRange {
    * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
    * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
    * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
-   * reads chunk by chunk (a custom one) is read as before: `concurrency` chunk keys at once, opening 8 wide. A running
+   * reads chunk by chunk (a custom one) is read `concurrency` chunk keys at once, opening 8 wide. A running
    * stream holds its operand's reader outside the reader cache's bounds until it ends or the segment moves on.
    */
   readonly concurrency?: number;

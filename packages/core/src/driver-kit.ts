@@ -37,10 +37,10 @@
  *    own write on the read-back), and raise a transient fault as `TransientError`.
  *
  * PORT CHANGES are recorded in the root `CHANGELOG.md`, under **Added**, **Changed** or **Breaking** like any
- * other. A parameter added to a port method is optional, so an existing driver keeps compiling and keeps its old
- * behaviour until it implements the parameter: `IRegistryDriver.delete`'s optional expected token, and
+ * other. A parameter added to a port method is optional, so an existing driver keeps compiling, and a parameter it does not
+ * implement is ignored: `IRegistryDriver.delete`'s optional expected token, and
  * `IStorageDriver.delete`'s optional `ifVersion` with `StorageCaps.conditionalDelete` and `getTail`'s optional
- * `version`, are the current examples: a driver that ignores them deletes unconditionally, as before. A driver that
+ * `version`, are the current examples: a driver that ignores them deletes unconditionally. A driver that
  * wraps another forwards `ifVersion` and the `version` of a tail read, or reports `conditionalDelete: false`.
  */
 
