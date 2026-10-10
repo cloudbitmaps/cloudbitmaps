@@ -12,18 +12,18 @@ import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race
  * A refused rewrite discards its own object when the winner's pointer stopped below it, where no collection looks. The
  * number can be taken again before that discard reaches the storage:
  *
- *   a load (L1)     writes 1, holds its publish ───────────────▶ publishes 1 │
- *   the erasure     reads 0, writes its rewrite at 2 (above 1), is refused by L1's publish, discards 2 ── stalls ──▶ │
- *   another erasure (of an id 2 holds)  finds 2 above the pointer, deletes it │
- *   a load (L2)                         takes 2 afresh (the pointer is 1, and 2 is free), writes, publishes │
+ *   a first load     writes 1, holds its publish ──────────────▶ publishes 1 │
+ *   the erasure      reads 0, writes its rewrite at 2, refused by that publish, discards 2 ── stalls ──────▶ deletes 2
+ *   another erasure  (of an id 2 holds)  finds 2 above the pointer, deletes it │
+ *   a second load                        takes 2 afresh (the pointer is 1, and 2 is free), writes, publishes │
  *
- * Without a condition the discard removes L2's generation, and the row names an object that is not in the bucket. With
- * one, the discard first proves the object under 2 is the one the rewrite wrote, by its footer, and deletes it under
- * the version that read reported: an object put there since is not its own, or is refused by a driver that reports
- * `conditionalDelete`, and stays.
+ * Without a condition the discard removes the second load's generation, and the row names an object that is not in the
+ * bucket. With one, the discard first proves the object under 2 is the one the rewrite wrote, by its footer, and deletes
+ * it under the version that read reported: an object put there since is not its own, or is refused by a driver that
+ * reports `conditionalDelete`, and stays.
  */
 
-/** The second id: the rewrite of generation 0 still holds it, and L1's generation does not. */
+/** The second id: the rewrite of generation 0 still holds it, and the first load's generation does not. */
 const Y = 77;
 
 const isRewritePublish = (patch: RegistryPatch): boolean =>
@@ -43,7 +43,7 @@ async function race(refusedAt: Refused, stallAt: Stall) {
   const deps = { storage, registry, codec: roaringCodec, clock };
   await loadSegment(REF, [1, 2, X, Y], deps); // generation 0
 
-  // L1 writes generation 1 and holds its publish.
+  // The first load writes generation 1 and holds its publish.
   const l1AtPublish = gate();
   const l1Registry = Object.create(registry) as IRegistryDriver;
   l1Registry.compareAndSwap = async (ref, expected, patch, options) => {
@@ -56,16 +56,16 @@ async function race(refusedAt: Refused, stallAt: Stall) {
   const l1 = loadSegment(REF, [5, 6], { ...deps, registry: l1Registry });
   await l1AtPublish.reached;
 
-  // L1 publishes where the first erasure is refused.
+  // The first load publishes where the first erasure is refused.
   let refused = false;
-  const publishL1 = async (): Promise<void> => {
+  const publishFirstLoad = async (): Promise<void> => {
     l1AtPublish.open();
     expect(await l1).toMatchObject({ generation: 1, published: true });
     refused = true;
   };
   const firstRegistry = Object.create(registry) as IRegistryDriver;
   firstRegistry.compareAndSwap = async (ref, expected, patch, options) => {
-    if (refusedAt === 'at publish' && !refused && isRewritePublish(patch)) await publishL1();
+    if (refusedAt === 'at publish' && !refused && isRewritePublish(patch)) await publishFirstLoad();
     return registry.compareAndSwap(ref, expected, patch, options);
   };
 
@@ -84,7 +84,7 @@ async function race(refusedAt: Refused, stallAt: Stall) {
   const firstStorage = Object.create(storage) as IStorageDriver;
   firstStorage.putImmutable = async (key, write) => {
     const out = await storage.putImmutable(key, write);
-    if (refusedAt === 'before verify' && key.generation === 2) await publishL1();
+    if (refusedAt === 'before verify' && key.generation === 2) await publishFirstLoad();
     return out;
   };
   firstStorage.getTail = async (key, maxBytes) => {
@@ -112,12 +112,12 @@ async function race(refusedAt: Refused, stallAt: Stall) {
   await atDiscard.reached;
   expect(await generations(storage)).toContain(2);
 
-  // Another erasure, of an id the rewrite holds and L1's generation does not, deletes it above the pointer.
+  // Another erasure, of an id the rewrite holds and the first load's generation does not, deletes it above the pointer.
   const second = await eraseIdFromSegment(REF, Y, deps);
   expect(second).toMatchObject({ erased: true });
   expect(await generations(storage)).not.toContain(2);
 
-  // L2 takes 2 afresh and publishes it.
+  // The second load takes 2 afresh and publishes it.
   expect(await loadSegment(REF, [7, 8, 9], deps)).toMatchObject({
     generation: 2,
     published: true,
@@ -141,7 +141,7 @@ describe('a refused rewrite whose discard meets another object under its number'
       const { first, storage, registry } = await race(refusedAt, stallAt);
 
       expect(first).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
-      // The row names generation 2, L2's, which is in the bucket and reads as L2 wrote it.
+      // The row names generation 2, the second load's, which is in the bucket and reads as the second load wrote it.
       expect((await registry.get(REF))?.currentGen).toBe(2);
       expect(await generations(storage)).toContain(2);
       const store = new CloudRoaring({
@@ -173,20 +173,21 @@ describe('a refused rewrite whose object is still its own', () => {
       const l1 = loadSegment(REF, [5, 6], { ...deps, registry: l1Registry });
       await l1AtPublish.reached;
       let released = false;
-      const publishL1 = async (): Promise<void> => {
+      const publishFirstLoad = async (): Promise<void> => {
         released = true;
         l1AtPublish.open();
         await l1;
       };
       const firstRegistry = Object.create(registry) as IRegistryDriver;
       firstRegistry.compareAndSwap = async (ref, expected, patch, options) => {
-        if (refusedAt === 'at publish' && !released && isRewritePublish(patch)) await publishL1();
+        if (refusedAt === 'at publish' && !released && isRewritePublish(patch))
+          await publishFirstLoad();
         return registry.compareAndSwap(ref, expected, patch, options);
       };
       const firstStorage = Object.create(storage) as IStorageDriver;
       firstStorage.putImmutable = async (key, write) => {
         const out = await storage.putImmutable(key, write);
-        if (refusedAt === 'before verify' && key.generation === 2) await publishL1();
+        if (refusedAt === 'before verify' && key.generation === 2) await publishFirstLoad();
         return out;
       };
 
