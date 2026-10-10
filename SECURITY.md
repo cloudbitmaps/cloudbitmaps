@@ -167,8 +167,7 @@ produced the package they installed**. The controls:
   **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
   publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is
   bootstrapped by hand, from a laptop, which has no workflow identity and therefore no provenance. Those are
-  published under the `rc` dist-tag at a throwaway prerelease of the family version (for example `0.20.0-rc.0`) and are never what `latest`
-  serves. If you are checking signatures, expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none, and treat an
+  published under the `rc` dist-tag at a throwaway prerelease of the family version (for example `0.20.0-rc.0`). The registry can point `latest` at a name's first publish, so until the real release ships, a plain install of a new name may serve that prerelease. If you are checking signatures, expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none, and treat an
   unattested tarball at a **real** version as untrusted.
 - **Publish only a re-verified tree.** The release workflow re-runs the gate that governs the artifact
   (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
