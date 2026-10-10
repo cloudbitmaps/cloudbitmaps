@@ -138,7 +138,7 @@ store. The only scheduled work is the retention sweep above (a load collects the
 *Into does when given keep; neither touches the current generation). An operator can move a pointer back with
 store.rollback(ref, generation), to a generation still in the bucket (store.generations(ref) lists them); it
 deletes nothing. Compliance is built in: subjectReport (Art. 15) and eraseSubject (Art. 17 -- a generation
-rewrite that deletes the generation holding the bit, so for every segment its ledger reports `erased: true` the
+rewrite that deletes the generation holding the bit, and any other generation that holds it, so for every segment its ledger reports `erased: true` the
 bit is physically gone from the bucket when the call returns), both scoped by a `namespace` or
 `{ allNamespaces: true }`; dropSegment; checkConsistency; exportSegments -- eject every segment to portable roaring or ndjson,
 which is the exit path; and the crypto-shred free functions destroySegment and eraseNamespace, which take the
