@@ -1122,8 +1122,8 @@ async function eraseOnce(
    * other: an object put under the number between the read and the delete stays, and that refusal is swallowed, since
    * the object this call wrote is gone. Any other fault of the discard is thrown in place of the refusal, unlike a
    * refused load's reclaim, which swallows every fault: the object this call would leave above the pointer can hold an
-   * id that another erasure has reported gone. On a driver that does not report it, that
-   * window remains, and there the delete removes the load's generation. Under a tombstone the delete is by number,
+   * id that another erasure has reported gone. On a driver that does not report `conditionalDelete`, that window
+   * remains, and there the delete removes the load's generation. Under a tombstone the delete is by number,
    * with no read: every writer refuses a `destroyed` row until it is purged, so no load takes the number again.
    *
    * Returns the row it read, so a refused publish reports what that row says.
