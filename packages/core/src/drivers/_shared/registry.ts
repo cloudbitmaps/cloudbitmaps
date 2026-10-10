@@ -29,10 +29,6 @@ import type {
 } from '@/core/ports';
 
 /** The valid {@link RegistryStatus} values — used to validate both caller input and stored bytes. */
-/** The public page that says how to move a store written by an earlier registry schema. */
-const UPGRADE_STEPS_URL =
-  'https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md#0200--2026-10-09';
-
 const STATUSES: readonly string[] = ['active', 'destroyed'];
 /**
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
@@ -530,6 +526,10 @@ export interface RegistryEnvelope {
  * what it resolves to.
  */
 export const REGISTRY_SCHEMA_VERSION = 4;
+
+// The public page that says how to move a store written by an earlier registry schema.
+const UPGRADE_STEPS_URL =
+  'https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md#0200--2026-10-09';
 
 /**
  * Validate a persisted registry row's `schemaVersion` (untrusted bytes, invariant 5) and return it: an absent or

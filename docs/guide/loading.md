@@ -939,6 +939,8 @@ feed that no output names is never read, and its `counts` is never called: decla
 **Erasure.** A fed operand is the caller's memory, which no erasure can reach, so the call is refused instead: see
 [a batch of materializations](erasure.md#a-batch-of-materializations).
 
+<a id="operands-held-in-memory-storememory"></a>
+
 ### A set you hold: feed it
 
 A few conditions, or a suppression list the caller already holds as a bitmap, go into the call as a feed. Each record is
