@@ -190,7 +190,7 @@ row**, and a purge that succeeds starts the count again. A blanket refusal (a po
 attempts a call and no more. A refusal particular to one row (one blob with a snapshot, one object under a legal hold)
 holds nothing behind it: the purges after it still go through, and the row is counted every call until it is cleared.
 The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
-it is charged to `limit` as before, and the purges go on.
+it is charged to `limit`, and the purges go on.
 
 **Two bounds to set deliberately.**
 
@@ -325,14 +325,14 @@ Two limits to know before you automate it:
 
 <a id="remove-the-deleted-rows-a-release-before-012-left"></a>
 
-## Registry rows an earlier schema wrote
+## Registry rows of another schema
 
-This release reads no row an earlier registry schema wrote, a deleted one included: each is refused with
-`UnsupportedError`, by every read and write of its segment and by every listing that reaches it, so the library can
-neither delete, drop nor retire one, and a sweep of a namespace that holds one fails. A deleted row from before 0.12
-is kept as a `{ deleted: true }` envelope, and a segment name that was personal data survives in its record. Remove
-such rows with your storage's own tools, or move the store to a new prefix and delete the old one, its noncurrent
-versions included, as the [changelog](../../CHANGELOG.md) says.
+The registry reads rows stamped `schemaVersion` 4 only. A row stamped 1, 2 or 3, a deleted one included, is refused with
+`UnsupportedError` naming its key, by every read and write of its segment and by every listing that reaches it, so the
+library can neither delete, drop nor retire one, and a sweep of a namespace that holds one fails. A deleted row is kept
+as a `{ deleted: true }` envelope, and a segment name that was personal data survives in its record. Remove such rows
+with your storage's own tools, or point the store at a new prefix and delete the old one, its noncurrent versions
+included.
 
 ## There is no per-id TTL
 
@@ -480,7 +480,7 @@ the day its tombstone's grace ends, beside the expiry pointers, and `scan: 'inde
 can sweep by index alone and keep the fleet scan as its repair pass. No field of the row records that day: the purge
 works it out from the retirement's stamp and the grace. The purge removes every pointer it read to the row, and the one
 its own grace would have filed. Where the registry only tombstones, no pointer is filed: nothing is removed for good, so
-a pointer would only add a row for every scan to read, and the fleet scan purges, as it always did. A sweep run with a
+a pointer would only add a row for every scan to read, and the fleet scan purges. A sweep run with a
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
 

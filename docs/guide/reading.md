@@ -418,7 +418,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
 
 ## Read a chunk at a time: `batches()`
 
-`iterate`, `intersect`, `union` and `andNot` return an `IdStream`: `for await` it for one id at a time, as always, or
+`iterate`, `intersect`, `union` and `andNot` return an `IdStream`: `for await` it for one id at a time, or
 call `.batches()` on it for one `Uint32Array` per chunk.
 
 ```ts
@@ -441,8 +441,8 @@ for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids)
 - **Stopping.** Leaving the loop (`break`, `return`, a throw) ends the read, as for the per-id stream, with the same
   read-ahead already in flight.
 - **`batches()` is its own read.** Each call starts a new read when it is called and fetches its chunks afresh, charged
-  to the budget again, whether or not the per-id stream was read. The per-id stream is as it has always been:
-  single-use, and a second `for await` over it yields nothing. On a pinned handle a `batches()` read is of the pin's
+  to the budget again, whether or not the per-id stream was read. The per-id stream is single-use:
+  a second `for await` over it yields nothing. On a pinned handle a `batches()` read is of the pin's
   generation; two separate reads of a live handle can see different generations, as any two reads can. A call that
   throws when its stream is first read (a bad range, an absent operand, a budget refusal) throws the same error from
   `batches()`.

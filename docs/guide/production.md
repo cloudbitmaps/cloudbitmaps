@@ -487,8 +487,8 @@ The ceiling is checked once, before the fan-out, against work whose size is alre
 hot path. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
 issue. For an `intersect` that is the surviving keys times the operands present at each, plus only those excludes
 that hold the key, so a large suppression list is not charged for keys it cannot affect. Bytes need no separate
-limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads the
-index with zero requests, so it approaches the ceiling only on a source that cannot serve cardinalities.
+limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no
+payload and answers from the row's summary, so it approaches the ceiling only on a source that cannot serve cardinalities.
 
 `eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
 row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is

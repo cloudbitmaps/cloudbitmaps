@@ -234,7 +234,7 @@ makes the coordinated restore point easy to hit rather than something you have t
    `T`, say), and step 8's erasures treat them as a first load's: each that holds an erased id goes, and every one it
    cannot open (on a row with no key, every encrypted one), whatever the id. Keep what you need of them first, by
    restoring the row to the state that names them or loading their ids again
-   ([erasure](erasure.md#two-rules-while-you-erase)).
+   ([erasure](erasure.md#three-rules-while-you-erase)).
 8. **Re-apply every erasure made after `T`.** The restore undid them: a crypto-shred's row has its wrapped key back,
    and a dropped or erased segment has its generations back, with the registry pointing at them. Take the segments
    from the events your audit sink stamped after `T`, and the subjects from your own record of erasure requests,
@@ -371,7 +371,7 @@ segments by design. **The symptom you will actually notice is downstream**, and 
 
 | | What you see |
 |---|---|
-| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` skips it. Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
+| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` finds no generation of it to rewrite: it searches only the objects under the tombstone, and deletes them all when a cleartext one holds the id ([erasure](erasure.md#how-it-stays-correct)). Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
 | **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and nothing else in the library runs the collection for a tombstone the sweep does not own — so any generations left behind (and any object a late load wrote) stay. |
 
 ### Detect
@@ -609,11 +609,11 @@ list, a `token` in any form but the library's, or a `pointerId` that is not one 
 lowercase hex digits of incarnation id, a decimal counter and a write part (16 lowercase hex digits), `.`-separated; a
 `pointerId` has the same form, the token's incarnation and a counter no higher than the token's. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
-`wrappedDeks` list. This release writes rows stamped 4 and reads rows stamped 4 only. A row with another
+`wrappedDeks` list. Rows are stamped `schemaVersion` 4, and the registry reads rows stamped 4 only. A row with another
 `schemaVersion` is refused with `UnsupportedError` naming its key: a higher one was written by a newer release, and the
-fix is to upgrade the process reading it, not to touch the row; one stamped 1, 2 or 3 was written by a release before
-0.20, and the fix is to move the bucket's segments to a new prefix, as the [CHANGELOG](../../CHANGELOG.md) says. A
-release before 0.20 refuses every row this one writes the same way.
+fix is to upgrade the process reading it, not to touch the row; one stamped 1, 2 or 3 cannot be read, deleted or dropped
+by the library, and the fix is to load the bucket's segments into a new prefix and delete the old one. A process that
+reads an older schema refuses a schema-4 row the same way.
 
 One refused row costs far more than its own segment:
 

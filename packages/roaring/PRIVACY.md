@@ -134,7 +134,7 @@ one that does not, it can, and the row then names a missing object, which `store
 ([a number taken again](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#how-it-stays-correct)). On an encrypted store such an object cannot
 be searched until its load publishes the key, so it is deleted whatever id is erased: an erasure of any id refuses an
 encrypted first load in flight that has written its object onto a segment whose row was made ahead of its data, and
-that load is re-run ([the erasure guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#two-rules-while-you-erase)). On an encrypted segment,
+that load is re-run ([the erasure guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#three-rules-while-you-erase)). On an encrypted segment,
 an object sealed under a key its row does not hold, and on a cleartext segment with a generation, an encrypted object,
 open for no read of the segment (the object of a first load that lost the race to the one that published, or
 crashed): each is deleted the same way, whatever id is erased, wherever an erasure meets it, except as the current

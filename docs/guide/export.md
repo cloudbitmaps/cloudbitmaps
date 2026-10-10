@@ -108,6 +108,13 @@ And a store loads one straight back, with no per-id work:
   store has no keystore (the command wires none, so it cannot decrypt those), is recorded in the manifest's `failed[]`.
   The export continues, and that segment's partial output is discarded. So "a `manifest.json` exists" means the run
   finished, not that every segment succeeded. Always check `failed`.
+- **An export carries ids, not the segment's other state.** A file holds the ids of the segment's current generation and
+  nothing else: not its generation metadata, its `retention` and `residency` policy, its leases, nor the older
+  generations `keep` retained. If you will load the files into a new prefix, record each segment's metadata
+  (`seg.stat()`) and retention policy beside its file, and set the policy again with `store.setRetention` after the
+  load. A crypto-shredded segment is skipped (`manifest.skipped`), and the registry row that records its destruction
+  stays in the prefix you export from, so keep your own record of it. A file also holds what the segment held when it
+  was read, so run again every erasure processed since the export began.
 - **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
   disappeared.** Export to a fresh directory for a clean dump.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds
