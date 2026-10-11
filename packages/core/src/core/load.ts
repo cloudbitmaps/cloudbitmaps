@@ -761,7 +761,7 @@ async function runLoad(
     });
     // After the refusal is on the record: what the caller is told is that the segment no longer reads.
     if (missing !== undefined) throw refusedOverMissing(reason, missing);
-    // Constructed field by field, never spread from the write result. That result now carries `wrappedDeks` —
+    // Constructed field by field, never spread from the write result. That result carries `wrappedDeks` —
     // wrapped key material — and a spread would put it on a public, JSON-serialisable object that a load job
     // will reasonably `logger.info({ result })`. Declared shapes are not a filter at runtime.
     return {

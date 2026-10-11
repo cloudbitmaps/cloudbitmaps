@@ -147,7 +147,7 @@ export async function eraseNamespace(
   let segmentsShredded = 0;
   // Segments are shredded with bounded concurrency, each behind its own fence (a get and a compare-and-swap), and
   // the ledger comes back in the listing's order whatever order they finish in. The `segment.erase` events are
-  // emitted as each segment finishes, so their order is no longer the listing's; the `namespace.erase` event
+  // emitted as each segment finishes, so their order is the order of finishing, not the listing's; the `namespace.erase` event
   // still comes last.
   const destroyed = await mapWithConcurrency(refs, ERASE_CONCURRENCY, async (ref) => {
     // Per-segment faults stay isolated so one failure cannot discard the ledger, mirroring `eraseSubject`'s

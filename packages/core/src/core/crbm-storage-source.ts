@@ -2104,7 +2104,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
-   * now re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a
+   * re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a
    * tight loop on a segment whose pointer names an object that is permanently absent — and an N-way
    * `intersect` would do it N times. Gated in `tests/core/storage-source-heal-open.test.ts` by counting calls.
    */
