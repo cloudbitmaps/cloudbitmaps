@@ -71,6 +71,9 @@ export class BufferReader implements BlobReader {
   }
 
   getTail(maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+    if (!Number.isInteger(maxBytes)) {
+      return Promise.reject(new ValidationError(`invalid tail length ${maxBytes}`));
+    }
     const size = this.buffer.length;
     const take = Math.min(Math.max(maxBytes, 0), size);
     return Promise.resolve({ bytes: this.buffer.subarray(size - take), size });

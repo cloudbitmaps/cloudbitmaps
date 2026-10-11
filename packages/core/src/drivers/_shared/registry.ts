@@ -452,7 +452,10 @@ function refuseDriverManaged(write: object, what: string): void {
   }
 }
 
-/** A `keyId` is absent or a non-empty string: the shape a read accepts back, so a write can never make a row unreadable. */
+/**
+ * A `keyId` is absent or a non-empty string. A read accepts any string, so this is stricter: an empty id names no key,
+ * and a value of another type would make the row unreadable.
+ */
 function validateKeyId(keyId: unknown): void {
   if (keyId !== undefined && (typeof keyId !== 'string' || keyId.length === 0)) {
     throw new ValidationError('keyId must be a non-empty string, or absent');

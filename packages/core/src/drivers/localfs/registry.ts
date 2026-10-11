@@ -11,11 +11,10 @@
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
  */
 import { constants as FS } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { mkdir, open, opendir, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import { open, opendir, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
+import { IntegrityError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import type {
   IRegistryDriver,
@@ -47,7 +46,6 @@ import {
 } from './paths';
 import { ExactCase } from './exact-case';
 import {
-  DIR_MODE,
   FILE_MODE,
   O_NOFOLLOW,
   fsyncDir,
@@ -55,6 +53,9 @@ import {
   isCode,
   mapFsError,
   writeAll,
+  makeDirs,
+  sweepOrphanTemps,
+  tempPathFor,
 } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
@@ -97,6 +98,8 @@ export interface LocalFsRegistryDriverOptions {
   readonly now?: () => number;
   /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
   readonly entropy?: Entropy;
+  /** The directory this root lives under, from which down directories are created private; defaults to the root. */
+  readonly privateRoot?: string;
 }
 
 export class LocalFsRegistryDriver implements IRegistryDriver {
@@ -107,7 +110,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
 
   constructor(
     private readonly root: string,
-    options: LocalFsRegistryDriverOptions = {},
+    private readonly options: LocalFsRegistryDriverOptions = {},
   ) {
     this.exactCase = new ExactCase(root);
     this.now = options.now ?? (() => Date.now());
@@ -263,7 +266,8 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
 
   private async writeRow(path: string, record: RegistryRecord): Promise<void> {
     await this.exactCase.refuseVariant(path);
-    await mkdir(dirname(path), { recursive: true, mode: DIR_MODE });
+    await makeDirs(dirname(path), this.options.privateRoot ?? this.root);
+    void sweepOrphanTemps(dirname(path));
     const out = Buffer.from(serializeRegistryEnvelope({ deleted: false, record }), 'utf8');
     // Cap on the write path too (the read path caps at the same size): never produce a row that would later
     // be unreadable. The governance fields are already capped by validate*, so this is a belt-and-braces guard.
@@ -273,7 +277,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       );
     }
 
-    const tmp = `${path}.${randomUUID()}.tmp`;
+    const tmp = tempPathFor(path);
     let handle;
     try {
       handle = await open(tmp, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW, FILE_MODE);
@@ -292,6 +296,11 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     await handle.close();
     await rename(tmp, path).catch(async (err) => {
       await unlink(tmp).catch(() => {});
+      if (isCode(err, 'ENOENT')) {
+        throw new TransientError('the temporary file of a registry row was removed mid-write', {
+          cause: err,
+        });
+      }
       throw mapFsError(err);
     });
     await fsyncDir(dirname(path));

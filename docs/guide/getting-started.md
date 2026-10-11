@@ -88,7 +88,7 @@ await store.load({ segment: 'active-this-week' }, [1, 2, 3]);
 // A new process that opens the same folder reads the same set.
 ```
 
-`LocalFsStorage` creates its files owner-only (`0600`) and its directories `0700`, whatever the process umask, so another user of the machine cannot read or list your segments; a directory that already exists keeps the mode it has, and Windows ignores modes. It is for one process on one folder: two processes on the same folder do not protect each other from
+`LocalFsStorage` creates its files owner-only (`0600`) and its directories `0700`, whatever the process umask, so another user of the machine cannot read or list your segments; a missing parent of the root keeps the default mode, an existing directory keeps the mode it has, a registry row is always rewritten `0600`, and Windows ignores modes. It is for one process on one folder: two processes on the same folder do not protect each other from
 writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket.
 
 Names keep their case, but a case-insensitive filesystem (the macOS and Windows default) would open one file for

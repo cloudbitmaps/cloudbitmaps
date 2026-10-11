@@ -356,7 +356,9 @@ export interface IStorageDriver {
   getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array>;
   /**
    * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**, and its `version`
-   * where the driver has one ({@link TailRead}). A missing object throws {@link NotFoundError}.
+   * where the driver has one ({@link TailRead}). A `maxBytes` of zero or less answers an empty tail with the size, and
+   * one past the size the whole object. A `maxBytes` that is not a whole number (`NaN`, a fraction, an infinity) throws
+   * {@link ValidationError}. A missing object throws {@link NotFoundError}.
    */
   getTail(key: GenKey, maxBytes: number): Promise<TailRead>;
   /**

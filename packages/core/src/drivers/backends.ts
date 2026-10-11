@@ -79,10 +79,10 @@ export class LocalFsStorage implements StorageBackend {
     }
     refuseUnknownOptions('LocalFsStorage', options, CLOCK_OPTION_KEYS);
     checkNow('LocalFsStorage', options.now);
-    this.storage = new LocalFsStorageDriver(join(root, 'storage'));
+    this.storage = new LocalFsStorageDriver(join(root, 'storage'), { privateRoot: root });
     this.registry = new LocalFsRegistryDriver(
       join(root, 'registry'),
-      options.now === undefined ? {} : { now: options.now },
+      options.now === undefined ? { privateRoot: root } : { now: options.now, privateRoot: root },
     );
     brandAsBackend(this);
   }

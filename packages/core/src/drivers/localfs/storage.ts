@@ -15,10 +15,16 @@
  * there would still be no identity to compare, so the driver does not claim the capability. `getTail` reports no version.
  */
 import { constants as FS } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
+import { createHash } from 'node:crypto';
+import { link, open, readdir, unlink } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import {
+  IntegrityError,
+  NotFoundError,
+  TransientError,
+  ValidationError,
+  WriteConflictError,
+} from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type {
   StorageCaps,
@@ -32,33 +38,17 @@ import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir 
 import { checkTailLength } from '../_shared/tail';
 import { ExactCase } from './exact-case';
 import {
-  DIR_MODE,
   FILE_MODE,
   O_NOFOLLOW,
   fsyncDir,
+  makeDirs,
+  sweepOrphanTemps,
+  tempPathFor,
   isAbsent,
   isCode,
   mapFsError,
   writeAll,
 } from './fs-util';
-
-/** A temp file this old belongs to no write still in progress: a crash or a failed close left it behind. */
-const ORPHAN_TEMP_AGE_MS = 60 * 60 * 1000;
-
-/** Remove the `*.tmp` files in `dir` that were last written longer ago than {@link ORPHAN_TEMP_AGE_MS}; best effort. */
-async function sweepOrphanTemps(dir: string): Promise<void> {
-  try {
-    const cutoff = Date.now() - ORPHAN_TEMP_AGE_MS;
-    for (const name of await readdir(dir)) {
-      if (!name.endsWith('.tmp')) continue;
-      const path = join(dir, name);
-      const info = await stat(path).catch(() => undefined);
-      if (info?.isFile() === true && info.mtimeMs < cutoff) await unlink(path).catch(() => {});
-    }
-  } catch {
-    // A sweep that fails leaves the files for the next write; it never fails this one.
-  }
-}
 
 /** Read exactly `length` bytes at `offset`, or throw: a short read is never returned zero-padded as real bytes. */
 async function readWhole(
@@ -84,7 +74,14 @@ async function readWhole(
 export class LocalFsStorageDriver implements IStorageDriver {
   private readonly exactCase: ExactCase;
 
-  constructor(private readonly root: string) {
+  /**
+   * `options.privateRoot` is the directory this one lives under, from which down directories are created private; it
+   * defaults to `root`.
+   */
+  constructor(
+    private readonly root: string,
+    private readonly options: { readonly privateRoot?: string } = {},
+  ) {
     this.exactCase = new ExactCase(root);
   }
 
@@ -104,10 +101,10 @@ export class LocalFsStorageDriver implements IStorageDriver {
     const finalPath = storageObjectPath(this.root, key);
     assertStorageNamesFit(key);
     await this.exactCase.refuseVariant(finalPath);
-    await mkdir(dirname(finalPath), { recursive: true, mode: DIR_MODE });
-    await sweepOrphanTemps(dirname(finalPath));
+    await makeDirs(dirname(finalPath), this.options.privateRoot ?? this.root);
+    void sweepOrphanTemps(dirname(finalPath));
 
-    const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
+    const tmpPath = tempPathFor(finalPath);
     // 'wx' = O_CREAT|O_EXCL|O_WRONLY; add O_NOFOLLOW so a pre-planted symlink can't redirect the write.
     const handle = await open(
       tmpPath,
@@ -139,6 +136,15 @@ export class LocalFsStorageDriver implements IStorageDriver {
       await link(tmpPath, finalPath);
     } catch (err) {
       await unlink(tmpPath).catch(() => {});
+      if (isCode(err, 'ENOENT')) {
+        // The temp file is gone: a sweep or an operator removed it while the write was open. Nothing was published.
+        throw new TransientError(
+          `the temporary file of ${key.segment}.${key.generation} was removed mid-write`,
+          {
+            cause: err,
+          },
+        );
+      }
       if (isCode(err, 'EEXIST')) {
         // A generation is write-once; a collision is a concurrency/state condition, not bad input.
         // Identify it by the logical key only — never leak the absolute filesystem path.
@@ -176,7 +182,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();
-      const take = Math.min(maxBytes, size);
+      const take = Math.min(Math.max(maxBytes, 0), size);
       return { bytes: await readWhole(handle, key, take, size - take), size };
     } finally {
       await handle.close();

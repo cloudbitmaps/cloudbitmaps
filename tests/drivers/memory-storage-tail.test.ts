@@ -24,7 +24,7 @@ describe.each([
     },
   ],
 ])('getTail length checks: %s', (_label, make) => {
-  it.each([[Number.NaN], [1.5], [-1], [Number.POSITIVE_INFINITY], [Number.MAX_SAFE_INTEGER + 2]])(
+  it.each([[Number.NaN], [1.5], [Number.POSITIVE_INFINITY], [Number.NEGATIVE_INFINITY]])(
     'refuses a tail length of %s with a ValidationError',
     async (length) => {
       const { driver, done } = await make();
@@ -42,6 +42,9 @@ describe.each([
     try {
       await driver.putImmutable(KEY, (sink) => sink.write(Uint8Array.of(1, 2, 3, 4)));
       expect((await driver.getTail(KEY, 0)).bytes.length).toBe(0);
+      const negative = await driver.getTail(KEY, -1);
+      expect([negative.bytes.length, negative.size]).toEqual([0, 4]);
+      expect((await driver.getTail(KEY, 2 ** 60)).bytes.length).toBe(4);
       expect([...(await driver.getTail(KEY, 2)).bytes]).toEqual([3, 4]);
       expect([...(await driver.getTail(KEY, 99)).bytes]).toEqual([1, 2, 3, 4]);
     } finally {

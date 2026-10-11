@@ -1,10 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, open, readdir, rm, writeFile, mkdir, utimes } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  open,
+  readdir,
+  rm,
+  writeFile,
+  mkdir,
+  symlink,
+  utimes,
+} from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { storageObjectPath } from '@/drivers/localfs/paths';
-import { IntegrityError } from '@/core/errors';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import { sweepOrphanTemps } from '@/drivers/localfs/fs-util';
+import { IntegrityError, TransientError } from '@/core/errors';
 
 const KEY = { segment: 's', generation: 1 };
 let root: string;
@@ -53,25 +66,74 @@ describe('LocalFs storage reads', () => {
 });
 
 describe('LocalFs orphan temp files', () => {
-  async function plantOrphan(ageMs: number): Promise<string> {
-    const final = storageObjectPath(root, KEY);
-    await mkdir(dirname(final), { recursive: true });
-    const orphan = `${final}.stale-writer.tmp`;
-    await writeFile(orphan, 'x');
-    const then = new Date(Date.now() - ageMs);
-    await utimes(orphan, then, then);
-    return orphan;
-  }
+  const DAY = 24 * 60 * 60 * 1000;
+  const tmpName = (final: string): string => `${final}.${randomUUID()}.tmp`;
 
-  it('a write sweeps an old temp file beside its object and keeps a recent one', async () => {
+  async function plant(path: string, ageMs: number): Promise<string> {
+    await writeFile(path, 'x');
+    const then = new Date(Date.now() - ageMs);
+    await utimes(path, then, then);
+    return path;
+  }
+  const dirOf = async (): Promise<string> => {
+    const dir = dirname(storageObjectPath(root, KEY));
+    await mkdir(dir, { recursive: true });
+    return dir;
+  };
+  const exists = (path: string): Promise<boolean> =>
+    lstat(path).then(
+      () => true,
+      () => false,
+    );
+
+  it('removes the old temp files this driver names, and keeps everything else', async () => {
+    const dir = await dirOf();
+    const final = storageObjectPath(root, KEY);
+    const old = await plant(tmpName(final), 2 * DAY);
+    const oldRow = await plant(tmpName(join(dir, 's.reg')), 2 * DAY);
+    const fresh = await plant(tmpName(final), 60 * 1000);
+    const foreign = await plant(join(dir, 'notes.tmp'), 2 * DAY);
+    const target = await plant(join(dir, 'target'), 2 * DAY);
+    const link = tmpName(final);
+    await symlink(target, link);
+    await sweepOrphanTemps(dir);
+    expect(await exists(old)).toBe(false);
+    expect(await exists(oldRow)).toBe(false);
+    expect(await exists(fresh)).toBe(true);
+    expect(await exists(foreign)).toBe(true);
+    expect(await exists(link)).toBe(true);
+    expect(await exists(target)).toBe(true);
+  });
+
+  it('sweeps a directory at most once an hour', async () => {
+    const dir = await dirOf();
+    const final = storageObjectPath(root, KEY);
+    const now = Date.now();
+    await sweepOrphanTemps(dir, now);
+    const old = await plant(tmpName(final), 2 * DAY);
+    await sweepOrphanTemps(dir, now + 60 * 1000);
+    expect(await exists(old)).toBe(true);
+    await sweepOrphanTemps(dir, now + 2 * 60 * 60 * 1000);
+    expect(await exists(old)).toBe(false);
+  });
+
+  it('a write starts a sweep without waiting for it, and a registry write does too', async () => {
     const driver = new LocalFsStorageDriver(root);
-    const old = await plantOrphan(2 * 60 * 60 * 1000);
-    const recent = `${old.replace('stale-writer', 'live-writer')}`;
-    await writeFile(recent, 'y');
+    const dir = await dirOf();
+    const old = await plant(tmpName(storageObjectPath(root, KEY)), 2 * DAY);
     await driver.putImmutable(KEY, (sink) => sink.write(Uint8Array.of(1)));
-    const names = await readdir(dirname(old));
-    expect(names.some((n) => n.includes('stale-writer'))).toBe(false);
-    expect(names.some((n) => n.includes('live-writer'))).toBe(true);
+    await vi.waitFor(async () => expect(await exists(old)).toBe(false));
+
+    const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+    await registry.create({ segment: 'r' }, { currentGen: 0 });
+    const rowDir = join(root, 'registry', '_default');
+    const entries = await readdir(rowDir);
+    expect(entries.length).toBeGreaterThan(0);
+    const oldRow = await plant(tmpName(join(rowDir, entries[0]!)), 2 * DAY);
+    await registry.create({ segment: 'r2' }, { currentGen: 0 }).catch(() => {});
+    await sweepOrphanTemps(rowDir, Date.now() + 2 * 60 * 60 * 1000);
+    expect(await exists(oldRow)).toBe(false);
+    expect(dir).toBeDefined();
   });
 
   it('a write whose sink fails leaves no temp file behind', async () => {
@@ -83,5 +145,16 @@ describe('LocalFs orphan temp files', () => {
     ).rejects.toBeDefined();
     const dir = dirname(storageObjectPath(root, KEY));
     expect((await readdir(dir)).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('a write whose temp file was removed meanwhile is a TransientError, not a raw error', async () => {
+    const driver = new LocalFsStorageDriver(root);
+    const dir = dirname(storageObjectPath(root, KEY));
+    await expect(
+      driver.putImmutable(KEY, async (sink) => {
+        await sink.write(Uint8Array.of(1));
+        for (const name of await readdir(dir)) if (name.endsWith('.tmp')) await rm(join(dir, name));
+      }),
+    ).rejects.toBeInstanceOf(TransientError);
   });
 });

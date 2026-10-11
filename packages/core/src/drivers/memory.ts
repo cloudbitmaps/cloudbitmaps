@@ -193,7 +193,7 @@ export class MemoryStorageDriver implements IStorageDriver {
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     checkTailLength(maxBytes);
     const { body, version } = this.require(key);
-    const take = Math.min(maxBytes, body.length);
+    const take = Math.min(Math.max(maxBytes, 0), body.length);
     return { bytes: body.slice(body.length - take), size: body.length, version };
   }
 
