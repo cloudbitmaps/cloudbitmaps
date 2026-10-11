@@ -35,6 +35,7 @@ import {
   validateNewRegistryRecord,
   validateRegistryPatch,
 } from './_shared/registry';
+import { checkTailLength } from './_shared/tail';
 import { entropyIsAvailable, webCryptoEntropy } from './_shared/entropy';
 
 export interface MemoryRegistryDriverOptions {
@@ -190,8 +191,9 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    checkTailLength(maxBytes);
     const { body, version } = this.require(key);
-    const take = Math.min(Math.max(maxBytes, 0), body.length);
+    const take = Math.min(maxBytes, body.length);
     return { bytes: body.slice(body.length - take), size: body.length, version };
   }
 
