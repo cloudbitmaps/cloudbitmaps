@@ -127,7 +127,7 @@ import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
-import { guardChunks, guardIdIterable, guardIds } from './lease-guards';
+import { guardIdIterable, guardIds, guardItems } from './lease-guards';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -2343,12 +2343,17 @@ export class CloudRoaring {
    * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
    * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
    * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one tail read of it,
-   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
+   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself, once
+   * one zero-byte read finds its object in the bucket; when the object is gone it throws `NotFoundError` naming what is.
    *
    * The same tail read (and a range read when the target's index is longer than it) gives the target's id count and
    * metadata, which the rollback writes into the row with the pointer, so a reader that sees the target as current sees
    * what describes it. The store's keystore opens an encrypted target for this; without it, or when it cannot open the
-   * key for any reason, the segment still rolls back and the row carries no summary of the target.
+   * key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out
+   * as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback to a generation below the pointer still
+   * happens, opening nothing, and the row carries no summary of the target. Any other failure of the keystore is
+   * thrown. A swap of the pointer that gets no answer is settled by reading the row: one that landed, the row being the
+   * one the swap leaves, is checked as any is, and otherwise its `TransientError` is thrown.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
@@ -2362,7 +2367,11 @@ export class CloudRoaring {
    *
    * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
    * without it: that is also where objects live that were never published, such as a load that wrote its object
-   * and died before the publish. Undoing an earlier rollback is what the opt-in is for.
+   * and died before the publish. Undoing an earlier rollback is what the opt-in is for. On an encrypted segment it also
+   * needs the key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap it, it is
+   * refused with `KeyUnavailableError` before the target is read, since an object sealed under a key no row holds passes
+   * every check that needs no key, and a key service that did not answer in time is thrown as `TransientError`, to
+   * retry.
    *
    * Needs a backend.
    */
@@ -3075,18 +3084,32 @@ export interface MaterializeOptions extends CombineOptions {
 }
 
 /**
+ * An id stream as an iterator: the ids ascending, driven by `for await` or by hand with `next()`, `return()` and
+ * `throw()`, as a generator is, on a handle that holds a lease as on one that does not. It is its own iterator and
+ * single-use. {@link Segment.everyNth} returns this; the streams of {@link IdStream} add `batches()`.
+ */
+export interface IdIterator extends AsyncIterableIterator<number> {
+  /** Ends the read, as a generator's `return` does, and resolves done with `value`. */
+  return(value?: unknown): Promise<IteratorResult<number, unknown>>;
+  /** Throws `err` into the read, as a generator's `throw` does: it rejects with `err` unless the read handles it. */
+  throw(err: unknown): Promise<IteratorResult<number, unknown>>;
+}
+
+/**
  * What a streaming read returns: the ids, ascending, one at a time under `for await`, or one chunk at a time from
  * {@link IdStream.batches}.
  *
- * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable. A live read is the
+ * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable, and an
+ * {@link IdIterator}, so `next()`, `return()` and `throw()` are typed. A live read is the
  * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
- * `throw()`, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
+ * `throw()`, and it is single-use (a second `for await` over it yields nothing). A handle that holds a lease returns a
+ * stream of the same shape, which checks the lease as it reads. `batches()` is a
  * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
  * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
  * fetched until a read is first pulled. A stream pulled with `next()` and dropped without `return()` is held by nothing
  * in the store, so it is garbage once the caller lets it go.
  */
-export interface IdStream extends AsyncIterable<number> {
+export interface IdStream extends IdIterator {
   /**
    * The same ids as the per-id stream, in the same order, one `Uint32Array` per chunk: each array ascending, holding
    * every id of one chunk the read yields (a range trimmed at its edges exactly as the per-id stream trims it), and
@@ -3112,17 +3135,19 @@ const withBatches = (
   batches: () => AsyncIterable<Uint32Array>,
 ): IdStream => Object.assign(gen, { batches });
 
-/**
- * A stream that fails when it is first read, either way. A combine refuses its arguments this way, as the engine's
- * own checks do, so a caller's try/catch around the iteration catches it.
- */
-const failing = (err: unknown): IdStream => {
-  const rejecting = (): AsyncIterator<never> => ({ next: () => Promise.reject(err) });
-  return {
-    [Symbol.asyncIterator]: rejecting,
-    batches: () => ({ [Symbol.asyncIterator]: rejecting }),
+/** A generator function whose generator throws `err` on its first pull: what a refused read is, so its caller can drive it as any other. */
+const refusing = (err: unknown) =>
+  // eslint-disable-next-line require-yield
+  async function* (): AsyncGenerator<never> {
+    throw err;
   };
-};
+
+/**
+ * A stream that fails when it is first read, either way, and has the shape of one that does not: a generator, with
+ * `batches` attached. A combine refuses its arguments this way, as the engine's own checks do, so a caller's try/catch
+ * around the iteration catches it.
+ */
+const failing = (err: unknown): IdStream => withBatches(refusing(err)(), refusing(err));
 
 /** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
 const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>
@@ -3217,10 +3242,8 @@ class CombineChunks {
 
 /** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
-  guard: guardChunks,
-  failing: (err) => ({
-    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
-  }),
+  guard: guardItems,
+  failing: (err) => refusing(err)(),
   intersect: (engine, refs, opts) => engine.intersectChunks(refs, opts),
   union: (engine, refs, opts) => engine.unionChunks(refs, opts),
   andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts),
@@ -3868,19 +3891,19 @@ export class Segment {
    * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
    * ```
    */
-  everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+  everyNth(n: number, options?: IdRange): IdIterator {
     // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
-    if (lease !== undefined) return failing(lease);
+    if (lease !== undefined) return refusing(lease)();
     const bad = optionsError(options, 'everyNth', CALL_KEYS.range);
-    if (bad !== undefined) return failing(bad);
+    if (bad !== undefined) return refusing(bad)();
     if (this.pinnedAt === undefined) {
-      return failing(
+      return refusing(
         new UnsupportedError(
           'everyNth needs a pinned handle: a live handle can place a rank by one generation ' +
             'and read it from another. Call `pin()` first.',
         ),
-      );
+      )();
     }
     const stream = this.engine.everyNth(
       this.ref,

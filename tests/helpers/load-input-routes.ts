@@ -75,6 +75,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/retention-hard-purge.test.ts',
   'tests/core/retention-policy.test.ts',
   'tests/core/retention-sweep.test.ts',
+  'tests/core/rollback-hardening.test.ts',
   'tests/core/rollback-metadata.test.ts',
   'tests/core/rollback-races-collection.test.ts',
   'tests/core/rollback-races-collection-controls.test.ts',
@@ -121,6 +122,8 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/roaring/lease-guards.test.ts':
+    'its one load only seeds a segment to read through a leased handle; the shape of the stream is what it tests, and the input form is not',
   'tests/roaring/call-options.test.ts':
     'its loads only seed segments for the option checks of other calls; the input form is not what it tests',
   'tests/drivers/localfs/exact-case.test.ts':

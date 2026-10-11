@@ -57,7 +57,10 @@ export interface IKeystore {
   /**
    * Reconstruct the {@link Aead} from a segment's stored wrappings by unwrapping with any KEK currently held.
    * Throws {@link KeyUnavailableError} if it holds none of the referenced KEKs (lost key, or a shredded
-   * segment whose wrappings were deleted).
+   * segment whose wrappings were deleted). Throw {@link TransientError} for a fault worth riding out (a throttle, a 5xx,
+   * a dropped connection, a request timeout): a rollback below a segment's pointer goes ahead without the key on that
+   * error, as on `KeyUnavailableError`, an `IntegrityError` or an `Error` named `TimeoutError`, and is stopped by any
+   * other error the keystore throws.
    */
   openDek(wrapped: readonly WrappedDek[]): Promise<Aead>;
 }
