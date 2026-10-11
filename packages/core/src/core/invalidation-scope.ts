@@ -20,9 +20,11 @@ import type { CodecBitmap } from './codec';
 
 /**
  * How many segments' latest invalidation a scope remembers. Past it the oldest is forgotten, and a segment the scope
- * does not remember counts as invalidated at the newest invalidation it has forgotten: a stream that opened before then
- * caches no more of that segment's chunks, which costs it cache entries, never correctness. With names at their
- * 256-character limit that is about 0.6 MB, and about 0.1 MB with 30-character names.
+ * does not remember, never-invalidated ones included, counts as invalidated at the newest invalidation it has
+ * forgotten: a stream that opened before then caches no more of that segment's chunks, which costs it cache entries,
+ * never correctness. So a sweep that invalidates more than this many segments at once (a `retireExpired` or an
+ * `eraseSubject` over a large fleet) stops every stream open at the time caching, whatever segment it reads. With
+ * names at their 256-character limit the record is about 0.6 MB, and about 0.1 MB with 30-character names.
  */
 export const REMEMBERED_INVALIDATIONS = 1024;
 
@@ -39,7 +41,7 @@ export class InvalidationScope {
    * promise per distinct key in flight. An invalidation drops the segment's entries, and a read whose entry is gone
    * caches nothing.
    */
-  readonly openReads = new Map<string, OpenRead>();
+  private readonly openReads = new Map<string, OpenRead>();
   private count = 0;
   /** The epoch of each remembered segment's latest invalidation, by cache-key prefix, the oldest first. */
   private readonly latest = new Map<string, number>();
@@ -64,6 +66,26 @@ export class InvalidationScope {
     }
     // A read already open was asked for before this call, so a caller after it must not join it.
     for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);
+  }
+
+  /** The read of `key` open now, for a caller that misses the cache to await instead of making its own. */
+  openRead(key: string): Promise<CodecBitmap | null> | undefined {
+    return this.openReads.get(key)?.read;
+  }
+
+  /** Register `entry` as the open read of `key`. */
+  beginRead(key: string, entry: OpenRead): void {
+    this.openReads.set(key, entry);
+  }
+
+  /** `entry` has settled: forget it, unless an invalidation dropped it and a newer read has taken the key. */
+  endRead(key: string, entry: OpenRead): void {
+    if (this.openReads.get(key) === entry) this.openReads.delete(key);
+  }
+
+  /** Whether the read `token` names is still the open read of `key`: one an invalidation dropped caches nothing. */
+  isOpen(key: string, token: object): boolean {
+    return this.openReads.get(key)?.token === token;
   }
 
   /** Whether the segment whose cache keys start with `prefix` has been invalidated since epoch `since`. */
