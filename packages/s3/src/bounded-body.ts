@@ -8,7 +8,7 @@
 import { NotFoundError } from '@cloudbitmaps/core';
 
 /** The `GetObject` response body, narrowed to the parts used. */
-export type ResponseBody =
+type ResponseBody =
   | {
       transformToByteArray?: () => Promise<Uint8Array>;
       [Symbol.asyncIterator]?: () => AsyncIterator<unknown>;

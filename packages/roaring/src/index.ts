@@ -839,6 +839,9 @@ interface HandleView {
   readonly leaseError: () => LeaseExpiredError | undefined;
 }
 
+/** Marks a segment so one from another copy of this package is recognised; `Symbol.for` is the same symbol in every copy. */
+const SEGMENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.roaring.segment');
+
 /** Set by the `Segment` class, whose private state it reads. */
 let viewOf: (segment: Segment) => HandleView;
 
@@ -1230,18 +1233,14 @@ export class CloudRoaring {
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.
     if (options.retry !== false) {
-      // The policy is a partial, and the rest is filled from the default — so tuning one field does not mean
+      // The policy is a partial and the rest is filled from the default, so tuning one field does not mean
       // restating all five, and `{ onRetry }` alone is a legal, useful value.
       //
-      // Field by field with `??`, NOT `{ ...DEFAULT, ...overrides }`. A spread lets a key that is *present with
-      // value `undefined`* overwrite the default instead of falling back to it, and `exactOptionalPropertyTypes`
-      // is off, so `retry: { baseDelayMs: cfg.baseDelayMs }` typechecks clean when `cfg.baseDelayMs` is absent —
-      // the ordinary shape for a value read from env or JSON. The result was `NaN` delays; `SystemClock.sleep`
-      // takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms, so bounded jittered backoff
-      // silently became a ~1 ms hot retry loop with the read still succeeding and the retry metric still
-      // emitting. That is the thundering-herd and denial-of-wallet protection gone with nothing to see.
-      // A `Partial` policy is what puts this in reach: were a whole `RetryPolicy` required, each would be a compile
-      // error.
+      // Each field is read with `??`, not by spreading over the default: a key that is present with the value
+      // `undefined` (the ordinary shape of a value read from env or JSON, which `exactOptionalPropertyTypes`
+      // being off lets through) must fall back to the default. A spread would let it replace the default with
+      // `undefined`, giving `NaN` delays that `SystemClock.sleep` turns into a ~1 ms hot retry loop, with the
+      // backoff bound and the herd protection gone and no error to show it.
       const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
       if (userOnRetry !== undefined && typeof userOnRetry !== 'function') {
         throw new ValidationError('retry.onRetry must be a function');
@@ -3415,6 +3414,7 @@ export class Segment {
   private readonly leaseHold?: LeaseHold;
 
   static {
+    Object.defineProperty(Segment.prototype, SEGMENT_BRAND, { value: true });
     makeSegment = (parts) => {
       minting = true;
       try {
@@ -3542,7 +3542,7 @@ export class Segment {
   async pin(options?: PinOptions): Promise<Segment> {
     // A leased handle pins nothing once its lease is over. The pin it makes is an ordinary one: it takes the generation
     // that is current now, which is not the leased one, and holds no lease of its own unless asked.
-    this.assertLeases([this]);
+    this.assertLease();
     const leaseUntil = this.leaseUntilOf('pin', options);
     return this.pinned(this.ref, leaseUntil);
   }
@@ -3641,13 +3641,13 @@ export class Segment {
    */
   private assertSegments(handles: readonly unknown[]): void {
     for (const h of handles) {
-      // A segment of another copy of this package (a second install) is not an instance of this one's class, and a
-      // combine has always taken it: what it has, a lease check, is what the call reads first.
+      // A segment of another copy of this package (a second install) is not an instance of this one's class, so it
+      // is recognised by the `Symbol.for` brand every segment carries, which is the same symbol in every copy.
       if (
         h instanceof Segment ||
         (typeof h === 'object' &&
           h !== null &&
-          typeof (h as { leaseError?: unknown }).leaseError === 'function')
+          (h as Record<symbol, unknown>)[SEGMENT_BRAND] === true)
       ) {
         continue;
       }
@@ -3660,10 +3660,13 @@ export class Segment {
    * the engine, so no operand, exclude or cached reader can answer past a lease.
    */
   private assertLeases(handles: readonly Segment[]): void {
-    for (const h of handles) {
-      const err = h.leaseError();
-      if (err !== undefined) throw err;
-    }
+    for (const h of handles) h.assertLease();
+  }
+
+  /** Throw this handle's lease error, if it has one. The calls that return a value instead of throwing use {@link leaseError}. */
+  private assertLease(): void {
+    const err = this.leaseError();
+    if (err !== undefined) throw err;
   }
 
   /**
@@ -3690,7 +3693,7 @@ export class Segment {
    */
   async pinAt(at: PinAt, options?: PinOptions): Promise<Segment> {
     // A leased handle past its lease pins nothing, as for `pin()`.
-    this.assertLeases([this]);
+    this.assertLease();
     const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
     // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
     const unknown =
@@ -3826,7 +3829,7 @@ export class Segment {
    * ```
    */
   async stat(): Promise<SegmentStat> {
-    this.assertLeases([this]);
+    this.assertLease();
     return this.engine.stat(this.ref);
   }
   /**
@@ -3856,9 +3859,7 @@ export class Segment {
     const stream = withBatches(engine.iterate(ref, bounds), () =>
       engine.iterateBatches(ref, bounds),
     );
-    return this.leaseHold === undefined
-      ? stream
-      : guardIds(stream, () => this.assertLeases([this]));
+    return this.leaseHold === undefined ? stream : guardIds(stream, () => this.assertLease());
   }
 
   /**
@@ -3914,7 +3915,7 @@ export class Segment {
     // ended throws even when no rank falls in its range, and at each chunk after that.
     return this.leaseHold === undefined
       ? stream
-      : guardIdIterable(stream, () => this.assertLeases([this]));
+      : guardIdIterable(stream, () => this.assertLease());
   }
 
   /**
