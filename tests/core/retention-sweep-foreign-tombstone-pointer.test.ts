@@ -155,6 +155,40 @@ for (const scan of ['fleet', 'index'] as const) {
       expect(await pointerCount(w.registry, soon)).toBe(1); // the re-filed pointer survived
     });
 
+    // Kills: removing from the scan's snapshot without reading the row again. The tombstone is purged by hand and its
+    // name re-created with a policy due the same day after the scan read it, and the pointer at the key (unchanged,
+    // so it carries the token the scan read) is now the live row's own.
+    it('does not remove the pointer of a name re-created after the scan read its tombstone', async () => {
+      const { w, ref, soon } = await dueAndForeign();
+      let injected = false;
+      const registry = new Proxy(w.registry, {
+        get(target, prop) {
+          const v = Reflect.get(target, prop, target) as unknown;
+          if (prop !== 'list') {
+            return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+          }
+          return async function* (namespace?: string) {
+            let sawForeign = false;
+            for await (const row of target.list(namespace)) {
+              if (row.segment.includes('foreign')) sawForeign = true;
+              yield row;
+            }
+            if (sawForeign && !injected) {
+              injected = true;
+              const tombstone = (await target.get(ref))!;
+              await target.delete(ref, tombstone.token);
+              await w.load(ref, [7]);
+              await w.store.setRetention(ref, { expiresAt: soon });
+            }
+          };
+        },
+      });
+      await retireExpired({ registry, storage: w.storage }, { scan, now: soon + 1 });
+      expect(injected).toBe(true);
+      expect((await w.registry.get(ref))!.status).not.toBe('destroyed');
+      expect(await pointerCount(w.registry, soon)).toBe(1); // the live row's pointer survived
+    });
+
     // Kills: removal under dryRun.
     it('leaves every pointer in place under dryRun', async () => {
       const { w, soon } = await dueAndForeign();
