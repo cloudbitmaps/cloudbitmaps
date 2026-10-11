@@ -130,6 +130,8 @@ describe('S3StorageDriver: a delete given ifVersion on AWS S3', () => {
       (e: unknown) => e,
     );
     expect(err).toBeDefined();
+    expect(err).toBeInstanceOf(ValidationError); // a wiring fault, with the service's error as its cause
+    expect((err as Error).cause).toBeDefined();
     expect(err).not.toBeInstanceOf(NotFoundError);
     expect(err).not.toBeInstanceOf(TransientError);
     expect(err).not.toBeInstanceOf(WriteConflictError);

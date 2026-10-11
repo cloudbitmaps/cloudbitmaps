@@ -41,7 +41,11 @@ export class CloudRoaringError extends Error {
   }
 }
 
-/** Invalid caller input (bad id, segment name, options). Raised before any storage call. */
+/**
+ * Invalid input, which the same call fails on again. Most is refused before any storage call (a bad id, segment name
+ * or option); some is found by the call itself: a read past the end of an object, or a bucket or container a cloud
+ * driver finds does not exist.
+ */
 export class ValidationError extends CloudRoaringError {}
 
 /** An OCC conditional write/delete lost the race — the row changed since it was read. */
@@ -225,7 +229,9 @@ export function isIntegrityError(err: unknown): err is IntegrityError {
   return isCloudRoaringError(err) && err.name === 'IntegrityError';
 }
 
-/** Invalid caller input. */
+/**
+ * Invalid caller input; also the error a cloud driver raises for a bucket or container it finds does not exist.
+ */
 export function isValidationError(err: unknown): err is ValidationError {
   return isCloudRoaringError(err) && err.name === 'ValidationError';
 }

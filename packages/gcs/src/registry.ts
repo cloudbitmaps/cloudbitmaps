@@ -45,7 +45,14 @@ import {
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
-import { isNotFound, isPreconditionFailed, isTransient, transientFaultMessage } from './gcs-errors';
+import {
+  asMissingBucket,
+  missingBucketError,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+  transientFaultMessage,
+} from './gcs-errors';
 import { BucketPresence } from './bucket-presence';
 import { crc32cBase64 } from './crc32c';
 import { retryDownload } from './download-retry';
@@ -133,7 +140,7 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         await this.presence.confirm(); // a missing bucket is an error, not an absent row
         return null;
       }
-      throw mapReadError(err);
+      throw mapReadError(err, this.bucket);
     }
     if (res.status !== 200) {
       throw new IntegrityError(`registry read answered HTTP ${res.status}, not 200: ${key}`);
@@ -175,7 +182,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
       if (isPreconditionFailed(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
-      throw mapError(err);
+      // A row write's 404 can be the bucket's: settle it before it is passed on.
+      if (isNotFound(err)) await this.presence.confirm();
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -191,7 +200,7 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         if (isNotFound(err)) await this.presence.confirm();
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -207,7 +216,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
           .bucket(this.bucket)
           .getFiles({ prefix, autoPaginate: false, maxResults: 1000, pageToken });
       } catch (err) {
-        throw mapError(err);
+        // A listing names no object, so its 404 can only be the bucket's.
+        if (isNotFound(err)) throw missingBucketError(this.bucket, scrubCredentials(err));
+        throw mapError(err, this.bucket);
       }
       for (const f of files ?? []) yield f.name;
       // A page that hands back the token it was asked with would be asked for again, forever.
@@ -237,16 +248,23 @@ function generationFence(version: string, key: string): number {
  * A read's error: a connection that failed or was cut off is transient too, after the driver's retries, whichever code
  * Node gave it, as `isTransient` takes every transport fault.
  */
-function mapReadError(err: unknown): unknown {
+function mapReadError(err: unknown, bucket: string): unknown {
   err = scrubCredentials(err);
   // Timed out on every attempt: transient, in words that name the read and the timeout.
   if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
-  return mapError(err);
+  return mapError(err, bucket);
 }
 
-/** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */
-function mapError(err: unknown): unknown {
-  return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
+/**
+ * Reclassify a transient GCS fault as a retryable {@link TransientError} and a missing bucket as a `ValidationError`;
+ * any other error is passed through.
+ */
+function mapError(err: unknown, bucket: string): unknown {
+  return toTransient(
+    asMissingBucket(scrubCredentials(err), bucket),
+    isTransient,
+    transientFaultMessage,
+  );
 }
 
 export class GcsRegistryDriver extends ObjectStoreRegistry {

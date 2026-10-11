@@ -20,6 +20,7 @@ import type {
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { Storage as GcsClient } from '@google-cloud/storage';
+import { defined } from './defined';
 import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
 import { downloadClient } from './read-client';
@@ -146,11 +147,9 @@ export class GcsStorage implements StorageBackend {
       this.client = options.client;
       readClient = downloadClient(options.client, true);
     } else {
-      const settings = {
-        ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
-        ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
-      };
-      this.client = new GcsClient(settings);
+      this.client = new GcsClient(
+        defined({ projectId: options.projectId, apiEndpoint: options.apiEndpoint }),
+      );
       // Downloads go through a twin that sends each once (see `read-client.ts`); it shares this client's credentials
       // object, so one token fetch and one hourly refresh serve both.
       readClient = downloadClient(this.client, false);
@@ -159,25 +158,19 @@ export class GcsStorage implements StorageBackend {
       storage: this.client,
       readStorage: readClient,
       bucket: options.bucket,
-      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
+      ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new GcsStorageDriver({
       ...shared,
-      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
-      ...(options.simpleUploadThresholdBytes === undefined
-        ? {}
-        : { simpleUploadThresholdBytes: options.simpleUploadThresholdBytes }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({
+        maxObjectBytes: options.maxObjectBytes,
+        simpleUploadThresholdBytes: options.simpleUploadThresholdBytes,
+        conditionalDelete: options.conditionalDelete,
+      }),
     });
     this.registry = new GcsRegistryDriver({
       ...shared,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

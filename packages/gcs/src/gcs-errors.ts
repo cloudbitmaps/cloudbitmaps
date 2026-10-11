@@ -7,7 +7,10 @@
  * `.code` (a number); dropped/timed-out sockets surface as a Node error with a string `.code` (`ECONNRESET`,
  * `ETIMEDOUT`, …).
  */
-import { isTransportFault as isNodeTransportFault } from '@cloudbitmaps/core/driver-kit';
+import {
+  ValidationError,
+  isTransportFault as isNodeTransportFault,
+} from '@cloudbitmaps/core/driver-kit';
 
 /** The HTTP status of a GCS `ApiError`, if present (`err.code` as a number, or `err.response.status`). */
 function httpStatus(err: unknown): number | undefined {
@@ -61,6 +64,25 @@ export function isMissingBucket(err: unknown): boolean {
     Array.isArray(e.errors) &&
     e.errors.some((inner) => says((inner as { message?: unknown } | null)?.message))
   );
+}
+
+/**
+ * The {@link ValidationError} a missing bucket is: it names the bucket and what to check, and carries the service's
+ * error as its `cause`. A wiring fault is not an absent object, so it is not a `NotFoundError`: a read re-resolves on
+ * that, and would treat a misnamed bucket as a miss it can heal.
+ */
+export function missingBucketError(bucket: string, cause: unknown): ValidationError {
+  return Object.assign(
+    new ValidationError(
+      `the GCS bucket does not exist: ${bucket}; check the bucket name and the project the client is built for`,
+    ),
+    { cause },
+  );
+}
+
+/** `err`, or {@link missingBucketError} when `err` says the bucket does not exist. */
+export function asMissingBucket(err: unknown, bucket: string): unknown {
+  return isMissingBucket(err) ? missingBucketError(bucket, err) : err;
 }
 
 /** A range request started past EOF (HTTP 416 Requested Range Not Satisfiable). */

@@ -661,7 +661,7 @@ describe('GCS (fake-gcs-server): a registry write made against a held row', () =
 });
 
 describe('a bucket that does not exist', () => {
-  it("fails every read and a delete with the service's own error, not as an absent object", async () => {
+  it('fails every read and a delete with a ValidationError that names it, not as an absent object', async () => {
     await expectMissingLocationFails(
       () =>
         new GcsStorage({
@@ -670,6 +670,7 @@ describe('a bucket that does not exist', () => {
           projectId: 'test',
           prefix: `${RUN}/missing`,
         }),
+      MISSING,
     );
   });
 

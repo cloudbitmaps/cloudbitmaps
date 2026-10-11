@@ -16,8 +16,8 @@ import {
 
 /**
  * A bucket or container that does not exist is a wiring fault, not an empty store. Each driver, over its real SDK,
- * against a loopback server that answers every request as the service answers for a missing bucket, must let the
- * service's error reach the caller: a read that answered "absent" would report an empty segment where the store
+ * against a loopback server that answers every request as the service answers for a missing bucket, must raise a
+ * `ValidationError` that names the location and keeps the service's error as its `cause`: a read that answered "absent" would report an empty segment where the store
  * is misconfigured. The control answers every request as a missing object in a bucket that exists, which must
  * still read as absent.
  */
@@ -72,7 +72,7 @@ const azureAnswer: Answer = (req, res, mode) =>
 
 /** GCS answers a missing bucket and a missing object with the same status and reason; only the message differs. */
 const gcsAnswer =
-  (body: 'json' | 'text'): Answer =>
+  (body: 'json' | 'text' | 'bare'): Answer =>
   (req, res, mode) => {
     // In a bucket that exists, a listing answers; only the bucket's absence makes one a 404.
     if (
@@ -84,11 +84,14 @@ const gcsAnswer =
       res.end(JSON.stringify({ kind: 'storage#objects', items: [] }));
       return;
     }
+    // `bare` words neither: a server that answers a bare `404 Not Found` for the bucket and for an object alike.
     const message =
-      mode === 'bucket'
-        ? 'The specified bucket does not exist.'
-        : 'No such object: missing/registry/_default/s.reg';
-    if (body === 'text') {
+      body === 'bare'
+        ? 'Not Found'
+        : mode === 'bucket'
+          ? 'The specified bucket does not exist.'
+          : 'No such object: missing/registry/_default/s.reg';
+    if (body === 'text' || body === 'bare') {
       res.writeHead(404, { 'content-type': 'text/plain' });
       res.end(message);
       return;
@@ -134,12 +137,17 @@ const SERVICES: Service[] = [
     backend: (url) => new GcsStorage({ bucket: 'missing', apiEndpoint: url, projectId: 'test' }),
   },
   {
+    name: 'GCS (a bare 404 that does not name the bucket)',
+    answer: gcsAnswer('bare'),
+    backend: (url) => new GcsStorage({ bucket: 'missing', apiEndpoint: url, projectId: 'test' }),
+  },
+  {
     name: 'Azure',
     answer: azureAnswer,
     backend: (url) =>
       new AzureBlobStorage({
         containerClient: new ContainerClient(
-          `${url}/missing`,
+          `${url}/account/missing`,
           new StorageSharedKeyCredential(
             'stand-in',
             Buffer.from('stand-in-key').toString('base64'),

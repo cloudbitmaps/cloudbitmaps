@@ -52,7 +52,13 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
-import { isConditionalConflict, isNotFound, isTransient, transientFaultMessage } from './s3-errors';
+import {
+  asMissingBucket,
+  isConditionalConflict,
+  isNotFound,
+  isTransient,
+  transientFaultMessage,
+} from './s3-errors';
 import { sendOnce } from './send-once';
 import { destroyBody, readBounded } from './bounded-body';
 import { scrubCredentials } from './scrub-error';
@@ -163,7 +169,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
         );
       } catch (err) {
         if (isNotFound(err)) return null;
-        throw mapError(err);
+        throw mapError(err, this.bucket);
       }
       try {
         // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
@@ -186,7 +192,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
         // on it; destroying the body closes the socket. On a body that already failed it changes nothing.
         destroyBody(res.Body);
         // A body cut off part-way is a dropped connection, and transient; a refused row is not.
-        throw isIntegrityError(err) ? err : mapError(err);
+        throw isIntegrityError(err) ? err : mapError(err, this.bucket);
       }
     });
   }
@@ -216,7 +222,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
       if (isConditionalConflict(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -233,7 +239,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
       if (isConditionalConflict(err) || isNotFound(err)) {
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -251,7 +257,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
           }),
         );
       } catch (err) {
-        throw mapError(err);
+        throw mapError(err, this.bucket);
       }
       for (const obj of res.Contents ?? []) {
         if (obj.Key !== undefined) yield obj.Key;
@@ -269,9 +275,16 @@ export class S3RegistryStore implements ObjectRegistryStore {
   }
 }
 
-/** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */
-function mapError(err: unknown): unknown {
-  return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
+/**
+ * Reclassify a transient S3 fault as a retryable {@link TransientError} and a missing bucket as a `ValidationError`;
+ * any other error is passed through.
+ */
+function mapError(err: unknown, bucket: string): unknown {
+  return toTransient(
+    asMissingBucket(scrubCredentials(err), bucket),
+    isTransient,
+    transientFaultMessage,
+  );
 }
 
 export class S3RegistryDriver extends ObjectStoreRegistry {

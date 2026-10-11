@@ -1,6 +1,8 @@
+import { isValidationError } from '@/core/errors';
 import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingBucket,
   isMissingBucket,
   isNotFound,
   isPreconditionFailed,
@@ -44,6 +46,16 @@ describe('S3 error classification', () => {
     expect(isNotFound(noBucket)).toBe(false);
     expect(isTransient(noBucket)).toBe(false);
     expect(isMissingBucket({ name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })).toBe(false);
+  });
+
+  it('a missing bucket becomes a ValidationError that names it and keeps the service error as its cause', () => {
+    const noBucket = { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } };
+    const err = asMissingBucket(noBucket, 'my-bucket') as Error;
+    expect(isValidationError(err)).toBe(true);
+    expect(err.message).toMatch(/^the S3 bucket does not exist: my-bucket; check /);
+    expect(err.cause).toBe(noBucket);
+    const other = { name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } };
+    expect(asMissingBucket(other, 'my-bucket')).toBe(other);
   });
 
   it('detects an invalid range (416)', () => {

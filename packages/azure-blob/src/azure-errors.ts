@@ -13,7 +13,7 @@
  * (`getProperties`) on a missing blob returns 404 with `.code` *undefined* (no response body), so NotFound is
  * keyed off the status, not the code.
  */
-import { isTransportFault } from '@cloudbitmaps/core/driver-kit';
+import { ValidationError, isTransportFault } from '@cloudbitmaps/core/driver-kit';
 
 /** The HTTP status of an Azure `RestError`, if present (`err.statusCode` as a number). */
 function httpStatus(err: unknown): number | undefined {
@@ -80,6 +80,21 @@ export function isNotFound(err: unknown): boolean {
  */
 export function isMissingContainer(err: unknown): boolean {
   return azureCode(err) === 'ContainerNotFound';
+}
+
+/**
+ * `err`, or the {@link ValidationError} a missing container is: it names the container and what to check, and carries
+ * the service's error as its `cause`. A wiring fault is not an absent blob, so it is not a `NotFoundError`: a read
+ * re-resolves on that, and would treat a misnamed container as a miss it can heal.
+ */
+export function asMissingContainer(err: unknown, container: string): unknown {
+  if (!isMissingContainer(err)) return err;
+  return Object.assign(
+    new ValidationError(
+      `the Azure container does not exist: ${container}; check the container name and the account the client is built for`,
+    ),
+    { cause: err },
+  );
 }
 
 /** A range request started past EOF (HTTP 416 `InvalidRange`). */
