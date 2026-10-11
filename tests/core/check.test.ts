@@ -67,7 +67,10 @@ describe('requireInteger', () => {
       'width must be an integer from 1 to 8; got undefined',
     );
     expect(message(() => requireInteger({}, bounds))).toContain('got object');
-    expect(message(() => requireInteger(3n, bounds))).toContain('got 3');
+    expect(message(() => requireInteger(3n, bounds))).toBe(
+      'width must be an integer from 1 to 8; got 3n',
+    );
+    expect(message(() => requireInteger(Symbol('x'), bounds))).toContain('got symbol');
     expect(message(() => requireInteger(true, bounds))).toContain('got true');
   });
 });
@@ -112,5 +115,19 @@ describe('requireFiniteNumber', () => {
     for (const bad of [NaN, Infinity, -Infinity, null, undefined]) {
       expect(() => requireFiniteNumber(bad, { what: 'x' })).toThrow(ValidationError);
     }
+  });
+});
+
+describe('a note', () => {
+  it('follows the range in parentheses, on an integer and on a finite number', () => {
+    expect(
+      message(() => requireInteger(undefined, { min: 0, what: 'keep', note: 'required' })),
+    ).toBe('keep must be an integer of at least 0 (required); got undefined');
+    expect(
+      message(() => requireFiniteNumber(-1, { min: 0, what: 'ttl', note: 'milliseconds' })),
+    ).toBe('ttl must be a finite number of at least 0 (milliseconds); got -1');
+    expect(message(() => requireFiniteNumber(NaN, { what: 'x', note: 'n' }))).toBe(
+      'x must be a finite number (n); got NaN',
+    );
   });
 });

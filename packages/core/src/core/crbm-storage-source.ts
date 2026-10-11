@@ -704,7 +704,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
     // never reach a long-lived reader: refused instead.
     if (currentGenTtlMs !== undefined && currentGenTtlMs !== null) {
-      requireFiniteNumber(currentGenTtlMs, { min: 0, what: 'cache.genTtlMs' });
+      requireFiniteNumber(currentGenTtlMs, {
+        min: 0,
+        what: 'cache.genTtlMs',
+        note: 'milliseconds; 0 turns the timed refresh off',
+      });
     }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.

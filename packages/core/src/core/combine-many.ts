@@ -352,7 +352,7 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   if (!Array.isArray(outputs) || outputs.length === 0) {
     throw new ValidationError('outputs must be a non-empty array');
   }
-  requireInteger(request.keep, { min: 0, what: 'keep' });
+  requireInteger(request.keep, { min: 0, what: 'keep', note: 'required' });
   requirePositiveInteger(request.maxBufferedBytes, 'maxBufferedBytes');
   requireInteger(request.publishConcurrency, {
     min: 1,

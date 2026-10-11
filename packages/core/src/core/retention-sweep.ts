@@ -530,7 +530,7 @@ export async function retireExpired(
   }
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
-  requireFiniteNumber(now, { what: 'retireExpired: `now`' });
+  requireFiniteNumber(now, { what: 'retireExpired: `now`', note: 'epoch milliseconds' });
   // A floor on `now` for the same reason `expiresAt` has one, and in the direction that actually destroys data: a
   // clock returning seconds makes every policy in the fleet look expired. (Too *small* a `now` is harmless —
   // nothing expires — but a sweep against a pre-2001 instant cannot legitimately expire anything anyway, so

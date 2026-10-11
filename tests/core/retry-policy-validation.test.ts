@@ -101,7 +101,7 @@ describe('checkedRetryPolicy', () => {
 
   it('refuses a maxDelayMs below baseDelayMs and takes one equal to it', () => {
     expect(refused({ baseDelayMs: 500, maxDelayMs: 100 })).toBe(
-      'retry.maxDelayMs must be a finite number of at least 500; got 100',
+      'retry.maxDelayMs must be a finite number of at least 500 (retry.baseDelayMs); got 100',
     );
     expect(
       checkedRetryPolicy({ ...DEFAULT_RETRY_POLICY, baseDelayMs: 500, maxDelayMs: 500 }),
@@ -130,7 +130,7 @@ describe('a store built with a retry policy', () => {
     );
     expect(() => build({ baseDelayMs: 5000 })).not.toThrow();
     expect(() => build({ baseDelayMs: 500, maxDelayMs: 100 })).toThrow(
-      'retry.maxDelayMs must be a finite number of at least 500; got 100',
+      'retry.maxDelayMs must be a finite number of at least 500 (retry.baseDelayMs); got 100',
     );
     expect(() => build({ baseDelayMs: 5000, maxDelayMs: 9000 })).not.toThrow();
   });

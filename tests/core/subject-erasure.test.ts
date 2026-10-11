@@ -144,6 +144,22 @@ describe('subjectReport', () => {
     await expect(
       w.reader().subjectReport(1, { allNamespaces: true, concurrency: 0 }),
     ).rejects.toBeInstanceOf(ValidationError);
+    for (const concurrency of [1.5, 2 ** 53, 1e300]) {
+      await expect(
+        w.reader().subjectReport(1, { allNamespaces: true, concurrency }),
+      ).rejects.toThrow(`concurrency must be an integer of at least 1; got ${concurrency}`);
+    }
+    // …before the registry is read: a scan that had started would have called `list`.
+    let listed = 0;
+    const list = w.registry.list.bind(w.registry);
+    w.registry.list = ((...args: Parameters<typeof list>) => {
+      listed++;
+      return list(...args);
+    }) as typeof w.registry.list;
+    await expect(
+      w.reader().subjectReport(1, { allNamespaces: true, concurrency: 2 ** 53 }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(listed).toBe(0);
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
       // raw objects behind a poisoned read, paired with the real registry that resolves generations

@@ -68,7 +68,7 @@ import {
   splitId,
   takeLease,
 } from '@cloudbitmaps/core';
-import { pointerIdOf, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import { pointerIdOf, requirePositiveInt, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
 import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
@@ -154,9 +154,7 @@ function rowVersionOfLive(version: string | null): string | null {
 
 /** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
 function validateConcurrency(concurrency: number | undefined): void {
-  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
-    throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
-  }
+  requirePositiveInt('concurrency', concurrency);
 }
 
 /**

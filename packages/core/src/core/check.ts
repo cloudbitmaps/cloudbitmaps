@@ -3,6 +3,9 @@
  * worded one way: `<what> must be <a range>; got <the value>`. Each throws `ValidationError` and returns the value it
  * accepted, so a call can wrap the expression that produced it. Pure: no I/O, time or globals.
  *
+ * A `note` is a short clause set after the range (`must be an integer of at least 0 (required); got undefined`), for
+ * what the range alone does not say.
+ *
  * ```
  * requireInteger(1.5, { min: 1, max: 8, what: 'concurrency' })
  *   -> ValidationError: concurrency must be an integer from 1 to 8; got 1.5
@@ -16,21 +19,31 @@
  */
 import { ValidationError } from './errors';
 
-/** A value as a message shows it: a string quoted (so `'200'` is not mistaken for `200`), another type by its name. */
+/**
+ * A value as a message shows it: a number or boolean as itself, a bigint with an `n` (so `5n` is not mistaken for
+ * `5`), a string quoted (so `'200'` is not mistaken for `200`), and anything else by its type.
+ */
 function shown(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
-    return String(value);
-  }
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return value === null ? 'null' : typeof value;
 }
 
-/** `from <min> to <max>`, `of at least <min>` or `of at most <max>`, or nothing when neither bound is set. */
-function rangeOf(min: number | undefined, max: number | undefined): string {
-  if (min !== undefined && max !== undefined) return ` from ${min} to ${max}`;
-  if (min !== undefined) return ` of at least ${min}`;
-  if (max !== undefined) return ` of at most ${max}`;
-  return '';
+/**
+ * `from <min> to <max>`, `of at least <min>` or `of at most <max>`, or nothing when neither bound is set, then the
+ * `note` in parentheses when there is one.
+ */
+function rangeOf(
+  min: number | undefined,
+  max: number | undefined,
+  note: string | undefined,
+): string {
+  let range = '';
+  if (min !== undefined && max !== undefined) range = ` from ${min} to ${max}`;
+  else if (min !== undefined) range = ` of at least ${min}`;
+  else if (max !== undefined) range = ` of at most ${max}`;
+  return note === undefined ? range : `${range} (${note})`;
 }
 
 /**
@@ -39,9 +52,14 @@ function rangeOf(min: number | undefined, max: number | undefined): string {
  */
 export function requireInteger(
   value: unknown,
-  bounds: { readonly min: number; readonly max?: number; readonly what: string },
+  bounds: {
+    readonly min: number;
+    readonly max?: number;
+    readonly what: string;
+    readonly note?: string;
+  },
 ): number {
-  const { min, max, what } = bounds;
+  const { min, max, what, note } = bounds;
   if (
     typeof value !== 'number' ||
     !Number.isSafeInteger(value) ||
@@ -49,7 +67,7 @@ export function requireInteger(
     (max !== undefined && value > max)
   ) {
     throw new ValidationError(
-      `${what} must be an integer${rangeOf(min, max)}; got ${shown(value)}`,
+      `${what} must be an integer${rangeOf(min, max, note)}; got ${shown(value)}`,
     );
   }
   return value;
@@ -66,9 +84,14 @@ export function requirePositiveInteger(value: unknown, what: string): number {
  */
 export function requireFiniteNumber(
   value: unknown,
-  bounds: { readonly min?: number; readonly max?: number; readonly what: string },
+  bounds: {
+    readonly min?: number;
+    readonly max?: number;
+    readonly what: string;
+    readonly note?: string;
+  },
 ): number {
-  const { min, max, what } = bounds;
+  const { min, max, what, note } = bounds;
   if (
     typeof value !== 'number' ||
     !Number.isFinite(value) ||
@@ -76,7 +99,7 @@ export function requireFiniteNumber(
     (max !== undefined && value > max)
   ) {
     throw new ValidationError(
-      `${what} must be a finite number${rangeOf(min, max)}; got ${shown(value)}`,
+      `${what} must be a finite number${rangeOf(min, max, note)}; got ${shown(value)}`,
     );
   }
   return value;

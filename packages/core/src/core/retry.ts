@@ -126,6 +126,7 @@ export function checkedRetryPolicy(policy: RetryPolicy): RetryPolicy {
   requireFiniteNumber(maxDelayMs, {
     min: baseDelayMs,
     what: 'retry.maxDelayMs',
+    note: 'retry.baseDelayMs',
   });
   requireFiniteNumber(backoffFactor, { min: 1, what: 'retry.backoffFactor' });
   if (jitter !== 'full' && jitter !== 'none') {

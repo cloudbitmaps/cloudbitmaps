@@ -311,6 +311,20 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 7 })).toEqual([7, 14]);
   });
 
+  it('an omitted maxDelayMs is the default cap, or the baseDelayMs given when that is larger', async () => {
+    expect(await sleepsFor({ baseDelayMs: 5000 })).toEqual([5000, 5000]);
+    expect(await sleepsFor({ baseDelayMs: 1500 })).toEqual([1500, 2000]);
+  });
+
+  it('a maxDelayMs of NaN is refused, not replaced by the default', () => {
+    const build = (retry: Record<string, number>) => () =>
+      new CloudRoaring({ storage: new MemoryStorage(), retry });
+    expect(build({ maxDelayMs: Number.NaN })).toThrow(
+      /retry\.maxDelayMs must be a finite number of at least 50 \(retry\.baseDelayMs\); got NaN/,
+    );
+    expect(build({ baseDelayMs: 0, maxDelayMs: 0 })).not.toThrow();
+  });
+
   // Each of the next two exists because the assertion above CANNOT see the field it names. `[7, 14]` is 7 × 2,
   // and 2 is the default `backoffFactor` — so a store that ignored the caller's factor produces the same
   // schedule. Likewise none of the schedules above reaches the `maxDelayMs` cap, so the cap is not
