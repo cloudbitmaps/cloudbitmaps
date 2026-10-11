@@ -36,7 +36,7 @@ const swapCase = (s: string): string =>
 const components = (path: string): string[] => path.split(sep).filter((c) => c !== '');
 
 /** What a path-resolving call needs of the filesystem: the error to refuse a write with. */
-export function caseVariantError(): ValidationError {
+function caseVariantError(): ValidationError {
   return new ValidationError(
     'names differ only by case on a case-insensitive filesystem: a name that differs only by case from one already ' +
       'stored is the same file here, so it is refused rather than written over',

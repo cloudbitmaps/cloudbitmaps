@@ -328,7 +328,7 @@ export async function dropSegment(
  * in the shred's own write, so only a tombstone a sweep wrote ever carries a sweep's mark, which is what lets a later
  * sweep purge it and never a crypto-shred's.
  */
-export interface SweepDrop {
+interface SweepDrop {
   readonly wanted: (row: RegistryRecord) => boolean;
   readonly stamp: (retention: RegistryRecord['retention']) => RegistryRecord['retention'];
 }

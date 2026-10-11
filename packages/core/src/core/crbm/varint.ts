@@ -24,7 +24,7 @@ export function writeVarint(out: number[], value: number): void {
   out.push(v);
 }
 
-export interface VarintRead {
+interface VarintRead {
   readonly value: number;
   /** Offset just past the bytes consumed. */
   readonly next: number;

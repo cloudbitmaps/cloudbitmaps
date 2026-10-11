@@ -33,7 +33,7 @@ export function usableKeptGens(record: RegistryRecord | null): readonly number[]
 }
 
 /** Which generations below a new pointer a grace window holds, and which it lets go: both ascending. */
-export interface KeptWindow {
+interface KeptWindow {
   readonly kept: number[];
   readonly evict: number[];
 }

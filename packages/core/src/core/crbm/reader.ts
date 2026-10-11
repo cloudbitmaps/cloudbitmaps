@@ -66,7 +66,7 @@ import {
  * `cardinalityMinusOne` stores `cardinality - 1` because a chunk's cardinality runs `[1, 65536]` and 65,536 does
  * not fit a `u16`; an offset is a `f64` because an object past 4 GiB puts a payload beyond a `u32`.
  */
-export interface ParsedIndex {
+interface ParsedIndex {
   readonly keys: Uint16Array;
   readonly cardinalityMinusOne: Uint16Array;
   readonly lengths: Uint32Array;

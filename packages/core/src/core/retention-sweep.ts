@@ -76,7 +76,7 @@ export const DEFAULT_RETIRE_LIMIT = 100;
  * (a blob with a snapshot, an object under a legal hold) does not hold the purges behind it, since a purge that succeeds
  * starts the count again.
  */
-export const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
+const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
 
 /**
  * Default delay before a retirement's own tombstone row is purged: 24 h.
@@ -85,7 +85,7 @@ export const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
  * a load that was mid-write when the drop landed cannot resurrect it. That window is
  * seconds to minutes in practice; a day of margin costs one tiny row and removes any need to reason about it.
  */
-export const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
+const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
 
 export interface RetireExpiredOptions {
   /** Scope the sweep to one namespace. Omit to sweep every namespace the registry knows. */

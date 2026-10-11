@@ -2410,7 +2410,7 @@ export async function openRollbackTarget(
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
-export interface StreamWriteResult {
+interface StreamWriteResult {
   readonly size: number;
   readonly sha256: string;
   /** Non-empty chunk keys written, in ascending order (for the post-write verify, since the stream is consumed). */
@@ -3170,7 +3170,7 @@ export function bulkLoadCrbmGeneration(
  * still in flight so their round trips overlap the encoding. Both are joined where the write needs them, and neither
  * may be left to reject unobserved.
  */
-export interface LoadAhead {
+interface LoadAhead {
   /** The number the generation takes (see {@link nextLoadGeneration}); joined just before the object is written. */
   readonly generation: PromiseLike<number>;
   /**

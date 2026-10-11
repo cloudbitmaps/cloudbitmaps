@@ -146,7 +146,7 @@ export function onlyLeasesDiffer(
 }
 
 /** A writer's count of the lease-only changes it has waited out, and the wait. One per call of the writer. */
-export interface LeaseChurn {
+interface LeaseChurn {
   /**
    * When `now` is `held` changed only in its leases and the bound is not spent: wait, then read the row again with
    * `reread`, and return what it found. The wait comes before the read, so the writer's next write is made against a row

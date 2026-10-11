@@ -59,7 +59,7 @@ export const O_NOFOLLOW = FS.O_NOFOLLOW ?? 0;
  * them there changes nothing.
  */
 export const FILE_MODE = 0o600;
-export const DIR_MODE = 0o700;
+const DIR_MODE = 0o700;
 
 /**
  * Best-effort parent-directory fsync, so a just-published `rename`/`link` survives a crash. Without it the

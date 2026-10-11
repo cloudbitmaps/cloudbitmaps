@@ -247,7 +247,7 @@ export type GuardRefusal = Exclude<LoadRefusal, 'superseded'>;
  * The bound a generation of `cardinality` ids breaks over a current one of `before` (`null`: none, or not read), in the
  * order a load checks them, or `undefined`. Pure: the one judgement a load and a dry run share.
  */
-export function guardRefusal(
+function guardRefusal(
   cardinality: number,
   before: number | null,
   guard: LoadGuard | undefined,

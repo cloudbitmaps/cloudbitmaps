@@ -15,7 +15,7 @@
 import type { Clock } from './determinism';
 import { ValidationError } from './errors';
 
-export interface LruOptions {
+interface LruOptions {
   /** Hard ceiling on entries; the least-recently-used is evicted past it. */
   readonly maxEntries: number;
   /**
