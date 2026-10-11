@@ -21,6 +21,7 @@ import {
   isNotFoundError,
   isWriteConflictError,
 } from './errors';
+import { generationsOf } from './generation-list';
 import { MAX_KEPT_GENERATIONS, keptWindow, usableKeptGens } from './kept-generations';
 import { heldGenerations } from './leases';
 import type {
@@ -417,12 +418,8 @@ async function listingPass(
   const record = await deps.registry.get(ref);
   if (record === null) return { deleted: [], kept: [], complete: true }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
-  // A set, not an array: a listing that spans a purge-and-recreate can yield the same generation number
-  // twice (the objects are re-created under the numbers just swept), and the grace window below keeps `keep`
-  // ENTRIES — so a duplicate would silently consume a keep slot and evict a live generation.
-  const seen = new Set<number>();
-  for await (const key of deps.storage.list(ref)) seen.add(key.generation);
-  const gens = [...seen];
+  // Each number once: a duplicate would silently consume a slot of the `keep` window and evict a live generation.
+  const gens = await generationsOf(deps.storage, ref);
   // Everything above was read BEFORE the listing and is acted on after it, and the listing is paginated —
   // seconds wide on a real object store. So re-read the row and reconcile, because BOTH branches can otherwise
   // delete an object the live pointer names, which is the forbidden `missing-storage-generation` state.
@@ -537,7 +534,7 @@ async function listingPass(
       : gens.filter((g) => g < cutoff).sort((a, b) => b - a); // newest-first
   const candidates =
     record.status === 'destroyed'
-      ? gens.sort((a, b) => a - b) // all of it: no reader can resolve a generation of a tombstoned segment
+      ? gens // all of it: no reader can resolve a generation of a tombstoned segment
       : cutoff === null
         ? // No Storage pointer yet, so "below current" selects nothing and there is nothing safe to infer: an object
           // here is either a load about to publish or an orphan we cannot tell apart from it. Deleting would race

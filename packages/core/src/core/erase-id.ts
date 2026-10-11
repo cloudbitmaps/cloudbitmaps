@@ -141,6 +141,8 @@ import type {
   SegmentRef,
   Token,
 } from './ports';
+import { generationsOf } from './generation-list';
+import { ascending } from './order';
 import { type ReadRetry, jitteredWait, retryRead } from './retry';
 import { metadataToCarry, summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
@@ -313,7 +315,7 @@ export async function eraseIdFromSegment(
       return again;
     }
     // Erased under the tombstone: the report covers both passes, what each deleted and the newest holder either read.
-    const collected = [...new Set([...result.collected, ...again.collected])].sort((a, b) => a - b);
+    const collected = [...new Set([...result.collected, ...again.collected])].sort(ascending);
     const newest = Math.max(result.fromGeneration ?? -1, again.fromGeneration ?? -1);
     const merged = { ...again, collected, ...(newest >= 0 ? { fromGeneration: newest } : {}) };
     return recordCollect(ref, merged, second, options);
@@ -636,10 +638,8 @@ async function eraseOnce(
    * current generation, which is in `clean`: one `list`, and no read.
    */
   const holderLeft = async (clean: ReadonlySet<number>): Promise<number | undefined> => {
-    const present = new Set<number>();
-    for await (const key of deps.storage.list(ref)) present.add(key.generation);
-    const toRead = [...present]
-      .sort((a, b) => b - a)
+    const toRead = (await generationsOf(deps.storage, ref))
+      .reverse()
       .filter((generation) => !clean.has(generation));
     return (await holdsEach(toRead, true)).find((outcome) => outcome.held === true)?.generation;
   };
@@ -812,7 +812,7 @@ async function eraseOnce(
       ...base,
       erased: true,
       fromGeneration,
-      collected: [...collected].sort((a, b) => a - b),
+      collected: [...collected].sort(ascending),
     };
   };
 
@@ -823,7 +823,7 @@ async function eraseOnce(
    */
   const sealedOnly = (answer: EraseIdResult, collected: readonly number[]): EraseIdResult => {
     if (collected.length > 0) seen.collectedOn = record.token;
-    return { ...answer, collected: [...collected].sort((a, b) => a - b) };
+    return { ...answer, collected: [...collected].sort(ascending) };
   };
 
   /**
@@ -846,9 +846,7 @@ async function eraseOnce(
    * and deletes it.
    */
   const unpublished = async (): Promise<EraseIdResult> => {
-    const generations: number[] = [];
-    for await (const key of deps.storage.list(ref)) generations.push(key.generation);
-    const newestFirst = generations.sort((a, b) => b - a);
+    const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
     const holders: number[] = []; // newest first
     const clean = new Set<number>();
     for (const { generation, held } of await holdsEach(newestFirst, false)) {
@@ -861,7 +859,7 @@ async function eraseOnce(
     const newest = holders.find((generation) => !sealed.has(generation));
 
     const { deleted, moved, missing } = await deleteFenced(holders);
-    const collected = [...deleted].sort((a, b) => a - b);
+    const collected = [...deleted].sort(ascending);
     const left = await holderLeft(clean);
     if (missing !== undefined) notePointerOnDeleted(missing);
     if (left === undefined) {
@@ -887,9 +885,7 @@ async function eraseOnce(
    * is read again. One listing for a tombstone with nothing left.
    */
   const underTombstone = async (): Promise<EraseIdResult> => {
-    const generations: number[] = [];
-    for await (const key of deps.storage.list(ref)) generations.push(key.generation);
-    const newestFirst = generations.sort((a, b) => b - a);
+    const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
     const holder = (await holdsEach(newestFirst, true)).find((h) => h.held === true);
     if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
     const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
@@ -968,12 +964,10 @@ async function eraseOnce(
       fromGeneration: from,
       collected: [],
     };
-    const others = new Set<number>();
-    for await (const key of deps.storage.list(ref)) {
-      if (key.generation !== from) others.add(key.generation);
-    }
-    if (others.size === 0) return notMember;
-    const newestFirst = [...others].sort((a, b) => b - a);
+    const newestFirst = (await generationsOf(deps.storage, ref))
+      .filter((g) => g !== from)
+      .reverse();
+    if (newestFirst.length === 0) return notMember;
 
     const clean = new Set<number>([from]);
     const holdersAbove: number[] = []; // newest first, those that could not be searched included
@@ -1358,7 +1352,7 @@ async function* rewrite(
   maxBytes: number,
   read: <T>(op: () => Promise<T>) => Promise<T>,
 ): AsyncGenerator<{ chunkKey: number; bitmap: CodecBitmap }> {
-  const keys = [...reader.chunkKeys()].sort((a, b) => a - b);
+  const keys = [...reader.chunkKeys()].sort(ascending);
   // The replaced chunk is never read: it is already in hand. Every other chunk comes through the reader's coalesced
   // stream: neighbouring chunks share one range request, each range goes out under the caller's read retry on its
   // own, and the stream holds at most REWRITE_RANGES_AHEAD ranges. It is the same reader, so the whole rewrite reads

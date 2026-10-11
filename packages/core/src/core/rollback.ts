@@ -20,6 +20,7 @@ import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audi
 import { incarnationField } from './token';
 import { openRollbackTarget, provesOwnObject } from './crbm-storage-source';
 import { aadFor } from './crypto';
+import { generationsOf } from './generation-list';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
   IntegrityError,
@@ -94,15 +95,13 @@ export async function listGenerations(
   validateUserRef(ref);
   const record = await deps.registry.get(ref);
   const current = record?.currentGen ?? null;
-  const seen = await generationsIn(ref, deps.storage);
+  const seen = await generationsOf(deps.storage, ref);
   const described = record === null ? undefined : await currentDescription(ref, record, deps);
-  return [...seen]
-    .sort((a, b) => a - b)
-    .map((generation) =>
-      generation === current
-        ? { generation, current: true, ...described }
-        : { generation, current: false },
-    );
+  return seen.map((generation) =>
+    generation === current
+      ? { generation, current: true, ...described }
+      : { generation, current: false },
+  );
 }
 
 /**
@@ -231,8 +230,8 @@ export async function rollbackSegment(
 
   // A first look, for the affordance rather than the safety: an operator who named a collected generation needs
   // to be told what IS available, and that is much nicer to produce before anything has moved.
-  const present = await generationsIn(ref, deps.storage);
-  if (!present.has(toGeneration)) throw notInBucket(ref, toGeneration, present, false);
+  const present = await generationsOf(deps.storage, ref);
+  if (!present.includes(toGeneration)) throw notInBucket(ref, toGeneration, present, false);
   // A row with no pointer has every generation above it: none was ever published.
   const forward = record.currentGen === null || toGeneration > record.currentGen;
   if (forward && options.allowForward !== true) {
@@ -457,25 +456,17 @@ function isKeyed(record: RegistryRecord): boolean {
   return record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
 }
 
-/** The generations the bucket holds for `ref`, from one listing. */
-async function generationsIn(ref: SegmentRef, storage: IStorageDriver): Promise<Set<number>> {
-  const present = new Set<number>();
-  for await (const key of storage.list(ref)) present.add(key.generation);
-  return present;
-}
-
 /** The refusal of a target whose object is not in the bucket, naming the generations that are. */
 function notInBucket(
   ref: SegmentRef,
   generation: number,
-  present: ReadonlySet<number>,
+  present: readonly number[],
   current: boolean,
 ): NotFoundError {
-  const available = [...present].sort((a, b) => a - b);
   return new NotFoundError(
     `rollback: generation ${generation} of "${ref.segment}" ` +
       (current ? 'is current, but its object is not in the bucket' : 'is not in the bucket') +
-      (available.length === 0 ? ' (no generations remain)' : ` — present: ${available.join(', ')}`),
+      (present.length === 0 ? ' (no generations remain)' : ` — present: ${present.join(', ')}`),
   );
 }
 
@@ -493,7 +484,7 @@ async function requirePresent(
     await storage.getTail({ ...ref, generation }, 0);
   } catch (err) {
     if (!isNotFoundError(err)) throw err;
-    throw notInBucket(ref, generation, await generationsIn(ref, storage), true);
+    throw notInBucket(ref, generation, await generationsOf(storage, ref), true);
   }
 }
 

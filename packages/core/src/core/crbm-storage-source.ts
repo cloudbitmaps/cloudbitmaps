@@ -44,6 +44,7 @@ import {
   leaseChurn,
   onlyLeasesDiffer,
 } from './leases';
+import { ascending } from './order';
 import { jitteredWait } from './retry';
 import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
@@ -3689,9 +3690,9 @@ export async function verifyGeneration(
   },
   crypto: CrbmCrypto | undefined,
 ): Promise<void> {
-  const expectedKeys = [...expected.chunkKeys].sort((a, b) => a - b);
+  const expectedKeys = [...expected.chunkKeys].sort(ascending);
   const reader = await openGenerationReader(storage, key, crypto);
-  const actualKeys = [...reader.chunkKeys()].sort((a, b) => a - b);
+  const actualKeys = [...reader.chunkKeys()].sort(ascending);
   const keysMatch =
     actualKeys.length === expectedKeys.length && actualKeys.every((k, i) => k === expectedKeys[i]);
   if (!keysMatch) {
