@@ -141,8 +141,16 @@ describe('a handle takes { namespace } only', () => {
 });
 
 describe('an operand list holds segments only', () => {
-  const NOT_SEGMENTS: readonly unknown[] = [null, 5, {}, 'a'];
-  const message = 'an operand must be a segment from store.segment()';
+  const NOT_SEGMENTS: readonly unknown[] = [
+    null,
+    5,
+    {},
+    'a',
+    { leaseError: () => undefined },
+    { ref: { segment: 'a' }, leaseHold: undefined, leaseError: () => undefined },
+  ];
+  const message =
+    'an operand must be a segment from `store.segment()` of a compatible copy of @cloudbitmaps/roaring; install one version of it';
 
   it('every combine and *Into refuses a value that is not a segment, before reading anything', async () => {
     const backend = new MemoryStorage();

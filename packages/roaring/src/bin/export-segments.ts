@@ -54,19 +54,19 @@ export interface ExportConfig {
   readonly namespace?: string;
 }
 
-/** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
+/** Parse + validate config from an environment map. Throws a {@link ValidationError} on misconfiguration. */
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
-    throw new Error('CR_EXPORT_ROOT is required (the local-filesystem storage root)');
+    throw new ValidationError('CR_EXPORT_ROOT is required (the local-filesystem storage root)');
   }
   const out = env.CR_EXPORT_OUT;
   if (out === undefined || out === '') {
-    throw new Error('CR_EXPORT_OUT is required (the output directory for the dump)');
+    throw new ValidationError('CR_EXPORT_OUT is required (the output directory for the dump)');
   }
   const format = env.CR_EXPORT_FORMAT || 'roaring'; // '' (an unset shell var) is the default, as the namespace's is
   if (format !== 'roaring' && format !== 'ndjson') {
-    throw new Error(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
+    throw new ValidationError(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
   }
   const namespace = env.CR_EXPORT_NAMESPACE || undefined; // treat '' (an unset shell var) as "no filter"
   return { root, out, format, namespace };
