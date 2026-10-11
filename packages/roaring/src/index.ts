@@ -2712,7 +2712,8 @@ export class CloudRoaring {
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
-   * object back, the pin reads it again.
+   * object back, the pin reads it again. A read of the segment already running on this store, a pin's and a combine's
+   * with a pinned operand included, caches nothing more of what it began reading before the call.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
@@ -2733,7 +2734,8 @@ export class CloudRoaring {
    *
    * The pinned handle gets its own engine but **shares the store's chunk cache**, under keys of its own: the
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
-   * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
+   * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}). It
+   * shares the store engine's invalidations too, so the store's writes reach a pinned read already running.
    */
   private async pinSegment(ref: SegmentRef, leaseUntil?: number, named?: PinAt): Promise<Segment> {
     const crbm = this.crbmSource;
@@ -2827,7 +2829,8 @@ export class CloudRoaring {
    * An engine reading every segment in `pins` at its pinned generation and everything else live, with the store's
    * retries, so a transient fault on a pinned read is retried as it would be on a live one.
    *
-   * It **shares the store's chunk cache and its memory bound**, under keys of its own for each pinned segment.
+   * It **shares the store's chunk cache and its memory bound**, under keys of its own for each pinned segment, and the
+   * store engine's invalidations, so an invalidation of a pinned segment reaches a read of the pin already running.
    */
   private engineWithPins(pins: ReadonlyMap<string, PinnedAt>): SegmentEngine {
     const crbm = this.crbmSource;
@@ -2848,6 +2851,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       budget: this.budget,
+      sharesInvalidationsWith: this.engine,
     });
   }
 
@@ -3077,7 +3081,8 @@ export interface MaterializeOptions extends CombineOptions {
  * `throw()`, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
  * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
  * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
- * fetched until a read is first pulled.
+ * fetched until a read is first pulled. A stream pulled with `next()` and dropped without `return()` is held by nothing
+ * in the store, so it is garbage once the caller lets it go.
  */
 export interface IdStream extends AsyncIterable<number> {
   /**
@@ -3478,7 +3483,9 @@ export class Segment {
    * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
    *
    * An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
-   * destroyed.
+   * destroyed. A read of the pin already running when the invalidation comes, a combine with the pin as an operand
+   * included, caches nothing more of what it began reading before it, so the pin's next read opens the object again
+   * too.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or

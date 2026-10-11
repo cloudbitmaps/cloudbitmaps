@@ -11,8 +11,32 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
+  invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other.
+  Engines that read through one chunk cache share their invalidations this way, and naming an engine over another
+  cache throws `ValidationError`. `CloudRoaring` builds the engines of its pins, and of its combines with a pinned
+  operand, so.
+
 ### Fixed
 
+- **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
+  engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
+  pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,
+  `dropSegment`, `retireExpired` or `invalidate` ran wrote what it had read back into the cache once the request
+  landed, and the pin's later reads were answered from it, an erased id included, until the cache evicted it. Every
+  engine over the store's chunk cache now shares one record of its invalidations: such a read caches nothing more of
+  what it began reading before the invalidation, and the pin's next read opens its object again, failing with
+  `NotFoundError` once the object is gone, as the [reading guide](docs/guide/reading.md#how-a-pin-stays-correct) and
+  the `Segment.pin` doc say.
+- **A read dropped without closing it no longer stays in memory.** An `iterate` or a combine pulled with `next()` and
+  then dropped without `return()`, as a `Promise.race` timeout around a pull does, was held by the engine for the
+  engine's whole life: its key list, and the source's suspended stream with the ranges it had already landed (up to
+  the read's `concurrency`, 32 by default, each at most 1 MiB or one chunk), one per abandoned read, with no bound.
+  The engine keeps no list of open streams now. A stream records when it opened, and before it caches a chunk asks
+  whether its segment has been invalidated since, from a record of the latest invalidation of up to 1,024 segments; a
+  segment the record has let go counts as invalidated, so a stream that opened before then caches no more of it.
 - **Azure and S3 tail reads fail closed.** An Azure tail read took a blob's size from one request and its bytes from another, so a blob replaced between them could return one blob's size with another's bytes and version; the download is now conditional on the properties' ETag, the pair is read again once on a replacement, and a second replacement is a `TransientError`. S3's `getTail` with a length that is not a whole number (`NaN`, `1.5`) sent `bytes=-NaN` and surfaced a raw service error; it now throws `ValidationError` before sending, as GCS and Azure do. The S3 driver now treats `EHOSTUNREACH` and `ENETUNREACH` as transient, so the read retry covers them as it does for GCS and Azure. An Azure properties response with no ETag is refused with `ValidationError`, since the download could not then be conditional.
 - **The cost tools refuse input they would have misread.** `estimateCost` and `groundedReport` now refuse a key they do not take, at the top level and inside `workload`, each segment, and `pricing`, with a `ValidationError` naming the key and where it sits: a segment `{ size: 1e9 }` used to be priced as 0 bytes, and `workload: { readsPerSecond }` was dropped. `estimateCost` refuses a segment `count` that is not a whole number, and a workload or rate card whose cost is not a finite number of dollars, instead of returning `$Infinity/mo`.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
