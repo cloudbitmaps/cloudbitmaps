@@ -37,10 +37,14 @@ so, and so do the module headers in the code.
   still yield after `eraseSubject`: up to 32 chunks for `iterate`. A pinned `iterate`, or a combine on the same store
   with a pinned operand, never looked again, and went on yielding the erased generation from every range it had
   already landed, and to the end of a small generation whose reader kept its chunks. A pinned stream now looks its pin
-  up again before its next chunk once its store has invalidated anything: after its own segment's invalidation it
-  opens its object again and fails with `NotFoundError` if the object is gone, so a pinned read in flight when the
-  erasure lands fails rather than answers. Where the object is still there (a `load` that keeps it), it carries on
-  with the ranges it holds and reads none again. Another segment's invalidation costs it no request.
+  up again before its next chunk once its store has invalidated its segment: it opens its object again and fails with
+  `NotFoundError` if the object is gone or replaced, or its row is gone or destroyed, so a pinned read in flight when
+  the erasure lands fails rather than answers. Where the object is still there (a `load` that keeps it), that open
+  costs what any open of a pin does (a row read and a tail read with a registry, and a key unwrap on an encrypted
+  segment), and the stream carries on with the ranges it holds and reads none again. Another segment's invalidation
+  costs it no request, whether or not the reader cache still holds the pin's reader. The one exception is a store that
+  invalidates more than 1,024 other segments while the stream runs: the stream then looks its pin up once, which costs
+  that open only where the reader cache has let the pin's reader go.
 - **A read dropped without closing it no longer stays in memory.** An `iterate` or a combine pulled with `next()` and
   then dropped without `return()`, as a `Promise.race` timeout around a pull does, was held by the engine for the
   engine's whole life: its key list, and the source's suspended stream with the ranges it had already landed (up to

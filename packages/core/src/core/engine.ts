@@ -1382,7 +1382,8 @@ export class SegmentEngine {
    * its own source: engines that read one source, as the facade's do, need only one of them told. A read of the
    * segment already running on any of them caches nothing more of what it began reading before the call, whether a
    * request already in flight or a stream already open; a stream that opens after the call, or a request sent after
-   * it, reads afresh and caches what it reads.
+   * it, reads afresh and, on a source that names versions (`currentVersion`), caches what it reads. On one that does
+   * not, a read that began before the call caches nothing from a stream it opens after it.
    *
    * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
    * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation

@@ -184,7 +184,9 @@ does, so the ranges it had already
 requested are dropped when the erasure has landed, not served ([a long call can describe two
 instants](reading.md#how-soon-a-reader-sees-a-new-load)). A pinned read in progress does not move to the rewritten
 generation: before its next chunk it opens its object again, and fails with `NotFoundError` once the erasure has
-deleted it, so it yields no more than that bound either. Every other store is a different
+deleted it, so it yields no more than that bound either. A pin of a generation the erasure could not remove (its
+ledger entry has `erased: false`) finds the object still there, and reads it, the id included, until a re-run of the
+erasure removes it. Every other store is a different
 question, in this process or another. This library ships nothing that could answer it for you: there is no daemon,
 no bus, and no connection between two stores that happen to point at the same bucket.
 
@@ -193,7 +195,7 @@ no bus, and no connection between two stores that happen to point at the same bu
 | storage | on return: the generation holding it is deleted |
 | the store that performed the erasure | on return, for every read that starts after it, and its pins then fail; a read already in progress there can still yield it from a chunk it had requested before |
 | another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), while the registry can be read, for a small generation's chunks too, which its reader holds and serves until the refresh moves it on; an outage of the registry stretches it ([how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)) |
-| `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the next row |
+| `seg.pinAt` of a generation the erasure rewrote, in any store | on return it fails with `NotFoundError`, since the object is deleted (and, with a registry, the row has moved on); during the erasure, between the rewrite's publish and its delete of the old generation, it can still open that generation, and a handle opened then is a pin, covered by the rows for the store that performed the erasure and for a pinned handle in another store |
 | a `materializeMany` call with a feed, and an erasure by any path but this store's `eraseSubject` | **no bound**: the call is refused only by this store's `eraseSubject` |
 | a pinned handle (`seg.pin()`) in another store | **no bound**: until that store's reader cache evicts the pin's reader (in a store with a timed pointer refresh, a small generation's reader holds all of its chunks, decoded or not) and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
 | a leased pinned handle (`seg.pin({ leaseUntil })`) in another store | until its lease ends, at most 14 days after it was taken: its reads then throw `LeaseExpiredError`, whether or not its reader still holds the chunks. Until then, as for any pinned handle in the row above |

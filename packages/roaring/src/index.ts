@@ -2714,7 +2714,8 @@ export class CloudRoaring {
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
    * object back, the pin reads it again. A read of the segment already running on this store, a pin's and a combine's
    * with a pinned operand included, caches nothing more of what it began reading before the call, and a pinned one
-   * opens its object again before its next chunk, failing with `NotFoundError` if the object is gone.
+   * opens its object again before its next chunk, failing with `NotFoundError` if the object is gone or replaced, or
+   * its row is gone or destroyed.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
