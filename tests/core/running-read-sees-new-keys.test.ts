@@ -21,119 +21,44 @@
  */
 import { setImmediate } from 'node:timers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BudgetExceededError, CloudRoaring, MemoryStorage } from '@/index';
-import type { Clock, Segment, SegmentRef } from '@/index';
-import { brandAsBackend } from '@/core/ports';
-import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
+import { BudgetExceededError } from '@/index';
+import type { SegmentRef } from '@/index';
+import type { IStorageDriver } from '@/core/ports';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { withoutRangedReads } from '../helpers/no-ranged-reads';
-
-const C = 65_536;
-const NS = 'ns';
-const TTL = 10;
-const ref = (segment: string): SegmentRef => ({ namespace: NS, segment });
-const S = ref('s');
-const O = ref('o'); // holds one id, in chunk 0
-const MIRROR = ref('mirror'); // holds every id of both generations of `s`
-const OPTOUT = ref('optout');
-
-const GEN0 = Array.from({ length: 50 }, (_, c) => c * C + 1);
-const ADDED = 200 * C + 5;
-const DROPPED = 40 * C + 1;
-const GEN1 = [...GEN0.filter((id) => id !== DROPPED), ADDED];
-const IN_O = 3;
-// In `s` and in the opt-out list from the start, in chunk 0: a combine reads the opt-out list there and at no key after.
-const OPTED_OUT = 1;
-
-const sorted = (ids: Iterable<number>): number[] => [...new Set(ids)].sort((a, b) => a - b);
+import {
+  ADDED,
+  C,
+  DROPPED,
+  GEN0,
+  GEN1,
+  GEN2,
+  GEN2_ADDED,
+  IN_O,
+  LOAD,
+  MIRROR,
+  MOVES,
+  O,
+  OPTED_OUT,
+  OPTOUT,
+  PUBLISH_COLD,
+  S,
+  TTL,
+  across,
+  flatten,
+  move,
+  ref,
+  sorted,
+  world,
+  worldFor,
+} from '../helpers/running-read-world';
+import type { World } from '../helpers/running-read-world';
 
 const MODES = ['streamed', 'chunk by chunk'] as const;
 type Mode = (typeof MODES)[number];
 const perKey = withoutRangedReads();
 afterEach(perKey.restore);
 const inMode = (mode: Mode): void => (mode === 'streamed' ? perKey.restore() : perKey.off());
-
-function manualClock(): Clock & { advance(ms: number): void } {
-  let t = 0;
-  return { now: () => t, sleep: async () => {}, advance: (ms) => void (t += ms) };
-}
-
-interface World {
-  readonly storage: IStorageDriver;
-  readonly registry: IRegistryDriver;
-  readonly clock: ReturnType<typeof manualClock>;
-  readonly store: CloudRoaring;
-  readonly seg: (r: SegmentRef) => Segment;
-}
-
-async function world(
-  options: { s?: readonly number[]; maxRequests?: number } = {},
-): Promise<World> {
-  const backend = new MemoryStorage();
-  const { storage, registry } = backend;
-  const put = (r: SegmentRef, ids: readonly number[]) =>
-    bulkLoadCrbmGeneration(storage, { ...r, generation: 0 }, sorted(ids), { registry });
-  await put(S, options.s ?? GEN0);
-  await put(O, [IN_O]);
-  await put(MIRROR, [...GEN0, ADDED, 300 * C + 7]);
-  await put(OPTOUT, [OPTED_OUT]);
-  const clock = manualClock();
-  const store = new CloudRoaring({
-    storage: brandAsBackend({ storage, registry }),
-    cache: { genTtlMs: TTL },
-    seams: { clock },
-    ...(options.maxRequests === undefined ? {} : { budget: { maxRequests: options.maxRequests } }),
-  });
-  return {
-    storage,
-    registry,
-    clock,
-    store,
-    seg: (r) => store.segment(r.segment, { namespace: NS }),
-  };
-}
-
-/** Every chunk of `refs` in the store's chunk cache, so a read of them is served from it. */
-async function warm(w: World, refs: readonly SegmentRef[]): Promise<void> {
-  for (const r of refs) for await (const id of w.seg(r).iterate()) void id;
-}
-
-const LOAD = 'this store loads';
-const PUBLISH_CACHED = 'another store publishes, past the TTL, every chunk cached';
-const PUBLISH_COLD = 'another store publishes, past the TTL, nothing cached';
-type Move = typeof LOAD | typeof PUBLISH_CACHED | typeof PUBLISH_COLD;
-const MOVES: readonly Move[] = [LOAD, PUBLISH_CACHED, PUBLISH_COLD];
-
-/** The world a move is met in: every chunk of every segment in the chunk cache before the read, for a cached move. */
-async function worldFor(how: Move, options?: Parameters<typeof world>[0]): Promise<World> {
-  const w = await world(options);
-  if (how === PUBLISH_CACHED) await warm(w, [S, O, MIRROR, OPTOUT]);
-  return w;
-}
-
-/** Move `r` to `ids`, as `how` says. Another store's publish is a new generation this store is not told of. */
-async function move(w: World, how: Move, r: SegmentRef, ids: readonly number[]): Promise<void> {
-  if (how === LOAD) {
-    await w.store.load(r, sorted(ids));
-    return;
-  }
-  const generation = ((await w.registry.get(r))?.currentGen ?? -1) + 1;
-  await bulkLoadCrbmGeneration(w.storage, { ...r, generation }, sorted(ids), {
-    registry: w.registry,
-  });
-  w.clock.advance(TTL + 1);
-}
-
-/** Take the first item of `stream`, run `then`, and gather the rest: everything it yielded, in order. */
-async function across<T>(stream: AsyncIterable<T>, then: () => Promise<void>): Promise<T[]> {
-  const out: T[] = [];
-  for await (const item of stream) {
-    out.push(item);
-    if (out.length === 1) await then();
-  }
-  return out;
-}
 
 /**
  * The reads of `s` a move of `s` reaches, each with the answer it gives over generation 1, and whether it looks at its
@@ -162,11 +87,6 @@ const READS_OF_S: ReadonlyArray<
     false,
   ],
 ];
-
-/** The ids of a stream of batches, one at a time, so a batch read moves at the same point as an id read. */
-async function* flatten(batches: AsyncIterable<Uint32Array>): AsyncGenerator<number> {
-  for await (const batch of batches) yield* batch;
-}
 
 describe('a running read of a segment that moves reads the chunk keys of the generation it moved to', () => {
   for (const mode of MODES) {
@@ -236,33 +156,168 @@ describe('a running combine whose exclude moves subtracts what the exclude holds
   }
 });
 
+/** How often each segment's keys are listed while `run` runs: live, and at a pinned generation. */
+async function listingsDuring(
+  run: () => Promise<unknown>,
+): Promise<{ live: Record<string, number>; pinned: Record<string, number> }> {
+  const proto = CrbmStorageChunkSource.prototype;
+  const listChunkKeys = proto.listChunkKeys;
+  const listChunkKeysAt = proto.listChunkKeysAt;
+  const live: Record<string, number> = {};
+  const pinned: Record<string, number> = {};
+  proto.listChunkKeys = function (this: CrbmStorageChunkSource, r: SegmentRef) {
+    live[r.segment] = (live[r.segment] ?? 0) + 1;
+    return listChunkKeys.call(this, r);
+  };
+  proto.listChunkKeysAt = function (
+    this: CrbmStorageChunkSource,
+    ...args: Parameters<typeof listChunkKeysAt>
+  ) {
+    pinned[args[0].segment] = (pinned[args[0].segment] ?? 0) + 1;
+    return listChunkKeysAt.apply(this, args);
+  };
+  try {
+    await run();
+  } finally {
+    proto.listChunkKeys = listChunkKeys;
+    proto.listChunkKeysAt = listChunkKeysAt;
+  }
+  return { live, pinned };
+}
+
 describe('a pinned read never plans again', () => {
   beforeEach(() => inMode('streamed'));
 
-  it('iterate() of a pin reads the pinned generation, across a load', async () => {
+  it('iterate() of a pin reads the pinned generation, across a load, from the one listing it made', async () => {
     const w = await world();
     const pin = await w.seg(S).pin();
-    const got = await across(pin.iterate(), () => move(w, LOAD, S, GEN1));
+    let got: number[] = [];
+    const seen = await listingsDuring(async () => {
+      got = await across(pin.iterate(), () => move(w, LOAD, S, GEN1));
+    });
     expect(got).toEqual(GEN0);
+    expect(seen).toEqual({ live: {}, pinned: { s: 1 } });
   });
 
-  it('everyNth of a pin places its ranks in the pinned generation, across a load', async () => {
+  it('everyNth of a pin places its ranks in the pinned generation, across a load, and lists no keys', async () => {
     const w = await world();
     const pin = await w.seg(S).pin();
-    const got = await across(pin.everyNth(7), () => move(w, LOAD, S, GEN1));
+    let got: number[] = [];
+    const seen = await listingsDuring(async () => {
+      got = await across(pin.everyNth(7), () => move(w, LOAD, S, GEN1));
+    });
     expect(got).toEqual(GEN0.filter((_, i) => (i + 1) % 7 === 0));
+    expect(seen).toEqual({ live: {}, pinned: {} });
   });
 
-  it('a combine plans its live operand again and keeps its pinned one', async () => {
+  it('a combine plans its live operand again and lists its pinned one only at the pin', async () => {
     const w = await world();
     const pin = await w.seg(S).pin();
     const gained = 300 * C + 7;
-    const got = await across(pin.union([w.seg(O)]), async () => {
-      await move(w, LOAD, S, GEN1);
-      await move(w, LOAD, O, [IN_O, gained]);
+    let got: number[] = [];
+    const seen = await listingsDuring(async () => {
+      got = await across(pin.union([w.seg(O)]), async () => {
+        await move(w, LOAD, S, GEN1);
+        await move(w, LOAD, O, [IN_O, gained]);
+      });
     });
     // `s` as pinned: chunk 40 still there, chunk 200 never; `o` as it is now
     expect(got).toEqual(sorted([...GEN0, IN_O, gained]));
+    // the move of `o` plans the read again, which lists `s` at its pin again, never live
+    expect(seen).toEqual({ live: { o: 2 }, pinned: { s: 2 } });
+  });
+});
+
+/**
+ * A move this store makes while a read is still listing a segment's keys: the listing opens the segment's object, and
+ * the load lands before that open returns, so the listing holds the generation it began on while the version the read
+ * resolves next is the new one. Nothing later could tell the two apart, since the read's chunks and its looks would all
+ * name the new version, so the read lists the keys again before it takes one: on its first listing, and on a listing
+ * after a move.
+ */
+describe('a move that lands while a read lists its keys', () => {
+  beforeEach(() => inMode('streamed'));
+
+  /** A world whose first tail read of `segment` at `generation`, once armed, first runs `then`. */
+  async function landingIn(
+    segment: string,
+    generation: number,
+    then: (w: World) => Promise<void>,
+    s?: readonly number[],
+  ) {
+    const state = { armed: false, landed: false };
+    const w: World = await world({
+      ...(s === undefined ? {} : { s }),
+      onTail: async (key) => {
+        if (!state.armed || key.segment !== segment || key.generation !== generation) return;
+        state.armed = false;
+        await then(w);
+        state.landed = true;
+      },
+    });
+    return { w, arm: () => void (state.armed = true), landed: () => state.landed };
+  }
+
+  it('iterate, on its first listing', async () => {
+    const at = await landingIn('s', 0, (w) => move(w, LOAD, S, GEN1));
+    at.arm();
+    const got: number[] = [];
+    for await (const id of at.w.seg(S).iterate()) got.push(id);
+    expect(at.landed()).toBe(true);
+    expect(got, 'a chunk the load added is read').toContain(ADDED);
+    expect(got).toEqual(GEN1);
+  });
+
+  it('andNot, on its first listing: the id the opt-out list gained is subtracted', async () => {
+    const at = await landingIn('optout', 0, (w) => move(w, LOAD, OPTOUT, [OPTED_OUT, ADDED]), GEN1);
+    at.arm();
+    const got: number[] = [];
+    for await (const id of at.w.seg(S).andNot([at.w.seg(OPTOUT)])) got.push(id);
+    expect(at.landed()).toBe(true);
+    expect(got).not.toContain(ADDED);
+    expect(got).toEqual(GEN1.filter((id) => id !== OPTED_OUT && id !== ADDED));
+  });
+
+  it('iterate, on the listing after a move', async () => {
+    const at = await landingIn('s', 1, (w) => move(w, LOAD, S, GEN2));
+    const got = await across(at.w.seg(S).iterate(), async () => {
+      await move(at.w, LOAD, S, GEN1);
+      at.arm();
+    });
+    expect(at.landed()).toBe(true);
+    expect(got, 'a chunk the second load added is read').toContain(GEN2_ADDED);
+    expect(got).toEqual(GEN2);
+  });
+
+  it("another segment's invalidation while it lists costs it no second listing", async () => {
+    const at = await landingIn('s', 0, async (w) => w.store.invalidate(ref('unrelated')));
+    at.arm();
+    let got: number[] = [];
+    const seen = await listingsDuring(async () => {
+      got = [];
+      for await (const id of at.w.seg(S).iterate()) got.push(id);
+    });
+    expect(at.landed()).toBe(true);
+    expect(got).toEqual(GEN0);
+    expect(seen).toEqual({ live: { s: 1 }, pinned: {} });
+  });
+
+  it('andNot, on the listing after a move: both ids the opt-out list gained are subtracted', async () => {
+    const both = [...GEN1, GEN2_ADDED];
+    const at = await landingIn(
+      'optout',
+      1,
+      (w) => move(w, LOAD, OPTOUT, [OPTED_OUT, ADDED, GEN2_ADDED]),
+      both,
+    );
+    const got = await across(at.w.seg(S).andNot([at.w.seg(OPTOUT)]), async () => {
+      await move(at.w, LOAD, OPTOUT, [OPTED_OUT, ADDED]);
+      at.arm();
+    });
+    expect(at.landed()).toBe(true);
+    expect(got).not.toContain(ADDED);
+    expect(got).not.toContain(GEN2_ADDED);
+    expect(got).toEqual(both.filter((id) => ![OPTED_OUT, ADDED, GEN2_ADDED].includes(id)));
   });
 });
 
@@ -424,7 +479,7 @@ describe('a read that plans again', () => {
     try {
       const w = await world();
       const got = await across(w.seg(S).union([w.seg(MIRROR)]), () => move(w, LOAD, S, GEN1));
-      expect(got).toEqual(sorted([...GEN1, ...GEN0, ADDED, 300 * C + 7]));
+      expect(got).toEqual(sorted([...GEN1, ...GEN0, ADDED, GEN2_ADDED, 300 * C + 7]));
     } finally {
       proto.getChunks = getChunks;
     }

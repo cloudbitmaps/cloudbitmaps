@@ -165,23 +165,29 @@ interface ChunkSequence {
   close(): void;
 }
 
+/** One plan of an `iterate`: the keys it reads, the version they were listed under, and their chunks. */
+interface IteratePlan {
+  readonly keys: readonly number[];
+  /** The index in `keys` of the next key to take. */
+  at: number;
+  readonly gen: string | number | null | undefined;
+  readonly chunks: ChunkSequence;
+  readonly moves: Moves;
+  /** The invalidation epoch the keys were listed from. */
+  readonly epoch: number;
+}
+
 /**
- * An `iterate` in progress: the keys of its current plan and how far it has taken them. A move met while it runs plans
- * the keys above the one it last took again, from the generation current then ({@link SegmentEngine.replanIterate}).
+ * An `iterate` in progress: its current plan and the key it last took. A move met while it runs plans the keys above
+ * that key again, from the generation current then ({@link SegmentEngine.replanIterate}).
  */
 interface IterateRun {
   readonly seg: SegmentRef;
   /** The read's range, `null` for every id. */
   readonly w: IdWindow | null;
-  keys: readonly number[];
-  /** The index in `keys` of the next key to take. */
-  at: number;
+  plan: IteratePlan;
   /** The key last taken, -1 before the first. */
   key: number;
-  /** The version the plan was made under. */
-  gen: string | number | null | undefined;
-  chunks: ChunkSequence;
-  moves: Moves;
   /** When it next looks: before the first key after an invalidation in the store. */
   readonly looks: Looks;
   /** Keys taken under the plans before this one: charged to the budget beside this plan's when it plans again. */
@@ -587,7 +593,7 @@ export class SegmentEngine {
     }
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'count'); // one storage fetch per chunk (before fan-out)
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combineOperands`
+    const gen = await this.cacheVersion(seg); // after the shape read — see `listKeys`
     // Order does not matter to a sum, but the window hands chunks back in key order: no more state than that.
     const window = this.chunkWindow(seg, chunkKeys, gen, false);
     let total = 0;
@@ -715,7 +721,7 @@ export class SegmentEngine {
         for (const remainder of chunk) yield joinId(chunkKey, remainder);
       }
     } finally {
-      run.chunks.close();
+      run.plan.chunks.close();
     }
   }
 
@@ -738,7 +744,7 @@ export class SegmentEngine {
         }
       }
     } finally {
-      run.chunks.close();
+      run.plan.chunks.close();
     }
   }
 
@@ -763,45 +769,33 @@ export class SegmentEngine {
         if (ids.length > 0) yield ids;
       }
     } finally {
-      run.chunks.close();
+      run.plan.chunks.close();
     }
   }
 
   /**
-   * Plan an `iterate` of the keys of `seg` above `after` and inside `w`: list them, charge the budget one storage fetch
-   * for each and for each of the `spent` keys earlier plans took, before any fetch, resolve the version, and open
-   * their chunks.
+   * Plan an `iterate` of the keys of `seg` above `after` and inside `w`: list them with their version
+   * ({@link listKeys}), charge the budget one storage fetch for each and for each of the `spent` keys earlier plans
+   * took, before any fetch, and open their chunks.
    */
   private async iteratePlan(
     seg: SegmentRef,
     w: IdWindow | null,
     after: number,
     spent: number,
-  ): Promise<IterateRun> {
-    const epoch = this.scope.epoch;
-    const listed = await this.chunkKeys(seg);
+  ): Promise<IteratePlan> {
+    const { listed, gen, epoch } = await this.listKeys(seg);
     const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
     checkBudget(this.budget, spent + keys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combineOperands`
     const moves: Moves = { moved: false };
     const chunks = this.chunkSequence(seg, keys, gen, epoch, moves);
-    return {
-      seg,
-      w,
-      keys,
-      at: 0,
-      key: after,
-      gen,
-      chunks,
-      moves,
-      looks: this.looks(Infinity, epoch),
-      spent,
-    };
+    return { keys, at: 0, gen, chunks, moves, epoch };
   }
 
   /** The first plan of an `iterate`: every key in `w`. */
-  private planIterate(seg: SegmentRef, w: IdWindow | null): Promise<IterateRun> {
-    return this.iteratePlan(seg, w, -1, 0);
+  private async planIterate(seg: SegmentRef, w: IdWindow | null): Promise<IterateRun> {
+    const plan = await this.iteratePlan(seg, w, -1, 0);
+    return { seg, w, plan, key: -1, looks: this.looks(Infinity, plan.epoch), spent: 0 };
   }
 
   /**
@@ -809,15 +803,17 @@ export class SegmentEngine {
    * when nothing has moved and no look is due, the chunk's own promise is all a key costs.
    */
   private nextChunk(run: IterateRun): Promise<CodecBitmap | null | undefined> {
-    if (run.moves.moved || this.lookDue(run.looks)) return this.nextChunkAfterLook(run);
+    run.looks.left -= 1; // one key nearer the next look
+    if (run.plan.moves.moved || this.lookDue(run.looks)) return this.nextChunkAfterLook(run);
     return this.takeNext(run);
   }
 
   private takeNext(run: IterateRun): Promise<CodecBitmap | null | undefined> {
-    if (run.at === run.keys.length) return Promise.resolve(undefined);
-    const key = run.keys[run.at++]!;
+    const plan = run.plan;
+    if (plan.at === plan.keys.length) return Promise.resolve(undefined);
+    const key = plan.keys[plan.at++]!;
     run.key = key;
-    return run.chunks.take(key);
+    return plan.chunks.take(key);
   }
 
   /**
@@ -827,10 +823,10 @@ export class SegmentEngine {
    */
   private async nextChunkAfterLook(run: IterateRun): Promise<CodecBitmap | null | undefined> {
     // Cleared first, so a chunk that shows a move while the look waits is looked at again.
-    run.moves.moved = false;
+    run.plan.moves.moved = false;
     this.looked(run.looks);
     const now = await this.cacheVersion(run.seg);
-    if (now !== run.gen) await this.replanIterate(run);
+    if (now !== run.plan.gen) await this.replanIterate(run);
     return this.takeNext(run);
   }
 
@@ -839,14 +835,43 @@ export class SegmentEngine {
    * What the plan's stream still has in flight is dropped, not served.
    */
   private async replanIterate(run: IterateRun): Promise<void> {
-    run.chunks.close();
-    const next = await this.iteratePlan(run.seg, run.w, run.key, run.spent + run.at);
-    run.keys = next.keys;
-    run.at = 0;
-    run.gen = next.gen;
-    run.chunks = next.chunks;
-    run.moves = next.moves;
-    run.spent = next.spent;
+    run.plan.chunks.close();
+    run.spent += run.plan.at;
+    run.plan = await this.iteratePlan(run.seg, run.w, run.key, run.spent);
+  }
+
+  /**
+   * A segment's chunk keys, ascending and checked, and the version they are read under, with the invalidation epoch
+   * they were listed from. The version is resolved AFTER the shape read (`listChunkKeys`): a non-empty shape read means
+   * the source resolved and cached a non-null snapshot, so the version cannot then come back null while storage data is
+   * present, and `storageChunk` cannot skip every chunk on a stale null.
+   *
+   * A write of this store that moves the segment while the two are read would leave the keys of one generation under
+   * the version of the next, and nothing later could tell: the read's chunks and its looks would all name that newer
+   * version. So when the segment was invalidated in this store's scope while they were read, they are read again. Only
+   * that segment's invalidations count, so a store busy invalidating other segments costs a listing nothing more; with
+   * none since the listing began the check is a number compare.
+   *
+   * Honest note on how much the ordering buys, so a future reader does not take an untested claim for a tested one.
+   * Against a `CrbmStorageChunkSource`, the only source with a generation to resolve, both reads go through the same
+   * resolved-reader memo, so the pathological state (keys non-empty, version null) does not arise and swapping the two
+   * is observably identical. The ordering is kept because it is the order that is correct for *any* source satisfying
+   * the port (a custom source that resolves its shape and its generation independently can still produce that state),
+   * not because a test can currently tell the difference. Within a call shorter than `cache.genTtlMs` the two share one
+   * snapshot, so the read is generation-consistent, absent cache-pressure eviction (see `intersect`).
+   */
+  private async listKeys(seg: SegmentRef): Promise<{
+    listed: number[];
+    gen: string | number | null | undefined;
+    epoch: number;
+  }> {
+    const prefix = this.prefixes.of(seg);
+    for (;;) {
+      const epoch = this.scope.epoch;
+      const listed = await this.chunkKeys(seg);
+      const gen = await this.cacheVersion(seg);
+      if (!this.scope.invalidatedSince(prefix, epoch)) return { listed, gen, epoch };
+    }
   }
 
   /**
@@ -857,9 +882,11 @@ export class SegmentEngine {
     return { every, epoch, left: every };
   }
 
-  /** Whether a look is due before the next key, which this counts. */
+  /**
+   * Whether a look is due before the next key: an invalidation since the read last looked, or its keys counted down. The
+   * caller counts the key, as it takes one, before it asks.
+   */
   private lookDue(looks: Looks): boolean {
-    looks.left -= 1;
     return looks.epoch !== this.scope.epoch || looks.left < 0;
   }
 
@@ -914,7 +941,7 @@ export class SegmentEngine {
       const c = counts.get(k)!;
       assertChunkCardinalityInRange(c);
     }
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combineOperands`
+    const gen = await this.cacheVersion(seg); // after the shape read — see `listKeys`
 
     // Ids of the first chunk at or below `after` do not count, so a range that cuts it reads it to know how many
     // there are. Before any fetch: no boundary can exist when the chunks in range hold fewer than `n` ids, and the
@@ -1198,20 +1225,8 @@ export class SegmentEngine {
   }
 
   /**
-   * Each operand's chunk-key set inside the read's range and above the key `after`, and its current version, include
-   * operands first. The version is resolved AFTER the shape read (`listChunkKeys`): a non-empty shape read means the
-   * source resolved and cached a non-null snapshot, so the version cannot then come back null while storage data is
-   * present, and `storageChunk` cannot skip every chunk on a stale null.
-   *
-   * Honest note on how much this ordering buys, so a future reader does not take an untested claim for a tested one.
-   * Against a `CrbmStorageChunkSource`, the only source with a generation to resolve, both reads go through the same
-   * resolved-reader memo, so the pathological state (keys non-empty, version null) does not arise and swapping the two
-   * is observably identical. The ordering is kept because it is the order that is correct for *any* source satisfying
-   * the port (a custom source that resolves its shape and its generation independently can still produce that state),
-   * not because a test can currently tell the difference.
-   *
-   * Within a call shorter than `cache.genTtlMs` the two share one snapshot, so the read is generation-consistent,
-   * absent cache-pressure eviction (see `intersect`).
+   * Each operand's chunk-key set inside the read's range and above the key `after`, and the version it was listed under
+   * ({@link listKeys}), include operands first.
    */
   private combineOperands(
     segs: readonly SegmentRef[],
@@ -1220,11 +1235,9 @@ export class SegmentEngine {
     after: number,
   ): Promise<[Operand[], Operand[]]> {
     const extract = async (seg: SegmentRef): Promise<Operand> => {
-      const epoch = this.scope.epoch;
-      const all = await this.chunkKeys(seg);
-      const gen = await this.cacheVersion(seg);
-      const keys = after < 0 && w === null ? all : keysAbove(all, w, after);
-      return { seg, keys: new Set(keys), chunkless: all.length === 0, gen, epoch };
+      const { listed, gen, epoch } = await this.listKeys(seg);
+      const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
+      return { seg, keys: new Set(keys), chunkless: listed.length === 0, gen, epoch };
     };
     return Promise.all([Promise.all(segs.map(extract)), Promise.all(excludeSegs.map(extract))]);
   }
@@ -1276,6 +1289,7 @@ export class SegmentEngine {
    * and no look is due, the window's own promise is all a key costs.
    */
   private nextSlot(run: CombineRun): Promise<CombineSlot | undefined> {
+    run.looks.left -= 1; // one key nearer the next look
     if (run.plan.moves.moved || this.lookDue(run.looks)) return this.nextSlotAfterLook(run);
     return run.plan.window.next();
   }
