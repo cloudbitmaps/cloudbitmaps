@@ -42,8 +42,9 @@ export class CloudRoaringError extends Error {
 }
 
 /**
- * Invalid caller input (bad id, segment name, options), raised before any storage call. A cloud driver also raises it
- * for a bucket or container it finds does not exist, from the call that found it.
+ * Invalid input, which the same call fails on again. Most is refused before any storage call (a bad id, segment name
+ * or option); some is found by the call itself: a read past the end of an object, or a bucket or container a cloud
+ * driver finds does not exist.
  */
 export class ValidationError extends CloudRoaringError {}
 

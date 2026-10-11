@@ -46,8 +46,9 @@ four; a custom role needs `storage.objects.create`, `storage.objects.get`, `stor
 key, which grants far more: prefer a `containerClient` built from a managed identity.
 
 **A bucket or container that does not exist** fails every call with a `ValidationError`, never reads as an empty store: a
-misspelt or deleted bucket cannot answer `has` with `false` and `count` with `0`. The one exception is S3's zero-length
-tail (`getTail(key, 0)`), which reads as a missing object because S3 sends no error code on a HEAD. The error names the bucket or
+misspelt or deleted bucket cannot answer `has` with `false` and `count` with `0`. On S3 a zero-length tail
+(`getTail(key, 0)`) reads as a missing object, because S3 sends no error code on a HEAD; on GCS, see the two cases this
+paragraph ends with. The error names the bucket or
 container and says what to check (the name, and the region, endpoint, project or account the client is built for), and
 carries the service's own error (`NoSuchBucket`, `ContainerNotFound`) as its `cause`. It is not a `NotFoundError`, which
 a read answers by looking again, and a wiring fault does not heal. GCS answers a missing bucket and a missing object with the same `404`, so

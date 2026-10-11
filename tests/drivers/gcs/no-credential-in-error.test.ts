@@ -58,7 +58,11 @@ async function outcome(run: () => Promise<unknown>): Promise<unknown> {
   throw new Error('expected a failure');
 }
 
-for (const status of [503, 403]) {
+async function drain(listing: AsyncIterable<unknown>): Promise<void> {
+  for await (const item of listing) void item;
+}
+
+for (const status of [503, 403, 404]) {
   describe(`GCS: a ${status} from the server leaves no credential in the error`, LIMIT, () => {
     let server: Server;
     let storage: Storage;
@@ -78,6 +82,11 @@ for (const status of [503, 403]) {
     });
 
     const cases: Array<[string, (s: Storage) => Promise<unknown>]> = [
+      [
+        'storage list',
+        (s) => drain(new GcsStorageDriver({ storage: s, bucket: 'b' }).list({ segment: 's' })),
+      ],
+      ['registry list', (s) => drain(new GcsRegistryDriver({ storage: s, bucket: 'b' }).list())],
       [
         'storage getRange',
         (s) => new GcsStorageDriver({ storage: s, bucket: 'b' }).getRange(GEN, 0, 8),

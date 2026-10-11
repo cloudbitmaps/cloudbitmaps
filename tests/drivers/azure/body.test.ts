@@ -17,8 +17,18 @@ describe('Azure: collect, the one body reader', () => {
   });
 
   it('stops at the first byte past the cap and lets the body go', async () => {
-    const body = Readable.from([Buffer.alloc(8), Buffer.alloc(8)]);
+    let pulled = 0;
+    // It would go on for 16 chunks: only a check made as each chunk arrives stops it at the second.
+    const body = new Readable({
+      highWaterMark: 8,
+      read() {
+        pulled += 1;
+        if (pulled > 16) this.destroy(new Error('read on past the cap'));
+        else this.push(Buffer.alloc(8));
+      },
+    });
     await expect(collect(body, live(), 12, oversize)).rejects.toThrow('too long');
+    expect(pulled).toBeLessThan(16);
     expect(body.destroyed).toBe(true);
   });
 

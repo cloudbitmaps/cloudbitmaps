@@ -508,11 +508,11 @@ export class GcsStorageDriver implements IStorageDriver {
   }
 
   /**
-   * Reclassify a transient GCS fault (throttle/5xx/dropped connection) as a retryable {@link TransientError},
-   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure, and a
-   * missing bucket as a `ValidationError` that names it; everything else propagates unchanged.
-   * The final fallback at every client-call site: an HTTP status and a fault
-   * in transit arrive typed, and anything else (a checksum mismatch, a credentials failure) as the SDK raised it.
+   * Reclassify a transient GCS fault (throttle/5xx/dropped connection) as a retryable {@link TransientError}, so the
+   * store's read retry can ride it out and a write's caller can tell it from a deterministic failure, and a missing
+   * bucket as a `ValidationError` that names it; everything else propagates unchanged. The final fallback at every
+   * client-call site: an HTTP status and a fault in transit arrive typed, and anything else (a checksum mismatch, a
+   * credentials failure) as the SDK raised it.
    */
   private mapError(err: unknown): unknown {
     const scrubbed = asMissingBucket(scrubCredentials(err), this.bucket);
