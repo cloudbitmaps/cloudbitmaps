@@ -88,6 +88,8 @@ async function timesOut(
     expect(err).toBeInstanceOf(TransientError);
     expect((err as Error).message).toBe(`Azure Blob ${operation} timed out after ${TIMEOUT} ms`);
     expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
+    // A ceiling loose enough for a loaded runner, tight enough that a timer firing seconds late fails.
+    expect(ms).toBeLessThan(TIMEOUT + 5_000);
     expect(await stub.releasedStalls()).toBe(true);
     await sleep(50);
   } finally {
