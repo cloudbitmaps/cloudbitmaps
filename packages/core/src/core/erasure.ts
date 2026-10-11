@@ -109,7 +109,7 @@ export async function destroySegment(
  * listing is capped at `maxScanSegments` (default {@link DEFAULT_MAX_SCAN_SEGMENTS}, 250,000), the ceiling every
  * other fleet scan keeps. A namespace over it throws `BudgetExceededError` **before any segment is destroyed**,
  * never part-way through; raise `maxScanSegments` when the namespace really is that large and the memory is there.
- * A `maxScanSegments` that is not a finite number >= 1 throws `ValidationError`, again before anything is destroyed.
+ * A `maxScanSegments` that is not a whole number of at least 1 throws `ValidationError`, again before anything is destroyed.
  */
 export async function eraseNamespace(
   namespace: string,

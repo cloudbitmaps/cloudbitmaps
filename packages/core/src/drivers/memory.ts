@@ -235,8 +235,6 @@ export class MemoryStorageDriver implements IStorageDriver {
 /** Collision-proof object key for a generation: `<segmentKey> <generation>` (the name parts are encoded, so a space cannot appear inside one). */
 function genObjectKey(key: GenKey): string {
   validateSegmentRef(key);
-  if (!Number.isInteger(key.generation) || key.generation < 0) {
-    throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
-  }
+  requireInteger(key.generation, { min: 0, what: 'generation' });
   return `${segmentKey(key)} ${key.generation}`;
 }

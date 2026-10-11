@@ -4,6 +4,7 @@ import { dueBucketsAt } from '@/core/due-index';
 import { ValidationError } from '@/core/errors';
 import { BoundedLru } from '@/core/lru';
 import { drainRegistry } from '@/core/registry-scan';
+import { storageObjectKey } from '@/drivers/_shared/object-keys';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring, MemoryStorage } from '@/index';
 
@@ -67,6 +68,14 @@ describe('number checks across the core share one wording', () => {
     await expect(storage.getRange(key, 0, 1.5)).rejects.toThrow(
       'range length must be an integer of at least 0; got 1.5',
     );
+  });
+
+  it('a generation number in an object key', () => {
+    for (const generation of [-1, 1.5, 2 ** 53]) {
+      expect(() => storageObjectKey(undefined, { segment: 's', generation })).toThrow(
+        `generation must be an integer of at least 0; got ${generation}`,
+      );
+    }
   });
 
   it('a rollback target', async () => {

@@ -47,6 +47,19 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Every number an option or argument takes is refused by one rule and worded one way.** An integer is a safe
+  integer, so a whole number of 2^53 or more is refused wherever one is taken (a `retireExpired` `limit` of `1e300` is
+  refused), and the refusal is a `ValidationError` reading `<name> must be an integer
+  of at least 1; got <value>`, or `an integer from 0 to 1024` where there is an upper bound, or `a finite number of at
+  least 0` for a fraction. The value shown is the one refused: a string is quoted, a `null` or other non-number appears
+  by its type, and a `concurrency` that fell back to a default is never reported as `undefined`. The size options of
+  the cloud backends read `partBytes must be an integer of at least 1; got 0`, and `requirePositiveInt` from
+  `@cloudbitmaps/core/driver-kit` words its refusal the same way and takes the same values. Newly refused: a fractional
+  `maxScanSegments` (for `retireExpired`, `checkConsistency` and `eraseNamespace`), a `getRange` offset or length of 2^53
+  or more on the in-process and local-filesystem drivers, and a generation number of 2^53 or more in a storage key.
+- **The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.** `retry: { maxAttempts:
+  2.5 }` and `retry: { baseDelayMs: 5000 }` (which leaves `maxDelayMs` at its 2,000 ms default) throw `ValidationError`
+  when the store is built, as the other fields of the policy already did.
 - **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
   tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
   before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number
