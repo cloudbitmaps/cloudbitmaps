@@ -487,7 +487,8 @@ longer grace than the one that filed a pointer finds it early and leaves it; onc
 dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
 nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
 without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
-works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
+works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the
+cap wait for the next call, and `limited` reports retirements still eligible, not this cleanup. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
 under `dryRun`, or on a registry that only tombstones its rows (where no pointer is filed to begin with). A pointer
 removal the registry refuses is counted in `purgeFaults`.
 
