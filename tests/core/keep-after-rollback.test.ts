@@ -119,6 +119,8 @@ describe('the first load after a rollback keeps the generation it superseded', (
     const r = await loadSegment(SEG, [7], w.deps, { keep: 1 });
     expect(r).toMatchObject({ generation: 4, published: true });
     expect(await generations(w.storage)).toEqual([2, 4]);
+    // Newest first, the order a listing pass has always deleted in.
+    expect(r.collected).toEqual([3, 1, 0]);
   });
 
   it('a rollback onto the oldest generation keeps it, and the newest keep - 1 of the rest', async () => {

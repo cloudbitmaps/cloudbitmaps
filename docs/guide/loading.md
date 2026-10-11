@@ -453,7 +453,10 @@ names the one generation it holds, so it never delays the collection of anything
 read after it throws rather than reads empty. See [Hold a generation for a job](reading.md#hold-a-generation-for-a-job-a-lease)
 and [Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
 
-**Who collects.** Collection deletes generations strictly below the current one, keeping the newest `keep` of them.
+**Who collects.** Collection deletes generations strictly below the current one, keeping `keep` of them: the
+generation the load superseded, then the newest of the rest by number. Without a rollback the superseded generation is
+usually the newest below the pointer, so the window is the newest `keep`; after one it is the generation the rollback
+restored ([what the first load after a rollback keeps](#what-the-first-load-after-a-rollback-keeps)).
 `keep` is a non-negative integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError`
 before anything is written. It never touches the current generation or anything above it.
 
@@ -480,8 +483,9 @@ A load lists the segment's objects instead in these cases:
   object with one zero-byte read first, and lists unless it finds it. A `keep` of 0 deletes the generation it
   superseded, which is the object in question, so it makes no such read;
 - when the row records no list: a `keep` above 64, which a row cannot record, and the first load after a rollback,
-  which leaves the row recording none. That load keeps the newest `keep` generations it finds
-  below the pointer and records them, so the next one collects by name. A `keep` above 64 lists on every load.
+  which leaves the row recording none. That load keeps `keep` of the generations it finds below the pointer, the one
+  it superseded first and then the newest by number, and records them, so the next one collects by name. A `keep`
+  above 64 lists on every load.
 
 The row's list is a cache of what a listing would keep, and the listing repairs it. A name in it can be missing from
 the bucket after a lifecycle rule or a collection that was not a load's took the object; the window then holds fewer than
@@ -588,10 +592,31 @@ generation already current is a reported no-op.
 **What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
 are then above `currentGen`, where collection never looks. They remain until one of three things happens, and until then `seg.pinAt` can reopen one of them, with its fingerprint, once a load has moved the pointer past it. Loads pass
 them: each takes the next number up while no object holds it, the first whose number one of them holds numbers above
-them all, and collection then keeps the newest `keep` of what is below its pointer. Or `dropSegment` deletes
+them all, and collection then keeps `keep` of what is below its pointer, the generation that load superseded first
+([what the first load after a rollback keeps](#what-the-first-load-after-a-rollback-keeps)). Or `dropSegment` deletes
 them. Or an erasure deletes them: all of them when it rewrites, and, when the current generation does not hold the id,
 only those that hold it and any no read of the segment can open, whatever the id. Rollback is audited as
 `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and this one cannot.
+
+### What the first load after a rollback keeps
+
+A load keeps `keep` generations below the one it publishes: the generation it superseded first, then the newest of the
+rest by number. After a rollback, the generation the next load supersedes is the one the rollback restored, so that one
+stays: a pin taken on it since goes on reading, and it is still there to roll back to if the new load is bad too. The
+generations the rollback moved away from are newer by number, so they are the ones that go.
+
+With generations 0 to 3 in the bucket and the pointer rolled back from 3 to 1, the next load finds 2 taken and
+publishes 4:
+
+| `keep` | the bucket after the load | why |
+|---|---|---|
+| `0` | 4 | nothing below the new pointer is kept |
+| `1` | 1, 4 | 1, the restored generation, which the load superseded |
+| `2` | 1, 3, 4 | 1, then the newest of the rest, 3 |
+
+The load records what it kept, so the load after it collects by name from there: with `keep: 1` it publishes 5 and
+deletes 1. Where the superseded generation's object has gone from the bucket (a lifecycle rule took it), the load keeps
+the newest `keep` that are there.
 
 ## Write a result into another segment: the `*Into` verbs
 
@@ -1244,10 +1269,14 @@ The listing pass a load runs on a row that records a list (every 16th generation
 that asks for a listing) deletes every generation below the pointer that the row does not name, whether the row
 names it as the publish wrote it or as it reads after the listing (a load that published meanwhile keeps its own window),
 and re-proves before each delete that the row still names a list and still does not name the generation. Where it cannot
-prove a delete it stops, and the load returns. Where the row records none, it keeps the
-newest `keep` generations it finds, and records them with one compare-and-swap on the row it
-just published: that write moves the row's token, so a derived writer in flight on the row, an erasure rewrite, meets a
-lost fence and re-derives, and it happens once for each row that records no list. A lost race there is not an error.
+prove a delete it stops, and the load returns. Where the row records none, it keeps `keep` of the generations it finds,
+the one the load superseded first and then the newest by number, and records them with one compare-and-swap on the row
+it just published. It puts the superseded generation first only while the pointer it works below is the load's own: if
+another load has published since, or a rollback has moved the pointer, the generation that pointer superseded is not
+one this load knows, and the window is the newest by number. Whatever it keeps, every generation it deletes is below
+that pointer. That compare-and-swap moves the row's token, so a derived writer in flight on the row, an erasure
+rewrite, meets a lost fence and re-derives, and it happens once for each row that records no list. A lost race there is
+not an error.
 
 **A lease on a pinned generation is read from the row a collection already holds.** A load's collection, by name or by
 listing, spares a generation that a live lease in the row names, and goes on to the next: the by-name pass reads the row

@@ -209,6 +209,10 @@ export interface LoadOptions {
    * longest pinned job runs, on every writer that loads the segment — see "Generations and `keep`" in the loading
    * guide.
    *
+   * The window holds the generation the load superseded first, then the newest of the rest by number. After a rollback
+   * the superseded generation is the one the rollback restored, so the first load after it keeps that one, and the
+   * newer generations the rollback moved away from go first.
+   *
    * The segment's row records the generations a load keeps, up to 64, so a load that found nothing above the pointer
    * collects without listing: it deletes the generations its publish pushed out of the window, and lists the segment's
    * objects on every sixteenth generation to take whatever that pass leaves, such as an object a crashed load left

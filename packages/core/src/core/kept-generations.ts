@@ -43,7 +43,7 @@ export interface KeptWindow {
  * generation was current, or its object has gone from the bucket), the newest `keep`.
  *
  * The superseded generation is the one reads were on until the publish, and, after a rollback, the one the operator
- * restored, which a pin or a lease taken since holds, and the one to roll back to if the new load is bad too. The
+ * restored, which a pin taken since reads, and the one to roll back to if the new load is bad too. The
  * generations a rollback moved away from are newer by number, so a window by number alone would keep those and delete
  * it. Every window a load keeps comes from here: the one its publish records in the row ({@link nextKept}), and the one
  * a listing keeps when the row records none.

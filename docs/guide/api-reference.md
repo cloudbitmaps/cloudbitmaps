@@ -204,9 +204,11 @@ a variable, and `new Segment(…)` throws `ValidationError`.
 ### Load a generation — `store.load(ref, input, { allowEmpty?, guard?, keep?, metadata?, audit? })`
 
 The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm`
-object, check it is plausible, move the pointer, and collect what the move superseded, keeping the newest `keep`
-generations below the new pointer (default `1`; a non-negative integer, and anything else — negative, fractional,
-`NaN`, infinite — throws `ValidationError` before anything is written). The `*Into` verbs take
+object, check it is plausible, move the pointer, and collect what the move superseded, keeping `keep` generations
+below the new pointer, the one it superseded first and then the newest by number (default `1`; a non-negative integer,
+and anything else — negative, fractional, `NaN`, infinite — throws `ValidationError` before anything is written). After
+a rollback the one it superseded is the generation the rollback restored
+([what the first load after a rollback keeps](loading.md#what-the-first-load-after-a-rollback-keeps)). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
 collected }`. The segment's row records the generations a load keeps (up to 64), so at any `keep` up to 64 a load that

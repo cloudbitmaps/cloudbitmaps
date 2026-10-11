@@ -28,6 +28,23 @@ so, and so do the module headers in the code.
   read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
+### Changed
+
+- **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
+  the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
+  number. Where the segment's row records which generations are kept, the superseded generation is always the newest
+  of them, so that window is unchanged. Where the row records none, the load lists the segment, and it kept the newest
+  `keep` by number: after a rollback, which drops the record, those are the generations the rollback moved away from,
+  so the load deleted the generation the operator had just restored and kept the one rolled away from. With
+  generations 0 to 3, a rollback to 1 and a load with `keep: 1`, the bucket now holds 1 and 4, where it held 3 and 4;
+  with `keep: 2`, it holds 1, 3 and 4, where it held 2, 3 and 4. A pin taken on the restored generation goes on
+  reading, and the generation stays a rollback target if the new load is bad too. The same holds for any load over a row that
+  records no window, such as one whose loads use a `keep` above 64: an object a crashed load left above the pointer no
+  longer takes a place in the window before the generation the load superseded. Where the superseded generation's
+  object has gone from the bucket, or another writer has moved the pointer since the load's publish, the window is the
+  newest `keep` by number, as before. No load makes a request it did not make before
+  ([what the first load after a rollback keeps](docs/guide/loading.md#what-the-first-load-after-a-rollback-keeps)).
+
 ### Fixed
 
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
