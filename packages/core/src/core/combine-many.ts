@@ -46,7 +46,13 @@ import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import { assertIdBound, cutToWindow, isEdge, keysWithin, windowOf } from './id-window';
 import type { IdWindow } from './id-window';
 import type { Clock } from './determinism';
-import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
+import {
+  BudgetExceededError,
+  CloudRoaringError,
+  IntegrityError,
+  StaleOperandError,
+  ValidationError,
+} from './errors';
 import type { Budget } from './budget';
 import { checkedGuard } from './load';
 import { checkedAuditSink } from './audit';
@@ -926,8 +932,12 @@ class Run<R> {
     return this.evictLargest(this.running);
   }
 
+  /**
+   * What an output with no outcome reports. None is left without one: every output fails, publishes, or is deferred and
+   * run again alone until it does one or the other. Kept so a slip in that reports a library error, not a hole.
+   */
   private neverRan(): CombineManyOutcome<R> {
-    return { ok: false, error: new Error('materializeMany: output did not run') };
+    return { ok: false, error: new CloudRoaringError('materializeMany: output did not run') };
   }
 
   // ---- index ------------------------------------------------------------------------------------------------

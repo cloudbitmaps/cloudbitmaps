@@ -210,7 +210,10 @@ interface IterateRun {
 /** One resolved operand of a chunk-aligned combine: its chunk-key set + pinned generation. */
 interface Operand {
   readonly seg: SegmentRef;
-  /** The operand's chunk keys, inside the read's range when it has one. */
+  /**
+   * The operand's chunk keys, inside the read's range when it has one. Added from the ascending listing
+   * ({@link SegmentEngine.listKeys}), so they iterate ascending.
+   */
   readonly keys: Set<number>;
   /** Whether the segment has no chunks at all, whatever the range: what the absent-operand check judges. */
   readonly chunkless: boolean;
@@ -399,12 +402,14 @@ function alignKeys(operands: readonly Operand[], mode: 'all' | 'any'): number[] 
     for (const k of pivot.keys) {
       if (operands.every((o) => o.keys.has(k))) candidates.push(k);
     }
-  } else {
-    const seen = new Set<number>();
-    for (const o of operands) for (const k of o.keys) seen.add(k);
-    for (const k of seen) candidates.push(k);
+    // Ascending as they are: one operand's keys, which iterate ascending (see `Operand.keys`).
+    return candidates;
   }
-  return candidates.sort((a, b) => a - b); // defensive: `chunkKeys` already returns sorted; don't rely on it
+  const seen = new Set<number>();
+  for (const o of operands) for (const k of o.keys) seen.add(k);
+  for (const k of seen) candidates.push(k);
+  // The operands' keys come one operand after another, not in one ascending run: sorted here.
+  return candidates.sort((a, b) => a - b);
 }
 
 /**
