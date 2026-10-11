@@ -265,13 +265,19 @@ export class AzureBlobStorageDriver implements IStorageDriver {
         if (maxBytes <= 0 || size === 0) {
           return withVersion({ bytes: new Uint8Array(0), size }, props.etag);
         }
+        // Without an ETag the download cannot be conditional, and a blob replaced between the two requests would
+        // hand back one blob's size with another's bytes, so a response that omits it is refused.
+        const etag = props.etag;
+        if (etag === undefined) {
+          throw this.badRead(key, 'tail', 'the properties response carries no ETag');
+        }
         const take = Math.min(maxBytes, size);
         let downloaded: { bytes: Uint8Array; version: string | undefined };
         try {
           downloaded = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
             const res = await this.blob(objectName).download(size - take, take, {
               abortSignal,
-              ...(props.etag === undefined ? {} : { conditions: { ifMatch: props.etag } }),
+              conditions: { ifMatch: etag },
             });
             const body = await collect(
               res.readableStreamBody,
@@ -283,7 +289,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
             return { bytes: body, version: res.etag };
           });
         } catch (err) {
-          if (props.etag !== undefined && isPreconditionFailed(err)) continue;
+          if (isPreconditionFailed(err)) continue;
           throw err;
         }
         if (downloaded.bytes.length !== take) {

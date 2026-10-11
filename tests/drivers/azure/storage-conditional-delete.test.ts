@@ -26,6 +26,8 @@ class FakeContainer {
   beforeDownload: (() => void) | undefined;
   /** What a properties read meets, in place of an answer. */
   propertiesFault: Error | undefined;
+  /** Answer a properties read without an ETag. */
+  omitPropertiesEtag = false;
   /** Apply the next delete, then lose its answer: the client's retry policy sends it again. */
   loseNextDeleteAnswer = false;
   private seq = 0;
@@ -47,7 +49,10 @@ class FakeContainer {
         if (this.propertiesFault !== undefined) throw this.propertiesFault;
         const stored = this.blobs.get('only');
         if (stored === undefined || this.containerMissing) throw missing();
-        return { contentLength: stored.bytes.length, etag: stored.etag };
+        return {
+          contentLength: stored.bytes.length,
+          etag: this.omitPropertiesEtag ? undefined : stored.etag,
+        };
       },
       download: async (
         offset: number,
@@ -143,6 +148,30 @@ describe('AzureBlobStorageDriver: a tail read of a blob replaced between its two
     ]);
   });
 
+  it('refuses a properties answer with no ETag, since the download could not be conditional', async () => {
+    const fake = new FakeContainer();
+    fake.put('hello');
+    fake.omitPropertiesEtag = true;
+    await expect(over(fake).getTail(KEY, 3)).rejects.toBeInstanceOf(ValidationError);
+    expect(fake.calls.some((c) => c.op === 'download')).toBe(false);
+  });
+
+  it('is NotFoundError when the blob is gone by the download', async () => {
+    const fake = new FakeContainer();
+    fake.put('hello');
+    fake.beforeDownload = () => fake.blobs.clear();
+    await expect(over(fake).getTail(KEY, 3)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('takes the version from the properties for an empty blob and for a length of zero', async () => {
+    const fake = new FakeContainer();
+    const empty = fake.put('');
+    expect((await over(fake).getTail(KEY, 4)).version).toBe(empty);
+    const etag = fake.put('hello');
+    expect((await over(fake).getTail(KEY, 0)).version).toBe(etag);
+    expect(fake.calls.some((c) => c.op === 'download')).toBe(false);
+  });
+
   it('is a TransientError when the blob is replaced again on the second try', async () => {
     const fake = new FakeContainer();
     fake.put('0123456789');
@@ -150,6 +179,7 @@ describe('AzureBlobStorageDriver: a tail read of a blob replaced between its two
       fake.put('abcdefghijklmnopqrstuvwxyz0123');
     };
     await expect(over(fake).getTail(KEY, 4)).rejects.toBeInstanceOf(TransientError);
+    expect(fake.calls.filter((c) => c.op === 'getProperties')).toHaveLength(2);
     expect(fake.calls.filter((c) => c.op === 'download')).toHaveLength(2);
   });
 });
