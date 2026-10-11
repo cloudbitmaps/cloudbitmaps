@@ -14,10 +14,12 @@ so, and so do the module headers in the code.
 ### Added
 
 - **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
-  invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other.
-  Engines that read through one chunk cache share their invalidations this way, and naming an engine over another
-  cache throws `ValidationError`. `CloudRoaring` builds the engines of its pins, and of its combines with a pinned
-  operand, so.
+  invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
+  and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
+  one cache without it share nothing, and a read running on one when the other invalidates its segment writes what it
+  read before the invalidation back into the cache, where later reads find it, an erased id included. Engines that
+  read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
+  `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
 ### Fixed
 
@@ -30,13 +32,24 @@ so, and so do the module headers in the code.
   what it began reading before the invalidation, and the pin's next read opens its object again, failing with
   `NotFoundError` once the object is gone, as the [reading guide](docs/guide/reading.md#how-a-pin-stays-correct) and
   the `Segment.pin` doc say.
+- **A pinned read in progress keeps the erasure's in-flight bound.** The [erasure
+  guide](docs/guide/erasure.md#who-stops-seeing-the-id-and-when) and `PRIVACY.md` bound what a read in progress can
+  still yield after `eraseSubject`: up to 32 chunks for `iterate`. A pinned `iterate`, or a combine on the same store
+  with a pinned operand, never looked again, and went on yielding the erased generation from every range it had
+  already landed, and to the end of a small generation whose reader kept its chunks. A pinned stream now looks its pin
+  up again before its next chunk once its store has invalidated anything: after its own segment's invalidation it
+  opens its object again and fails with `NotFoundError` if the object is gone, so a pinned read in flight when the
+  erasure lands fails rather than answers. Where the object is still there (a `load` that keeps it), it carries on
+  with the ranges it holds and reads none again. Another segment's invalidation costs it no request.
 - **A read dropped without closing it no longer stays in memory.** An `iterate` or a combine pulled with `next()` and
   then dropped without `return()`, as a `Promise.race` timeout around a pull does, was held by the engine for the
   engine's whole life: its key list, and the source's suspended stream with the ranges it had already landed (up to
   the read's `concurrency`, 32 by default, each at most 1 MiB or one chunk), one per abandoned read, with no bound.
   The engine keeps no list of open streams now. A stream records when it opened, and before it caches a chunk asks
-  whether its segment has been invalidated since, from a record of the latest invalidation of up to 1,024 segments; a
-  segment the record has let go counts as invalidated, so a stream that opened before then caches no more of it.
+  whether its segment has been invalidated since, from a record of the latest invalidation of up to 1,024 segments. A
+  segment not in the record, one never invalidated included, counts as invalidated at the newest invalidation the
+  record has let go, so once more than 1,024 segments are invalidated while a stream is open it caches no more of any
+  segment it reads; what it returns is unchanged.
 - **Azure and S3 tail reads fail closed.** An Azure tail read took a blob's size from one request and its bytes from another, so a blob replaced between them could return one blob's size with another's bytes and version; the download is now conditional on the properties' ETag, the pair is read again once on a replacement, and a second replacement is a `TransientError`. S3's `getTail` with a length that is not a whole number (`NaN`, `1.5`) sent `bytes=-NaN` and surfaced a raw service error; it now throws `ValidationError` before sending, as GCS and Azure do. The S3 driver now treats `EHOSTUNREACH` and `ENETUNREACH` as transient, so the read retry covers them as it does for GCS and Azure. An Azure properties response with no ETag is refused with `ValidationError`, since the download could not then be conditional.
 - **The cost tools refuse input they would have misread.** `estimateCost` and `groundedReport` now refuse a key they do not take, at the top level and inside `workload`, each segment, and `pricing`, with a `ValidationError` naming the key and where it sits: a segment `{ size: 1e9 }` used to be priced as 0 bytes, and `workload: { readsPerSecond }` was dropped. `estimateCost` refuses a segment `count` that is not a whole number, and a workload or rate card whose cost is not a finite number of dollars, instead of returning `$Infinity/mo`.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.

@@ -2713,7 +2713,8 @@ export class CloudRoaring {
    *
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
    * object back, the pin reads it again. A read of the segment already running on this store, a pin's and a combine's
-   * with a pinned operand included, caches nothing more of what it began reading before the call.
+   * with a pinned operand included, caches nothing more of what it began reading before the call, and a pinned one
+   * opens its object again before its next chunk, failing with `NotFoundError` if the object is gone.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
@@ -3483,13 +3484,16 @@ export class Segment {
    * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
    *
    * An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
-   * destroyed. A read of the pin already running when the invalidation comes, a combine with the pin as an operand
-   * included, caches nothing more of what it began reading before it, so the pin's next read opens the object again
-   * too.
+   * destroyed. A read of the pin already running when the invalidation comes, a combine on this store with the pin as
+   * an operand included, looks the pin up again before it hands out its next chunk: it carries on with what it holds
+   * where the object is still there, and fails with `NotFoundError` where it is gone. It caches nothing more of what it
+   * began reading before the invalidation, so the pin's next read opens the object again too.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
-   * {@link CloudRoaring.invalidate} is called on this store. Where the
+   * {@link CloudRoaring.invalidate} is called on this store. A combine on another store that takes the pin as an
+   * operand reads it through that store's reader and chunk cache, which only that store's own writes and its
+   * `invalidate` reach. Where the
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
    * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
    *

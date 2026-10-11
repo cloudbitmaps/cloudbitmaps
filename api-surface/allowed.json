@@ -321,6 +321,6 @@
   },
   {
     "entry": "@cloudbitmaps/core EngineDeps.sharesInvalidationsWith",
-    "reason": "the owner agreed: one invalidation scope shared by every engine on a chunk cache, so an invalidation reaches pinned engines"
+    "reason": "the owner agreed: an optional, opt-in member, so every existing construction compiles and behaves as before; engines over one chunk cache built with it share one invalidation scope, so an invalidation reaches pinned engines, and engines built without it share nothing"
   }
 ]
