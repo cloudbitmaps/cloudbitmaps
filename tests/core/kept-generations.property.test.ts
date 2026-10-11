@@ -93,8 +93,10 @@ const STEP: fc.Arbitrary<Step> = fc.oneof(
 const KEEPS = fc.constantFrom(0, 1, 2, 3, 5, 12, MAX_KEPT_GENERATIONS, MAX_KEPT_GENERATIONS + 1);
 
 /**
- * What a load that lists keeps below its new pointer, written apart from the library's rule: the generation its publish
- * superseded when it is there, then the newest of the rest by number, `keep` in all; ascending.
+ * What a load that lists keeps below its new pointer: the generation its publish superseded when it is there, then the
+ * newest of the rest by number, `keep` in all; ascending. A twin of `keptWindow`, the same rule written a second time:
+ * it catches a slip in transcribing the rule or in wiring it to the listing pass, not a flaw in the rule. The checks
+ * independent of the rule are the hand-computed table and the partition property in `kept-window.test.ts`.
  */
 function listedWindow(
   below: readonly number[],

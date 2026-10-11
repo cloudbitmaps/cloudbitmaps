@@ -152,6 +152,21 @@ describe('a load collects by name when its number was checked, whatever keep is'
     expect(await generations(w.memory)).toEqual([3]);
   });
 
+  it('with keep 0, names the superseded generation even when its object is gone, and neither looks nor lists', async () => {
+    const w = world();
+    await loadMany(w, 3, { keep: 0 });
+    expect(await generations(w.memory)).toEqual([2]);
+    await w.memory.delete({ ...SEG, generation: 2 }); // removed from outside
+    await orphan(w.memory, 0); // an object below the pointer, which a listing would take
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 0 });
+    // A `keep` of 0 takes the superseded name whether or not it is there, so it makes no read of it and lists nothing:
+    // the object below the pointer waits for the periodic pass.
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [2] });
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([0, 3]);
+  });
+
   it('makes no request after the publish when nothing is yet outside the window', async () => {
     const w = world();
     // A first load reads the row twice (it found none, so it reads again after its ids) and nothing more.

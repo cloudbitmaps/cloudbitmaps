@@ -53,12 +53,16 @@ export function keptWindow(
   superseded: number | undefined,
   keep: number,
 ): KeptWindow {
-  const first =
-    keep > 0 && superseded !== undefined && below.includes(superseded) ? superseded : undefined;
-  const newest = below.filter((g) => g !== first).sort((a, b) => b - a);
-  const held = new Set(newest.slice(0, first === undefined ? keep : keep - 1));
-  if (first !== undefined) held.add(first);
   const ascending = [...below].sort((a, b) => a - b);
+  const first =
+    keep > 0 && superseded !== undefined && ascending.includes(superseded) ? superseded : undefined;
+  const held = new Set<number>(first === undefined ? [] : [first]);
+  // The rest of the window, newest first.
+  for (let i = ascending.length - 1, room = keep - held.size; i >= 0 && room > 0; i--) {
+    if (ascending[i] === first) continue;
+    held.add(ascending[i]!);
+    room -= 1;
+  }
   return {
     kept: ascending.filter((g) => held.has(g)),
     evict: ascending.filter((g) => !held.has(g)),

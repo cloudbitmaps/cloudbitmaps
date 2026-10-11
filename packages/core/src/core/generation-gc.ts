@@ -517,10 +517,13 @@ async function listingPass(
     return 'delete';
   };
 
-  // The generation the window keeps first: the one the load's publish superseded, while the cutoff is that publish. A
-  // pointer another writer has moved since (a later publish, a rollback) superseded a generation this pass does not
-  // know, and keeping the load's would cost the one below that pointer, which reads are on: the window is then the
-  // newest by number.
+  // The generation the window keeps first: the one the load's publish superseded, while the cutoff, the lower of the
+  // pass's two reads of the pointer, is the load's own generation. Otherwise another writer moved the pointer before
+  // the first read, or a rollback lowered it by the second, and this pass does not know what that pointer superseded:
+  // the window is then the newest by number, as for a pass that knows no superseded generation. The comparison is of
+  // generation numbers, not incarnations: a row purged and made again whose pointer reaches the load's number between
+  // the two reads would have the old incarnation's superseded number kept first, which only chooses what is kept, as
+  // the cutoff and the re-read before each delete still bound what is deleted.
   const prior =
     options.superseded !== undefined && cutoff === options.superseded.by
       ? options.superseded.generation

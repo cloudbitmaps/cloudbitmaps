@@ -1,8 +1,11 @@
+import type { Clock } from '@/core/determinism';
+import { takeLease } from '@/core/leases';
 import { loadSegment } from '@/core/load';
 import type { LoadOptions } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
@@ -32,7 +35,7 @@ async function generations(storage: IStorageDriver): Promise<number[]> {
   return out.sort((a, b) => a - b);
 }
 
-/** Loads of `[1]`, `[2]`, … one generation each, as the probe that found this loaded them. */
+/** Loads of `[1]`, `[2]`, … one generation each: the loading guide's worked example. */
 async function loadEach(w: World, count: number, options: LoadOptions): Promise<void> {
   const have = (await w.registry.get(SEG))?.currentGen ?? -1;
   for (let g = have + 1; g < have + 1 + count; g++) {
@@ -226,5 +229,75 @@ describe('a row that records no window keeps the generation a load superseded', 
     expect((await w.registry.get(SEG))!.currentGen).toBe(5);
     // 3, which the load superseded, stays; the crashed load's 4 is not the window.
     expect(await generations(w.storage)).toEqual([3, 5]);
+  });
+});
+
+describe('the guard on the superseded generation, at a window wider than one', () => {
+  it('keeps the newest two below a pointer another publish moved before the collection, at keep 2', async () => {
+    const w = world();
+    await loadEach(w, 4, { keep: 9 });
+    await rollbackSegment(SEG, 1, w.deps);
+    const registry = afterFirstSwap(w.registry, async () => {
+      const other = await loadSegment(SEG, [7, 8], w.deps, { keep: 5 });
+      expect(other).toMatchObject({ generation: 5, published: true, collected: [] });
+    });
+    const r = await loadSegment(SEG, [7], { ...w.deps, registry }, { keep: 2 });
+    expect(r).toMatchObject({ generation: 4, published: true });
+    // The pointer is 5, which superseded 4: the window is 4 and 3, not the load's superseded 1.
+    expect(await generations(w.storage)).toEqual([3, 4, 5]);
+  });
+
+  it('keeps the newest two below the pointer a rollback set while the collection listed, at keep 2', async () => {
+    const w = world();
+    await loadEach(w, 5, { keep: 9 }); // generations 0 to 4
+    await rollbackSegment(SEG, 0, w.deps);
+    // The load publishes 5 over 0; while its collection lists, an operator rolls back to 4. The window is the newest two
+    // below 4, not 0, which the load superseded.
+    const storage = duringSecondListing(w.storage, async () => {
+      await rollbackSegment(SEG, 4, w.deps);
+    });
+    const r = await loadSegment(SEG, [7], { ...w.deps, storage }, { keep: 2 });
+    expect(r).toMatchObject({ generation: 5, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(4);
+    expect(await generations(w.storage)).toEqual([2, 3, 4, 5]);
+  });
+});
+
+describe('a lease on the restored generation', () => {
+  /** A clock the test reads; waits return at once. */
+  const clockAt = (t: number): Clock => ({ now: () => t, sleep: () => Promise.resolve() });
+
+  it('holds the first place of the window: the first load keeps it alone at keep 1, and the next spares it by its lease', async () => {
+    const clock = clockAt(MIN_EXPIRES_AT_MS * 2);
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver({ now: () => clock.now() });
+    const w = { storage, registry, deps: { storage, registry, codec: roaringCodec, clock } };
+    await loadEach(w, 4, { keep: 9 });
+    await rollbackSegment(SEG, 1, w.deps);
+    const row = (await registry.get(SEG))!;
+    const taken = await takeLease(
+      SEG,
+      { registry, clock },
+      {
+        holder: '00000000000000a1',
+        generation: 1,
+        until: clock.now() + 60_000,
+        row,
+        current: true,
+      },
+    );
+    expect(taken).not.toBe('moved');
+
+    // The leased generation is the one the load superseded, so it is the window, and 3 is not.
+    const first = await loadSegment(SEG, [7], w.deps, { keep: 1 });
+    expect(first).toMatchObject({ generation: 4, published: true, collected: [3, 2, 0] });
+    expect(await generations(storage)).toEqual([1, 4]);
+    expect((await registry.get(SEG))!.keptGens).toEqual([1]);
+
+    // The next load pushes 1 out of the window by name, and its live lease spares it.
+    const next = await loadSegment(SEG, [7, 8], w.deps, { keep: 1 });
+    expect(next).toMatchObject({ generation: 5, published: true, collected: [] });
+    expect(await generations(storage)).toEqual([1, 4, 5]);
+    expect((await registry.get(SEG))!.keptGens).toEqual([4]);
   });
 });

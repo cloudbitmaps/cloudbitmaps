@@ -10,7 +10,7 @@ import type { RegistryRecord } from '@/core/ports';
 
 describe('keptWindow', () => {
   it.each([
-    // The probe's numbers: 0 to 3 below the new pointer, 1 the generation a rollback restored.
+    // The loading guide's worked example: 0 to 3 below the new pointer, 1 the generation a rollback restored.
     { below: [0, 1, 2, 3], superseded: 1, keep: 1, kept: [1], evict: [0, 2, 3] },
     { below: [0, 1, 2, 3], superseded: 1, keep: 2, kept: [1, 3], evict: [0, 2] },
     { below: [0, 1, 2, 3], superseded: 1, keep: 3, kept: [1, 2, 3], evict: [0] },
