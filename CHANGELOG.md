@@ -16,7 +16,8 @@ so, and so do the module headers in the code.
 - **A load can throw `NotFoundError` after its publish landed or after it was refused, and an erasure can report it in
   place of its answer.** It means a rollback moved the pointer onto a generation the call had just deleted, and the
   row still named it after the call read it again; a refused load answered with its refusal before. Catch it where you
-  branch on `published`, and check `store.generations(ref)` before acting, as the first entry under Fixed says.
+  branch on `published`, and check `store.generations(ref)` before acting, as the entry under Fixed on a rollback that
+  lands while a delete runs says.
 
 ### Added
 
@@ -70,6 +71,28 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A running `iterate` or combine reads a chunk a new generation added.** A read listed its segments' chunk keys before
+  its first fetch and kept that list to the end, so when a load, a rollback or an erasure moved a segment while the read
+  ran, the read went on from the new generation but only at the keys the old one held: a chunk the new generation added
+  was never read, a segment that grew was not read to its new end, and an opt-out list that gained an id in a chunk it
+  did not hold when the combine began was never subtracted from it, all against the [reading
+  guide](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load)'s promise that a reader sees a new generation within
+  `cache.genTtlMs`. A read now meets a move through a chunk it is served from another generation than it listed its keys
+  under, looks at its segments' generations before the first key after an invalidation in its store, and, for a combine
+  with an `exclude` or a union, every `concurrency` keys; where one moved, it lists every segment's keys again above the
+  key it last took and reads on from there, dropping what it had requested; a move this store makes while the read is
+  listing a segment's keys makes it list them again. A key the new generation dropped is no longer asked for, and a read
+  plans again at most once for each key it takes. A pinned read, `everyNth`, a `count` that reads chunks and
+  `materializeMany` with `pin: false` keep the keys they listed. Looking makes no request, with one exception: a combine
+  with an `exclude` or a union that runs past `cache.genTtlMs` makes the pointer read of a refresh, once per
+  `cache.genTtlMs`, for an operand it no longer reads. A look waits for its lookups, so a combine's streams can group
+  its chunks into ranges a little differently: counted on the in-memory batch benchmark, where nothing moves, the
+  `*Into` route makes 19,761 range reads where it made 19,785 in one shape, and 137,089 where it made 137,037 in the
+  refresh-shaped one. A read that lists its keys again is charged to the per-op budget again, with what it has already
+  taken, and throws `BudgetExceededError` when a segment grew past it; the ranges a move requests again are not charged
+  to it. A running `iterate` or combine of the store that erases an id now meets the erasure before its next key, and
+  yields the id only from the chunk or key it is handing out, well inside the written bound, which is unchanged ([who
+  stops seeing the id](docs/guide/erasure.md#who-stops-seeing-the-id-and-when)).
 - **A rollback to the generation already current checks that its object is there.** It reported a no-op without reading
   anything, so over a pointer that named a missing object (a collection that raced an earlier rollback, or a swap that
   landed, lost its answer and had its target collected since) re-running a rollback to that generation answered success
@@ -119,7 +142,7 @@ so, and so do the module headers in the code.
   prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
   row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
   `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
-  `materializeMany` call, and 143,993 (137,037 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
+  `materializeMany` call, and 144,045 (137,089 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
 - **A refused load deletes its own object once another write has changed the segment's row.** A load refused after
