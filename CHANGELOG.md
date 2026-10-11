@@ -18,6 +18,16 @@ so, and so do the module headers in the code.
   row still named it after the call read it again; a refused load answered with its refusal before. Catch it where you
   branch on `published`, and check `store.generations(ref)` before acting, as the first entry under Fixed says.
 
+### Added
+
+- **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
+  invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
+  and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
+  one cache without it share nothing, and a read running on one when the other invalidates its segment writes what it
+  read before the invalidation back into the cache, where later reads find it, an erased id included. Engines that
+  read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
+  `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
+
 ### Fixed
 
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
@@ -49,18 +59,6 @@ so, and so do the module headers in the code.
   the pointer that a rollback then published, though no load had published it. The refusal now deletes the object once
   one read of its footer proves it the load's own, passing that read's version, and keeps one the row names, as its
   pointer, in its kept window or in a lease.
-### Added
-
-- **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
-  invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
-  and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
-  one cache without it share nothing, and a read running on one when the other invalidates its segment writes what it
-  read before the invalidation back into the cache, where later reads find it, an erased id included. Engines that
-  read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
-  `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
-
-### Fixed
-
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,
