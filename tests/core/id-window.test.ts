@@ -144,15 +144,29 @@ describe('the edge chunks of a window', () => {
         aBound,
         aBound,
         fc.integer({ min: 0, max: CHUNK_COUNT - 1 }),
-        (after, through, key) => {
+        // Most keys are drawn at the window's edges and just outside them, where the answer turns.
+        fc.constantFrom('any', 'lo-1', 'lo', 'hi', 'hi+1'),
+        (after, through, any, at) => {
           const w = windowOf({ after, through });
           if (w === null || w === 'empty') return;
-          const ids = [joinId(key, 0), joinId(key, MAX_REMAINDER)];
-          const whole = ids.every((id) => inWindow(id, after, through));
-          const none = key < w.loKey || key > w.hiKey;
+          const key = {
+            any,
+            'lo-1': w.loKey - 1,
+            lo: w.loKey,
+            hi: w.hiKey,
+            'hi+1': w.hiKey + 1,
+          }[at];
+          if (key < 0 || key >= CHUNK_COUNT) return;
+          const first = joinId(key, 0);
+          const last = joinId(key, MAX_REMAINDER);
+          const lo = after === undefined ? 0 : after + 1;
+          const hi = through ?? U32_MAX;
+          const whole = inWindow(first, after, through) && inWindow(last, after, through);
+          const none = last < lo || first > hi;
           expect(isEdge(key, w)).toBe(!whole && !none);
         },
       ),
+      { numRuns: 500 },
     );
   });
 
