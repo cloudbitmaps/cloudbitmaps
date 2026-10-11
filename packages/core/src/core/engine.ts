@@ -12,6 +12,7 @@ import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-rout
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
+import { refuseAbsent } from './absent-operands';
 import {
   assertChunkCardinalityInRange,
   assertChunkKeyInRange,
@@ -1725,7 +1726,8 @@ export class SegmentEngine {
    * chunks — a segment with data is self-evidently registered — so the check is a registry read exactly when
    * a combine was about to do something suspicious, and no reads at all otherwise. A source that cannot answer
    * `exists` (it has no notion of registration) skips the check rather than guessing. An operand is judged by
-   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious.
+   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious. Many
+   * chunkless operands are asked after a bounded number at a time, as {@link refuseAbsent} says.
    */
   private async refuseAbsentOperands(
     resolved: readonly Operand[],
@@ -1733,21 +1735,11 @@ export class SegmentEngine {
     op: string,
   ): Promise<void> {
     if (allow === true || this.storage.exists === undefined) return;
-    const empty = resolved.filter((o) => o.chunkless);
-    if (empty.length === 0) return;
-    const checked = await Promise.all(
-      empty.map(async (o) => ({ seg: o.seg, exists: await this.storage.exists!(o.seg) })),
-    );
-    const absent = checked.filter((c) => !c.exists).map((c) => c.seg);
-    if (absent.length === 0) return;
-    const named = absent
-      .map((s) => (s.namespace === undefined ? `"${s.segment}"` : `"${s.namespace}/${s.segment}"`))
-      .join(', ');
-    throw new ValidationError(
-      `${op}: operand ${named} names a segment that does not exist or was dropped, so it would contribute nothing — ` +
-        `an exclude would suppress no ids and an include would contribute none. Check the name and the ` +
-        `namespace (a segment addressed without its \`namespace\` is a DIFFERENT segment). ` +
-        `Pass \`allowAbsentOperands: true\` if you meant it.`,
+    await refuseAbsent(
+      op,
+      resolved.filter((o) => o.chunkless),
+      (o) => this.storage.exists!(o.seg),
+      ({ seg }) => (seg.namespace === undefined ? seg.segment : `${seg.namespace}/${seg.segment}`),
     );
   }
 

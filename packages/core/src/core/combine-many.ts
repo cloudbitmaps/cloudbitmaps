@@ -20,6 +20,7 @@
  * output is byte for byte what the same ids would load.
  */
 import { MAX_REMAINDER, U32_MAX } from './bit-route';
+import { refuseAbsent } from './absent-operands';
 import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import type { CodecBitmap, CodecInterface } from './codec';
@@ -867,7 +868,7 @@ class Run<R> {
     this.window = windowOf(this.req.after, this.req.through);
     if (this.checkedFeed !== undefined) this.feed = this.openFeed(this.checkedFeed);
     await this.readIndexes();
-    await this.refuseAbsent();
+    await this.refuseAbsentOperands();
     this.planOutputs();
     // A feed is read once, so a call with one runs every output as one group.
     const groups = this.formGroups(
@@ -1007,24 +1008,17 @@ class Run<R> {
    * the call. One whose index was read is judged only if it has no chunk at all; one whose index was not read (no output
    * names it, or the range is empty) is asked outright.
    */
-  private async refuseAbsent(): Promise<void> {
-    if (this.req.allowAbsentOperands === true || this.source.exists === undefined) return;
-    const judged = this.operands.filter(
-      (op) => op.error === undefined && (op.read ? op.chunkless : true),
-    );
-    if (judged.length === 0) return;
-    const exists = this.source.exists.bind(this.source);
-    const checked = await mapWithConcurrency(judged, INDEX_PARALLELISM, async (op) => {
-      this.registryReads++;
-      return { op, exists: await exists(op.spec.ref) };
-    });
-    const absent = checked.filter((c) => !c.exists).map((c) => c.op.spec.name);
-    if (absent.length === 0) return;
-    throw new ValidationError(
-      `materializeMany: operand ${absent.map((n) => `"${n}"`).join(', ')} names a segment that does not exist or was dropped, so it ` +
-        'would contribute nothing — an exclude would suppress no ids and an include would contribute none. Check ' +
-        'the name and the namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
-        '`allowAbsentOperands: true` if you meant it.',
+  private async refuseAbsentOperands(): Promise<void> {
+    const source = this.source;
+    if (this.req.allowAbsentOperands === true || source.exists === undefined) return;
+    await refuseAbsent(
+      'materializeMany',
+      this.operands.filter((op) => op.error === undefined && (op.read ? op.chunkless : true)),
+      (op) => {
+        this.registryReads++;
+        return source.exists!(op.spec.ref);
+      },
+      (op) => op.spec.name,
     );
   }
 
