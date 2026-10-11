@@ -122,7 +122,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * Hard ceiling on how many segments' readers (each holding a fully-parsed `.crbm` index) are cached at once
    * (default 1024) — a memory bound for a long-running server. Past it, the least-recently-used
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
-   * generations are immutable). Raise it for a big cache working set of small segments. A source with a timed refresh
+   * generations are immutable). Raise it for a big cache working set of small segments, and raise {@link maxOpenIndexBytes} with it: each open reader counts about 3.75 KiB there, so past about 17,000 tiny readers the byte ceiling binds first. A source with a timed refresh
    * also keeps up to 8 times this many segments' resolutions apart from their readers, for the TTL: the re-open then
    * reads no row, and comes only when a read needs the reader, for the index or for a chunk.
    */
@@ -133,12 +133,13 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * **second half of that memory bound**. `maxOpenSegments` alone bounds by *count*, but a wide/dense segment's
    * parsed index can reach about 1.3 MB, so 1024 wide indices could pin over a GB and blow a small heap (e.g. a 128 MB
    * Lambda) while the count is nominally "in bounds". This caps the summed {@link CrbmReader.retainedBytes} (the
-   * parsed index, any metadata a generation carries, and any kept chunk bytes) across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
+   * parsed index, any metadata a generation carries, and any kept chunk bytes) plus a fixed 3.75 KiB for the objects each open reader
+   * holds around them, across cached readers, so that many tiny segments are bounded too; the least-recently-used reader is evicted once the total would exceed it — whichever
    * of the count/byte bounds binds first. A reader whose open read the whole object keeps a copy of its chunk region when
    * that region is at most this ceiling divided by {@link maxOpenSegments} (64 KiB by default) — its fair share — so a small generation's
    * chunks are served from memory with no further request, and a bigger one is read by range. Only a source with a timed
    * pointer refresh ({@link currentGenTtlMs} above 0, a registry and a clock) keeps chunk bytes. Lower it for memory-tight deployments with wide segments; a single
-   * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside. A
+   * segment whose weight alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside. A
    * sixteenth of it bounds the resolutions a source with a timed refresh keeps besides (4 MiB by default).
    */
   readonly maxOpenIndexBytes?: number;
@@ -524,6 +525,15 @@ class Snapshot {
 /** The fixed part of what a resolution weighs ({@link weightOf}): the entry, its generation and its `pointerId`. */
 const SNAPSHOT_BASE_BYTES = 256;
 /**
+ * The fixed heap an open reader's snapshot holds beyond {@link CrbmReader.retainedBytes}: the snapshot, the reader, its
+ * five index arrays as objects, and the closures and promises that tie them. It is added to a reader's weight in the
+ * reader cache, so that the byte ceiling bounds many tiny segments as it does a few wide ones. Measured as the heap that
+ * stayed (full collections until stable) per segment after a source opened 2,000 one-chunk segments, minus the 20 bytes
+ * of index the weight already counts: about 3.7 KiB on Node 24, rounded up to 3.75 KiB.
+ * `tests/core/reader-cache-heap.test.ts` holds the counted weight to that heap.
+ */
+export const OPEN_READER_BYTES = 3_840;
+/**
  * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
  * transient JS-side buffer to **~28 MB measured** irrespective of input size, while keeping batches large
  * enough that the per-id JS↔native crossing is amortised away.
@@ -889,7 +899,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             forgetIfStale();
             return;
           }
-          if (this.snapshots.peek(key) === snap) this.snapshots.setWeight(key, r.retainedBytes);
+          if (this.snapshots.peek(key) === snap)
+            this.snapshots.setWeight(key, OPEN_READER_BYTES + r.retainedBytes);
         },
         () => this.dropStale(key, snap),
       );
