@@ -27,7 +27,11 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
   return `${prefixPart(prefix)}${namespaceKeyPart(ref.namespace)}/segments/${encodeNameForKey(ref.segment)}.`;
 }
 
-/** The full key of one generation's object, `<segmentPrefix><gen>.crbm`; a generation that is not a whole number from 0 is refused. */
+/**
+ * The full key of one generation's object, `<segmentPrefix><gen>.crbm`; a generation that is not a whole number from 0
+ * is refused. A generation past the safe-integer range (2^53 or more) still builds a key, but one that
+ * {@link parseGenerationFromKey} does not read back, so a listing does not see that object.
+ */
 export function storageObjectKey(prefix: string | undefined, key: GenKey): string {
   if (!Number.isInteger(key.generation) || key.generation < 0) {
     throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
