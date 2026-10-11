@@ -9,6 +9,7 @@ import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SameKeys } from '../helpers/types';
@@ -511,5 +512,42 @@ describe('a backend refuses settings it can never honour, when it is built', () 
     expect(azure({ blockBytes: 4000 * MiB + 1 })).toThrow(/4,000 MiB block limit/);
     expect(azure({ maxObjectBytes: Number.MAX_SAFE_INTEGER })).toThrow(/blocks of 4,000 MiB/);
     expect(azure({ blockBytes: 4000 * MiB })).not.toThrow();
+  });
+});
+
+describe('the SDK-free backends refuse settings they can never honour, when they are built', () => {
+  it('a LocalFs root that is not a non-empty string, and nothing is made where an empty root would land', async () => {
+    // An empty root joins to `storage` and `registry` under the working directory: the paths an accepted empty root would write to.
+    for (const root of ['', undefined, null, 5, {}]) {
+      expect(() => new LocalFsStorage(root as never)).toThrow(ValidationError);
+    }
+    expect(existsSync(join(process.cwd(), 'storage'))).toBe(false);
+    expect(existsSync(join(process.cwd(), 'registry'))).toBe(false);
+  });
+
+  it('names every unknown option, not only the first', () => {
+    expect(() => new MemoryStorage({ a: 1, b: 2 } as never)).toThrow(/`a`, `b`/);
+  });
+
+  it('a misspelt option, named, on both backends', () => {
+    expect(() => new MemoryStorage({ nows: () => 1 } as never)).toThrow(/does not take `nows`/);
+    expect(() => new LocalFsStorage('/tmp/x', { nows: () => 1 } as never)).toThrow(
+      /does not take `nows`/,
+    );
+  });
+
+  it('an options bag that is not an object', () => {
+    expect(() => new MemoryStorage(null as never)).toThrow(ValidationError);
+    expect(() => new LocalFsStorage('/tmp/x', 5 as never)).toThrow(ValidationError);
+  });
+
+  it('a `now` that is not a function', () => {
+    expect(() => new MemoryStorage({ now: 5 } as never)).toThrow(/`now` must be a function/);
+    expect(() => new LocalFsStorage('/tmp/x', { now: 'today' } as never)).toThrow(
+      /`now` must be a function/,
+    );
+    expect(() => new MemoryStorage({ now: () => 1 })).not.toThrow();
+    expect(() => new MemoryStorage()).not.toThrow();
+    expect(() => new MemoryStorage({})).not.toThrow();
   });
 });

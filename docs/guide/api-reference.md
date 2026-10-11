@@ -79,8 +79,8 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 
 | Backend | Import | Construct |
 |---|---|---|
-| `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)` |
-| `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced. Names that differ only by case stay distinct on a case-insensitive filesystem: see [Keep it on disk](getting-started.md#keep-it-on-disk) |
+| `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage({ now? }?)`; an option key it does not take, or a `now` that is not a function, throws `ValidationError` |
+| `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps', { now? }?)`: a root that is not a non-empty string, an option key it does not take, or a `now` that is not a function throws `ValidationError`, and nothing is created. Generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects. It creates files `0600` and directories `0700` from the root down (a missing parent of the root is created with the default mode); an existing directory keeps its mode, and a registry row is always rewritten `0600`. A root is for one process: instances in a process share a lock per row, two processes on one root are not fenced. Names that differ only by case stay distinct on a case-insensitive filesystem: see [Keep it on disk](getting-started.md#keep-it-on-disk) |
 | `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, maxSockets?, maxObjectBytes?, partBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the five settings that build one, and both is refused |
 | `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint?, maxObjectBytes?, simpleUploadThresholdBytes?, readTimeoutMs?, conditionalDelete?, now? })` — `client` or the two settings that build one, and both is refused |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` or `({ connectionString, container, prefix?, maxObjectBytes?, blockBytes?, readTimeoutMs?, conditionalDelete?, now? })` — one or the other, and both is refused |
@@ -165,8 +165,8 @@ download, each on its own, and a registry row's read. The clock starts at the ca
 listings are not timed ([why](production.md#reliability-retries-backoff--timeouts)).
 
 Each cloud backend builds its own SDK client unless you pass one. Every backend exposes its storage and registry as `.storage`
-and `.registry`, and accepts an injected `now` for deterministic tests. The three cloud backends refuse an option
-key they do not take, by name, as the store does.
+and `.registry`, and accepts an injected `now` for deterministic tests. Every backend refuses an option
+key it does not take, by name, as the store does.
 
 > **`backend.storage` is not a backend.** It is the storage alone, without the registry: a raw `IStorageDriver`. Passed as `storage`,
 > it builds a store with no pointer: cleartext and read-only, as the raw-driver paragraph below describes. Pass
@@ -722,7 +722,9 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
 - An out-of-range read, meaning a range past the end or a negative or non-integer offset or length, throws
   `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size, and, where the
-  driver has one, its `version`, from the same response as the bytes.
+  driver has one, its `version`, from the same response as the bytes. A `getTail` length of zero or less answers an empty tail with
+  the size, and one past the object's size the whole object; a length that is not a whole number (`NaN`, a fraction, an infinity) throws `ValidationError` on the in-process and local-filesystem drivers.
+- A registry write whose `keyId` is not a non-empty string, or absent, throws `ValidationError` and stores nothing.
 - `delete` is idempotent: deleting an absent key is a no-op, with or without `ifVersion`.
 - `delete` with `ifVersion` does what `StorageCaps.conditionalDelete` says: with `true`, it removes the object only
   while it is the one that version names, by a check the backend applies in the same step as the removal, and for

@@ -15,10 +15,16 @@
  * there would still be no identity to compare, so the driver does not claim the capability. `getTail` reports no version.
  */
 import { constants as FS } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { link, open, readdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
+import {
+  IntegrityError,
+  NotFoundError,
+  TransientError,
+  ValidationError,
+  WriteConflictError,
+} from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type {
   StorageCaps,
@@ -29,13 +35,53 @@ import type {
   TailRead,
 } from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
+import { checkTailLength } from '../_shared/tail';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
+import {
+  FILE_MODE,
+  O_NOFOLLOW,
+  fsyncDir,
+  makeDirs,
+  sweepOrphanTemps,
+  tempPathFor,
+  isAbsent,
+  isCode,
+  mapFsError,
+  writeAll,
+} from './fs-util';
+
+/** Read exactly `length` bytes at `offset`, or throw: a short read is never returned zero-padded as real bytes. */
+async function readWhole(
+  handle: Awaited<ReturnType<typeof open>>,
+  key: GenKey,
+  length: number,
+  offset: number,
+): Promise<Uint8Array> {
+  const buf = new Uint8Array(length);
+  let filled = 0;
+  while (filled < length) {
+    const { bytesRead } = await handle.read(buf, filled, length - filled, offset + filled);
+    if (bytesRead === 0) {
+      throw new IntegrityError(
+        `short read of ${key.segment}.${key.generation}: wanted ${length}B at ${offset}, got ${filled}B`,
+      );
+    }
+    filled += bytesRead;
+  }
+  return buf;
+}
 
 export class LocalFsStorageDriver implements IStorageDriver {
   private readonly exactCase: ExactCase;
 
-  constructor(private readonly root: string) {
+  /**
+   * `options.privateRoot` is the directory this one lives under, from which down directories are created private; it
+   * defaults to `root`.
+   */
+  constructor(
+    private readonly root: string,
+    private readonly options: { readonly privateRoot?: string } = {},
+  ) {
     this.exactCase = new ExactCase(root);
   }
 
@@ -55,11 +101,16 @@ export class LocalFsStorageDriver implements IStorageDriver {
     const finalPath = storageObjectPath(this.root, key);
     assertStorageNamesFit(key);
     await this.exactCase.refuseVariant(finalPath);
-    await mkdir(dirname(finalPath), { recursive: true });
+    await makeDirs(dirname(finalPath), this.options.privateRoot ?? this.root);
+    void sweepOrphanTemps(dirname(finalPath));
 
-    const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
+    const tmpPath = tempPathFor(finalPath);
     // 'wx' = O_CREAT|O_EXCL|O_WRONLY; add O_NOFOLLOW so a pre-planted symlink can't redirect the write.
-    const handle = await open(tmpPath, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW);
+    const handle = await open(
+      tmpPath,
+      FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW,
+      FILE_MODE,
+    );
     const hash = createHash('sha256');
     let size = 0;
     const sink: BlobSink = {
@@ -85,6 +136,15 @@ export class LocalFsStorageDriver implements IStorageDriver {
       await link(tmpPath, finalPath);
     } catch (err) {
       await unlink(tmpPath).catch(() => {});
+      if (isCode(err, 'ENOENT')) {
+        // The temp file is gone: a sweep or an operator removed it while the write was open. Nothing was published.
+        throw new TransientError(
+          `the temporary file of ${key.segment}.${key.generation} was removed mid-write`,
+          {
+            cause: err,
+          },
+        );
+      }
       if (isCode(err, 'EEXIST')) {
         // A generation is write-once; a collision is a concurrency/state condition, not bad input.
         // Identify it by the logical key only — never leak the absolute filesystem path.
@@ -111,22 +171,19 @@ export class LocalFsStorageDriver implements IStorageDriver {
           `range [${offset}, ${offset + length}) out of bounds for ${size}B`,
         );
       }
-      const buf = Buffer.alloc(length);
-      if (length > 0) await handle.read(buf, 0, length, offset);
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      return await readWhole(handle, key, length, offset);
     } finally {
       await handle.close();
     }
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    checkTailLength(maxBytes);
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();
       const take = Math.min(Math.max(maxBytes, 0), size);
-      const buf = Buffer.alloc(take);
-      if (take > 0) await handle.read(buf, 0, take, size - take);
-      return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), size };
+      return { bytes: await readWhole(handle, key, take, size - take), size };
     } finally {
       await handle.close();
     }
