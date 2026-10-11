@@ -16,6 +16,7 @@
  */
 import type { Aead } from './crypto';
 import { aadFor } from './crypto';
+import { U32_MAX } from './bit-route';
 import { IntegrityError, isIntegrityError } from './errors';
 import { fingerprintFor, fingerprintParts } from './crbm/fingerprint';
 import {
@@ -44,7 +45,7 @@ const CRC_BYTES = 4;
 /** The fixed part of a sealed summary's plaintext: the count and the fingerprint. */
 const FIXED_BYTES = COUNT_BYTES + SIZE_BYTES + CRC_BYTES;
 /** A generation holds at most every 32-bit id. */
-const MAX_CARDINALITY = 2 ** 32;
+export const MAX_SUMMARY_CARDINALITY = U32_MAX + 1;
 
 /** What a summary says about a generation: its id count, and its metadata when it has any. */
 export interface GenerationDescription {
@@ -193,7 +194,7 @@ export function openSummary(
     fail('the sealed summary is shorter than its count and fingerprint');
   const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
   const count = view.getBigUint64(0, true);
-  if (count > BigInt(MAX_CARDINALITY)) fail(`cardinality ${count} is outside 0 to 2^32`);
+  if (count > BigInt(MAX_SUMMARY_CARDINALITY)) fail(`cardinality ${count} is outside 0 to 2^32`);
   const size = view.getBigUint64(COUNT_BYTES, true);
   const fingerprint = fingerprintFor(Number(size), view.getUint32(COUNT_BYTES + SIZE_BYTES, true));
   if (size > BigInt(Number.MAX_SAFE_INTEGER) || fingerprintParts(fingerprint) === undefined) {

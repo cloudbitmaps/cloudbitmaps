@@ -40,7 +40,7 @@ export type ExprNode =
   | { readonly kind: Operator; readonly kids: readonly ExprNode[] };
 
 /** How many nodes one {@link compileExpr} call may still allocate; shared across the expressions of one output. */
-export interface NodeBudget {
+interface NodeBudget {
   remaining: number;
 }
 
@@ -129,7 +129,7 @@ export interface KeyBounds {
 const CHUNK_IDS = 65_536;
 
 /** The keys of an operand the plan cannot know (a fed one): every key. Compared by identity, never by content. */
-export const ANY_KEYS: Uint16Array = new Uint16Array(0);
+const ANY_KEYS: Uint16Array = new Uint16Array(0);
 /** The bounds of an operand the plan cannot know. */
 export const ANY_BOUNDS: KeyBounds = { keys: ANY_KEYS, card: new Uint32Array(0) };
 

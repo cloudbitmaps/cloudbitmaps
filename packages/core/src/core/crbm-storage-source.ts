@@ -37,7 +37,15 @@ import type { Clock, Rng } from './determinism';
 import { incarnationField, sameIncarnation } from './token';
 import { pointerIdOf } from './pointer-id';
 import { nextKept } from './kept-generations';
-import { isLive, leaseChurn, onlyLeasesDiffer } from './leases';
+import {
+  UNANSWERED_BASE_MS,
+  UNANSWERED_RESENDS,
+  isLive,
+  leaseChurn,
+  onlyLeasesDiffer,
+} from './leases';
+import { ascending } from './order';
+import { jitteredWait } from './retry';
 import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
@@ -2121,7 +2129,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
-   * now re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a
+   * re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a
    * tight loop on a segment whose pointer names an object that is permanently absent — and an N-way
    * `intersect` would do it N times. Gated in `tests/core/storage-source-heal-open.test.ts` by counting calls.
    */
@@ -2427,7 +2435,7 @@ export async function openRollbackTarget(
 }
 
 /** What {@link writeCrbmGenerationStream} wrote: the driver's `{ size, sha256 }` + a tally of the generation. */
-export interface StreamWriteResult {
+interface StreamWriteResult {
   readonly size: number;
   readonly sha256: string;
   /** Non-empty chunk keys written, in ascending order (for the post-write verify, since the stream is consumed). */
@@ -2510,14 +2518,6 @@ function refuseCleartextOntoKey(
       `write with the keystore that holds the segment's key.`,
   );
 }
-
-/**
- * How many times a publish sends a fresh compare-and-swap after one that ended without an answer and left the row as it
- * was: four sends of the row write in all.
- */
-const UNANSWERED_RESENDS = 3;
-/** The wait before the first of those, in ms, as an upper bound: each next one doubles it, and a full jitter spreads it. */
-const UNANSWERED_RESEND_BASE_MS = 500;
 
 /**
  * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
@@ -2929,11 +2929,11 @@ export async function publishGenerationKept(
       if (sameRow(now, record)) {
         // The write did not land, or is still on its way. Send a new one from the row just read, a bounded number of
         // times; the registry's fence lets at most one of the two copies land.
-        const sleep = options.clock?.sleep;
-        if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw outcomeUnknown(key, err);
-        const bound = UNANSWERED_RESEND_BASE_MS * 2 ** resends;
+        if (options.clock?.sleep === undefined || resends >= UNANSWERED_RESENDS)
+          throw outcomeUnknown(key, err);
+        const bound = UNANSWERED_BASE_MS * 2 ** resends;
         resends += 1;
-        await sleep.call(options.clock, Math.floor((options.rng?.next() ?? 1) * bound));
+        await jitteredWait(options.clock, options.rng, bound);
         unanswered = outcomeUnknown(key, err);
         fresh = now;
         continue;
@@ -3195,7 +3195,7 @@ export function bulkLoadCrbmGeneration(
  * still in flight so their round trips overlap the encoding. Both are joined where the write needs them, and neither
  * may be left to reject unobserved.
  */
-export interface LoadAhead {
+interface LoadAhead {
   /** The number the generation takes (see {@link nextLoadGeneration}); joined just before the object is written. */
   readonly generation: PromiseLike<number>;
   /**
@@ -3715,9 +3715,9 @@ export async function verifyGeneration(
   },
   crypto: CrbmCrypto | undefined,
 ): Promise<void> {
-  const expectedKeys = [...expected.chunkKeys].sort((a, b) => a - b);
+  const expectedKeys = [...expected.chunkKeys].sort(ascending);
   const reader = await openGenerationReader(storage, key, crypto);
-  const actualKeys = [...reader.chunkKeys()].sort((a, b) => a - b);
+  const actualKeys = [...reader.chunkKeys()].sort(ascending);
   const keysMatch =
     actualKeys.length === expectedKeys.length && actualKeys.every((k, i) => k === expectedKeys[i]);
   if (!keysMatch) {

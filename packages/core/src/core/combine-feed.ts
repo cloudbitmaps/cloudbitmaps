@@ -207,7 +207,7 @@ export class FeedClosed extends Error {}
 export class FeedStale extends Error {}
 
 /** What a {@link FeedCursor} needs from the pass that runs it. */
-export interface FeedCursorDeps {
+interface FeedCursorDeps {
   readonly feed: CheckedFeed;
   readonly codec: CodecInterface;
   /** The index the first fed operand has among the call's operands. */

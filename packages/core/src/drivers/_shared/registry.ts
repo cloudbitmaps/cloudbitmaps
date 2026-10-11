@@ -12,6 +12,7 @@ import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
 import { fingerprintParts } from '@/core/crbm/fingerprint';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import { renewsPointer } from '@/core/pointer-id';
+import { MAX_SUMMARY_CARDINALITY } from '@/core/summary';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
 import {
   MAX_KEPT_GENERATIONS,
@@ -33,7 +34,7 @@ const STATUSES: readonly string[] = ['active', 'destroyed'];
 /**
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
  * through is refused on read-back like any other corruption (invariant 5), rather than ignored. A field the record
- * gains is listed here with its validator.
+ * gains is listed here with its validator; the registry test fails to compile when this list and the record disagree.
  */
 export const RECORD_FIELDS = [
   'namespace',
@@ -61,8 +62,6 @@ const MAX_GOVERNANCE_BYTES = 64 * 1024;
 /** Bounds on the wrapped-DEK list (one DEK wrapped under a few KEKs) — keeps the row small + rejects abuse. */
 const MAX_WRAPPED_DEKS = 8;
 const MAX_WRAPPED_DEK_BYTES = 4 * 1024;
-/** Ids a generation can hold: every 32-bit id. */
-const MAX_SUMMARY_CARDINALITY = 2 ** 32;
 /**
  * A sealed summary's fixed part: a 12-byte nonce, the u64 count, the object's fingerprint (a u64 size and a u32 footer
  * checksum), and a 16-byte tag.

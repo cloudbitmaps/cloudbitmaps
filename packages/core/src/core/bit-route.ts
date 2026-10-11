@@ -8,7 +8,7 @@ export const U32_MAX = 0xffff_ffff;
 export const CHUNK_COUNT = 0x1_0000; // 65,536 possible chunk keys
 const LOW_16 = 0xffff;
 
-export interface BitRoute {
+interface BitRoute {
   /** Top 16 bits — the chunk key (0..65535). */
   readonly chunkKey: number;
   /** Bottom 16 bits — the value within the chunk (0..65535). */

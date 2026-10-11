@@ -37,7 +37,7 @@ import {
 } from './_shared/registry';
 import { entropyIsAvailable, webCryptoEntropy } from './_shared/entropy';
 
-export interface MemoryRegistryDriverOptions {
+interface MemoryRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now` (drivers may use ambient time). */
   readonly now?: () => number;
   /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */

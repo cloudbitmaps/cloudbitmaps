@@ -19,6 +19,14 @@ so, and so do the module headers in the code.
   branch on `published`, and check `store.generations(ref)` before acting, as the entry under Fixed on a rollback that
   lands while a delete runs says.
 
+- **A combine refuses an operand that is not a segment of a compatible copy of `@cloudbitmaps/roaring`, a segment from
+  an earlier release included.** The refusal is a `ValidationError` before any request: an `*Into` call rejects with
+  it, and `intersect`, `union` and `andNot` throw it when their stream is first read, as they do their other errors. A
+  stub with a `leaseError` method and a segment-shaped object are refused the same way. A segment from another copy is
+  taken by `intersect`, `union`, `andNot` and the `*Into` verbs when it carries the same versioned brand as this copy,
+  as every copy of the same release does; `materializeMany` takes only a segment of its own copy. Install one version
+  of `@cloudbitmaps/roaring`.
+
 ### Added
 
 - **Shared driver helpers in `@cloudbitmaps/core/driver-kit`.** `storageObjectKey`, `segmentObjectPrefix` and
@@ -53,6 +61,18 @@ so, and so do the module headers in the code.
   (`transient Azure Blob fault: RestError`) where the storage half named the Azure error code; both now say
   `transient Azure fault: <code>` (`ServerBusy`, `ECONNRESET`), and name the class only when there is no code. A GCS
   storage fault with no code is named by its class, as the registry's was, rather than `unknown`.
+- **The eject CLI's configuration errors are `ValidationError`.** A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` and an
+  unknown `CR_EXPORT_FORMAT` throw it from `parseConfig`; the messages and the exit code (1) are the same.
+
+- **A drop and an erasure count a generation once when a storage listing yields its object twice.** A drop's
+  `wouldDelete`, `generationsDeleted` and `generationsRemaining` list each generation once, its `segment.dispose` event
+  counts each once, and an erasure deletes each generation it finds once. Of the shipped drivers, only `MemoryStorage`
+  can list a key twice, when an object is deleted and stored again while it is listed.
+
+- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
+  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
+- **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
+  object nothing checks. Wording only; no behaviour changed.
 - **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
   the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
   number. Where the segment's row records which generations are kept, the superseded generation is always the newest
