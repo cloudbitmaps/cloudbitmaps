@@ -98,9 +98,12 @@ async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
   }
 }
 
+/** The manifest's file name, at the top of the output directory. */
+const MANIFEST_NAME = 'manifest.json';
+
 /**
  * A filesystem {@link ExportSink}. Writes each segment to a **unique** `<segment><ext>.<uuid>.part` temp
- * (`O_EXCL` create, mode `0o600`) and atomically renames it into `<out>/<namespace>/<segment><ext>` on `close()`,
+ * (`O_EXCL` create, mode `0o600`) and atomically renames it into `<out>/<namespace>/<segment><ext>` on `close()` (a namespace named `manifest.json` is refused with a `ValidationError`, so the segment lands in `failed`),
  * so a half-written file never masquerades as complete and concurrent exports to the same dir can't clobber one
  * another. Uses a `FileHandle` (not `createWriteStream`) so an I/O fault **rejects the write** rather than
  * emitting an unhandled `'error'` event that would crash the process, and loops on short writes so a partial
@@ -117,7 +120,14 @@ export function fsSink(out: string): ExportSink {
       // `namespacePathPart`, not `encodeNameForPath(ns ?? '_default')`: the sentinel is emitted literally
       // while a caller's namespace is encoded, so a segment in a namespace actually named `_default`
       // does not land in the same directory as the un-namespaced ones.
-      const dir = join(out, namespacePathPart(ref.namespace));
+      const part = namespacePathPart(ref.namespace);
+      // The manifest is a file at the top of `out`, so a namespace directory of that name would take its place.
+      if (part === MANIFEST_NAME) {
+        throw new ValidationError(
+          `a namespace named ${MANIFEST_NAME} cannot be exported to a directory: its folder would be the manifest's path`,
+        );
+      }
+      const dir = join(out, part);
       await ensureOwnDirectory(out, dir);
       const finalPath = join(dir, `${encodeNameForPath(ref.segment)}${ext}`);
       const tmpPath = `${finalPath}.${randomUUID()}.part`;

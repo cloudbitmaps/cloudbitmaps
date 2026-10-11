@@ -202,6 +202,39 @@ describe('export-segments CLI', () => {
       expect(mani.failed.map((f) => f.segment)).toEqual(['bad']); // persisted so an operator sees the gap
     });
 
+    it('records a namespace named manifest.json as failed, writes the manifest, and exports the rest', async () => {
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
+      const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+      await bulkLoadCrbmGeneration(
+        storage,
+        { namespace: 'manifest.json', segment: 'x', generation: 0 },
+        [1],
+        { registry },
+      );
+      await bulkLoadCrbmGeneration(
+        storage,
+        { namespace: 'ok', segment: 'good', generation: 0 },
+        [9],
+        {
+          registry,
+        },
+      );
+
+      // A re-run gets the same answer as the first run: neither stops on the namespace's name.
+      for (let run = 0; run < 2; run++) {
+        const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+        expect(manifest.segments.map((s) => s.segment)).toEqual(['good']);
+        expect(manifest.failed).toHaveLength(1);
+        expect(manifest.failed[0]).toMatchObject({ segment: 'x', namespace: 'manifest.json' });
+        expect(manifest.failed[0]!.error).toMatch(/manifest\.json/);
+        const written = JSON.parse(await readFile(join(out, 'manifest.json'), 'utf8')) as {
+          failed: unknown[];
+        };
+        expect(written.failed).toHaveLength(1);
+        expect(roaringIds(await readFile(join(out, 'ok', 'good.roaring')))).toEqual([9]);
+      }
+    });
+
     it('a segment written without a registry is invisible, and says so', async () => {
       // A load that passes a registry publishes a row, so the registry is a complete index of every loaded
       // segment and enumeration cannot miss one. A load that passes NO registry writes an object nothing points
