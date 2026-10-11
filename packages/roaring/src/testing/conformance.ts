@@ -394,6 +394,9 @@ export function storageDriverConformance(
       const none = await d.getTail(key(0), 0);
       expect(none.size).toBe(1000);
       expect(none.bytes.length).toBe(0);
+      // A length that is no whole number is refused, never read as a different length.
+      await expect(d.getTail(key(0), Number.NaN)).rejects.toBeInstanceOf(ValidationError);
+      await expect(d.getTail(key(0), 1.5)).rejects.toBeInstanceOf(ValidationError);
       // An empty object is an object: its tail is empty and its size is 0, not a refused range.
       await putBytes(d, key(1), new Uint8Array(0));
       const empty = await d.getTail(key(1), 10);
@@ -1361,6 +1364,28 @@ export function registryConformance(
         pointerId: before.pointerId,
         currentGen: 0,
       });
+    });
+
+    // A keyId a read would refuse (it must be a non-empty string) is refused at the write, so one bad write cannot
+    // make a row unreadable and stop every listing that reaches it.
+    it('a create or a patch naming a keyId that is not a non-empty string is refused and stores nothing', async () => {
+      const d = makeDriver();
+      for (const keyId of [5, '', null, {}]) {
+        await expect(
+          d.create(SEG, { currentGen: 0, keyId } as unknown as NewRegistryRecord),
+        ).rejects.toBeInstanceOf(ValidationError);
+        expect(await d.get(SEG)).toBeNull();
+      }
+      const { token } = await d.create(SEG, { currentGen: 0, keyId: 'k1' });
+      for (const keyId of [5, '', {}]) {
+        await expect(
+          d.compareAndSwap(SEG, token, { keyId } as unknown as RegistryPatch),
+        ).rejects.toBeInstanceOf(ValidationError);
+      }
+      expect(await d.get(SEG)).toMatchObject({ token, keyId: 'k1' });
+      const cleared = await d.compareAndSwap(SEG, token, { keyId: undefined });
+      expect((await d.get(SEG))!.token).toBe(cleared.token);
+      expect((await d.get(SEG))!.keyId).toBeUndefined();
     });
 
     // Only the registry sets it: a write that carried a value of the caller's is refused, or the value is not stored.
