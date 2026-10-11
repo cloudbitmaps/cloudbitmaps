@@ -121,6 +121,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and the
+  `*Into` verbs read at most 16 operands at a time: the listing of their chunk keys on every plan, the plan a move
+  makes included; the check, on the first plan, of whether each operand that holds no chunk exists; and the lookup of
+  their versions at every look while they run. The first of those reads to fail fails the combine at once, and no more
+  of them are sent. `materializeMany` asks whether its operands exist the same way.
 - **A reader keeps chunk bytes of its own when a storage driver answers a tail read with a Node `Buffer`.** A reader
   that keeps a small generation's chunk region took it by slicing the tail, and a `Buffer`'s `slice` is a view of the
   driver's memory, not a copy: the reader held the driver's whole buffer while the cache weighed only the region, and a

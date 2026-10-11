@@ -1551,9 +1551,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * Whether the segment is a registered name at all. With a registry that is exactly "a row exists" — including
-   * a row with no generation yet (minted by `setRetention` before the first load) and a `destroyed` tombstone,
-   * both of which are names somebody deliberately created. Without a registry there is no registration to
+   * Whether the segment is a registered name at all. With a registry: a row that is not a `destroyed` tombstone,
+   * including one with no generation yet (minted by `setRetention` before the first load), which somebody deliberately
+   * created. A tombstone holds nothing, so it answers `false`. Without a registry there is no registration to
    * consult, so the honest answer is whether the bucket holds any generation of it.
    *
    * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to

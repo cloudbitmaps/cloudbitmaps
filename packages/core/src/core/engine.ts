@@ -8,10 +8,11 @@
  * one generation. Storage-agnostic and time/random-free (the determinism seam): all I/O is via the injected
  * source; the cache carries its own `Clock`.
  */
-import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-route';
+import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
+import { refuseAbsent } from './absent-operands';
 import {
   assertChunkCardinalityInRange,
   assertChunkKeyInRange,
@@ -20,9 +21,22 @@ import {
 } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import { ChunkWindow } from './chunk-window';
+import { boundedAll } from './concurrency';
 import type { Clock } from './determinism';
 import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
+import {
+  cutToWindow,
+  edgeIds,
+  firstAbove,
+  isEdge,
+  keysAbove,
+  keysWithin,
+  remaindersWithin,
+  WHOLE_ID_SPACE,
+  windowOf,
+} from './id-window';
+import type { IdWindow } from './id-window';
 import { InvalidationScope } from './invalidation-scope';
 import type { OpenRead } from './invalidation-scope';
 import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
@@ -42,6 +56,12 @@ export const DEFAULT_INTERSECT_CONCURRENCY = 32;
 const COMBINE_WINDOW_START = 8;
 /** A combine's chunk streams open this many ranges wide (or `concurrency` wide, if that is less) and double per range taken. */
 const COMBINE_RANGE_START = 4;
+/**
+ * The most operands a combine reads at once before and between its chunk reads (invariant 6): listing their chunk keys,
+ * asking whether one that holds none exists, and looking up their versions. A combine of fewer operands reads them all at
+ * once.
+ */
+const OPERANDS_AT_ONCE = 16;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
@@ -197,7 +217,10 @@ interface IterateRun {
 /** One resolved operand of a chunk-aligned combine: its chunk-key set + pinned generation. */
 interface Operand {
   readonly seg: SegmentRef;
-  /** The operand's chunk keys, inside the read's range when it has one. */
+  /**
+   * The operand's chunk keys, inside the read's range when it has one. Added from the ascending listing
+   * ({@link SegmentEngine.listKeys}), so they iterate ascending.
+   */
   readonly keys: Set<number>;
   /** Whether the segment has no chunks at all, whatever the range: what the absent-operand check judges. */
   readonly chunkless: boolean;
@@ -254,90 +277,6 @@ interface StreamedChunks {
    * of the segment after the stream opened is found through {@link openedAt}.
    */
   invalidated: boolean;
-}
-
-/** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
-interface IdWindow {
-  readonly loKey: number;
-  readonly loRem: number;
-  readonly hiKey: number;
-  readonly hiRem: number;
-}
-
-/**
- * Validate a read's range. `null` when none was asked for, so the read does no extra work; `'empty'` when no id can
- * be in it.
- */
-function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
-  const after = range?.after;
-  const through = range?.through;
-  if (after === undefined && through === undefined) return null;
-  for (const [name, bound] of [
-    ['after', after],
-    ['through', through],
-  ] as const) {
-    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
-    }
-  }
-  const lo = after === undefined ? 0 : after + 1;
-  const hi = through ?? U32_MAX;
-  if (lo > hi) return 'empty';
-  return {
-    loKey: Math.floor(lo / CHUNK_COUNT),
-    loRem: lo % CHUNK_COUNT,
-    hiKey: Math.floor(hi / CHUNK_COUNT),
-    hiRem: hi % CHUNK_COUNT,
-  };
-}
-
-/** The window a range with neither bound set describes: every id. */
-const WHOLE_ID_SPACE: IdWindow = {
-  loKey: 0,
-  loRem: 0,
-  hiKey: CHUNK_COUNT - 1,
-  hiRem: MAX_REMAINDER,
-};
-
-/**
- * Whether the range cuts inside `chunkKey`: one of its two edge chunks, and only where the bound falls inside the
- * chunk rather than on its boundary. A chunk the range covers whole is yielded by the plain loop.
- */
-const isEdge = (chunkKey: number, w: IdWindow): boolean =>
-  (chunkKey === w.loKey && w.loRem > 0) || (chunkKey === w.hiKey && w.hiRem < MAX_REMAINDER);
-
-/** The ids of an edge chunk that lie inside the window. The chunk iterates ascending, so it stops at the top. */
-function* edgeIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow): Generator<number> {
-  const from = chunkKey === w.loKey ? w.loRem : 0;
-  const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
-  for (const remainder of chunk) {
-    if (remainder > to) return;
-    if (remainder >= from) yield joinId(chunkKey, remainder);
-  }
-}
-
-/** The ascending `keys` inside the window's chunk span: two binary searches, no scan. */
-function keysWithin(keys: readonly number[], w: IdWindow): number[] {
-  const firstAtLeast = (key: number): number => {
-    let lo = 0;
-    let hi = keys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (keys[mid]! < key) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
-  return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
-}
-
-/**
- * The ascending `keys` inside the window's chunk span (every key, for `null`) and above the key `after`: what a read
- * that plans again after taking `after` still reads.
- */
-function keysAbove(keys: readonly number[], w: IdWindow | null, after: number): number[] {
-  const span = w ?? WHOLE_ID_SPACE;
-  return keysWithin(keys, after < span.loKey ? span : { ...span, loKey: after + 1, loRem: 0 });
 }
 
 /** One chunk of a combine's result: the bitmap of its remainders, owned by whoever reads it. */
@@ -445,27 +384,13 @@ class CombineWindow {
 function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uint32Array {
   let rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
   if (w !== null && isEdge(chunkKey, w)) {
-    const from = chunkKey === w.loKey ? w.loRem : 0;
-    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
     // A copy, not a view: a batch owns exactly its ids, and does not pin the whole chunk's buffer.
-    rem = rem.slice(firstAbove(rem, from - 1), firstAbove(rem, to));
+    rem = remaindersWithin(rem, chunkKey, w).slice();
   }
   // Not `<<`: a key of 32768 or more would wrap negative. A remainder is masked as `joinId` masks it.
   const base = chunkKey * CHUNK_COUNT;
   for (let i = 0; i < rem.length; i++) rem[i] = base + (rem[i]! & MAX_REMAINDER);
   return rem;
-}
-
-/** The index of the first element of ascending `a` greater than `value`: a binary search. */
-function firstAbove(a: Uint32Array, value: number): number {
-  let lo = 0;
-  let hi = a.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (a[mid]! <= value) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
 }
 
 /**
@@ -484,12 +409,14 @@ function alignKeys(operands: readonly Operand[], mode: 'all' | 'any'): number[] 
     for (const k of pivot.keys) {
       if (operands.every((o) => o.keys.has(k))) candidates.push(k);
     }
-  } else {
-    const seen = new Set<number>();
-    for (const o of operands) for (const k of o.keys) seen.add(k);
-    for (const k of seen) candidates.push(k);
+    // Ascending as they are: one operand's keys, which iterate ascending (see `Operand.keys`).
+    return candidates;
   }
-  return candidates.sort((a, b) => a - b); // defensive: `chunkKeys` already returns sorted; don't rely on it
+  const seen = new Set<number>();
+  for (const o of operands) for (const k of o.keys) seen.add(k);
+  for (const k of seen) candidates.push(k);
+  // The operands' keys come one operand after another, not in one ascending run: sorted here.
+  return candidates.sort((a, b) => a - b);
 }
 
 /**
@@ -926,7 +853,8 @@ export class SegmentEngine {
     const epoch = this.scope.epoch;
     const w = windowOf(range);
     if (w === 'empty') return;
-    const { loKey, loRem, hiKey, hiRem } = w ?? WHOLE_ID_SPACE;
+    const span = w ?? WHOLE_ID_SPACE;
+    const { loKey, loRem, hiKey, hiRem } = span;
     if (this.storage.cardinalities === undefined) {
       throw new UnsupportedError('everyNth needs a storage source that reports per-chunk counts');
     }
@@ -934,7 +862,7 @@ export class SegmentEngine {
     if (counts === null) return;
     const keys = keysWithin(
       [...counts.keys()].sort((a, b) => a - b),
-      { loKey, loRem, hiKey, hiRem },
+      span,
     );
     for (const k of keys) {
       assertChunkKeyInRange(k);
@@ -1226,9 +1154,10 @@ export class SegmentEngine {
 
   /**
    * Each operand's chunk-key set inside the read's range and above the key `after`, and the version it was listed under
-   * ({@link listKeys}), include operands first.
+   * ({@link listKeys}), include operands first, each in its order. At most {@link OPERANDS_AT_ONCE} are listed at once;
+   * the first listing to fail rejects the plan at once, and no other is begun after it.
    */
-  private combineOperands(
+  private async combineOperands(
     segs: readonly SegmentRef[],
     excludeSegs: readonly SegmentRef[],
     w: IdWindow | null,
@@ -1239,7 +1168,8 @@ export class SegmentEngine {
       const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
       return { seg, keys: new Set(keys), chunkless: listed.length === 0, gen, epoch };
     };
-    return Promise.all([Promise.all(segs.map(extract)), Promise.all(excludeSegs.map(extract))]);
+    const all = await boundedAll([...segs, ...excludeSegs], OPERANDS_AT_ONCE, extract);
+    return [all.slice(0, segs.length), all.slice(segs.length)];
   }
 
   /**
@@ -1298,7 +1228,8 @@ export class SegmentEngine {
    * {@link nextSlot} once the read has looked at every operand's version, and planned again if one is not the version
    * the plan was made under. An operand the keys left do not read would otherwise never show the read its move: an
    * exclude whose keys the survivors do not reach, or an include of a union past its last key. A chunk that suggested a
-   * move is confirmed so, as in {@link nextChunkAfterLook}.
+   * move is confirmed so, as in {@link nextChunkAfterLook}. The versions are looked up at most {@link OPERANDS_AT_ONCE}
+   * at once, all of them: a look that finds no move has compared every one.
    */
   private async nextSlotAfterLook(run: CombineRun): Promise<CombineSlot | undefined> {
     const plan = run.plan;
@@ -1306,7 +1237,7 @@ export class SegmentEngine {
     plan.moves.moved = false;
     this.looked(run.looks);
     const all = [...plan.operands, ...plan.excludes];
-    const now = await Promise.all(all.map((o) => this.cacheVersion(o.seg)));
+    const now = await boundedAll(all, OPERANDS_AT_ONCE, (o) => this.cacheVersion(o.seg));
     if (now.some((version, i) => version !== all[i]!.gen)) await this.replanCombine(run);
     return run.plan.window.next();
   }
@@ -1418,21 +1349,13 @@ export class SegmentEngine {
         if (!slot.result || slot.result.isEmpty) continue;
         const bitmap =
           w !== null && isEdge(slot.key, w)
-            ? this.cutToWindow(slot.result, slot.key, w)
+            ? cutToWindow(this.codec, slot.result, slot.key, w)
             : slot.result;
         if (!bitmap.isEmpty) yield { chunkKey: slot.key, bitmap };
       }
     } finally {
       this.closeCombine(run.plan);
     }
-  }
-
-  /** An edge chunk's bitmap cut to the window, as a new bitmap: the remainders `edgeIds` would yield. */
-  private cutToWindow(chunk: CodecBitmap, chunkKey: number, w: IdWindow): CodecBitmap {
-    const from = chunkKey === w.loKey ? w.loRem : 0;
-    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
-    const rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
-    return this.codec.fromValues(rem.subarray(firstAbove(rem, from - 1), firstAbove(rem, to)));
   }
 
   /**
@@ -1725,7 +1648,8 @@ export class SegmentEngine {
    * chunks — a segment with data is self-evidently registered — so the check is a registry read exactly when
    * a combine was about to do something suspicious, and no reads at all otherwise. A source that cannot answer
    * `exists` (it has no notion of registration) skips the check rather than guessing. An operand is judged by
-   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious.
+   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious. At most
+   * {@link OPERANDS_AT_ONCE} are asked after at once.
    */
   private async refuseAbsentOperands(
     resolved: readonly Operand[],
@@ -1733,21 +1657,12 @@ export class SegmentEngine {
     op: string,
   ): Promise<void> {
     if (allow === true || this.storage.exists === undefined) return;
-    const empty = resolved.filter((o) => o.chunkless);
-    if (empty.length === 0) return;
-    const checked = await Promise.all(
-      empty.map(async (o) => ({ seg: o.seg, exists: await this.storage.exists!(o.seg) })),
-    );
-    const absent = checked.filter((c) => !c.exists).map((c) => c.seg);
-    if (absent.length === 0) return;
-    const named = absent
-      .map((s) => (s.namespace === undefined ? `"${s.segment}"` : `"${s.namespace}/${s.segment}"`))
-      .join(', ');
-    throw new ValidationError(
-      `${op}: operand ${named} names a segment that does not exist or was dropped, so it would contribute nothing — ` +
-        `an exclude would suppress no ids and an include would contribute none. Check the name and the ` +
-        `namespace (a segment addressed without its \`namespace\` is a DIFFERENT segment). ` +
-        `Pass \`allowAbsentOperands: true\` if you meant it.`,
+    await refuseAbsent(
+      op,
+      resolved.filter((o) => o.chunkless),
+      OPERANDS_AT_ONCE,
+      (o) => this.storage.exists!(o.seg),
+      ({ seg }) => (seg.namespace === undefined ? seg.segment : `${seg.namespace}/${seg.segment}`),
     );
   }
 
