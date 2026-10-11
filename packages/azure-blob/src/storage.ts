@@ -251,41 +251,59 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       if (!(maxBytes <= 0) && !Number.isSafeInteger(maxBytes)) {
         throw new ValidationError(`invalid tail length ${maxBytes}`);
       }
-      const props = await timedRead('getProperties', this.readTimeoutMs, (abortSignal) =>
-        this.blob(objectName).getProperties({ abortSignal }),
-      );
-      const size = props.contentLength ?? 0;
-      if (!Number.isSafeInteger(size) || size < 0) {
-        throw new ValidationError(`Azure returned an invalid blob size: ${String(size)}`);
-      }
-      if (maxBytes <= 0 || size === 0) {
-        return withVersion({ bytes: new Uint8Array(0), size }, props.etag);
-      }
-      const take = Math.min(maxBytes, size);
-      const { bytes, version } = await timedRead(
-        'download',
-        this.readTimeoutMs,
-        async (abortSignal) => {
-          const res = await this.blob(objectName).download(size - take, take, { abortSignal });
-          const body = await collect(
-            res.readableStreamBody,
-            abortSignal,
-            take,
-            () => this.badRead(key, 'tail', `the response is longer than the ${take}B requested`),
-            res.contentLength,
-          );
-          // The version of the blob the bytes came from: the ETag of the download that carried them.
-          return { bytes: body, version: res.etag };
-        },
-      );
-      if (bytes.length !== take) {
-        throw this.badRead(
-          key,
-          'tail',
-          `the response holds ${bytes.length}B of the ${take}B requested`,
+      // The download is conditional on the properties' ETag, so the size, the bytes and the version always describe
+      // one blob. A blob replaced between the two requests answers 412: the pair is read again once, and a second
+      // replacement is a `TransientError` for the caller's retry.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const props = await timedRead('getProperties', this.readTimeoutMs, (abortSignal) =>
+          this.blob(objectName).getProperties({ abortSignal }),
         );
+        const size = props.contentLength ?? 0;
+        if (!Number.isSafeInteger(size) || size < 0) {
+          throw new ValidationError(`Azure returned an invalid blob size: ${String(size)}`);
+        }
+        if (maxBytes <= 0 || size === 0) {
+          return withVersion({ bytes: new Uint8Array(0), size }, props.etag);
+        }
+        // Without an ETag the download cannot be conditional, and a blob replaced between the two requests would
+        // hand back one blob's size with another's bytes, so a response that omits it is refused.
+        const etag = props.etag;
+        if (etag === undefined) {
+          throw this.badRead(key, 'tail', 'the properties response carries no ETag');
+        }
+        const take = Math.min(maxBytes, size);
+        let downloaded: { bytes: Uint8Array; version: string | undefined };
+        try {
+          downloaded = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
+            const res = await this.blob(objectName).download(size - take, take, {
+              abortSignal,
+              conditions: { ifMatch: etag },
+            });
+            const body = await collect(
+              res.readableStreamBody,
+              abortSignal,
+              take,
+              () => this.badRead(key, 'tail', `the response is longer than the ${take}B requested`),
+              res.contentLength,
+            );
+            return { bytes: body, version: res.etag };
+          });
+        } catch (err) {
+          if (isPreconditionFailed(err)) continue;
+          throw err;
+        }
+        if (downloaded.bytes.length !== take) {
+          throw this.badRead(
+            key,
+            'tail',
+            `the response holds ${downloaded.bytes.length}B of the ${take}B requested`,
+          );
+        }
+        return withVersion({ bytes: downloaded.bytes, size }, downloaded.version);
       }
-      return withVersion({ bytes, size }, version);
+      throw new TransientError(
+        `${key.segment}.${key.generation} was replaced while its tail was read`,
+      );
     } catch (err) {
       throw this.mapReadError(err, key);
     }

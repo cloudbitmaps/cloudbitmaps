@@ -71,6 +71,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/publish-reconcile.test.ts',
   'tests/core/range-read.test.ts',
   'tests/core/reserved-namespace.test.ts',
+  'tests/core/retention-sweep-foreign-tombstone-pointer.test.ts',
   'tests/core/retention-hard-purge.test.ts',
   'tests/core/retention-policy.test.ts',
   'tests/core/retention-sweep.test.ts',

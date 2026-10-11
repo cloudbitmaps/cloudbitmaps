@@ -43,6 +43,8 @@ report.verdict; // 'win-big' | 'win' | 'lose-zone' — never hides the lose case
 report.assumptions.notes; // what it modeled, and what it did not
 ```
 
+Both functions refuse input they cannot price, with a `ValidationError`: a key they do not take, at any level (a misspelt `segments[0].size`, `workload.readsPerSecond` or `pricing.storage.getPerMilion`; the message names the key and where it sits), and a workload or rate card so large that a cost is not a finite number of dollars. `estimateCost` also refuses a segment `count` that is not a whole number.
+
 ## Ground: `groundedReport` from `stat().sizeBytes`
 
 Price a store you run, from what it really holds. A segment handle's `stat()` reports `sizeBytes`, the bytes of its

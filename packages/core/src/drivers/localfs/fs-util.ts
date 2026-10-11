@@ -3,7 +3,9 @@
  * of truth for error-code matching, the symlink-refusal flag, and directory durability.
  */
 import { constants as FS } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, opendir, open, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { FileHandle } from 'node:fs/promises';
 import { TransientError } from '@/core/errors';
 
@@ -51,6 +53,15 @@ export const mapFsError = (err: unknown): unknown =>
 export const O_NOFOLLOW = FS.O_NOFOLLOW ?? 0;
 
 /**
+ * The modes LocalFs creates what it stores with: files readable and writable by their owner alone, directories
+ * searchable by it alone, so another user of the machine cannot read or list a segment. A process umask can only
+ * remove bits from these, never add any. On Windows Node ignores a mode apart from the read-only bit, so passing
+ * them there changes nothing.
+ */
+export const FILE_MODE = 0o600;
+export const DIR_MODE = 0o700;
+
+/**
  * Best-effort parent-directory fsync, so a just-published `rename`/`link` survives a crash. Without it the
  * directory entry can still be in the page cache when power goes: the generation's bytes are durable and
  * the name pointing at them is not, which is the one way a published generation can come back missing.
@@ -83,5 +94,54 @@ export async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<v
       });
     }
     offset += bytesWritten;
+  }
+}
+
+/**
+ * Create `dir` and the directories missing above it, private from `top` down: what is missing above `top` is created
+ * with the default mode (another service may need to traverse it), `top` and everything below it {@link DIR_MODE}. A
+ * directory that exists keeps its mode.
+ */
+export async function makeDirs(dir: string, top: string): Promise<void> {
+  if (!parentsMade.has(top)) {
+    await mkdir(dirname(top), { recursive: true });
+    parentsMade.add(top);
+  }
+  await mkdir(dir, { recursive: true, mode: DIR_MODE });
+}
+const parentsMade = new Set<string>();
+
+/** The name of a temp file beside `finalPath`: `<finalPath>.<uuid>.tmp`. The only names {@link sweepOrphanTemps} removes. */
+export const tempPathFor = (finalPath: string): string => `${finalPath}.${randomUUID()}.tmp`;
+const TEMP_NAME = /\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+/** A temp file this old belongs to no write in progress: a crash or a failed close left it behind. */
+const ORPHAN_TEMP_AGE_MS = 24 * 60 * 60 * 1000;
+/** A directory is swept at most this often per process, so a save never lists a large directory every time. */
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+const lastSwept = new Map<string, number>();
+
+/**
+ * Remove the temp files in `dir` named by {@link tempPathFor} that were last written more than a day ago, streaming the
+ * directory, and at most once an hour per directory in this process. Only regular files go (a symlink is never followed
+ * or removed). Best effort: a failure leaves the files for a later sweep and is never raised. Callers start it without
+ * awaiting it.
+ */
+export async function sweepOrphanTemps(dir: string, now: number = Date.now()): Promise<void> {
+  const last = lastSwept.get(dir);
+  if (last !== undefined && now - last < SWEEP_INTERVAL_MS) return;
+  lastSwept.set(dir, now);
+  try {
+    const entries = await opendir(dir);
+    for await (const entry of entries) {
+      if (!TEMP_NAME.test(entry.name)) continue;
+      const path = join(dir, entry.name);
+      const info = await lstat(path).catch(() => undefined);
+      if (info?.isFile() === true && info.mtimeMs < now - ORPHAN_TEMP_AGE_MS) {
+        await unlink(path).catch(() => {});
+      }
+    }
+  } catch {
+    // Nothing to sweep, or unreadable: the next interval tries again.
   }
 }

@@ -61,3 +61,22 @@ describe('S3StorageDriver.getTail on an empty object', () => {
     await expect(CrbmReader.open(blob)).rejects.toBeInstanceOf(IntegrityError);
   });
 });
+
+describe('S3StorageDriver.getTail with a length that is not a whole number', () => {
+  it.each([Number.NaN, 1.5, Number.POSITIVE_INFINITY])(
+    'refuses %s before sending anything',
+    async (n) => {
+      const bucket = new StubS3Bucket();
+      store(bucket, new Uint8Array(10));
+      await expect(driverOver(bucket).getTail(GEN, n)).rejects.toBeInstanceOf(ValidationError);
+      expect(bucket.count('GetObject')).toBe(0);
+      expect(bucket.count('HeadObject')).toBe(0);
+    },
+  );
+
+  it('answers a length of zero or less with an empty tail, as GCS and Azure do', async () => {
+    const bucket = new StubS3Bucket();
+    store(bucket, new Uint8Array(10));
+    expect(await driverOver(bucket).getTail(GEN, -1)).toMatchObject({ size: 10 });
+  });
+});

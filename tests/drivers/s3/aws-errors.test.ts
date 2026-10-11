@@ -50,3 +50,11 @@ describe('shared AWS error helpers', () => {
     expect(isNetworkOrTimeout(new Error('the item timed out of the cache window'))).toBe(false);
   });
 });
+
+describe('isNetworkOrTimeout on unreachable-network codes', () => {
+  it.each(['EHOSTUNREACH', 'ENETUNREACH'])('treats %s as transient', (code) => {
+    expect(
+      isNetworkOrTimeout(Object.assign(new Error(`connect ${code} 10.0.0.1:443`), { code })),
+    ).toBe(true);
+  });
+});
