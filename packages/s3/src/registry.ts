@@ -65,7 +65,7 @@ import { scrubCredentials } from './scrub-error';
 import { appliesDeleteIfMatch, probeClient } from './client-probe';
 import type { ClientFacts } from './client-probe';
 
-export interface S3RegistryDriverOptions {
+interface S3RegistryDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
   readonly client: S3Client;
   /** Target bucket (must already exist). */

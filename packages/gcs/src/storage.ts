@@ -108,7 +108,7 @@ const REAL_RNG: Rng = { next: () => Math.random() };
  */
 const DEFAULT_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
-export interface GcsStorageDriverOptions {
+interface GcsStorageDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
   /**

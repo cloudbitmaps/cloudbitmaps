@@ -57,7 +57,7 @@ import { collect, destroyBody } from './body';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
-export interface AzureBlobRegistryDriverOptions {
+interface AzureBlobRegistryDriverOptions {
   /** A constructed `@azure/storage-blob` `ContainerClient`, scoped to an existing container. */
   readonly containerClient: ContainerClient;
   /** Optional blob-name prefix under which all registry objects live (e.g. `cloudbitmaps/`). */

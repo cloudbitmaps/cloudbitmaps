@@ -124,7 +124,7 @@ const REAL_TIME: Sleeper = {
 /** Where the backoff's jitter comes from when none is injected. */
 const REAL_RNG: Rng = { next: () => Math.random() };
 
-export interface S3StorageDriverOptions {
+interface S3StorageDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
   readonly client: S3Client;
   /** Target bucket (must already exist). */

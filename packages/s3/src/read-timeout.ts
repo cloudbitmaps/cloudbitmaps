@@ -20,7 +20,7 @@
 import { TransientError, ValidationError } from '@cloudbitmaps/core/driver-kit';
 
 /** No timeout unless one is set: the value a read takes stays the caller's until in-region measurements justify one. */
-export const DEFAULT_READ_TIMEOUT_MS = 0;
+const DEFAULT_READ_TIMEOUT_MS = 0;
 
 /** The longest delay a Node timer holds. A longer one fires after 1 ms instead, so it is refused rather than passed on. */
 const MAX_TIMER_MS = 2_147_483_647;
