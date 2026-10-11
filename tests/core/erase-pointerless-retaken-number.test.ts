@@ -42,7 +42,8 @@ import {
  * authentication under the row's key.
  *
  * A driver that reports no `conditionalDelete` ignores the version, and there the race still ends with the row naming
- * a missing object.
+ * a missing object. The first erasure reads the row once more after its last delete, finds it naming the number it
+ * deleted with no object under it, and throws `NotFoundError` rather than answer.
  */
 
 const keystore = (): InProcessKeystore =>
@@ -61,7 +62,9 @@ interface Race {
  * delete, the second erases the id to the end, and a load of `[7, 8, 9]` takes the number the second one freed.
  * Returns what each erasure reported.
  */
-async function race(r: Race): Promise<{ first: EraseIdResult; second: EraseIdResult }> {
+async function race(
+  r: Race,
+): Promise<{ first: EraseIdResult | { error: unknown }; second: EraseIdResult }> {
   const deps = {
     storage: r.storage,
     registry: r.registry,
@@ -83,7 +86,7 @@ async function race(r: Race): Promise<{ first: EraseIdResult; second: EraseIdRes
   expect(loaded).toMatchObject({ generation: r.at, published: true });
 
   atDelete.open();
-  return { first: await first, second };
+  return { first: await first.catch((error: unknown) => ({ error })), second };
 }
 
 /** The row names `at`, its object is in the bucket and reads as the load wrote it, and nothing holds the id. */
@@ -199,16 +202,23 @@ describe('the same race over a storage driver that reports no conditionalDelete'
     await rm(root, { recursive: true, force: true });
   });
 
-  it("the local filesystem ignores the version: the stale delete removes the load's object, and the row names it still", async () => {
+  it("the local filesystem ignores the version: the stale delete removes the load's object, and the erasure says the row names it still", async () => {
     const storage = new LocalFsStorageDriver(root);
     expect(storage.capabilities().conditionalDelete).toBe(false);
     const r: Race = { storage, registry: new MemoryRegistryDriver(), at: 0 };
     await pointerless(r.storage, r.registry);
 
-    const { second } = await race(r);
+    const { first, second } = await race(r);
 
     expect(second).toMatchObject({ erased: true, collected: [0] });
-    // The residual: the row names generation 0, the load's, and the first erasure's delete took it.
+    // The residual: the row names generation 0, the load's, and the first erasure's delete took it. That erasure's read
+    // of the row after its delete finds the pointer on the number it deleted, with nothing under it, and says so.
+    expect(first).toEqual({
+      error: expect.objectContaining({
+        name: 'NotFoundError',
+        message: expect.stringMatching(/an erasure deleted generation 0\b/),
+      }),
+    });
     expect((await r.registry.get(REF))?.currentGen).toBe(0);
     expect(await generations(r.storage)).toEqual([]);
   });
