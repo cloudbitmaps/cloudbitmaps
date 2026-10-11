@@ -13,6 +13,7 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **Azure and S3 tail reads fail closed.** An Azure tail read took a blob's size from one request and its bytes from another, so a blob replaced between them could return one blob's size with another's bytes and version; the download is now conditional on the properties' ETag, the pair is read again once on a replacement, and a second replacement is a `TransientError`. S3's `getTail` with a length that is not a whole number (`NaN`, `1.5`) sent `bytes=-NaN` and surfaced a raw service error; it now throws `ValidationError` before sending, as GCS and Azure do. The S3 driver now treats `EHOSTUNREACH` and `ENETUNREACH` as transient, so the read retry covers them as it does for GCS and Azure.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
 
 ## [0.20.0] — 2026-10-09

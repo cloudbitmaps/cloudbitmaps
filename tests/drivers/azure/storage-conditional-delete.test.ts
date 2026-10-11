@@ -22,8 +22,8 @@ class FakeContainer {
   /** What a Delete Blob under `ifMatch` answers for a name with no blob. */
   absentAnswer: 404 | 412 = 404;
   containerMissing = false;
-  /** The ETag the next ranged download answers with, in place of the blob's: a blob replaced between the two requests. */
-  downloadEtag: string | undefined;
+  /** Runs as a ranged download arrives, before it is answered: a blob replaced between the two requests. */
+  beforeDownload: (() => void) | undefined;
   /** What a properties read meets, in place of an answer. */
   propertiesFault: Error | undefined;
   /** Apply the next delete, then lose its answer: the client's retry policy sends it again. */
@@ -49,15 +49,22 @@ class FakeContainer {
         if (stored === undefined || this.containerMissing) throw missing();
         return { contentLength: stored.bytes.length, etag: stored.etag };
       },
-      download: async (offset: number, count: number) => {
-        this.calls.push({ op: 'download' });
+      download: async (
+        offset: number,
+        count: number,
+        options?: { conditions?: { ifMatch?: string } },
+      ) => {
+        this.calls.push({ op: 'download', ifMatch: options?.conditions?.ifMatch });
+        this.beforeDownload?.();
         const stored = this.blobs.get('only');
         if (stored === undefined || this.containerMissing) throw missing();
         const bytes = stored.bytes.subarray(offset, offset + count);
-        const etag = this.downloadEtag ?? stored.etag;
-        this.downloadEtag = undefined;
+        const ifMatch = options?.conditions?.ifMatch;
+        if (ifMatch !== undefined && stored.etag !== ifMatch) {
+          throw restError(412, 'ConditionNotMet');
+        }
         return {
-          etag,
+          etag: stored.etag,
           contentLength: bytes.length,
           readableStreamBody: (async function* () {
             yield Buffer.from(bytes);
@@ -109,9 +116,41 @@ describe('AzureBlobStorageDriver: a tail read reports the ETag', () => {
     const driver = over(fake);
     expect((await driver.getTail(KEY, 3)).version).toBe(etag);
     expect((await driver.getTail(KEY, 0)).version).toBe(etag);
-    // A blob replaced between the properties and the download: the version names the bytes, the download's.
-    fake.downloadEtag = '"0x8Dnew"';
-    expect((await driver.getTail(KEY, 3)).version).toBe('"0x8Dnew"');
+  });
+});
+
+describe('AzureBlobStorageDriver: a tail read of a blob replaced between its two requests', () => {
+  it('reads the replacement whole: its size, its bytes and its version together', async () => {
+    const fake = new FakeContainer();
+    fake.put('0123456789');
+    let replaced = false;
+    let etagB = '';
+    fake.beforeDownload = () => {
+      if (replaced) return;
+      replaced = true;
+      etagB = fake.put('abcdefghijklmnopqrstuvwxyz0123');
+    };
+    const tail = await over(fake).getTail(KEY, 4);
+    expect(tail).toEqual({ bytes: new TextEncoder().encode('0123'), size: 30, version: etagB });
+  });
+
+  it('sends the properties ETag as ifMatch on the download', async () => {
+    const fake = new FakeContainer();
+    const etag = fake.put('hello');
+    await over(fake).getTail(KEY, 3);
+    expect(fake.calls.filter((c) => c.op === 'download')).toEqual([
+      { op: 'download', ifMatch: etag },
+    ]);
+  });
+
+  it('is a TransientError when the blob is replaced again on the second try', async () => {
+    const fake = new FakeContainer();
+    fake.put('0123456789');
+    fake.beforeDownload = () => {
+      fake.put('abcdefghijklmnopqrstuvwxyz0123');
+    };
+    await expect(over(fake).getTail(KEY, 4)).rejects.toBeInstanceOf(TransientError);
+    expect(fake.calls.filter((c) => c.op === 'download')).toHaveLength(2);
   });
 });
 
