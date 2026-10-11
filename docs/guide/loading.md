@@ -455,8 +455,8 @@ and [Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
 
 **Who collects.** Collection deletes generations strictly below the current one, keeping `keep` of them: the
 generation the load superseded, then the newest of the rest by number. Without a rollback the superseded generation is
-usually the newest below the pointer, so the window is the newest `keep`; after one it is the generation the rollback
-restored ([what the first load after a rollback keeps](#what-the-first-load-after-a-rollback-keeps)).
+usually the newest below the pointer, so the window is the newest `keep`; for the first load after a rollback it is the
+generation the rollback restored ([what the first load after a rollback keeps](#what-the-first-load-after-a-rollback-keeps)).
 `keep` is a non-negative integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError`
 before anything is written. It never touches the current generation or anything above it.
 
@@ -513,7 +513,7 @@ neither is this one. An `*Into` always lists when it is given a `keep`.
 An `*Into` that collects on the way through:
 
 ```ts
-// Deletes every generation below the new one, keeping the newest 1 as a grace window.
+// Deletes every generation below the new one but one, the one it superseded, kept as a grace window.
 // `collected` lists what it deleted.
 const { collected } = await store
   .segment('campaign-targets')
@@ -629,22 +629,28 @@ only those that hold it and any no read of the segment can open, whatever the id
 ### What the first load after a rollback keeps
 
 A load keeps `keep` generations below the one it publishes: the generation it superseded first, then the newest of the
-rest by number. After a rollback, the generation the next load supersedes is the one the rollback restored, so that one
-stays: a pin taken on it since goes on reading, and it is still there to roll back to if the new load is bad too. The
-generations the rollback moved away from are newer by number, so they are the ones that go.
+rest by number. After a rollback, the generation the next load supersedes is the one the rollback restored, so with a
+`keep` of 1 or more the first load after the rollback keeps it, and it is still there to roll back to if that load is
+bad too. The rest of that load's window is the newest by number, which can be generations the rollback moved away
+from.
+
+From the load after that, the generation superseded is the newest below the pointer again, so the window is the newest
+`keep` by number: with a `keep` of 2 or more, the restored generation goes before the newest generations the rollback
+moved away from. A pin taken on the restored generation reads it until a load collects it, unless the pin is leased
+([hold a generation for a job](reading.md#hold-a-generation-for-a-job-a-lease)).
 
 With generations 0 to 3 in the bucket and the pointer rolled back from 3 to 1, the next load finds 2 taken and
-publishes 4:
+publishes 4, and the load after it publishes 5:
 
-| `keep` | the bucket after the load | why |
-|---|---|---|
-| `0` | 4 | nothing below the new pointer is kept |
-| `1` | 1, 4 | 1, the restored generation, which the load superseded |
-| `2` | 1, 3, 4 | 1, then the newest of the rest, 3 |
+| `keep` | the bucket after the first load | after the next | why |
+|---|---|---|---|
+| `0` | 4 | 5 | nothing below the new pointer is kept |
+| `1` | 1, 4 | 4, 5 | the first keeps 1, which it superseded; the next keeps 4, which it superseded |
+| `2` | 1, 3, 4 | 3, 4, 5 | the first keeps 1, then the newest of the rest, 3; the next keeps the newest two, 4 and 3 |
 
-The load records what it kept, so the load after it collects by name from there: with `keep: 1` it publishes 5 and
-deletes 1. Where the superseded generation's object has gone from the bucket (a lifecycle rule took it), the load keeps
-the newest `keep` that are there.
+At `keep: 2`, 3, which the rollback moved away from, outlives 1, which it restored, by one load. Each load records what
+it kept, so the load after the first collects by name. Where the superseded generation's object has gone from the
+bucket (a lifecycle rule took it), the load keeps the newest `keep` that are there.
 
 ## Write a result into another segment: the `*Into` verbs
 
@@ -1299,22 +1305,26 @@ names it as the publish wrote it or as it reads after the listing (a load that p
 and re-proves before each delete that the row still names a list and still does not name the generation. Where it cannot
 prove a delete it stops, and the load returns. Where the row records none, it keeps `keep` of the generations it finds,
 the one the load superseded first and then the newest by number, and records them with one compare-and-swap on the row
-it just published. It puts the superseded generation first only while the pointer it works below is the load's own: if
-another load has published since, or a rollback has moved the pointer, the generation that pointer superseded is not
-one this load knows, and the window is the newest by number. Whatever it keeps, every generation it deletes is below
-that pointer. That compare-and-swap moves the row's token, so a derived writer in flight on the row, an erasure
-rewrite, meets a lost fence and re-derives, and it happens once for each row that records no list. A lost race there is
-not an error.
+it just published. It puts the superseded generation first only while the lower of its two reads of the pointer, the one
+before its listing and the one after, is the load's own generation. Otherwise another writer moved the pointer before
+the pass first read it, or a rollback lowered it by the second read, and the generation that pointer superseded is not
+one this load knows, so the window is the newest by number. A publish that lands after the first read, or a rollback
+down and forward again to the load's generation, leaves the superseded generation first. Whatever it keeps, every
+generation it deletes is below that lower pointer. That compare-and-swap moves the row's token, so a derived writer in
+flight on the row, an erasure rewrite, meets a lost fence and re-derives, and it happens once for each row that records
+no list. A lost race there is not an error.
 
 **A lease on a pinned generation is read from the row a collection already holds.** A load's collection, by name or by
 listing, spares a generation that a live lease in the row names, and goes on to the next: the by-name pass reads the row
 before each delete and the listing pass re-proves it, so a lease that lands while the pass runs is seen at the next name,
-and one that lands in the round trip between that read and the delete is not. A leased generation takes no place in the
-`keep` window, and the record of the window leaves it out. The collection that runs for an erasure, a shred, a drop and a
-retention expiry does not read leases at all. A lease is written by one compare-and-swap on the row, so it is one more
-writer of the row, but never one that refuses the others: see the next paragraph. A load's publish drops the leases that
-have ended from the row in its own write, at no request of its own. A load with no clock (`deps.clock` absent, which the
-store never is) cannot tell a live lease from an ended one, so its collection reads none and its publish prunes none.
+and one that lands in the round trip between that read and the delete is not. The `keep` window is chosen without
+looking at leases. A leased generation it leaves out takes no place in it, and the record of the window leaves it out;
+one it holds anyway, such as the generation the load superseded, takes its place there as any other would. The
+collection that runs for an erasure, a shred, a drop and a retention expiry does not read leases at all. A lease is
+written by one compare-and-swap on the row, so it is one more writer of the row, but never one that refuses the others:
+see the next paragraph. A load's publish drops the leases that have ended from the row in its own write, at no request
+of its own. A load with no clock (`deps.clock` absent, which the store never is) cannot tell a live lease from an ended
+one, so its collection reads none and its publish prunes none.
 
 **A lease write does not refuse a writer fenced on the row's token.** Invariant 1's fence stays: a load, an erasure
 rewrite and a rollback publish only against the row they read. But readers write a segment's leases, in numbers no

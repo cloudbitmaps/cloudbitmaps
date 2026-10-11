@@ -3261,7 +3261,7 @@ export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
 /**
  * The `keep` a materialisation passes when the caller does not: a grace window wide enough to collect nothing.
  *
- * The collection keeps the newest `keep` generations below the pointer and deletes the rest, so an
+ * The collection keeps `keep` generations below the pointer and deletes the rest, so an
  * integer at the top of the range keeps all of them. It has to be an integer — `loadSegment` validates that,
  * and `Infinity` is rejected — which is why this is `MAX_SAFE_INTEGER` and not the value that reads more
  * naturally.

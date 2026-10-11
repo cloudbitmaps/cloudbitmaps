@@ -210,8 +210,10 @@ export interface LoadOptions {
    * guide.
    *
    * The window holds the generation the load superseded first, then the newest of the rest by number. After a rollback
-   * the superseded generation is the one the rollback restored, so the first load after it keeps that one, and the
-   * newer generations the rollback moved away from go first.
+   * the superseded generation is the one the rollback restored, so with a `keep` of 1 or more the first load after it
+   * keeps that one; the rest of its window is the newest by number, which can be generations the rollback moved away
+   * from. From the next load the window is the newest `keep` by number again, so with a `keep` of 2 or more the restored
+   * generation goes before the newest of those.
    *
    * The segment's row records the generations a load keeps, up to 64, so a load that found nothing above the pointer
    * collects without listing: it deletes the generations its publish pushed out of the window, and lists the segment's
