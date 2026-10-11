@@ -93,7 +93,7 @@ async function rowLockKey(path: string): Promise<string> {
   }
 }
 
-export interface LocalFsRegistryDriverOptions {
+interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */

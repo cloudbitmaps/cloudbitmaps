@@ -69,7 +69,7 @@ export type { CombineManyFeed, CombineManyFeedRecord } from './combine-feed';
 /** The range requests a pass keeps in flight at once across all its operands, inside a client's socket pool. */
 export const MAX_RANGES_IN_FLIGHT = 64;
 /** The largest `publishConcurrency` and `concurrency` a call may ask for. */
-export const MAX_BATCH_PARALLELISM = 1024;
+const MAX_BATCH_PARALLELISM = 1024;
 /** What a range request can hold: a range is at most a chunk's size cap, and a chunk is 1 MiB at most. */
 const RANGE_BYTES = 1 << 20;
 /** The most one decoded chunk can be once optimized: used to size the per-key working set. */
@@ -329,7 +329,7 @@ export interface CompiledCombineMany<R> {
 }
 
 /** The most nodes the expressions of one call may hold in all, so that a thousand large outputs cannot be planned at once. */
-export const MAX_CALL_NODES = 200_000;
+const MAX_CALL_NODES = 200_000;
 
 /** Every operand under a child of an `andNot` after the first, at any depth. */
 function subtractedOperands(node: ExprNode, under: boolean, into: Set<number>): void {
@@ -593,7 +593,7 @@ const BYTES_PER_NODE = 320;
 const BYTES_PER_OUTPUT = 3_700;
 
 /** What {@link GroupCost} reads of an output. */
-export interface GroupCostItem {
+interface GroupCostItem {
   readonly bound: number;
   readonly serializedBound: number;
   readonly rootKeys: Uint16Array;

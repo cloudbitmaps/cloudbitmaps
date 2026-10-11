@@ -21,6 +21,7 @@ import {
   isNotFoundError,
   isWriteConflictError,
 } from './errors';
+import { generationsOf } from './generation-list';
 import { MAX_KEPT_GENERATIONS, keptWindow, usableKeptGens } from './kept-generations';
 import { heldGenerations } from './leases';
 import type {
@@ -34,7 +35,7 @@ import type {
 import { sameIncarnation } from './token';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
-export interface GenerationDeps {
+interface GenerationDeps {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /** What a delete loop waits on before it reads the row again ({@link watchDeletes}). Absent, it does not wait. */
@@ -54,7 +55,7 @@ export interface GenerationDeps {
 export const DELETE_SETTLE_WAITS_MS: readonly number[] = Object.freeze([250, 500, 1_000]);
 
 /** What a delete loop has deleted, held to every read of the segment's row it makes after a delete. */
-export interface DeleteWatch {
+interface DeleteWatch {
   /** Note a delete that landed. */
   deleted(generation: number): void;
   /** Every generation noted so far. */
@@ -148,7 +149,7 @@ export function watchDeletes(deps: GenerationDeps, ref: SegmentRef): DeleteWatch
 }
 
 /** Who deleted the generation a {@link pointerOnDeletedError} names, which leads its message. */
-export type Deleter =
+type Deleter =
   | { readonly kind: 'collection' }
   | { readonly kind: 'erasure' }
   | { readonly kind: 'load'; readonly published: number }
@@ -228,7 +229,7 @@ function numberAbove(highest: number): number {
 }
 
 /** The number a load takes, and whether one existence check proved it free (so nothing is above the pointer). */
-export interface LoadNumber {
+interface LoadNumber {
   readonly generation: number;
   /**
    * `true` when the number is `currentGen + 1` and the check found no object holding it. Collection by name rests
@@ -354,7 +355,7 @@ export async function collectBelowPointer(
  * reads none. A pass without a guard never reads the row's leases, which is what keeps erasure, shred and drop deleting
  * what a lease names.
  */
-export interface LeaseGuard {
+interface LeaseGuard {
   readonly now: () => number;
 }
 
@@ -417,12 +418,8 @@ async function listingPass(
   const record = await deps.registry.get(ref);
   if (record === null) return { deleted: [], kept: [], complete: true }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
-  // A set, not an array: a listing that spans a purge-and-recreate can yield the same generation number
-  // twice (the objects are re-created under the numbers just swept), and the grace window below keeps `keep`
-  // ENTRIES — so a duplicate would silently consume a keep slot and evict a live generation.
-  const seen = new Set<number>();
-  for await (const key of deps.storage.list(ref)) seen.add(key.generation);
-  const gens = [...seen];
+  // Each number once: a duplicate would silently consume a slot of the `keep` window and evict a live generation.
+  const gens = await generationsOf(deps.storage, ref);
   // Everything above was read BEFORE the listing and is acted on after it, and the listing is paginated —
   // seconds wide on a real object store. So re-read the row and reconcile, because BOTH branches can otherwise
   // delete an object the live pointer names, which is the forbidden `missing-storage-generation` state.
@@ -537,7 +534,7 @@ async function listingPass(
       : gens.filter((g) => g < cutoff).sort((a, b) => b - a); // newest-first
   const candidates =
     record.status === 'destroyed'
-      ? gens.sort((a, b) => a - b) // all of it: no reader can resolve a generation of a tombstoned segment
+      ? gens // all of it: no reader can resolve a generation of a tombstoned segment
       : cutoff === null
         ? // No Storage pointer yet, so "below current" selects nothing and there is nothing safe to infer: an object
           // here is either a load about to publish or an orphan we cannot tell apart from it. Deleting would race

@@ -133,6 +133,7 @@ export interface SegmentReader {
   ): { pin(): Promise<{ iterate(): AsyncIterable<number> }> };
 }
 
+const UTF8 = new TextEncoder();
 const DEFAULT_NDJSON_BATCH_BYTES = 64 * 1024;
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -255,7 +256,7 @@ export async function runExport(
           buf += `${id}\n`;
           count += 1;
           if (buf.length >= batchCap) {
-            const b = Buffer.from(buf, 'utf8');
+            const b = UTF8.encode(buf);
             await writer.write(b);
             bytes += b.length;
             buf = '';
@@ -263,7 +264,7 @@ export async function runExport(
         }
         if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         if (buf.length > 0) {
-          const b = Buffer.from(buf, 'utf8');
+          const b = UTF8.encode(buf);
           await writer.write(b);
           bytes += b.length;
         }

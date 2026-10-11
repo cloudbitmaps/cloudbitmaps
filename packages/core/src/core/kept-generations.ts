@@ -7,6 +7,7 @@
  * without naming the list drops it (see `applyRegistryPatch`), so a writer that forgets the list leaves a row that
  * lists, never one that deletes a generation it should keep. Pure: no I/O, time or randomness.
  */
+import { ascending } from './order';
 import type { RegistryRecord } from './ports';
 
 /**
@@ -32,7 +33,7 @@ export function usableKeptGens(record: RegistryRecord | null): readonly number[]
 }
 
 /** Which generations below a new pointer a grace window holds, and which it lets go: both ascending. */
-export interface KeptWindow {
+interface KeptWindow {
   readonly kept: number[];
   readonly evict: number[];
 }
@@ -53,19 +54,21 @@ export function keptWindow(
   superseded: number | undefined,
   keep: number,
 ): KeptWindow {
-  const ascending = [...below].sort((a, b) => a - b);
+  const oldestFirst = [...below].sort(ascending);
   const first =
-    keep > 0 && superseded !== undefined && ascending.includes(superseded) ? superseded : undefined;
+    keep > 0 && superseded !== undefined && oldestFirst.includes(superseded)
+      ? superseded
+      : undefined;
   const held = new Set<number>(first === undefined ? [] : [first]);
   // The rest of the window, newest first.
-  for (let i = ascending.length - 1, room = keep - held.size; i >= 0 && room > 0; i--) {
-    if (ascending[i] === first) continue;
-    held.add(ascending[i]!);
+  for (let i = oldestFirst.length - 1, room = keep - held.size; i >= 0 && room > 0; i--) {
+    if (oldestFirst[i] === first) continue;
+    held.add(oldestFirst[i]!);
     room -= 1;
   }
   return {
-    kept: ascending.filter((g) => held.has(g)),
-    evict: ascending.filter((g) => !held.has(g)),
+    kept: oldestFirst.filter((g) => held.has(g)),
+    evict: oldestFirst.filter((g) => !held.has(g)),
   };
 }
 

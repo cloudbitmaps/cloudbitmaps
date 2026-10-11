@@ -20,7 +20,7 @@ const REACHES = [
   /this\.pinned\(/,
 ];
 /** What counts as checking a lease. */
-const CHECKS = [/assertLeases\(/, /leaseError\(/, /assertIntoHandles\(/];
+const CHECKS = [/assertLeases\(/, /assertLease\(/, /leaseError\(/, /assertIntoHandles\(/];
 /** Methods that touch no data: they name the segment, hold the check itself, or time a call. */
 const EXEMPT = new Set([
   'constructor',
