@@ -66,6 +66,7 @@ import type {
   StorageDeleteOptions,
   TailRead,
 } from '@cloudbitmaps/core/driver-kit';
+import type { Clock, Rng } from '@cloudbitmaps/core';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import {
   AbortMultipartUploadCommand,
@@ -114,13 +115,13 @@ const THROTTLE_RESENDS = 3;
 const THROTTLE_BASE_DELAY_MS = 500;
 
 /** What the throttle backoff waits on. */
-interface Sleeper {
-  sleep(ms: number): Promise<void>;
-}
+type Sleeper = Pick<Clock, 'sleep'>;
 
 const REAL_TIME: Sleeper = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+/** Where the backoff's jitter comes from when none is injected. */
+const REAL_RNG: Rng = { next: () => Math.random() };
 
 export interface S3StorageDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
@@ -155,6 +156,8 @@ export interface S3StorageDriverOptions {
   readonly sockets?: SocketAdvisory;
   /** What the backoff before re-sending a throttled commit waits on; real time when absent. */
   readonly clock?: Sleeper;
+  /** Where the jitter of that backoff is drawn from; `Math.random` when absent. */
+  readonly rng?: Rng;
   /**
    * Whether a delete given `ifVersion` is sent with `If-Match`, so it removes the object only while it is the one that
    * ETag names. Defaults as the registry's option does: on when the host the client resolves is an AWS S3 host and the
@@ -174,6 +177,7 @@ export class S3StorageDriver implements IStorageDriver {
   private readonly partBytes: number;
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
+  private readonly rng: Rng;
   private readonly sockets: SocketAdvisory | undefined;
   private readonly explicitConditionalDelete: boolean | undefined;
   private probed: Promise<void> | undefined;
@@ -186,6 +190,7 @@ export class S3StorageDriver implements IStorageDriver {
     this.bucket = options.bucket;
     this.prefix = normalizeObjectPrefix(options.prefix);
     this.clock = options.clock ?? REAL_TIME;
+    this.rng = options.rng ?? REAL_RNG;
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
     // reach the arithmetic below and size every part (and the advertised cap) from garbage.
     requirePositiveInt('partBytes', options.partBytes);
@@ -240,6 +245,7 @@ export class S3StorageDriver implements IStorageDriver {
       this.maxObjectBytes,
       this.readTimeoutMs,
       this.clock,
+      this.rng,
     );
     try {
       await write(sink);
@@ -564,6 +570,7 @@ class S3MultipartSink implements BlobSink {
     private readonly maxObjectBytes: number,
     private readonly readTimeoutMs: number,
     private readonly clock: Sleeper,
+    private readonly rng: Rng,
   ) {}
 
   async write(bytes: Uint8Array): Promise<void> {
@@ -697,7 +704,7 @@ class S3MultipartSink implements BlobSink {
             { cause: err },
           );
         }
-        await this.clock.sleep(Math.floor(Math.random() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
+        await this.clock.sleep(Math.floor(this.rng.next() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
       }
     }
   }

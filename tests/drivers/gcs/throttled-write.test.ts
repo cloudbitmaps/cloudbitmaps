@@ -34,11 +34,12 @@ afterEach(async () => {
   await stub.stop();
 });
 
-function driverOver(onSleep?: () => Promise<void>) {
+function driverOver(onSleep?: () => Promise<void>, rng?: { next(): number }) {
   const waits: number[] = [];
   const driver = new GcsStorageDriver({
     storage: stub.client(),
     bucket: STUB_GCS_BUCKET,
+    ...(rng === undefined ? {} : { rng }),
     clock: {
       sleep: async (ms: number) => {
         waits.push(ms);
@@ -146,16 +147,18 @@ describe('GCS: a throttled single-request upload is sent again, and its write id
     ['at its lowest', 0, [0, 0, 0]],
     ['just under each bound', 0.999, [499, 999, 1998]],
   ])('waits a random time under 500 ms, then 1 s, then 2 s: %s', async (_, draw, expected) => {
-    const random = vi.spyOn(Math, 'random').mockReturnValue(draw);
-    try {
-      const { driver, waits } = driverOver();
-      for (let i = 0; i < 3; i++) stub.arm({ status: 503 });
-      await put(driver, new Uint8Array([1]));
-      expect(stub.count('upload')).toBe(4);
-      expect(waits).toEqual(expected);
-    } finally {
-      random.mockRestore();
-    }
+    const draws: number[] = [];
+    const { driver, waits } = driverOver(undefined, {
+      next: () => {
+        draws.push(draw);
+        return draw;
+      },
+    });
+    for (let i = 0; i < 3; i++) stub.arm({ status: 503 });
+    await put(driver, new Uint8Array([1]));
+    expect(stub.count('upload')).toBe(4);
+    expect(waits).toEqual(expected);
+    expect(draws).toHaveLength(3); // one draw per wait, none from the global source
   });
 
   it('a throttle on every send ends in TransientError after three re-sends, deleting nothing', async () => {

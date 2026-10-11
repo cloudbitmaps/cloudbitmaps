@@ -53,6 +53,7 @@ import type {
   StorageDeleteOptions,
   TailRead,
 } from '@cloudbitmaps/core/driver-kit';
+import type { Clock, Rng } from '@cloudbitmaps/core';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { Writable } from 'node:stream';
 import { once } from 'node:events';
@@ -89,13 +90,13 @@ const THROTTLE_RESENDS = 3;
 const THROTTLE_BASE_DELAY_MS = 500;
 
 /** What the throttle backoff waits on. */
-interface Sleeper {
-  sleep(ms: number): Promise<void>;
-}
+type Sleeper = Pick<Clock, 'sleep'>;
 
 const REAL_TIME: Sleeper = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+/** Where the backoff's jitter comes from when none is injected. */
+const REAL_RNG: Rng = { next: () => Math.random() };
 
 /**
  * Objects at/under this size are uploaded in a **single simple (non-resumable) request**; larger ones switch to
@@ -133,6 +134,8 @@ export interface GcsStorageDriverOptions {
   readonly readTimeoutMs?: number;
   /** What the backoff before re-sending a throttled upload waits on; real time when absent. */
   readonly clock?: Sleeper;
+  /** Where the jitter of that backoff is drawn from; `Math.random` when absent. */
+  readonly rng?: Rng;
   /**
    * Whether a delete given `ifVersion` is sent with `ifGenerationMatch`, so it removes the object only while it is the
    * one that generation names. Defaults to `false`, on the public endpoint too, as the registry's option does: whether
@@ -153,6 +156,7 @@ export class GcsStorageDriver implements IStorageDriver {
   private readonly threshold: number;
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
+  private readonly rng: Rng;
   private readonly presence: BucketPresence;
   private readonly conditionalDelete: boolean;
 
@@ -160,6 +164,7 @@ export class GcsStorageDriver implements IStorageDriver {
     this.storage = options.storage;
     this.conditionalDelete = requireBool('conditionalDelete', options.conditionalDelete) ?? false;
     this.clock = options.clock ?? REAL_TIME;
+    this.rng = options.rng ?? REAL_RNG;
     this.readStorage = options.readStorage ?? options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeObjectPrefix(options.prefix);
@@ -212,6 +217,7 @@ export class GcsStorageDriver implements IStorageDriver {
       this.maxObjectBytes,
       this.threshold,
       this.clock,
+      this.rng,
     );
     try {
       await write(sink);
@@ -566,6 +572,7 @@ class GcsUploadSink implements BlobSink {
     private readonly maxObjectBytes: number,
     private readonly threshold: number,
     private readonly clock: Sleeper,
+    private readonly rng: Rng,
   ) {}
 
   private static readonly WRITE_OPTS = {
@@ -674,7 +681,7 @@ class GcsUploadSink implements BlobSink {
             { cause: err },
           );
         }
-        await this.clock.sleep(Math.floor(Math.random() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
+        await this.clock.sleep(Math.floor(this.rng.next() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
       }
     }
   }
