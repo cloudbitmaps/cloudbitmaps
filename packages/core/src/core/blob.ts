@@ -33,8 +33,9 @@ export class BufferSink implements BlobSink {
   private length = 0;
 
   write(bytes: Uint8Array): Promise<void> {
-    // Copy: callers may reuse their buffer after write() resolves.
-    this.chunks.push(bytes.slice());
+    // Copy into a plain Uint8Array: callers may reuse their buffer after write() resolves, and on a Node Buffer
+    // `slice()` is a view of it, not a copy.
+    this.chunks.push(new Uint8Array(bytes));
     this.length += bytes.length;
     return Promise.resolve();
   }
@@ -70,6 +71,9 @@ export class BufferReader implements BlobReader {
   }
 
   getTail(maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+    if (!Number.isInteger(maxBytes)) {
+      return Promise.reject(new ValidationError(`invalid tail length ${maxBytes}`));
+    }
     const size = this.buffer.length;
     const take = Math.min(Math.max(maxBytes, 0), size);
     return Promise.resolve({ bytes: this.buffer.subarray(size - take), size });
