@@ -160,6 +160,23 @@ describe('CrbmStorageChunkSource — byte-bounded reader cache (second half of t
     expect(opens()).toBe(4);
   });
 
+  it('counts the fixed reader weight for a pinned reader against the byte budget', async () => {
+    const registry = new MemoryRegistryDriver({ now: () => 0 });
+    const { storage, opens } = countingStorage(new MemoryStorageDriver());
+    await seed(storage, registry, SEGS);
+    const source = new CrbmStorageChunkSource(storage, {
+      registry,
+      maxOpenSegments: 100,
+      maxOpenIndexBytes: 2 * ONE_READER,
+    });
+    const pins = [];
+    for (const segment of SEGS) pins.push(await source.pinGeneration({ segment }));
+    const before = opens();
+    // Three pinned readers do not fit a budget of two: the first pin's reader was evicted and re-opens.
+    await source.listChunkKeysAt({ segment: 's0' }, pins[0]!.generation, pins[0]!);
+    expect(opens()).toBe(before + 1);
+  });
+
   it('counts the metadata a reader holds against the same byte budget', async () => {
     // Two segments whose one-entry indices together fill the cap exactly, each with an extension block of metadata. A
     // reader holds its decoded metadata too, so the two cannot both stay resident: reading s0 again re-opens it.

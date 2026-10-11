@@ -504,15 +504,15 @@ export interface CacheOptions {
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices, the metadata a
-   * generation carries, and the chunk bytes a reader keeps when its tail read returned a whole object whose chunks
+   * Aggregate byte ceiling on what the open readers hold: their parsed `.crbm` indices, the metadata a
+   * generation carries, a fixed 3.75 KiB for the objects each open reader holds around its index, and the chunk bytes a reader keeps when its tail read returned a whole object whose chunks
    * total at most this ceiling divided by {@link CacheOptions.readerMax} (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
-   * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
+   * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed weight
    * would exceed the ceiling — whichever of the count/byte bounds binds first. A sixteenth of it (4 MiB by default)
    * bounds the segments' resolutions a store with a timed refresh keeps besides. Lower it for memory-tight
-   * deployments that read across wide segments. Applies whenever the store builds its own read path.
+   * deployments that read across wide segments. A ceiling below about 3.9 KB keeps one reader open at a time. Applies whenever the store builds its own read path.
    */
   readonly readerMaxBytes?: number;
 }

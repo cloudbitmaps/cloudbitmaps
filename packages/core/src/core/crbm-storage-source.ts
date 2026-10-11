@@ -121,7 +121,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * Hard ceiling on how many segments' readers (each holding a fully-parsed `.crbm` index) are cached at once
    * (default 1024) — a memory bound for a long-running server. Past it, the least-recently-used
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
-   * generations are immutable). Raise it for a big cache working set of small segments. A source with a timed refresh
+   * generations are immutable). Raise it for a big cache working set of small segments, and raise {@link maxOpenIndexBytes} with it: each open reader counts about 3.75 KiB there, so past about 17,000 tiny readers the byte ceiling binds first. A source with a timed refresh
    * also keeps up to 8 times this many segments' resolutions apart from their readers, for the TTL: the re-open then
    * reads no row, and comes only when a read needs the reader, for the index or for a chunk.
    */
@@ -138,7 +138,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * that region is at most this ceiling divided by {@link maxOpenSegments} (64 KiB by default) — its fair share — so a small generation's
    * chunks are served from memory with no further request, and a bigger one is read by range. Only a source with a timed
    * pointer refresh ({@link currentGenTtlMs} above 0, a registry and a clock) keeps chunk bytes. Lower it for memory-tight deployments with wide segments; a single
-   * segment whose index alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside. A
+   * segment whose weight alone exceeds the budget is still cached (it can't be shrunk) but nothing else alongside. A
    * sixteenth of it bounds the resolutions a source with a timed refresh keeps besides (4 MiB by default).
    */
   readonly maxOpenIndexBytes?: number;
