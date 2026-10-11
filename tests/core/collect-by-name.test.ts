@@ -362,7 +362,8 @@ describe('a load lists when its row records no list, or its number or current ob
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps);
     expect(r).toMatchObject({ generation: 5, published: true });
     expect(w.storageCalls.list).toBe(2);
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([4]);
+    // The window is the generation the rollback restored, which the load superseded, not 4, the newest by number.
+    expect((await w.registry.get(SEG))!.keptGens).toEqual([2]);
   });
 });
 

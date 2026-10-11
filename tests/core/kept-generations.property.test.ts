@@ -26,7 +26,14 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  *  4. after a load whose generation is a multiple of the cadence and which met no fault, nothing is below the
  *     pointer that the row does not name (an orphan is gone by the next periodic pass);
  *  5. a load that published and found a usable list wrote the newest `keep` of that list and the generation it
- *     superseded.
+ *     superseded;
+ *  6. a load that published over a row with no usable list (the first after a rollback, one with a `keep` above the
+ *     cap, the first over a row a writer that records none left) keeps below its pointer exactly the generation its
+ *     publish superseded, when that was in the bucket, and the newest `keep - 1` of the rest by number, and records
+ *     them when `keep` fits the list.
+ *
+ * Rollbacks pick their target four ways: any generation below the pointer, one the row's list names, the one the
+ * current generation superseded, and the oldest.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
@@ -37,7 +44,7 @@ type Step =
   | { kind: 'refused'; who: 0 | 1 }
   | { kind: 'crash'; above: number }
   | { kind: 'stray'; pick: number }
-  | { kind: 'rollback'; pick: number }
+  | { kind: 'rollback'; pick: number; target: Target }
   | { kind: 'erase'; id: number }
   | { kind: 'retention' }
   | { kind: 'purge'; objects: boolean }
@@ -45,6 +52,12 @@ type Step =
   | { kind: 'race'; who: 0 | 1; extra: number };
 
 const who = fc.constantFrom<0 | 1>(0, 1);
+type Target = 'any' | 'kept' | 'superseded' | 'oldest';
+const ROLLBACK: fc.Arbitrary<Step> = fc.record({
+  kind: fc.constant('rollback' as const),
+  pick: fc.nat(20),
+  target: fc.constantFrom<Target>('any', 'kept', 'superseded', 'oldest'),
+});
 const STEP: fc.Arbitrary<Step> = fc.oneof(
   {
     weight: 10,
@@ -59,7 +72,7 @@ const STEP: fc.Arbitrary<Step> = fc.oneof(
     }),
   },
   { weight: 2, arbitrary: fc.record({ kind: fc.constant('stray' as const), pick: fc.nat(20) }) },
-  { weight: 2, arbitrary: fc.record({ kind: fc.constant('rollback' as const), pick: fc.nat(20) }) },
+  { weight: 2, arbitrary: ROLLBACK },
   { weight: 2, arbitrary: fc.record({ kind: fc.constant('erase' as const), id: fc.nat(6) }) },
   { weight: 1, arbitrary: fc.constant({ kind: 'retention' as const }) },
   {
@@ -78,6 +91,24 @@ const STEP: fc.Arbitrary<Step> = fc.oneof(
 
 /** Keeps for the two loaders: small, wide, the cap, one above it, and 0. */
 const KEEPS = fc.constantFrom(0, 1, 2, 3, 5, 12, MAX_KEPT_GENERATIONS, MAX_KEPT_GENERATIONS + 1);
+
+/**
+ * What a load that lists keeps below its new pointer, written apart from the library's rule: the generation its publish
+ * superseded when it is there, then the newest of the rest by number, `keep` in all; ascending.
+ */
+function listedWindow(
+  below: readonly number[],
+  superseded: number | undefined,
+  keep: number,
+): number[] {
+  if (keep === 0) return [];
+  const first = superseded !== undefined && below.includes(superseded) ? [superseded] : [];
+  const rest = [...below]
+    .filter((g) => !first.includes(g))
+    .sort((a, b) => b - a)
+    .slice(0, keep - first.length);
+  return [...first, ...rest].sort((a, b) => a - b);
+}
 
 async function generations(storage: IStorageDriver): Promise<number[]> {
   const out: number[] = [];
@@ -148,6 +179,42 @@ const CLIMB: fc.Arbitrary<Step> = fc.oneof(
 );
 const SMALL_KEEPS = fc.constantFrom(1, 2, 5, 12);
 
+/** Steps for the rollback runs: loads among rollbacks of every kind, a crashed load, and a publish mid-pass. */
+const ROLLBACKS: fc.Arbitrary<Step> = fc.oneof(
+  {
+    weight: 8,
+    arbitrary: fc.record({ kind: fc.constant('load' as const), who, extra: fc.nat(3) }),
+  },
+  { weight: 5, arbitrary: ROLLBACK },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      kind: fc.constant('crash' as const),
+      above: fc.integer({ min: 1, max: 3 }),
+    }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({ kind: fc.constant('race' as const), who, extra: fc.nat(3) }),
+  },
+);
+/** Keeps for the rollback runs: 0 and 1, a few, and one above the cap, which lists on every load. */
+const ROLLBACK_KEEPS = fc.constantFrom(0, 1, 2, 3, MAX_KEPT_GENERATIONS + 1);
+
+interface Floors {
+  readonly published: number;
+  readonly byName?: number;
+  readonly periodic?: number;
+  /** Loads held to oracle 6. */
+  readonly listed?: number;
+  /** Of those, the ones whose superseded generation a window by number alone would have dropped. */
+  readonly restored?: number;
+  /** Rollbacks onto each kind of target. */
+  readonly onto?: Readonly<Record<Target, number>>;
+}
+/** A case's floors, checked for unknown keys and widened to {@link Floors}. */
+const floors = (f: Floors): Floors => f;
+
 describe.each([
   {
     name: 'two loaders among every other writer',
@@ -155,7 +222,14 @@ describe.each([
     stepArb: STEP,
     lengths: { minLength: 20, maxLength: 120 },
     runs: 200,
-    floor: { published: 1500, byName: 300, periodic: 20 },
+    floor: floors({
+      published: 1500,
+      byName: 300,
+      periodic: 20,
+      listed: 500,
+      restored: 40,
+      onto: { any: 30, kept: 25, superseded: 30, oldest: 30 },
+    }),
   },
   {
     // Long enough to pass generation 16 and 32 many times, with a non-empty list at every periodic pass.
@@ -164,13 +238,30 @@ describe.each([
     stepArb: CLIMB,
     lengths: { minLength: 40, maxLength: 110 },
     runs: 100,
-    floor: { published: 3000, byName: 1500, periodic: 150 },
+    floor: floors({ published: 3000, byName: 1500, periodic: 150 }),
+  },
+  {
+    // Loads among rollbacks onto a kept, a superseded and the oldest generation, at keep 0, 1, a few and above the cap.
+    name: 'loads among rollbacks of every kind, at keep 0, 1 and above',
+    keepsArb: ROLLBACK_KEEPS,
+    stepArb: ROLLBACKS,
+    lengths: { minLength: 20, maxLength: 80 },
+    runs: 200,
+    floor: floors({
+      published: 2500,
+      listed: 1000,
+      restored: 250,
+      onto: { any: 150, kept: 100, superseded: 130, oldest: 140 },
+    }),
   },
 ])('the kept generations, $name (property)', ({ keepsArb, stepArb, lengths, runs, floor }) => {
   it('never deletes the current or a named generation, leaves no orphan past a periodic pass, and no landed load throws', async () => {
     let published = 0;
     let periodic = 0;
     let byName = 0;
+    let listed = 0;
+    let restored = 0;
+    const onto: Record<Target, number> = { any: 0, kept: 0, superseded: 0, oldest: 0 };
     await fc.assert(
       fc.asyncProperty(
         keepsArb,
@@ -181,6 +272,8 @@ describe.each([
           const registry = new MemoryRegistryDriver();
           const keeps = [keepA, keepB] as const;
           const deps = { storage, registry, codec: roaringCodec };
+          // The generation each published one superseded, for a rollback onto it.
+          const supersededBy = new Map<number, number>();
           const idsFor = async (extra: number): Promise<number[]> => {
             const have = (await registry.get(SEG))?.currentGen ?? -1;
             return Array.from({ length: Math.max(have, 0) + 2 + extra }, (_, i) => i);
@@ -209,6 +302,8 @@ describe.each([
             published += 1;
             const row = (await registry.get(SEG))!;
             const present = await generations(storage);
+            const previous = before?.currentGen ?? undefined;
+            if (previous !== undefined) supersededBy.set(result.generation, previous);
             // 5: the list a publish wrote, from the list it found.
             const found = usableKeptGens(before);
             if (
@@ -223,6 +318,33 @@ describe.each([
               // The load's own list is the row's unless another writer's list replaced it.
               if (row.keptGens !== undefined) expect(row.keptGens).toEqual(expected);
               byName += 1;
+            }
+            // 6: a publish that recorded no window collects by listing, and keeps the generation it superseded first.
+            if (
+              (found === undefined || keep > MAX_KEPT_GENERATIONS) &&
+              row.currentGen === result.generation &&
+              options.registry === undefined &&
+              options.storage === undefined
+            ) {
+              const below = presentBefore.filter((g) => g < result.generation);
+              const window = listedWindow(below, previous, keep);
+              expect(
+                present.filter((g) => g < result.generation),
+                `generation ${result.generation} over ${String(previous)} at keep ${keep}`,
+              ).toEqual(window);
+              if (keep <= MAX_KEPT_GENERATIONS && keep < result.generation) {
+                expect(row.keptGens, 'the window it recorded').toEqual(window);
+              }
+              listed += 1;
+              // Where a window by number alone would have dropped the superseded generation.
+              const byNumber = [...below].sort((a, b) => b - a).slice(0, keep);
+              if (
+                previous !== undefined &&
+                below.includes(previous) &&
+                !byNumber.includes(previous)
+              ) {
+                restored += 1;
+              }
             }
             // 2: the newest `keep` of the generations the row names, that were there, are still there.
             if (row.currentGen === result.generation && options.registry === undefined) {
@@ -295,8 +417,24 @@ describe.each([
               }
               case 'rollback': {
                 const below = present.filter((g) => g < current);
-                const target = below[step.pick % Math.max(below.length, 1)];
-                if (target !== undefined) await rollbackSegment(SEG, target, { storage, registry });
+                const named = (row?.keptGens ?? []).filter((g) => below.includes(g));
+                const superseded = supersededBy.get(current);
+                const target =
+                  step.target === 'kept' && named.length > 0
+                    ? named[step.pick % named.length]
+                    : step.target === 'superseded' &&
+                        superseded !== undefined &&
+                        below.includes(superseded)
+                      ? superseded
+                      : step.target === 'oldest'
+                        ? below[0]
+                        : step.target === 'any'
+                          ? below[step.pick % Math.max(below.length, 1)]
+                          : undefined;
+                if (target !== undefined) {
+                  await rollbackSegment(SEG, target, { storage, registry });
+                  onto[step.target] += 1;
+                }
                 break;
               }
               case 'erase':
@@ -323,6 +461,7 @@ describe.each([
                 if (step.objects)
                   for (const g of present) await storage.delete({ ...SEG, generation: g });
                 if (row !== null) await registry.delete(SEG);
+                supersededBy.clear();
                 break;
               case 'failed-delete':
                 await load(step.who, step.extra, { storage: failingFirstDelete(storage) });
@@ -346,10 +485,16 @@ describe.each([
       ),
       { numRuns: runs },
     );
-    // Not vacuous: publishes were checked against the list, and periodic passes were reached.
+    // Not vacuous: publishes were checked against the list, periodic passes were reached, loads that list were checked
+    // against the window, among them loads after a rollback, and each kind of rollback ran.
     expect(published).toBeGreaterThan(floor.published);
-    expect(byName).toBeGreaterThan(floor.byName);
-    expect(periodic).toBeGreaterThan(floor.periodic);
+    expect(byName).toBeGreaterThan(floor.byName ?? -1);
+    expect(periodic).toBeGreaterThan(floor.periodic ?? -1);
+    expect(listed).toBeGreaterThan(floor.listed ?? -1);
+    expect(restored).toBeGreaterThan(floor.restored ?? -1);
+    for (const t of Object.keys(onto) as Target[]) {
+      expect(onto[t], `rollbacks onto ${t}`).toBeGreaterThan(floor.onto?.[t] ?? -1);
+    }
     // Thousands of loads a case: seconds on an idle machine, so the default 5 s limit fails it under full-suite load.
   }, 60_000);
 });

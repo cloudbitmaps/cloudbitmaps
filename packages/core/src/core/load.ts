@@ -854,6 +854,10 @@ async function runLoad(
   // the object: the collection looks for itself, with one zero-byte read of it, only if it is about to delete by name
   // a generation the window keeps. A load that made no read at all (`allowEmpty` with neither `minRetained` nor
   // `maxGrowth`) cannot tell.
+  //
+  // `previous` is the generation this publish superseded: the publish is fenced on the row this load read (its token,
+  // or a row changed only in its leases since), so the pointer it moved was the one that row named. A window kept by
+  // listing holds it first, which after a rollback is the generation the rollback restored.
   const currentObjectGone = needsBefore && before === null;
   const collected = await collectAfterLoad(ref, deps, {
     generation,
@@ -861,6 +865,7 @@ async function runLoad(
     byName: checked && deps.collectByListing !== true,
     currentGone: currentObjectGone,
     ...(leasesNow === undefined ? {} : { leases: { now: leasesNow } }),
+    ...(fromGeneration === undefined ? {} : { previous: fromGeneration }),
     kept: published.kept,
     ...(current.fromSummary && fromGeneration !== undefined
       ? { proveCurrent: { ...ref, generation: fromGeneration } }
