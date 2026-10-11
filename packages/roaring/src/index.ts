@@ -3075,10 +3075,23 @@ export interface MaterializeOptions extends CombineOptions {
 }
 
 /**
+ * An id stream as an iterator: the ids ascending, driven by `for await` or by hand with `next()`, `return()` and
+ * `throw()`, as a generator is, on a handle that holds a lease as on one that does not. It is its own iterator and
+ * single-use. {@link Segment.everyNth} returns this; the streams of {@link IdStream} add `batches()`.
+ */
+export interface IdIterator extends AsyncIterableIterator<number> {
+  /** Ends the read, as a generator's `return` does, and resolves done with `value`. */
+  return(value?: unknown): Promise<IteratorResult<number, unknown>>;
+  /** Throws `err` into the read, as a generator's `throw` does: it rejects with `err` unless the read handles it. */
+  throw(err: unknown): Promise<IteratorResult<number, unknown>>;
+}
+
+/**
  * What a streaming read returns: the ids, ascending, one at a time under `for await`, or one chunk at a time from
  * {@link IdStream.batches}.
  *
- * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable. A live read is the
+ * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable, and an
+ * {@link IdIterator}, so `next()`, `return()` and `throw()` are typed. A live read is the
  * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
  * `throw()`, and it is single-use (a second `for await` over it yields nothing). A handle that holds a lease returns a
  * stream of the same shape, which checks the lease as it reads. `batches()` is a
@@ -3087,7 +3100,7 @@ export interface MaterializeOptions extends CombineOptions {
  * fetched until a read is first pulled. A stream pulled with `next()` and dropped without `return()` is held by nothing
  * in the store, so it is garbage once the caller lets it go.
  */
-export interface IdStream extends AsyncIterable<number> {
+export interface IdStream extends IdIterator {
   /**
    * The same ids as the per-id stream, in the same order, one `Uint32Array` per chunk: each array ascending, holding
    * every id of one chunk the read yields (a range trimmed at its edges exactly as the per-id stream trims it), and
@@ -3113,7 +3126,7 @@ const withBatches = (
   batches: () => AsyncIterable<Uint32Array>,
 ): IdStream => Object.assign(gen, { batches });
 
-/** A generator that throws `err` on its first pull: what a refused read is, so its caller can drive it as any other. */
+/** A generator function whose generator throws `err` on its first pull: what a refused read is, so its caller can drive it as any other. */
 const refusing = (err: unknown) =>
   // eslint-disable-next-line require-yield
   async function* (): AsyncGenerator<never> {
@@ -3869,7 +3882,7 @@ export class Segment {
    * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
    * ```
    */
-  everyNth(n: number, options?: IdRange): AsyncIterable<number> {
+  everyNth(n: number, options?: IdRange): IdIterator {
     // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
     if (lease !== undefined) return refusing(lease)();

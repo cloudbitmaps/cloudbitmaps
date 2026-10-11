@@ -1,4 +1,10 @@
-import { CloudRoaring, LeaseExpiredError, MemoryStorage } from '@/index';
+import {
+  CloudRoaring,
+  LeaseExpiredError,
+  MemoryStorage,
+  type IdIterator,
+  type IdStream,
+} from '@/index';
 import { guardIdIterable, guardIds, guardItems } from '@/lease-guards';
 
 /**
@@ -113,7 +119,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
   ])(
     '%s: next, return and throw are functions, and iterating it gives it back',
     async (_n, guard) => {
-      const g = guard(idsOf(1)) as unknown as AsyncGenerator<number>;
+      const g = guard(idsOf(1));
       expect(typeof g.next).toBe('function');
       expect(await g.next()).toEqual({ done: false, value: 1 });
       expect(typeof g.return).toBe('function');
@@ -129,7 +135,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
   });
 
   it('next() drives it by hand, to the end', async () => {
-    const g = guardIdIterable(idsOf(7), () => undefined) as unknown as AsyncGenerator<number>;
+    const g = guardIdIterable(idsOf(7), () => undefined);
     expect(await g.next()).toEqual({ done: false, value: 7 });
     expect(await g.next()).toEqual({ done: true, value: undefined });
     expect(await g.next()).toEqual({ done: true, value: undefined });
@@ -140,7 +146,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
     ['guardItems', guardItems],
   ])('%s: return() ends the source and the stream stays ended', async (_n, guard) => {
     const { seen, source } = watched([1, 2, 3]);
-    const g = guard(source(), () => undefined) as unknown as AsyncGenerator<number>;
+    const g = guard(source(), () => undefined);
     expect((await g.next()).value).toBe(1);
     expect(await g.return(undefined)).toEqual({ done: true, value: undefined });
     expect(seen.closed).toBe(true);
@@ -161,7 +167,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
         },
       }),
     };
-    const g = guard(bare, () => undefined) as unknown as AsyncGenerator<number>;
+    const g = guard(bare, () => undefined);
     await g.return(undefined);
     expect(returned).toBe(1);
     expect((await g.next()).done).toBe(true);
@@ -174,7 +180,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
     '%s: throw() reaches the source, ends it, rejects with the error, and ends the stream',
     async (_n, guard) => {
       const { seen, source } = watched([1, 2, 3]);
-      const g = guard(source(), () => undefined) as unknown as AsyncGenerator<number>;
+      const g = guard(source(), () => undefined);
       await g.next();
       const boom = new Error('boom');
       await expect(g.throw(boom)).rejects.toBe(boom);
@@ -195,7 +201,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
         },
       }),
     };
-    const g = guardIdIterable(bare, () => undefined) as unknown as AsyncGenerator<number>;
+    const g = guardIdIterable(bare, () => undefined);
     const boom = new Error('boom');
     await expect(g.throw(boom)).rejects.toBe(boom);
     expect(closed).toBe(true);
@@ -214,12 +220,12 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
     const check = (): void => {
       if (!live) ended();
     };
-    const g = guardItems(recovering(), check) as unknown as AsyncGenerator<number>;
+    const g = guardItems(recovering(), check);
     await g.next();
     expect(await g.throw(new Error('boom'))).toEqual({ done: false, value: 99 });
     expect(await g.next()).toEqual({ done: false, value: 100 });
 
-    const h = guardItems(recovering(), check) as unknown as AsyncGenerator<number>;
+    const h = guardItems(recovering(), check);
     await h.next();
     live = false;
     await expect(h.throw(new Error('boom'))).rejects.toBeInstanceOf(LeaseExpiredError);
@@ -237,24 +243,24 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
         },
       }),
     };
-    const g = guardItems(bare, () => undefined) as unknown as AsyncGenerator<number, number>;
+    const g = guardItems(bare, () => undefined);
     expect(await g.return(42)).toEqual({ done: true, value: 42 });
     expect(got).toBe(42);
   });
 
   it("a result handed out is the caller's: changing one changes no later result", async () => {
-    const g = guardItems(idsOf(1), () => undefined) as unknown as AsyncGenerator<number>;
+    const g = guardItems(idsOf(1), () => undefined);
     const r = (await g.return(undefined)) as { value: unknown };
     r.value = 'mutated';
     expect(await g.next()).toEqual({ done: true, value: undefined });
-    const h = guardItems(idsOf(1), () => undefined) as unknown as AsyncGenerator<number>;
+    const h = guardItems(idsOf(1), () => undefined);
     expect(await h.return(undefined)).toEqual({ done: true, value: undefined });
   });
 
   it('throw() before the first pull ends the stream: a later next() is done, as on a generator', async () => {
     const boom = new Error('boom');
     for (const guard of [guardIdIterable, guardItems]) {
-      const g = guard(idsOf(1), ended) as unknown as AsyncGenerator<number>;
+      const g = guard(idsOf(1), ended);
       await expect(g.throw(boom)).rejects.toBe(boom);
       expect((await g.next()).done).toBe(true);
     }
@@ -262,7 +268,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
 
   it('a pull in flight when return() is called settles done, not with the item the source had for it', async () => {
     for (const guard of [guardIdIterable, guardItems]) {
-      const g = guard(idsOf(1, 2, 3), () => undefined) as unknown as AsyncGenerator<number>;
+      const g = guard(idsOf(1, 2, 3), () => undefined);
       await g.next();
       const pull = g.next();
       await g.return(undefined);
@@ -274,7 +280,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
     let live = true;
     const g = guardIdIterable(idsOf(1, 65_536, 65_537, 65_538), () => {
       if (!live) ended();
-    }) as unknown as AsyncGenerator<number>;
+    });
     await g.next();
     live = false;
     const pulls = await Promise.allSettled([g.next(), g.next(), g.next(), g.next()]);
@@ -291,7 +297,7 @@ describe("a guarded stream is an iterator of its own, as the engine's generator 
     const { seen, source } = watched([1, 65_536, 131_072]);
     const g = guardIdIterable(source(), () => {
       if (!live) ended();
-    }) as unknown as AsyncGenerator<number>;
+    });
     await g.next();
     live = false;
     await expect(g.next()).rejects.toBeInstanceOf(LeaseExpiredError);
@@ -336,7 +342,7 @@ describe('a leased handle and an unleased one have one shape', () => {
   it('iterate() has next, return, throw, batches and itself as its iterator, leased or not', async () => {
     const { live, unleased, leased } = await handles();
     for (const seg of [live, unleased, leased]) {
-      const s = seg.iterate() as unknown as AsyncGenerator<number> & { batches: unknown };
+      const s = seg.iterate();
       for (const m of SHAPE) expect(typeof s[m]).toBe('function');
       expect(typeof s.batches).toBe('function');
       expect(s[Symbol.asyncIterator]()).toBe(s);
@@ -352,16 +358,16 @@ describe('a leased handle and an unleased one have one shape', () => {
       (s: typeof leased) => s.union([other]),
       (s: typeof leased) => s.andNot([other]),
     ]) {
-      const a = make(unleased) as unknown as Record<string, unknown>;
-      const b = make(leased) as unknown as Record<string, unknown>;
+      const a: IdStream = make(unleased);
+      const b: IdStream = make(leased);
       for (const m of [...SHAPE, 'batches'] as const) {
         expect(typeof b[m]).toBe('function');
         expect(typeof b[m]).toBe(typeof a[m]);
       }
-      expect(typeof b[Symbol.asyncIterator as never]).toBe('function');
-      const pull = async (x: Record<string, unknown>) => {
-        const per = await (x as unknown as AsyncGenerator<number>).next();
-        const bat = await (x.batches as () => AsyncGenerator<Uint32Array>)().next();
+      expect(typeof b[Symbol.asyncIterator]).toBe('function');
+      const pull = async (x: IdStream) => {
+        const per = await x.next();
+        const bat = await x.batches()[Symbol.asyncIterator]().next();
         return [per.value, Array.from((bat.value ?? []) as Uint32Array)];
       };
       expect(await pull(b)).toEqual(await pull(a));
@@ -370,7 +376,7 @@ describe('a leased handle and an unleased one have one shape', () => {
 
   it('everyNth() of a leased handle is driven by next, return and throw', async () => {
     const { leased } = await handles();
-    const s = leased.everyNth(2) as unknown as AsyncGenerator<number>;
+    const s = leased.everyNth(2);
     for (const m of SHAPE) expect(typeof s[m]).toBe('function');
     expect((await s.next()).value).toBe(2);
     await s.return(undefined);
@@ -380,7 +386,7 @@ describe('a leased handle and an unleased one have one shape', () => {
   it('overlapping next() calls across the lease ending, and after release(), serve nothing of a later chunk', async () => {
     for (const how of ['expiry', 'release'] as const) {
       const { leased, state } = await handles();
-      const s = leased.iterate() as unknown as AsyncGenerator<number>;
+      const s = leased.iterate();
       for (const want of [1, 2, 3]) expect((await s.next()).value).toBe(want);
       if (how === 'expiry') state.t += 61_000;
       else await leased.release();
@@ -421,15 +427,18 @@ describe('a leased handle and an unleased one have one shape', () => {
       ['everyNth on a live handle', () => live.everyNth(2), Error, false],
     ];
     for (const [name, make, type, hasBatches] of refused) {
-      const s = make() as unknown as AsyncGenerator<number> & { batches?: () => AsyncGenerator };
+      const s = make() as IdStream | IdIterator;
       for (const m of SHAPE) expect(typeof s[m], name).toBe('function');
       expect(s[Symbol.asyncIterator](), name).toBe(s);
-      expect(typeof s.batches, name).toBe(hasBatches ? 'function' : 'undefined');
+      expect(typeof (s as Partial<IdStream>).batches, name).toBe(
+        hasBatches ? 'function' : 'undefined',
+      );
       await expect(s.next(), name).rejects.toBeInstanceOf(type);
       expect((await s.next()).done, name).toBe(true);
       if (hasBatches) {
-        const b = s.batches!();
-        for (const m of SHAPE) expect(typeof b[m], name).toBe('function');
+        const b = (s as IdStream).batches()[Symbol.asyncIterator]();
+        for (const m of SHAPE)
+          expect(typeof (b as unknown as IdIterator)[m], name).toBe('function');
         await expect(b.next(), name).rejects.toBeInstanceOf(type);
       }
     }
@@ -437,7 +446,7 @@ describe('a leased handle and an unleased one have one shape', () => {
 
   it('stream.next() by hand on a leased handle reads the ids, and throws LeaseExpiredError once the lease ends', async () => {
     const { leased, state } = await handles();
-    const s = leased.iterate() as unknown as AsyncGenerator<number>;
+    const s = leased.iterate();
     expect(new Set(IDS.slice(0, 3).map((id) => id >>> 16)).size).toBe(1);
     expect((await s.next()).value).toBe(1);
     state.t += 61_000;
@@ -450,11 +459,11 @@ describe('a leased handle and an unleased one have one shape', () => {
   it("return() and throw() on a leased handle's stream end the read, as on an unleased one", async () => {
     const { leased, unleased } = await handles();
     for (const seg of [unleased, leased]) {
-      const s = seg.iterate() as unknown as AsyncGenerator<number>;
+      const s = seg.iterate();
       await s.next();
       expect((await s.return(undefined)).done).toBe(true);
       expect((await s.next()).done).toBe(true);
-      const t = seg.iterate() as unknown as AsyncGenerator<number>;
+      const t = seg.iterate();
       await t.next();
       const boom = new Error('boom');
       await expect(t.throw(boom)).rejects.toBe(boom);
@@ -627,7 +636,7 @@ describe('the guard, held against what a reordering or a shortcut would break', 
     });
   });
 
-  // Not a mutant: throw() on a source whose throw() rejects must leave the guard over, as stop() does.
+  // throw() on a source whose own throw() rejects leaves the guard over, as a failed check does.
   it('after throw() rejects from a source that has throw(), the stream is over', async () => {
     const { calls, src } = bare({ throwRejects: true });
     const g = guardItems(src, () => undefined);
@@ -638,7 +647,7 @@ describe('the guard, held against what a reordering or a shortcut would break', 
     expect(calls.next).toBe(pulled);
   });
 
-  // Not a mutant: the done result is a fresh object per call, as a generator's is, so a caller cannot poison it.
+  // The done result is a fresh object per call, as a generator's is, so a caller cannot change what later pulls get.
   it('the done results of finished streams are not one shared object', async () => {
     const a = guardItems((async function* () {})(), () => undefined);
     const b = guardItems((async function* () {})(), () => undefined);
