@@ -43,7 +43,8 @@
  * landed and lost its response, a pointer older than an index scan's lookback) is removed by the next scan that reads
  * it: an index scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a
  * delete only rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would
- * only add a row for every scan to read.
+ * only add a row for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a
+ * crypto-shred, a drop by hand) are removed too, since the sweep will never act on that row; the row stays.
  */
 import { type IAuditSink, checkedAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
@@ -96,8 +97,9 @@ export interface RetireExpiredOptions {
   readonly now: number;
   /**
    * Maximum segments to retire in this cycle (default 100). It also bounds the purges attempted (a purge the registry
-   * refuses is not charged; {@link RetireExpiredResult.purgeFaults} says how purging stops after refusals) and the
-   * due-index pointers to nothing one call removes.
+   * refuses is not charged; {@link RetireExpiredResult.purgeFaults} says how purging stops after refusals), the
+   * due-index pointers to nothing one call removes, and, counted apart from the retirements, the tombstones this sweep
+   * did not write whose pointers one call removes.
    */
   readonly limit?: number;
   /** Report what would be retired and change nothing. */
@@ -238,7 +240,10 @@ export interface RetireExpiredResult {
   readonly wouldRetire: number;
   /** Tombstone rows actually deleted. Zero under `dryRun`; the `would-purge-tombstone` entries carry the preview. */
   readonly tombstonesPurged: number;
-  /** True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. */
+  /**
+   * True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. The cap on removing pointers
+   * of tombstones this sweep did not write leaves it false.
+   */
   readonly limited: boolean;
   /**
    * Deletes this sweep attempted that were **refused for a reason other than a lost race**: a tombstone's purge
@@ -448,6 +453,25 @@ async function filePurgePointer(
 }
 
 /**
+ * Remove the pointers a scan read to a tombstone the sweep will never act on, each fenced on the token it was read
+ * with. Best-effort: a pointer left behind is read again by the next scan, which removes it then.
+ */
+async function forgetFoundPointers(
+  registry: IRegistryDriver,
+  found: readonly FoundPointer[],
+  onFault: (err: unknown) => void,
+): Promise<void> {
+  for (const pointer of found) {
+    try {
+      await registry.delete(pointer.ref, pointer.token);
+    } catch (err) {
+      // A lost race is the pointer changing under the delete, and is no fault; anything else is counted.
+      onFault(err);
+    }
+  }
+}
+
+/**
  * Remove the pointers to a purged tombstone: every one the index scan read to it, each fenced on the token it was
  * read with, and the one this sweep's grace would have filed, which a fleet scan has not read. Best-effort: a pointer
  * left behind costs one read when its bucket is next scanned, which then finds its row gone and removes it.
@@ -599,6 +623,8 @@ export async function retireExpired(
   // with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
   // while every segment in the namespace is tombstoned.
   let attempted = 0;
+  // Tombstones the sweep did not write whose pointers it worked, bounded by `limit` apart from `attempted`.
+  let attemptedForeign = 0;
 
   for (const rec of mine) {
     const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
@@ -606,6 +632,27 @@ export async function retireExpired(
     const policy = readRetentionPolicy(rec.retention);
 
     if (rec.status === 'destroyed') {
+      // A tombstone this sweep did not write (a crypto-shred, a drop by hand) is never retired or purged here, and it
+      // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
+      const stamp = retirementStamp(rec.retention);
+      if (stamp === null) {
+        const found = scanned.pointers.get(segmentKey(ref)) ?? [];
+        // At most `limit` such tombstones are worked per call, as the litter pass is, so a long backlog cannot make
+        // one call arbitrarily long. The row is read again first, since the scan may be minutes old: a tombstone
+        // purged by hand and its name re-created since has a live row, and a pointer of its own is not litter.
+        if (!dryRun && removesRows && found.length > 0 && attemptedForeign < limit) {
+          attemptedForeign += 1;
+          try {
+            const live = await deps.registry.get(ref);
+            if (live?.status === 'destroyed' && retirementStamp(live.retention) === null) {
+              await forgetFoundPointers(deps.registry, found, noteFault);
+            }
+          } catch (err) {
+            noteFault(err);
+          }
+        }
+        continue;
+      }
       if (!purgeTombstones || !purging) continue;
       // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
       // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
@@ -613,8 +660,7 @@ export async function retireExpired(
       // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
       // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
       // for every writer. A marker cannot be forged by that ordering.
-      const retiredAt = retirementStamp(rec.retention);
-      if (retiredAt === null) continue; // not ours — a GDPR tombstone, or one from a manual drop
+      const retiredAt = stamp;
       if (now - retiredAt < grace) continue; // inside the fence window; not ledger noise
       if (attempted >= limit) {
         limited = true;

@@ -205,6 +205,21 @@ export async function runExport(
   let probed = false;
   let unusable: Error | undefined;
 
+  // A segment that exports no ids is either empty or destroyed between the listing and its pin, where a tombstone
+  // resolves no generation and reads as empty. Its row is read again to tell the two apart.
+  const rowIsGone = async (ref: SegmentRef): Promise<boolean> => {
+    const row = await registry.get(ref);
+    return row === null || row.status === 'destroyed';
+  };
+  const skipGone = async (ref: SegmentRef, writer: ExportWriter): Promise<void> => {
+    try {
+      await writer.abort?.();
+    } catch {
+      /* best-effort cleanup */
+    }
+    skipped.push({ segment: ref.segment, namespace: ref.namespace, reason: 'destroyed' });
+  };
+
   const exportRef = async (ref: SegmentRef): Promise<void> => {
     let writer: ExportWriter | undefined;
     let count = 0;
@@ -230,6 +245,7 @@ export async function runExport(
           bm.add(id);
           count += 1;
         }
+        if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         const out = bm.serialize(); // portable RoaringBitmap32 — the cross-language CRoaring format
         await writer.write(out);
         bytes = out.length;
@@ -245,6 +261,7 @@ export async function runExport(
             buf = '';
           }
         }
+        if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         if (buf.length > 0) {
           const b = Buffer.from(buf, 'utf8');
           await writer.write(b);
