@@ -213,7 +213,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   re-reads a pointer only on an eviction, a read that finds its generation swept, or an invalidation.
 
   It assumes each hot segment stays open in the reader's cache: 1,024 segments by default (`cache.readerMax`), and
-  64 MiB of parsed indices, and of the chunk bytes a reader keeps of a small generation (`cache.readerMaxBytes`). A read
+  64 MiB of parsed indices, a fixed 3.75 KiB for each open reader, and the chunk bytes a reader keeps of a small generation (`cache.readerMaxBytes`). A read
   of a segment the cache evicted opens it again, a tail read, when it needs the index or a chunk the chunk cache does
   not hold (`iterate` and the combines always do; a `has()` whose chunk is cached, a `count()` and a `stat()` do not,
   where the row has a summary the store can use),
