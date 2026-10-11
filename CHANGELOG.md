@@ -67,6 +67,8 @@ so, and so do the module headers in the code.
   the rollback went ahead without the key: make such a keystore throw `TransientError` for a fault worth riding out, as
   `IKeystore.openDek` now says. To undo a rollback of an encrypted segment, run it on a store whose keystore opens the
   segment's key.
+- **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
+  object nothing checks. Wording only; no behaviour changed.
 
 ### Fixed
 
