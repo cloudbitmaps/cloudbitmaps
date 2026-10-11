@@ -111,7 +111,7 @@ describe('an export batch size and format', () => {
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
-    'names ndjsonBatchBytes and the value %s, before anything is read',
+    'names ndjsonBatchBytes and the value %s',
     async (value) => {
       await expect(
         store().exportSegments(

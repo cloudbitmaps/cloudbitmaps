@@ -422,7 +422,7 @@ export interface CloudRoaringOptions {
    * lands and then loses its response would, replayed blindly, report its own write as a conflict. A write is
    * retried only where that is safe: a load's registry write that gets no answer is settled by reading the row,
    * and a throttled write-once object is sent again by the S3 and GCS drivers. Pass a partial policy to tune it — anything you leave out keeps its
-   * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
+   * default, except an omitted `maxDelayMs`, which is `baseDelayMs` when that is larger than 2000 ms — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
    * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
    * layer.

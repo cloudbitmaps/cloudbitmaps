@@ -60,8 +60,10 @@ so, and so do the module headers in the code.
   number of at least 0` for a fraction. The value shown is the one refused: a number or boolean as itself, a bigint with
   an `n`, a string quoted, and anything else by its type. The size options of the cloud backends read `partBytes must be
   an integer of at least 1; got 0`, and `requirePositiveInt` from `@cloudbitmaps/core/driver-kit` words its refusal the
-  same way and takes the same values. The `getRange` checks of the cloud drivers, `guard.maxGrowth` and `leaseUntil` keep
-  their own rule and wording. Newly refused: a fractional `maxScanSegments` (for `retireExpired`, `checkConsistency` and
+  same way and takes the same values. These keep their own rule and wording: `guard.maxGrowth`, `cache.ttlMs` and
+  `cache.readerMaxBytes` (each must be above 0), the timestamps `leaseUntil` and `retention.expiresAt`, the id bounds
+  `after` and `through` (whose refusal never shows the value), `pinAt`, `BufferReader.getRange` and the cloud drivers'
+  `getRange`. Newly refused: a fractional `maxScanSegments` (for `retireExpired`, `checkConsistency` and
   `eraseNamespace`), a `getRange` offset or length of 2^53 or more on the in-process and local-filesystem drivers, and a
   generation number of 2^53 or more in a storage key.
 - **The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.** `retry: {
