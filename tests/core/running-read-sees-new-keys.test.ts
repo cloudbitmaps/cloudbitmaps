@@ -38,10 +38,10 @@ const O = ref('o'); // holds one id, in chunk 0
 const MIRROR = ref('mirror'); // holds every id of both generations of `s`
 const OPTOUT = ref('optout');
 
-const G0 = Array.from({ length: 50 }, (_, c) => c * C + 1);
+const GEN0 = Array.from({ length: 50 }, (_, c) => c * C + 1);
 const ADDED = 200 * C + 5;
 const DROPPED = 40 * C + 1;
-const G1 = [...G0.filter((id) => id !== DROPPED), ADDED];
+const GEN1 = [...GEN0.filter((id) => id !== DROPPED), ADDED];
 const IN_O = 3;
 // In `s` and in the opt-out list from the start, in chunk 0: a combine reads the opt-out list there and at no key after.
 const OPTED_OUT = 1;
@@ -74,9 +74,9 @@ async function world(
   const { storage, registry } = backend;
   const put = (r: SegmentRef, ids: readonly number[]) =>
     bulkLoadCrbmGeneration(storage, { ...r, generation: 0 }, sorted(ids), { registry });
-  await put(S, options.s ?? G0);
+  await put(S, options.s ?? GEN0);
   await put(O, [IN_O]);
-  await put(MIRROR, [...G0, ADDED, 300 * C + 7]);
+  await put(MIRROR, [...GEN0, ADDED, 300 * C + 7]);
   await put(OPTOUT, [OPTED_OUT]);
   const clock = manualClock();
   const store = new CloudRoaring({
@@ -143,12 +143,12 @@ async function across<T>(stream: AsyncIterable<T>, then: () => Promise<void>): P
 const READS_OF_S: ReadonlyArray<
   readonly [string, (w: World) => AsyncIterable<number>, readonly number[], boolean]
 > = [
-  ['iterate()', (w) => w.seg(S).iterate(), G1, false],
-  ['iterate({ after })', (w) => w.seg(S).iterate({ after: 0 }), G1, false],
-  ['iterate().batches()', (w) => flatten(w.seg(S).iterate().batches()), G1, false],
-  ['union', (w) => w.seg(S).union([w.seg(O)]), sorted([...G1, IN_O]), true],
-  ['andNot', (w) => w.seg(S).andNot([w.seg(OPTOUT)]), G1.filter((id) => id !== OPTED_OUT), true],
-  ['intersect', (w) => w.seg(S).intersect([w.seg(MIRROR)]), G1, false],
+  ['iterate()', (w) => w.seg(S).iterate(), GEN1, false],
+  ['iterate({ after })', (w) => w.seg(S).iterate({ after: 0 }), GEN1, false],
+  ['iterate().batches()', (w) => flatten(w.seg(S).iterate().batches()), GEN1, false],
+  ['union', (w) => w.seg(S).union([w.seg(O)]), sorted([...GEN1, IN_O]), true],
+  ['andNot', (w) => w.seg(S).andNot([w.seg(OPTOUT)]), GEN1.filter((id) => id !== OPTED_OUT), true],
+  ['intersect', (w) => w.seg(S).intersect([w.seg(MIRROR)]), GEN1, false],
   [
     'intersect().batches()',
     (w) =>
@@ -158,7 +158,7 @@ const READS_OF_S: ReadonlyArray<
           .intersect([w.seg(MIRROR)])
           .batches(),
       ),
-    G1,
+    GEN1,
     false,
   ],
 ];
@@ -176,7 +176,7 @@ describe('a running read of a segment that moves reads the chunk keys of the gen
 
         it.each(READS_OF_S)('%s', async (_name, read, expected, looks) => {
           const w = await worldFor(how);
-          const got = await across(read(w), () => move(w, how, S, G1));
+          const got = await across(read(w), () => move(w, how, S, GEN1));
           expect(got, 'a chunk the new generation dropped is not read').not.toContain(DROPPED);
           if (mode === 'chunk by chunk' && how === PUBLISH_COLD && !looks) {
             // Nothing tells the read of the move: it keeps the keys it listed, read from generation 1.
@@ -190,8 +190,8 @@ describe('a running read of a segment that moves reads the chunk keys of the gen
         it('a range that ends below the added chunk still ends there', async () => {
           const w = await worldFor(how);
           const through = 100 * C;
-          const got = await across(w.seg(S).iterate({ through }), () => move(w, how, S, G1));
-          expect(got).toEqual(G1.filter((id) => id <= through));
+          const got = await across(w.seg(S).iterate({ through }), () => move(w, how, S, GEN1));
+          expect(got).toEqual(GEN1.filter((id) => id <= through));
         });
       });
     }
@@ -210,13 +210,13 @@ describe('a running combine whose exclude moves subtracts what the exclude holds
     [
       'intersect with an exclude (read after the AND)',
       (w) => w.seg(S).intersect([w.seg(MIRROR)], { exclude: [w.seg(OPTOUT)] }),
-      G1,
+      GEN1,
     ],
-    ['andNot (read with the include)', (w) => w.seg(S).andNot([w.seg(OPTOUT)]), G1],
+    ['andNot (read with the include)', (w) => w.seg(S).andNot([w.seg(OPTOUT)]), GEN1],
     [
       'union with an exclude',
       (w) => w.seg(S).union([w.seg(O)], { exclude: [w.seg(OPTOUT)] }),
-      sorted([...G1, IN_O]),
+      sorted([...GEN1, IN_O]),
     ],
   ];
 
@@ -226,7 +226,7 @@ describe('a running combine whose exclude moves subtracts what the exclude holds
         beforeEach(() => inMode(mode));
 
         it.each(COMBINES)('%s', async (_name, read, all) => {
-          const w = await worldFor(how, { s: G1 });
+          const w = await worldFor(how, { s: GEN1 });
           const got = await across(read(w), () => move(w, how, OPTOUT, [OPTED_OUT, ADDED]));
           expect(got, 'the id the opt-out list gained is subtracted').not.toContain(ADDED);
           expect(got).toEqual(all.filter((id) => id !== OPTED_OUT && id !== ADDED));
@@ -242,15 +242,15 @@ describe('a pinned read never plans again', () => {
   it('iterate() of a pin reads the pinned generation, across a load', async () => {
     const w = await world();
     const pin = await w.seg(S).pin();
-    const got = await across(pin.iterate(), () => move(w, LOAD, S, G1));
-    expect(got).toEqual(G0);
+    const got = await across(pin.iterate(), () => move(w, LOAD, S, GEN1));
+    expect(got).toEqual(GEN0);
   });
 
   it('everyNth of a pin places its ranks in the pinned generation, across a load', async () => {
     const w = await world();
     const pin = await w.seg(S).pin();
-    const got = await across(pin.everyNth(7), () => move(w, LOAD, S, G1));
-    expect(got).toEqual(G0.filter((_, i) => (i + 1) % 7 === 0));
+    const got = await across(pin.everyNth(7), () => move(w, LOAD, S, GEN1));
+    expect(got).toEqual(GEN0.filter((_, i) => (i + 1) % 7 === 0));
   });
 
   it('a combine plans its live operand again and keeps its pinned one', async () => {
@@ -258,11 +258,11 @@ describe('a pinned read never plans again', () => {
     const pin = await w.seg(S).pin();
     const gained = 300 * C + 7;
     const got = await across(pin.union([w.seg(O)]), async () => {
-      await move(w, LOAD, S, G1);
+      await move(w, LOAD, S, GEN1);
       await move(w, LOAD, O, [IN_O, gained]);
     });
     // `s` as pinned: chunk 40 still there, chunk 200 never; `o` as it is now
-    expect(got).toEqual(sorted([...G0, IN_O, gained]));
+    expect(got).toEqual(sorted([...GEN0, IN_O, gained]));
   });
 });
 
@@ -272,7 +272,7 @@ describe('a pinned read never plans again', () => {
  */
 describe('the budget of a read that plans again', () => {
   beforeEach(() => inMode('streamed'));
-  const GROWN = [...G0, 200 * C + 5, 201 * C + 5]; // 52 chunks
+  const GROWN = [...GEN0, 200 * C + 5, 201 * C + 5]; // 52 chunks
 
   it('iterate: refused once the keys taken and the keys left exceed it', async () => {
     const w = await world({ maxRequests: 51 });
@@ -366,7 +366,7 @@ describe('a read during which nothing moves', () => {
         range.count = 0;
         if (lapse) w.clock.advance(TTL + 1);
       });
-      expect(got).toEqual(G0.slice(1));
+      expect(got).toEqual(GEN0.slice(1));
       return { pointerReads: [...pointerReads].sort(), ranges: range.count };
     };
     await read(false); // every chunk in the cache: the reads below read no range
@@ -389,7 +389,7 @@ describe('a read during which nothing moves', () => {
       const got = await across(w.seg(S).iterate(), async () => {
         w.store.invalidate(ref('unrelated'));
       });
-      expect(got).toEqual(G0);
+      expect(got).toEqual(GEN0);
     } finally {
       proto.currentVersion = currentVersion;
     }
@@ -423,8 +423,8 @@ describe('a read that plans again', () => {
     };
     try {
       const w = await world();
-      const got = await across(w.seg(S).union([w.seg(MIRROR)]), () => move(w, LOAD, S, G1));
-      expect(got).toEqual(sorted([...G1, ...G0, ADDED, 300 * C + 7]));
+      const got = await across(w.seg(S).union([w.seg(MIRROR)]), () => move(w, LOAD, S, GEN1));
+      expect(got).toEqual(sorted([...GEN1, ...GEN0, ADDED, 300 * C + 7]));
     } finally {
       proto.getChunks = getChunks;
     }
