@@ -307,17 +307,24 @@ function scannedFiles(): string[] {
   return out;
 }
 
+// Parsing every source and test file takes seconds, and longer when other whole-repo scans run beside it.
+const LIMIT = { timeout: 30_000 };
+
 describe('a storage driver that wraps another hands delete its options on', () => {
-  it('no storage delete wrapper in tests/ or packages/*/src takes or forwards only the key', () => {
-    const files = scannedFiles();
-    expect(files).toContain('packages/roaring/src/open-charging-storage.ts');
-    const found = files.flatMap((file) =>
-      droppedConditions(file, readFileSync(join(ROOT, file), 'utf8')).map(
-        (d) => `${d.file}:${d.line} ${d.why}`,
-      ),
-    );
-    expect(found).toEqual([]);
-  });
+  it(
+    'no storage delete wrapper in tests/ or packages/*/src takes or forwards only the key',
+    LIMIT,
+    () => {
+      const files = scannedFiles();
+      expect(files).toContain('packages/roaring/src/open-charging-storage.ts');
+      const found = files.flatMap((file) =>
+        droppedConditions(file, readFileSync(join(ROOT, file), 'utf8')).map(
+          (d) => `${d.file}:${d.line} ${d.why}`,
+        ),
+      );
+      expect(found).toEqual([]);
+    },
+  );
 
   // The detector, both ways, on planted inputs: each dropping shape it is written for fails, and each look-alike passes.
   const flagged = (text: string): number => droppedConditions('planted.ts', text).length;

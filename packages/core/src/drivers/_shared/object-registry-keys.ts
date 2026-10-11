@@ -75,7 +75,7 @@ export function normalizeObjectPrefix(prefix: string | undefined): string | unde
 }
 
 /** The key prefix under which every registry object lives: `<prefix>registry/`. */
-export function registryPrefix(prefix: string | undefined): string {
+function registryPrefix(prefix: string | undefined): string {
   return `${prefixPart(prefix)}registry/`;
 }
 

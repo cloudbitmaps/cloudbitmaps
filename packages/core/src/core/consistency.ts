@@ -18,6 +18,7 @@
  */
 
 import { mapWithConcurrency } from './concurrency';
+import { generationsOf } from './generation-list';
 import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
@@ -90,13 +91,6 @@ export interface ConsistencyReport {
    * only when summaries were asked for.
    */
   readonly summariesUnchecked?: number;
-}
-
-/** Collect the set of generations the object store currently lists for a segment. */
-async function generationsPresent(storage: IStorageDriver, ref: SegmentRef): Promise<Set<number>> {
-  const present = new Set<number>();
-  for await (const key of storage.list(ref)) present.add(key.generation);
-  return present;
 }
 
 type Outcome =
@@ -229,8 +223,8 @@ export async function runConsistencyCheck(
       // would make `missing-storage-generation` fire on the healthy steady state of every such segment, which is the
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };
-      const present = await generationsPresent(deps.storage, ref);
-      if (present.has(live.currentGen)) {
+      const present = await generationsOf(deps.storage, ref);
+      if (present.includes(live.currentGen)) {
         if (options.summaries !== true || live.summary === undefined) return { kind: 'ok' };
         return await checkSummary(ref, live, deps);
       }

@@ -413,7 +413,7 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 
 ### Generation bookkeeping & erasure
 
-`PinnedAt` (`{ generation, version, fingerprint? }` — what a pin holds for one segment; `version` is opaque, the generation with the row's `pointerId` it was resolved under; `fingerprint` names the object it pinned, so a replaced one is refused, and is optional only so that a pin built by hand still compiles, when nothing checks the object it reads; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `PinnedObject` (`{ version, fingerprint? }` — what a pinned read of `CrbmStorageChunkSource` checks the generation's object against) · `EraseDeps` · `DestroyResult` · `DropResult`
+`PinnedAt` (`{ generation, version, fingerprint? }` — what a pin holds for one segment; `version` is opaque, the generation with the row's `pointerId` it was resolved under; `fingerprint` names the object it pinned, so a replaced one is refused, and is optional: a pin built by hand without one reads an object nothing checks, while `seg.pin()` always records it; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `PinnedObject` (`{ version, fingerprint? }` — what a pinned read of `CrbmStorageChunkSource` checks the generation's object against) · `EraseDeps` · `DestroyResult` · `DropResult`
 
 ### Retention
 
