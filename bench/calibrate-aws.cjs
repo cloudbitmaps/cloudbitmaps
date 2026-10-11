@@ -121,7 +121,7 @@ const {
   firstLoadRequests,
   STEADY_KEEP,
   STEADY_LOADS,
-  STEADY_LOAD_REQUESTS,
+  steadyLoadRequestsOf,
   steadyKind,
 } = require('./lib/calibrate-stages.cjs');
 const {
@@ -1994,7 +1994,7 @@ async function main() {
         }
         const perLoadRecords = loads.map((l, g) => {
           const kind = steadyKind(g, STEADY_KEEP);
-          const want = STEADY_LOAD_REQUESTS[kind];
+          const want = steadyLoadRequestsOf(packageVersion)[kind];
           if (l.put !== want.put || l.get !== want.get || l.free !== want.free) {
             (results.expectedMissed ??= []).push(
               `steadyLoad: generation ${g} (${kind}) made ${l.put} PUT-class, ${l.get} GET-class and ${l.free} deletes, ` +

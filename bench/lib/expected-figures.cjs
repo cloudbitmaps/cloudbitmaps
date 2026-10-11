@@ -58,6 +58,17 @@ function computeExpectedFigures() {
   const PUT_USD = AWS_US_EAST_1_ONDEMAND.storage.putPerMillion / 1e6;
   const first = STORE_LOAD_REQUESTS.first;
   const firstEach = first.put * PUT_USD + first.get * GET_USD;
+  // A steady load at any `keep` up to 64, from the third on: one that deletes by name, the one in every sixteen that
+  // lists, and their average over that cadence, as the shipped estimator prices a load.
+  const { LIST_CADENCE } = require('./calibrate-stages.cjs');
+  const steadyEach = (r) => r.put * PUT_USD + r.get * GET_USD;
+  const byName = steadyEach(STORE_LOAD_REQUESTS.collecting);
+  const listing = steadyEach(STORE_LOAD_REQUESTS.listing);
+  const kind = (r, each) => ({
+    requestsText: `${r.put} PUT${r.put === 2 ? '' : '-class'} + ${r.get} GET`,
+    each: usd(each),
+    perMillion: usd(each * 1e6),
+  });
   const per = (gets) => ({
     gets,
     getsText: `${gets} GETs`,
@@ -77,6 +88,13 @@ function computeExpectedFigures() {
       requestsText: `${first.put} PUT + ${first.get} GET`,
       each: usd(firstEach),
       perMillion: usd(firstEach * 1e6),
+    },
+    steadyLoad: {
+      byName: kind(STORE_LOAD_REQUESTS.collecting, byName),
+      listing: kind(STORE_LOAD_REQUESTS.listing, listing),
+      average: {
+        perMillion: usd((((LIST_CADENCE - 1) * byName + listing) / LIST_CADENCE) * 1e6),
+      },
     },
     andNot: per(andNot),
     iterate: per(iterate),

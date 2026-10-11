@@ -323,15 +323,58 @@ function steadyKind(g, keep = STEADY_KEEP) {
 
 /**
  * What one load of each kind requests when nothing races it, on S3's request shape: PUT-class (the object, the pointer and
- * a listing), GET-class (pointer reads and zero-byte object checks), and deletes, which are free. Counted by a test
- * against the real registry protocol and held equal to the figures module's `STORE_LOAD_REQUESTS`.
+ * a listing), GET-class (pointer reads and zero-byte object checks), and deletes, which are free. A load that collects
+ * reads the pointer once more after its last delete, which sees a rollback that landed between the read before that
+ * delete and the delete. Counted by a test against the real registry protocol and held equal to the figures module's
+ * `STORE_LOAD_REQUESTS`.
  */
 const STEADY_LOAD_REQUESTS = Object.freeze({
   first: Object.freeze({ put: 2, get: 3, free: 0 }),
   reload: Object.freeze({ put: 2, get: 2, free: 0 }),
+  byName: Object.freeze({ put: 2, get: 5, free: 1 }),
+  listing: Object.freeze({ put: 3, get: 6, free: 1 }),
+});
+
+/**
+ * The first release whose load reads the pointer after its collection's last delete. A run of an earlier release ran an
+ * engine that made no such read, so it is held to {@link STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE}.
+ */
+const READ_AFTER_DELETE_SINCE = Object.freeze([0, 21, 0]);
+
+/** What one load of each kind requested on a release before {@link READ_AFTER_DELETE_SINCE}: one GET fewer to collect. */
+const STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE = Object.freeze({
+  first: STEADY_LOAD_REQUESTS.first,
+  reload: STEADY_LOAD_REQUESTS.reload,
   byName: Object.freeze({ put: 2, get: 4, free: 1 }),
   listing: Object.freeze({ put: 3, get: 5, free: 1 }),
 });
+
+/**
+ * `0.12.0` as numbers, a pre-release counting as the release it precedes (`0.12.0-rc.1` ran 0.12.0's engine); null for
+ * anything else, which is read as the current engine. A run reports the version of the packages it ran: an evidence run
+ * installs a published release, so that is the engine that ran. A rehearsal of unreleased source made before its version
+ * bump reports the last release instead, and is read against that release's engine.
+ */
+function releaseOf(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(version));
+  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** Whether `release`, from {@link releaseOf}, is `since` or later; null, the current engine, always is. */
+function releasedSince(release, since) {
+  if (release === null) return true;
+  for (let i = 0; i < 3; i += 1) {
+    if (release[i] !== since[i]) return release[i] > since[i];
+  }
+  return true;
+}
+
+/** The requests a steady load of each kind makes on the engine of the run that reported `packageVersion`. */
+function steadyLoadRequestsOf(packageVersion) {
+  return releasedSince(releaseOf(packageVersion), READ_AFTER_DELETE_SINCE)
+    ? STEADY_LOAD_REQUESTS
+    : STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE;
+}
 
 /** The exact requests of the stage's loads, by class: the sum of each load's kind. */
 function expectedSteady(loads = STEADY_LOADS, keep = STEADY_KEEP) {
@@ -350,6 +393,8 @@ module.exports = {
   STEADY_LOADS,
   LIST_CADENCE,
   STEADY_LOAD_REQUESTS,
+  steadyLoadRequestsOf,
+  releaseOf,
   steadyKind,
   expectedSteady,
   STAGES,

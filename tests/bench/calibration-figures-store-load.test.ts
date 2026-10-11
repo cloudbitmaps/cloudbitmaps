@@ -769,8 +769,10 @@ describe('a run with a steady-load stage', () => {
     m.measured = { ...m.measured, packageVersion };
   };
   const steadyOf = (run: Run): Steady => run.phases.steadyLoad as unknown as Steady;
+  type Kinds = Record<string, { put: number; get: number; free: number }>;
   const stable = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
-    STEADY_LOAD_REQUESTS: Record<string, { put: number; get: number; free: number }>;
+    STEADY_LOAD_REQUESTS: Kinds;
+    steadyLoadRequestsOf: (packageVersion: string | undefined) => Kinds;
   };
   const refused = (mutate: (r: Run) => void): string => {
     const run = asRealRun();
@@ -924,7 +926,30 @@ describe('a run with a steady-load stage', () => {
     ).toMatch(/its PUT-class commands are not what its loads make/);
   });
 
-  it('names a steady load that did not stay in the table, in the table the harness holds', () => {
-    expect(stable.STEADY_LOAD_REQUESTS.byName).toEqual({ put: 2, get: 4, free: 1 });
+  it('names a steady load that did not stay in the table, in the table the harness holds for its release', () => {
+    expect(stable.steadyLoadRequestsOf('0.17.0').byName).toEqual({ put: 2, get: 4, free: 1 });
+  });
+
+  // From 0.21.0 a load that collects reads the pointer once more, after its last delete. A run is held to the counts of
+  // the engine it ran: a committed run of an earlier release to that release's, and one of a later release, or of a
+  // version that is not a release, to the engine's own.
+  it("holds a run's steady loads to the counts of its release", () => {
+    expect(stable.steadyLoadRequestsOf('0.20.0')).toMatchObject({
+      byName: { put: 2, get: 4, free: 1 },
+      listing: { put: 3, get: 5, free: 1 },
+    });
+    expect(stable.steadyLoadRequestsOf('0.21.0-rc.1')).toBe(stable.STEADY_LOAD_REQUESTS);
+    expect(stable.steadyLoadRequestsOf('main')).toBe(stable.STEADY_LOAD_REQUESTS);
+    expect(stable.steadyLoadRequestsOf(undefined)).toBe(stable.STEADY_LOAD_REQUESTS);
+    expect(stable.STEADY_LOAD_REQUESTS).toMatchObject({
+      first: { put: 2, get: 3, free: 0 },
+      reload: { put: 2, get: 2, free: 0 },
+      byName: { put: 2, get: 5, free: 1 },
+      listing: { put: 3, get: 6, free: 1 },
+    });
+    // The committed evidence, as a run of the release that reads after the delete, made a GET too few to collect.
+    expect(refused((r) => versioned(r, '0.21.0'))).toMatch(
+      /its steady load \d+ \(byName\) made 2 PUT-class, 4 GET-class and 1 deletes, not the 2, 5 and 1 of a byName load/,
+    );
   });
 });

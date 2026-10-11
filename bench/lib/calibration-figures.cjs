@@ -56,17 +56,6 @@ const { removeAll } = require('./remove-all.cjs');
  */
 const FIXED_WINDOW_THROUGH = Object.freeze({ version: [0, 12, 0], keys: 8 });
 
-/**
- * `0.12.0` as numbers, a pre-release counting as the release it precedes (`0.12.0-rc.1` ran 0.12.0's engine); null for
- * anything else, which is read as the current engine. A run reports the version of the packages it ran: an evidence run
- * installs a published release, so that is the engine that ran. A rehearsal of unreleased source made before its version
- * bump reports the last release instead, and is read against that release's window.
- */
-function releaseOf(version) {
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(version));
-  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
 /** The window the engine of `packageVersion` ran with: how wide it opened and the most it held. */
 function windowOfRun(packageVersion, src) {
   const release = releaseOf(packageVersion);
@@ -85,6 +74,8 @@ const {
   STEADY_KEEP,
   STEADY_LOADS,
   STEADY_LOAD_REQUESTS,
+  steadyLoadRequestsOf,
+  releaseOf,
   steadyKind,
 } = require('./calibrate-stages.cjs');
 const {
@@ -104,15 +95,15 @@ const {
  * (its row, which the compare-and-swap is written against) and makes the one check, and sizes the current generation
  * from its row's summary, so it opens no object; from the third load on, collection deletes the generation the
  * window pushed out, by name, after a second check that the current generation's object is there, and re-reads the
- * pointer before its delete, so a collecting load lists nothing. Every sixteenth load lists instead, `listing`: a
- * listing, and the pointer read before and after it, and it needs no check that the current object is there. The test
- * asserts these numbers, so the prices below cannot drift from what runs.
+ * pointer before its delete and once after it, so a collecting load lists nothing. Every sixteenth load lists instead,
+ * `listing`: a listing, the pointer read before and after it and once after the delete, and it needs no check that the
+ * current object is there. The test asserts these numbers, so the prices below cannot drift from what runs.
  */
 const STORE_LOAD_REQUESTS = Object.freeze({
   first: Object.freeze({ put: 2, get: 3 }),
   reload: Object.freeze({ put: 2, get: 2 }),
-  collecting: Object.freeze({ put: 2, get: 4 }),
-  listing: Object.freeze({ put: 3, get: 5 }),
+  collecting: Object.freeze({ put: 2, get: 5 }),
+  listing: Object.freeze({ put: 3, get: 6 }),
 });
 
 /** Roaring's portable format stores a chunk of at most this many ids as an array: a header, then 2 bytes an id. */
@@ -502,9 +493,10 @@ function derive(run, src) {
           steadyRecords.length === STEADY_LOADS,
         `its steady stage ran ${steadyRecords.length} loads at keep ${steady.keep}, not the harness's ${STEADY_LOADS} at ${STEADY_KEEP}`,
       );
+      const wanted = steadyLoadRequestsOf(run.measured?.packageVersion);
       steadyRecords.forEach((l, g) => {
         const kind = steadyKind(g, STEADY_KEEP);
-        const want = STEADY_LOAD_REQUESTS[kind];
+        const want = wanted[kind];
         check(
           l.generation === g &&
             l.kind === kind &&
@@ -1151,10 +1143,14 @@ function shapesOf(f) {
     [f.putsPerSingle, f.getsPerLoad],
     [f.putsPerMultipart, f.getsPerMultipart],
     ...Object.values(f.storeLoad).map((r) => [r.put, r.get]),
-    // The steady stage's own total, which a report may state beside its loads.
+    // The steady stage's own total, which a report may state beside its loads, and what each kind of its loads made,
+    // which is what the engine of the run's release requests and need not be the engine's table.
     ...(f.steadyLoad === null
       ? []
-      : [[f.stageLedger.steadyLoad.put, f.stageLedger.steadyLoad.get]]),
+      : [
+          [f.stageLedger.steadyLoad.put, f.stageLedger.steadyLoad.get],
+          ...Object.values(f.steadyLoad.byKind).map((r) => [r.put, r.get]),
+        ]),
   ];
 }
 
