@@ -40,7 +40,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { lstat, mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
@@ -98,6 +98,9 @@ async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
   }
 }
 
+/** The manifest's file name, at the top of the output directory. */
+const MANIFEST_NAME = 'manifest.json';
+
 /**
  * A filesystem {@link ExportSink}. Writes each segment to a **unique** `<segment><ext>.<uuid>.part` temp
  * (`O_EXCL` create, mode `0o600`) and atomically renames it into `<out>/<namespace>/<segment><ext>` on `close()`,
@@ -105,6 +108,10 @@ async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
  * another. Uses a `FileHandle` (not `createWriteStream`) so an I/O fault **rejects the write** rather than
  * emitting an unhandled `'error'` event that would crash the process, and loops on short writes so a partial
  * `write()` never truncates the output. Artifacts are **owner-only** (dir `0o700`, files `0o600`) — cleartext.
+ *
+ * A namespace named `manifest.json`, in any letter case, is refused with a `ValidationError`, so each of its segments
+ * lands in `failed`: its directory would take the manifest's path. Aborting a segment also removes its namespace
+ * directory when that leaves it empty.
  */
 export function fsSink(out: string): ExportSink {
   return {
@@ -117,7 +124,14 @@ export function fsSink(out: string): ExportSink {
       // `namespacePathPart`, not `encodeNameForPath(ns ?? '_default')`: the sentinel is emitted literally
       // while a caller's namespace is encoded, so a segment in a namespace actually named `_default`
       // does not land in the same directory as the un-namespaced ones.
-      const dir = join(out, namespacePathPart(ref.namespace));
+      const part = namespacePathPart(ref.namespace);
+      // The manifest is a file at the top of `out`, so a namespace directory of that name would take its place.
+      if (part.toLowerCase() === MANIFEST_NAME) {
+        throw new ValidationError(
+          `a namespace named ${MANIFEST_NAME} (in any letter case) cannot be exported to a directory: its folder would be the manifest's path`,
+        );
+      }
+      const dir = join(out, part);
       await ensureOwnDirectory(out, dir);
       const finalPath = join(dir, `${encodeNameForPath(ref.segment)}${ext}`);
       const tmpPath = `${finalPath}.${randomUUID()}.part`;
@@ -146,6 +160,11 @@ export function fsSink(out: string): ExportSink {
           // Discard the partial; best-effort so a failing cleanup never masks the caller's original fault.
           await handle.close().catch(() => {});
           await rm(tmpPath, { force: true });
+          // Only an empty directory goes; one holding files is left alone, and any other fault is the caller's to see.
+          await rmdir(dir).catch((err: NodeJS.ErrnoException) => {
+            if (err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST' && err.code !== 'ENOENT')
+              throw err;
+          });
         },
       };
     },
@@ -186,7 +205,15 @@ export async function main(
 
   // An earlier run's manifest goes before anything of this run is written: its presence marks a finished run, and one
   // left in place would mark this run finished, with the earlier run's counts, if this one stopped part way.
-  await rm(join(config.out, 'manifest.json'), { force: true });
+  const priorManifest = await lstat(join(config.out, MANIFEST_NAME)).catch(() => null);
+  if (priorManifest?.isDirectory() === true) {
+    // Not removed here: it is a directory of someone's files, and only a person can say it holds nothing they want.
+    throw new ValidationError(
+      `${join(config.out, MANIFEST_NAME)} is a directory, so the manifest cannot be written there: ` +
+        'remove or rename it, or export to a fresh directory',
+    );
+  }
+  await rm(join(config.out, MANIFEST_NAME), { force: true });
   const manifest = await store.exportSegments(fsSink(config.out), {
     format: config.format,
     namespace: config.namespace,

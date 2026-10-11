@@ -71,8 +71,8 @@ Any other key is refused by name.
   store's read retry runs again. It is off unless you set it. The clock starts at the call into the SDK, so waiting
   for a socket or a credential's token counts. Writes, deletes and listings are not timed.
 - **Price it with `storage.requestsPerSizedRead: 2`.** A pointer read is one GET here, as on S3 and GCS, but a
-  segment's tail read is two requests, its properties and then its bytes, because Azure Blob takes no suffix range.
-  Set it in the pricing profile you give `estimateCost` or `groundedReport` from `@cloudbitmaps/tools`, and leave
+  segment's tail read is two requests, its properties and then its bytes, because Azure Blob takes no suffix range. The download is conditional on the properties' ETag, so a blob
+  replaced between the two is read again once, and a second replacement is a `TransientError`. Set it in the pricing profile you give `estimateCost` or `groundedReport` from `@cloudbitmaps/tools`, and leave
   `requestsPerPointerRead` at 1.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.

@@ -45,6 +45,8 @@ const NETWORK_CODES = new Set([
   'ENOTFOUND',
   'EAI_AGAIN',
   'ECONNABORTED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
 ]);
 
 // Message-text fallback for when the structural signals (name/code/$metadata/$retryable) are absent. Kept

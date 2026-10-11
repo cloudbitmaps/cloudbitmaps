@@ -319,6 +319,10 @@ export class S3StorageDriver implements IStorageDriver {
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const objectKey = storageObjectKey(this.prefix, key);
+    // `NaN` compares false either way, so the test is "not 0 or less", which it fails.
+    if (!(maxBytes <= 0) && !Number.isSafeInteger(maxBytes)) {
+      throw new ValidationError(`invalid tail length ${maxBytes}`);
+    }
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
       const head = await this.head(key, objectKey);
