@@ -13,6 +13,7 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The cost tools refuse input they would have misread.** `estimateCost` and `groundedReport` now refuse a key they do not take, at the top level and inside `workload`, each segment, and `pricing`, with a `ValidationError` naming the key and where it sits: a segment `{ size: 1e9 }` used to be priced as 0 bytes, and `workload: { readsPerSecond }` was dropped. `estimateCost` refuses a segment `count` that is not a whole number, and a workload or rate card whose cost is not a finite number of dollars, instead of returning `$Infinity/mo`.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
 
 ## [0.20.0] — 2026-10-09
