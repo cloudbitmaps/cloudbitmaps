@@ -150,7 +150,8 @@ describe('a lease write against the other writers of the row', () => {
     // A lease write changed nothing the load derived: it publishes, and its object was written once.
     expect(r).toMatchObject({ published: true, generation: 1 });
     expect(await snap!.count()).toBe(10);
-    // Any other write beats it, as ever: it leaves its object, an orphan above the pointer that the re-run numbers past.
+    // Any other write beats it, as ever: one read of its object's footer proves the object its own, and the refusal
+    // deletes it, so the re-run takes the number again.
     const beaten = hook(x.memory.registry, 'compareAndSwap', async (nth) => {
       if (nth === 0)
         await x.memory.registry.compareAndSwap(REF, (await x.memory.registry.get(REF))!.token, {
@@ -162,8 +163,8 @@ describe('a lease write against the other writers of the row', () => {
       published: false,
       reason: 'superseded',
     });
-    expect(await generationsIn(x.memory.storage)).toEqual([0, 1, 2]);
-    expect(await x.writer.load(REF, ids(30))).toMatchObject({ published: true, generation: 3 });
+    expect(await generationsIn(x.memory.storage)).toEqual([0, 1]);
+    expect(await x.writer.load(REF, ids(30))).toMatchObject({ published: true, generation: 2 });
   });
 
   it('a pin whose row went stale before its write lands re-reads and pins the new current generation', async () => {

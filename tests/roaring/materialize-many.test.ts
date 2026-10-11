@@ -847,7 +847,8 @@ describe('store.materializeMany', () => {
 
   describe('the recipe for the total GET-class requests', () => {
     // attributed.get, plus two reads (a tail and a row) for each operand a pin took or an index opened, plus, for each
-    // publish, two reads of an existing destination or three of one with no generation, and one more when it was refused
+    // publish, two reads of an existing destination or three of one with no generation, and two more when it was
+    // refused: its reclaim reads the row before it deletes its object and once after
     const shapes: Array<[boolean, boolean, boolean, boolean, number]> = [];
     for (const pin of [true, false])
       for (const newDest of [true, false])
@@ -881,7 +882,7 @@ describe('store.materializeMany', () => {
         const refused = run.outputs.filter((o) => !o.published).length;
         expect(refused).toBe(refuse && !newDest ? n : 0);
         const opened = pin ? Object.keys(operands).length : requests.opens;
-        const recipe = requests.attributed.get + 2 * opened + n * (newDest ? 3 : 2) + refused;
+        const recipe = requests.attributed.get + 2 * opened + n * (newDest ? 3 : 2) + 2 * refused;
         expect(w.calls.ranges + w.calls.tails + w.calls.rowReads).toBe(recipe);
         expect(w.calls.puts + w.calls.rowWrites).toBeGreaterThanOrEqual(requests.attributed.put);
         expect(requests.attributed.put).toBe(w.calls.puts + w.calls.rowWrites);

@@ -140,8 +140,8 @@ What it costs at three illustrative sizes, priced by the project's own estimator
 | | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
 |---|---:|---:|---:|---:|
 | **Small** — a product team keeping its user cohorts | 200 MB | $1.70 | $35.04 | **95% less** |
-| **Medium** — an ad platform matching audiences | 20 GB | $71.60 | $900 | **92% less** |
-| **Large** — a marketplace filtering its catalogue | 2 TB | $2,538 | $27,325 | **91% less** |
+| **Medium** — an ad platform matching audiences | 20 GB | $71.66 | $900 | **92% less** |
+| **Large** — a marketplace filtering its catalogue | 2 TB | $2,541 | $27,325 | **91% less** |
 <!-- SIZING:WHY_SIZES:END -->
 
 <!-- SIZING:WHY_CAVEATS:START -->
@@ -168,7 +168,7 @@ bucket as the data.
 |---|---|---|
 | Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 6 GETs | **$2.40 / million** | measured requests at list prices |
 | A segment's first `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | measured requests at list prices |
-| A steady `store.load()` at `keep: 12`, deleting a generation by name: 2 PUT + 4 GET and a free delete | **$11.60 / million** | measured requests at list prices |
+| A steady `store.load()` at `keep: 12`, deleting a generation by name: 2 PUT + 5 GET and a free delete | **$12.00 / million** | counted requests at list prices |
 
 Run from inside the region with a client of 128 sockets, a cold `count()` is one request at
 27.19 ms, a single-part load ran at 5,443,673 bytes a second, and an `andNot` against ten excludes made 33 GETs in 351.64 ms. The

@@ -95,6 +95,39 @@ async function collectsByName(engine, keep = 12) {
   );
 }
 
+/**
+ * Whether an engine's load reads the segment's row after its collection's last delete, which is what a steady load's
+ * table turns on: loads `keep + 2` generations of one segment over the in-memory backend and, on the first load past the
+ * window, which deletes by name, records the order of the storage driver's deletes and the registry's reads. `engine` is
+ * the library's module (`CloudRoaring`, `MemoryStorage`), so a test can hand it a stand-in. The calibration harness asks
+ * before it creates anything, and records the answer with its evidence; an engine that deleted nothing on that load
+ * throws, since it does not collect by name, which the harness refuses first.
+ */
+async function readsRowAfterCollect(engine, keep = 12) {
+  const { CloudRoaring, MemoryStorage } = engine;
+  const backend = new MemoryStorage();
+  let seen = null;
+  const wrap = (target, name, entry) => {
+    const original = target[name].bind(target);
+    target[name] = (...args) => {
+      seen?.push(entry);
+      return original(...args);
+    };
+  };
+  wrap(backend.storage, 'delete', 'delete');
+  wrap(backend.registry, 'get', 'read');
+  const loader = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
+  for (let g = 0; g <= keep + 1; g += 1) {
+    seen = g === keep + 1 ? [] : null;
+    await loader.load({ segment: 'probe' }, [g + 1], { keep });
+  }
+  const lastDelete = seen.lastIndexOf('delete');
+  if (lastDelete === -1) {
+    throw new Error(`the engine deleted nothing on its first load past a window of ${keep}`);
+  }
+  return seen.indexOf('read', lastDelete) !== -1;
+}
+
 /** The requests of one cold read: `read(store)` returns the stream to drain. */
 async function coldRead(loads, read) {
   const { loader, cold, calls } = await countedBackend();
@@ -207,6 +240,7 @@ module.exports = {
   coldAndNotIds,
   coldIterate,
   collectsByName,
+  readsRowAfterCollect,
   sharedLayout,
   run,
 };

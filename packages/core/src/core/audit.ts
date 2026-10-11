@@ -117,7 +117,9 @@ export type AuditEvent =
        * exists only for a finished erasure. A call that ends otherwise throws or reports `erased: false` with another
        * reason and emits nothing, even when it had deleted a holder; its re-run emits when it finishes, and reports
        * `'not-member'` with no event when another collection deleted the last holder meanwhile, as its ledger entry
-       * does.
+       * does. One finished erasure emits it and then throws `NotFoundError`: one that found, after its deletes, the
+       * segment's pointer on a generation it had deleted (a rollback moved it there meanwhile), so the deletion is on
+       * the record although the call cannot answer.
        *
        * `fromGeneration` is the newest generation the call found holding the id, and is absent when it found the id in
        * none and deleted only objects it could not search: then the ledger lists no entry for the segment, and this

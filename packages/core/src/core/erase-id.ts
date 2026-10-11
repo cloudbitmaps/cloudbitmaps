@@ -114,6 +114,7 @@ import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
   IntegrityError,
   KeyUnavailableError,
+  type NotFoundError,
   ValidationError,
   WriteConflictError,
   isIntegrityError,
@@ -121,7 +122,13 @@ import {
   isTransientError,
   isWriteConflictError,
 } from './errors';
-import { gcOrphanGenerations, nextGeneration } from './generation-gc';
+import {
+  collectBelowPointer,
+  gcOrphanGenerations,
+  nextGeneration,
+  pointerOnDeletedError,
+  watchDeletes,
+} from './generation-gc';
 import { UNANSWERED_BASE_MS, UNANSWERED_RESENDS, leaseChurn, onlyLeasesDiffer } from './leases';
 import { renewPointer } from './pointer-id';
 import { assertRegistryCanWrite } from './ports';
@@ -253,6 +260,13 @@ export interface EraseIdResult {
    * bucket. The row write an erasure makes before deleting a holder a load may still publish, when it gets no answer
    * that reading the row can settle, throws the registry's `TransientError`, and that holder is not deleted.
    *
+   * A rollback that lands between the call's read of the row and one of its deletes, onto the generation being deleted,
+   * leaves the pointer on an object that is gone. The call finds it at its next read of the row, or by reading the row
+   * once more after its last delete, and **throws `NotFoundError`** rather than report anything: every read of the
+   * segment fails until a rollback moves the pointer to a generation still in the bucket, and nothing restores the
+   * deleted object. When nothing left in the bucket holds the id, the call has emitted its `segment.collect` event
+   * first, so the deletion is on the record. Re-run it after that rollback.
+   *
    * **Re-run it**, and read what the re-run says rather than assuming it finished the job. The re-run looks for
    * the id in every generation in the bucket, not only the current one, and there are three outcomes:
    *
@@ -276,7 +290,8 @@ export interface EraseIdResult {
  * Emits one `segment.rewrite` audit event at the publish (before the superseded generation is collected), so the
  * compliance record exists the moment the generation without the id is authoritative. An erasure that rewrites nothing,
  * because only other generations held the id, emits one `segment.collect` once no generation holds it, and so does one
- * that deleted only objects no read of the segment can open, which names no generation the id was found in.
+ * that deleted only objects no read of the segment can open, which names no generation the id was found in. Either
+ * event comes before the `NotFoundError` of a rollback that moved the pointer onto a generation the call deleted.
  */
 export async function eraseIdFromSegment(
   ref: SegmentRef,
@@ -293,7 +308,10 @@ export async function eraseIdFromSegment(
     const again = await eraseOnce(ref, id, deps, options, second);
     // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
     if (again.reason === 'destroyed') return result;
-    if (!again.erased) return again;
+    if (!again.erased) {
+      if (second.missing !== undefined) throw second.missing;
+      return again;
+    }
     // Erased under the tombstone: the report covers both passes, what each deleted and the newest holder either read.
     const collected = [...new Set([...result.collected, ...again.collected])].sort((a, b) => a - b);
     const newest = Math.max(result.fromGeneration ?? -1, again.fromGeneration ?? -1);
@@ -305,19 +323,22 @@ export async function eraseIdFromSegment(
 
 /**
  * What one pass of {@link eraseIdFromSegment} saw: whether the row it read first was a tombstone, the token of the row it
- * read when it finished by deleting objects and rewriting none, and whether one of those it searched held the id.
+ * read when it finished by deleting objects and rewriting none, whether one of those it searched held the id, and the
+ * error to raise once the call has recorded what it deleted, when the row named a generation it deleted.
  */
 interface Pass {
   tombstoned?: boolean;
   collectedOn?: Token;
   found?: boolean;
+  missing?: NotFoundError;
 }
 
 /**
  * Emit `segment.collect` for a call that finished by deleting the holders and rewriting none, from the report the call
  * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included. It
  * names the generation the id was found in only when a searched one held it: a call that deleted only objects it could
- * not search found it in none.
+ * not search found it in none. Then, when the pass found the row naming a generation it deleted, it throws that error
+ * in place of the report: the deletion is on the record, and the segment no longer reads.
  */
 function recordCollect(
   ref: SegmentRef,
@@ -337,6 +358,7 @@ function recordCollect(
       collected: [...result.collected],
     });
   }
+  if (pass.missing !== undefined) throw pass.missing;
   return result;
 }
 
@@ -716,8 +738,8 @@ async function eraseOnce(
 
   /**
    * Delete `holders`, newest first, each after reading the row and finding it still the one {@link fenceInFlight}
-   * renewed (or that row with only its leases changed), and stop at the first that is not. Returns what was deleted, and
-   * the row's reason when the deletes stopped.
+   * renewed (or that row with only its leases changed), and stop at the first that is not. Returns what was deleted, the
+   * row's reason when the deletes stopped, and, in `missing`, a generation it deleted that the row then named.
    *
    * One round trip remains between that read and its delete: a rollback that lands inside it onto the holder being
    * deleted leaves the pointer naming a missing object. Above the pointer, and on a row with no pointer, that is one
@@ -725,7 +747,9 @@ async function eraseOnce(
    * encrypted target there); below it, an object sealed under a key the row does not hold, which only a rollback with
    * no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
    * move-then-verify catches every such landing except one whose check runs before the delete, and a condition on the
-   * object cannot close it, since the pointer then names the very object this call read.
+   * object cannot close it, since the pointer then names the very object this call read. So it is detected instead:
+   * every read of the row after a delete is held to what was deleted, and so is one more read after the last delete
+   * when none followed it ({@link deletedUnderPointer}). The deletes stop at the first such read.
    *
    * What the condition does close is another object under the number. In that round trip another erasure of the id can
    * delete the holder, and a load that read the row after both renewals take its number, write and publish: nothing
@@ -737,12 +761,16 @@ async function eraseOnce(
    */
   const deleteFenced = async (
     holders: readonly number[],
-  ): Promise<{ deleted: number[]; moved: ReturnType<typeof rowVerdict> }> => {
+  ): Promise<{ deleted: number[]; moved: ReturnType<typeof rowVerdict>; missing?: number }> => {
     const deleted: number[] = [];
+    const watch = watchDeletes(deps, ref);
     let moved = await fenceInFlight();
     for (const generation of holders) {
       if (moved !== null) break;
-      moved = rowVerdict(await deps.registry.get(ref));
+      const row = await deps.registry.get(ref);
+      const missing = await watch.check(premise, row);
+      if (missing !== undefined) return { deleted, moved: 'superseded', missing };
+      moved = rowVerdict(row);
       if (moved !== null) break;
       try {
         await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
@@ -754,8 +782,22 @@ async function eraseOnce(
         break;
       }
       deleted.push(generation);
+      watch.deleted(generation);
     }
+    // No read follows the last delete, so a rollback onto it would go unseen: one read of the row covers it.
+    const missing = await watch.settle(premise);
+    if (missing !== undefined) return { deleted, moved: 'superseded', missing };
     return { deleted, moved };
+  };
+
+  /**
+   * Note that a delete loop of this call found the row naming `missing`, a generation it deleted. The call raises it in
+   * place of its answer ({@link recordCollect}), after the `segment.collect` event when nothing left in the bucket holds
+   * the id, and with no event when something does, since the erasure did not finish. Not thrown here: a `NotFoundError`
+   * thrown while {@link stage} runs is translated by re-reading the row, which would report this as a race.
+   */
+  const notePointerOnDeleted = (missing: number): void => {
+    seen.missing = pointerOnDeletedError(ref, { kind: 'erasure' }, missing);
   };
 
   /**
@@ -818,9 +860,10 @@ async function eraseOnce(
     // The newest object that was searched and held the id; a sealed one could not be searched.
     const newest = holders.find((generation) => !sealed.has(generation));
 
-    const { deleted, moved } = await deleteFenced(holders);
+    const { deleted, moved, missing } = await deleteFenced(holders);
     const collected = [...deleted].sort((a, b) => a - b);
     const left = await holderLeft(clean);
+    if (missing !== undefined) notePointerOnDeleted(missing);
     if (left === undefined) {
       return newest === undefined ? sealedOnly(none, collected) : collectedAll(newest, collected);
     }
@@ -888,7 +931,9 @@ async function eraseOnce(
    *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}): a rollback that
    *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
    *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
-   *    the object cannot close that one, since the pointer then names the very object this call read.
+   *    the object cannot close that one, since the pointer then names the very object this call read, so the call
+   *    detects it, as collection does, and throws `NotFoundError`: after its `segment.collect` event when nothing left
+   *    in the bucket holds the id, at once when something does.
    *    What the condition does close is another object under the number: in that round trip another erasure can
    *    delete the holder and a load take its number, write and publish. Each delete passes the version of the read
    *    that made the object a holder (`versions`), so a driver that reports `conditionalDelete` refuses it for any
@@ -959,22 +1004,33 @@ async function eraseOnce(
     const fenced = newest === undefined ? [...holdersAbove, ...sealedBelow] : holdersAbove;
     if (newest === undefined && fenced.length === 0) return notMember;
 
-    const collected =
-      newest === undefined ? [] : [...(await gcOrphanGenerations(ref, deps, { keep: 0 }))];
+    const swept =
+      newest === undefined ? { deleted: [] } : await collectBelowPointer(ref, deps, { keep: 0 });
+    const collected = [...swept.deleted];
     let moved: ReturnType<typeof rowVerdict> = null;
-    if (fenced.length > 0) {
+    let missing = swept.missing;
+    // A collection that stopped on a rollback has moved the pointer off `from`, so nothing above it is deleted.
+    if (fenced.length > 0 && missing === undefined) {
       const deleted = await deleteFenced(fenced);
       collected.push(...deleted.deleted);
       moved = deleted.moved;
+      missing = deleted.missing;
     }
 
     const left = await holderLeft(clean);
+    if (missing !== undefined) notePointerOnDeleted(missing);
     if (left === undefined) {
       if (newest !== undefined) return collectedAll(newest, collected);
       return sealedOnly(notMember, collected);
     }
-    if (moved !== null) {
-      return { ...base, erased: false, reason: moved, fromGeneration: newest ?? from, collected };
+    if (moved !== null || missing !== undefined) {
+      return {
+        ...base,
+        erased: false,
+        reason: moved ?? 'superseded',
+        fromGeneration: newest ?? from,
+        collected,
+      };
     }
     throw cannotRemove(left);
   };
@@ -1218,8 +1274,13 @@ async function eraseOnce(
   // a load still in flight. The pointer can still move DOWN onto one of them — an operator's `rollbackSegment`,
   // or a purge-and-recreate (invariant 1) — which is why the collector re-proves the row before every delete
   // rather than trusting the one this call read, and why the receipt below reads what is left rather than
-  // assuming.
-  const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+  // assuming. A rollback that lands between a re-proof and its delete, and that the row still shows when read again, makes
+  // the call throw `NotFoundError`, after the `segment.rewrite` event above: the collection stopped there.
+  const swept = await collectBelowPointer(ref, deps, { keep: 0 });
+  if (swept.missing !== undefined) {
+    throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
+  }
+  const collected = swept.deleted;
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };

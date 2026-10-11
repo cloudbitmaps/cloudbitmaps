@@ -20,6 +20,21 @@
     "each": "$0.0000112",
     "perMillion": "$11.20"
   },
+  "steadyLoad": {
+    "byName": {
+      "requestsText": "2 PUT + 5 GET",
+      "each": "$0.000012",
+      "perMillion": "$12.00"
+    },
+    "listing": {
+      "requestsText": "3 PUT-class + 6 GET",
+      "each": "$0.0000174",
+      "perMillion": "$17.40"
+    },
+    "average": {
+      "perMillion": "$12.34"
+    }
+  },
   "andNot": {
     "gets": 33,
     "getsText": "33 GETs",

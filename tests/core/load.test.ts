@@ -276,9 +276,10 @@ describe('loadSegment — racing writers', () => {
     expect(await idsOf(w.storage, 1)).toEqual([7]);
   });
 
-  it('a refusal after another write changed the row leaves its object, superseded and guarded alike', async () => {
-    // The delete is fenced on the row's token, not its pointer: a retention change moves no pointer and still
-    // makes the number this call holds one it can no longer prove is its own.
+  it('a refusal after another write changed the row deletes its object once its footer proves it its own, superseded and guarded alike', async () => {
+    // The delete by number is fenced on the row's token, not its pointer: a retention change moves no pointer and
+    // still makes the number this call holds one the row no longer proves its own, so one read of the object's footer
+    // proves it instead, and the delete passes the version that read reported.
     for (const [ids, reason] of [
       [[2], 'superseded'],
       [[], 'empty'],
@@ -291,7 +292,7 @@ describe('loadSegment — racing writers', () => {
       const r = await loadSegment(SEG, ids, { ...w.deps, storage: racing });
       expect(r, reason).toMatchObject({ generation: 1, published: false, reason });
       expect((await w.registry.get(SEG))!.currentGen, reason).toBe(0);
-      expect(await generations(w.storage), reason).toEqual([0, 1]);
+      expect(await generations(w.storage), reason).toEqual([0]);
     }
   });
 
@@ -419,11 +420,11 @@ describe('loadSegment — racing writers', () => {
     const r = await loadSegment(SEG, [2], { ...w.deps, storage: racingStorage }, { keep: 0 });
     expect(raced).toBe(true);
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
-    // The object is deliberately NOT deleted here: the row changed under this call, and a generation number
-    // only identifies a generation within one incarnation. It is below the winner's pointer, so ordinary
-    // generation collection takes it — no leak, and no risk of deleting something that is not ours.
+    // The row changed under this call, and a generation number only identifies a generation within one incarnation,
+    // so the object is not deleted by number: one read of its footer proves it this load's own, and the delete passes
+    // the version that read reported. Below the winner's pointer it would otherwise be a rollback target.
     expect((await w.registry.get(SEG))!.currentGen).toBe(9);
-    expect(await generations(w.storage)).toContain(9);
+    expect(await generations(w.storage)).toEqual([0, 9]);
   });
 
   it('refuses, and touches nothing, when the name is re-created underneath it', async () => {
@@ -607,7 +608,7 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
     expect(cond()).toBe(true);
   };
 
-  it('the higher is refused when the lower publishes first: one lands, the refusal is audited, and the next load collects its object', async () => {
+  it('the higher is refused when the lower publishes first: one lands, the refusal is audited, and deletes its object', async () => {
     const { w, audits, lower, higher } = await raced('lower');
     expect([lower.generation, higher.generation]).toEqual([0, 1]);
     expect(lower.published).toBe(true);
@@ -621,11 +622,11 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
     ]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
     expect(await idsOf(w.storage, 0)).toEqual([1]);
-    // The row it met is another load's, so the refusal cannot prove the number its own: its object stays above the
-    // pointer, and the next load's check meets it, numbers past it by a listing, and that listing deletes it.
+    // The row it met is another load's, so the row does not prove the number its own: one read of the object's footer
+    // does, and the refusal deletes it. The next load takes the number afresh.
+    expect(await generations(w.storage)).toEqual([0]);
+    expect(await loadSegment(SEG, [3], w.deps)).toMatchObject({ generation: 1, published: true });
     expect(await generations(w.storage)).toEqual([0, 1]);
-    expect(await loadSegment(SEG, [3], w.deps)).toMatchObject({ generation: 2, published: true });
-    expect(await generations(w.storage)).toEqual([0, 2]);
   });
 
   it('the lower one is superseded when the higher publishes first', async () => {

@@ -11,6 +11,13 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A load can throw `NotFoundError` after its publish landed or after it was refused, and an erasure can report it in
+  place of its answer.** It means a rollback moved the pointer onto a generation the call had just deleted, and the
+  row still named it after the call read it again; a refused load answered with its refusal before. Catch it where you
+  branch on `published`, and check `store.generations(ref)` before acting, as the first entry under Fixed says.
+
 ### Added
 
 - **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
@@ -23,6 +30,35 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
+  Each of these reads the segment's row just before each delete, and a rollback onto the very generation being deleted
+  (one with `allowForward` for a generation above the pointer) could land between that read and the delete, pass its own
+  check and leave the pointer on an object that is gone, with no call saying so: the load answered as it would have, the
+  erasure reported `erased: true`, and a collection either succeeded or threw `WriteConflictError`. Each call now holds
+  every read of the row after a delete to what it deleted, and reads the row once more after its last delete. When the
+  row names one of them with no object under it, the call reads the row again at once and, on the store's clock, after
+  waits of 250, 500 and 1,000 ms, since a rollback whose own check finds the object gone puts the pointer back itself;
+  only when every read still names the missing object does it throw `NotFoundError` naming the generation. A load
+  whose publish landed says it took effect at its generation; a refused load, which answered with its refusal before,
+  now throws and names its refusal, after its `segment.load-refused` event when it answers the refusal rather than its
+  publish raising it; an erasure never answers `erased: true` over it, and sends its `segment.collect` event first when
+  nothing left in the bucket holds the id. This detects; it cannot restore the object. Check `store.generations(ref)`
+  or `checkConsistency()` first, and roll back to a generation still in the bucket only while the pointer names a
+  missing one ([a rollback that races a collection](docs/guide/loading.md#a-rollback-that-races-a-collection)). On a
+  storage driver that ignores a delete's condition, an erasure's delete of a load's object published under a number
+  taken again is reported the same way. The read costs one registry request after a delete loop: a steady load on S3 makes
+  2 PUT-class requests, 5 GET-class and a delete, and averages $12.34 per million single-part loads at the default
+  prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
+  row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
+  `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
+  `materializeMany` call, and 143,993 (137,037 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
+  request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
+  reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
+- **A refused load deletes its own object once another write has changed the segment's row.** A load refused after
+  another writer changed the row kept its object, so a loader that stalled before its write could leave an object below
+  the pointer that a rollback then published, though no load had published it. The refusal now deletes the object once
+  one read of its footer proves it the load's own, passing that read's version, and keeps one the row names, as its
+  pointer, in its kept window or in a lease.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,
