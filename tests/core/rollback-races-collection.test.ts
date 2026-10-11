@@ -217,6 +217,27 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
     await namesMissing(w, 2, [0, 1, 3, 4]);
   });
 
+  it('the first load after a rollback, deleting a generation the rollback moved away from: the same', async () => {
+    const w = world();
+    await loaded(w, 3);
+    await rollbackSegment(REF, 1, w.deps); // the row records no window now
+    const at = gate();
+    // The load publishes 4 over 1 and lists: its window keeps 1, the generation it superseded, and the pass deletes 3,
+    // then 2, then 0.
+    const load = loadSegment(
+      REF,
+      [42],
+      { ...w.deps, storage: stallingDelete(w.storage, 3, at) },
+      { keep: 1 },
+    );
+    await stalledAt(at, load);
+    await rollbackSegment(REF, 3, w.deps);
+    at.open();
+
+    await expect(load).rejects.toSatisfy(pointerOnDeleted(3, /took effect at generation 4/));
+    await namesMissing(w, 3, [0, 1, 2, 4]);
+  });
+
   it("an erasure's collection of a holder below the pointer: NotFoundError after the deletion is audited, not a race", async () => {
     const w = world();
     await loadSegment(REF, [1, 2, 3, X], w.deps, { keep: 9 }); // 0 holds the id

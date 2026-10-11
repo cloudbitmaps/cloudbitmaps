@@ -71,8 +71,8 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
-are not kept: a `load` collects, by default, the generations below its new pointer except the newest one (`keep: 1`),
-taking the ones its publish pushes out of its row's window by name and the rest on every 16th generation; a subject erasure collects every
+are not kept: a `load` collects, by default, the generations below its new pointer except the one it superseded
+(`keep: 1`), taking the ones its publish pushes out of its row's window by name and the rest on every 16th generation; a subject erasure collects every
 one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
 to delete the generation the restored registry names.
 
@@ -761,22 +761,41 @@ current versions.
   object holds it, and collection usually freed the numbers just above the restored pointer, so the first re-runs can
   number *below* the strays and leave them above the pointer; the first load whose number a stray holds numbers
   above every object in the bucket, which puts them all below the pointer. List `store.generations(ref)` and load
-  until the pointer is above the highest stray. Below the pointer, collection counts them within `keep` like any
-  other generation: `keep` counts every generation below the new pointer, strays first, so collection takes
-  all but the newest `keep` of them, and each later load takes one more. Under the default `keep: 1` it keeps the
-  newest stray and collects the rest, the restored generation included. The re-runs that number below the strays
-  are generations below the pointer too, so by the time the pointer passes the strays every number from the restored
-  pointer to the highest stray can be there: if the restored generation must stay a rollback target, pass a `keep` of
-  at least the highest stray minus the restored pointer, plus one, on every re-run until the pointer is above the
-  strays. With the pointer restored to 1 and strays at 4 and 5, that is `keep: 5`; a `keep` of the number of strays
-  plus one, 3, collects generation 1 on the re-run that passes them. Do not hand-publish an
-  object you cannot vouch for. A stray
-  above the pointer is a whole object — every backend commits an object atomically, so a crash never leaves a
-  partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load
-  published after `T`; otherwise it can be a load whose process died between writing and publishing, a load refused
-  or superseded after the row changed, or a load whose publish threw. A `TransientError` from a load whose registry
-  writes were never answered leaves its object for that reason: a write can still land after the load returned, and
-  then points the row at it, so a load never deletes it. A rollback with
+  until the pointer is above the highest stray.
+
+  Below the pointer, collection treats the strays as any generation no load published there. What the load that
+  passes them keeps depends on whether the row records which generations are kept, which it does once a load with a
+  `keep` up to 64 has collected:
+
+  - where it does, that load lists the segment and deletes every generation below its pointer that the row does not
+    name, the strays among them;
+  - where it does not, that load keeps `keep` of what is below its pointer, the generation it superseded first and
+    then the newest by number, strays included, and each later load takes one more.
+
+  The re-runs that number below the strays are generations below the pointer too, so by the time the pointer passes
+  the strays every number from the restored pointer to the highest stray can be there. With generations 0 and 1 from
+  before `T`, the pointer restored to 1, and strays at 4 and 5, re-runs publish 2 and 3, and the next numbers 6, past
+  the strays. Each re-run uses the same `keep`, and the bucket then holds:
+
+  | `keep` | the restored row records a window | the restored row records none |
+  |---|---|---|
+  | `1` | 3, 6 | 3, 6 (the re-run that published 2 recorded one) |
+  | `3` | 1, 2, 3, 6 | 3, 4, 5, 6 |
+  | `5` | 0, 1, 2, 3, 6 | 1, 2, 3, 4, 5, 6 |
+
+  So under the default `keep: 1` the load that passes the strays keeps only the generation it superseded, the last
+  re-run, and collects the rest, the strays and the restored generation included; the restored generation stays only
+  when no re-run numbered below the strays. If it must stay a rollback target, pass a `keep` of at least the highest
+  stray minus the restored pointer, plus one, on every re-run until the pointer is above the strays: `keep: 5` here,
+  which keeps generation 1 either way. A `keep` of the number of strays plus one, 3, keeps it only where the row
+  records a window.
+
+  Do not hand-publish an object you cannot vouch for. A stray above the pointer is a whole object — every backend
+  commits an object atomically, so a crash never leaves a partial one — but the bucket cannot tell you whether it was
+  ever current. After a restore it is usually a load published after `T`; otherwise it can be a load whose process died
+  between writing and publishing, a load refused or superseded after the row changed, or a load whose publish threw. A
+  `TransientError` from a load whose registry writes were never answered leaves its object for that reason: a write can
+  still land after the load returned, and then points the row at it, so a load never deletes it. A rollback with
   `allowForward: true` will point at it if asked: on an encrypted segment, only from a store whose keystore opens the
   segment's key, and only when the object opens under it.
 
