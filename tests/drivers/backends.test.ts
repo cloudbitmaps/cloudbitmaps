@@ -8,7 +8,8 @@ import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
 
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SameKeys } from '../helpers/types';
@@ -515,12 +516,17 @@ describe('a backend refuses settings it can never honour, when it is built', () 
 });
 
 describe('the SDK-free backends refuse settings they can never honour, when they are built', () => {
-  it('a LocalFs root that is not a non-empty string, and no directory is made for it', async () => {
-    const before = await readdir(process.cwd());
+  it('a LocalFs root that is not a non-empty string, and nothing is made where an empty root would land', async () => {
+    // An empty root joins to `storage` and `registry` under the working directory: the paths an accepted empty root would write to.
     for (const root of ['', undefined, null, 5, {}]) {
       expect(() => new LocalFsStorage(root as never)).toThrow(ValidationError);
     }
-    expect(await readdir(process.cwd())).toEqual(before);
+    expect(existsSync(join(process.cwd(), 'storage'))).toBe(false);
+    expect(existsSync(join(process.cwd(), 'registry'))).toBe(false);
+  });
+
+  it('names every unknown option, not only the first', () => {
+    expect(() => new MemoryStorage({ a: 1, b: 2 } as never)).toThrow(/`a`, `b`/);
   });
 
   it('a misspelt option, named, on both backends', () => {

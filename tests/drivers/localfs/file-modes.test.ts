@@ -10,14 +10,19 @@ import { LocalFsStorage } from '@/index';
  */
 const posix = process.platform !== 'win32';
 let dir: string;
-let previousUmask: number;
+let previousUmask: number | undefined;
 
-beforeEach(async () => {
-  previousUmask = process.umask(0o022);
+beforeEach(async (ctx) => {
+  try {
+    previousUmask = process.umask(0o022);
+  } catch {
+    ctx.skip('process.umask cannot be set where this test runs (worker threads)');
+    return;
+  }
   dir = await mkdtemp(join(tmpdir(), 'cbm-modes-'));
 });
 afterEach(async () => {
-  process.umask(previousUmask);
+  if (previousUmask !== undefined) process.umask(previousUmask);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -50,8 +55,11 @@ describe.skipIf(!posix)('LocalFs creates what it stores owner-only, whatever the
     const root = join(dir, 'a', 'b', 'root');
     const backend = new LocalFsStorage(root);
     await backend.registry.create({ segment: 's' }, { currentGen: 0 });
-    expect((await stat(join(dir, 'a'))).mode & 0o777).toBe(0o755);
-    expect((await stat(join(dir, 'a', 'b'))).mode & 0o777).toBe(0o755);
+    // What a plain mkdir gives under the umask this test set.
+    await mkdir(join(dir, 'plain'));
+    const plain = (await stat(join(dir, 'plain'))).mode & 0o777;
+    expect((await stat(join(dir, 'a'))).mode & 0o777).toBe(plain);
+    expect((await stat(join(dir, 'a', 'b'))).mode & 0o777).toBe(plain);
     expect((await stat(root)).mode & 0o777).toBe(0o700);
   });
 
