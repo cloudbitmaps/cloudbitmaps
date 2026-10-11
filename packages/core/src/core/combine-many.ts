@@ -19,7 +19,6 @@
  * from them. Every output chunk is built from decoded chunks and handed on, and the write path run-optimizes it, so an
  * output is byte for byte what the same ids would load.
  */
-import { MAX_REMAINDER, U32_MAX } from './bit-route';
 import { refuseAbsent } from './absent-operands';
 import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
@@ -44,6 +43,8 @@ import { residentBound, residentBytes, ResidentLedger, serializedBound } from '.
 import { mapWithConcurrency } from './concurrency';
 import { yieldEvery } from './cooperative';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
+import { assertIdBound, cutToWindow, isEdge, keysWithin, windowOf } from './id-window';
+import type { IdWindow } from './id-window';
 import type { Clock } from './determinism';
 import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
 import type { Budget } from './budget';
@@ -370,15 +371,8 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   integerIn(request.maxBufferedBytes, 1, Number.MAX_SAFE_INTEGER, 'maxBufferedBytes');
   integerIn(request.publishConcurrency, 1, MAX_BATCH_PARALLELISM, 'publishConcurrency');
   integerIn(request.concurrency, 1, MAX_BATCH_PARALLELISM, 'concurrency');
-  for (const [name, bound] of [
-    ['after', request.after],
-    ['through', request.through],
-  ] as const) {
-    // An `after` or `through` is an id: the refusal says what is wrong, never the value.
-    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
-    }
-  }
+  assertIdBound('after', request.after);
+  assertIdBound('through', request.through);
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
   const feed =
@@ -473,57 +467,6 @@ function subtractedList(node: ExprNode): number[] {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-
-/** The window a range cuts: inclusive id bounds as chunk keys and remainders, as a combine's range is. */
-interface IdWindow {
-  readonly loKey: number;
-  readonly loRem: number;
-  readonly hiKey: number;
-  readonly hiRem: number;
-}
-
-function windowOf(
-  after: number | undefined,
-  through: number | undefined,
-): IdWindow | 'empty' | null {
-  if (after === undefined && through === undefined) return null;
-  const lo = after === undefined ? 0 : after + 1;
-  const hi = through ?? U32_MAX;
-  if (lo > hi) return 'empty';
-  return {
-    loKey: Math.floor(lo / 0x1_0000),
-    loRem: lo % 0x1_0000,
-    hiKey: Math.floor(hi / 0x1_0000),
-    hiRem: hi % 0x1_0000,
-  };
-}
-
-const isEdge = (key: number, w: IdWindow): boolean =>
-  (key === w.loKey && w.loRem > 0) || (key === w.hiKey && w.hiRem < MAX_REMAINDER);
-
-function firstAbove(sorted: Uint32Array, x: number): number {
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (sorted[mid]! <= x) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-/** An edge chunk cut to the window, as a new bitmap. */
-function cutToWindow(
-  codec: CodecInterface,
-  chunk: CodecBitmap,
-  key: number,
-  w: IdWindow,
-): CodecBitmap {
-  const from = key === w.loKey ? w.loRem : 0;
-  const to = key === w.hiKey ? w.hiRem : MAX_REMAINDER;
-  const rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
-  return codec.fromValues(rem.subarray(firstAbove(rem, from - 1), firstAbove(rem, to)));
-}
 
 /** A first-in first-out limit on how many things run at once. */
 class Gate {
@@ -865,7 +808,7 @@ class Run<R> {
   }
 
   async execute(): Promise<CombineManyRun<R>> {
-    this.window = windowOf(this.req.after, this.req.through);
+    this.window = windowOf(this.req);
     if (this.checkedFeed !== undefined) this.feed = this.openFeed(this.checkedFeed);
     await this.readIndexes();
     await this.refuseAbsentOperands();
@@ -973,7 +916,7 @@ class Run<R> {
       const op = this.operands[index]!;
       try {
         const listed = checkedChunkKeys(await this.source.listChunkKeys(op.spec.ref));
-        const keys = w === null ? listed : within(listed, w);
+        const keys = w === null ? listed : keysWithin(listed, w);
         const cards = await this.source.cardinalities?.(op.spec.ref);
         const card = new Uint32Array(keys.length);
         let serialized = 0;
@@ -1912,11 +1855,6 @@ function hasKey(keys: Uint16Array | undefined, key: number): boolean {
     else hi = mid;
   }
   return lo < keys.length && keys[lo] === key;
-}
-
-/** The ascending `keys` inside the window's chunk span. */
-function within(keys: readonly number[], w: IdWindow): number[] {
-  return keys.filter((k) => k >= w.loKey && k <= w.hiKey);
 }
 
 /**

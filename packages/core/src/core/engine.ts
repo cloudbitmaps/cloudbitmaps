@@ -8,7 +8,7 @@
  * one generation. Storage-agnostic and time/random-free (the determinism seam): all I/O is via the injected
  * source; the cache carries its own `Clock`.
  */
-import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-route';
+import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
@@ -24,6 +24,18 @@ import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
+import {
+  cutToWindow,
+  edgeIds,
+  firstAbove,
+  isEdge,
+  keysAbove,
+  keysWithin,
+  remaindersWithin,
+  WHOLE_ID_SPACE,
+  windowOf,
+} from './id-window';
+import type { IdWindow } from './id-window';
 import { InvalidationScope } from './invalidation-scope';
 import type { OpenRead } from './invalidation-scope';
 import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
@@ -257,90 +269,6 @@ interface StreamedChunks {
   invalidated: boolean;
 }
 
-/** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
-interface IdWindow {
-  readonly loKey: number;
-  readonly loRem: number;
-  readonly hiKey: number;
-  readonly hiRem: number;
-}
-
-/**
- * Validate a read's range. `null` when none was asked for, so the read does no extra work; `'empty'` when no id can
- * be in it.
- */
-function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
-  const after = range?.after;
-  const through = range?.through;
-  if (after === undefined && through === undefined) return null;
-  for (const [name, bound] of [
-    ['after', after],
-    ['through', through],
-  ] as const) {
-    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
-    }
-  }
-  const lo = after === undefined ? 0 : after + 1;
-  const hi = through ?? U32_MAX;
-  if (lo > hi) return 'empty';
-  return {
-    loKey: Math.floor(lo / CHUNK_COUNT),
-    loRem: lo % CHUNK_COUNT,
-    hiKey: Math.floor(hi / CHUNK_COUNT),
-    hiRem: hi % CHUNK_COUNT,
-  };
-}
-
-/** The window a range with neither bound set describes: every id. */
-const WHOLE_ID_SPACE: IdWindow = {
-  loKey: 0,
-  loRem: 0,
-  hiKey: CHUNK_COUNT - 1,
-  hiRem: MAX_REMAINDER,
-};
-
-/**
- * Whether the range cuts inside `chunkKey`: one of its two edge chunks, and only where the bound falls inside the
- * chunk rather than on its boundary. A chunk the range covers whole is yielded by the plain loop.
- */
-const isEdge = (chunkKey: number, w: IdWindow): boolean =>
-  (chunkKey === w.loKey && w.loRem > 0) || (chunkKey === w.hiKey && w.hiRem < MAX_REMAINDER);
-
-/** The ids of an edge chunk that lie inside the window. The chunk iterates ascending, so it stops at the top. */
-function* edgeIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow): Generator<number> {
-  const from = chunkKey === w.loKey ? w.loRem : 0;
-  const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
-  for (const remainder of chunk) {
-    if (remainder > to) return;
-    if (remainder >= from) yield joinId(chunkKey, remainder);
-  }
-}
-
-/** The ascending `keys` inside the window's chunk span: two binary searches, no scan. */
-function keysWithin(keys: readonly number[], w: IdWindow): number[] {
-  const firstAtLeast = (key: number): number => {
-    let lo = 0;
-    let hi = keys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (keys[mid]! < key) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
-  return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
-}
-
-/**
- * The ascending `keys` inside the window's chunk span (every key, for `null`) and above the key `after`: what a read
- * that plans again after taking `after` still reads.
- */
-function keysAbove(keys: readonly number[], w: IdWindow | null, after: number): number[] {
-  const span = w ?? WHOLE_ID_SPACE;
-  return keysWithin(keys, after < span.loKey ? span : { ...span, loKey: after + 1, loRem: 0 });
-}
-
 /** One chunk of a combine's result: the bitmap of its remainders, owned by whoever reads it. */
 export interface CombinedChunk {
   readonly chunkKey: number;
@@ -446,27 +374,13 @@ class CombineWindow {
 function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uint32Array {
   let rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
   if (w !== null && isEdge(chunkKey, w)) {
-    const from = chunkKey === w.loKey ? w.loRem : 0;
-    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
     // A copy, not a view: a batch owns exactly its ids, and does not pin the whole chunk's buffer.
-    rem = rem.slice(firstAbove(rem, from - 1), firstAbove(rem, to));
+    rem = remaindersWithin(rem, chunkKey, w).slice();
   }
   // Not `<<`: a key of 32768 or more would wrap negative. A remainder is masked as `joinId` masks it.
   const base = chunkKey * CHUNK_COUNT;
   for (let i = 0; i < rem.length; i++) rem[i] = base + (rem[i]! & MAX_REMAINDER);
   return rem;
-}
-
-/** The index of the first element of ascending `a` greater than `value`: a binary search. */
-function firstAbove(a: Uint32Array, value: number): number {
-  let lo = 0;
-  let hi = a.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (a[mid]! <= value) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
 }
 
 /**
@@ -927,7 +841,8 @@ export class SegmentEngine {
     const epoch = this.scope.epoch;
     const w = windowOf(range);
     if (w === 'empty') return;
-    const { loKey, loRem, hiKey, hiRem } = w ?? WHOLE_ID_SPACE;
+    const span = w ?? WHOLE_ID_SPACE;
+    const { loKey, loRem, hiKey, hiRem } = span;
     if (this.storage.cardinalities === undefined) {
       throw new UnsupportedError('everyNth needs a storage source that reports per-chunk counts');
     }
@@ -935,7 +850,7 @@ export class SegmentEngine {
     if (counts === null) return;
     const keys = keysWithin(
       [...counts.keys()].sort((a, b) => a - b),
-      { loKey, loRem, hiKey, hiRem },
+      span,
     );
     for (const k of keys) {
       assertChunkKeyInRange(k);
@@ -1419,21 +1334,13 @@ export class SegmentEngine {
         if (!slot.result || slot.result.isEmpty) continue;
         const bitmap =
           w !== null && isEdge(slot.key, w)
-            ? this.cutToWindow(slot.result, slot.key, w)
+            ? cutToWindow(this.codec, slot.result, slot.key, w)
             : slot.result;
         if (!bitmap.isEmpty) yield { chunkKey: slot.key, bitmap };
       }
     } finally {
       this.closeCombine(run.plan);
     }
-  }
-
-  /** An edge chunk's bitmap cut to the window, as a new bitmap: the remainders `edgeIds` would yield. */
-  private cutToWindow(chunk: CodecBitmap, chunkKey: number, w: IdWindow): CodecBitmap {
-    const from = chunkKey === w.loKey ? w.loRem : 0;
-    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
-    const rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
-    return this.codec.fromValues(rem.subarray(firstAbove(rem, from - 1), firstAbove(rem, to)));
   }
 
   /**
