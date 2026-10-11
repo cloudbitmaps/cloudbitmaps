@@ -288,12 +288,12 @@ an id in a chunk it did not hold when the combine began is subtracted from there
   range reads more or fewer in tens of thousands. A move costs the listing (from the index of the generation the read moved to: a tail read when the store has not
   opened it yet) and the ranges the earlier streams had in flight, which are requested again. The keys left are looked
   up in the chunk cache again, so the `cache` metric counts them twice.
-- **What bounds it.** A read plans again at most once for each key it takes, and its keys only rise, so it always
-  finishes: a segment that keeps growing while the read runs keeps it reading to the segment's last chunk, or until
-  the budget refuses it. The ranges a move requests again are not charged to the budget, so across moves the chunk
-  reads it is charged are no bound on its requests. Measured on the in-memory backend: a read of a segment this store
-  loaded again after every chunk the read took, 2,000 loads each adding a chunk past its end, finished with the exact
-  answer, and each move cost it one range request, one tail read and one row read.
+- **What bounds it.** A read plans again at most once for each key it takes, and its keys only rise. A move this
+  store makes of a segment while the read is listing that segment's keys makes it list them again, once for each such
+  move, at a row read and a tail read the budget does not count. So once the segment stops moving, the read finishes:
+  a segment that keeps growing while it runs keeps it reading to the segment's last chunk, or until the budget refuses
+  it. The ranges a move requests again are not charged to the budget either, so across moves the chunk reads a read is
+  charged are no bound on its requests: each move costs it a range request, a tail read and a row read more.
 - **The budget.** The per-op budget is charged again when a read lists its keys again: the chunk reads it has already
   taken and those the new listing will make. A segment that grows past the budget while a read runs makes the read
   throw `BudgetExceededError` at that key.
