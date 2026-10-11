@@ -83,6 +83,7 @@ import {
 import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingBucket,
   isNoSuchUpload,
   isNotFound,
   spanFromContentRange,
@@ -531,7 +532,8 @@ export class S3StorageDriver implements IStorageDriver {
    * read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
+    const scrubbed = asMissingBucket(scrubCredentials(err), this.bucket);
+    return toTransient(scrubbed, isTransient, transientFaultMessage);
   }
 }
 

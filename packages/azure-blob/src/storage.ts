@@ -59,6 +59,7 @@ import type { ContainerClient } from '@azure/storage-blob';
 import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingContainer,
   isNotFound,
   isPreconditionFailed,
   isTransient,
@@ -378,7 +379,11 @@ export class AzureBlobStorageDriver implements IStorageDriver {
    * retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    return toTransient(err, isTransient, transientFaultMessage);
+    return toTransient(
+      asMissingContainer(err, this.container.containerName),
+      isTransient,
+      transientFaultMessage,
+    );
   }
 }
 

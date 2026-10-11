@@ -60,6 +60,7 @@ import { once } from 'node:events';
 import type { Storage } from '@google-cloud/storage';
 import { BucketPresence } from './bucket-presence';
 import {
+  asMissingBucket,
   isInvalidRange,
   isNotFound,
   isPreconditionFailed,
@@ -508,7 +509,8 @@ export class GcsStorageDriver implements IStorageDriver {
    * in transit arrive typed, and anything else (a checksum mismatch, a credentials failure) as the SDK raised it.
    */
   private mapError(err: unknown): unknown {
-    return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
+    const scrubbed = asMissingBucket(scrubCredentials(err), this.bucket);
+    return toTransient(scrubbed, isTransient, transientFaultMessage);
   }
 }
 

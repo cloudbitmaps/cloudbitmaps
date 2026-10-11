@@ -728,9 +728,9 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 - Keys keep every name apart: one segment in two namespaces, two names an encoding could fold into one (`a/b` and
   `a_b`, `a:b` and `a%3Ab`), and a name that extends another (`s` and `s.1`) are separate objects, each listed and
   deleted alone. Generations are listed and deleted by number, never by a prefix of one (`1` is not `10`).
-- A bucket or container that does not exist fails with an error that is neither `NotFoundError` nor a
-  `TransientError`. Read as the first, it answers every read as an empty segment; as the second, it is retried for
-  nothing.
+- A bucket or container that does not exist fails with a `ValidationError` that names it and carries the service's
+  error as its `cause`, never a `NotFoundError` or a `TransientError`. Read as the first, it answers every read as an
+  empty segment, and a read re-resolves on it as on a miss it can heal; as the second, it is retried for nothing.
 - A missing object makes `getRange` and `getTail` throw `NotFoundError`, never an empty or short result. Heal-forward,
   the erasure's holder probe and verify, and a pin's replaced-object check branch on it. A zero-length `getRange` may answer empty without
   reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
@@ -769,7 +769,7 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
 reads are strongly consistent; a row is keyed by its namespace and segment together, so one segment name in two
 namespaces is two rows; `list` yields every existing row, `destroyed` tombstones included, with every field, however many
 pages the service splits the listing into; a bucket or container that does not exist fails a read, a listing and a
-write with an error that is neither `NotFoundError` nor a `TransientError`, never a `null` read;
+write with a `ValidationError` (never a `NotFoundError` or a `TransientError`), never a `null` read;
 the replay rule above applies to `create` and `compareAndSwap`, which a driver never sends again on a throttle. The
 store's publish reads the row after one that ended without an answer and recognises its own landed write by its
 effect; when the row is unchanged it sends a **fresh** compare-and-swap from the version it read (at most three, after a
@@ -981,7 +981,7 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 
 | Error | Fires when | What to do | Retry? |
 |---|---|---|---|
-| `ValidationError` | your input is malformed — a bad id, an illegal segment name, an out-of-range option. Raised **before any storage call** | fix the call | no — deterministic |
+| `ValidationError` | your input is malformed — a bad id, an illegal segment name, an out-of-range option; or a bucket or container that does not exist, which every cloud driver reports with it, naming the bucket and keeping the service's error as its `cause`. Raised **before any storage call**, except for the missing bucket | fix the call (for a missing bucket: the name, and the region, endpoint, project or account of the client) | no — deterministic |
 | `WriteConflictError` | a write-once generation number was claimed twice, a registry compare-and-swap lost every retry, or generation collection found the segment re-created underneath it (the name now belongs to a different segment) | re-read the pointer and re-derive: re-run the operation (a load takes a fresh generation number) | no — but the *operation* is safe to re-run |
 | `IntegrityError` | bytes from storage are corrupt, oversized, fail a checksum, or fail AEAD authentication; or a registry row is not one the library wrote — not valid JSON, an envelope or record field it does not declare, no `schemaVersion`, a `status` other than `active` or `destroyed`, a token or a `pointerId` in no form a shipped registry writes (or a `pointerId` of another incarnation than the row's token, or written after it), a summary without the fingerprint of its object, or a segment or namespace other than the one whose key or file it sits under (a row copied to another name) | **investigate** — this says "this data is corrupt", not "try again". It names the chunk, or the row's key. Re-loading the segment from source repairs a generation. A bad row fails its own `get` **and every `list()` that reaches it** — its namespace's, and every unscoped one — so it stops `segments()`, the sweeps, the subject scans and `checkConsistency` across the fleet until the object is restored to a valid row or deleted | no |
 | `NotFoundError` | an object or row the caller named does not exist. Every backend, the in-memory one included, throws it for a generation object that is not there; a registry `get` of a missing row returns `null` instead. A read also throws it for an object under the generation's number that is another object than the row's summary names: it is refused as a missing one is, and not served | usually the library handles it internally (a swept generation, or a number taken again, heals forward). Reaching you means the pointer names an object that is *permanently* absent, or one the row does not name — a torn restore. `checkConsistency({ summaries: true })` finds both. See [disaster recovery](disaster-recovery.md). A load, an erasure or a collection also raises it when another writer, a rollback as a rule, moved the pointer onto a generation the call had just deleted, and the row still named it, with no object under it, when the call read it again after a wait: the message names the generation. Check `store.generations(ref)` or `checkConsistency()` first: a rollback that found its target gone puts the pointer back itself, and only while the pointer still names a missing object is a rollback to a generation still in the bucket the fix ([a rollback that races a collection](loading.md#a-rollback-that-races-a-collection)) | no |

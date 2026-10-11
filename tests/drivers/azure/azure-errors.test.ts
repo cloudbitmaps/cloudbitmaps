@@ -1,6 +1,8 @@
+import { isValidationError } from '@/core/errors';
 import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingContainer,
   isMissingContainer,
   isNotFound,
   isPreconditionFailed,
@@ -66,6 +68,16 @@ describe('Azure error classification', () => {
     expect(isTransient(noContainer)).toBe(false);
     expect(isMissingContainer(detailsErr('BlobNotFound'))).toBe(false);
     expect(isTransient(statusErr(404))).toBe(false);
+  });
+
+  it('a missing container becomes a ValidationError that names it and keeps the service error as its cause', () => {
+    const noContainer = { statusCode: 404, code: 'ContainerNotFound' };
+    const err = asMissingContainer(noContainer, 'my-container') as Error;
+    expect(isValidationError(err)).toBe(true);
+    expect(err.message).toMatch(/^the Azure container does not exist: my-container; check /);
+    expect(err.cause).toBe(noContainer);
+    const noBlob = codeErr('BlobNotFound');
+    expect(asMissingContainer(noBlob, 'my-container')).toBe(noBlob);
   });
 
   it('416 = out-of-range (never a transient)', () => {

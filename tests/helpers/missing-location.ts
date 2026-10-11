@@ -1,8 +1,9 @@
-import { CloudRoaring, isNotFoundError, isTransientError } from '@/index';
+import { CloudRoaring, isNotFoundError, isTransientError, isValidationError } from '@/index';
 import type { StorageBackend } from '@cloudbitmaps/core';
 
 /**
- * What a backend whose bucket or container does not exist must do: fail each call with an error that is neither an
+ * What a backend whose bucket or container does not exist must do: fail each call with a `ValidationError` (a wiring
+ * fault) that names the location, says what to check and carries the service's error as its `cause`. It is neither an
  * absent row (`null`), an absent object (`NotFoundError`) nor a fault worth retrying (`TransientError`). Read as an
  * absence, a misnamed or deleted bucket would answer every read as an empty segment.
  */
@@ -22,6 +23,12 @@ function notAbsent(err: unknown): void {
   expect(err).toBeInstanceOf(Error);
   expect(isNotFoundError(err)).toBe(false);
   expect(isTransientError(err)).toBe(false);
+  expect(isValidationError(err)).toBe(true);
+  const { message, cause } = err as Error;
+  expect(message).toMatch(/bucket|container/);
+  expect(message).toMatch(/does not exist: \S+; check /);
+  expect(message).not.toContain('stand-in'); // the stubs' credentials
+  expect(cause).toBeInstanceOf(Error);
 }
 
 /** `backend()` builds a fresh backend over the missing location each time it is called. */

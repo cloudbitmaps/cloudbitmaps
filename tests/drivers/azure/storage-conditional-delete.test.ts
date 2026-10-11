@@ -231,6 +231,8 @@ describe('AzureBlobStorageDriver: a delete given ifVersion, on by default', () =
         (e: unknown) => e,
       );
     expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(ValidationError); // a wiring fault, with the service's error as its cause
+    expect((err as Error).cause).toBeDefined();
     expect(err).not.toBeInstanceOf(NotFoundError);
     expect(err).not.toBeInstanceOf(TransientError);
     expect(err).not.toBeInstanceOf(WriteConflictError);

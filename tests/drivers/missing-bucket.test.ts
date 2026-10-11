@@ -139,7 +139,7 @@ const SERVICES: Service[] = [
     backend: (url) =>
       new AzureBlobStorage({
         containerClient: new ContainerClient(
-          `${url}/missing`,
+          `${url}/account/missing`,
           new StorageSharedKeyCredential(
             'stand-in',
             Buffer.from('stand-in-key').toString('base64'),

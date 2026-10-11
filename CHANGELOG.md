@@ -47,6 +47,14 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A bucket or container that does not exist is a `ValidationError` on every cloud driver.** The S3 and Azure Blob
+  drivers let the service's own error through, and the GCS driver threw a plain `Error`; all three now throw a
+  `ValidationError` that names the bucket or container and says what to check, with the service's error as its
+  `cause`. It is not a `NotFoundError`, which a read answers by looking again. Branch on `isValidationError`, not on
+  the SDK's `NoSuchBucket` or `ContainerNotFound`.
+- **An Azure Blob storage read whose body connection closes early is a `TransientError`.** The registry already read a
+  body cut off part-way that way; a generation read now does too, instead of throwing the stream's own
+  `ERR_STREAM_PREMATURE_CLOSE`.
 - **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
   tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
   before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number

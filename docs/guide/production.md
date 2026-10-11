@@ -45,12 +45,14 @@ four; a custom role needs `storage.objects.create`, `storage.objects.get`, `stor
 `Storage Blob Data Contributor` role on the container covers all of them. A connection string carries the account
 key, which grants far more: prefer a `containerClient` built from a managed identity.
 
-**A bucket or container that does not exist** fails every call with an error, never reads as an empty store: a
-misspelt or deleted bucket cannot answer `has` with `false` and `count` with `0`. S3 raises its own `NoSuchBucket`
-and Azure Blob its own `ContainerNotFound`. GCS answers a missing bucket and a missing object with the same `404`, so
+**A bucket or container that does not exist** fails every call with a `ValidationError`, never reads as an empty store: a
+misspelt or deleted bucket cannot answer `has` with `false` and `count` with `0`. The error names the bucket or
+container and says what to check (the name, and the region, endpoint, project or account the client is built for), and
+carries the service's own error (`NoSuchBucket`, `ContainerNotFound`) as its `cause`. It is not a `NotFoundError`, which
+a read answers by looking again, and a wiring fault does not heal. GCS answers a missing bucket and a missing object with the same `404`, so
 the first time a GCS request answers `404` the driver lists one object in the bucket, which only a missing bucket can
 answer with `404`, and remembers the bucket once it has seen it: one listing per driver for the life of the process.
-A missing bucket then fails with `the GCS bucket does not exist: <bucket>`. An identity without
+A missing bucket then fails with `the GCS bucket does not exist: <bucket>; check ...`. An identity without
 `storage.objects.list` is refused that listing, which says nothing about the bucket: for it, a `404` reads as a
 missing object unless GCS's message says the bucket does not exist. A bucket deleted after the driver has seen it
 reads as empty for the rest of the process, while every write to it fails.

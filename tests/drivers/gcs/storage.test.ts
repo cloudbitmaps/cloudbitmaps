@@ -1,7 +1,12 @@
 import { PassThrough, Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
+import {
+  TransientError,
+  ValidationError,
+  WriteConflictError,
+  isValidationError,
+} from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 
 // Construction-level checks need no network (the client is never called), so they run on the normal lane.
@@ -243,7 +248,10 @@ describe('GcsStorageDriver — what a delete costs', () => {
 
   it('a 404 in a bucket that does not exist fails the delete', async () => {
     const { driver } = bucketWith(notFound, notFound);
-    await expect(driver.delete(gen)).rejects.toThrow('the GCS bucket does not exist: b');
+    const err = await driver.delete(gen).catch((e: unknown) => e);
+    expect(isValidationError(err)).toBe(true);
+    expect((err as Error).message).toMatch(/^the GCS bucket does not exist: b; check /);
+    expect((err as Error).cause).toBeDefined();
   });
 
   it('a listing the identity may not make says nothing about the bucket: the 404 is an absent object', async () => {

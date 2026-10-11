@@ -47,6 +47,7 @@ import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-k
 import type { BlobDownloadResponseParsed, ContainerClient } from '@azure/storage-blob';
 import {
   isConditionalConflict,
+  asMissingContainer,
   isNotFound,
   isPreconditionFailed,
   isTransient,
@@ -105,12 +106,12 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         if (err instanceof RangeError) {
           throw new IntegrityError(`registry read carries no usable ETag or length: ${key}`);
         }
-        throw mapError(err);
+        throw mapError(err, this.container.containerName);
       }
       try {
         return await readRow(res, key, new URL(blob.url).host, abortSignal);
       } catch (err) {
-        throw isIntegrityError(err) ? err : mapError(err);
+        throw isIntegrityError(err) ? err : mapError(err, this.container.containerName);
       }
     });
   }
@@ -133,7 +134,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       if (expect !== 'absent' && isNotFound(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
-      if (!isConditionalConflict(err)) throw mapError(err);
+      if (!isConditionalConflict(err)) throw mapError(err, this.container.containerName);
       // The client's retry policy may have sent this write again after a lost response, and the replay meets the
       // row it just wrote. The row carries this write's id when that is what happened. The read-back is not
       // definitive: a writer that swapped in over ours before it shows its own id, and ours reports a conflict.
@@ -141,7 +142,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       try {
         stored = await storedWriteId(blob);
       } catch (readErr) {
-        throw mapError(readErr);
+        throw mapError(readErr, this.container.containerName);
       }
       if (stored === writeId) return;
       throw new WriteConflictError(`registry OCC conflict for ${key}`);
@@ -161,7 +162,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       if (isPreconditionFailed(err) || isNotFound(err)) {
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.container.containerName);
     }
   }
 
@@ -172,7 +173,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         yield item.name;
       }
     } catch (err) {
-      throw mapError(err);
+      throw mapError(err, this.container.containerName);
     }
   }
 }
@@ -238,8 +239,8 @@ async function readRow(
 }
 
 /** Reclassify a transient Azure fault as a retryable {@link TransientError}; pass everything else through. */
-function mapError(err: unknown): unknown {
-  return toTransient(err, isTransient, transientFaultMessage);
+function mapError(err: unknown, container: string): unknown {
+  return toTransient(asMissingContainer(err, container), isTransient, transientFaultMessage);
 }
 
 export class AzureBlobRegistryDriver extends ObjectStoreRegistry {
