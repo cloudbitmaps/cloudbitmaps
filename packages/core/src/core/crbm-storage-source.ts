@@ -444,15 +444,6 @@ function describe(reader: CrbmReader): GenerationDescription {
   return { cardinality: reader.count(), metadata: reader.metadata };
 }
 
-/**
- * A memoized per-segment snapshot, on one resolution of the segment, whose TTL is the snapshot's. A live snapshot is a
- * resolved target, and a reader that is opened only when a read needs one: one resolution serves a `count` answered
- * from the row and a `has` that follows it, which reads the generation the count saw. The reader opens whatever object
- * is under that generation's key when it opens, which is another object than the row named if the number has been
- * taken again since the row was read; it is held to the object the row's summary names where there is one
- * ({@link CrbmStorageChunkSource.openLive}), and its version names the object it opened ({@link versionOfReader}), so
- * nothing cached from the earlier object answers for it. A pinned snapshot is its reader alone.
- */
 /** Runs one storage request, and may run it again if it fails. */
 type Retry = <R>(request: () => Promise<R>) => Promise<R>;
 
@@ -474,6 +465,15 @@ function validateRead(ref: SegmentRef, keys: readonly number[]): void {
   validateChunkKeyOrder(keys);
 }
 
+/**
+ * A memoized per-segment snapshot, on one resolution of the segment, whose TTL is the snapshot's. A live snapshot is a
+ * resolved target, and a reader that is opened only when a read needs one: one resolution serves a `count` answered
+ * from the row and a `has` that follows it, which reads the generation the count saw. The reader opens whatever object
+ * is under that generation's key when it opens, which is another object than the row named if the number has been
+ * taken again since the row was read; it is held to the object the row's summary names where there is one
+ * ({@link CrbmStorageChunkSource.openLive}), and its version names the object it opened ({@link versionOfReader}), so
+ * nothing cached from the earlier object answers for it. A pinned snapshot is its reader alone.
+ */
 class Snapshot {
   /** Set by the cache, to hear of a reader as it is opened. */
   onReader: ((reader: Promise<CrbmReader | null>) => void) | undefined;
@@ -1873,7 +1873,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // generation swept from under the snapshot, and one whose object was replaced under the same number.
         // Anything else propagates at once, and so does a second miss with no chunk in between.
         if (healed) throw err;
-        if (!(await this.healable(ref, at.pending, err, retry))) throw err;
+        if (!(await this.healable(ref, () => at.pending, err, retry))) throw err;
         // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
         // window does not open beside them.
         await chunks?.settled();
@@ -2019,7 +2019,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         if (attempt === 1) throw err;
         // A fault that is neither a miss nor corruption (a keystore's, say) is not asked about again: reading the
         // snapshot's reader here would call the keystore a second time.
-        if (!(await this.healable(ref, snap.reader, err))) throw err;
+        if (!(await this.healable(ref, () => snap.reader, err))) throw err;
         this.dropStale(segmentKey(ref), snap);
       }
     }
@@ -2112,7 +2112,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
         // (corruption, a real second miss) propagates.
         if (attempt === 1) throw err;
-        if (!(await this.healable(ref, at.pending, err, retry))) throw err;
+        if (!(await this.healable(ref, () => at.pending, err, retry))) throw err;
         this.dropStale(segmentKey(ref), at.snap); // lazily: the happy path never needs the key
       }
     }
@@ -2152,11 +2152,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   private async healable(
     ref: SegmentRef,
-    pending: Promise<CrbmReader | null>,
+    pending: () => Promise<CrbmReader | null>,
     err: unknown,
     retry?: Retry,
   ): Promise<boolean> {
-    return isNotFoundError(err) || (await this.replacedUnder(ref, pending, err, retry));
+    if (isNotFoundError(err)) return true;
+    // `pending` is asked for only here: a snapshot opens its reader when it is first read, so a fault that is neither
+    // a miss nor corruption (a keystore's, say) must not read it, which would call the keystore again.
+    if (!(isIntegrityError(err) || isValidationError(err))) return false;
+    return this.replacedUnder(ref, pending(), err, retry);
   }
 
   /** The options a chunk stream is read with: the caller's tuning, its retry for each range, and this source's clock. */
