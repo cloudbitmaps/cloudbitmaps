@@ -177,8 +177,14 @@ The erasure is immediate in storage, and immediate in the store that performed i
 returns: that store drops what it had cached about the segment before returning, so it cannot keep answering from
 memory. A read of that store already in progress moves to the rewritten generation, but what it had already taken is the old
 generation's, so it can still yield the id from it: up to 32 chunks for `iterate` and `count`, and up to `concurrency` + 1
-keys (33 by default) for a combine, the key it is handing out and the `concurrency` keys it had already requested. A
-combine or `iterate` reads each operand's chunks as ranges of the object, and
+keys (33 by default) for a combine. That is the bound: the chunk or key a read is handing out and what it had already
+requested, which a `count` that reads chunks (on a source of your own with no index) reaches. A running `iterate` or
+combine stops sooner: the erasure invalidates the segment, so before the next key it takes the read looks at its
+segments, finds the rewritten generation, lists its chunk keys again from it and drops what it had requested, and so
+yields the id only from the chunk or key it is handing out ([a running read plans its keys
+again](reading.md#a-running-read-plans-its-keys-again-after-a-move)). On a source of your own that names neither a
+version nor a generation it cannot tell, and can reach the bound. A combine or `iterate` reads each operand's chunks as
+ranges of the object, and
 resolves the segment again before it serves each chunk, one held in its cache included, as a read of that chunk alone
 does, so the ranges it had already
 requested are dropped when the erasure has landed, not served ([a long call can describe two

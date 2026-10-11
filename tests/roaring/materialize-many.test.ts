@@ -202,6 +202,33 @@ describe('store.materializeMany', () => {
     expect(run.stats.operands.a!.pinned).toBe(false);
   });
 
+  it('with pin: false the call reads the chunk keys each index listed when it began, not a key a load adds', async () => {
+    const C = 65_536;
+    const before = [1, C + 1, 2 * C + 1];
+    const added = 5 * C + 1;
+    const w = await batchWorld({ a: before });
+    let loaded = false;
+    w.hooks.beforeRange = async (segment) => {
+      if (segment !== 'a' || loaded) return;
+      loaded = true; // this store's own load, so the call's live read of `a` moves at its next chunk
+      await w.load('a', [...before, added], w.store);
+    };
+    const run = await w.store.materializeMany({
+      operands: { a: w.store.segment('a') },
+      outputs: [{ dest: w.store.segment('d'), expr: 'a' }],
+      keep: 1,
+      pin: false,
+    });
+    published(run.outputs[0]);
+    expect(loaded).toBe(true);
+    expect(run.stats.operands.a).toMatchObject({
+      startGeneration: 0,
+      endGeneration: 1,
+      moved: true,
+    });
+    expect(await w.ids('d')).toEqual(before);
+  });
+
   it('a lease released mid-pass fails only the outputs that read the operand', async () => {
     const w = await batchWorld(DATA);
     const s = (n: string) => w.store.segment(n);

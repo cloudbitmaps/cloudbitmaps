@@ -126,8 +126,10 @@ no read of the object. Only the current entry has them: the other generations ar
 ## How soon a reader sees a new load
 
 **A reader sees a new generation within `cache.genTtlMs`, 2000 ms by default.** After a load publishes, a reader may
-serve the previous generation for up to that long, then switches. No restart is needed. This is the one place the
-bound is stated; other pages link here.
+serve the previous generation for up to that long, then switches. No restart is needed. A read already running switches
+too: an `iterate` or a combine reads the chunk keys of the new generation from the key it has reached, a chunk the
+new generation added included ([a running read plans its keys again](#a-running-read-plans-its-keys-again-after-a-move)).
+This is the one place the bound is stated; other pages link here.
 
 - **Fresher reads:** lower `cache.genTtlMs`. It costs more registry reads.
 - **Fewer registry reads:** raise it, and accept a little more staleness.
@@ -208,7 +210,9 @@ a read of one chunk would, so a range it had already requested of the earlier ge
 taken: up to `concurrency` + 1 keys per operand (33 by default) for a combine, the key it is handing out and the
 `concurrency` keys it had already requested, on a source that reads ranges or chunk by chunk; up to 32 chunks for
 `iterate`, the one it is handing out included; and up to 32 chunk keys for `count` where it reads chunks. Its answer then describes two
-instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
+instants. An `iterate` or a combine also lists the chunk keys of the generation it moved to and reads on from there, so
+it reads a chunk that generation added ([a running read plans its keys
+again](#a-running-read-plans-its-keys-again-after-a-move)). A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
 encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
 `readerMaxBytes`: one reader per streamed operand, for as long as the read runs. A read its caller drops without
 ending it (a stream pulled with `next()` and then let go, with no `break` or `return()`) is held by nothing in the
@@ -251,6 +255,44 @@ What the check does not cover:
 - **A pin reads the object it pinned**, by that object's fingerprint, which `pinAt` takes from its caller: a pin is held
   to its own object, not to the row. A live `pin()` holds a reader it shares with an earlier pin to the row's summary
   first.
+
+### A running read plans its keys again after a move
+
+A read lists its segments' chunk keys before its first fetch: `iterate` its segment's, a combine each operand's, and the
+keys a combine reads are the ones its includes share (any include's, for a union). When the read meets a move of one
+of its segments, it lists that generation's keys again and goes on from there: it reads a chunk the new generation
+added, and does not ask for one it dropped (whose ids it would not yield anyway, since the new generation holds none of
+them). A segment that grows while an `iterate` or a combine runs is read to its new end, and an opt-out list that gains
+an id in a chunk it did not hold when the combine began is subtracted from there on.
+
+- **What it meets a move by.** A chunk it is served that comes from another generation than the one it listed its keys
+  under: a chunk of its stream, which names the generation it was read from, or a chunk of the chunk cache that is no
+  longer the segment's. Before the first key it takes after an invalidation in its store (this store's `load`,
+  `rollback`, `eraseSubject`, `*Into`, `dropSegment`, `retireExpired` or `invalidate()`, for any segment), it looks at
+  its segments' generations. A combine with an `exclude`, or a union, also looks every `concurrency` keys (32 by
+  default), since the keys it has left may never read the operand that moved: an exclude whose keys the survivors do
+  not reach, or an include of a union past its last key.
+- **What it does then.** It looks at its segments' generations, and where one is no longer the one its keys were
+  listed under, it lists every segment's keys again, above the key it last took and inside its range, and reads on
+  from there through new streams. What the earlier listing had requested and not yet handed out is dropped, not
+  served. So a move this store makes (an invalidation) is met before the next key, and the read serves nothing more of
+  the earlier generation than the chunk or key it is handing out.
+- **What it costs.** Nothing on a read during which nothing moves, beyond a number compared at each key, and for a
+  combine with an `exclude` or a union a look at each operand's generation every `concurrency` keys: the lookup a read
+  of one cached chunk makes, which costs no request while the store holds the segment's resolution, and past
+  `cache.genTtlMs` the pointer read a refresh makes, once per `cache.genTtlMs` for an operand the read no longer reads.
+  A move costs the listing (from the index of the generation the read moved to: a tail read when the store has not
+  opened it yet) and the ranges the earlier streams had in flight, which are requested again. The keys left are looked
+  up in the chunk cache again, so the `cache` metric counts them twice.
+- **The budget.** The per-op budget is charged again when a read lists its keys again: the chunk reads it has already
+  taken and those the new listing will make. A segment that grows past the budget while a read runs makes the read
+  throw `BudgetExceededError` at that key.
+- **What does not plan again.** A pinned read is one instant and keeps the keys it listed, and a combine with a pinned
+  operand lists its live operands again and keeps the pin's. `everyNth` places its ranks from one generation's counts,
+  so it reads only through a pin. A `count` that reads chunks, on a source of your own with no index, and a
+  [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany) call with `pin: false` keep the keys they
+  listed. A source of your own that reads chunk by chunk names no generation on a chunk it reads, so there a read meets
+  a move only through a chunk of the chunk cache, an invalidation in its store, or a combine's look.
 
 ## Read one fixed point in time
 
@@ -515,8 +557,9 @@ The range applies to every operand and every `exclude`, and a pinned operand is 
 integer in `0..4294967295`, or the stream throws `ValidationError` when first read. `after >= through` reads nothing,
 so a cursor that reaches the end of its window needs no special case.
 
-**Cost.** The per-op budget is charged once, before the first fetch, for every chunk in the range, so a page with
-`after` alone is charged to the end of the segment however early it stops. It counts chunk reads, which is an upper
+**Cost.** The per-op budget is charged before the first fetch, for every chunk in the range, so a page with
+`after` alone is charged to the end of the segment however early it stops; a read that
+[lists its keys again after a move](#a-running-read-plans-its-keys-again-after-a-move) is charged again. It counts chunk reads, which is an upper
 bound on the requests a read makes: chunks that sit near each other are read in one range request, so the requests are
 fewer. A combine reads each operand as a stream of ranges and fetches ahead: it starts 4 ranges at once (or
 `concurrency`, if that is lower), doubles with each range it takes until the window is `concurrency` wide (32 by

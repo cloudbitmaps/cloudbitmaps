@@ -718,7 +718,9 @@ snapshot. On a cold store a pin makes the row and tail reads the pass would have
 one row read and one tail read per operand more. An operand you pass already pinned is used as it is. A generation collected during the call fails the
 outputs that read it with `NotFoundError`, where a live read would have served a mix, so size `keep` on the operands'
 loaders past the call, or lease the pins. `pin: false` reads each operand live, as a combine does, and can describe two
-generations of one operand, which also breaks the call's pruning. **With `pin: false` the re-check below does not run**: an
+generations of one operand, which also breaks the call's pruning. Unlike a combine, it does not list an operand's chunk
+keys again when the operand moves: it reads the keys each index listed when the call began, so a chunk a load adds to
+an operand during the call is not read. **With `pin: false` the re-check below does not run**: an
 opt-out list can move during the call and the outputs that subtract it are published; `stats.operands` still says, from
 one registry read at the end, that it moved.
 
