@@ -1,4 +1,5 @@
-import { storageObjectFilename, parseGeneration } from '@/drivers/localfs/paths';
+import { storageObjectFilename, storageObjectPath, parseGeneration } from '@/drivers/localfs/paths';
+import { ValidationError } from '@/core/errors';
 
 describe('parseGeneration', () => {
   it('parses the canonical <segment>.<gen>.crbm filename', () => {
@@ -25,5 +26,21 @@ describe('parseGeneration', () => {
     for (const gen of [0, 1, 7, 65_535, 1_000_000]) {
       expect(parseGeneration('seg', storageObjectFilename('seg', gen))).toBe(gen);
     }
+  });
+});
+
+describe('storageObjectPath', () => {
+  it.each([-1, 1.5, 2 ** 53, Number.NaN])('refuses a generation of %s', (generation) => {
+    expect(() => storageObjectPath('/root', { segment: 's', generation })).toThrow(ValidationError);
+    expect(() => storageObjectPath('/root', { segment: 's', generation })).toThrow(
+      `generation must be an integer of at least 0; got ${generation}`,
+    );
+  });
+
+  it('takes generation 0 and the largest safe integer', () => {
+    expect(storageObjectPath('/root', { segment: 's', generation: 0 })).toContain('s.0.crbm');
+    expect(
+      storageObjectPath('/root', { segment: 's', generation: Number.MAX_SAFE_INTEGER }),
+    ).toContain(`s.${Number.MAX_SAFE_INTEGER}.crbm`);
   });
 });

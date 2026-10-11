@@ -1,0 +1,106 @@
+/**
+ * Number checks shared by every option and argument the core validates, so a bad number is refused by one rule and
+ * worded one way: `<what> must be <a range>; got <the value>`. Each throws `ValidationError` and returns the value it
+ * accepted, so a call can wrap the expression that produced it. Pure: no I/O, time or globals.
+ *
+ * A `note` is a short clause set after the range (`must be an integer of at least 0 (required); got undefined`), for
+ * what the range alone does not say.
+ *
+ * ```
+ * requireInteger(1.5, { min: 1, max: 8, what: 'concurrency' })
+ *   -> ValidationError: concurrency must be an integer from 1 to 8; got 1.5
+ * requirePositiveInteger('3', 'limit')
+ *   -> ValidationError: limit must be an integer of at least 1; got "3"
+ * requireFiniteNumber(Infinity, { min: 0, what: 'tombstoneGraceMs' })
+ *   -> ValidationError: tombstoneGraceMs must be a finite number of at least 0; got Infinity
+ * ```
+ *
+ * Integers are safe integers: 2^53 and above are refused, whatever the bounds say.
+ */
+import { ValidationError } from './errors';
+
+/**
+ * A value as a message shows it: a number or boolean as itself, a bigint with an `n` (so `5n` is not mistaken for
+ * `5`), a string quoted (so `'200'` is not mistaken for `200`), and anything else by its type.
+ */
+function shown(value: unknown): string {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return value === null ? 'null' : typeof value;
+}
+
+/**
+ * `from <min> to <max>`, `of at least <min>` or `of at most <max>`, or nothing when neither bound is set, then the
+ * `note` in parentheses when there is one.
+ */
+function rangeOf(
+  min: number | undefined,
+  max: number | undefined,
+  note: string | undefined,
+): string {
+  let range = '';
+  if (min !== undefined && max !== undefined) range = ` from ${min} to ${max}`;
+  else if (min !== undefined) range = ` of at least ${min}`;
+  else if (max !== undefined) range = ` of at most ${max}`;
+  return note === undefined ? range : `${range} (${note})`;
+}
+
+/**
+ * `value` if it is a safe integer from `min` to `max` (inclusive; `max` defaults to the largest safe integer), else a
+ * `ValidationError` naming `what`: `<what> must be an integer from <min> to <max>; got <value>`.
+ */
+export function requireInteger(
+  value: unknown,
+  bounds: {
+    readonly min: number;
+    readonly max?: number;
+    readonly what: string;
+    readonly note?: string;
+  },
+): number {
+  const { min, max, what, note } = bounds;
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < min ||
+    (max !== undefined && value > max)
+  ) {
+    throw new ValidationError(
+      `${what} must be an integer${rangeOf(min, max, note)}; got ${shown(value)}`,
+    );
+  }
+  return value;
+}
+
+/** `value` if it is a safe integer of 1 or more, else a `ValidationError` naming `what`. */
+export function requirePositiveInteger(value: unknown, what: string): number {
+  return requireInteger(value, { min: 1, what });
+}
+
+/**
+ * `value` if it is a finite number within the optional `min` and `max` (inclusive), else a `ValidationError` naming
+ * `what`: `<what> must be a finite number from <min> to <max>; got <value>`. `NaN` and the infinities are refused.
+ */
+export function requireFiniteNumber(
+  value: unknown,
+  bounds: {
+    readonly min?: number;
+    readonly max?: number;
+    readonly what: string;
+    readonly note?: string;
+  },
+): number {
+  const { min, max, what, note } = bounds;
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    (min !== undefined && value < min) ||
+    (max !== undefined && value > max)
+  ) {
+    throw new ValidationError(
+      `${what} must be a finite number${rangeOf(min, max, note)}; got ${shown(value)}`,
+    );
+  }
+  return value;
+}

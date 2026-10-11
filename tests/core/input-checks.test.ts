@@ -109,6 +109,20 @@ describe('an export batch size and format', () => {
       ).rejects.toBeInstanceOf(ValidationError);
     }
   });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
+    'names ndjsonBatchBytes and the value %s',
+    async (value) => {
+      await expect(
+        store().exportSegments(
+          { open: () => ({ write() {}, close() {} }) } as unknown as ExportSink,
+          { format: 'ndjson', ndjsonBatchBytes: value },
+        ),
+      ).rejects.toThrow(
+        `runExport: ndjsonBatchBytes must be an integer of at least 1; got ${value}`,
+      );
+    },
+  );
 });
 
 describe('a cache-hit rate is a fraction', () => {

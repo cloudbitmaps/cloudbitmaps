@@ -205,7 +205,7 @@ describe('S3Storage maxSockets, on the client it builds', () => {
     (value) => {
       const build = () => new S3Storage({ bucket: 'b', maxSockets: value });
       expect(build).toThrow(ValidationError);
-      expect(build).toThrow(/maxSockets must be a positive safe integer; got /);
+      expect(build).toThrow(/maxSockets must be an integer of at least 1; got /);
     },
   );
 

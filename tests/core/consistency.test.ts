@@ -111,7 +111,7 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await expect(runConsistencyCheck({ storage, registry }, { concurrency: 0 })).rejects.toThrow(
-      /concurrency/,
+      'concurrency must be an integer of at least 1; got 0',
     );
   });
 });

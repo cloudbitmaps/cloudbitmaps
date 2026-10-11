@@ -34,6 +34,7 @@ import type {
   StorageDeleteOptions,
   TailRead,
 } from '@/core/ports';
+import { requireInteger } from '@/core/check';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { ExactCase } from './exact-case';
 import {
@@ -159,9 +160,8 @@ export class LocalFsStorageDriver implements IStorageDriver {
   }
 
   async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
-    if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
-      throw new ValidationError(`invalid range offset=${offset} length=${length}`);
-    }
+    requireInteger(offset, { min: 0, what: 'range offset' });
+    requireInteger(length, { min: 0, what: 'range length' });
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();

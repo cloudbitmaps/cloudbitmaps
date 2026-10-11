@@ -53,6 +53,23 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The numbers the core and the store's admin calls check are refused by one rule and worded one way.** An integer is a
+  safe integer, so a whole number of 2^53 or more is refused wherever one is taken (a `retireExpired` `limit` of `1e300`
+  is refused, and so is an admin `concurrency` of `2 ** 53`), and the refusal is a `ValidationError` reading `<name> must
+  be an integer of at least 1; got <value>`, `an integer from 1 to 1024` where there is an upper bound, or `a finite
+  number of at least 0` for a fraction. The value shown is the one refused: a number or boolean as itself, a bigint with
+  an `n`, a string quoted, and anything else by its type. The size options of the cloud backends read `partBytes must be
+  an integer of at least 1; got 0`, and `requirePositiveInt` from `@cloudbitmaps/core/driver-kit` words its refusal the
+  same way and takes the same values. These keep their own rule and wording: `guard.maxGrowth`, `cache.ttlMs` and
+  `cache.readerMaxBytes` (each must be above 0), the timestamps `leaseUntil` and `retention.expiresAt`, the id bounds
+  `after` and `through` (whose refusal never shows the value), `pinAt`, `BufferReader.getRange` and the cloud drivers'
+  `getRange`. Newly refused: a fractional `maxScanSegments` (for `retireExpired`, `checkConsistency` and
+  `eraseNamespace`), a `getRange` offset or length of 2^53 or more on the in-process and local-filesystem drivers, and a
+  generation number of 2^53 or more in a storage key.
+- **The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.** `retry: {
+  maxAttempts: 2.5 }` and `retry: { baseDelayMs: 500, maxDelayMs: 100 }` throw `ValidationError` when the store is
+  built, as the other fields of the policy do. A `maxDelayMs` you leave out is 2000 ms, or `baseDelayMs` when that is
+  larger, so `retry: { baseDelayMs: 5000 }` alone is accepted and caps each delay at 5000 ms. A `maxDelayMs` given alone must be at least the `baseDelayMs` default of 50 ms.
 - **An Azure Blob generation read whose body connection closes early is a `TransientError`,** as a registry read of a
   row cut off part-way is.
 - **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty

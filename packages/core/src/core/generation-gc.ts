@@ -13,10 +13,10 @@
  * publish pushed out of that window ({@link deleteEvicted}). Pure orchestration over the driver ports — no I/O, time or
  * randomness of its own.
  */
+import { requireInteger } from './check';
 import {
   IntegrityError,
   NotFoundError,
-  ValidationError,
   WriteConflictError,
   isNotFoundError,
   isWriteConflictError,
@@ -412,9 +412,7 @@ async function listingPass(
   const quiet = options.quiet === true;
   // Refused, not clamped: `NaN` slices nothing off the end and would collect the whole grace window, and a
   // negative count that clamps to 0 collects it too, for a caller who wrote a typo.
-  if (!Number.isInteger(keep) || keep < 0) {
-    throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
-  }
+  requireInteger(keep, { min: 0, what: 'keep' });
   const record = await deps.registry.get(ref);
   if (record === null) return { deleted: [], kept: [], complete: true }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;

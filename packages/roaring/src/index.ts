@@ -68,7 +68,7 @@ import {
   splitId,
   takeLease,
 } from '@cloudbitmaps/core';
-import { pointerIdOf, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import { pointerIdOf, requirePositiveInt, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
 import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
@@ -154,9 +154,7 @@ function rowVersionOfLive(version: string | null): string | null {
 
 /** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
 function validateConcurrency(concurrency: number | undefined): void {
-  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
-    throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
-  }
+  requirePositiveInt('concurrency', concurrency);
 }
 
 /**
@@ -424,7 +422,7 @@ export interface CloudRoaringOptions {
    * lands and then loses its response would, replayed blindly, report its own write as a conflict. A write is
    * retried only where that is safe: a load's registry write that gets no answer is settled by reading the row,
    * and a throttled write-once object is sent again by the S3 and GCS drivers. Pass a partial policy to tune it — anything you leave out keeps its
-   * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
+   * default, except an omitted `maxDelayMs`, which is `baseDelayMs` when that is larger than 2000 ms — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
    * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
    * layer.
@@ -542,7 +540,8 @@ export interface EncryptionOptions {
  * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
  *
  * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its
- * {@link DEFAULT_RETRY_POLICY} value.
+ * {@link DEFAULT_RETRY_POLICY} value, except that an omitted `maxDelayMs` is the `baseDelayMs` when that is larger
+ * than the default cap.
  */
 export interface RetryOptions extends Partial<RetryPolicy> {
   /**
@@ -1251,10 +1250,17 @@ export class CloudRoaring {
       if (userOnRetry !== undefined && typeof userOnRetry !== 'function') {
         throw new ValidationError('retry.onRetry must be a function');
       }
+      // An omitted `maxDelayMs` is the default cap, or the `baseDelayMs` given when that is larger, so tuning only the
+      // base delay never leaves a cap below it. A `maxDelayMs` given below the `baseDelayMs` is refused.
+      const baseDelayMs = ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs;
       const policy: RetryPolicy = {
         maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
-        baseDelayMs: ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs,
-        maxDelayMs: ov.maxDelayMs ?? DEFAULT_RETRY_POLICY.maxDelayMs,
+        baseDelayMs,
+        maxDelayMs:
+          ov.maxDelayMs ??
+          (typeof baseDelayMs === 'number' && baseDelayMs > DEFAULT_RETRY_POLICY.maxDelayMs
+            ? baseDelayMs
+            : DEFAULT_RETRY_POLICY.maxDelayMs),
         backoffFactor: ov.backoffFactor ?? DEFAULT_RETRY_POLICY.backoffFactor,
         jitter: ov.jitter ?? DEFAULT_RETRY_POLICY.jitter,
       };

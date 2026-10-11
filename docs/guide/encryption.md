@@ -108,7 +108,7 @@ crypto-shreds an encrypted segment and deletes its objects.
   row, and `'already'` for a tombstone.
 - **`eraseNamespace` returns one `DestroyResult` per segment** and records per-segment faults instead of throwing:
   `reason: 'contended'` or `` `failed: ...` ``, with `destroyed: false`, means the segment still holds data. Inspect
-  them. A `maxScanSegments` that is not a finite number of at least 1 throws `ValidationError`.
+  them. A `maxScanSegments` that is not a whole number of at least 1 throws `ValidationError`.
 - **`eraseNamespace` shreds eight segments at a time.** Each segment still has its own read and compare-and-swap, and
   a fault in one is recorded against it and stops no other. `destroyed` is in the listing's order, whichever segment
   finishes first; the `segment.erase` events are emitted as each segment finishes, so their order is not the

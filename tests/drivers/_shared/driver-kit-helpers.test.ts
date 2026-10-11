@@ -91,17 +91,17 @@ describe('requirePositiveInt', () => {
     ]) {
       expect(() => requirePositiveInt('partBytes', bad), String(bad)).toThrow(ValidationError);
       expect(() => requirePositiveInt('partBytes', bad)).toThrow(
-        /^partBytes must be a positive safe integer; got /,
+        /^partBytes must be an integer of at least 1; got /,
       );
     }
   });
 
   it('quotes a string, so a "200" is not mistaken for a 200', () => {
     expect(() => requirePositiveInt('maxSockets', '200')).toThrow(
-      'maxSockets must be a positive safe integer; got "200"',
+      'maxSockets must be an integer of at least 1; got "200"',
     );
     expect(() => requirePositiveInt('maxSockets', -2)).toThrow(
-      'maxSockets must be a positive safe integer; got -2',
+      'maxSockets must be an integer of at least 1; got -2',
     );
   });
 });

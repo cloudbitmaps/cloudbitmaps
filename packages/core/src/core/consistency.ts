@@ -17,6 +17,7 @@
  * to confirm a reported tear.
  */
 
+import { requirePositiveInteger } from './check';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
 import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
@@ -191,10 +192,8 @@ export async function runConsistencyCheck(
     throw new ValidationError(`summaries must be a boolean; got ${String(options.summaries)}`);
   }
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
-  if (!Number.isInteger(concurrency) || concurrency < 1) {
-    // Fail fast before the (possibly huge) registry scan, not after.
-    throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
-  }
+  // Fail fast before the (possibly huge) registry scan, not after.
+  requirePositiveInteger(concurrency, 'concurrency');
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
   // Bounded enumeration, shared with the retention sweep — see `registry-scan.ts` for why a fleet-wide scan is
   // drained rather than streamed, and why the ceiling is not optional.

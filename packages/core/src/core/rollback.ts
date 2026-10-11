@@ -16,6 +16,7 @@
  * one is a human overriding the ordering rule the rest of the system relies on, which is exactly the event an
  * Art. 30 record or an incident review wants to find.
  */
+import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { openRollbackTarget, provesOwnObject } from './crbm-storage-source';
@@ -205,11 +206,7 @@ export async function rollbackSegment(
 ): Promise<RollbackResult> {
   validateUserRef(ref);
   checkedAuditSink(options.audit, 'rollback');
-  if (!Number.isInteger(toGeneration) || toGeneration < 0) {
-    throw new ValidationError(
-      `rollback: generation must be a non-negative integer; got ${String(toGeneration)}`,
-    );
-  }
+  requireInteger(toGeneration, { min: 0, what: 'rollback: generation' });
 
   const record = await deps.registry.get(ref);
   if (record === null) {
