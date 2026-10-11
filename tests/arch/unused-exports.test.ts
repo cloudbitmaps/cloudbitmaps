@@ -22,11 +22,10 @@ import ts from 'typescript';
  * allowance follows the snapshot.
  *
  * What it reads, and what it does not. It matches by NAME, not by resolved file, so a name imported from one module
- * counts as used for a same-named export in another: that can hide an unused export, never invent one. A
- * non-entry module's re-export counts as a use of the name, so a name that is re-exported but imported from
- * nowhere is not flagged. It does not
- * see a name used only through a dynamic key (`ns[name]`), or a use inside a string or a comment. A name that is
- * used only inside its own file loses its `export` (or is deleted when nothing uses it at all).
+ * counts as used for a same-named export in another: that can hide an unused export, never invent one. A non-entry
+ * module's re-export counts as a use of the name, so a name that is re-exported but imported from nowhere is not
+ * flagged. It does not see a name used only through a dynamic key (`ns[name]`), or a use inside a string or a
+ * comment. A name that is used only inside its own file loses its `export` (or is deleted when nothing uses it at all).
  *
  * Known blind spots. Each makes the gate flag an export that is in use, so it fails loudly rather than passing
  * quietly: a dynamic `import()` (destructured or read by member), `vi.importActual`, the keys of a `vi.mock`
@@ -143,8 +142,8 @@ function usedNames(sf: ts.SourceFile): Set<string> {
 
 /**
  * The exports of `checked` that no other file in `all` takes: `file: name` for each. `entries` are the files whose
- * exports are the public surface; they are read for what they take and never reported. `referenced` holds, per package, the names the
- * public API snapshot records, which count as used in that package.
+ * exports are the public surface; they are read for what they take and never reported. `referenced` holds, per
+ * package, the names the public API snapshot records, which count as used in that package.
  */
 export function unusedExports(
   all: readonly Source[],
@@ -330,9 +329,23 @@ describe('the unused-exports detector fires on a planted unused export and spare
       '@cloudbitmaps/p (referenced) R (value)',
       '@cloudbitmaps/p I.[Symbol.iterator]',
       '@cloudbitmaps/p (referenced) F [/x]',
+      '@cloudbitmaps/p H #2',
+      '@cloudbitmaps/p V (value)',
+      '@cloudbitmaps/p ns.X',
       '@cloudbitmaps/q G',
     ]);
-    expect([...(ref.get('p') ?? [])].sort()).toEqual(['A', 'B', 'C', 'D', 'F', 'I', 'R']);
+    expect([...(ref.get('p') ?? [])].sort()).toEqual([
+      'A',
+      'B',
+      'C',
+      'D',
+      'F',
+      'H',
+      'I',
+      'R',
+      'V',
+      'ns',
+    ]);
     expect([...(ref.get('q') ?? [])]).toEqual(['G']);
   });
 
