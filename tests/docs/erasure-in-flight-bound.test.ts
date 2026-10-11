@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CloudRoaring, MemoryStorage, NotFoundError } from '@/index';
+import type { IStorageDriver, SegmentRef } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import { MAX_RANGES_IN_FLIGHT } from '@/core/crbm/plan-reads';
 import { DEFAULT_INTERSECT_CONCURRENCY } from '@/core/engine';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
  * The privacy note and the erasure guide promise the same bound on what a read already in progress can still yield
@@ -73,4 +77,185 @@ describe('the in-flight bound after an erasure', () => {
       boundsIn('up to `concurrency` + 1 keys per operand (33 by default) for a combine'),
     ).toEqual([]);
   });
+});
+
+/**
+ * The bound holds for a pinned read too. A pin never moves to another generation, so where a live read in progress
+ * moves on, a pinned one, a pinned operand of a combine included, finds out at its next chunk whether its object is
+ * still there, and fails with `NotFoundError` once the erasure has deleted it: what it can still yield after the
+ * erasure is what it had already taken, within the same bound.
+ *
+ * The segment is 200 chunks of one id each, so the whole object is one range, and on a store with a timed refresh its
+ * reader keeps every chunk: a pinned stream that did not look again would serve every remaining chunk, the erased id
+ * among them, from memory.
+ */
+describe('a pinned read in progress after an erasure', () => {
+  const NS = 'ns';
+  const C = 65_536;
+  const CHUNKS = 200;
+  const REF: SegmentRef = { namespace: NS, segment: 's' };
+  const IDS = Array.from({ length: CHUNKS }, (_, c) => c * C + 1);
+  const ERASED = 150 * C + 1;
+
+  /** A driver that counts its reads, and can hold the next range read until it is released. */
+  function gated(inner: IStorageDriver) {
+    let hold: { reached: () => void; gate: Promise<void> } | undefined;
+    const reads = { range: 0, tail: 0 };
+    const storage: IStorageDriver = {
+      capabilities: () => inner.capabilities(),
+      getRange: async (key, offset, length) => {
+        reads.range += 1;
+        const bytes = await inner.getRange(key, offset, length);
+        const h = hold;
+        if (h !== undefined) {
+          hold = undefined;
+          h.reached();
+          await h.gate;
+        }
+        return bytes;
+      },
+      getTail: (key, maxBytes) => {
+        reads.tail += 1;
+        return inner.getTail(key, maxBytes);
+      },
+      putImmutable: (key, write) => inner.putImmutable(key, write),
+      list: (ref) => inner.list(ref),
+      delete: (key, options) => inner.delete(key, options),
+    };
+    const holdNextRange = () => {
+      let reached!: () => void;
+      let release!: () => void;
+      const arrived = new Promise<void>((resolve) => (reached = resolve));
+      hold = { reached, gate: new Promise<void>((resolve) => (release = resolve)) };
+      return { arrived, release };
+    };
+    return { storage, holdNextRange, reads };
+  }
+
+  /** `s` in the erasure's namespace, and a copy of it in another, which the erasure leaves alone. */
+  async function world(genTtlMs: number | undefined) {
+    const backend = new MemoryStorage();
+    const { registry } = backend;
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(
+      backend.storage,
+      { namespace: 'elsewhere', segment: 'o', generation: 0 },
+      IDS,
+      { registry },
+    );
+    const g = gated(backend.storage);
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: g.storage, registry }),
+      ...(genTtlMs === undefined ? {} : { cache: { genTtlMs } }),
+    });
+    return { store, g, seg: store.segment('s', { namespace: NS }) };
+  }
+
+  /** Pull the rest of `it`: the ids it yields, and how it ended. */
+  async function rest(it: AsyncIterator<number>): Promise<{ ids: number[]; error: unknown }> {
+    const ids: number[] = [];
+    try {
+      for (let r = await it.next(); r.done !== true; r = await it.next()) ids.push(r.value);
+    } catch (error) {
+      return { ids, error };
+    }
+    return { ids, error: undefined };
+  }
+
+  const chunksOf = (ids: readonly number[]): number =>
+    new Set(ids.map((id) => Math.floor(id / C))).size;
+
+  const STORES = [
+    ['a store with a timed refresh', undefined],
+    ['a store with no timed refresh', 0],
+  ] as const;
+
+  it.each(STORES)(
+    '%s: a pinned iterate() yields no more than the bound, then fails',
+    async (_name, ttl) => {
+      const { store, seg } = await world(ttl);
+      const pin = await seg.pin();
+      const it = pin.iterate()[Symbol.asyncIterator]();
+      expect((await it.next()).value).toBe(IDS[0]);
+      expect((await store.eraseSubject(ERASED, { namespace: NS })).erasedFrom).toHaveLength(1);
+
+      const after = await rest(it);
+      expect(after.ids).not.toContain(ERASED);
+      expect(chunksOf(after.ids)).toBeLessThanOrEqual(DEFAULT_INTERSECT_CONCURRENCY);
+      expect(after.error).toBeInstanceOf(NotFoundError);
+    },
+  );
+
+  it.each(STORES)(
+    '%s: a combine with a pinned operand yields no more than the bound, then fails',
+    async (_name, ttl) => {
+      const { store, seg } = await world(ttl);
+      const other = store.segment('o', { namespace: 'elsewhere' });
+      const pin = await seg.pin();
+      const it = other.intersect([pin])[Symbol.asyncIterator]();
+      expect((await it.next()).value).toBe(IDS[0]);
+      expect((await store.eraseSubject(ERASED, { namespace: NS })).erasedFrom).toHaveLength(1);
+
+      const after = await rest(it);
+      expect(after.ids).not.toContain(ERASED);
+      expect(chunksOf(after.ids)).toBeLessThanOrEqual(DEFAULT_INTERSECT_CONCURRENCY + 1);
+      expect(after.error).toBeInstanceOf(NotFoundError);
+    },
+  );
+
+  it('a pinned has() in flight meets the erasure before it answers, and fails as the next one does', async () => {
+    const { store, g, seg } = await world(0); // no timed refresh: the reader keeps no chunks, so the read is a request
+    const pin = await seg.pin();
+    const held = g.holdNextRange();
+    const inflight = pin.has(ERASED);
+    await held.arrived;
+    await store.eraseSubject(ERASED, { namespace: NS });
+    held.release();
+    await expect(inflight).rejects.toBeInstanceOf(NotFoundError);
+
+    await expect(pin.has(ERASED)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('a pinned has() whose reader kept every chunk fails after the erasure', async () => {
+    const { store, seg } = await world(undefined);
+    const pin = await seg.pin();
+    expect(await pin.has(ERASED)).toBe(true);
+    await store.eraseSubject(ERASED, { namespace: NS });
+
+    await expect(pin.has(ERASED)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(pin.has(IDS[1]!)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it.each(STORES)(
+    '%s: an invalidation that leaves the object in place lets a pinned read carry on with the ranges it holds',
+    async (_name, ttl) => {
+      const { store, g, seg } = await world(ttl);
+      const pin = await seg.pin();
+      const it = pin.iterate()[Symbol.asyncIterator]();
+      expect((await it.next()).value).toBe(IDS[0]);
+      const ranges = g.reads.range;
+      store.invalidate(REF);
+
+      const after = await rest(it);
+      expect(after.error).toBeUndefined();
+      expect(after.ids).toEqual(IDS.slice(1));
+      expect(g.reads.range).toBe(ranges); // nothing it held is read again
+    },
+  );
+
+  it.each(STORES)(
+    "%s: another segment's invalidation costs a pinned read no request",
+    async (_name, ttl) => {
+      const { store, g, seg } = await world(ttl);
+      const pin = await seg.pin();
+      const it = pin.iterate()[Symbol.asyncIterator]();
+      await it.next();
+      const before = { ...g.reads };
+      store.invalidate({ namespace: NS, segment: 'unrelated' });
+
+      const after = await rest(it);
+      expect(after.ids).toEqual(IDS.slice(1));
+      expect(g.reads).toEqual(before);
+    },
+  );
 });

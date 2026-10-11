@@ -253,6 +253,12 @@ const notThePinned = (ref: SegmentRef, generation: number): NotFoundError =>
     `segment "${ref.segment}" generation ${generation} is no longer the object this handle pinned`,
   );
 
+/** A read of a generation whose registry row has gone or been destroyed while it ran, which it cannot finish. */
+const goneUnder = (ref: SegmentRef, generation: number): NotFoundError =>
+  new NotFoundError(
+    `segment "${ref.segment}" generation ${generation} can no longer be read: its registry row is gone or destroyed`,
+  );
+
 /**
  * What a resolution names: `<generation>`, or `<generation>:<pointerId>` where there is a row. One spelling, for the
  * live lookup and for what a pin holds. It names an object only as of the row read that produced it: a number can be
@@ -1850,6 +1856,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * {@link getChunks} of a specific generation, the pinned shape read. It yields the chunks without a version: the
    * caller that pinned the generation knows it. It never moves to another generation; `held` as for
    * {@link getChunkAt}.
+   *
+   * Before it hands out a chunk after an {@link invalidate}, it looks its generation up as a read of that chunk alone
+   * would. Where the invalidation was of its segment, which forgets the pinned reader, it opens the object again, and
+   * fails as that read would, with `NotFoundError` once the object is gone or replaced, or its row is gone or
+   * destroyed. An object still there is the one it was reading, since an object is immutable and the open is held to
+   * the pin, so the stream carries on with the ranges it holds. Another segment's invalidation finds the pin's reader
+   * where it was, with no request (unless the reader cache has let it go meanwhile, when it is opened again as any read
+   * of the pin would open it), and with no invalidation since it last looked the check is a compare.
    */
   async *getChunksAt(
     ref: SegmentRef,
@@ -1864,6 +1878,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const retry = options?.retry;
     const open = (): Promise<CrbmReader | null> =>
       this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    let epoch = this.invalidations;
     const reader = await (retry === undefined ? open() : retry(open));
     if (reader === null) {
       for (const key of keys) yield { key, bytes: null };
@@ -1888,7 +1903,16 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         }),
       );
       try {
-        while (await pull.advance()) yield pull.take((chunk) => chunk);
+        while (await pull.advance()) {
+          if (this.invalidations !== epoch) {
+            // Looked up as a read of the generation would be: from the reader cache, where another segment's
+            // invalidation leaves the pin's reader, at no cost, and opened again where this segment's forgot it.
+            epoch = this.invalidations;
+            if ((await (retry === undefined ? open() : retry(open))) === null)
+              throw goneUnder(ref, generation);
+          }
+          yield pull.take((chunk) => chunk);
+        }
       } finally {
         await pull.close();
       }

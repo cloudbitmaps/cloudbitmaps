@@ -1,6 +1,7 @@
 import { MemoryStorage, CloudRoaring, NotFoundError } from '@/index';
 import type { IStorageDriver, Segment, SegmentRef } from '@/index';
 import { brandAsBackend } from '@/core/ports';
+import { setSegmentRetention } from '@/core/retention';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
@@ -15,7 +16,9 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  * the `Segment.pin` doc).
  *
  * Each case holds the pinned read on a gate after its range request has read the bytes, runs the verb, then lets the
- * read finish. What the held read itself answers is the instant it began in, and is not what these check.
+ * read finish. The held read meets the invalidation before it hands its chunk out, so it looks its pin up again: it
+ * answers from the pinned object where the verb left it in place, and fails with `NotFoundError` where the verb deleted
+ * it, as the pin's next read does.
  */
 const NS = 'ns';
 const REF: SegmentRef = { namespace: NS, segment: 's' };
@@ -91,10 +94,7 @@ async function world(extra: ReadonlyArray<readonly number[]> = []) {
   return { backend, gated, store, seg };
 }
 
-/** Pull every id, so the read finishes and every chunk it delivered has been offered to the cache. */
-async function drain(it: AsyncIterator<number>): Promise<void> {
-  for (let r = await it.next(); r.done !== true; r = await it.next());
-}
+const PAST = Date.parse('2020-01-01T00:00:00Z');
 
 describe('an invalidation reaches a pinned read in flight', () => {
   it('control: with no read in flight, an erasure leaves a pin failing, not answering from memory', async () => {
@@ -119,7 +119,7 @@ describe('an invalidation reaches a pinned read in flight', () => {
     expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
     expect(await seg.has(ERASED)).toBe(false);
     held.release();
-    await inflight;
+    await expect(inflight).rejects.toBeInstanceOf(NotFoundError);
 
     await expect(pin.has(ERASED)).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -135,8 +135,7 @@ describe('an invalidation reaches a pinned read in flight', () => {
     const ledger = await store.eraseSubject(HIGH, { namespace: NS });
     expect(ledger.erasedFrom[0]).toMatchObject({ erased: true });
     held.release();
-    expect((await first).value).toBe(1);
-    await drain(it);
+    await expect(first).rejects.toBeInstanceOf(NotFoundError);
 
     await expect(pin.has(HIGH)).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -158,63 +157,102 @@ describe('an invalidation reaches a pinned read in flight', () => {
     await held.reached;
     await store.eraseSubject(ERASED, { namespace: NS });
     held.release();
-    await first;
-    await drain(it);
+    await expect(first).rejects.toBeInstanceOf(NotFoundError);
 
     await expect(pin.has(ERASED)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   /**
-   * Each verb that invalidates the segment, with a pinned `has()` held in flight across it. `expect` is what the next
-   * pinned read does: read the pinned object again (it is still there), or fail because it is gone. Either way it is
-   * not answered from memory: a read that answers must have reached storage.
+   * Each path that invalidates the segment, with a pinned `has()` held in flight across it. `expect` is what the held
+   * read and the next pinned read do: read the pinned object again (it is still there), or fail because it is gone.
+   * Either way the next read is not answered from memory: one that answers must have reached storage.
    */
+  type World = Awaited<ReturnType<typeof world>>;
   const VERBS: ReadonlyArray<{
     name: string;
     /** Generations loaded above `IDS` before the pin is taken: the pin holds the newest. */
     extra?: ReadonlyArray<readonly number[]>;
-    run(store: CloudRoaring): Promise<unknown>;
+    /** Runs before the pin is taken. */
+    prepare?(w: World): Promise<unknown>;
+    run(w: World): Promise<unknown>;
     expect: 'reads again' | 'NotFoundError';
   }> = [
     {
       name: 'invalidate',
-      run: (store) => Promise.resolve(store.invalidate(REF)),
+      run: ({ store }) => Promise.resolve(store.invalidate(REF)),
       expect: 'reads again',
     },
     {
       name: 'load, with keep: 0',
-      run: (store) => store.load(REF, [1, 2, 3], { keep: 0 }),
+      run: ({ store }) => store.load(REF, [1, 2, 3], { keep: 0 }),
       expect: 'NotFoundError',
     },
     {
       name: 'load, keeping the pinned generation',
-      run: (store) => store.load(REF, [1, 2, 3]),
+      run: ({ store }) => store.load(REF, [1, 2, 3]),
       expect: 'reads again',
     },
     {
       name: 'rollback',
       extra: [IDS],
-      run: (store) => store.rollback(REF, 0),
+      run: ({ store }) => store.rollback(REF, 0),
       expect: 'reads again',
     },
     {
       name: 'dropSegment',
-      run: (store) => store.dropSegment(REF, { confirmSegment: 's' }),
+      run: ({ store }) => store.dropSegment(REF, { confirmSegment: 's' }),
       expect: 'NotFoundError',
+    },
+    {
+      name: 'retireExpired',
+      prepare: ({ backend }) =>
+        setSegmentRetention(REF, { registry: backend.registry }, { expiresAt: PAST }),
+      run: ({ store }) => store.retireExpired({ now: PAST + 1 }),
+      expect: 'NotFoundError',
+    },
+    {
+      name: 'an intersectInto the segment',
+      prepare: ({ backend }) =>
+        bulkLoadCrbmGeneration(
+          backend.storage,
+          { namespace: NS, segment: 'src', generation: 0 },
+          [1, 2],
+          { registry: backend.registry },
+        ),
+      run: ({ store, seg }) => store.segment('src', { namespace: NS }).intersectInto(seg, []),
+      expect: 'reads again',
+    },
+    {
+      name: "subjectReport, finding the row moved under the store's view",
+      // A live read first, so the store holds a view of generation 0 for the report to find out of date.
+      prepare: ({ seg }) => seg.has(1),
+      run: async ({ backend, store }) => {
+        await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 1 }, [1, 2, 3], {
+          registry: backend.registry,
+        });
+        await store.subjectReport(1, { namespace: NS });
+      },
+      expect: 'reads again',
     },
   ];
 
   for (const verb of VERBS) {
     it(`${verb.name}: the next pinned read is not answered from memory`, async () => {
-      const { gated, store, seg } = await world(verb.extra);
+      const w = await world(verb.extra);
+      const { gated, seg } = w;
+      await verb.prepare?.(w);
       const pin: Segment = await seg.pin();
 
       const held = gated.holdNextRange('s');
       const inflight = pin.has(ERASED);
       await held.reached;
-      await verb.run(store);
+      await verb.run(w);
       held.release();
-      expect(await inflight).toBe(true);
+      if (verb.expect === 'NotFoundError') {
+        await expect(inflight).rejects.toBeInstanceOf(NotFoundError);
+      } else {
+        expect(await inflight).toBe(true);
+      }
 
       const before = gated.reads();
       if (verb.expect === 'NotFoundError') {

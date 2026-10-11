@@ -182,7 +182,9 @@ combine or `iterate` reads each operand's chunks as ranges of the object, and
 resolves the segment again before it serves each chunk, one held in its cache included, as a read of that chunk alone
 does, so the ranges it had already
 requested are dropped when the erasure has landed, not served ([a long call can describe two
-instants](reading.md#how-soon-a-reader-sees-a-new-load)). Every other store is a different
+instants](reading.md#how-soon-a-reader-sees-a-new-load)). A pinned read in progress does not move to the rewritten
+generation: before its next chunk it opens its object again, and fails with `NotFoundError` once the erasure has
+deleted it, so it yields no more than that bound either. Every other store is a different
 question, in this process or another. This library ships nothing that could answer it for you: there is no daemon,
 no bus, and no connection between two stores that happen to point at the same bucket.
 
