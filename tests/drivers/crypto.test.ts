@@ -208,3 +208,26 @@ describe('InProcessKeystore (envelope BYOK)', () => {
     ).rejects.toBeInstanceOf(IntegrityError);
   });
 });
+
+describe('key material is held in buffers of its own', () => {
+  // `Buffer.from` of a small key is a view on a slab of Node's shared pool (8 KiB on Node 22, 64 KiB on recent Node 24): held for as long as an open reader holds its
+  // key, it pins the whole slab, which no cache weight counts, and keeps key bytes in a pool shared with other data.
+  const own = (held: unknown): number => (held as Uint8Array).buffer.byteLength;
+
+  it('a NodeAead key is exactly 32 bytes of memory', () => {
+    expect(own((new NodeAead(randomBytes(32)) as unknown as { key: Uint8Array }).key)).toBe(32);
+    // A key given as a pooled view still ends up in its own memory.
+    expect(
+      own((new NodeAead(Buffer.from(randomBytes(32))) as unknown as { key: Uint8Array }).key),
+    ).toBe(32);
+  });
+
+  it('the keystore holds each KEK, and each DEK it opens, in memory of its own', async () => {
+    const store = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    for (const kek of (store as unknown as { keys: Map<string, Uint8Array> }).keys.values())
+      expect(own(kek)).toBe(32);
+    const { wrapped } = await store.createDek();
+    const aead = await store.openDek(wrapped);
+    expect(own((aead as unknown as { key: Uint8Array }).key)).toBe(32);
+  });
+});

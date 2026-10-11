@@ -20,6 +20,16 @@ const TAG_BYTES = 16; // GCM tag
 const isBytes = (v: unknown): v is Uint8Array =>
   Object.prototype.toString.call(v) === '[object Uint8Array]';
 
+/**
+ * A copy of key bytes in a buffer of their own. `Buffer.from` takes small buffers from a slab of Node's shared pool (8 KiB on Node 22,
+ * 64 KiB on recent Node 24), so a held key would pin the whole slab it came from for as long as it lives, and keep key bytes beside unrelated data.
+ */
+function ownKey(key: Uint8Array): Buffer {
+  const own = Buffer.alloc(key.length);
+  own.set(key);
+  return own;
+}
+
 /** AES-256-GCM AEAD bound to one 32-byte key. A fresh CSPRNG 96-bit nonce per `seal`; `aad` is authenticated,
  * never stored. Nonce-reuse safety: the random-96-bit birthday bound is ~q²/2⁹⁷, negligible below ~2³² seals
  * under one key. A per-segment DEK is **reused across all generations** (every load and rewrite encrypts under it), so
@@ -33,7 +43,7 @@ export class NodeAead implements Aead {
       throw new ValidationError('AEAD key must be a Uint8Array of key bytes, not text');
     if (key.length !== KEY_BYTES)
       throw new ValidationError(`AEAD key must be ${KEY_BYTES} bytes, got ${key.length}`);
-    this.key = Buffer.from(key);
+    this.key = ownKey(key);
   }
 
   seal(plaintext: Uint8Array, aad: Uint8Array): AeadSealed {
@@ -110,7 +120,7 @@ export class InProcessKeystore implements IKeystore {
       if (k.length !== KEY_BYTES)
         throw new ValidationError(`KEK "${id}" must be ${KEY_BYTES} bytes, got ${k.length}`);
     }
-    this.keys = new Map(entries.map(([id, k]) => [id, Buffer.from(k)]));
+    this.keys = new Map(entries.map(([id, k]) => [id, ownKey(k)]));
     // Membership is against the keys given, not the names an object inherits (`constructor`, `toString`).
     if (!this.keys.has(options.activeKeyId))
       throw new ValidationError(`activeKeyId "${String(options.activeKeyId)}" is not in keys`);
