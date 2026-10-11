@@ -30,6 +30,28 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
+  the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
+  number. Where the segment's row records which generations are kept, the superseded generation is always the newest
+  of them, so that window is unchanged. Where the row records none, the load lists the segment, and it kept the newest
+  `keep` by number: after a rollback, which drops the record, those are the generations the rollback moved away from,
+  so the load deleted the generation the operator had just restored and kept the one rolled away from. With
+  generations 0 to 3, a rollback to 1 and a load with `keep: 1`, the bucket now holds 1 and 4, where it held 3 and 4;
+  with `keep: 2`, it holds 1, 3 and 4, where it held 2, 3 and 4. So with a `keep` of 1 or more the restored generation
+  is still there to roll back to if the first load after the rollback is bad too. From the load after that, the window
+  is the newest `keep` by number again, so with a `keep` of 2 or more the restored generation goes before the newest
+  generations the rollback moved away from: at `keep: 2` the next load leaves 3, 4 and 5. A pin taken on the restored
+  generation reads it until a load collects it, unless the pin is leased. The same holds for any load over a row that
+  records no window, such as one whose loads use a `keep` above 64: an object a crashed load left above the pointer no
+  longer takes a place in the window before the generation the load superseded. The window is the newest `keep` by
+  number, as before, where the superseded generation's object has gone from the bucket, and where the lower of the
+  collection's two reads of the pointer, before and after its listing, is not the load's own generation: another
+  writer moved the pointer before the first read, or a rollback lowered it by the second. The window is chosen without
+  looking at leases, so a live lease on the generation a load supersedes after a rollback now holds a place in the
+  window instead of being spared beside it: that load can delete one more generation than before, and the next load
+  one fewer. Otherwise a load deletes as many generations, and makes the same requests, as before
+  ([what the first load after a rollback keeps](docs/guide/loading.md#what-the-first-load-after-a-rollback-keeps)).
+
 - **A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer
   taken for a missing key.** A `rollback` with `allowForward` on an encrypted segment, from a store with no keystore or
   one that could not open the segment's key, checked only that the target was in the bucket and encrypted, so it could

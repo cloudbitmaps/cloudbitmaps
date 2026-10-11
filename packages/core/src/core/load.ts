@@ -209,6 +209,12 @@ export interface LoadOptions {
    * longest pinned job runs, on every writer that loads the segment — see "Generations and `keep`" in the loading
    * guide.
    *
+   * The window holds the generation the load superseded first, then the newest of the rest by number. After a rollback
+   * the superseded generation is the one the rollback restored, so with a `keep` of 1 or more the first load after it
+   * keeps that one; the rest of its window is the newest by number, which can be generations the rollback moved away
+   * from. From the next load the window is the newest `keep` by number again, so with a `keep` of 2 or more the restored
+   * generation goes before the newest of those.
+   *
    * The segment's row records the generations a load keeps, up to 64, so a load that found nothing above the pointer
    * collects without listing: it deletes the generations its publish pushed out of the window, and lists the segment's
    * objects on every sixteenth generation to take whatever that pass leaves, such as an object a crashed load left
@@ -854,6 +860,10 @@ async function runLoad(
   // the object: the collection looks for itself, with one zero-byte read of it, only if it is about to delete by name
   // a generation the window keeps. A load that made no read at all (`allowEmpty` with neither `minRetained` nor
   // `maxGrowth`) cannot tell.
+  //
+  // `previous` is the generation this publish superseded: the publish is fenced on the row this load read (its token,
+  // or a row changed only in its leases since), so the pointer it moved was the one that row named. A window kept by
+  // listing holds it first, which after a rollback is the generation the rollback restored.
   const currentObjectGone = needsBefore && before === null;
   const collected = await collectAfterLoad(ref, deps, {
     generation,
@@ -861,6 +871,7 @@ async function runLoad(
     byName: checked && deps.collectByListing !== true,
     currentGone: currentObjectGone,
     ...(leasesNow === undefined ? {} : { leases: { now: leasesNow } }),
+    ...(fromGeneration === undefined ? {} : { previous: fromGeneration }),
     kept: published.kept,
     ...(current.fromSummary && fromGeneration !== undefined
       ? { proveCurrent: { ...ref, generation: fromGeneration } }
