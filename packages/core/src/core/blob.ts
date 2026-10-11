@@ -24,8 +24,8 @@ export interface BlobReader {
   /** Exactly `length` bytes starting at `offset`. Out-of-range is a `ValidationError`, never a short read. */
   getRange(offset: number, length: number): Promise<Uint8Array>;
   /**
-   * The last `min(maxBytes, size)` bytes plus the total size — the one-GET footer+index path. `maxBytes` is held to
-   * {@link checkTailLength}.
+   * The last `min(maxBytes, size)` bytes plus the total size — the one-GET footer+index path. `maxBytes` is a safe
+   * integer, zero or less for an empty tail; any other length is refused with `ValidationError`.
    */
   getTail(maxBytes: number): Promise<{ bytes: Uint8Array; size: number }>;
 }
