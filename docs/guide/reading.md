@@ -276,7 +276,10 @@ an id in a chunk it did not hold when the combine began is subtracted from there
   listed under, it lists every segment's keys again, above the key it last took and inside its range, and reads on
   from there through new streams. What the earlier listing had requested and not yet handed out is dropped, not
   served. So a move this store makes (an invalidation) is met before the next key, and the read serves nothing more of
-  the earlier generation than the chunk or key it is handing out.
+  the earlier generation than the chunk or key it is handing out. A move this store makes while the read is still
+  listing a segment's keys, on its first listing or a later one, makes it list them again before it takes a key, so
+  the keys and the generation it reads them from always agree; another segment's invalidation costs a listing
+  nothing.
 - **What it costs.** Nothing on a read during which nothing moves, beyond a number compared at each key, and for a
   combine with an `exclude` or a union a look at each operand's generation every `concurrency` keys: the lookup a read
   of one cached chunk makes, which costs no request while the store holds the segment's resolution, and past
@@ -285,6 +288,12 @@ an id in a chunk it did not hold when the combine began is subtracted from there
   range reads more or fewer in tens of thousands. A move costs the listing (from the index of the generation the read moved to: a tail read when the store has not
   opened it yet) and the ranges the earlier streams had in flight, which are requested again. The keys left are looked
   up in the chunk cache again, so the `cache` metric counts them twice.
+- **What bounds it.** A read plans again at most once for each key it takes, and its keys only rise, so it always
+  finishes: a segment that keeps growing while the read runs keeps it reading to the segment's last chunk, or until
+  the budget refuses it. The ranges a move requests again are not charged to the budget, so across moves the chunk
+  reads it is charged are no bound on its requests. Measured on the in-memory backend: a read of a segment this store
+  loaded again after every chunk the read took, 2,000 loads each adding a chunk past its end, finished with the exact
+  answer, and each move cost it one range request, one tail read and one row read.
 - **The budget.** The per-op budget is charged again when a read lists its keys again: the chunk reads it has already
   taken and those the new listing will make. A segment that grows past the budget while a read runs makes the read
   throw `BudgetExceededError` at that key.
@@ -572,8 +581,9 @@ so a cursor that reaches the end of its window needs no special case.
 
 **Cost.** The per-op budget is charged before the first fetch, for every chunk in the range, so a page with
 `after` alone is charged to the end of the segment however early it stops; a read that
-[lists its keys again after a move](#a-running-read-plans-its-keys-again-after-a-move) is charged again. It counts chunk reads, which is an upper
-bound on the requests a read makes: chunks that sit near each other are read in one range request, so the requests are
+[lists its keys again after a move](#a-running-read-plans-its-keys-again-after-a-move) is charged again. It counts chunk reads, which, for a read
+during which nothing moves, is an upper bound on the requests it makes: chunks that sit near each other are read in one
+range request, so the requests are
 fewer. A combine reads each operand as a stream of ranges and fetches ahead: it starts 4 ranges at once (or
 `concurrency`, if that is lower), doubles with each range it takes until the window is `concurrency` wide (32 by
 default), on every segment it reads. A page that stops early has already requested up to `concurrency` ranges per
