@@ -938,10 +938,10 @@ describe('cost model — additional coverage', () => {
     expect(three.monthlyUSD.byOp.storage).toBeCloseTo(one.monthlyUSD.byOp.storage * 3, 9);
     const none = estimateCost({ segments: [{ sizeBytes: 1e8, count: 0 }] });
     expect(none.monthlyUSD.byOp.storage).toBe(0);
-    // A fractional count is floored first: half a segment is none, and sizes and discloses nothing.
-    const half = estimateCost({ segments: [{ cardinality: 1e6, count: 0.5 }] });
-    expect(half.monthlyUSD.byOp.storage).toBe(0);
-    expect(half.assumptions.notes.at(-1)).not.toContain('cardinality');
+    // Half a segment is not a segment count.
+    expect(() => estimateCost({ segments: [{ cardinality: 1e6, count: 0.5 }] })).toThrow(
+      /segments\[0\]\.count must be a whole number/,
+    );
   });
 
   it('rejects non-finite / negative inputs (fail-fast, no NaN report)', () => {
@@ -1892,6 +1892,59 @@ describe('a workload is read as a caller builds it', () => {
     // `null` reads as no workload, as an omitted one does.
     expect(groundedReport({ storageBytes: 1e6, workload: null as never })).toEqual(
       groundedReport({ storageBytes: 1e6 }),
+    );
+  });
+});
+
+describe('cost tools refuse inputs they would otherwise misread', () => {
+  const seg = { sizeBytes: 1e9 };
+  it('refuses a misspelt key at every level, naming the path and the key', () => {
+    expect(() =>
+      estimateCost({ segments: [seg], workLoad: { readsPerSec: 1e6 } } as never),
+    ).toThrow(/estimateCost: unknown option "workLoad"/);
+    expect(() =>
+      estimateCost({ segments: [seg], workload: { readsPerSecond: 1e6 } as never }),
+    ).toThrow(/estimateCost: unknown key "readsPerSecond" in workload/);
+    expect(() => estimateCost({ segments: [{ size: 1e9 } as never] })).toThrow(
+      /estimateCost: unknown key "size" in segments\[0\]/,
+    );
+    expect(() =>
+      groundedReport({ storageBytes: 1e9, workload: { readsPerSecond: 1 } as never }),
+    ).toThrow(/groundedReport: unknown key "readsPerSecond" in workload/);
+    const pricing = { ...AWS_US_EAST_1_ONDEMAND, storge: {} } as never;
+    expect(() => estimateCost({ segments: [seg], pricing })).toThrow(
+      /unknown key "storge" in pricing/,
+    );
+    const storage = { ...AWS_US_EAST_1_ONDEMAND.storage, getPerMilion: 1 };
+    expect(() =>
+      estimateCost({ segments: [seg], pricing: { ...AWS_US_EAST_1_ONDEMAND, storage } as never }),
+    ).toThrow(/unknown key "getPerMilion" in pricing\.storage/);
+    expect(() =>
+      estimateCost({
+        segments: [seg],
+        pricing: {
+          name: 'x',
+          storage: AWS_US_EAST_1_ONDEMAND.storage,
+          redis: { monthlyUSD: 5, extra: 1 },
+        } as never,
+      }),
+    ).toThrow(/unknown key "extra" in pricing\.redis/);
+    // Every documented key is still accepted, and the shipped profiles.
+    expect(() =>
+      estimateCost({ segments: [{ sizeBytes: 1, count: 2 }, { cardinality: 3 }] }),
+    ).not.toThrow();
+  });
+
+  it('refuses a result that is not a finite dollar amount', () => {
+    for (const workload of [
+      { readsPerSec: 1e308 },
+      { loadsPerMonth: 1e308, requestsPerLoad: 1e308 },
+    ]) {
+      expect(() => estimateCost({ segments: [seg], workload })).toThrow(ValidationError);
+      expect(() => groundedReport({ storageBytes: 1e9, workload })).toThrow(ValidationError);
+    }
+    expect(() => estimateCost({ segments: [seg], workload: { readsPerSec: 1e308 } })).toThrow(
+      /not a finite number of dollars/,
     );
   });
 });
