@@ -163,7 +163,8 @@ you can lose.
     until Azure garbage-collects uncommitted blocks, a week after the last one staged for that blob.
   - **`LocalFsStorage`**: an object is written to a temporary file beside it
     (`<segment>.<generation>.crbm.<uuid>.tmp`) and linked into place. A killed process leaves that file; a listing
-    ignores it and nothing in the library deletes it, so remove stale `.tmp` files yourself.
+    ignores it, and a write of an object or a registry row removes the `.tmp` files of that kind beside it that were
+    last written over 24 hours ago, scanning each directory at most once an hour per process.
 - [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to restore every row to
       `T`, and the store that sets your RPO. It also keeps the wrapped keys a crypto-shred removes from a row; see
       [Encryption & DR](#encryption--dr).
