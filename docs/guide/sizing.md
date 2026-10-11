@@ -60,8 +60,8 @@ timed refresh keeps no resolution, and reads the pointer at every reopen. Two mo
   weight; the reader's other objects, the chunk bytes it keeps of a small generation, and your chunk cache are not in it. The
   reader cache does count the reader's other objects (the snapshot, the reader, its arrays, closures and promises) as a fixed
   share of its own, measured on a one-chunk segment's reader, so the byte ceiling bounds many tiny segments as it bounds a few
-  wide ones: at the default ceiling, more tiny readers fit than the default count allows. [Reading](reading.md) and the
-  [production notes](production.md) give the figure, and a ceiling below that share keeps one reader open at a time.
+  wide ones: at the default ceiling, more tiny readers fit than the default count allows. The
+  [production notes](production.md) give the figure, and a ceiling below a couple of readers' weight keeps one reader open at a time.
 - **The hit rates assume the reads are skewed.** The fifth column is what holding a hot set whole takes, and the
   last is the share of reads a default chunk cache would answer if they were spread evenly over the hot set. The hit
   rates above hold only where most reads fall on a small part of it, or where the chunk cache is raised toward that

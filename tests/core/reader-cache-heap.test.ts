@@ -65,7 +65,7 @@ describe('the reader cache weight versus the heap its readers retain', () => {
       const before = heapUsed();
       for (const ref of refs) {
         await source.listChunkKeys(ref);
-        // A busy process allocates from Node's shared 64 KiB buffer pool between opens, so a key kept as a view on the
+        // A busy process allocates from a slab of Node's shared buffer pool (8 KiB on Node 22, 64 KiB on recent Node 24) between opens, so a key kept as a view on the
         // pool pins the slab it was taken from: advance the pool by that much.
         for (let i = 0; i < 64; i++) Buffer.allocUnsafe(1024);
       }

@@ -512,7 +512,7 @@ export interface CacheOptions {
    * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed weight
    * would exceed the ceiling — whichever of the count/byte bounds binds first. A sixteenth of it (4 MiB by default)
    * bounds the segments' resolutions a store with a timed refresh keeps besides. Lower it for memory-tight
-   * deployments that read across wide segments. A ceiling below about 3.9 KB keeps one reader open at a time. Applies whenever the store builds its own read path.
+   * deployments that read across wide segments. A ceiling below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Applies whenever the store builds its own read path.
    */
   readonly readerMaxBytes?: number;
 }

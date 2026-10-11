@@ -21,11 +21,11 @@ const isBytes = (v: unknown): v is Uint8Array =>
   Object.prototype.toString.call(v) === '[object Uint8Array]';
 
 /**
- * A copy of key bytes in a buffer of their own. `Buffer.from` takes small buffers from Node's shared 64 KiB pool, so a
- * held key would pin the whole slab it came from for as long as it lives, and keep key bytes beside unrelated data.
+ * A copy of key bytes in a buffer of their own. `Buffer.from` takes small buffers from a slab of Node's shared pool (8 KiB on Node 22,
+ * 64 KiB on recent Node 24), so a held key would pin the whole slab it came from for as long as it lives, and keep key bytes beside unrelated data.
  */
 function ownKey(key: Uint8Array): Buffer {
-  const own = Buffer.allocUnsafeSlow(key.length);
+  const own = Buffer.alloc(key.length);
   own.set(key);
   return own;
 }

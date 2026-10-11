@@ -210,7 +210,7 @@ describe('InProcessKeystore (envelope BYOK)', () => {
 });
 
 describe('key material is held in buffers of its own', () => {
-  // `Buffer.from` of a small key is a view on Node's shared 64 KiB pool: held for as long as an open reader holds its
+  // `Buffer.from` of a small key is a view on a slab of Node's shared pool (8 KiB on Node 22, 64 KiB on recent Node 24): held for as long as an open reader holds its
   // key, it pins the whole slab, which no cache weight counts, and keeps key bytes in a pool shared with other data.
   const own = (held: unknown): number => (held as Uint8Array).buffer.byteLength;
 
