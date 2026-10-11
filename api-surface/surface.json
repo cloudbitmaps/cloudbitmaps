@@ -309,6 +309,7 @@
     "@cloudbitmaps/core EngineDeps.codec": "readonly codec: CodecInterface;",
     "@cloudbitmaps/core EngineDeps.maxBitmapBytes": "readonly maxBitmapBytes?: number;",
     "@cloudbitmaps/core EngineDeps.metrics": "readonly metrics?: IMetricsSink;",
+    "@cloudbitmaps/core EngineDeps.sharesInvalidationsWith": "readonly sharesInvalidationsWith?: SegmentEngine;",
     "@cloudbitmaps/core EngineDeps.storage": "readonly storage: StorageChunkSource;",
     "@cloudbitmaps/core Entropy": "type Entropy = (length: number) => Uint8Array;",
     "@cloudbitmaps/core EraseDeps": "interface EraseDeps extends ChurnDeps",
