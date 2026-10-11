@@ -95,6 +95,11 @@ const INDEX_BYTES_PER_CHUNK = sourceConstant(
   'packages/core/src/core/crbm/reader.ts',
   'RETAINED_BYTES_PER_INDEX_ENTRY',
 );
+/** What the reader cache counts for an open reader besides its index, which the verdict below adds. */
+const OPEN_READER_BYTES = sourceConstant(
+  'packages/core/src/core/crbm-storage-source.ts',
+  'OPEN_READER_BYTES',
+);
 const CACHE_MAX_CHUNKS = sourceConstant(
   'packages/roaring/src/index.ts',
   'DEFAULT_CACHE_MAX_CHUNKS',
@@ -682,14 +687,17 @@ function render() {
     '|---|---:|---|---:|---:|---|---:|',
     ...PROFILES.map((p) => {
       const index = p.hotPerProcess * CHUNKS_PER_SEGMENT * INDEX_BYTES_PER_CHUNK;
+      // The cache counts each open reader's index and its fixed heap; the column shows the index alone.
+      const perReader = OPEN_READER_BYTES + CHUNKS_PER_SEGMENT * INDEX_BYTES_PER_CHUNK;
+      const counted = p.hotPerProcess * perReader;
       const fits =
         p.hotPerProcess > READER_MAX
           ? `more segments than the default ${int(READER_MAX)}`
-          : index <= READER_MAX_BYTES * 0.9
+          : counted <= READER_MAX_BYTES * 0.9
             ? 'fits'
-            : index <= READER_MAX_BYTES
+            : counted <= READER_MAX_BYTES
               ? 'at the limit: raise it'
-              : `${(index / READER_MAX_BYTES).toFixed(1)}× it: raise it, or ${int(Math.floor(READER_MAX_BYTES / (CHUNKS_PER_SEGMENT * INDEX_BYTES_PER_CHUNK)))} stay open`;
+              : `${(counted / READER_MAX_BYTES).toFixed(1)}× it: raise it, or ${int(Math.floor(READER_MAX_BYTES / perReader))} stay open`;
       const chunks = p.hotPerProcess * CHUNKS_PER_SEGMENT;
       return (
         `| **${p.name}** | ${mib(index)} | ${fits} | ${int(chunks)} | ` +
