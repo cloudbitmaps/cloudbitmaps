@@ -2564,6 +2564,95 @@ function leasesPatch(
   return { leases: live.length === 0 ? undefined : live };
 }
 
+/** What a publish is told, beyond the row and the key it moves the pointer to. */
+interface PublishOptions {
+  wrappedDeks?: readonly WrappedDek[];
+  expectFrom?: number;
+  expectToken?: Token;
+  /**
+   * The row `expectToken` names, as the caller read it. With it, a row whose token has moved but which differs from
+   * this one only in its leases (a reader took or released one) does not refuse the publish: it goes on against the
+   * fresh row, after a jittered wait and without the caller redoing its work, up to a bound. Any other difference
+   * refuses as ever. Without it, a moved token refuses.
+   */
+  expectRow?: RegistryRecord | null;
+  /**
+   * Publish only while the segment still has **no registry row**.
+   *
+   * The fence for a caller whose decision rests on the row being ABSENT: every load that found no row sets it,
+   * guarded or not. `expectFrom` and `expectToken` cannot express it: both compare against a value read from a
+   * row, so when there was no row there is nothing to compare and both are simply omitted — leaving the publish a
+   * bare forward-only advance that happily lands over whatever appeared in the meantime.
+   *
+   * Without it, a guarded load into a segment that did not exist yet would judge "no row", pass its empty and
+   * `minRetained` bounds vacuously, and land an EMPTY generation over the ids a concurrent writer had just loaded,
+   * reporting `published: true`. An unguarded load would move the pointer over another first load's generation or
+   * onto a row `setRetention` made, and, where an erasure had deleted its object above that row's pointer, onto an
+   * object that is gone. Materialising into a destination that does not exist yet is the ordinary first run of a
+   * pipeline, so the `*Into` verbs reach this as often as `loadSegment` does.
+   */
+  expectAbsent?: boolean;
+  /**
+   * The generation's summary (see {@link RegistrySummary}), written by the write that moves the pointer to it. It
+   * names `key.generation`. Absent, the row is left with none for this generation.
+   */
+  summary?: RegistrySummary;
+  /**
+   * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
+   * instead of reading the row again, which is sound because that attempt writes only under the row's own
+   * fence: its compare-and-swap carries this row's token, and with no row it creates create-only, so a row
+   * that changed or appeared since makes the write lose and the next attempt reads the row afresh. Only the
+   * idempotent "already current" answer writes nothing, so a reused row never gives it.
+   */
+  row?: RegistryRecord | null;
+  /**
+   * The object was written without encryption. Its publish is refused, with {@link KeyUnavailableError}, onto a row
+   * that carries key material: a reader of that segment opens every generation with its key, and a later
+   * `destroySegment` would attest that shredding it made a readable object unreadable. A caller decides its key
+   * from the row it read before the write, so this closes the window in which another writer creates the
+   * segment encrypted meanwhile.
+   */
+  cleartext?: boolean;
+  /**
+   * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
+   * registry write failed and the row then names `key.generation`, to tell this publish's write from another
+   * writer's at the same number. Every caller that writes the object passes it. Without it, a write that ended
+   * without an answer over a row that names `key.generation` cannot be settled: the publish throws
+   * {@link TransientError} and the caller keeps its object.
+   */
+  holdsOwnObject?: () => Promise<boolean>;
+  /**
+   * What a publish waits on before it sends a fresh compare-and-swap, after a write that ended without an answer and
+   * left the row as it was. Without a `sleep`, such a write throws at once instead of being sent again.
+   */
+  clock?: Yielder;
+  /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
+  rng?: Rng;
+  /**
+   * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
+   * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
+   * held its generation for a while before another writer moved on.
+   */
+  onUnanswered?: () => void;
+  /**
+   * The clock that judges whether a lease has ended. With it, a publish over a row that holds ended leases drops
+   * them in the write that moves the pointer, which rewrites the row anyway. Without it, leases are left as they are.
+   */
+  leasesNow?: () => number;
+  /**
+   * Clear the row's leases in the write that moves the pointer: the caller's collection deletes every generation
+   * below the new pointer whatever a lease says, as a subject erasure's does.
+   */
+  clearLeases?: boolean;
+  /**
+   * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
+   * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
+   * current), derived from the very row the write is made against, and the result names the generations the window
+   * dropped. Without it, or above the most a row records, the row records none, and a collection lists.
+   */
+  keep?: number;
+}
+
 /**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
@@ -2629,93 +2718,7 @@ function leasesPatch(
 export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
-  options: {
-    wrappedDeks?: readonly WrappedDek[];
-    expectFrom?: number;
-    expectToken?: Token;
-    /**
-     * The row `expectToken` names, as the caller read it. With it, a row whose token has moved but which differs from
-     * this one only in its leases (a reader took or released one) does not refuse the publish: it goes on against the
-     * fresh row, after a jittered wait and without the caller redoing its work, up to a bound. Any other difference
-     * refuses as ever. Without it, a moved token refuses.
-     */
-    expectRow?: RegistryRecord | null;
-    /**
-     * Publish only while the segment still has **no registry row**.
-     *
-     * The fence for a caller whose decision rests on the row being ABSENT: every load that found no row sets it,
-     * guarded or not. `expectFrom` and `expectToken` cannot express it: both compare against a value read from a
-     * row, so when there was no row there is nothing to compare and both are simply omitted — leaving the publish a
-     * bare forward-only advance that happily lands over whatever appeared in the meantime.
-     *
-     * Without it, a guarded load into a segment that did not exist yet would judge "no row", pass its empty and
-     * `minRetained` bounds vacuously, and land an EMPTY generation over the ids a concurrent writer had just loaded,
-     * reporting `published: true`. An unguarded load would move the pointer over another first load's generation or
-     * onto a row `setRetention` made, and, where an erasure had deleted its object above that row's pointer, onto an
-     * object that is gone. Materialising into a destination that does not exist yet is the ordinary first run of a
-     * pipeline, so the `*Into` verbs reach this as often as `loadSegment` does.
-     */
-    expectAbsent?: boolean;
-    /**
-     * The generation's summary (see {@link RegistrySummary}), written by the write that moves the pointer to it. It
-     * names `key.generation`. Absent, the row is left with none for this generation.
-     */
-    summary?: RegistrySummary;
-    /**
-     * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
-     * instead of reading the row again, which is sound because that attempt writes only under the row's own
-     * fence: its compare-and-swap carries this row's token, and with no row it creates create-only, so a row
-     * that changed or appeared since makes the write lose and the next attempt reads the row afresh. Only the
-     * idempotent "already current" answer writes nothing, so a reused row never gives it.
-     */
-    row?: RegistryRecord | null;
-    /**
-     * The object was written without encryption. Its publish is refused, with {@link KeyUnavailableError}, onto a row
-     * that carries key material: a reader of that segment opens every generation with its key, and a later
-     * `destroySegment` would attest that shredding it made a readable object unreadable. A caller decides its key
-     * from the row it read before the write, so this closes the window in which another writer creates the
-     * segment encrypted meanwhile.
-     */
-    cleartext?: boolean;
-    /**
-     * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
-     * registry write failed and the row then names `key.generation`, to tell this publish's write from another
-     * writer's at the same number. Every caller that writes the object passes it. Without it, a write that ended
-     * without an answer over a row that names `key.generation` cannot be settled: the publish throws
-     * {@link TransientError} and the caller keeps its object.
-     */
-    holdsOwnObject?: () => Promise<boolean>;
-    /**
-     * What a publish waits on before it sends a fresh compare-and-swap, after a write that ended without an answer and
-     * left the row as it was. Without a `sleep`, such a write throws at once instead of being sent again.
-     */
-    clock?: Yielder;
-    /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
-    rng?: Rng;
-    /**
-     * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
-     * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
-     * held its generation for a while before another writer moved on.
-     */
-    onUnanswered?: () => void;
-    /**
-     * The clock that judges whether a lease has ended. With it, a publish over a row that holds ended leases drops
-     * them in the write that moves the pointer, which rewrites the row anyway. Without it, leases are left as they are.
-     */
-    leasesNow?: () => number;
-    /**
-     * Clear the row's leases in the write that moves the pointer: the caller's collection deletes every generation
-     * below the new pointer whatever a lease says, as a subject erasure's does.
-     */
-    clearLeases?: boolean;
-    /**
-     * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
-     * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
-     * current), derived from the very row the write is made against, and the result names the generations the window
-     * dropped. Without it, or above the most a row records, the row records none, and a collection lists.
-     */
-    keep?: number;
-  } = {},
+  options: PublishOptions = {},
 ): Promise<PublishResult> {
   // A row read after a write that failed, which the next attempt acts on instead of reading it again.
   let fresh: RegistryRecord | null | undefined;
@@ -3019,7 +3022,7 @@ const REFUSED: PublishResult = { published: false };
 export async function publishGeneration(
   registry: IRegistryDriver,
   key: GenKey,
-  options: Parameters<typeof publishGenerationKept>[2] = {},
+  options: PublishOptions = {},
 ): Promise<boolean> {
   return (await publishGenerationKept(registry, key, options)).published;
 }
