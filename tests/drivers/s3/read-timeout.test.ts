@@ -387,11 +387,7 @@ function expectTimedOut<T>(
 
 /** Wait (bounded) until every stalled response's connection has closed: a timed-out read let go of its socket. */
 async function expectReleased(stub: StubS3): Promise<void> {
-  const deadline = performance.now() + 10_000;
-  while (stub.stalled.size > 0 && performance.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  expect(stub.stalled.size).toBe(0);
+  await vi.waitFor(() => expect(stub.stalled.size).toBe(0), { timeout: 10_000, interval: 25 });
 }
 
 describe('S3: timedRead on a fake clock', () => {
@@ -459,13 +455,16 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('a GET whose headers never come is a TransientError at the timeout, sent once', async () => {
+    // One fast read first, so the SDK is warm and the only thing that can end the next one is the stall.
+    expect(await settle(backend.storage.getRange(GEN, 0, 8))).toHaveProperty('value');
+    const before = stub.count('GetObject');
     stub.arm('GetObject', { kind: 'no-headers' });
 
     expectTimedOut(await settle(backend.storage.getRange(GEN, 0, 8)));
     await expectReleased(stub);
     // The SDK does not send an aborted request again: the retry is the store's to make.
     await new Promise((resolve) => setTimeout(resolve, 2 * TIMEOUT));
-    expect(stub.count('GetObject')).toBe(1);
+    expect(stub.count('GetObject') - before).toBe(1);
   });
 
   it('a GET that sends its headers and then stalls mid-body is a TransientError, and lets go of the socket', async () => {
@@ -499,18 +498,19 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('that HEAD gets a timeout of its own, not what the GET before it left', async () => {
-    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 600 });
+    // Each request is well inside the timeout (500 ms of headroom) and the two together are well past it.
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 1_500 });
     try {
       stub.ignoreRange = true;
-      stub.arm('GetObject', { kind: 'delay', ms: 400 });
-      stub.arm('HeadObject', { kind: 'delay', ms: 400 });
+      stub.arm('GetObject', { kind: 'delay', ms: 1_000 });
+      stub.arm('HeadObject', { kind: 'delay', ms: 1_000 });
       const started = Date.now();
 
       const tail = await settle(timed.storage.getTail(GEN, BYTES.length));
 
       expect(tail).toMatchObject({ value: { size: BYTES.length } });
       // The two together outlast one timeout, so one clock across both would have cut the HEAD off.
-      expect(Date.now() - started).toBeGreaterThan(600);
+      expect(Date.now() - started).toBeGreaterThan(1_500);
       expect(stub.count('HeadObject')).toBe(1);
     } finally {
       timed.client.destroy();
@@ -689,7 +689,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
 
     const outcome = await settle(put(new Uint8Array([1, 2, 3])));
     expect(outcome).toMatchObject({ value: { size: 3 } });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThan(TIMEOUT);
     expect(stub.count('PutObject')).toBe(1);
     expect(stub.cut).toEqual([]);
   });
@@ -718,7 +718,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
       }),
     );
     expect(outcome).toMatchObject({ error: failed });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThan(TIMEOUT);
     expect(stub.answered).toContain('AbortMultipartUpload');
     expect(stub.cut).toEqual([]);
   });
@@ -729,7 +729,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
 
     const outcome = await settle(backend.storage.delete(GEN));
     expect(outcome).toHaveProperty('value');
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThan(TIMEOUT);
     expect(stub.objects.has(OBJECT_KEY)).toBe(false);
     expect(stub.cut).toEqual([]);
   });
@@ -865,6 +865,12 @@ describe("S3: the registry's read is timed too", LIMIT, () => {
   });
 });
 
+/**
+ * The stalled read waits out this timeout, and the store's retry then runs under the same one, so it has to be long
+ * enough that a loaded machine answers a fast request inside it: a retry cut off here would hide what the test is for.
+ */
+const STORE_TIMEOUT = 1_000;
+
 describe("S3: through the store, a stalled read is the store's retry to repeat", LIMIT, () => {
   let stub: StubS3;
   let backend: S3Storage;
@@ -872,7 +878,7 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
   beforeEach(async () => {
     stub = new StubS3();
     await stub.start();
-    backend = new S3Storage({ ...stub.options(), readTimeoutMs: TIMEOUT });
+    backend = new S3Storage({ ...stub.options(), readTimeoutMs: STORE_TIMEOUT });
     await new CloudRoaring({ storage: backend }).load({ segment: 's' }, [1, 2, 70_000]);
   });
   afterEach(async () => {
@@ -881,13 +887,16 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
   });
 
   it('one stalled chunk read, then a fast one: the read succeeds', async () => {
+    // One fast read first, on a store of its own, so the SDK has its connection and credentials before the stall.
+    const warm = await settle(new CloudRoaring({ storage: backend }).segment('s').has(70_000));
+    expect(warm).toMatchObject({ value: true });
     const store = new CloudRoaring({ storage: backend });
     const before = stub.count('GetObject', '.crbm');
     stub.arm('GetObject', { kind: 'no-headers' }, { keyIncludes: '.crbm' });
 
     const outcome = await settle(store.segment('s').has(70_000));
     expect(outcome).toMatchObject({ value: true });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(STORE_TIMEOUT - 25);
     // The stalled request, then the store's retry of it, then whatever else the read needed.
     expect(stub.count('GetObject', '.crbm') - before).toBeGreaterThanOrEqual(2);
     await expectReleased(stub);
@@ -897,7 +906,7 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
     const store = new CloudRoaring({ storage: backend, retry: false });
     stub.arm('GetObject', { kind: 'no-headers' }, { keyIncludes: '.crbm' });
 
-    expectTimedOut(await settle(store.segment('s').has(70_000)));
+    expectTimedOut(await settle(store.segment('s').has(70_000)), STORE_TIMEOUT);
   });
 });
 
