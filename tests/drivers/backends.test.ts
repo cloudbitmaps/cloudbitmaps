@@ -551,3 +551,30 @@ describe('the SDK-free backends refuse settings they can never honour, when they
     expect(() => new MemoryStorage({})).not.toThrow();
   });
 });
+
+describe('a backend that builds its own client gives it the options it was given', () => {
+  it('S3: region, endpoint, pathStyle and credentials reach the client as it resolves them', async () => {
+    const { config } = new S3Storage({
+      bucket: 'b',
+      region: 'eu-west-2',
+      endpoint: 'http://127.0.0.1:9',
+      pathStyle: true,
+      credentials: { accessKeyId: 'stand-in', secretAccessKey: 'stand-in' },
+    }).client;
+    const pathStyle: unknown = config.forcePathStyle;
+    expect(pathStyle).toBe(true);
+    expect(await config.region()).toBe('eu-west-2');
+    expect(await config.endpoint?.()).toMatchObject({ hostname: '127.0.0.1', port: 9 });
+    expect(await config.credentials()).toMatchObject({ accessKeyId: 'stand-in' });
+  });
+
+  it('GCS: projectId and apiEndpoint reach the client', () => {
+    const { client } = new GcsStorage({
+      bucket: 'b',
+      projectId: 'proj-x',
+      apiEndpoint: 'http://127.0.0.1:9',
+    });
+    expect(client.projectId).toBe('proj-x');
+    expect(client.apiEndpoint).toContain('127.0.0.1:9');
+  });
+});

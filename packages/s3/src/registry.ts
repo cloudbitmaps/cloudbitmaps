@@ -275,7 +275,10 @@ export class S3RegistryStore implements ObjectRegistryStore {
   }
 }
 
-/** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */
+/**
+ * Reclassify a transient S3 fault as a retryable {@link TransientError} and a missing bucket as a `ValidationError`;
+ * any other error is passed through.
+ */
 function mapError(err: unknown, bucket: string): unknown {
   return toTransient(
     asMissingBucket(scrubCredentials(err), bucket),

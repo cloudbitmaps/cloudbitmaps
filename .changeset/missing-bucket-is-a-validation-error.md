@@ -4,4 +4,4 @@
 '@cloudbitmaps/azure-blob': minor
 ---
 
-A bucket or container that does not exist is a `ValidationError` on the S3, GCS and Azure Blob drivers, naming it and keeping the service's error as its `cause`. An Azure Blob generation read whose body closes early is a `TransientError`.
+A bucket or container that does not exist is a `ValidationError` on the S3, GCS and Azure Blob drivers (except an S3 zero-length tail read), naming it and keeping the service's error as its `cause`. An Azure Blob generation read whose body closes early is a `TransientError`.

@@ -15,7 +15,9 @@ so, and so do the module headers in the code.
 
 - **A bucket or container that does not exist is a `ValidationError` on every cloud driver.** It names the bucket or
   container and says what to check, with the service's error as its `cause`. It is not a `NotFoundError`, which a read
-  answers by looking again. Branch on `isValidationError`, not on the SDK's `NoSuchBucket` or `ContainerNotFound`.
+  answers by looking again. Branch on `isValidationError`, not on the SDK's `NoSuchBucket` or `ContainerNotFound`. The
+  one exception is an S3 zero-length tail read, which reads as a missing object because S3 sends no error code on a
+  HEAD.
 
 - **A load can throw `NotFoundError` after its publish landed or after it was refused, and an erasure can report it in
   place of its answer.** It means a rollback moved the pointer onto a generation the call had just deleted, and the

@@ -259,6 +259,19 @@ describe('S3: a throttled write-once object is sent again, and its write id tell
     expect(draws).toHaveLength(3); // one draw per wait, none from the global source
   });
 
+  it('draws the jitter from Math.random when no rng is injected', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    try {
+      const bucket = new StubS3Bucket();
+      const { driver, waits } = driverOver(bucket);
+      for (let i = 0; i < 3; i++) bucket.arm('PutObject', 'throttle');
+      await put(driver, new Uint8Array([1]));
+      expect(waits).toEqual([499, 999, 1998]);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   it('a throttle on every send ends in TransientError after three re-sends, deleting nothing', async () => {
     const bucket = new StubS3Bucket();
     const { driver, waits } = driverOver(bucket);

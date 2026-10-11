@@ -238,7 +238,10 @@ async function readRow(
   return { bytes, version: etag };
 }
 
-/** Reclassify a transient Azure fault as a retryable {@link TransientError}; pass everything else through. */
+/**
+ * Reclassify a transient Azure fault as a retryable {@link TransientError} and a missing container as a
+ * `ValidationError`; any other error is passed through.
+ */
 function mapError(err: unknown, container: string): unknown {
   return toTransient(asMissingContainer(err, container), isTransient, transientFaultMessage);
 }

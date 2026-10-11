@@ -161,6 +161,18 @@ describe('GCS: a throttled single-request upload is sent again, and its write id
     expect(draws).toHaveLength(3); // one draw per wait, none from the global source
   });
 
+  it('draws the jitter from Math.random when no rng is injected', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    try {
+      const { driver, waits } = driverOver();
+      for (let i = 0; i < 3; i++) stub.arm({ status: 503 });
+      await put(driver, new Uint8Array([1]));
+      expect(waits).toEqual([499, 999, 1998]);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   it('a throttle on every send ends in TransientError after three re-sends, deleting nothing', async () => {
     const { driver, waits } = driverOver();
     for (let i = 0; i < 4; i++) stub.arm({ status: 429 });

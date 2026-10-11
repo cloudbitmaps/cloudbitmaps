@@ -61,6 +61,7 @@ import type { Storage } from '@google-cloud/storage';
 import { BucketPresence } from './bucket-presence';
 import {
   asMissingBucket,
+  missingBucketError,
   isInvalidRange,
   isNotFound,
   isPreconditionFailed,
@@ -232,6 +233,8 @@ export class GcsStorageDriver implements IStorageDriver {
         );
       }
       if (isValidationError(err) || isWriteConflictError(err) || isNotFoundError(err)) throw err;
+      // An upload's 404 can be the bucket's: settle it before it is passed on.
+      if (isNotFound(err)) await this.presence.confirm();
       throw this.mapError(err);
     }
   }
@@ -468,6 +471,8 @@ export class GcsStorageDriver implements IStorageDriver {
       // autoPaginate (default) drains every page; a segment has few generations, so the set is small.
       [files] = await this.storage.bucket(this.bucket).getFiles({ prefix });
     } catch (err) {
+      // A listing names no object, so its 404 can only be the bucket's.
+      if (isNotFound(err)) throw missingBucketError(this.bucket, scrubCredentials(err));
       throw this.mapError(err);
     }
     for (const f of files) {
@@ -504,8 +509,9 @@ export class GcsStorageDriver implements IStorageDriver {
 
   /**
    * Reclassify a transient GCS fault (throttle/5xx/dropped connection) as a retryable {@link TransientError},
-   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure;
-   * everything else propagates unchanged. The final fallback at every client-call site: an HTTP status and a fault
+   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure, and a
+   * missing bucket as a `ValidationError` that names it; everything else propagates unchanged.
+   * The final fallback at every client-call site: an HTTP status and a fault
    * in transit arrive typed, and anything else (a checksum mismatch, a credentials failure) as the SDK raised it.
    */
   private mapError(err: unknown): unknown {

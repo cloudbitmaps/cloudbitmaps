@@ -736,6 +736,7 @@ describe('a bucket that does not exist', () => {
   it('fails every read and a delete with a ValidationError that names it, not as an absent object', async () => {
     await expectMissingLocationFails(
       () => new S3Storage({ client, bucket: MISSING, prefix: `${RUN}/missing` }),
+      MISSING,
     );
   });
 

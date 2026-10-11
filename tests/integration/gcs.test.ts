@@ -670,6 +670,7 @@ describe('a bucket that does not exist', () => {
           projectId: 'test',
           prefix: `${RUN}/missing`,
         }),
+      MISSING,
     );
   });
 

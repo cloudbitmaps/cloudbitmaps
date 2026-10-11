@@ -47,6 +47,7 @@ import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-k
 import type { Storage } from '@google-cloud/storage';
 import {
   asMissingBucket,
+  missingBucketError,
   isNotFound,
   isPreconditionFailed,
   isTransient,
@@ -181,6 +182,8 @@ export class GcsRegistryStore implements ObjectRegistryStore {
       if (isPreconditionFailed(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
+      // A row write's 404 can be the bucket's: settle it before it is passed on.
+      if (isNotFound(err)) await this.presence.confirm();
       throw mapError(err, this.bucket);
     }
   }
@@ -213,6 +216,8 @@ export class GcsRegistryStore implements ObjectRegistryStore {
           .bucket(this.bucket)
           .getFiles({ prefix, autoPaginate: false, maxResults: 1000, pageToken });
       } catch (err) {
+        // A listing names no object, so its 404 can only be the bucket's.
+        if (isNotFound(err)) throw missingBucketError(this.bucket, scrubCredentials(err));
         throw mapError(err, this.bucket);
       }
       for (const f of files ?? []) yield f.name;
@@ -250,7 +255,10 @@ function mapReadError(err: unknown, bucket: string): unknown {
   return mapError(err, bucket);
 }
 
-/** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */
+/**
+ * Reclassify a transient GCS fault as a retryable {@link TransientError} and a missing bucket as a `ValidationError`;
+ * any other error is passed through.
+ */
 function mapError(err: unknown, bucket: string): unknown {
   return toTransient(
     asMissingBucket(scrubCredentials(err), bucket),

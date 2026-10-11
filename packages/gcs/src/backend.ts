@@ -147,10 +147,9 @@ export class GcsStorage implements StorageBackend {
       this.client = options.client;
       readClient = downloadClient(options.client, true);
     } else {
-      const settings = {
-        ...defined({ projectId: options.projectId, apiEndpoint: options.apiEndpoint }),
-      };
-      this.client = new GcsClient(settings);
+      this.client = new GcsClient(
+        defined({ projectId: options.projectId, apiEndpoint: options.apiEndpoint }),
+      );
       // Downloads go through a twin that sends each once (see `read-client.ts`); it shares this client's credentials
       // object, so one token fetch and one hourly refresh serve both.
       readClient = downloadClient(this.client, false);

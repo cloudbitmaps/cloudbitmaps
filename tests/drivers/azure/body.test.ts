@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
-import { collect } from '@/azure-blob/body';
+import { NotFoundError } from '@/core/errors';
+import { collect, destroyBody } from '@/azure-blob/body';
 import { isTransient } from '@/azure-blob/azure-errors';
 
 /**
@@ -48,5 +49,42 @@ describe('Azure: collect, the one body reader', () => {
     const err = await collect(body, live(), 16, oversize).catch((e: unknown) => e);
     expect((err as { code?: string }).code).toBe('ECONNRESET');
     expect(isTransient(err)).toBe(true);
+  });
+});
+
+describe('Azure: collect, the edges the first tests leave open', () => {
+  it('holds a body to the cap to the byte: the cap itself is read, one byte more is refused', async () => {
+    expect([...(await collect(Readable.from([Buffer.alloc(4, 7)]), live(), 4, oversize))]).toEqual([
+      7, 7, 7, 7,
+    ]);
+    await expect(collect(Readable.from([Buffer.alloc(5)]), live(), 4, oversize)).rejects.toThrow(
+      'too long',
+    );
+    // across chunks too
+    await expect(
+      collect(Readable.from([Buffer.alloc(2), Buffer.alloc(3)]), live(), 4, oversize),
+    ).rejects.toThrow('too long');
+  });
+
+  it('keeps the SDK error as the cause of a dropped-connection error (abort and premature close)', async () => {
+    const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const aborted = new Readable({ read: () => aborted.destroy(abort) });
+    const e1 = (await collect(aborted, live(), 16, oversize).catch((e: unknown) => e)) as Error;
+    expect(e1.cause).toBe(abort);
+
+    const closed = new Readable({ read: () => closed.destroy() });
+    const e2 = (await collect(closed, live(), 16, oversize).catch((e: unknown) => e)) as Error;
+    expect((e2.cause as { code?: string }).code).toBe('ERR_STREAM_PREMATURE_CLOSE');
+  });
+
+  it('a body with no stream is a NotFoundError', async () => {
+    await expect(collect(undefined, live(), 16, oversize)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('destroyBody leaves a listener, so an error the body raises later is not thrown out of the event', () => {
+    const body = Readable.from([Buffer.alloc(1)]);
+    destroyBody(body);
+    expect(body.destroyed).toBe(true);
+    expect(() => body.emit('error', new Error('late abort'))).not.toThrow();
   });
 });

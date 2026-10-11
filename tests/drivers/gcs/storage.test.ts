@@ -1,6 +1,7 @@
 import { PassThrough, Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
+import { BucketPresence } from '@/gcs/bucket-presence';
 import {
   TransientError,
   ValidationError,
@@ -273,5 +274,27 @@ describe('GcsStorageDriver — what a delete costs', () => {
     await expect(driver.delete(gen)).rejects.toBeInstanceOf(TransientError);
     await expect(driver.delete(gen)).rejects.toBeInstanceOf(TransientError);
     expect(calls.map((c) => c.op)).toEqual(['delete', 'list', 'delete', 'list']);
+  });
+});
+
+describe('GCS: the bucket presence check', () => {
+  it('keeps no credential or live request on the cause of a missing bucket', async () => {
+    const raised = Object.assign(new Error('not found'), {
+      code: 404,
+      request: { headers: { authorization: 'Bearer SECRET-TOKEN' } },
+    });
+    const storage = {
+      bucket: () => ({
+        getFiles: async () => {
+          throw raised;
+        },
+      }),
+    } as unknown as Storage;
+    const err = (await new BucketPresence(storage, 'b')
+      .confirm()
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.cause).not.toBe(raised);
+    expect(err.cause).not.toHaveProperty('request');
   });
 });

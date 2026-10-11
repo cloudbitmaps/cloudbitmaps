@@ -710,6 +710,7 @@ describe('a container that does not exist', () => {
           containerClient: service.getContainerClient(MISSING),
           prefix: `${RUN}/missing`,
         }),
+      MISSING,
     );
   });
 
