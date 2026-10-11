@@ -4,6 +4,7 @@
  * is not a function, a size that is not a positive safe integer and a switch that is not a boolean. Each throws
  * `ValidationError`, so a wiring mistake fails where it is made rather than at the first read.
  */
+import { requirePositiveInteger } from '@/core/check';
 import { ValidationError } from '@/core/errors';
 
 /**
@@ -44,11 +45,7 @@ export function checkNow(name: string, now: unknown): void {
  * absent value comes back `undefined`, for the caller's default.
  */
 export function requirePositiveInt(name: string, value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw new ValidationError(`${name} must be a positive safe integer; got ${shown(value)}`);
-  }
-  return value;
+  return value === undefined ? undefined : requirePositiveInteger(value, name);
 }
 
 /**
