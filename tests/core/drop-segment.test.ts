@@ -765,4 +765,29 @@ describe('segment.dispose audit event', () => {
     });
     expect(events).toEqual([]);
   });
+
+  it('names a generation once when the listing yields its object twice', async () => {
+    const w = await world();
+    await seed(w, [1]);
+    await seed(w, [1, 2]);
+    const storage = new Proxy(w.storage, {
+      get(target, prop, rx) {
+        if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
+        return async function* (ref: SegmentRef) {
+          for await (const key of w.storage.list(ref)) {
+            yield key;
+            yield key;
+          }
+        };
+      },
+    });
+    const deps: DropDeps = { storage, registry: w.registry };
+
+    const preview = await dropSegment(SEG, deps, { ...CONFIRM, dryRun: true });
+    expect(preview.wouldDelete).toEqual([0, 1]);
+
+    const dropped = await dropSegment(SEG, deps, CONFIRM);
+    expect(dropped.generationsDeleted).toEqual([0, 1]);
+    expect(await generationsInStorage(w)).toEqual([]);
+  });
 });

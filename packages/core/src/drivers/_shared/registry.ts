@@ -34,7 +34,7 @@ const STATUSES: readonly string[] = ['active', 'destroyed'];
 /**
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
  * through is refused on read-back like any other corruption (invariant 5), rather than ignored. A field the record
- * gains is listed here with its validator.
+ * gains is listed here with its validator; the registry test fails to compile when this list and the record disagree.
  */
 export const RECORD_FIELDS = [
   'namespace',
@@ -52,14 +52,7 @@ export const RECORD_FIELDS = [
   'keptGens',
   'leases',
   'pointerId',
-] as const satisfies readonly (keyof RegistryRecord)[];
-/** Compile-time: a field {@link RegistryRecord} gains and this list lacks fails the type check here. */
-const everyFieldListed: [Exclude<keyof RegistryRecord, (typeof RECORD_FIELDS)[number]>] extends [
-  never,
-]
-  ? true
-  : never = true;
-void everyFieldListed;
+] as const;
 /** The fields the registry sets on a row and a caller's write never does. */
 const DRIVER_MANAGED: readonly string[] = ['token', 'pointerId'];
 /** The fields of the persisted envelope around a record. */

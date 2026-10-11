@@ -9,13 +9,20 @@ import ts from 'typescript';
  * reader must understand and what a refactor must keep, and the lint config has no unused-exports rule to catch
  * it. The package entry points (the files `exports` and `bin` in each manifest name) are the public surface and
  * are not checked: whether a name belongs there is the api-surface gate's question. Every other file's exports are
- * checked, and a name is used when any file under packages/*\/src, tests/ or fuzz/ imports it, re-exports it, names
+ * checked, and a name is used when any file under packages/*\/src or tests/ imports it, re-exports it, names
  * it in an `import('…')` type, or reads it off a namespace import.
  *
  * What it reads, and what it does not. It matches by NAME, not by resolved file, so a name imported from one module
  * counts as used for a same-named export in another: that can hide an unused export, never invent one. It does not
  * see a name used only through a dynamic key (`ns[name]`), or a use inside a string or a comment. A name that is
  * used only inside its own file loses its `export` (or is deleted when nothing uses it at all).
+ *
+ * Known blind spots. Each makes the gate flag an export that is in use, so it fails loudly rather than passing
+ * quietly: a dynamic `import()` (destructured or read by member), `vi.importActual`, the keys of a `vi.mock`
+ * factory, `export * from`, `typeof ns.X` in a type position, destructuring a namespace (`const { A } = ns`),
+ * `export { A as default }` read through a default import, and `import x = require()`. An unused overloaded
+ * function is reported once per signature. A name flagged for one of these is read by a shape the gate cannot
+ * follow: import it by name, or rename the collision, rather than loosening the detector.
  *
  * The detector is a pure function so the test can plant a violation and watch it fire, and plant the look-alikes
  * that must not: a gate that fires on everything teaches people to route around it.
@@ -162,20 +169,20 @@ function entryFiles(): Set<string> {
   return out;
 }
 
-describe('no export of packages/*/src goes unused', () => {
+describe('no export of packages/core/src goes unused', () => {
   it('every checked export is imported by another file', () => {
     const packages = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => path.join(ROOT, 'packages', e.name, 'src'));
-    const files = [
-      ...packages.flatMap(walk),
-      ...walk(path.join(ROOT, 'tests')),
-      ...walk(path.join(ROOT, 'fuzz')),
-    ];
+    const files = [...packages.flatMap(walk), ...walk(path.join(ROOT, 'tests'))];
     const all = files.map((p) => ({ path: path.relative(ROOT, p), text: readFileSync(p, 'utf8') }));
     const entries = entryFiles();
     expect([...entries].filter((p) => !existsSync(p))).toEqual([]);
     const entryPaths = new Set([...entries].map((p) => path.relative(ROOT, p)));
+    // A missing directory or an empty match would pass with nothing checked. Core has about 76 source files, so a
+    // floor of 50 fails a rename or a wrong prefix while leaving room for files to be merged.
+    expect(existsSync(path.join(ROOT, CORE_DIR))).toBe(true);
+    expect(all.filter((f) => f.path.startsWith(CORE_DIR)).length).toBeGreaterThan(50);
     expect(unusedExports(all, entryPaths, (file) => file.startsWith(CORE_DIR))).toEqual([]);
   });
 });
