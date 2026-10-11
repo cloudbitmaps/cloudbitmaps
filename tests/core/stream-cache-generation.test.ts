@@ -8,6 +8,7 @@ import { BoundedLru, SegmentEngine } from '@cloudbitmaps/core';
 import type { CodecBitmap, StorageChunkSource } from '@cloudbitmaps/core';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
+import { chunkKeyUnder, segmentPrefix } from '@/core/keys';
 import { StreamChunkSource } from '../helpers/stream-chunk-source';
 import { collect, seedSegment } from '../helpers/loaded';
 
@@ -19,9 +20,13 @@ function setup(onResolve?: (engine: SegmentEngine) => void) {
   const inner = new StreamChunkSource();
   seedSegment(inner, 'a', ids([1, 2, 3]));
   seedSegment(inner, 'b', ids([2, 3, 4]));
+  const listed: string[] = [];
   const storage: StorageChunkSource = {
     getChunk: (r) => inner.getChunk(r),
-    listChunkKeys: (r) => inner.listChunkKeys(r),
+    listChunkKeys: (r) => {
+      listed.push(r.segment);
+      return inner.listChunkKeys(r);
+    },
     getChunks: (r, keys, options) => inner.getChunks(r, keys, options),
     currentGeneration: () => {
       onResolve?.(engine);
@@ -30,7 +35,7 @@ function setup(onResolve?: (engine: SegmentEngine) => void) {
   };
   const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
   const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
-  return { inner, cache, engine };
+  return { inner, cache, engine, listed };
 }
 
 describe('a streaming source that names generations and not versions', () => {
@@ -54,33 +59,46 @@ describe('a streaming source that names generations and not versions', () => {
     expect(cache.size).toBe(3);
   });
 
-  it('does not cache what a stream opened after an invalidation reads: it may be newer than the generation it planned under', async () => {
+  // A read invalidated while it resolves its generation lists its keys again and resolves the generation after the
+  // invalidation, so what it caches is of the generation it then planned under, as a read begun after it would cache.
+  // The second listing is what shows the read took its epoch before it resolved: taken after, it would never notice.
+  it('an iterate invalidated while it resolves its generation lists its keys again, and caches what it then reads', async () => {
     let fired = false;
-    const { cache, engine } = setup((engine) => {
+    const { cache, engine, listed } = setup((engine) => {
       if (fired) return;
       fired = true;
       engine.invalidate(ref('a')); // lands while the read resolves its generation
     });
     expect(await collect(engine.iterate(ref('a')))).toEqual(ids([1, 2, 3]));
-    expect(cache.size).toBe(0);
-    expect(await collect(engine.iterate(ref('a')))).toEqual(ids([1, 2, 3])); // a later read caches again
+    expect(listed).toEqual(['a', 'a']);
     expect(cache.size).toBe(3);
   });
 
-  it('a combine invalidated while the generations of its operands resolve caches nothing it reads', async () => {
+  // The operand invalidated while it resolves lists its keys again and caches what it then reads. The other was listed
+  // from before the invalidation, which its stream cannot tell from one of its own segment on a source that names no
+  // versions, so it caches nothing it reads.
+  it('a combine invalidated while the generations of its operands resolve: the operand invalidated lists again, the other caches nothing', async () => {
     let fired = false;
-    const { cache, engine } = setup((engine) => {
+    const { cache, engine, listed } = setup((engine) => {
       if (fired) return;
       fired = true;
       engine.invalidate(ref('a'));
     });
     expect(await collect(engine.intersect([ref('a'), ref('b')]))).toEqual(ids([2, 3]));
-    expect(cache.size).toBe(0);
+    expect(listed.filter((segment) => segment === 'a')).toHaveLength(2);
+    expect(listed.filter((segment) => segment === 'b')).toHaveLength(1);
+    const cached = (segment: string, chunk: number) =>
+      cache.peek(chunkKeyUnder(segmentPrefix(ref(segment)), chunk, 7)) !== undefined;
+    expect([2, 3].map((chunk) => [cached('a', chunk), cached('b', chunk)])).toEqual([
+      [true, false],
+      [true, false],
+    ]);
+    expect(cache.size).toBe(2);
   });
 
-  it('an iterate over a range invalidated while its generation resolves caches nothing it reads', async () => {
+  it('an iterate over a range invalidated while its generation resolves lists its keys again, and caches what it then reads', async () => {
     let fired = false;
-    const { cache, engine } = setup((e) => {
+    const { cache, engine, listed } = setup((e) => {
       if (fired) return;
       fired = true;
       e.invalidate(ref('a'));
@@ -88,7 +106,8 @@ describe('a streaming source that names generations and not versions', () => {
     expect(await collect(engine.iterate(ref('a'), { through: joinId(3, 5) }))).toEqual(
       ids([1, 2, 3]),
     );
-    expect(cache.size).toBe(0);
+    expect(listed).toEqual(['a', 'a']);
+    expect(cache.size).toBe(3);
   });
 
   describe('a read that moves while its stream is open caches nothing more the stream delivers', () => {
