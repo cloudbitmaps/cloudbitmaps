@@ -145,16 +145,16 @@ function projectOps({
   // real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new segment that finds its number
   // free checks it once and reads the pointer twice with nothing racing it (its row, then again after its ids, the
   // create being sent without reading the row), three GET-class requests, and one that finds it taken reads the pointer
-  // three times more around its collection: before and after its listing and before its delete, since the objects it
-  // met leave one outside its window, five; the row it publishes records no list of kept generations (the listing
-  // numbered it), so the collection records the window it kept with one more conditional write that reads the row for
-  // its version, six; each attempt a load loses adds two pointer reads (the publish's read of the row, and the
-  // create's read after it lost), so it makes fifteen at most, fourteen pointer reads and the check, and one that
+  // four times more around its collection: before and after its listing, and before and after its delete, since the
+  // objects it met leave one outside its window, six; the row it publishes records no list of kept generations (the
+  // listing numbered it), so the collection records the window it kept with one more conditional write that reads the
+  // row for its version, seven; each attempt a load loses adds two pointer reads (the publish's read of the row, and the
+  // create's read after it lost), so it makes sixteen at most, fifteen pointer reads and the check, and one that
   // loses every attempt throws after as many. The harness is the only
   // writer to a bucket of its own, so its loads never race and never meet an object; the bound still has to hold if
   // one did, for up to two (each further stray below the window adds a re-read).
   const putPerLoad = 4 + retryBound;
-  const getPerLoad = 5 + 2 * retryBound;
+  const getPerLoad = 6 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same listings and pointer advance.
   const putPerLargeLoad = 5 + partsPerLargeLoad + retryBound;
   // A read, per operand: resolve the pointer, read the footer and the index, then one GET per chunk fetched.
@@ -175,10 +175,10 @@ function projectOps({
  * A claim on each segment's FIRST load, refusing a second.
  *
  * The projection bounds a segment's first load: its number checked once and its pointer read twice with nothing
- * racing it, four more when the check finds the number taken and the load collects what it met and records its window,
- * and fifteen GET-class requests at most when every publish attempt but the last is lost. A reload whose number is taken makes ELEVEN at
- * five lost races, as many as the bound, and twelve, past it, when its row was written before rows carried a summary
- * of the current generation and it also reads that generation's index. A stage that loaded a name
+ * racing it, five more when the check finds the number taken and the load collects what it met and records its window,
+ * and sixteen GET-class requests at most when every publish attempt but the last is lost. A reload whose number is
+ * taken makes eleven when it loses four races, and twelve when its row was written before rows carried a summary of the
+ * current generation and it also reads that generation's index (`tests/bench/calibrate-stages.test.ts` counts both). A stage that loaded a name
  * twice would overspend a projection that said it was safe, so the harness loads each name once and a repeat is
  * refused before it sends anything.
  */

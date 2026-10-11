@@ -1,9 +1,12 @@
+import { runConsistencyCheck } from '@cloudbitmaps/core';
 import { loadSegment } from '@/core/load';
-import { KeyUnavailableError, ValidationError } from '@/core/errors';
+import { KeyUnavailableError, NotFoundError, ValidationError } from '@/core/errors';
+import { rollbackSegment } from '@/core/rollback';
 import { roaringCodec } from '@/roaring-codec';
 import { RecordingAuditSink, TransientError } from '@/index';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { gate } from '../helpers/retaken-number-race';
 
 /**
  * A refused load deletes the object it wrote, best-effort: a fault in that cleanup must not replace the refusal, which
@@ -102,5 +105,123 @@ describe('a refusal the publish raises as an error', () => {
     ).rejects.toBe(err);
     expect(await registry.get(REF)).toBeNull();
     expect(await objects(storage)).toEqual([0]);
+  });
+});
+
+describe('a refused load whose row another writer changed', () => {
+  /**
+   * The object a refused load wrote, once another writer has changed the row, is deleted only when one read of its
+   * footer proves it the load's own, under the version that read reported, and kept when the row's pointer names it. Left
+   * in the bucket, an object below the pointer is a rollback target, and a rollback would publish what the load never
+   * published:
+   *
+   *   stale loader   reads the row at 5, finds 6 free ── stalls before its put ──────────▶ writes 6, is refused
+   *   two loads                       publish 6 (deleting 5), then 7 (deleting 6) │
+   */
+  const objects = async (storage: IStorageDriver): Promise<number[]> => {
+    const out: number[] = [];
+    for await (const k of storage.list(REF)) out.push(k.generation);
+    return out.sort((a, b) => a - b);
+  };
+  const world = () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  };
+  const consistent = async (w: ReturnType<typeof world>): Promise<void> => {
+    const report = await runConsistencyCheck({ storage: w.storage, registry: w.registry });
+    expect(report.inconsistent).toEqual([]);
+  };
+
+  it("deletes a stalled loader's object below the pointer, so no rollback can publish it", async () => {
+    const w = world();
+    for (let g = 0; g <= 5; g++) await loadSegment(REF, [g + 1], w.deps, { keep: 0 }); // current 5
+    const at = gate();
+    let held = false;
+    const stalling = Object.create(w.storage) as IStorageDriver;
+    stalling.putImmutable = async (key, write) => {
+      if (!held && key.generation === 6) {
+        held = true;
+        at.reach();
+        await at.opened;
+      }
+      return w.storage.putImmutable(key, write);
+    };
+    const stale = loadSegment(
+      REF,
+      [],
+      { ...w.deps, storage: stalling },
+      { allowEmpty: true, keep: 0 },
+    );
+    await at.reached;
+    await loadSegment(REF, [7], w.deps, { keep: 0 }); // 6, deleting 5
+    await loadSegment(REF, [8], w.deps, { keep: 0 }); // 7, deleting 6
+    expect(await objects(w.storage)).toEqual([7]);
+    at.open();
+
+    // It writes 6 afresh, below the pointer now, and is refused.
+    await expect(stale).resolves.toMatchObject({
+      generation: 6,
+      published: false,
+      reason: 'superseded',
+    });
+    expect(await objects(w.storage)).toEqual([7]);
+    await expect(rollbackSegment(REF, 6, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+    expect((await w.registry.get(REF))!.currentGen).toBe(7);
+    await consistent(w);
+  });
+
+  it('keeps an object that landed unanswered and that the next publish keeps in its window', async () => {
+    const w = world();
+    await loadSegment(REF, [1, 2, 3], w.deps); // 0
+    // This load's compare-and-swap lands and its answer is lost; before the load reads the row back, another load
+    // publishes over it with a window of one, which keeps this load's generation.
+    let lost = false;
+    const lossy = Object.create(w.registry) as IRegistryDriver;
+    lossy.compareAndSwap = async (ref, expected, patch) => {
+      const written = await w.registry.compareAndSwap(ref, expected, patch);
+      if (lost) return written;
+      lost = true;
+      await loadSegment(REF, [7, 8, 9], w.deps);
+      throw new TransientError('connection reset after the write');
+    };
+    const audit = new RecordingAuditSink();
+    await expect(
+      loadSegment(REF, [4, 5, 6], { ...w.deps, registry: lossy }, { audit }),
+    ).resolves.toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(audit.snapshot()).toContainEqual(
+      expect.objectContaining({ kind: 'segment.load-refused', unanswered: true }),
+    );
+    const row = (await w.registry.get(REF))!;
+    expect(row.currentGen).toBe(2);
+    expect(row.keptGens).toEqual([1]);
+    expect(await objects(w.storage)).toEqual([1, 2]);
+    await consistent(w);
+  });
+
+  it('keeps an object the pointer names by the time the refusal reads the row', async () => {
+    const w = world();
+    await loadSegment(REF, [1, 2, 3], w.deps); // 0
+    // Right after this load writes its empty object at 1, a forward rollback moves the pointer onto it. The guard then
+    // refuses the empty load, and the row its refusal reads names the object.
+    let rolled = false;
+    const racing = Object.create(w.storage) as IStorageDriver;
+    racing.putImmutable = async (key, write) => {
+      const out = await w.storage.putImmutable(key, write);
+      if (!rolled) {
+        rolled = true;
+        await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+      }
+      return out;
+    };
+    await expect(loadSegment(REF, [], { ...w.deps, storage: racing })).resolves.toMatchObject({
+      generation: 1,
+      published: false,
+      reason: 'empty',
+    });
+    expect(rolled).toBe(true);
+    expect((await w.registry.get(REF))!.currentGen).toBe(1);
+    expect(await objects(w.storage)).toEqual([0, 1]);
+    await consistent(w);
   });
 });

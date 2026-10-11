@@ -199,7 +199,7 @@
                   <td class="from">
                     A generation written once, then the pointer moved to it: a segment's first
                     <span class="m">store.load()</span> made 2 PUT + 3 GET on real S3, with the pointer in the same bucket (the requests measured, the price the list price);
-                    a single-part load ran at 2.59 million ids a second. A steady load at <span class="m">keep: 12</span> that deletes a generation by name made 2 PUT + 4 GET and a free delete, $11.60 per million, on the same run. The meter counts objects, not ids — so batch a refresh.
+                    a single-part load ran at 2.59 million ids a second. Each kind of steady load at <span class="m">keep: 12</span> was measured on the same run, of the release it installed. The meter counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -737,7 +737,7 @@
           </div>
           <p class="tpanel-foot">
             <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where marked:
-            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a steady load at <span class="m">keep: 12</span> is measured too: 2 PUT + 4 GET and a free delete when it deletes a generation by name, $11.60 per million, with each kind in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#the-in-region-run--run-2026-10-06-9d36b" target="_blank" rel="noopener" aria-label="The benchmarks doc's steady-load figures (opens in a new tab)">the benchmarks doc</a>. All 40
+            the second row is the code's prediction, which the run met exactly. The two load rows are a segment's first load: the requests are measured and the price is the list price; a steady load at <span class="m">keep: 12</span> is measured too, on the release the run installed, with each kind in <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md#the-in-region-run--run-2026-10-06-9d36b" target="_blank" rel="noopener" aria-label="The benchmarks doc's steady-load figures (opens in a new tab)">the benchmarks doc</a>. All 40
             cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
             count and by sum, and each fetched 100 of 1,999 chunks per segment, the chunks the two share, and
             no other, as one range. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the

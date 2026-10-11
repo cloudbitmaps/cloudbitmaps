@@ -125,7 +125,7 @@ describe('an unguarded write that found no row fences on that absence too', () =
     await other.load({ segment: 'dest' }, THOUSAND);
   };
 
-  it('load({ allowEmpty: true }): refused and audited, and its object is left for the next load to collect', async () => {
+  it('load({ allowEmpty: true }): refused and audited, and its object deleted', async () => {
     const backend = new MemoryStorage();
     const store = new CloudRoaring({ storage: backend, cache: { genTtlMs: 0 } });
     const audit = new RecordingAuditSink();
@@ -146,14 +146,14 @@ describe('an unguarded write that found no row fences on that absence too', () =
     ]);
     expect((await backend.registry.get({ segment: 'dest' }))!.currentGen).toBe(0);
     expect(await collect(store.segment('dest').iterate())).toHaveLength(1000);
-    // The row changed under it, so the refusal cannot prove the number its own and leaves the object above the
-    // pointer. The next load's check meets it, numbers above it by a listing, and that listing deletes it.
-    expect(await objects(backend, 'dest')).toEqual([0, 1]);
+    // The row changed under it, so the row does not prove the number its own: one read of the object's footer does,
+    // and the refusal deletes it. The next load takes the number afresh.
+    expect(await objects(backend, 'dest')).toEqual([0]);
     expect(await store.load({ segment: 'dest' }, [7])).toMatchObject({
-      generation: 2,
+      generation: 1,
       published: true,
     });
-    expect(await objects(backend, 'dest')).toEqual([0, 2]);
+    expect(await objects(backend, 'dest')).toEqual([0, 1]);
   });
 
   it('an *Into with allowEmpty: true: a lost race throws, and the destination keeps its ids', async () => {
@@ -224,20 +224,15 @@ describe('an unguarded write that found no row fences on that absence too', () =
     expect(row.currentGen).toBeNull();
     expect(row.retention).toBeDefined();
     expect(await store.exists({ segment: 'dest' })).toBe(false);
-    // Its object is left in the bucket. The next load numbers past it; that row recorded no kept generations, so the
-    // load's listing keeps the newest one below its pointer, this object, and the load after it pushes it out.
-    expect(await objects(backend, 'dest')).toEqual([0]);
+    // One read of its object's footer proves it this load's own, and the refusal deletes it. The next load takes the
+    // number afresh, onto the row and its policy.
+    expect(await objects(backend, 'dest')).toEqual([]);
     expect(await store.load({ segment: 'dest' }, [4])).toMatchObject({
-      generation: 1,
+      generation: 0,
       published: true,
     });
     expect((await backend.registry.get({ segment: 'dest' }))!.retention).toEqual(row.retention);
     expect(await collect(store.segment('dest').iterate())).toEqual([4]);
-    expect(await objects(backend, 'dest')).toEqual([0, 1]);
-    expect(await store.load({ segment: 'dest' }, [5])).toMatchObject({
-      generation: 2,
-      published: true,
-    });
-    expect(await objects(backend, 'dest')).toEqual([1, 2]);
+    expect(await objects(backend, 'dest')).toEqual([0]);
   });
 });

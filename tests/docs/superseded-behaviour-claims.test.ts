@@ -1991,15 +1991,18 @@ const LOAD_PRICES: Dollars = (() => {
   return {
     steady: price(steady),
     listing: price({ put: steady.put + 1, get: steady.get + 1 }),
-    // A first load has nothing to collect, so it makes no re-read before a delete either.
-    first: price({ put: steady.put, get: steady.get - 1 }),
+    // A first load has nothing to collect, so it makes neither the read of the row before a delete nor the one after.
+    first: price({ put: steady.put, get: steady.get - 2 }),
     average: price({ put: putAverage, get: getAverage }),
     get: base.storage.getPerMillion,
     put: base.storage.putPerMillion,
   };
 })();
-/** What 0.11.2 published for a steady and a first load. History belongs to the changelog, after "was". */
-const PRICES_BEFORE = [23.6, 22.8];
+/**
+ * What 0.11.2 published for a steady and a first load, and what a cycle of steady loads averaged on the 0.17.0 engine,
+ * which read the pointer once fewer to collect. History belongs to the changelog and to a run's own record, after "was".
+ */
+const PRICES_BEFORE = [23.6, 22.8, 11.94];
 /**
  * A million single-part writes and publishes, pointer included: the figure of the newest run that timed a write and
  * publish alone, from its committed evidence by the module the site's figures take it from. A page compares
@@ -2218,9 +2221,9 @@ describe("a page's figures for store.load() are the estimator's", () => {
       f(LOAD_PRICES.steady),
       f(LOAD_PRICES.listing),
       f(LOAD_PRICES.average),
-    ]).toEqual(['11.20', '11.60', '17.00', '11.94']);
+    ]).toEqual(['11.20', '12.00', '17.40', '12.34']);
     expect(WRITE_AND_PUBLISH.toFixed(2)).toBe('11.20');
-    expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.07');
+    expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.10');
   });
 
   // Both directions: each stale form is caught, and the sentences that must stay legal are not.
@@ -2255,12 +2258,12 @@ describe("a page's figures for store.load() are the estimator's", () => {
   });
 
   it.each([
-    'about $11.94 per million single-part loads at the default prices',
+    'about $12.34 per million single-part loads at the default prices',
     "a segment's first store.load() is expected at $11.20 per million",
-    'a load that does not list costs $11.60 per million',
-    'a load that lists costs $17.00 per million',
-    "$11.94 per million steady single-part loads at the default prices: $11.60 when a load does not list, $17.00 when it lists (every 16th generation), and $11.20 for a segment's first load",
-    "$11.94 per million single-part loads, where it was $23.60, and $11.20 for a segment's first load, where it was $22.80.",
+    'a load that does not list costs $12.00 per million',
+    'a load that lists costs $17.40 per million',
+    "$12.34 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.40 when it lists (every 16th generation), and $11.20 for a segment's first load",
+    "$12.34 per million single-part loads, where it was $23.60, and $11.20 for a segment's first load, where it was $22.80.",
     'one more GET ($0.40 per million at the default prices) that a load makes',
     'S3 GETs, $0.40 a million, and a PUT-class request, $5 per million, for each load',
     '$82.40 per million cold intersects of two segments, and $11.20 per million loads written and published',
@@ -2280,13 +2283,13 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'Writing and publishing a segment, pointer included, with store.load() about a tenth more on average',
     '1M writes + publishes · store.load() ≈ 1.1×',
     'store.load() costs 1.1 times a write and publish, on average',
-    'a store.load() writes and publishes for $11.94 per million on average',
+    'a store.load() writes and publishes for $12.34 per million on average',
     // Prices another load's words call for, and other backends' and encrypted segments' counts.
-    'a load that deletes by name costs $11.60 per million',
-    'from the third load on, a load costs $11.60 per million',
-    'a load that lists nothing costs $11.60 per million',
-    'a load on a generation divisible by 16 costs $17.00 per million',
-    'on Azure Blob a steady load costs $11.60 per million, $11.94 on average',
+    'a load that deletes by name costs $12.00 per million',
+    'from the third load on, a load costs $12.00 per million',
+    'a load that lists nothing costs $12.00 per million',
+    'a load on a generation divisible by 16 costs $17.40 per million',
+    'on Azure Blob a steady load costs $12.00 per million, $12.34 on average',
     "an encrypted segment's load costs $12.74 per million on average",
     // A ratio that is not a comparison with a write: a 64 × 1,024 product, and a write named without store.load().
     'the writer cuts 64 × 1,024 containers per slice, and store.load() writes each',
@@ -2334,7 +2337,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
 // read or a check counted inside a load, a total for a load that lists, a clause that names two operations without a
 // word between a subject and its count that tells them apart, or a subject worded another way ("one write and publish").
 // The first and second load's counts are derived from the steady load's, as the cost test's counts of the engine hold
-// them (2 PUT-class and 4 GET-class, then 2 and 3).
+// them (a steady load 2 PUT-class and 5 GET-class; a first load 2 and 3, and a second 2 and 2).
 // ---------------------------------------------------------------------------------------------------
 type LoadKind = 'steady' | 'first' | 'second' | 'listing';
 type Requests = { put: number; get: number };
@@ -2362,8 +2365,9 @@ const REQUEST_COUNTS: {
     load: {
       steady: { ...steady, total: steady.put + steady.get + DELETE },
       listing: { put: steady.put + 1, get: steady.get + 1 },
-      first: { ...steady, get: steady.get - 1, total: steady.put + steady.get - 1 },
-      second: { ...steady, get: steady.get - 2, total: steady.put + steady.get - 2 },
+      // Neither collects, so neither reads the row before a delete or after it; a second load reads its row once.
+      first: { ...steady, get: steady.get - 2, total: steady.put + steady.get - 2 },
+      second: { ...steady, get: steady.get - 3, total: steady.put + steady.get - 3 },
     },
     coldCount: {
       pointer,
@@ -2533,8 +2537,8 @@ function requestCountHits(rel: string, text: string): string[] {
 describe("a page's request counts for a load, a cold count and a cold stat are the cost model's", () => {
   it('derives the counts the model gives', () => {
     expect(REQUEST_COUNTS.load).toEqual({
-      steady: { put: 2, get: 4, total: 7 },
-      listing: { put: 3, get: 5 },
+      steady: { put: 2, get: 5, total: 8 },
+      listing: { put: 3, get: 6 },
       first: { put: 2, get: 3, total: 5 },
       second: { put: 2, get: 2, total: 4 },
     });
@@ -2543,14 +2547,14 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
 
   // Both directions: each stale or wrong form is caught, and the honest phrasings and the look-alikes are not.
   it.each([
-    'a steady single-part load on S3 is 2 PUT-class requests, 4 GET-class and a delete, 9 requests',
-    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 8 requests',
+    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 9 requests',
+    'a steady single-part load on S3 is 2 PUT-class requests, 4 GET-class and a delete, 7 requests',
     "a segment's first load is expected at 2 PUT-class and 4 GET requests",
-    'a steady store.load() is 3 PUT-class requests and 4 GET-class',
+    'a steady store.load() is 3 PUT-class requests and 5 GET-class',
     "a segment's first load is expected at 2 PUT-class and 5 GET requests",
     "a segment's second load makes 3 GET-class requests",
     'a reload of a segment makes 3 GETs',
-    'a load that lists is 3 PUT-class and 6 GET-class',
+    'a load that lists is 3 PUT-class and 5 GET-class',
     'a load makes 14 requests',
     'a cold count() makes 2 requests',
     'a cold count is two requests',
@@ -2561,7 +2565,7 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'A cold `stat()` is 2 pointer reads',
     'a cold count on S3 and GCS makes 3 requests, with the row summary',
     'store.load() sends 3 PUTs.',
-    '| A steady store.load() | 8 requests |',
+    '| A steady store.load() | 7 requests |',
     '| A first load | 2 PUT-class requests and 4 GETs |',
     "a segment's first load was measured at 2 PUT-class and 9 GET requests",
     "a segment's first load made 2 PUT-class and 9 GET requests in run 2026-10-04-73668",
@@ -2570,12 +2574,12 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
   });
 
   it.each([
-    'a steady single-part load on S3 is 2 PUT-class requests, 4 GET-class and a delete, 7 requests',
-    'a steady store.load() is 2 PUT-class requests and 4 GET-class',
+    'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 8 requests',
+    'a steady store.load() is 2 PUT-class requests and 5 GET-class',
     "a segment's first load is expected at 2 PUT-class and 3 GET requests",
     "a segment's second load is 2 PUT-class and 2 GET-class requests, 4 in all",
-    'a load that lists is 3 PUT-class and 5 GET-class',
-    'a load that does not list makes 7 requests',
+    'a load that lists is 3 PUT-class and 6 GET-class',
+    'a load that does not list makes 8 requests',
     'a cold count() makes 1 request',
     'a cold count is one request',
     'count() is one request when cold, and a cold stat() is one pointer read',
@@ -2584,9 +2588,9 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'a cold count() of a row with no summary makes 2 requests, and 3 on Azure Blob',
     'a cold stat() of a row with no summary makes 2 requests, and 3 on Azure Blob',
     // History is the changelog's.
-    'a steady load makes 7 requests, where 0.11.2 made 14',
+    'a steady load makes 8 requests, where 0.11.2 made 14',
     'a cold count makes 1 request where it was 2',
-    'it takes a steady load from 14 requests to 7',
+    'it takes a steady load from 14 requests to 8',
     // Ranges, bounds, and "more" or "fewer".
     'a load makes 2 to 3 PUT-class requests',
     'a load makes one or two requests more than it needs',
@@ -2608,10 +2612,10 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     'A load past 3,500 PUT requests a second to one prefix is throttled.',
     'A load takes 2 PUT-class requests and, on the cadence, a listing.',
     'A cold count() of 4 segments in one call makes 4 requests.',
-    '| A steady store.load() | 7 requests |',
+    '| A steady store.load() | 8 requests |',
     'objects that fit one PUT, loaded through store.load(), and objects large enough to upload multipart',
     'store.load() writes the object with one PUT, then moves the pointer',
-    'a cold intersect makes 206 GETs, and a load makes 2 PUT-class requests and 4 GET-class requests',
+    'a cold intersect makes 206 GETs, and a load makes 2 PUT-class requests and 5 GET-class requests',
   ])('leaves %j alone', (text) => {
     expect(requestCountHits('x.md', text)).toEqual([]);
   });

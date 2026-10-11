@@ -48,7 +48,7 @@ const report = estimateCost({
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.000358, pointerRefresh: ≈1.05, retention: 0 }
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.00037, pointerRefresh: ≈1.05, retention: 0 }
 report.monthlyUSD.total; // ≈68.4
 report.redisBaseline; // $142.35 a month: the cheapest cluster in the catalogue that holds 1.12 GiB, 1 shard of 3 cache.t4g.medium nodes
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
@@ -156,19 +156,20 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   index longer than the tail read (tens of thousands of chunks). Counts and stats within `cache.genTtlMs` are free
   beyond the pointer refresh.
 - **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
-  P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and four GETs: two pointer reads and
-  two checks, each a single request on every backend (a `HeadObject` on S3), that the next generation number is free
-  and that the current generation's object is there. The load reads no index: the row's summary of the current
+  P + 2), plus what `store.load()` adds: the pointer's write, PUT-class on S3, and five GETs: three pointer reads (the
+  row before the publish, again before the delete, and once after it, which sees a rollback that landed between that
+  read and the delete) and two checks, each a single request on every backend (a `HeadObject` on S3), that the next
+  generation number is free and that the current generation's object is there. The load reads no index: the row's summary of the current
   generation gives its guard the size, and its publish is written against the row the load read, with no read of its own. The
   row records which generations the load keeps, so the load then deletes by name the generations its publish pushed out
   of the window, a request S3 does not bill, and lists the segment only on every 16th generation, which adds a
   PUT-class request and two pointer reads there and makes no check that the current object is there, a sixteenth of each
   a load on average. That is a segment with a full window behind it, whose row carries a summary and a list of kept
-  generations, at any `keep` from 1 to 64, and about $11.94 per million single-part loads at the default prices
-  (derived from the measured kinds, weighted as every 16 generations make them: 15 loads that delete by name and one
-  that lists). The requests are measured on S3 at `keep: 12`
-  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made the requests above for each kind of load)
-  and counted, not measured, at any other `keep` above 1; a segment's first two loads collect
+  generations, at any `keep` from 1 to 64, and about $12.34 per million single-part loads at the default prices
+  (derived from the counted kinds, weighted as every 16 generations make them: 15 loads that delete by name and one
+  that lists). The requests are counted by the engine's tests at every `keep` from 1 to 64
+  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) measured each kind of load at `keep: 12` on an
+  earlier release, whose loads that collect made one GET fewer, without the read after the delete); a segment's first two loads collect
   nothing and make fewer requests, and the first load onto a row with no summary of its current generation (one a
   rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) reads that
   generation's index, a tail read, in place of the check that its object is there. A publish
@@ -225,9 +226,11 @@ it is a property of three inputs, and of the data size, which sets the Redis:
 
 **An erasure is not in the model.** Beside the reads that search a segment's generations, an erasure that deletes an
 object a load may still publish (above the pointer, a first load's object on a segment with no generation yet, or one
-no read of the segment can open) renews the segment's registry row before it deletes it and reads the row again before
-each such delete: on a segment with no generation yet, `3 + n` registry reads and 1 write for `n` objects, where an
-erasure that deletes nothing reads the row once (counted at the registry the S3, GCS and Azure Blob drivers share).
+no read of the segment can open) renews the segment's registry row before it deletes it, reads the row again before
+each such delete, and once more after the last: on a segment with no generation yet, `4 + n` registry reads and 1
+write for `n` objects, where an erasure that deletes nothing reads the row once (counted at the registry the S3, GCS
+and Azure Blob drivers share). The collection an erasure runs below the pointer reads the row once more after its last
+delete too.
 That is paid once per affected segment, since the next run finds nothing to delete. A renewal that gets no answer
 waits up to 3.5 s in all before it gives up, within one segment, and `eraseSubject` erases 8 segments at once by
 default. A renewal on a segment with a generation moves its `pointerId`, so each store reading it opens its current

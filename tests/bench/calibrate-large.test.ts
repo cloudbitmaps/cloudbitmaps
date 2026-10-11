@@ -1057,14 +1057,35 @@ describe('the evidence of a large run', () => {
     }
     const recorded = fixture as unknown as Recorded;
 
-    it('records the bound the projection gives its own plan, and the sizes and counts the engine makes', async () => {
+    it('records the bound the projection gave its own plan, and the sizes and counts the engine makes', async () => {
       const sizes = await counted;
-      const plan = large.projectLarge(planOf(sizes));
-      expect(recorded.projected).toEqual(plan.total);
-      expect(recorded.projectedStages).toEqual(plan.stages);
-      expect(recorded.projectedDiscards).toEqual({
-        ...plan.discards,
-        costliestSample: plan.costliestSample,
+      const w = planOf(sizes);
+      const plan = large.projectLarge(w);
+      // The recording's harness bounded a load one GET lower than this one does, since a load now reads the pointer
+      // once more after its collection's last delete: the bound this harness gives the same plan is the recorded one
+      // with one GET more for each load the plan makes, and for the costliest sample, an `*Into` call that loads its
+      // output, so for each sample a run may discard.
+      const loads = {
+        largeLoad: sizes.reduce((n, x) => n + x.operandBytes.length, 0),
+        largeInto: sizes.length * w.intos * Object.keys(large.INTO_READS).length,
+      };
+      const oneMore = (stage: keyof typeof loads): Bound => ({
+        put: recorded.projectedStages[stage]?.put ?? NaN,
+        get: (recorded.projectedStages[stage]?.get ?? NaN) + loads[stage],
+      });
+      expect(plan.stages).toEqual({
+        ...recorded.projectedStages,
+        largeLoad: oneMore('largeLoad'),
+        largeInto: oneMore('largeInto'),
+      });
+      expect(plan.costliestSample).toBe(recorded.projectedDiscards.costliestSample + 1);
+      expect(plan.discards).toEqual({
+        put: recorded.projectedDiscards.put,
+        get: recorded.projectedDiscards.get + w.discards.perRun,
+      });
+      expect(plan.total).toEqual({
+        put: recorded.projected.put,
+        get: recorded.projected.get + loads.largeLoad + loads.largeInto + w.discards.perRun,
       });
       expect(recorded.workload.sizes.map((x) => x.idsPerSegment)).toEqual(large.LARGE_SIZES);
       expect(recorded.workload.sizes.map((x) => x.operandBytes)).toEqual(

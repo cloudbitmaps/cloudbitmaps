@@ -99,7 +99,7 @@ async function orphan(storage: IStorageDriver, generation: number): Promise<void
 }
 
 describe('a load collects by name when its number was checked, whatever keep is', () => {
-  it('deletes the generation the window pushed out, with one pointer read and no listing', async () => {
+  it('deletes the generation the window pushed out, with two pointer reads and no listing', async () => {
     const w = world();
     await loadMany(w, 3);
     expect(await generations(w.memory)).toEqual([1, 2]);
@@ -108,8 +108,9 @@ describe('a load collects by name when its number was checked, whatever keep is'
     expect(r).toMatchObject({ generation: 3, published: true, collected: [1] });
     expect(w.storageCalls.list).toBeUndefined();
     expect(w.storageCalls.delete).toBe(1);
-    // The row once before the publish, and again before the delete: that is the whole pass.
-    expect(w.registryCalls.get).toBe(2);
+    // The row once before the publish, again before the delete, and once after it, which a rollback that landed between
+    // that read and the delete would be seen by: that is the whole pass.
+    expect(w.registryCalls.get).toBe(3);
     expect(await generations(w.memory)).toEqual([2, 3]);
   });
 
@@ -131,7 +132,7 @@ describe('a load collects by name when its number was checked, whatever keep is'
       expect(r.collected).toHaveLength(1);
       expect(w.storageCalls.list).toBeUndefined();
       expect(w.storageCalls.delete).toBe(1);
-      expect(w.registryCalls.get).toBe(2);
+      expect(w.registryCalls.get).toBe(3);
       const held = await generations(w.memory);
       expect(held).toHaveLength(keep + 1);
       expect(held.slice(-keep - 1)).toEqual(
