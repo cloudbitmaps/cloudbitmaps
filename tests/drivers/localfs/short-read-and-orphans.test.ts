@@ -56,7 +56,7 @@ describe('LocalFs orphan temp files', () => {
   async function plantOrphan(ageMs: number): Promise<string> {
     const final = storageObjectPath(root, KEY);
     await mkdir(dirname(final), { recursive: true });
-    const orphan = `${final}.00000000-0000-4000-8000-000000000000.tmp`;
+    const orphan = `${final}.stale-writer.tmp`;
     await writeFile(orphan, 'x');
     const then = new Date(Date.now() - ageMs);
     await utimes(orphan, then, then);
@@ -66,12 +66,12 @@ describe('LocalFs orphan temp files', () => {
   it('a write sweeps an old temp file beside its object and keeps a recent one', async () => {
     const driver = new LocalFsStorageDriver(root);
     const old = await plantOrphan(2 * 60 * 60 * 1000);
-    const recent = `${old.replace('00000000-0000-4000-8000-000000000000', '11111111-1111-4111-8111-111111111111')}`;
+    const recent = `${old.replace('stale-writer', 'live-writer')}`;
     await writeFile(recent, 'y');
     await driver.putImmutable(KEY, (sink) => sink.write(Uint8Array.of(1)));
     const names = await readdir(dirname(old));
-    expect(names.some((n) => n.includes('00000000-0000-4000'))).toBe(false);
-    expect(names.some((n) => n.includes('11111111-1111-4111'))).toBe(true);
+    expect(names.some((n) => n.includes('stale-writer'))).toBe(false);
+    expect(names.some((n) => n.includes('live-writer'))).toBe(true);
   });
 
   it('a write whose sink fails leaves no temp file behind', async () => {
