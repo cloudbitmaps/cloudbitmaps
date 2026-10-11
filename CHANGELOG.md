@@ -13,6 +13,7 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The reader cache's byte ceiling counts the heap a tiny reader holds.** `cache.readerMaxBytes` weighed an open reader as its parsed index, metadata and kept chunk bytes only, about 20 bytes for a one-chunk segment that retained about 3.7 KiB, so a store that raised `cache.readerMax` for many small segments held roughly 100 times the bytes the ceiling named. Each open reader now also counts a fixed 3.75 KiB, measured. At the defaults nothing changes (64 MiB holds about 17,000 tiny readers, past the 1,024 count); a store that lowered `readerMaxBytes` for a small heap keeps fewer tiny segments open, and reopens the rest as it reads them.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
 
 ## [0.20.0] — 2026-10-09
