@@ -33,8 +33,9 @@ export class BufferSink implements BlobSink {
   private length = 0;
 
   write(bytes: Uint8Array): Promise<void> {
-    // Copy: callers may reuse their buffer after write() resolves.
-    this.chunks.push(bytes.slice());
+    // Copy into a plain Uint8Array: callers may reuse their buffer after write() resolves, and on a Node Buffer
+    // `slice()` is a view of it, not a copy.
+    this.chunks.push(new Uint8Array(bytes));
     this.length += bytes.length;
     return Promise.resolve();
   }
