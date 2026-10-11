@@ -322,5 +322,21 @@
   {
     "entry": "@cloudbitmaps/core EngineDeps.sharesInvalidationsWith",
     "reason": "the owner agreed: an optional, opt-in member, so every existing construction compiles and returns what it did before; engines over one chunk cache built with it share one invalidation scope, so an invalidation reaches pinned engines, and engines built without it share nothing"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdStream",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.everyNth",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdIterator.return",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdIterator.throw",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
   }
 ]
