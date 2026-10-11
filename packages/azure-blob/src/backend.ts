@@ -7,7 +7,12 @@
  * **container client**, not an account client plus a container name, because a `ContainerClient` is already
  * scoped. Supply `containerClient` directly, or give a `connectionString` + `container` and one is built.
  */
-import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import {
+  STORAGE_BACKEND,
+  ValidationError,
+  brandAsBackend,
+  refuseUnknownOptions,
+} from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
@@ -70,27 +75,6 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
   'conditionalDelete',
 ] as const;
 
-/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
-function refuseUnknown(
-  name: string,
-  options: unknown,
-  keys: readonly string[],
-  hint: string,
-): void {
-  if (options === null || typeof options !== 'object') {
-    throw new ValidationError(
-      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
-    );
-  }
-  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
-  if (unknown.length > 0) {
-    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
-    throw new ValidationError(
-      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
-    );
-  }
-}
-
 export class AzureBlobStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -100,7 +84,7 @@ export class AzureBlobStorage implements StorageBackend {
   readonly containerClient: ContainerClient;
 
   constructor(options: AzureBlobStorageOptions) {
-    refuseUnknown(
+    refuseUnknownOptions(
       'AzureBlobStorage',
       options,
       AZURE_BLOB_STORAGE_OPTION_KEYS,

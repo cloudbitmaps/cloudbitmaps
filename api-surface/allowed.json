@@ -338,5 +338,41 @@
   {
     "entry": "@cloudbitmaps/roaring IdIterator.throw",
     "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit refuseUnknownOptions",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit isTransportFault",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit requirePositiveInt",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit requireBool",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit toTransient",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit storageObjectKey",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit parseGenerationFromKey",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit segmentObjectPrefix",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit concatBytes",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
   }
 ]

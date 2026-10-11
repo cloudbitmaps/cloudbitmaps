@@ -214,3 +214,20 @@ describe('GcsStorageDriver.getTail (suffix range, one request)', () => {
     });
   });
 });
+
+describe('GcsStorageDriver.getTail with a length that is not a safe integer', () => {
+  it.each([Number.NaN, 1.5, -1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 2 ** 53])(
+    'refuses %s before sending anything',
+    async (n) => {
+      const fake = new FakeTail(bytesOf(10));
+      await expect(driverOver(fake).getTail(KEY, n)).rejects.toBeInstanceOf(ValidationError);
+      expect(fake.requests).toEqual([]);
+    },
+  );
+
+  it('answers a whole length of zero or less with an empty tail, as every driver does', async () => {
+    const fake = new FakeTail(bytesOf(10));
+    expect(await driverOver(fake).getTail(KEY, -1)).toEqual({ bytes: new Uint8Array(0), size: 10 });
+    expect((await driverOver(fake).getTail(KEY, Number.MAX_SAFE_INTEGER)).bytes.length).toBe(10);
+  });
+});

@@ -301,7 +301,8 @@ export interface StorageDeleteOptions {
  *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
  *   to check that the object is still the one it pinned.
  * - **`getTail` reports the object's true total size**, not the number of bytes it returned, and, where the driver has
- *   one, the object's `version` ({@link TailRead.version}) from the same response as the bytes.
+ *   one, the object's `version` ({@link TailRead.version}) from the same response as the bytes. Its length is a safe
+ *   integer, zero or less for an empty tail; any other length throws {@link ValidationError} before anything is read.
  * - **`delete` is idempotent.** Deleting an absent key is a no-op, not an error: collection passes race each
  *   other and retry. That holds with `ifVersion` too: an absent object is a no-op whatever version is given.
  * - **`delete` with `ifVersion` does what {@link StorageCaps.conditionalDelete} says.** A driver that reports `true`
@@ -356,9 +357,10 @@ export interface IStorageDriver {
   getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array>;
   /**
    * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**, and its `version`
-   * where the driver has one ({@link TailRead}). A `maxBytes` of zero or less answers an empty tail with the size, and
-   * one past the size the whole object. A `maxBytes` that is not a whole number (`NaN`, a fraction, an infinity) throws
-   * {@link ValidationError}. A missing object throws {@link NotFoundError}.
+   * where the driver has one ({@link TailRead}). `maxBytes` must be a safe integer: zero or less answers an empty tail
+   * with the size, and one past the size the whole object. Any other `maxBytes` (`NaN`, a fraction, a negative one
+   * included, an infinity of either sign, a whole number of 2^53 or more) throws {@link ValidationError} before anything
+   * is read. A missing object throws {@link NotFoundError}.
    */
   getTail(key: GenKey, maxBytes: number): Promise<TailRead>;
   /**

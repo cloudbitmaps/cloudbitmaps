@@ -20,6 +20,14 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **Shared driver helpers in `@cloudbitmaps/core/driver-kit`.** `storageObjectKey`, `segmentObjectPrefix` and
+  `parseGenerationFromKey` build and read back the storage object layout every object-store driver shares
+  (`<prefix><ns>/segments/<segment>.<gen>.crbm`); `refuseUnknownOptions`, `requirePositiveInt` and `requireBool` check a
+  constructor's options and refuse a bad one with `ValidationError`; `isTransportFault` says whether an error is a
+  connection Node reports as failed or cut off, and `toTransient` hands a transient fault on as `TransientError` with the
+  fault as its cause; `concatBytes` joins byte chunks into one buffer that owns its bytes. The S3, GCS and Azure Blob
+  drivers are built on them, so their key layout, option checks and shared connection-fault codes are defined once, and a
+  third-party driver can use them the same way.
 - **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
   invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
   and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
@@ -30,6 +38,20 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
+  tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
+  before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number of
+  2^53 or more. The in-process and local-filesystem drivers and `BufferReader` read a whole number of 2^53 or more as the
+  whole object, and the S3, GCS and Azure Blob drivers answered `-1.5` and `-Infinity` with an empty tail; each now
+  throws.
+- **A malformed size or switch given to a cloud backend is a `ValidationError` in every case.** A `Symbol` given as
+  `partBytes`, `maxObjectBytes`, `simpleUploadThresholdBytes` or `blockBytes` threw a `TypeError` while the refusal's
+  message was built, and `AzureBlobStorage` read `blockBytes: null` as the default where it refused
+  `maxObjectBytes: null`. A refused string is quoted in the message (`got "8"`).
+- **Each cloud driver words a transient fault one way.** The Azure Blob registry named the error's class
+  (`transient Azure Blob fault: RestError`) where the storage half named the Azure error code; both now say
+  `transient Azure fault: <code>` (`ServerBusy`, `ECONNRESET`), and name the class only when there is no code. A GCS
+  storage fault with no code is named by its class, as the registry's was, rather than `unknown`.
 - **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
   the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
   number. Where the segment's row records which generations are kept, the superseded generation is always the newest
@@ -70,6 +92,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A reader keeps chunk bytes of its own when a storage driver answers a tail read with a Node `Buffer`.** A reader
+  that keeps a small generation's chunk region took it by slicing the tail, and a `Buffer`'s `slice` is a view of the
+  driver's memory, not a copy: the reader held the driver's whole buffer while the cache weighed only the region, and a
+  driver that reused its buffer changed the chunks the reader served, which then failed their checksum. A tail answered
+  with a `Uint8Array` subclass is now copied once, where the driver's answer reaches the reader. The shipped drivers
+  answer with a plain `Uint8Array`, which is used as it is.
 - **A rollback to the generation already current checks that its object is there.** It reported a no-op without reading
   anything, so over a pointer that named a missing object (a collection that raced an earlier rollback, or a swap that
   landed, lost its answer and had its target collected since) re-running a rollback to that generation answered success

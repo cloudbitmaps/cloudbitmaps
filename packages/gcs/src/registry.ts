@@ -38,13 +38,14 @@ import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
-  ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
+  requireBool,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
-import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
+import { isNotFound, isPreconditionFailed, isTransient, transientFaultMessage } from './gcs-errors';
 import { BucketPresence } from './bucket-presence';
 import { crc32cBase64 } from './crc32c';
 import { retryDownload } from './download-retry';
@@ -232,40 +233,20 @@ function generationFence(version: string, key: string): number {
   return generation;
 }
 
-/** A read's error: a connection that failed or was cut off is transient too, after the driver's retries. */
+/**
+ * A read's error: a connection that failed or was cut off is transient too, after the driver's retries, whichever code
+ * Node gave it, as `isTransient` takes every transport fault.
+ */
 function mapReadError(err: unknown): unknown {
   err = scrubCredentials(err);
   // Timed out on every attempt: transient, in words that name the read and the timeout.
   if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
-  if (isTransportFault(err)) {
-    return new TransientError(`transient GCS fault: ${String((err as { code?: unknown }).code)}`, {
-      cause: err,
-    });
-  }
   return mapError(err);
 }
 
 /** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
-  err = scrubCredentials(err);
-  if (isTransient(err)) {
-    return new TransientError(
-      `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? (err as { name?: string } | null)?.name ?? 'unknown'}`,
-      { cause: err },
-    );
-  }
-  return err;
-}
-
-/** {@link GcsRegistryDriverOptions.conditionalDelete}, checked, or its default: off. */
-function resolveConditionalDelete(value: unknown): boolean {
-  if (value === undefined) {
-    return false;
-  }
-  if (typeof value !== 'boolean') {
-    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
-  }
-  return value;
+  return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
 }
 
 export class GcsRegistryDriver extends ObjectStoreRegistry {
@@ -276,7 +257,7 @@ export class GcsRegistryDriver extends ObjectStoreRegistry {
         options.readStorage ?? options.storage,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        resolveConditionalDelete(options.conditionalDelete),
+        requireBool('conditionalDelete', options.conditionalDelete) ?? false,
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

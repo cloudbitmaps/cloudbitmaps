@@ -100,6 +100,14 @@ export function isTransient(err: unknown): boolean {
   );
 }
 
+/**
+ * The message a transient S3 fault is handed on with: `transient S3 fault: <name>`, the SDK error's name, which names
+ * S3's error code (`SlowDown`, `InternalError`) or the transport failure (`TimeoutError`).
+ */
+export function transientFaultMessage(err: unknown): string {
+  return `transient S3 fault: ${errorName(err) ?? 'unknown'}`;
+}
+
 /** The first and last byte a `Content-Range: bytes <start>-<end>/<total>` header names, or `undefined` if unparseable. */
 export function spanFromContentRange(
   contentRange: string | undefined,

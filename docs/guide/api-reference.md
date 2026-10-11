@@ -709,6 +709,10 @@ nothing can compare one. Branding them is you taking that on.
 | `encodeNameForKey` · `namespaceKeyPart` | how a segment name and namespace become an object key |
 | `encodeNameForPath` | percent-encode a name for use as a **filesystem path component**. Escapes everything `encodeNameForKey` does plus `:` (an NTFS alternate-data-stream separator on Windows), plus three hazards that are properties of the whole component: `.`/`..` traversal, Windows reserved device names (`CON`, `NUL`, `COM1`…, reserved with *or without* an extension), and a trailing dot or space, which Windows silently strips so two names would collide on one path. Use it if you write your own filesystem `ExportSink`, so your dump matches the drivers' layout. **If you decode these names back, require the encoding to round-trip** (`encodeNameForPath(decoded) === raw`) rather than trusting a decode — percent-decoding accepts spellings the encoder never emits (a lowercase escape, say), and without that check a planted entry can alias a real one |
 | `namespacePathPart` | the physical namespace component of a **path**: the caller's namespace **encoded**, or the `_default` sentinel emitted **literally**. That asymmetry is load-bearing — encoding the sentinel too would send an absent namespace to `%5Fdefault`, exactly where a caller who names their namespace `_default` already goes, and the two would read each other's data. Use it rather than encoding `ns ?? '_default'` yourself. (`namespaceKeyPart` is the object-key twin) |
+| `storageObjectKey` · `segmentObjectPrefix` · `parseGenerationFromKey` | the storage object layout every object-store driver shares, so a segment written through one reads identically through another on the same bucket. `storageObjectKey(prefix, key)` is one generation's key, `<prefix><ns>/segments/<segment>.<gen>.crbm`; `segmentObjectPrefix(prefix, ref)` is the prefix all of a segment's generations share, which its listing asks for; `parseGenerationFromKey(segmentPrefix, key)` reads a listed key back to its generation number, or `null` for a key that is not one of that segment's (a leading zero, another segment whose name shares the prefix, a number past the safe range). The first two validate the ref, and the generation, and throw `ValidationError` |
+| `refuseUnknownOptions` · `requirePositiveInt` · `requireBool` | constructor option checks, each throwing `ValidationError` naming the option. `refuseUnknownOptions(name, options, keys, hint?)` refuses an options value that is not an object, and one with an own enumerable key not in `keys`, naming each such key, then the keys it takes, then `hint` when given. `requirePositiveInt(name, value)` and `requireBool(name, value)` return the value, or `undefined` when it is absent, for your default, and refuse anything else: for a size, `0`, a fraction, `NaN`, a string or `null`; for a switch, a truthy string or a `1` |
+| `isTransportFault` · `toTransient` | fault classification. `isTransportFault(err)` is true when `err.code` is one of the codes Node gives a connection that failed or was cut off: `ECONNRESET`, `ECONNREFUSED`, `ECONNABORTED`, `ETIMEDOUT`, `ENOTFOUND`, `EAI_AGAIN`, `EHOSTUNREACH`, `ENETUNREACH`, `EPIPE`. It reads nothing else, so check your service's own statuses first. `toTransient(err, isTransient, message)` returns `err` as a `TransientError`, with `message(err)` as its message and `err` as its `cause`, when `isTransient(err)`, and `err` unchanged otherwise: the last step of a driver's error mapping. Scrub credentials from the error before it, since it becomes the cause |
+| `concatBytes` | `concatBytes(parts)`: the chunks, in order, copied into one new `Uint8Array` that owns its bytes, so a part's buffer can be reused once it returns |
 | `validateSegmentRef` | the name rules a driver applies to a ref, and nothing more: it takes a namespace in the reserved `cbm.due.` prefix, where the library's own due-index rows live. The refusal of that prefix is in the calls that take an application's ref or `namespace`, not here |
 | `BlobSink` | the sink `putImmutable` hands the writer: the object's bytes arrive through its one method, `write`, and the driver commits them once the writer returns |
 | the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and a predicate for each: `isValidationError` · `isWriteConflictError` · `isNotFoundError` · `isIntegrityError` · `isTransientError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
@@ -730,8 +734,10 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   reaching the backend, so it proves neither that the object exists nor that the offset is inside it.
 - An out-of-range read, meaning a range past the end or a negative or non-integer offset or length, throws
   `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size, and, where the
-  driver has one, its `version`, from the same response as the bytes. A `getTail` length of zero or less answers an empty tail with
-  the size, and one past the object's size the whole object; a length that is not a whole number (`NaN`, a fraction, an infinity) throws `ValidationError` on the in-process and local-filesystem drivers.
+  driver has one, its `version`, from the same response as the bytes. A `getTail` length is a safe integer: zero or less
+  answers an empty tail with the size, and one past the object's size the whole object. Any other length (`NaN`, a
+  fraction, a negative one included, an infinity of either sign, a whole number of 2^53 or more) throws `ValidationError`
+  before anything is read.
 - A registry write whose `keyId` is not a non-empty string, or absent, throws `ValidationError` and stores nothing.
 - `delete` is idempotent: deleting an absent key is a no-op, with or without `ifVersion`.
 - `delete` with `ifVersion` does what `StorageCaps.conditionalDelete` says: with `true`, it removes the object only
@@ -1106,7 +1112,10 @@ Object-store registry: `ObjectStoreRegistry` · `ObjectRegistryStore` · `Object
 `MAX_ROW_BYTES`
 
 Keys, paths and prefixes: `normalizeObjectPrefix` · `prefixPart` · `encodeNameForKey` · `namespaceKeyPart` ·
-`encodeNameForPath` · `namespacePathPart`
+`encodeNameForPath` · `namespacePathPart` · `storageObjectKey` · `segmentObjectPrefix` · `parseGenerationFromKey`
+
+Driver helpers: `refuseUnknownOptions` · `requirePositiveInt` · `requireBool` · `isTransportFault` · `toTransient` ·
+`concatBytes`
 
 Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
 `NotFoundError` · `IntegrityError` · `TransientError` · `isValidationError` · `isWriteConflictError` ·

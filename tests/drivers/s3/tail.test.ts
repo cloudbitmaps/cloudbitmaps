@@ -62,8 +62,8 @@ describe('S3StorageDriver.getTail on an empty object', () => {
   });
 });
 
-describe('S3StorageDriver.getTail with a length that is not a whole number', () => {
-  it.each([Number.NaN, 1.5, Number.POSITIVE_INFINITY])(
+describe('S3StorageDriver.getTail with a length that is not a safe integer', () => {
+  it.each([Number.NaN, 1.5, -1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 2 ** 53])(
     'refuses %s before sending anything',
     async (n) => {
       const bucket = new StubS3Bucket();
@@ -74,9 +74,11 @@ describe('S3StorageDriver.getTail with a length that is not a whole number', () 
     },
   );
 
-  it('answers a length of zero or less with an empty tail, as GCS and Azure do', async () => {
+  it('answers a whole length of zero or less with an empty tail, as every driver does', async () => {
     const bucket = new StubS3Bucket();
     store(bucket, new Uint8Array(10));
-    expect(await driverOver(bucket).getTail(GEN, -1)).toMatchObject({ size: 10 });
+    const tail = await driverOver(bucket).getTail(GEN, -1);
+    expect([tail.bytes.length, tail.size]).toEqual([0, 10]);
+    expect((await driverOver(bucket).getTail(GEN, Number.MAX_SAFE_INTEGER)).bytes.length).toBe(10);
   });
 });

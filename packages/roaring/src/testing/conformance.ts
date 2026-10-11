@@ -394,9 +394,25 @@ export function storageDriverConformance(
       const none = await d.getTail(key(0), 0);
       expect(none.size).toBe(1000);
       expect(none.bytes.length).toBe(0);
-      // A length that is no whole number is refused, never read as a different length.
-      await expect(d.getTail(key(0), Number.NaN)).rejects.toBeInstanceOf(ValidationError);
-      await expect(d.getTail(key(0), 1.5)).rejects.toBeInstanceOf(ValidationError);
+      // A whole length of zero or less is an empty tail with the size, and the largest safe one the whole object.
+      const negative = await d.getTail(key(0), -1);
+      expect(negative.size).toBe(1000);
+      expect(negative.bytes.length).toBe(0);
+      expect((await d.getTail(key(0), Number.MAX_SAFE_INTEGER)).bytes).toEqual(bytes);
+      // A length that is not a safe integer is refused, never read as a different length: a fraction (a negative one
+      // too), an infinity of either sign, and a whole number past the safe range.
+      for (const length of [
+        Number.NaN,
+        1.5,
+        -1.5,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        2 ** 53,
+      ]) {
+        await expect(d.getTail(key(0), length), String(length)).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+      }
       // An empty object is an object: its tail is empty and its size is 0, not a refused range.
       await putBytes(d, key(1), new Uint8Array(0));
       const empty = await d.getTail(key(1), 10);
