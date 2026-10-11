@@ -340,3 +340,54 @@ describe('a pinned read in progress after an erasure', () => {
     },
   );
 });
+
+/**
+ * The bound holds for a live read that plans its keys again. The erasure invalidates the segment, so a running `iterate`
+ * or combine of the store that erased looks at its segments before the next key it takes, finds the rewritten
+ * generation and plans its keys from it, dropping what it had requested: here the erased id is the only id of its
+ * chunk, which the rewritten generation no longer lists. The read yields nothing of the erased generation from the next
+ * key on, well within the bound, and every other id.
+ */
+describe('a live read in progress that plans again after the erasure', () => {
+  const NS = 'ns';
+  const C = 65_536;
+  const REF: SegmentRef = { namespace: NS, segment: 's' };
+  const IDS = Array.from({ length: 200 }, (_, c) => c * C + 1);
+
+  async function world() {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
+    // the other operand, in a namespace the erasure leaves alone
+    await bulkLoadCrbmGeneration(
+      storage,
+      { namespace: 'elsewhere', segment: 'every', generation: 0 },
+      IDS,
+      { registry },
+    );
+    const store = new CloudRoaring({ storage: brandAsBackend({ storage, registry }) });
+    return { store, seg: store.segment('s', { namespace: NS }) };
+  }
+
+  it.each([
+    ['iterate', 1],
+    ['iterate', 150],
+    ['intersect', 1],
+    ['intersect', 150],
+  ] as const)('%s, the erased id alone in chunk %s', async (verb, chunk) => {
+    const { store, seg } = await world();
+    const erased = chunk * C + 1;
+    const stream =
+      verb === 'iterate'
+        ? seg.iterate()
+        : seg.intersect([store.segment('every', { namespace: 'elsewhere' })]);
+    const it = stream[Symbol.asyncIterator]();
+    expect((await it.next()).value).toBe(IDS[0]);
+    expect((await store.eraseSubject(erased, { namespace: NS })).erasedFrom).toHaveLength(1);
+
+    const ids: number[] = [];
+    for (let r = await it.next(); r.done !== true; r = await it.next()) ids.push(r.value);
+    expect(ids).not.toContain(erased);
+    expect(ids).toEqual(IDS.slice(1).filter((id) => id !== erased));
+  });
+});
