@@ -5,6 +5,7 @@ import type { IStorageDriver, SegmentRef } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { MAX_RANGES_IN_FLIGHT } from '@/core/crbm/plan-reads';
 import { DEFAULT_INTERSECT_CONCURRENCY } from '@/core/engine';
+import { REMEMBERED_INVALIDATIONS } from '@/core/invalidation-scope';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
 /**
@@ -97,9 +98,10 @@ describe('a pinned read in progress after an erasure', () => {
   const IDS = Array.from({ length: CHUNKS }, (_, c) => c * C + 1);
   const ERASED = 150 * C + 1;
 
-  /** A driver that counts its reads, and can hold the next range read until it is released. */
+  /** A driver that counts its reads, and can hold the next range or tail read, once it has its bytes, until released. */
   function gated(inner: IStorageDriver) {
     let hold: { reached: () => void; gate: Promise<void> } | undefined;
+    let holdTail: { reached: () => void; gate: Promise<void> } | undefined;
     const reads = { range: 0, tail: 0 };
     const storage: IStorageDriver = {
       capabilities: () => inner.capabilities(),
@@ -114,26 +116,35 @@ describe('a pinned read in progress after an erasure', () => {
         }
         return bytes;
       },
-      getTail: (key, maxBytes) => {
+      getTail: async (key, maxBytes) => {
         reads.tail += 1;
-        return inner.getTail(key, maxBytes);
+        const read = await inner.getTail(key, maxBytes);
+        const h = holdTail;
+        if (h !== undefined) {
+          holdTail = undefined;
+          h.reached();
+          await h.gate;
+        }
+        return read;
       },
       putImmutable: (key, write) => inner.putImmutable(key, write),
       list: (ref) => inner.list(ref),
       delete: (key, options) => inner.delete(key, options),
     };
-    const holdNextRange = () => {
+    const holding = (set: (h: { reached: () => void; gate: Promise<void> }) => void) => {
       let reached!: () => void;
       let release!: () => void;
       const arrived = new Promise<void>((resolve) => (reached = resolve));
-      hold = { reached, gate: new Promise<void>((resolve) => (release = resolve)) };
+      set({ reached, gate: new Promise<void>((resolve) => (release = resolve)) });
       return { arrived, release };
     };
-    return { storage, holdNextRange, reads };
+    const holdNextRange = () => holding((h) => (hold = h));
+    const holdNextTail = () => holding((h) => (holdTail = h));
+    return { storage, holdNextRange, holdNextTail, reads };
   }
 
   /** `s` in the erasure's namespace, and a copy of it in another, which the erasure leaves alone. */
-  async function world(genTtlMs: number | undefined) {
+  async function world(genTtlMs: number | undefined, readerMax?: number) {
     const backend = new MemoryStorage();
     const { registry } = backend;
     await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, IDS, { registry });
@@ -146,7 +157,10 @@ describe('a pinned read in progress after an erasure', () => {
     const g = gated(backend.storage);
     const store = new CloudRoaring({
       storage: brandAsBackend({ storage: g.storage, registry }),
-      ...(genTtlMs === undefined ? {} : { cache: { genTtlMs } }),
+      cache: {
+        ...(genTtlMs === undefined ? {} : { genTtlMs }),
+        ...(readerMax === undefined ? {} : { readerMax }),
+      },
     });
     return { store, g, seg: store.segment('s', { namespace: NS }) };
   }
@@ -233,13 +247,14 @@ describe('a pinned read in progress after an erasure', () => {
       const pin = await seg.pin();
       const it = pin.iterate()[Symbol.asyncIterator]();
       expect((await it.next()).value).toBe(IDS[0]);
-      const ranges = g.reads.range;
+      const before = { ...g.reads };
       store.invalidate(REF);
 
       const after = await rest(it);
       expect(after.error).toBeUndefined();
       expect(after.ids).toEqual(IDS.slice(1));
-      expect(g.reads.range).toBe(ranges); // nothing it held is read again
+      expect(g.reads.range).toBe(before.range); // nothing it held is read again
+      expect(g.reads.tail).toBe(before.tail + 1); // the one open that finds the object still there
     },
   );
 
@@ -256,6 +271,72 @@ describe('a pinned read in progress after an erasure', () => {
       const after = await rest(it);
       expect(after.ids).toEqual(IDS.slice(1));
       expect(g.reads).toEqual(before);
+    },
+  );
+
+  it.each(STORES)(
+    "%s: another segment's invalidation costs a pinned read no request once its reader has left the reader cache",
+    async (_name, ttl) => {
+      const { store, g, seg } = await world(ttl, 1);
+      const pin = await seg.pin();
+      const it = pin.iterate()[Symbol.asyncIterator]();
+      await it.next();
+      // The reader cache holds one reader, so reading another segment lets the pin's go.
+      expect(await store.segment('o', { namespace: 'elsewhere' }).has(IDS[0]!)).toBe(true);
+      const before = { ...g.reads };
+      store.invalidate({ namespace: NS, segment: 'unrelated' });
+
+      const after = await rest(it);
+      expect(after.ids).toEqual(IDS.slice(1));
+      expect(g.reads).toEqual(before);
+    },
+  );
+
+  it.each(STORES)(
+    '%s: past 1,024 other segments invalidated, a pinned read whose reader has gone opens its object once',
+    async (_name, ttl) => {
+      const { store, g, seg } = await world(ttl, 1);
+      const pin = await seg.pin();
+      const it = pin.iterate()[Symbol.asyncIterator]();
+      await it.next();
+      expect(await store.segment('o', { namespace: 'elsewhere' }).has(IDS[0]!)).toBe(true);
+      const before = { ...g.reads };
+      for (let i = 0; i <= REMEMBERED_INVALIDATIONS; i++) {
+        store.invalidate({ namespace: NS, segment: `other${i}` });
+      }
+
+      const after = await rest(it);
+      expect(after.ids).toEqual(IDS.slice(1));
+      expect(g.reads).toEqual({ range: before.range, tail: before.tail + 1 });
+    },
+  );
+
+  it.each(STORES)(
+    '%s: an open that finds the object still there, overtaken by the erasure, still ends in NotFoundError',
+    async (_name, ttl) => {
+      const { store, g, seg } = await world(ttl);
+      const pin = await seg.pin();
+      const it = pin.iterate()[Symbol.asyncIterator]();
+      expect((await it.next()).value).toBe(IDS[0]);
+      // An invalidation that leaves the object: the stream's next chunk opens it again, and that open is held after
+      // its tail read has found the object, while the erasure deletes it and invalidates the segment once more.
+      store.invalidate(REF);
+      const held = g.holdNextTail();
+      const next = it.next();
+      await held.arrived;
+      expect((await store.eraseSubject(ERASED, { namespace: NS })).erasedFrom).toHaveLength(1);
+      held.release();
+
+      const ids: number[] = [];
+      const first = await next.then(
+        (r) => r,
+        (error: unknown) => ({ error }),
+      );
+      const after = 'error' in first ? { ids, error: first.error } : await rest(it);
+      if (!('error' in first) && first.done !== true) after.ids.unshift(first.value);
+      expect(after.ids).not.toContain(ERASED);
+      expect(chunksOf(after.ids)).toBeLessThanOrEqual(DEFAULT_INTERSECT_CONCURRENCY);
+      expect(after.error).toBeInstanceOf(NotFoundError);
     },
   );
 });

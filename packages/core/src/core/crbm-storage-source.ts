@@ -69,6 +69,7 @@ import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
 import { CrbmReader, footerSaysEncrypted, openCrbmReaderKeeping } from './crbm/reader';
 import { compactFingerprint, fingerprintFor } from './crbm/fingerprint';
 import type { ChunkStream, CrbmReaderOptions } from './crbm/reader';
+import { InvalidationRecord } from './invalidation-scope';
 import { ItemPull } from './item-pull';
 import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
@@ -587,7 +588,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * counts every segment's invalidations: a read that waited through another segment's only costs a later read the
    * check again.
    */
-  private invalidations = 0;
+  private get invalidations(): number {
+    return this.invalidated.epoch;
+  }
+  /**
+   * Which segments {@link invalidate} has been called for, the latest invalidation of up to 1,024 of them: a pinned
+   * stream asks it whether its own segment was invalidated since it last looked.
+   */
+  private readonly invalidated = new InvalidationRecord();
   /**
    * Generations whose row summary this process found to disagree with their object, by segment and generation. A
    * summary here is not used again: a count of that generation reads the object. Bounded as the readers are, so a
@@ -964,8 +972,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * storage side can close the window; with no registry, no clock or `cache.genTtlMs: 0`, nothing bounds it at all.
    */
   invalidate(ref: SegmentRef): void {
-    this.invalidations += 1;
     const key = segmentKey(ref);
+    this.invalidated.invalidate(key);
     this.snapshots.delete(key);
     // …and the resolution the snapshot was built on, which the next read would otherwise build a snapshot on again.
     this.resolutions?.delete(key);
@@ -1861,9 +1869,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * would. Where the invalidation was of its segment, which forgets the pinned reader, it opens the object again, and
    * fails as that read would, with `NotFoundError` once the object is gone or replaced, or its row is gone or
    * destroyed. An object still there is the one it was reading, since an object is immutable and the open is held to
-   * the pin, so the stream carries on with the ranges it holds. Another segment's invalidation finds the pin's reader
-   * where it was, with no request (unless the reader cache has let it go meanwhile, when it is opened again as any read
-   * of the pin would open it), and with no invalidation since it last looked the check is a compare.
+   * the pin, so the stream carries on with the ranges it holds. Another segment's invalidation costs it nothing, the
+   * pin's reader still in the reader cache or not, and with no invalidation since it last looked the check is a
+   * compare. The one exception is a store that invalidates more than 1,024 other segments while the stream runs: the
+   * record of invalidations then counts the stream's segment as invalidated too, and the stream looks its pin up
+   * again, at no cost where the reader cache still holds the pin's reader and with one open where it has let it go.
    */
   async *getChunksAt(
     ref: SegmentRef,
@@ -1878,7 +1888,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const retry = options?.retry;
     const open = (): Promise<CrbmReader | null> =>
       this.readerAt(ref, generation, held?.version, held?.fingerprint);
-    let epoch = this.invalidations;
+    const segment = segmentKey(ref);
+    let since = this.invalidated.epoch;
     const reader = await (retry === undefined ? open() : retry(open));
     if (reader === null) {
       for (const key of keys) yield { key, bytes: null };
@@ -1904,10 +1915,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       );
       try {
         while (await pull.advance()) {
-          if (this.invalidations !== epoch) {
-            // Looked up as a read of the generation would be: from the reader cache, where another segment's
-            // invalidation leaves the pin's reader, at no cost, and opened again where this segment's forgot it.
-            epoch = this.invalidations;
+          if (this.invalidated.invalidatedSince(segment, since)) {
+            // Looked up as a read of the generation would be: the invalidation forgot the pin's reader, so it is opened
+            // again. The count is taken first, so an invalidation that lands while it opens is met at the next chunk.
+            since = this.invalidated.epoch;
             if ((await (retry === undefined ? open() : retry(open))) === null)
               throw goneUnder(ref, generation);
           }
