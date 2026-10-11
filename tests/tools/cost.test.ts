@@ -1947,4 +1947,115 @@ describe('cost tools refuse inputs they would otherwise misread', () => {
       /not a finite number of dollars/,
     );
   });
+
+  it('refuses a misspelt key at the deepest levels, in every row, and in groundedReport pricing', () => {
+    const base = { name: 'x', storage: AWS_US_EAST_1_ONDEMAND.storage };
+    const sizing = { ...ELASTICACHE_REDIS_US_EAST_1_ONDEMAND, replicas: 2 };
+    expect(() =>
+      estimateCost({
+        segments: [seg],
+        pricing: { ...base, redis: { sizedToData: sizing } } as never,
+      }),
+    ).toThrow(/unknown key "replicas" in pricing\.redis\.sizedToData/);
+    const rows = ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.nodeTypes.map((n) => ({ ...n }));
+    rows[1] = { ...rows[1], hourlyUsd: 1 } as never;
+    expect(() =>
+      estimateCost({
+        segments: [seg],
+        pricing: {
+          ...base,
+          redis: { sizedToData: { ...ELASTICACHE_REDIS_US_EAST_1_ONDEMAND, nodeTypes: rows } },
+        } as never,
+      }),
+    ).toThrow(/unknown key "hourlyUsd" in pricing\.redis\.sizedToData\.nodeTypes\[1\]/);
+    expect(() => estimateCost({ segments: [seg, seg, { size: 1 } as never] })).toThrow(
+      /in segments\[2\]/,
+    );
+    expect(() =>
+      groundedReport({
+        storageBytes: 1,
+        pricing: { ...AWS_US_EAST_1_ONDEMAND, storge: {} } as never,
+      }),
+    ).toThrow(/groundedReport: unknown key "storge" in pricing/);
+  });
+
+  it('quotes a refused key as JSON, so a hostile name stays on one line', () => {
+    expect(() => estimateCost({ segments: [{ 'a\nb': 1 } as never] })).toThrow(/"a\\nb"/);
+  });
+
+  it('reads a key whose value is undefined as absent, and checks keys before storageBytes', () => {
+    expect(() =>
+      estimateCost({ segments: [seg], workload: { readsPerSecond: undefined } as never }),
+    ).not.toThrow();
+    expect(() => groundedReport({ storageBytes: -1, typo: 1 } as never)).toThrow(
+      /unknown option "typo"/,
+    );
+  });
+
+  it('refuses an array where a segment object is expected, and a fractional count', () => {
+    expect(() => estimateCost({ segments: [[1e9] as never] })).toThrow(ValidationError);
+    expect(() => estimateCost({ segments: [{ sizeBytes: 1, count: 1.5 }] })).toThrow(
+      /segments\[0\]\.count must be a whole number/,
+    );
+  });
+
+  it('accepts every documented key, fully populated', () => {
+    const workload: Required<Workload> = {
+      readsPerSec: 1,
+      intersectsPerSec: 1,
+      cacheHitRate: 0.5,
+      chunksPerIntersect: 2,
+      operandsPerIntersect: 2,
+      loadsPerMonth: 1,
+      requestsPerLoad: 1,
+      hotSegments: 1,
+      readerProcesses: 1,
+      genTtlMs: 1000,
+      retirementsPerMonth: 1,
+      purgesPerMonth: 1,
+      conditionalDelete: true,
+    };
+    const sizing: RedisSizing = {
+      source: 'test',
+      nodeTypes: [
+        { name: 'n', memoryGiB: 8, ssdGiB: 10, hourlyUSD: 0.1, maxShards: 4 },
+        { name: 'm', memoryGiB: 16, hourlyUSD: 0.2 },
+      ],
+      replicasPerShard: 2,
+      reservedMemoryFraction: 0.25,
+    };
+    const storage: Required<PricingProfile['storage']> = {
+      getPerMillion: 0.4,
+      putPerMillion: 5,
+      storagePerGiBMonth: 0.023,
+      requestsPerPointerRead: 1,
+      requestsPerSizedRead: 1,
+    };
+    for (const redis of [{ sizedToData: sizing }, { monthlyUSD: 100 }]) {
+      const pricing: PricingProfile = { name: 'full', storage, redis };
+      const segments = [{ sizeBytes: 1e6, cardinality: 10, count: 2 }];
+      expect(() => estimateCost({ segments, workload, pricing })).not.toThrow();
+      expect(() => groundedReport({ storageBytes: 1e6, workload, pricing })).not.toThrow();
+    }
+  });
+
+  it('names the component that overflowed, and refuses a total that overflows when no part does', () => {
+    expect(() =>
+      estimateCost({ segments: [seg], workload: { loadsPerMonth: 1e308, requestsPerLoad: 1e308 } }),
+    ).toThrow(/estimateCost: the loads cost/);
+    expect(() =>
+      groundedReport({
+        storageBytes: 1e9,
+        workload: { readsPerSec: 1e154 },
+        pricing: {
+          ...AWS_US_EAST_1_ONDEMAND,
+          storage: {
+            ...AWS_US_EAST_1_ONDEMAND.storage,
+            getPerMillion: 3e153,
+            storagePerGiBMonth: 1.5e308,
+          },
+        },
+      }),
+    ).toThrow(/groundedReport: the total cost/);
+  });
 });

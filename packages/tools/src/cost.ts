@@ -655,6 +655,8 @@ function sizingBytes(spec: SegmentSizing): number {
 
 /** Core report builder shared by planning + grounded modes. `storageBytes` is total across all segments. */
 function buildReport(input: {
+  /** The public function that asked, named in what it refuses. */
+  readonly op: string;
   readonly storageBytes: number;
   readonly workload: Workload;
   readonly pricing: PricingProfile;
@@ -786,7 +788,7 @@ function buildReport(input: {
   })) {
     if (!Number.isFinite(usd)) {
       throw new ValidationError(
-        `the ${what} cost is not a finite number of dollars: the workload and pricing are too large to price`,
+        `${input.op}: the ${what} cost is not a finite number of dollars: the workload and pricing are too large to price`,
       );
     }
   }
@@ -962,43 +964,66 @@ interface InputShape {
   readonly rows?: Readonly<Record<string, InputShape>>;
 }
 
+/**
+ * The keys of an interface, from a record the compiler holds to that interface's fields: a field added to the
+ * interface without a line here is a type error, so the table cannot refuse a key the interface takes.
+ */
+function keysOf<T>(fields: Record<keyof T, true>): readonly string[] {
+  return Object.keys(fields);
+}
+
 const WORKLOAD_SHAPE: InputShape = {
-  keys: [
-    'readsPerSec',
-    'intersectsPerSec',
-    'cacheHitRate',
-    'chunksPerIntersect',
-    'operandsPerIntersect',
-    'loadsPerMonth',
-    'requestsPerLoad',
-    'hotSegments',
-    'readerProcesses',
-    'genTtlMs',
-    'retirementsPerMonth',
-    'purgesPerMonth',
-    'conditionalDelete',
-  ],
+  keys: keysOf<Workload>({
+    readsPerSec: true,
+    intersectsPerSec: true,
+    cacheHitRate: true,
+    chunksPerIntersect: true,
+    operandsPerIntersect: true,
+    loadsPerMonth: true,
+    requestsPerLoad: true,
+    hotSegments: true,
+    readerProcesses: true,
+    genTtlMs: true,
+    retirementsPerMonth: true,
+    purgesPerMonth: true,
+    conditionalDelete: true,
+  }),
 };
-const SEGMENT_SHAPE: InputShape = { keys: ['sizeBytes', 'cardinality', 'count'] };
+const SEGMENT_SHAPE: InputShape = {
+  keys: keysOf<SegmentSizing>({ sizeBytes: true, cardinality: true, count: true }),
+};
 const PRICING_SHAPE: InputShape = {
-  keys: ['name', 'storage', 'redis'],
+  keys: keysOf<PricingProfile>({ name: true, storage: true, redis: true }),
   objects: {
     storage: {
-      keys: [
-        'getPerMillion',
-        'putPerMillion',
-        'storagePerGiBMonth',
-        'requestsPerPointerRead',
-        'requestsPerSizedRead',
-      ],
+      keys: keysOf<PricingProfile['storage']>({
+        getPerMillion: true,
+        putPerMillion: true,
+        storagePerGiBMonth: true,
+        requestsPerPointerRead: true,
+        requestsPerSizedRead: true,
+      }),
     },
     redis: {
-      keys: ['monthlyUSD', 'sizedToData'],
+      keys: keysOf<PricingProfile['redis']>({ monthlyUSD: true, sizedToData: true }),
       objects: {
         sizedToData: {
-          keys: ['source', 'nodeTypes', 'replicasPerShard', 'reservedMemoryFraction'],
+          keys: keysOf<RedisSizing>({
+            source: true,
+            nodeTypes: true,
+            replicasPerShard: true,
+            reservedMemoryFraction: true,
+          }),
           rows: {
-            nodeTypes: { keys: ['name', 'memoryGiB', 'ssdGiB', 'hourlyUSD', 'maxShards'] },
+            nodeTypes: {
+              keys: keysOf<RedisNodeType>({
+                name: true,
+                memoryGiB: true,
+                ssdGiB: true,
+                hourlyUSD: true,
+                maxShards: true,
+              }),
+            },
           },
         },
       },
@@ -1006,7 +1031,7 @@ const PRICING_SHAPE: InputShape = {
   },
 };
 const ESTIMATE_SHAPE: InputShape = {
-  keys: ['segments', 'workload', 'pricing'],
+  keys: keysOf<EstimateInput>({ segments: true, workload: true, pricing: true }),
   objects: { workload: WORKLOAD_SHAPE, pricing: PRICING_SHAPE },
   rows: { segments: SEGMENT_SHAPE },
 };
@@ -1018,8 +1043,9 @@ const GROUNDED_SHAPE: InputShape = {
 /**
  * Refuses a key `shape` does not list, in `value` and in every nested object it describes, as a `ValidationError`
  * naming the call, the key and where it sits (`workload`, `segments[0]`, `pricing.storage`). A misspelt key would
- * drop what it names and still return a confident report. A value that is not an object is left for the checks that
- * know what it should be.
+ * drop what it names and still return a confident report. A key whose value is `undefined` reads as absent, as it
+ * does everywhere else in the library. A value that is not an object is left for the checks that know what it
+ * should be.
  */
 function refuseUnknownKeys(
   op: string,
@@ -1031,11 +1057,11 @@ function refuseUnknownKeys(
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return;
   const record = value as Record<string, unknown>;
   for (const key of Object.keys(record)) {
-    if (!shape.keys.includes(key)) {
+    if (!shape.keys.includes(key) && record[key] !== undefined) {
       throw new ValidationError(
         where === ''
-          ? `${op}: unknown option "${key}"; ${hint}`
-          : `${op}: unknown key "${key}" in ${where}; it takes { ${shape.keys.join(', ')} }`,
+          ? `${op}: unknown option ${JSON.stringify(key)}; ${hint}`
+          : `${op}: unknown key ${JSON.stringify(key)} in ${where}; it takes { ${shape.keys.join(', ')} }`,
       );
     }
   }
@@ -1091,7 +1117,7 @@ export function estimateCost(input: EstimateInput): CostReport {
   // An index loop, so a hole in a sparse array is refused as an entry too.
   for (let i = 0; i < input.segments.length; i++) {
     const spec: unknown = input.segments[i];
-    if (spec === null || typeof spec !== 'object') {
+    if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
       throw new ValidationError(`estimateCost: segments[${i}] must be an object`);
     }
   }
@@ -1123,7 +1149,14 @@ export function estimateCost(input: EstimateInput): CostReport {
       sizesFromCardinality = true;
     }
   }
-  return buildReport({ storageBytes, workload, pricing, grounded: false, sizesFromCardinality });
+  return buildReport({
+    op: 'estimateCost',
+    storageBytes,
+    workload,
+    pricing,
+    grounded: false,
+    sizesFromCardinality,
+  });
 }
 
 /**
@@ -1165,6 +1198,7 @@ export function groundedReport(input: {
   checkModelInputs('groundedReport', input.pricing, input.workload);
   const measured = input.storageBytes !== null;
   return buildReport({
+    op: 'groundedReport',
     storageBytes: measured ? input.storageBytes : 0,
     workload: input.workload ?? {},
     pricing: input.pricing ?? AWS_US_EAST_1_ONDEMAND,

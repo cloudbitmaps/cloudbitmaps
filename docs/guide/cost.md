@@ -56,7 +56,7 @@ report.redisCrossover.readsPerSec; // ≈ 672 sustained reads/s at THIS report's
 ```
 <!-- SIZING:GUIDE_EXAMPLE:END -->
 
-Both functions refuse input they cannot price, with a `ValidationError`: a key they do not take, at any level (`segments[0].size`, `workload.readsPerSecond`, `pricing.storage.getPerMilion`; the message names the key and where it sits), a segment `count` that is not a whole number, and a workload or rate card so large that a cost is not a finite number of dollars.
+Both functions refuse input they cannot price, with a `ValidationError`: a key they do not take, at any level (a misspelt `segments[0].size`, `workload.readsPerSecond` or `pricing.storage.getPerMilion`; the message names the key and where it sits), and a workload or rate card so large that a cost is not a finite number of dollars. `estimateCost` also refuses a segment `count` that is not a whole number.
 
 **Grounded** (a segment's real size, which `stat()` reports from the registry row's summary, which records the size of
 the generation's object, or from its `.crbm` footer when the row has no summary to use — exact, no payload reads):
