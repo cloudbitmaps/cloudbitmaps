@@ -100,6 +100,7 @@ describe('an abandoned read holds nothing in the engine', () => {
     const gc = runInNewContext('gc') as (options?: { type: 'major'; execution: 'sync' }) => void;
     const { source, engine } = setup();
     await abandon(engine, ABANDONED);
+    expect(source.refs).toHaveLength(ABANDONED); // each read opened a stream, so there is something to free
     // A WeakRef's target is kept to the end of the job that made or read it, so collect across turns, until stable.
     let alive = source.refs.length;
     for (let round = 0; round < 10 && alive > 0; round++) {
