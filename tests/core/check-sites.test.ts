@@ -80,7 +80,6 @@ describe('number checks across the core share one wording', () => {
 
   it('a rollback target', async () => {
     const store = new CloudRoaring({ storage: new MemoryStorage() });
-    await store.load({ segment: 'a' }, [1, 2, 3]);
     await expect(store.rollback({ segment: 'a' }, -1)).rejects.toThrow(
       'rollback: generation must be an integer of at least 0; got -1',
     );
