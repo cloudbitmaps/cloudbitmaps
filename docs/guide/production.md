@@ -483,8 +483,11 @@ for await (const _ of store.segment('huge').intersect([store.segment('other')], 
 }
 ```
 
-The ceiling is checked once, before the fan-out, against work whose size is already known, so it adds nothing to the
-hot path. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
+The ceiling is checked before the fan-out, against work whose size is already known, so it adds nothing to the
+hot path. An `iterate` or a combine that lists its keys again after a move
+([a running read plans its keys again](reading.md#a-running-read-plans-its-keys-again-after-a-move)) is checked again,
+with the chunk reads it has already taken, and throws `BudgetExceededError` at that key when the segment grew past the
+ceiling. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
 issue. For an `intersect` that is the surviving keys times the operands present at each, plus only those excludes
 that hold the key, so a large suppression list is not charged for keys it cannot affect. Bytes need no separate
 limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no

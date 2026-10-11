@@ -312,7 +312,9 @@ budget. [Reading in depth](reading.md#combine-segments-intersect-union-andnot) h
 instead of chaining.
 
 **Read consistency.** Every read resolves the segment's current generation once, before it fans out, and every chunk it
-reads is a whole, checksum-verified generation object. A long call can still describe two instants. To read one instant,
+reads is a whole, checksum-verified generation object. A long call can still describe two instants, and an `iterate` or a
+combine that meets a move lists the chunk keys of the generation it moved to and reads on from there
+([a running read plans its keys again](reading.md#a-running-read-plans-its-keys-again-after-a-move)). To read one instant,
 pin: `seg.pin()`. [How soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load) says what re-resolves a
 segment mid-call and how the timed refresh behaves.
 
