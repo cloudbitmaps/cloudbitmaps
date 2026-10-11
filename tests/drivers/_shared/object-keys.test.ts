@@ -5,6 +5,7 @@ import {
   storageObjectKey,
 } from '@cloudbitmaps/core/driver-kit';
 import { ValidationError } from '@/core/errors';
+import { encodeNameForKey } from '@/core/name-codec';
 
 /**
  * The storage object layout every object-store driver (S3, GCS, Azure Blob) builds its keys with: one definition, so a
@@ -22,6 +23,15 @@ describe('storage object keys', () => {
       expect(
         storageObjectKey('cloudbitmaps', { segment: 'seg1', generation: 42, namespace: 'ns' }),
       ).toBe('cloudbitmaps/ns/segments/seg1.42.crbm');
+    });
+
+    it('encodes the segment and namespace names, so a name that needs encoding stays one path part', () => {
+      const key = storageObjectKey(undefined, { segment: 'A/b', generation: 1 });
+      expect(key).toBe(`_default/segments/${encodeNameForKey('A/b')}.1.crbm`);
+      expect(key.split('/')).toHaveLength(3);
+      expect(segmentObjectPrefix('p', { namespace: 'N', segment: 'A/b' })).toBe(
+        `p/${encodeNameForKey('N')}/segments/${encodeNameForKey('A/b')}.`,
+      );
     });
 
     it('applies a caller prefix, trimming stray slashes', () => {
@@ -97,6 +107,18 @@ describe('storage object keys', () => {
       expect(
         parseGenerationFromKey(prefix, '_default/segments/s.99999999999999999999.crbm'),
       ).toBeNull(); // > MAX_SAFE_INTEGER
+    });
+
+    it('reads a key that does not end in .crbm as no generation, whatever is left of it', () => {
+      expect(parseGenerationFromKey(prefix, '_default/segments/s.12.crbx')).toBeNull();
+      expect(parseGenerationFromKey(prefix, '_default/segments/s.123456')).toBeNull();
+      expect(parseGenerationFromKey(prefix, '_default/segments/s.12.crbm.')).toBeNull();
+    });
+
+    it('takes the segment prefix only at the start of the key, not anywhere inside it', () => {
+      // A real segment prefix ends in `.`; a prefix ending in a digit shows a match found inside the key.
+      expect(parseGenerationFromKey('1', '21.crbm')).toBeNull();
+      expect(parseGenerationFromKey('1', '11.crbm')).toBe(1);
     });
 
     it('does not match a different segment that merely shares the prefix string', () => {

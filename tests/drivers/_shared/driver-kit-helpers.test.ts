@@ -52,6 +52,15 @@ describe('refuseUnknownOptions', () => {
       ValidationError,
     );
   });
+
+  it("reads own enumerable string keys only: not a hidden own property, an array's length, or an inherited key", () => {
+    const hidden = Object.defineProperty({}, 'hidden', { value: 1, enumerable: false });
+    expect(() => refuseUnknownOptions('Store', hidden, KEYS)).not.toThrow();
+    expect(() => refuseUnknownOptions('Store', [], KEYS)).not.toThrow();
+    expect(() =>
+      refuseUnknownOptions('Store', Object.create({ inherited: 1 }) as object, KEYS),
+    ).not.toThrow();
+  });
 });
 
 describe('requirePositiveInt', () => {

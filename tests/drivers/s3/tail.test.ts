@@ -86,4 +86,13 @@ describe('S3StorageDriver.getTail with a length that is not a safe integer', () 
     expect([tail.bytes.length, tail.size]).toEqual([0, 10]);
     expect((await driverOver(bucket).getTail(GEN, Number.MAX_SAFE_INTEGER)).bytes.length).toBe(10);
   });
+
+  it('answers a length of zero with one HeadObject and no GetObject, never a `bytes=-0` range', async () => {
+    const bucket = new StubS3Bucket();
+    store(bucket, new Uint8Array(10));
+    const tail = await driverOver(bucket).getTail(GEN, 0);
+    expect([tail.bytes.length, tail.size]).toEqual([0, 10]);
+    expect(bucket.count('GetObject')).toBe(0);
+    expect(bucket.count('HeadObject')).toBe(1);
+  });
 });

@@ -15,12 +15,13 @@ import type {
   StorageDeleteOptions,
   TailRead,
 } from '@/core/ports';
-import { ownedTail } from '@/core/crbm-storage-source';
+import { ownedTail, provenObject } from '@/core/crbm-storage-source';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect } from '../helpers/chunk-stream';
+import { objectFingerprint } from '../helpers/fingerprint';
 
 const K = 65_536;
 /** Three chunks of 200 ids: a chunk region far under the 64 KiB a reader keeps by default. */
@@ -34,8 +35,16 @@ const OtherRealmPool = runInNewContext(
   'class Pool extends Uint8Array { slice(start, end) { return this.subarray(start, end); } }; Pool',
 ) as Uint8ArrayConstructor;
 
+/** A `Uint8Array` subclass of this realm that is not a `Buffer`, whose `slice` is a view as a `Buffer`'s is. */
+class ViewTail extends Uint8Array {
+  override slice(start?: number, end?: number): Uint8Array<ArrayBuffer> {
+    return this.subarray(start, end);
+  }
+}
+
 type PoolOf = (length: number) => Uint8Array;
 const bufferPool: PoolOf = (length) => Buffer.alloc(length);
+const viewTailPool: PoolOf = (length) => new ViewTail(length);
 const otherRealmPool: PoolOf = (length) => new OtherRealmPool(length);
 
 /** `bytes` copied into a pool of `poolOf`'s kind, larger than they are, and a view of them inside it. */
@@ -93,6 +102,18 @@ describe('a tail answered as a Node Buffer', () => {
     expect(await collect(seg.iterate())).toEqual(IDS);
     expect(await seg.has(2 * K + 597)).toBe(true);
     expect(await seg.has(2 * K + 598)).toBe(false);
+    expect(calls).toEqual({ tails: 1, ranges: 0 });
+  });
+});
+
+describe('a tail answered as a Uint8Array subclass that is not a Buffer', () => {
+  it('leaves the reader its own chunk bytes: overwriting the driver buffer changes no read', async () => {
+    const { store, pools, answered, calls } = await pooledAnswerWorld(viewTailPool);
+    const seg = store.segment('s');
+    expect(await seg.has(K + 3)).toBe(true);
+    expect(answered[0]).toBeInstanceOf(ViewTail);
+    for (const pool of pools) pool.fill(0xff);
+    expect(await collect(seg.iterate())).toEqual(IDS);
     expect(calls).toEqual({ tails: 1, ranges: 0 });
   });
 });
@@ -174,6 +195,22 @@ describe('ownedTail', () => {
   it('adds no version to an answer that has none', () => {
     const owned = ownedTail({ bytes: pooled(bytes, bufferPool).view, size: 4 });
     expect('version' in owned).toBe(false);
+  });
+});
+
+describe('the version a copied tail carries to the proof of an object', () => {
+  it('is the version the driver reported beside Buffer bytes', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const key: GenKey = { segment: 's', generation: 0 };
+    await bulkLoadCrbmGeneration(storage, key, IDS, { registry });
+    const fingerprint = await objectFingerprint(storage, key);
+    const getTail = storage.getTail.bind(storage);
+    vi.spyOn(storage, 'getTail').mockImplementation(async (k: GenKey, max: number) => {
+      const tail = await getTail(k, max);
+      return { ...tail, bytes: Buffer.from(tail.bytes), version: 'driver-version-1' };
+    });
+    expect(await provenObject(storage, key, fingerprint)).toEqual({ version: 'driver-version-1' });
   });
 });
 
