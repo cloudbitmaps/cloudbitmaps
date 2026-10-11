@@ -190,7 +190,8 @@ delete ([the loading guide](guide/loading.md#a-rollback-that-races-a-collection)
 $12.00 per million at the default prices, for 2 PUT + 5 GET and a free delete; the load that lists, $17.40 per million,
 for 3 PUT-class + 6 GET and a delete. Over a cycle of 16 that is $12.34 per million single-part loads. The counts
 are the engine's, held by `tests/tools/cost.test.ts` and `tests/bench/calibrate-stages.test.ts`, and are expected, not
-measured on S3.
+measured on S3. The table's median times are of the release the run installed too: this release's by-name and listing
+loads wait one registry round trip more each, which no run has timed.
 
 ## Large operands — run `2026-10-07-88cd3`
 

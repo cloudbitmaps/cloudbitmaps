@@ -76,7 +76,7 @@ there", and `note` says why:
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
 | `error: <message>`, `requireEncryption: segment … is cleartext` | The store was built with `encryption: { required: true }`, and the rewrite would write a cleartext generation. | Erase it from a store built without `required`, or drop the segment. |
 | `error: <message>`, a `NotFoundError` saying the generation is another object than its registry row names | The object under the row's current generation is not the one the row's summary names by its fingerprint: put back from outside the library, or restored from another point than the registry. The erasure read none of its ids and wrote nothing. That object stays in the bucket and may hold the id, and every read that opens it refuses it. | Re-running will not help. Run `checkConsistency({ summaries: true })`, which reports the segment as `summary-mismatch`, restore the registry and the bucket to one coherent point ([disaster recovery](disaster-recovery.md)), then re-run the erasure. |
-| `error: <message>`, a `NotFoundError` saying the erasure deleted a generation and another writer moved the pointer onto it | A rollback landed between the erasure's read of the row and one of its deletes, onto the generation it was deleting (or, on a storage driver that ignores a delete's condition, a load took that number again and published, [below](#reading-the-ledger)). The pointer now names a missing object, and every read of the segment fails. Nothing restores a deleted object. When nothing left in the bucket held the id, the deletion was recorded first, as a `segment.collect` event; with a holder left, nothing was recorded. | Roll back to a generation still in the bucket (`store.generations(ref)` lists them), then re-run. A re-run that answers `'not-member'` found the id gone: keep this entry's error and the `segment.collect` event with your ledger. |
+| `error: <message>`, a `NotFoundError` saying an erasure deleted a generation and another writer moved the pointer onto it | A rollback landed between the erasure's read of the row and one of its deletes, onto the generation it was deleting (or, on a storage driver that ignores a delete's condition, a load took that number again and published, [below](#reading-the-ledger)), and the row still named it, with no object under it, when the call read the row again after a wait. The pointer may then name a missing object, and while it does every read of the segment fails; a rollback that found its target gone puts the pointer back itself, and the segment is then whole. Nothing restores a deleted object. On the rewrite path the call had published and sent `segment.rewrite`, and its collection stopped at that generation. With nothing rewritten, when nothing left in the bucket held the id, the deletion was recorded first, as a `segment.collect` event; with a holder left, nothing was recorded. | Check first: `store.generations(ref)` marks the current generation and lists the bucket, and `checkConsistency()` reports the segment as `missing-storage-generation` while the pointer names a missing object. Roll back to a generation still in the bucket only if it does. Then re-run. A re-run that answers `'not-member'` found the id gone: keep this entry's error and the `segment.collect` event with your ledger. |
 | `error: <message>`, an `IntegrityError` naming a chunk, or saying authentication failed | That segment is corrupt: a chunk holds a value no chunk can, or a generation sealed under the segment's own key has a chunk that does not open under it, or the current generation does not open under it at all. The rewrite refused to copy the corruption into a new generation, the erasure deletes nothing on account of that error, and no erasure happened on it. | Investigate; re-running will not help. |
 | `error: <message>`, a `WriteConflictError` | The erasure could not remove a generation holding the id and refused to claim it had. Often a rewrite had already published, so part of the work landed (a rollback onto a generation that still holds the id, landing while the rewrite collects, is one way). It also fires on the collect-only path, where nothing is published at all, and on a segment with no generation yet, when the erasure found a first load's object to delete and a first load wrote another, holding the id or sealed under its own key, after the erasure listed the bucket; when that load published before the erasure's last read of the row, the entry is `'superseded'` instead. | See what a re-run reports instead of assuming the job finished. |
 
@@ -335,10 +335,15 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   what it deleted, and a row that names one of those generations with no object under it (one zero-byte read, made
   only then) makes the call throw `NotFoundError` rather than answer, never `erased: true`. When nothing left in the
   bucket holds the id, it emits its `segment.collect` event first, so the deletion is on the record; with a holder
-  left, it emits nothing. Reads that open the segment's current generation fail with `NotFoundError` until a rollback
-  moves the pointer to a generation in the bucket, which `store.generations(ref)` lists. A rollback whose own check
-  ran after the delete found the object gone and put the pointer back, and the erasure can read the row between the
-  two, so its message allows for that: `checkConsistency()` says which it was.
+  left, it emits nothing. A rollback whose own check ran after the delete finds the object gone and puts the pointer
+  back, and the erasure can read the row between the two, so before it raises it reads the row again, at once and after
+  waits of up to 1.75 s in all on the store's clock, and raises only if every read still names the missing object. A
+  slower rollback can still be undoing itself, so check `store.generations(ref)` or `checkConsistency()` first: while
+  the pointer names a missing object, reads that open the segment's current generation fail with `NotFoundError` until
+  a rollback moves it to a generation in the bucket. One delete is not held to this: a refused rewrite's delete of its
+  own object above the winner's pointer, where the call reads the row, then the object's footer, then deletes. A
+  rollback with `allowForward` onto that object inside that window leaves the pointer on a missing object with nothing
+  reported, and only `checkConsistency()` finds it.
 
 **A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
 a call deletes a holder by name, above the pointer or on a segment with no generation yet, another erasure of the same
@@ -445,8 +450,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
 - A `NotFoundError` is raised when the pointer still names its generation and that generation's object is missing,
   the forbidden `missing-storage-generation` state, or is another object than the row's summary names by its
   fingerprint. No re-run fixes either: `checkConsistency({ summaries: true })` reports both. It is also raised when
-  another writer moved the pointer onto a generation the call deleted, as above: a rollback to a generation in the
-  bucket fixes that one, and a re-run follows it.
+  another writer moved the pointer onto a generation the call deleted and the row still named it after a wait, as
+  above: check `store.generations(ref)` first, roll back to a generation in the bucket only while the pointer names a
+  missing one, and re-run.
 - `collected` lists the generations this call deleted: evidence for the physical half of an Art. 17 erasure, and what
   to keep if you build a proof-of-deletion artifact. `eraseSubject`'s ledger entry does not carry it: the
   `segment.collect` audit event does, for a segment where the call deleted generations and rewrote none, and that

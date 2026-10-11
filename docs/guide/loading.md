@@ -104,10 +104,12 @@ the outputs of a `materializeMany` call, count it with a dry run ([below](#recip
   the row since the load's publish (a load, a rollback, a purge) stops and returns what it deleted in `collected`: a load
   that took effect does not throw for a race it won;
 - a rollback that moved the pointer onto a generation the load had just deleted, one its collection took or its own
-  refused object: `NotFoundError`. After the publish it says the load took effect at its generation; after a refusal it
-  names the refusal, and the `segment.load-refused` event is already sent. Either way the segment's current generation
-  is missing from the bucket until a rollback moves the pointer to one that is there
-  ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
+  refused object, and still named it when the load read the row again, after a wait on the store's clock:
+  `NotFoundError`. After the publish it says the load took effect at its generation; after a refusal it names the
+  refusal, after the `segment.load-refused` event when the load answers the refusal rather than its publish raising
+  it. The pointer may then name a missing object: check `store.generations(ref)` or `checkConsistency()`, and roll back
+  to a generation the bucket holds only if it does, since a rollback that found its target gone puts the pointer back
+  itself ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
 
 The `*Into` verbs throw on the same superseded condition instead of reporting it.
 
@@ -552,7 +554,9 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   meanwhile makes it throw `WriteConflictError` instead of being undone. A rollback to a generation a concurrent load is
   collecting can still lose that generation: the collection proves the row before each delete, and a rollback landing
   between that proof and the delete is the one window it cannot close. The collection detects it and the load throws
-  `NotFoundError`, and the pointer names a missing object until you roll back to a generation in the bucket
+  `NotFoundError` when the pointer still names the missing object after a wait, which is the time a rollback that found
+  its target gone takes to put the pointer back. Check `store.generations(ref)` before acting: while the pointer names
+  a missing object, roll back to a generation in the bucket
   ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
@@ -648,8 +652,9 @@ otherwise. Five properties follow from "a write is a load":
   An empty result into a destination that was never loaded still publishes: there is nothing to protect. Pass
   `allowEmpty: true` when emptying the destination is the point, and `guard: { minCardinality, minRetained, maxGrowth }` for the
   same bounds `load()` takes, judged against what the destination held. A refusal is reported, not thrown; a lost race
-  still throws `WriteConflictError`. A refused call also emits `segment.load-refused` to `audit`, since a
-  materialization is a load.
+  still throws `WriteConflictError`, and a rollback onto the object the refusal deleted throws `NotFoundError`, as a
+  load's does ([what throws instead](#when-a-load-is-refused)). A refused call also emits `segment.load-refused` to
+  `audit`, since a materialization is a load.
 
 A `WriteConflictError` from an `*Into` means the destination changed underneath the call, and it does not by itself
 mean nothing was published. The same error covers a pointer that moved, a row rewritten by something that is not a
@@ -794,6 +799,9 @@ Counted in memory (`bench/materialize-many-counts.cjs`, the `target` shape: 100 
 | 2 GiB | 6 | 3,570 | 900,000 | 1,472 MiB |
 
 so at that size the default makes 4,815,000 chunk reads in 78 groups, about 32 times the 150,000 that one read of every chunk of every operand (100 operands of 1,500 chunks) makes, and 5.3 times the 2 GiB call's; a larger `maxBufferedBytes` is the lever.
+The groups, and with them the range and chunk reads, depend on when each publish settles, since a group's buffers are
+released only as its publishes settle: a publish that makes one more request, or a store with other latencies, can close
+a group at another output. These figures are of this engine over the in-memory backend, not a property of the shape alone.
 Planning sizes groups from the index, which cannot know how much two operands overlap, so an `and` of two large operands is
 priced at the smaller and is often far smaller in fact; the high water mark above shows how much of the budget a call used.
 
@@ -836,7 +844,8 @@ To reconstruct the total GET-class requests, add to `attributed.get` two reads (
 store already holds the operand's reader) for each operand a pin took, which with `pin` on is every named operand whether or not
 an output reads it, or for each of `opens` with `pin: false`; and for each publish the reads of its load, two for a destination
 that has a generation and three for one that has none, and two more when the guard refuses it (its reclaim reads the row
-before it deletes its object and once after). A test holds that recipe to a
+before it deletes its object, and then the row once more after the delete, or, for a destination with no row, the
+object's footer before it). A test holds that recipe to a
 recording driver over pinned and live operands, new and existing destinations, refused and published outputs and unused
 operands. Not known to the call: a multipart upload's extra requests, a listing, and what a publish that threw sent.
 In the counted call above `attributed.put` equals the drivers' PUT-class count and `attributed.get` is a small part of the
@@ -1324,29 +1333,49 @@ such read: no rollback moves a `destroyed` row's pointer. One delete is not held
 delete of its own object above the winner's pointer, which a rollback with `allowForward` onto that object in the same
 round trip leaves named by the pointer, with nothing reported; `checkConsistency()` finds it.
 
+**It gives the rollback's own check time to finish.** The more common order is the other one: the rollback's check runs
+after the delete, finds the object gone and puts the pointer back, and the deleting call's read lands between the move
+and the undo. A rollback client no nearer the store than the deleting call is always in that order:
+
+```
+deleting call       reads: g may go → deletes g → reads: names g, g is gone → reads again: the pointer is back
+rollbackSegment(g)    moves the pointer onto g ──→ lists: g is gone ──────────→ puts the pointer back
+```
+
+So a read that finds the pointer on a deleted generation with no object under it is not yet the answer. The call
+reads the row again at once and, on a store (which always has a clock), again after waits of 250, 500 and 1,000 ms,
+1.75 s in all, and it reports the state only when every one of those reads still names a deleted generation that is
+missing. A rollback's check is one listing of the segment's objects (one page below 1,000 generations) and one
+compare-and-swap, two or three round trips, so the waits cover a rollback client a few hundred milliseconds further
+from the store than the deleting call. A caller of the core functions that passes no clock gets only the read at once.
+A rollback whose undo takes longer than that can still be reported while it is undoing, which is why the message says
+to look before acting.
+
 What the caller sees is `NotFoundError` naming the generation, in place of the answer it would have given:
 
 | The delete | The message says | Already sent |
 |---|---|---|
-| a load's collection, after its publish landed | the load took effect at its generation, and its collection deleted the one the pointer now names | `segment.publish` |
-| a refused load's delete of its own object | the load was refused, for its `reason`, and published nothing | `segment.load-refused` |
-| the erasure's collection, after its rewrite published | a collection deleted the generation | `segment.rewrite` |
+| a load's collection, after its publish landed | the load took effect at its generation, and its collection deleted the one the pointer named | `segment.publish` |
+| a refused load's delete of its own object | the load was refused, naming the refusal, and published nothing | `segment.load-refused` for a refusal the load answers (a guard's, or a publish that answered `false`); nothing for one its publish raised as a `ValidationError` or `KeyUnavailableError`, whose name and message it carries |
+| the erasure's collection, after its rewrite published | an erasure deleted the generation | `segment.rewrite` |
 | the erasure's deletes when it rewrote nothing | an erasure deleted the generation | `segment.collect` when nothing left in the bucket holds the id; nothing when a holder is left |
 
-The message also allows for a rollback whose own check ran after the delete: that rollback found the object gone and
-put the pointer back, and the call can read the row between the two. `checkConsistency()` says which it was: it reports
-the segment as `missing-storage-generation` while the pointer names the missing object. Every read that opens the
-segment's current generation fails until then.
-
-**What to do.** `store.generations(ref)` lists what the bucket holds; roll back to one of them (`allowForward` for one
-above the pointer), or load the segment again, which moves the pointer onto the load's own new generation. The erasure
-also needs a re-run, as its ledger entry says ([reading the ledger](erasure.md#reading-the-ledger)).
+**What to do.** Look before you act: `store.generations(ref)` lists what the bucket holds and marks the current
+generation, and `checkConsistency()` reports the segment as `missing-storage-generation` while its pointer names a
+missing object. Act only if the pointer still names one; a rollback that found its target gone has put the pointer back
+itself, and the segment needs nothing: a rollback then would undo a load that took effect. While the pointer does name
+a missing object, every read that opens the segment's current generation fails: roll back to a generation the bucket
+holds (`allowForward` for one above the pointer), or load the segment again, which moves the pointer onto the load's own
+new generation. The erasure also needs a re-run, as its ledger entry says
+([reading the ledger](erasure.md#reading-the-ledger)).
 
 **What it costs.** One registry read after a loop's last delete, when no read followed it, and none for a loop that
 deleted nothing: a steady load makes one more GET than it would without it. On S3 a load that deletes by name costs
 $12.00 per million at the default prices, for 2 PUT-class requests, 5 GET-class and a delete
-([the cost guide](cost.md#what-each-term-counts)). The zero-byte read is made only when the row names a deleted number,
-which a load or a collection where nothing raced never sees.
+([the cost guide](cost.md#what-each-term-counts)). The rest is made only when a read finds the row naming a deleted
+number, which a call where nothing raced never sees: one zero-byte read of that object, and when it is gone, up to four
+more reads of the row over the waits above, each followed by a zero-byte read while the row still names a deleted
+number.
 
 **What it does not do.** It detects; it repairs nothing, and the rollback that moved the pointer is not undone. The
 argument that it sees every such landing rests on a store that is consistent for a read after a write, as every
