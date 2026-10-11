@@ -323,15 +323,40 @@ function steadyKind(g, keep = STEADY_KEEP) {
 
 /**
  * What one load of each kind requests when nothing races it, on S3's request shape: PUT-class (the object, the pointer and
- * a listing), GET-class (pointer reads and zero-byte object checks), and deletes, which are free. Counted by a test
- * against the real registry protocol and held equal to the figures module's `STORE_LOAD_REQUESTS`.
+ * a listing), GET-class (pointer reads and zero-byte object checks), and deletes, which are free. A load that collects
+ * reads the pointer once more after its last delete, which sees a rollback that landed between the read before that
+ * delete and the delete. Counted by a test against the real registry protocol and held equal to the figures module's
+ * `STORE_LOAD_REQUESTS`.
  */
 const STEADY_LOAD_REQUESTS = Object.freeze({
   first: Object.freeze({ put: 2, get: 3, free: 0 }),
   reload: Object.freeze({ put: 2, get: 2, free: 0 }),
+  byName: Object.freeze({ put: 2, get: 5, free: 1 }),
+  listing: Object.freeze({ put: 3, get: 6, free: 1 }),
+});
+
+/**
+ * What one load of each kind requested on an engine whose load does not read the pointer after its collection's last
+ * delete: one GET fewer to collect.
+ */
+const STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE = Object.freeze({
+  first: STEADY_LOAD_REQUESTS.first,
+  reload: STEADY_LOAD_REQUESTS.reload,
   byName: Object.freeze({ put: 2, get: 4, free: 1 }),
   listing: Object.freeze({ put: 3, get: 5, free: 1 }),
 });
+
+/**
+ * The requests a steady load of each kind makes on the engine a run installed, from what the harness found when it ran
+ * that engine in memory before the run (`measured.readsRowAfterCollect`, from `readsRowAfterCollect` in
+ * `range-counts.cjs`). Evidence with no such answer was written by a harness that held its steady loads to the table
+ * without the read, and recorded a load that made the read as a missed count, so it is read against that table.
+ */
+function steadyLoadRequestsOf(readsRowAfterCollect) {
+  return readsRowAfterCollect === true
+    ? STEADY_LOAD_REQUESTS
+    : STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE;
+}
 
 /** The exact requests of the stage's loads, by class: the sum of each load's kind. */
 function expectedSteady(loads = STEADY_LOADS, keep = STEADY_KEEP) {
@@ -350,6 +375,7 @@ module.exports = {
   STEADY_LOADS,
   LIST_CADENCE,
   STEADY_LOAD_REQUESTS,
+  steadyLoadRequestsOf,
   steadyKind,
   expectedSteady,
   STAGES,

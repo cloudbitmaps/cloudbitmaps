@@ -328,8 +328,8 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 // command by command. A load reads its row once before the publish and checks the next generation number with one
 // HeadObject instead of listing, and sizes the current generation from the row's summary of it. Its publish is written
 // against the row it read, so the write makes no read of the row. It collects by name: it looks for the current object
-// with a second HeadObject, re-reads the pointer and deletes the one generation its publish pushed out of the window,
-// listing nothing, except on every sixteenth generation, where it lists instead.
+// with a second HeadObject, re-reads the pointer, deletes the one generation its publish pushed out of the window and
+// reads the pointer once more, listing nothing, except on every sixteenth generation, where it lists instead.
 describe('S3 (MinIO): the requests one store.load() sends', () => {
   const require_ = createRequire(import.meta.url);
   const { meter } = require_('../../bench/lib/aws-meter.cjs') as {
@@ -377,25 +377,26 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
       byCommand: { GetObjectCommand: 1, HeadObjectCommand: 1, PutObjectCommand: 2 },
     });
     // From the third load on the collection deletes by name: a second HeadObject first, that the current generation's
-    // object is there, and the pointer re-read before the delete.
+    // object is there, the pointer re-read before the delete, and read once more after it, to see that no rollback
+    // landed on the generation it deleted.
     const steady = {
       put: 2,
-      get: 4,
+      get: 5,
       byCommand: {
-        GetObjectCommand: 2,
+        GetObjectCommand: 3,
         HeadObjectCommand: 2,
         PutObjectCommand: 2,
         DeleteObjectCommand: 1,
       },
     };
     for (let g = 2; g < 16; g++) expect(await load(g), `generation ${g}`).toEqual(steady);
-    // Every sixteenth generation lists instead: one ListObjectsV2, and the pointer read before and after it. It needs no
-    // word that the current object is there.
+    // Every sixteenth generation lists instead: one ListObjectsV2, the pointer read before and after it, and once more
+    // after its delete. It needs no word that the current object is there.
     expect(await load(16)).toEqual({
       put: 3,
-      get: 5,
+      get: 6,
       byCommand: {
-        GetObjectCommand: 4,
+        GetObjectCommand: 5,
         HeadObjectCommand: 1,
         PutObjectCommand: 2,
         ListObjectsV2Command: 1,

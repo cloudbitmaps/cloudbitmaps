@@ -743,24 +743,24 @@ describe('a segment is loaded once', () => {
       chunksPerRead: 0,
       retryBound: guards.RETRY_BOUND,
     }).get;
-    expect(bound).toBe(15);
+    expect(bound).toBe(16);
     // Nothing racing and the number free: a reload sizes the current generation from its row's summary, so it is the
     // counted two (its row, which its publish is written against, and the check of the next number), a request fewer
-    // than a first load, and a load that collects makes four (it also checks that the current object is there, and
-    // reads the row again before it deletes). Four lost publishes, the last attempt winning, each reading the row
-    // again, put them at six and eight, inside the bound.
+    // than a first load, and a load that collects makes five (it also checks that the current object is there, and
+    // reads the row again before it deletes and after). Four lost publishes, the last attempt winning, each reading the
+    // row again, put them at six and nine, inside the bound.
     expect(await reload(2, 0)).toEqual({ gets: 2, threw: false });
-    expect(await reload(3, 0)).toEqual({ gets: 4, threw: false });
+    expect(await reload(3, 0)).toEqual({ gets: 5, threw: false });
     expect(await reload(2, 4)).toEqual({ gets: 6, threw: false });
-    expect(await reload(3, 4)).toEqual({ gets: 8, threw: false });
+    expect(await reload(3, 4)).toEqual({ gets: 9, threw: false });
     // A reload whose check finds the number taken lists to collect as well, and reads the pointer around its listing
-    // and before each delete: six with nothing racing, and with four lost publishes ten.
-    expect(await reload(3, 0, true)).toEqual({ gets: 6, threw: false });
-    expect(await reload(3, 4, true)).toEqual({ gets: 10, threw: false });
+    // and before and after its delete: seven with nothing racing, and with four lost publishes eleven.
+    expect(await reload(3, 0, true)).toEqual({ gets: 7, threw: false });
+    expect(await reload(3, 4, true)).toEqual({ gets: 11, threw: false });
     // The same reload of a row with no summary reads the current generation's index as well:
     // one more, which is still inside the bound.
-    expect(await reload(3, 4, true, true)).toEqual({ gets: 11, threw: false });
-    for (const gets of [10, 11]) expect(gets).toBeLessThanOrEqual(bound);
+    expect(await reload(3, 4, true, true)).toEqual({ gets: 12, threw: false });
+    for (const gets of [11, 12]) expect(gets).toBeLessThanOrEqual(bound);
   });
 });
 
@@ -830,8 +830,8 @@ describe('the ceiling covers every stage', () => {
       pointReads: 4_020,
       // An include and ten excludes: eleven operands' pointer and tail, and a range each.
       andNot: 330,
-      // 18 loads of one segment: the first 3, twelve reloads of 2, four by name of 4 and a listing of 5.
-      steadyLoad: 48,
+      // 18 loads of one segment: the first 3, twelve reloads of 2, four by name of 5 and a listing of 6.
+      steadyLoad: 53,
     });
     const single = stages.firstLoadRequests(0);
     const multi = stages.firstLoadRequests(2);
@@ -851,23 +851,23 @@ describe('the ceiling covers every stage', () => {
     const get =
       loads.get + setup.get + Object.values(expected).reduce((n, g) => n + g, 0) + fixed.get;
     const steady = stages.expectedSteady(18, 12);
-    expect(steady).toEqual({ put: 37, get: 48, free: 5 });
+    expect(steady).toEqual({ put: 37, get: 53, free: 5 });
     const put = loads.put + setup.put + fixed.put + steady.put;
-    expect({ put, get }).toEqual({ put: 138, get: 5_162 });
+    expect({ put, get }).toEqual({ put: 138, get: 5_167 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
-    expect(expectedUSD).toBeCloseTo(0.0027548, 7);
+    expect(expectedUSD).toBeCloseTo(0.0027568, 7);
     // The bounds are unchanged by coalescing: each is what a request for every chunk would cost, which a read of
     // ranges never exceeds, so they are far above what is expected now. The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
     // at the costliest sample's bound, a cold intersect sharing 2,000 chunks.
     const projected = stages.projectStages(w);
     expect(projected.costliestSample).toBe(stages.coldIntersectBound(2_000));
     expect(projected.discards).toEqual({ put: 0, get: 3 * 4_006 });
-    // Each of the 59 loads the plan names, in the stages and their setups, is projected at the load bound's 15 GET-class
+    // Each of the 59 loads the plan names, in the stages and their setups, is projected at the load bound's 16 GET-class
     // requests, the steady stage's 18 among them.
-    expect(projected.stages.steadyLoad).toEqual({ put: 18 * 9, get: 18 * 15 });
-    expect(projected.total).toEqual({ put: 567, get: 94_606 + 270 + 12_018 });
+    expect(projected.stages.steadyLoad).toEqual({ put: 18 * 9, get: 18 * 16 });
+    expect(projected.total).toEqual({ put: 567, get: 94_647 + 288 + 12_018 });
     const bound = meterLib.priceTally(projected.total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.0455926, 7);
+    expect(bound).toBeCloseTo(0.0456162, 7);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
   });
@@ -944,6 +944,7 @@ describe('the steady-load stage', () => {
   };
   const rangeCounts = require_(join(ROOT, 'bench', 'lib', 'range-counts.cjs')) as {
     collectsByName: (engine: unknown, keep?: number) => Promise<boolean>;
+    readsRowAfterCollect: (engine: unknown, keep?: number) => Promise<boolean>;
   };
   const engineSrc = (rel: string): string =>
     readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', rel), 'utf8');
@@ -1011,7 +1012,7 @@ describe('the steady-load stage', () => {
     // The stage's 18 loads, summed.
     expect(stages.expectedSteady(stages.STEADY_LOADS, stages.STEADY_KEEP)).toEqual({
       put: 37,
-      get: 48,
+      get: 53,
       free: 5,
     });
   });
@@ -1088,6 +1089,51 @@ describe('the steady-load stage', () => {
     expect(at('collectsByName(await import')).toBeGreaterThan(-1);
     expect(at('collectsByName(await import')).toBeLessThan(at('layout = planLayout('));
     expect(harnessSrc).toContain('0.17.0 is the first release that does');
+  });
+
+  it('asks the installed engine whether its load reads the row after its last delete, and records the answer', async () => {
+    const real = { CloudRoaring, MemoryStorage };
+    expect(await rangeCounts.readsRowAfterCollect(real)).toBe(true);
+    // An engine whose load ends at its collection's delete: here the read after it is served past the probe's count.
+    class EndsAtTheDelete extends CloudRoaring {
+      constructor(options: ConstructorParameters<typeof CloudRoaring>[0]) {
+        const { storage, registry } = options.storage as unknown as {
+          storage: { delete: (...a: unknown[]) => Promise<void> };
+          registry: { get: (...a: unknown[]) => Promise<unknown> };
+        };
+        const counted = { delete: storage.delete, get: registry.get };
+        const uncounted = (Object.getPrototypeOf(registry) as typeof registry).get;
+        let deleted = false;
+        storage.delete = (...a) => {
+          deleted = true;
+          return counted.delete(...a);
+        };
+        registry.get = (...a) => (deleted ? uncounted.apply(registry, a) : counted.get(...a));
+        super(options);
+      }
+    }
+    expect(
+      await rangeCounts.readsRowAfterCollect({ CloudRoaring: EndsAtTheDelete, MemoryStorage }),
+    ).toBe(false);
+    // One that deletes nothing there is not asked, since the harness refuses it first; the probe says why it cannot answer.
+    class KeepsEverything extends CloudRoaring {
+      override load(...[ref, ids, options]: Parameters<CloudRoaring['load']>) {
+        return super.load(ref, ids, { ...options, keep: 1_000 });
+      }
+    }
+    await expect(
+      rangeCounts.readsRowAfterCollect({ CloudRoaring: KeepsEverything, MemoryStorage }),
+    ).rejects.toThrow(/deleted nothing on its first load past a window of 12/);
+    // The harness asks before it creates anything, after the engine is known to collect by name, and records the answer
+    // where the figures read it.
+    const at = (needle: string): number => harnessSrc.indexOf(needle);
+    const asked = harnessSrc.search(
+      /readsRowAfterCollect\(\s*await import\('@cloudbitmaps\/roaring'\)/,
+    );
+    expect(asked).toBeGreaterThan(at('collectsByName(await import'));
+    expect(asked).toBeLessThan(at('layout = planLayout('));
+    expect(harnessSrc).toContain('{ readsRowAfterCollect: readsAfterCollect }');
+    expect(harnessSrc).toContain('steadyLoadRequestsOf(readsAfterCollect)[kind]');
   });
 
   it('claims the steady segment once, for its first load, and reloads it through the same helper', () => {
