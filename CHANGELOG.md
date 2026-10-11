@@ -19,6 +19,16 @@ so, and so do the module headers in the code.
   branch on `published`, and check `store.generations(ref)` before acting, as the entry under Fixed on a rollback that
   lands while a delete runs says.
 
+- **A combine refuses an operand that is not a segment made by this copy of `@cloudbitmaps/roaring`, including a
+  segment from another installed version of it.** The refusal is a `ValidationError` before any request: an `*Into`
+  call rejects with it, and `intersect`, `union` and `andNot` throw it when their stream is first read, as they do
+  their other errors. A stub with a `leaseError` method, a segment-shaped object and a segment from another installed
+  version are all refused. Before, a stub or a segment-shaped object passed the check or failed later with a
+  `TypeError`, and a segment from a copy of 0.19.0 to 0.20.0 was taken and worked. A segment from another copy of
+  this release is still taken by `intersect`, `union`, `andNot` and the `*Into` verbs, recognised by a versioned
+  `Symbol.for` brand; `materializeMany` takes only a segment of its own copy. Install one version of
+  `@cloudbitmaps/roaring`.
+
 ### Added
 
 - **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
@@ -31,11 +41,6 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **A combine operand that is not a segment this library made is refused with `ValidationError` at the call.** A
-  stub with a `leaseError` method, a segment-shaped object, or a segment from a copy of the package from a release
-  before this one is refused when the combine is called. Before, a stub or a segment-shaped object failed later with
-  a `TypeError` or passed the check. A segment from another copy of this release is still taken, recognised by a
-  `Symbol.for` brand.
 - **The eject CLI's configuration errors are `ValidationError`.** A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` and an
   unknown `CR_EXPORT_FORMAT` throw it from `parseConfig`; the messages and the exit code (1) are the same.
 

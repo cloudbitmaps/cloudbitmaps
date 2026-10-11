@@ -839,8 +839,13 @@ interface HandleView {
   readonly leaseError: () => LeaseExpiredError | undefined;
 }
 
-/** Marks a segment so one from another copy of this package is recognised; `Symbol.for` is the same symbol in every copy. */
-const SEGMENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.roaring.segment');
+/**
+ * Marks a segment so one from another copy of this package is recognised; `Symbol.for` is the same symbol in every
+ * copy. A combine reads these members of a segment from another copy: `ref`, `pinnedAt`, `leaseHold`, `key()` and
+ * `leaseError()`. The number at the end of the key is raised whenever one of them changes meaning, is renamed or is
+ * removed, so a copy at another number is refused instead of read through members it does not have.
+ */
+const SEGMENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.roaring.segment/1');
 
 /** Set by the `Segment` class, whose private state it reads. */
 let viewOf: (segment: Segment) => HandleView;
@@ -3642,7 +3647,7 @@ export class Segment {
   private assertSegments(handles: readonly unknown[]): void {
     for (const h of handles) {
       // A segment of another copy of this package (a second install) is not an instance of this one's class, so it
-      // is recognised by the `Symbol.for` brand every segment carries, which is the same symbol in every copy.
+      // is recognised by the versioned `Symbol.for` brand every segment carries.
       if (
         h instanceof Segment ||
         (typeof h === 'object' &&
@@ -3651,7 +3656,9 @@ export class Segment {
       ) {
         continue;
       }
-      throw new ValidationError('an operand must be a segment from store.segment()');
+      throw new ValidationError(
+        'an operand must be a segment made by this copy of @cloudbitmaps/roaring (`store.segment()`); a segment from another installed version is refused',
+      );
     }
   }
 
@@ -3660,7 +3667,10 @@ export class Segment {
    * the engine, so no operand, exclude or cached reader can answer past a lease.
    */
   private assertLeases(handles: readonly Segment[]): void {
-    for (const h of handles) h.assertLease();
+    for (const h of handles) {
+      const err = h.leaseError();
+      if (err !== undefined) throw err;
+    }
   }
 
   /** Throw this handle's lease error, if it has one. The calls that return a value instead of throwing use {@link leaseError}. */
