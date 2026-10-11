@@ -19,12 +19,13 @@ so, and so do the module headers in the code.
   branch on `published`, and check `store.generations(ref)` before acting, as the entry under Fixed on a rollback that
   lands while a delete runs says.
 
-- **A combine refuses an operand that is not a segment made by this copy of `@cloudbitmaps/roaring`, including a
-  segment from another installed version of it.** The refusal is a `ValidationError` before any request: an `*Into`
-  call rejects with it, and `intersect`, `union` and `andNot` throw it when their stream is first read, as they do
-  their other errors. A stub with a `leaseError` method and a segment-shaped object are refused the same way. A
-  segment from another copy of this release is taken by `intersect`, `union`, `andNot` and the `*Into` verbs;
-  `materializeMany` takes only a segment of its own copy. Install one version of `@cloudbitmaps/roaring`.
+- **A combine refuses an operand that is not a segment of a compatible copy of `@cloudbitmaps/roaring`, a segment from
+  an earlier release included.** The refusal is a `ValidationError` before any request: an `*Into` call rejects with
+  it, and `intersect`, `union` and `andNot` throw it when their stream is first read, as they do their other errors. A
+  stub with a `leaseError` method and a segment-shaped object are refused the same way. A segment from another copy is
+  taken by `intersect`, `union`, `andNot` and the `*Into` verbs when it carries the same versioned brand as this copy,
+  as every copy of the same release does; `materializeMany` takes only a segment of its own copy. Install one version
+  of `@cloudbitmaps/roaring`.
 
 ### Added
 

@@ -35,7 +35,7 @@ which is right. As an operand, a mistyped name or a missing `namespace` would co
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
 operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy or crypto-shredded
 is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
-counts as existing.
+counts as existing. A combine also refuses a segment from another installed copy of `@cloudbitmaps/roaring` unless that copy carries the same versioned segment brand, which every copy of the same release does, with a `ValidationError` that says to install one version.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).

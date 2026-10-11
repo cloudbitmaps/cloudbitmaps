@@ -149,7 +149,8 @@ describe('an operand list holds segments only', () => {
     { leaseError: () => undefined },
     { ref: { segment: 'a' }, leaseHold: undefined, leaseError: () => undefined },
   ];
-  const message = 'an operand must be a segment made by this copy of @cloudbitmaps/roaring';
+  const message =
+    'an operand must be a segment from `store.segment()` of a compatible copy of @cloudbitmaps/roaring; install one version of it';
 
   it('every combine and *Into refuses a value that is not a segment, before reading anything', async () => {
     const backend = new MemoryStorage();

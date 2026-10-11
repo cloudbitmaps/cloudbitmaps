@@ -21,14 +21,18 @@ describe('export-segments CLI', () => {
       expect(() => parseConfig({ CR_EXPORT_ROOT: '/x' })).toThrow(/CR_EXPORT_OUT/);
     });
     it('refuses a misconfiguration with a ValidationError that keeps its message', () => {
-      expect(() => parseConfig({})).toThrow(ValidationError);
-      expect(() => parseConfig({})).toThrow(
-        'CR_EXPORT_ROOT is required (the local-filesystem storage root)',
-      );
-      expect(() => parseConfig({ CR_EXPORT_ROOT: '/x' })).toThrow(ValidationError);
-      expect(() =>
-        parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: 'csv' }),
-      ).toThrow('CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got csv');
+      const cases: ReadonlyArray<[Record<string, string>, string]> = [
+        [{}, 'CR_EXPORT_ROOT is required (the local-filesystem storage root)'],
+        [{ CR_EXPORT_ROOT: '/x' }, 'CR_EXPORT_OUT is required (the output directory for the dump)'],
+        [
+          { CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: 'csv' },
+          'CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got csv',
+        ],
+      ];
+      for (const [env, message] of cases) {
+        expect(() => parseConfig(env)).toThrow(ValidationError);
+        expect(() => parseConfig(env)).toThrow(message);
+      }
     });
     it('defaults format=roaring; rejects a bad format', () => {
       expect(parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o' })).toMatchObject({

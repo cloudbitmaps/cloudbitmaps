@@ -843,7 +843,8 @@ interface HandleView {
  * Marks a segment so one from another copy of this package is recognised; `Symbol.for` is the same symbol in every
  * copy. A combine reads these members of a segment from another copy: `ref`, `pinnedAt`, `leaseHold`, `key()` and
  * `leaseError()`. The number at the end of the key is raised whenever one of them changes meaning, is renamed or is
- * removed, so a copy at another number is refused instead of read through members it does not have.
+ * removed, or a combine starts to read another member of another copy's segment, so a copy at another number is
+ * refused instead of read through members it does not have.
  */
 const SEGMENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.roaring.segment/1');
 
@@ -3657,7 +3658,7 @@ export class Segment {
         continue;
       }
       throw new ValidationError(
-        'an operand must be a segment made by this copy of @cloudbitmaps/roaring (`store.segment()`); a segment from another installed version is refused',
+        'an operand must be a segment from `store.segment()` of a compatible copy of @cloudbitmaps/roaring; install one version of it',
       );
     }
   }

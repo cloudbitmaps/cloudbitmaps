@@ -423,9 +423,9 @@ move it up.
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- **Segment handles across installed versions.** A segment handle carries a versioned brand, and a combine
-  refuses a segment of another installed version of `@cloudbitmaps/roaring`. Whether a handle from another version is
-  accepted, or refused with a clear message, is designed with the `1.0` compatibility promise.
+- **Segment handles across installed versions.** A segment handle carries a versioned brand, raised when what a
+  combine reads from another copy's handle changes, and a combine refuses a handle whose brand differs from its own.
+  Which versions' handles a combine accepts is part of the `1.0` compatibility promise.
 - **One generation from parts built in several processes.** Several workers, each owning a disjoint range of the id
   space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
   and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every
