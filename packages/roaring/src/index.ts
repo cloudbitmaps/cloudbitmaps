@@ -542,7 +542,8 @@ export interface EncryptionOptions {
  * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
  *
  * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its
- * {@link DEFAULT_RETRY_POLICY} value.
+ * {@link DEFAULT_RETRY_POLICY} value, except that an omitted `maxDelayMs` is the `baseDelayMs` when that is larger
+ * than the default cap.
  */
 export interface RetryOptions extends Partial<RetryPolicy> {
   /**
@@ -1251,10 +1252,17 @@ export class CloudRoaring {
       if (userOnRetry !== undefined && typeof userOnRetry !== 'function') {
         throw new ValidationError('retry.onRetry must be a function');
       }
+      // An omitted `maxDelayMs` is the default cap, or the `baseDelayMs` given when that is larger, so tuning only the
+      // base delay never leaves a cap below it. A `maxDelayMs` given below the `baseDelayMs` is refused.
+      const baseDelayMs = ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs;
       const policy: RetryPolicy = {
         maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
-        baseDelayMs: ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs,
-        maxDelayMs: ov.maxDelayMs ?? DEFAULT_RETRY_POLICY.maxDelayMs,
+        baseDelayMs,
+        maxDelayMs:
+          ov.maxDelayMs ??
+          (typeof baseDelayMs === 'number' && baseDelayMs > DEFAULT_RETRY_POLICY.maxDelayMs
+            ? baseDelayMs
+            : DEFAULT_RETRY_POLICY.maxDelayMs),
         backoffFactor: ov.backoffFactor ?? DEFAULT_RETRY_POLICY.backoffFactor,
         jitter: ov.jitter ?? DEFAULT_RETRY_POLICY.jitter,
       };

@@ -57,9 +57,10 @@ so, and so do the module headers in the code.
   `@cloudbitmaps/core/driver-kit` words its refusal the same way and takes the same values. Newly refused: a fractional
   `maxScanSegments` (for `retireExpired`, `checkConsistency` and `eraseNamespace`), a `getRange` offset or length of 2^53
   or more on the in-process and local-filesystem drivers, and a generation number of 2^53 or more in a storage key.
-- **The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.** `retry: { maxAttempts:
-  2.5 }` and `retry: { baseDelayMs: 5000 }` (which leaves `maxDelayMs` at its 2,000 ms default) throw `ValidationError`
-  when the store is built, as the other fields of the policy already did.
+- **The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.** `retry: {
+  maxAttempts: 2.5 }` and `retry: { baseDelayMs: 500, maxDelayMs: 100 }` throw `ValidationError` when the store is
+  built, as the other fields of the policy do. A `maxDelayMs` you leave out is 2000 ms, or `baseDelayMs` when that is
+  larger, so `retry: { baseDelayMs: 5000 }` alone is accepted and caps each delay at 5000 ms.
 - **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
   tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
   before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number
