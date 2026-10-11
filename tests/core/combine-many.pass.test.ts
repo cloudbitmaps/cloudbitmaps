@@ -6,12 +6,12 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
-  combineWork,
   compileCombineMany,
   rebindCombineMany,
   runCombineMany,
+  runCombineManyCounted,
 } from '@/core/combine-many';
-import type { CombineExpr, CombineManyOperand } from '@/core/combine-many';
+import type { CombineExpr, CombineManyOperand, PlanWork } from '@/core/combine-many';
 import {
   BudgetExceededError,
   IntegrityError,
@@ -878,12 +878,13 @@ describe('pricing a group does not grow with the group', () => {
     const outputs = Array.from({ length: n }, (_, i) =>
       collecting({ expr: i % 2 === 0 ? { and: ['a', 'b'] } : { or: ['a', 'b'] } }),
     ).map((o) => ({ ...o, publish: async () => ({ ids: [], keys: [] }) }));
-    for (const k of Object.keys(combineWork) as Array<keyof typeof combineWork>) combineWork[k] = 0;
-    const r = await runCombineMany(
+    const work: PlanWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
+    const r = await runCombineManyCounted(
       compileCombineMany(request(setup, outputs, { maxBufferedBytes: budget })),
       { source: setup.source, codec: roaringCodec, clock },
+      work,
     );
-    return { r, work: { ...combineWork } };
+    return { r, work };
   };
 
   it('prices each output once to add it and twice to place it, by its own operands, whatever the group size', async () => {
@@ -906,6 +907,24 @@ describe('pricing a group does not grow with the group', () => {
     expect(split.r.stats.groups).toBeGreaterThan(1);
     expect(split.work.planBuilds).toBe(split.r.stats.groups);
     expect(split.r.stats.memory.planBytes).toBe(small.r.stats.memory.planBytes);
+  });
+
+  it('counts a call into its own counters only, whatever runs beside it', async () => {
+    const alone = await tiny(300);
+    // Each pricing walks the output's two operands.
+    expect(alone.work.operandSteps).toBe(2 * (alone.work.adds + alone.work.withs));
+    const setup = seed({ a: ids([1]), b: ids([1]) });
+    const others = Array.from({ length: 500 }, () => collecting({ expr: { and: ['a', 'b'] } }));
+    const [beside] = await Promise.all([
+      tiny(300),
+      runCombineMany(compileCombineMany(request(setup, others)), {
+        source: setup.source,
+        codec: roaringCodec,
+        clock,
+      }),
+      tiny(40),
+    ]);
+    expect(beside.work).toEqual(alone.work);
   });
 });
 

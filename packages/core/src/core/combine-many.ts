@@ -19,7 +19,7 @@
  * from them. Every output chunk is built from decoded chunks and handed on, and the write path run-optimizes it, so an
  * output is byte for byte what the same ids would load.
  */
-import { MAX_REMAINDER, U32_MAX } from './bit-route';
+import { refuseAbsent } from './absent-operands';
 import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import type { CodecBitmap, CodecInterface } from './codec';
@@ -43,8 +43,16 @@ import { residentBound, residentBytes, ResidentLedger, serializedBound } from '.
 import { mapWithConcurrency } from './concurrency';
 import { yieldEvery } from './cooperative';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
+import { assertIdBound, cutToWindow, isEdge, keysWithin, windowOf } from './id-window';
+import type { IdWindow } from './id-window';
 import type { Clock } from './determinism';
-import { BudgetExceededError, IntegrityError, StaleOperandError, ValidationError } from './errors';
+import {
+  BudgetExceededError,
+  CloudRoaringError,
+  IntegrityError,
+  StaleOperandError,
+  ValidationError,
+} from './errors';
 import type { Budget } from './budget';
 import { checkedGuard } from './load';
 import { checkedAuditSink } from './audit';
@@ -69,7 +77,7 @@ const WORKING_CHUNK = residentBytes(8_208);
 /** A request budget's headroom over what the plan needs, for a group that has to be re-run. */
 const BUDGET_HEADROOM_FACTOR = 2;
 const BUDGET_HEADROOM_FLOOR = 1_000;
-/** Operands whose index is read at once. */
+/** The most operands read at once: their indexes, whether one exists, and their registry rows. */
 const INDEX_PARALLELISM = 16;
 
 /** One named stored operand, as the pass reads it. */
@@ -369,15 +377,8 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   integerIn(request.maxBufferedBytes, 1, Number.MAX_SAFE_INTEGER, 'maxBufferedBytes');
   integerIn(request.publishConcurrency, 1, MAX_BATCH_PARALLELISM, 'publishConcurrency');
   integerIn(request.concurrency, 1, MAX_BATCH_PARALLELISM, 'concurrency');
-  for (const [name, bound] of [
-    ['after', request.after],
-    ['through', request.through],
-  ] as const) {
-    // An `after` or `through` is an id: the refusal says what is wrong, never the value.
-    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      throw new ValidationError(`${name} must be an integer from 0 to ${U32_MAX}`);
-    }
-  }
+  assertIdBound('after', request.after);
+  assertIdBound('through', request.through);
   const index = new Map<string, number>();
   operands.forEach((op, i) => index.set(op.name, i));
   const feed =
@@ -472,57 +473,6 @@ function subtractedList(node: ExprNode): number[] {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-
-/** The window a range cuts: inclusive id bounds as chunk keys and remainders, as a combine's range is. */
-interface IdWindow {
-  readonly loKey: number;
-  readonly loRem: number;
-  readonly hiKey: number;
-  readonly hiRem: number;
-}
-
-function windowOf(
-  after: number | undefined,
-  through: number | undefined,
-): IdWindow | 'empty' | null {
-  if (after === undefined && through === undefined) return null;
-  const lo = after === undefined ? 0 : after + 1;
-  const hi = through ?? U32_MAX;
-  if (lo > hi) return 'empty';
-  return {
-    loKey: Math.floor(lo / 0x1_0000),
-    loRem: lo % 0x1_0000,
-    hiKey: Math.floor(hi / 0x1_0000),
-    hiRem: hi % 0x1_0000,
-  };
-}
-
-const isEdge = (key: number, w: IdWindow): boolean =>
-  (key === w.loKey && w.loRem > 0) || (key === w.hiKey && w.hiRem < MAX_REMAINDER);
-
-function firstAbove(sorted: Uint32Array, x: number): number {
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (sorted[mid]! <= x) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-/** An edge chunk cut to the window, as a new bitmap. */
-function cutToWindow(
-  codec: CodecInterface,
-  chunk: CodecBitmap,
-  key: number,
-  w: IdWindow,
-): CodecBitmap {
-  const from = key === w.loKey ? w.loRem : 0;
-  const to = key === w.hiKey ? w.hiRem : MAX_REMAINDER;
-  const rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
-  return codec.fromValues(rem.subarray(firstAbove(rem, from - 1), firstAbove(rem, to)));
-}
 
 /** A first-in first-out limit on how many things run at once. */
 class Gate {
@@ -652,9 +602,15 @@ interface GroupCostItem {
 
 /**
  * Work counters of the planner, for the tests that hold it to its cost: how many times a group was priced, how many
- * operands those prices walked, and how many group plans were built. Plain numbers, never read by the planner.
+ * operands those prices walked, and how many group plans were built. A call counts into the one it is given
+ * ({@link runCombineManyCounted}), and into none otherwise; the planner never reads them.
  */
-export const combineWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
+export interface PlanWork {
+  adds: number;
+  withs: number;
+  operandSteps: number;
+  planBuilds: number;
+}
 
 /**
  * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
@@ -674,15 +630,19 @@ export class GroupCost {
   constructor(
     private readonly streamBytes: (operand: number) => number,
     private readonly publishConcurrency: number,
+    /** Where this pricing is counted, when it is. */
+    private readonly work?: PlanWork,
   ) {}
 
   /** The cost of the group with `o` added. */
   with(o: GroupCostItem): number {
-    combineWork.withs++;
+    if (this.work !== undefined) {
+      this.work.withs++;
+      this.work.operandSteps += o.compiled.operands.length;
+    }
     let streams = this.streams;
     let operands = this.operands.size;
     for (const i of o.compiled.operands) {
-      combineWork.operandSteps++;
       if (!this.operands.has(i)) {
         streams += this.streamBytes(i);
         operands++;
@@ -702,9 +662,11 @@ export class GroupCost {
   }
 
   add(o: GroupCostItem): void {
-    combineWork.adds++;
+    if (this.work !== undefined) {
+      this.work.adds++;
+      this.work.operandSteps += o.compiled.operands.length;
+    }
     for (const i of o.compiled.operands) {
-      combineWork.operandSteps++;
       if (!this.operands.has(i)) {
         this.operands.add(i);
         this.streams += this.streamBytes(i);
@@ -776,6 +738,16 @@ export async function runCombineMany<R>(
   return run.execute();
 }
 
+/** {@link runCombineMany}, counting the planner's work into `work`. Not exported from the package. */
+export async function runCombineManyCounted<R>(
+  compiled: CompiledCombineMany<R>,
+  deps: CombineManyDeps,
+  work: PlanWork,
+): Promise<CombineManyRun<R>> {
+  const run = new Run(compiled, deps, work);
+  return run.execute();
+}
+
 class Run<R> {
   private readonly req: CombineManyRequest<R>;
   private readonly source: StorageChunkSource;
@@ -812,7 +784,11 @@ class Run<R> {
   private running: ReadonlyArray<OutputState<R>> = [];
   private bounds: KeyBounds[] | undefined;
 
-  constructor(compiled: CompiledCombineMany<R>, deps: CombineManyDeps) {
+  constructor(
+    compiled: CompiledCombineMany<R>,
+    deps: CombineManyDeps,
+    private readonly work?: PlanWork,
+  ) {
     const checked = COMPILED.get(compiled);
     if (checked === undefined) {
       throw new ValidationError('runCombineMany takes the result of compileCombineMany');
@@ -864,10 +840,10 @@ class Run<R> {
   }
 
   async execute(): Promise<CombineManyRun<R>> {
-    this.window = windowOf(this.req.after, this.req.through);
+    this.window = windowOf(this.req);
     if (this.checkedFeed !== undefined) this.feed = this.openFeed(this.checkedFeed);
     await this.readIndexes();
-    await this.refuseAbsent();
+    await this.refuseAbsentOperands();
     this.planOutputs();
     // A feed is read once, so a call with one runs every output as one group.
     const groups = this.formGroups(
@@ -956,8 +932,12 @@ class Run<R> {
     return this.evictLargest(this.running);
   }
 
+  /**
+   * What an output with no outcome reports. None is left without one: every output fails, publishes, or is deferred and
+   * run again alone until it does one or the other. Kept so a slip in that reports a library error, not a hole.
+   */
   private neverRan(): CombineManyOutcome<R> {
-    return { ok: false, error: new Error('materializeMany: output did not run') };
+    return { ok: false, error: new CloudRoaringError('materializeMany: output did not run') };
   }
 
   // ---- index ------------------------------------------------------------------------------------------------
@@ -972,7 +952,7 @@ class Run<R> {
       const op = this.operands[index]!;
       try {
         const listed = checkedChunkKeys(await this.source.listChunkKeys(op.spec.ref));
-        const keys = w === null ? listed : within(listed, w);
+        const keys = w === null ? listed : keysWithin(listed, w);
         const cards = await this.source.cardinalities?.(op.spec.ref);
         const card = new Uint32Array(keys.length);
         let serialized = 0;
@@ -1007,24 +987,18 @@ class Run<R> {
    * the call. One whose index was read is judged only if it has no chunk at all; one whose index was not read (no output
    * names it, or the range is empty) is asked outright.
    */
-  private async refuseAbsent(): Promise<void> {
-    if (this.req.allowAbsentOperands === true || this.source.exists === undefined) return;
-    const judged = this.operands.filter(
-      (op) => op.error === undefined && (op.read ? op.chunkless : true),
-    );
-    if (judged.length === 0) return;
-    const exists = this.source.exists.bind(this.source);
-    const checked = await mapWithConcurrency(judged, INDEX_PARALLELISM, async (op) => {
-      this.registryReads++;
-      return { op, exists: await exists(op.spec.ref) };
-    });
-    const absent = checked.filter((c) => !c.exists).map((c) => c.op.spec.name);
-    if (absent.length === 0) return;
-    throw new ValidationError(
-      `materializeMany: operand ${absent.map((n) => `"${n}"`).join(', ')} names a segment that does not exist or was dropped, so it ` +
-        'would contribute nothing — an exclude would suppress no ids and an include would contribute none. Check ' +
-        'the name and the namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
-        '`allowAbsentOperands: true` if you meant it.',
+  private async refuseAbsentOperands(): Promise<void> {
+    const source = this.source;
+    if (this.req.allowAbsentOperands === true || source.exists === undefined) return;
+    await refuseAbsent(
+      'materializeMany',
+      this.operands.filter((op) => op.error === undefined && (op.read ? op.chunkless : true)),
+      INDEX_PARALLELISM,
+      (op) => {
+        this.registryReads++;
+        return source.exists!(op.spec.ref);
+      },
+      (op) => op.spec.name,
     );
   }
 
@@ -1104,7 +1078,7 @@ class Run<R> {
     const room = this.req.maxBufferedBytes - base;
     const groups: GroupSummary[] = [];
     const fresh = (): GroupCost =>
-      new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency);
+      new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency, this.work);
     let cost = fresh();
     let kept = 0;
     let current: Array<OutputState<R>> = [];
@@ -1165,7 +1139,7 @@ class Run<R> {
 
   /** The keys each operand is fetched at for `members`, and the keys the pass visits. */
   private buildGroup(members: readonly OutputState<R>[]): GroupPlan {
-    combineWork.planBuilds++;
+    if (this.work !== undefined) this.work.planBuilds++;
     const bounds = this.boundsList();
     const bits = new Map<number, KeyBits>();
     const visit = new KeyBits();
@@ -1918,11 +1892,6 @@ function hasKey(keys: Uint16Array | undefined, key: number): boolean {
     else hi = mid;
   }
   return lo < keys.length && keys[lo] === key;
-}
-
-/** The ascending `keys` inside the window's chunk span. */
-function within(keys: readonly number[], w: IdWindow): number[] {
-  return keys.filter((k) => k >= w.loKey && k <= w.hiKey);
 }
 
 /**
