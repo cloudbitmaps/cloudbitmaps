@@ -830,7 +830,7 @@ demand with `node bench/materialize-many-counts.cjs --check --all`.
 
 | | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments |
 |---|---|---|---|---|---|---|
-| 1,000 `*Into` calls, nested groups through scratch segments | 137,037 | 2,736 | 4,220 | **143,993** | **3,404** | 818 |
+| 1,000 `*Into` calls, nested groups through scratch segments | 137,089 | 2,736 | 4,220 | **144,045** | **3,404** | 818 |
 | one `materializeMany`, default 256 MiB (6 groups) | 589 | 1,100 | 2,043 | **3,732** | **1,768** | 0 |
 
 GET-class is range reads, tail reads and registry row reads; PUT-class is object writes, registry writes and listings;

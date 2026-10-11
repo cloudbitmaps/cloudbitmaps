@@ -72,14 +72,14 @@
       "into": {
         "published": 768,
         "scratchSegments": 818,
-        "rangeReads": 137037,
+        "rangeReads": 137089,
         "tailReads": 2736,
         "rowReads": 4220,
         "objectWrites": 1818,
         "rowWrites": 1586,
         "listings": 0,
         "deletes": 232,
-        "getClass": 143993,
+        "getClass": 144045,
         "putClass": 3404
       }
     },

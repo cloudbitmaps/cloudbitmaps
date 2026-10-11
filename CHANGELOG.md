@@ -45,11 +45,12 @@ so, and so do the module headers in the code.
   `pin: false` keep the keys they listed. Looking makes no request, with one exception: a combine with an `exclude`
   or a union that runs past `cache.genTtlMs` makes the pointer read of a refresh, once per `cache.genTtlMs`, for an
   operand it no longer reads. A look waits for its lookups, so a combine's streams can group its chunks into ranges a
-  little differently: counted on the in-memory batch benchmark, where nothing moves, 24 fewer of 19,785 range reads
-  in one shape and 52 more of 137,037 in another. A read that lists its keys again is charged to the per-op budget
-  again, with what it has already taken, and throws `BudgetExceededError` when a segment grew past it. A running
-  `iterate` or combine of the store that erases an id now meets the erasure before its next key, and yields the id
-  only from the chunk or key it is handing out, well inside the written bound, which is unchanged
+  little differently: counted on the in-memory batch benchmark, where nothing moves, the `*Into` route makes 19,761
+  range reads where it made 19,785 in one shape, and 137,089 where it made 137,037 in the refresh-shaped one. A read
+  that lists its keys again is charged to the per-op budget again, with what it has already taken, and throws
+  `BudgetExceededError` when a segment grew past it. A running `iterate` or combine of the store that erases an id now
+  meets the erasure before its next key, and yields the id only from the chunk or key it is handing out, well inside
+  the written bound, which is unchanged
   ([who stops seeing the id](docs/guide/erasure.md#who-stops-seeing-the-id-and-when)).
 - **A leased handle's `iterate()`, combines and `everyNth()` return a stream that can be driven by hand.** The stream of a
   handle holding a lease was an object with `for await` and `batches()` only, so `stream.next()`, `stream.return()` and
@@ -80,7 +81,7 @@ so, and so do the module headers in the code.
   prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
   row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
   `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
-  `materializeMany` call, and 143,993 (137,037 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
+  `materializeMany` call, and 144,045 (137,089 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
 - **A refused load deletes its own object once another write has changed the segment's row.** A load refused after
