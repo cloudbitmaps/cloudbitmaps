@@ -86,7 +86,7 @@ for (const format of ['roaring', 'ndjson'] as const) {
         expect(manifest.skipped).toEqual([{ segment: 'victim', reason: 'destroyed' }]);
         expect(manifest.failed).toEqual([]);
         expect(committed).toEqual([`_default/live.${format === 'roaring' ? 'roaring' : 'ndjson'}`]);
-        expect(aborted.length).toBeLessThanOrEqual(1);
+        expect(aborted).toEqual([`_default/victim.${format}`]);
       });
     }
 
@@ -106,4 +106,78 @@ for (const format of ['roaring', 'ndjson'] as const) {
       expect(committed.length).toBe(1);
     });
   });
+}
+
+/** A sink whose `abort` can be made to fail, recording what it was asked to commit and to discard. */
+function sinkWith(abortFails: boolean): {
+  sink: ExportSink;
+  committed: string[];
+  aborted: string[];
+} {
+  const committed: string[] = [];
+  const aborted: string[] = [];
+  const sink: ExportSink = {
+    open(ref: SegmentRef, ext: string): ExportWriter {
+      const key = `${ref.namespace ?? '_default'}/${ref.segment}${ext}`;
+      return {
+        write() {},
+        close() {
+          committed.push(key);
+        },
+        abort() {
+          aborted.push(key);
+          if (abortFails) throw new Error('abort refused');
+        },
+      };
+    },
+  };
+  return { sink, committed, aborted };
+}
+
+/** A registry whose listing runs `act` and then yields the rows it read before it. */
+function staleListing(base: IRegistryDriver, act: () => Promise<void>): IRegistryDriver {
+  return new Proxy(base, {
+    get(target, prop) {
+      if (prop !== 'list') {
+        const v = Reflect.get(target, prop, target) as unknown;
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      }
+      return async function* (namespace?: string) {
+        const rows = [];
+        for await (const r of target.list(namespace)) rows.push(r);
+        await act();
+        for (const r of rows) yield r;
+      };
+    },
+  });
+}
+
+for (const format of ['roaring', 'ndjson'] as const) {
+  for (const abortFails of [false, true]) {
+    // Kills: a skip that never aborts the open writer (leaves a `.part` temp behind in the CLI's sink), a skip that
+    // drops the namespace, and a skip whose abort fault is not isolated. The shipped test only bounds aborts at <= 1
+    // and names no namespace.
+    it(`(${format}) a namespaced segment destroyed after the listing is aborted exactly once and skipped with its namespace${abortFails ? ' even when abort throws' : ''}`, async () => {
+      const { storage, registry } = new MemoryStorage();
+      const ref = { namespace: 'ns', segment: 'victim' };
+      await bulkLoadCrbmGeneration(storage, { ...ref, generation: 0 }, [3], { registry });
+      const racing = staleListing(registry, async () => {
+        const rec = (await registry.get(ref))!;
+        await registry.compareAndSwap(ref, rec.token, { status: 'destroyed' });
+      });
+      const store = new CloudRoaring({
+        storage: brandAsBackend({ storage, registry: racing }),
+        retry: false,
+        cache: { genTtlMs: 0 },
+      });
+      const { sink, committed, aborted } = sinkWith(abortFails);
+      const manifest = await store.exportSegments(sink, { format });
+      expect(manifest.skipped).toEqual([
+        { segment: 'victim', namespace: 'ns', reason: 'destroyed' },
+      ]);
+      expect(manifest.failed).toEqual([]);
+      expect(committed).toEqual([]);
+      expect(aborted).toEqual([`ns/victim.${format}`]);
+    });
+  }
 }

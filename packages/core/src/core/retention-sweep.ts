@@ -619,6 +619,8 @@ export async function retireExpired(
   // with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
   // while every segment in the namespace is tombstoned.
   let attempted = 0;
+  // Tombstones the sweep did not write whose pointers it worked, bounded by `limit` apart from `attempted`.
+  let attemptedForeign = 0;
 
   for (const rec of mine) {
     const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
@@ -628,13 +630,22 @@ export async function retireExpired(
     if (rec.status === 'destroyed') {
       // A tombstone this sweep did not write (a crypto-shred, a drop by hand) is never retired or purged here, and it
       // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
-      if (retirementStamp(rec.retention) === null) {
-        if (!dryRun && removesRows) {
-          await forgetFoundPointers(
-            deps.registry,
-            scanned.pointers.get(segmentKey(ref)) ?? [],
-            noteFault,
-          );
+      const stamp = retirementStamp(rec.retention);
+      if (stamp === null) {
+        const found = scanned.pointers.get(segmentKey(ref)) ?? [];
+        // At most `limit` such tombstones are worked per call, as the litter pass is, so a long backlog cannot make
+        // one call arbitrarily long. The row is read again first, since the scan may be minutes old: a tombstone
+        // purged by hand and its name re-created since has a live row, and a pointer of its own is not litter.
+        if (!dryRun && removesRows && found.length > 0 && attemptedForeign < limit) {
+          attemptedForeign += 1;
+          try {
+            const live = await deps.registry.get(ref);
+            if (live?.status === 'destroyed' && retirementStamp(live.retention) === null) {
+              await forgetFoundPointers(deps.registry, found, noteFault);
+            }
+          } catch (err) {
+            noteFault(err);
+          }
         }
         continue;
       }
@@ -645,7 +656,7 @@ export async function retireExpired(
       // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
       // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
       // for every writer. A marker cannot be forged by that ordering.
-      const retiredAt = retirementStamp(rec.retention)!; // not null: a foreign tombstone went on above
+      const retiredAt = stamp;
       if (now - retiredAt < grace) continue; // inside the fence window; not ledger noise
       if (attempted >= limit) {
         limited = true;

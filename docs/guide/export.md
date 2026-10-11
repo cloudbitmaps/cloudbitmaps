@@ -106,9 +106,12 @@ And a store loads one straight back, with no per-id work:
   listed. (The registry's internal due-index rows are not segments, and are in none of the three.) A segment
   destroyed after the listing named it and before its export began is skipped the same way: when a segment yields no
   ids, its row is read again, and a row now destroyed or gone is recorded in `skipped[]` and no file is committed.
-- **The command refuses a namespace named `manifest.json`.** Its directory would be the manifest's path, so each of its
-  segments is recorded in `failed[]` with a `ValidationError` message, and the run still writes its manifest and
-  exports every other namespace.
+- **The command refuses a namespace named `manifest.json`, in any letter case.** Its directory would be the manifest's
+  path (on a filesystem that ignores case, `Manifest.json` is the same path), so each of its segments is recorded in
+  `failed[]` with a `ValidationError` message, and the run still writes its manifest and exports every other namespace.
+  An output directory that already holds a directory named `manifest.json` is refused up front with a `ValidationError`
+  telling you to remove or rename it; the command never deletes it. A namespace directory left empty because every
+  segment in it was skipped is removed.
 - **A segment that cannot be read does not stop the run.** A corrupt storage object, or an encrypted segment when the
   store has no keystore (the command wires none, so it cannot decrypt those), is recorded in the manifest's `failed[]`.
   The export continues, and that segment's partial output is discarded. So "a `manifest.json` exists" means the run
