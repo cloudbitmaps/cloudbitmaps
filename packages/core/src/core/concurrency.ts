@@ -60,15 +60,23 @@ export function boundedAll<T, R>(
   limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
-  try {
-    if (!Number.isInteger(limit) || limit < 1) {
-      throw new ValidationError(`concurrency limit must be a positive integer; got ${limit}`);
-    }
-    if (items.length <= limit) return Promise.all(items.map((item) => fn(item)));
-  } catch (err) {
-    return Promise.reject(err);
+  if (!Number.isInteger(limit) || limit < 1) {
+    return Promise.reject(
+      new ValidationError(`concurrency limit must be a positive integer; got ${limit}`),
+    );
   }
-  return inWaves(items, limit, fn);
+  if (items.length > limit) return inWaves(items, limit, fn);
+  const calls: Promise<R>[] = [];
+  for (const item of items) {
+    try {
+      calls.push(fn(item));
+    } catch (err) {
+      // The calls already made still run; settle them, so one that rejects later is not left unhandled.
+      void Promise.allSettled(calls);
+      return Promise.reject(err);
+    }
+  }
+  return Promise.all(calls);
 }
 
 /** {@link boundedAll} over more items than `limit`: `limit` workers, each taking the next item as its last settles. */

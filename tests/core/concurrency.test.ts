@@ -165,6 +165,29 @@ describe('boundedAll', () => {
     }
   });
 
+  it('leaves no call it made unhandled when a later call throws as it is made', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const late = new Error('rejected later');
+      const boom = new Error('thrown');
+      await expect(
+        boundedAll([0, 1, 2], 3, (x) => {
+          if (x === 0) return wait(5).then(() => Promise.reject(late));
+          if (x === 1) throw boom;
+          return Promise.resolve(x);
+        }),
+      ).rejects.toBe(boom);
+      await wait(30);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('rejects a non-positive or non-integer limit, and answers [] for no items', async () => {
     await expect(boundedAll([1], 0, async (x) => x)).rejects.toThrow(ValidationError);
     await expect(boundedAll([1], 1.5, async (x) => x)).rejects.toThrow(ValidationError);

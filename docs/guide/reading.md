@@ -35,11 +35,11 @@ which is right. As an operand, a mistyped name or a missing `namespace` would co
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
 operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy or crypto-shredded
 is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
-counts as existing. A combine lists its operands' chunk keys at most 16 operands at a time, then asks the registry
-once about each operand that holds no chunk, also at most 16 at a time; an operand that holds data costs no such
-request. A combine also refuses a segment of an installed copy of `@cloudbitmaps/roaring` that is not a compatible
-copy: one whose segments carry the same versioned segment brand as this copy's, as every copy of the same release does.
-The refusal is a `ValidationError` that says to install one version.
+counts as existing. A combine also refuses a segment of an installed copy of `@cloudbitmaps/roaring` that is not a
+compatible copy: one whose segments carry the same versioned segment brand as this copy's, as every copy of the same
+release does. The refusal is a `ValidationError` that says to install one version. A combine lists its operands' chunk
+keys at most 16 operands at a time, then asks the registry once about each operand that holds no chunk, also at most 16
+at a time; an operand that holds data costs no such request.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
