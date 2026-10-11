@@ -281,7 +281,7 @@ describe('GCS: the bucket presence check', () => {
   it('keeps no credential or live request on the cause of a missing bucket', async () => {
     const raised = Object.assign(new Error('not found'), {
       code: 404,
-      request: { headers: { authorization: 'Bearer SECRET-TOKEN' } },
+      request: { marker: 'stand-in' },
     });
     const storage = {
       bucket: () => ({
