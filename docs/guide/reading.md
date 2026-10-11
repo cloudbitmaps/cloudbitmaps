@@ -281,7 +281,8 @@ an id in a chunk it did not hold when the combine began is subtracted from there
   combine with an `exclude` or a union a look at each operand's generation every `concurrency` keys: the lookup a read
   of one cached chunk makes, which costs no request while the store holds the segment's resolution, and past
   `cache.genTtlMs` the pointer read a refresh makes, once per `cache.genTtlMs` for an operand the read no longer reads.
-  A move costs the listing (from the index of the generation the read moved to: a tail read when the store has not
+  A look waits for its lookups, so a combine's streams can group its chunks into ranges a little differently, a few
+  range reads more or fewer in tens of thousands. A move costs the listing (from the index of the generation the read moved to: a tail read when the store has not
   opened it yet) and the ranges the earlier streams had in flight, which are requested again. The keys left are looked
   up in the chunk cache again, so the `cache` metric counts them twice.
 - **The budget.** The per-op budget is charged again when a read lists its keys again: the chunk reads it has already

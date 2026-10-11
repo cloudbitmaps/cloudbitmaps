@@ -34,9 +34,11 @@ so, and so do the module headers in the code.
   combine with an `exclude` or a union, every `concurrency` keys; where one moved, it lists every segment's keys again
   above the key it last took and reads on from there, dropping what it had requested. A key the new generation dropped
   is no longer asked for. A pinned read, `everyNth`, a `count` that reads chunks and `materializeMany` with
-  `pin: false` keep the keys they listed. A read during which nothing moves makes no request it did not make before,
-  with one exception: a combine with an `exclude` or a union that runs past `cache.genTtlMs` makes the pointer read of
-  a refresh, once per `cache.genTtlMs`, for an operand it no longer reads. A read that lists its keys again is charged to the per-op budget
+  `pin: false` keep the keys they listed. Looking makes no request, with one exception: a combine with an `exclude`
+  or a union that runs past `cache.genTtlMs` makes the pointer read of a refresh, once per `cache.genTtlMs`, for an
+  operand it no longer reads. A look waits for its lookups, so a combine's streams can group its chunks into ranges a
+  little differently: counted on the in-memory batch benchmark, where nothing moves, 24 fewer of 19,785 range reads
+  in one shape and 52 more of 137,037 in another. A read that lists its keys again is charged to the per-op budget
   again, with what it has already taken, and throws `BudgetExceededError` when a segment grew past it. A running
   `iterate` or combine of the store that erases an id now meets the erasure before its next key, and yields the id
   only from the chunk or key it is handing out, well inside the written bound, which is unchanged
