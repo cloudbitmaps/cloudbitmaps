@@ -21,8 +21,38 @@ so, and so do the module headers in the code.
   read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
+### Changed
+
+- **A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer
+  taken for a missing key.** A `rollback` with `allowForward` on an encrypted segment, from a store with no keystore or
+  one that could not open the segment's key, checked only that the target was in the bucket and encrypted, so it could
+  move the pointer onto an object sealed under a key no row holds, such as the one the loser of two concurrent first
+  loads leaves, and every read of the segment then failed with `IntegrityError`. It now throws `KeyUnavailableError`
+  before it reads the target, saying why no key was at hand, and moves nothing; with the key it opens the target as
+  before, and refuses one that does not open. A rollback below the pointer still goes ahead without the key and leaves
+  the row with no summary of the target. "No key at hand" is now exactly this: the keystore holds none of the key's KEKs
+  (`KeyUnavailableError`), one it holds does not unwrap it (`IntegrityError`), or it throws `TransientError` or times
+  out as `AbortSignal.timeout()` and the AWS SDK report a timeout. Any other failure of `openDek`, such as a `TypeError`
+  from a keystore of your own, is thrown and moves nothing, where it was swallowed and the rollback went ahead without
+  the key: make such a keystore throw `TransientError` for a fault worth riding out. To undo a rollback of an encrypted
+  segment, run it on a store whose keystore opens the segment's key.
+
 ### Fixed
 
+- **A rollback to the generation already current checks that its object is there.** It reported a no-op without reading
+  anything, so over a pointer that named a missing object (a collection that raced an earlier rollback, or a swap that
+  landed, lost its answer and had its target collected since) re-running a rollback to that generation answered success
+  while every read failed. It now makes one zero-byte read of the object, and when the object is gone throws
+  `NotFoundError` naming the generations in the bucket, as a rollback to any missing generation does. A fault of that
+  read is thrown rather than taken for either answer.
+- **A rollback whose swap of the pointer gets no answer is settled by reading the row.** The swap's `TransientError`
+  reached the caller with nothing checked, so a swap that had landed was never verified: its target could be collected
+  meanwhile and the pointer left on a missing object, and a move that took effect was not audited. The rollback now
+  reads the row back. When the row shows the swap landed (the row it read, with the pointer on the target and nothing
+  else changed but its leases), it checks the target as after any swap: it puts the pointer back if the target went, and
+  reports and audits the move if the target is there. When the row shows no such thing, it throws the `TransientError`:
+  the write may still land, and a re-run finds the pointer where it is. A row read back that is not one the library
+  wrote throws its `IntegrityError` instead.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,

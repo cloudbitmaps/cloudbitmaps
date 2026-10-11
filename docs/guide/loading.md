@@ -529,7 +529,8 @@ const ref = { segment: 'audience:active' };
 await store.generations(ref); // → [{ generation: 3, current: false }, { generation: 4, current: true }]
 await store.rollback(ref, 3, { audit }); // → { fromGeneration: 4, generation: 3 }
 
-// Generation 4 is still in the bucket, above the pointer now, so undoing the rollback needs the opt-in:
+// Generation 4 is still in the bucket, above the pointer now, so undoing the rollback needs the opt-in
+// (and, on an encrypted segment, a store whose keystore opens the segment's key):
 await store.rollback(ref, 4, { audit, allowForward: true });
 ```
 
@@ -544,19 +545,29 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   between that proof and the delete is the one window it cannot close.
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
-  that were never published, such as those of a load that died before its publish.
+  that were never published, such as those of a load that died before its publish. On an encrypted segment it also
+  needs the segment's key, and with no keystore, or one that cannot open the key, it throws `KeyUnavailableError`
+  before it reads the target: an object sealed under a key no row holds, such as the one the loser of two concurrent
+  first loads leaves, passes every check that needs no key, and only opening it with the segment's key tells it apart.
 - A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
   segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
   one tail read of the target, which needs no key to tell which kind it is.
 - The same read gives the target's id count and metadata, which the rollback writes into the row with the pointer (one
   tail read, and a range read as well when the target's index is longer than the tail read). An encrypted target is
-  opened with the store's keystore for that, and a store without one, or one that cannot open the segment's key for any
-  reason, an unreachable or timed-out key service included, still rolls the segment back and leaves the row with no
-  summary of the target; the next load writes one. A target whose index or metadata does not open is refused, since no
-  read could use it either. A target above the pointer (`allowForward`) is read once more after the swap, and if it is
-  no longer the object that was read (an erasure deleted it and a load took its number meanwhile) the pointer and the
-  old summary are put back and the rollback throws `NotFoundError`.
+  opened with the store's keystore for that. A store with no keystore, or one whose keystore cannot open the segment's
+  key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out as
+  `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls the segment back to a generation below the
+  pointer and leaves the row with no summary of the target; the next load writes one. Any other failure of the
+  keystore is thrown, and nothing moves: a keystore of your own should throw `TransientError` for a fault worth riding
+  out. A target whose index or metadata does not open is refused, since no read could use it either. A target above
+  the pointer (`allowForward`) is read once more after the swap, and if it is no longer the object that was read (an
+  erasure deleted it and a load took its number meanwhile) the pointer and the old summary are put back and the
+  rollback throws `NotFoundError`.
+- A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row shows it
+  landed, the target is checked as after any swap, and the pointer put back if the target went meanwhile. Otherwise the
+  rollback throws that `TransientError`, and the pointer may still move, since the write may yet land: run the rollback
+  again, which finds the pointer where it is.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
@@ -567,7 +578,9 @@ await store.rollback(ref, 4, { audit, allowForward: true });
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
 operator who has looked at the segment and knows which generation they want. So rollback refuses rather than guesses.
 A crypto-shredded segment throws `ValidationError`, since every generation of it is unreadable, and rolling to the
-generation already current is a reported no-op.
+generation already current is a reported no-op once one zero-byte read finds its object in the bucket. When the object
+is gone (a collection raced an earlier move), it throws `NotFoundError` naming the generations that are there, so
+re-running a rollback to the generation you want never reports a missing object as fine.
 
 **What happens to the generations above the new pointer.** They stay, which is what makes a rollback reversible. They
 are then above `currentGen`, where collection never looks. They remain until one of three things happens, and until then `seg.pinAt` can reopen one of them, with its fingerprint, once a load has moved the pointer past it. Loads pass

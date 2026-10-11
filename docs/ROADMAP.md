@@ -63,7 +63,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
-| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
+| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, an above-pointer target without an explicit opt-in, and one of an encrypted segment with no key at hand to open it; rolling to the current generation checks its object is there, and a swap that gets no answer is settled by reading the row |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained, maxGrowth }` adds the plausibility bounds, judged against what `dest` held |
@@ -74,7 +74,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
 | The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **shipped** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
 | The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
-| Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention` and shred writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, the reconcile for `setRetention` and shred writes, and the resend of a `rollback` swap the row shows did not land: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
 | A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
 
@@ -372,15 +372,19 @@ between here and there:
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
    - an `op` metric for `store.load`, which the metrics sink does not time;
-   - the reconcile of an unanswered registry write, for the writes of `rollback`, `setRetention` and a crypto-shred;
-     the publish of a load, an `*Into` or an erasure's rewrite, and the write an erasure makes to the row before it
-     deletes an object a load may still publish, settle one by reading the row;
+   - the reconcile of an unanswered registry write, for the writes of `setRetention` and a crypto-shred; the publish
+     of a load, an `*Into` or an erasure's rewrite, and the write an erasure makes to the row before it deletes an
+     object a load may still publish, settle one by reading the row. A `rollback` reads the row too, and goes on from a
+     swap the row shows landed, but does not send again one the row shows did not land: it throws the
+     `TransientError`;
    - the parts stretch, under [Planned](#planned--exploring);
-   - a `rollback` onto an encrypted target on a store with no keystore, which opens nothing: it checks that the object
-     is in the bucket, and from its footer that it is encrypted exactly when the row has keys, so it can still move
-     onto a generation a first load wrote and never published, sealed under a key the registry never stored, which
-     then fails every read and which `checkConsistency` does not flag. (With a keystore, a rollback opens the target's
-     index and metadata before it moves the pointer, and refuses one that does not open.)
+   - a `rollback` below the pointer onto an encrypted target on a store with no keystore, which opens nothing: it
+     checks that the object is in the bucket, and from its footer that it is encrypted exactly when the row has keys,
+     so it can still move onto an object a first load wrote and never published, sealed under a key the registry never
+     stored, once later loads have numbered past it, which then fails every read and which `checkConsistency` does not
+     flag. Above the pointer, a rollback of an encrypted segment needs the key and refuses such an object. (With a
+     keystore, a rollback opens the target's index and metadata before it moves the pointer, and refuses one that does
+     not open.)
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
 10. **The cost model in a package of its own — ✅ Shipped.** `estimateCost`,
