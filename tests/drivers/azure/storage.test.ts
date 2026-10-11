@@ -229,7 +229,7 @@ describe('AzureBlobStorageDriver — what a tail read costs', () => {
     const blob = {
       getProperties: async () => {
         calls.push('getProperties');
-        return { contentLength: body.length };
+        return { contentLength: body.length, etag: '"e"' };
       },
       download: async (offset: number, count: number) => {
         calls.push('download');
