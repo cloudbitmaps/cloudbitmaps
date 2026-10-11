@@ -51,6 +51,15 @@ export const mapFsError = (err: unknown): unknown =>
 export const O_NOFOLLOW = FS.O_NOFOLLOW ?? 0;
 
 /**
+ * The modes LocalFs creates what it stores with: files readable and writable by their owner alone, directories
+ * searchable by it alone, so another user of the machine cannot read or list a segment. A process umask can only
+ * remove bits from these, never add any. On Windows Node ignores a mode apart from the read-only bit, so passing
+ * them there changes nothing.
+ */
+export const FILE_MODE = 0o600;
+export const DIR_MODE = 0o700;
+
+/**
  * Best-effort parent-directory fsync, so a just-published `rename`/`link` survives a crash. Without it the
  * directory entry can still be in the page cache when power goes: the generation's bytes are durable and
  * the name pointing at them is not, which is the one way a published generation can come back missing.

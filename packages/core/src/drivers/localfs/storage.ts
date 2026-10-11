@@ -31,7 +31,16 @@ import type {
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { checkTailLength } from '../_shared/tail';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
+import {
+  DIR_MODE,
+  FILE_MODE,
+  O_NOFOLLOW,
+  fsyncDir,
+  isAbsent,
+  isCode,
+  mapFsError,
+  writeAll,
+} from './fs-util';
 
 /** A temp file this old belongs to no write still in progress: a crash or a failed close left it behind. */
 const ORPHAN_TEMP_AGE_MS = 60 * 60 * 1000;
@@ -95,12 +104,16 @@ export class LocalFsStorageDriver implements IStorageDriver {
     const finalPath = storageObjectPath(this.root, key);
     assertStorageNamesFit(key);
     await this.exactCase.refuseVariant(finalPath);
-    await mkdir(dirname(finalPath), { recursive: true });
+    await mkdir(dirname(finalPath), { recursive: true, mode: DIR_MODE });
     await sweepOrphanTemps(dirname(finalPath));
 
     const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
     // 'wx' = O_CREAT|O_EXCL|O_WRONLY; add O_NOFOLLOW so a pre-planted symlink can't redirect the write.
-    const handle = await open(tmpPath, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW);
+    const handle = await open(
+      tmpPath,
+      FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW,
+      FILE_MODE,
+    );
     const hash = createHash('sha256');
     let size = 0;
     const sink: BlobSink = {

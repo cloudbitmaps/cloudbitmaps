@@ -46,7 +46,16 @@ import {
   parseRegistryRow,
 } from './paths';
 import { ExactCase } from './exact-case';
-import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
+import {
+  DIR_MODE,
+  FILE_MODE,
+  O_NOFOLLOW,
+  fsyncDir,
+  isAbsent,
+  isCode,
+  mapFsError,
+  writeAll,
+} from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -254,7 +263,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
 
   private async writeRow(path: string, record: RegistryRecord): Promise<void> {
     await this.exactCase.refuseVariant(path);
-    await mkdir(dirname(path), { recursive: true });
+    await mkdir(dirname(path), { recursive: true, mode: DIR_MODE });
     const out = Buffer.from(serializeRegistryEnvelope({ deleted: false, record }), 'utf8');
     // Cap on the write path too (the read path caps at the same size): never produce a row that would later
     // be unreadable. The governance fields are already capped by validate*, so this is a belt-and-braces guard.
@@ -267,7 +276,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     const tmp = `${path}.${randomUUID()}.tmp`;
     let handle;
     try {
-      handle = await open(tmp, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW);
+      handle = await open(tmp, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW, FILE_MODE);
     } catch (err) {
       throw mapFsError(err);
     }
