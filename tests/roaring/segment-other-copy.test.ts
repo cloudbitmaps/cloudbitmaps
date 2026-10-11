@@ -3,7 +3,8 @@ import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
 
 /**
  * A segment of another copy of the package (a second install loads the module twice) is not an instance of this
- * copy's class. A combine takes it: the operand check refuses what is not a segment, not what another copy with the same brand made.
+ * copy's class. A combine takes it when it carries this copy's brand, as every copy of the same release does: the
+ * operand check refuses what is not a segment, not what another copy with the same brand made.
  * An object that only has a lease check, or only the right shape, is not a segment.
  */
 describe('a segment from another copy of the package', () => {
@@ -113,7 +114,9 @@ describe('a segment from another copy of the package', () => {
       await drain(a.intersect([a], { exclude: [h] }));
       await a.intersectInto(store.segment('d'), [h]);
       await a.andNotInto(store.segment('d'), [h]);
+      await a.unionInto(store.segment('d'), [h]);
     }
+    await a.intersectInto(audit(otherStore.segment('d')) as unknown as Seg, [a]);
     expect([...reads].sort()).toEqual(
       [String(BRAND), 'ref', 'pinnedAt', 'leaseHold', 'key', 'leaseError'].sort(),
     );
