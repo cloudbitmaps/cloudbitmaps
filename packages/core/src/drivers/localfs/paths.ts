@@ -8,6 +8,7 @@
  * caller's `_default` encodes to `%5Fdefault` while this sentinel is emitted literally.
  */
 import { join } from 'node:path';
+import { requireInteger } from '@/core/check';
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
@@ -59,9 +60,7 @@ export function segmentsDir(root: string, ref: SegmentRef): string {
 /** Absolute path of one `.crbm` generation object. */
 export function storageObjectPath(root: string, key: GenKey): string {
   validateSegmentRef(key);
-  if (!Number.isInteger(key.generation) || key.generation < 0) {
-    throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
-  }
+  requireInteger(key.generation, { min: 0, what: 'generation' });
   return join(segmentsDir(root, key), storageObjectFilename(key.segment, key.generation));
 }
 

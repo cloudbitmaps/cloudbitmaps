@@ -46,6 +46,7 @@
  * only add a row for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a
  * crypto-shred, a drop by hand) are removed too, since the sweep will never act on that row; the row stays.
  */
+import { requireFiniteNumber, requireInteger, requirePositiveInteger } from './check';
 import { type IAuditSink, checkedAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
 import { gcOrphanGenerations } from './generation-gc';
@@ -516,28 +517,20 @@ export async function retireExpired(
   // Shards are numbered from 0, below `totalShards`. Without `totalShards`, or with a number outside that range, a
   // replica owned everything or nothing, silently: replicas numbered from 1 left shard 0 unswept for good.
   if (options.shards !== undefined) {
-    const total = options.totalShards;
-    if (typeof total !== 'number' || !Number.isInteger(total) || total < 1) {
-      throw new ValidationError('retireExpired: shards needs totalShards, an integer of 1 or more');
-    }
+    const total = requirePositiveInteger(
+      options.totalShards,
+      'retireExpired: shards needs totalShards, which',
+    );
     if (!Array.isArray(options.shards)) {
       throw new ValidationError('retireExpired: shards must be an array of shard numbers');
     }
     for (const shard of options.shards as readonly unknown[]) {
-      if (typeof shard !== 'number' || !Number.isInteger(shard) || shard < 0 || shard >= total) {
-        throw new ValidationError(
-          `retireExpired: a shard is an integer from 0 to totalShards - 1 (${total - 1}); got ${String(shard)}`,
-        );
-      }
+      requireInteger(shard, { min: 0, max: total - 1, what: 'retireExpired: a shard' });
     }
   }
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   const now = options.now;
-  if (!Number.isFinite(now)) {
-    throw new ValidationError(
-      `retireExpired: \`now\` must be a finite epoch-ms; got ${String(now)}`,
-    );
-  }
+  requireFiniteNumber(now, { what: 'retireExpired: `now`', note: 'epoch milliseconds' });
   // A floor on `now` for the same reason `expiresAt` has one, and in the direction that actually destroys data: a
   // clock returning seconds makes every policy in the fleet look expired. (Too *small* a `now` is harmless —
   // nothing expires — but a sweep against a pre-2001 instant cannot legitimately expire anything anyway, so
@@ -549,22 +542,12 @@ export async function retireExpired(
     );
   }
   const limit = options.limit ?? DEFAULT_RETIRE_LIMIT;
-  if (!Number.isInteger(limit) || limit < 1) {
-    throw new ValidationError(`retireExpired: \`limit\` must be a positive integer; got ${limit}`);
-  }
+  requirePositiveInteger(limit, 'retireExpired: `limit`');
   const purgeTombstones = options.purgeTombstones ?? true;
   const grace = options.tombstoneGraceMs ?? DEFAULT_TOMBSTONE_GRACE_MS;
-  if (!Number.isFinite(grace) || grace < 0) {
-    throw new ValidationError(
-      `retireExpired: \`tombstoneGraceMs\` must be a non-negative finite number; got ${String(grace)}`,
-    );
-  }
+  requireFiniteNumber(grace, { min: 0, what: 'retireExpired: `tombstoneGraceMs`' });
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
-  if (!Number.isFinite(maxScanSegments) || maxScanSegments < 1) {
-    throw new ValidationError(
-      `retireExpired: \`maxScanSegments\` must be a finite number >= 1; got ${String(maxScanSegments)}`,
-    );
-  }
+  requirePositiveInteger(maxScanSegments, 'retireExpired: `maxScanSegments`');
   const dryRun = options.dryRun === true;
 
   // Drain the enumeration first, bounded. The sweep mutates rows as it goes (a tombstone CAS, a row delete), and

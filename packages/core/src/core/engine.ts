@@ -8,6 +8,7 @@
  * one generation. Storage-agnostic and time/random-free (the determinism seam): all I/O is via the injected
  * source; the cache carries its own `Clock`.
  */
+import { requirePositiveInteger } from './check';
 import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
@@ -847,9 +848,7 @@ export class SegmentEngine {
    * `after` turn out to be fewer than `n`, and one that cuts its last chunk may read it and yield nothing.
    */
   async *everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number> {
-    if (!Number.isSafeInteger(n) || n < 1) {
-      throw new ValidationError(`n must be a positive integer; got ${String(n)}`);
-    }
+    requirePositiveInteger(n, 'n');
     const epoch = this.scope.epoch;
     const w = windowOf(range);
     if (w === 'empty') return;
@@ -1091,11 +1090,7 @@ export class SegmentEngine {
       throw new ValidationError('andNot requires at least one segment to subtract');
     }
     const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
-    if (!Number.isInteger(limit) || limit < 1) {
-      throw new ValidationError(
-        `concurrency must be a positive integer; got ${options?.concurrency}`,
-      );
-    }
+    requirePositiveInteger(limit, 'concurrency');
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A
     // partial override inherits the store's tightening (not the generous default) — see resolvePerOpBudget.
     const budget = resolvePerOpBudget(options?.budget, this.budget);

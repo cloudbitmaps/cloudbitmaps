@@ -19,6 +19,7 @@ import { ValidationError } from '../errors';
 import type { AeadSealed, CrbmCrypto } from '../crypto';
 import { metadataBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
+import { requireInteger } from '../check';
 import { crc32c } from './crc32c';
 import { writeVarint } from './varint';
 import type { BlobSink } from '../blob';
@@ -92,11 +93,7 @@ export class CrbmWriter {
     private readonly sink: BlobSink,
     private readonly options: CrbmWriterOptions,
   ) {
-    if (!Number.isSafeInteger(options.generation) || options.generation < 0) {
-      throw new ValidationError(
-        `generation must be a non-negative integer; got ${options.generation}`,
-      );
-    }
+    requireInteger(options.generation, { min: 0, what: 'generation' });
     this.metadata = metadataBytes(options.metadata, (message) => {
       throw new ValidationError(message);
     });

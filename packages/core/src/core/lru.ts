@@ -12,6 +12,7 @@
  * pending promise; its size is known only once it resolves), so weight is reported via {@link setWeight} and
  * eviction re-runs then.
  */
+import { requireFiniteNumber, requirePositiveInteger } from './check';
 import type { Clock } from './determinism';
 import { ValidationError } from './errors';
 
@@ -45,9 +46,7 @@ export class BoundedLru<K, V> {
   private totalBytes = 0;
 
   constructor(options: LruOptions) {
-    if (!Number.isInteger(options.maxEntries) || options.maxEntries < 1) {
-      throw new ValidationError(`maxEntries must be a positive integer; got ${options.maxEntries}`);
-    }
+    requirePositiveInteger(options.maxEntries, 'maxEntries');
     if (
       options.maxBytes !== undefined &&
       (!(options.maxBytes > 0) || !Number.isFinite(options.maxBytes))
@@ -104,10 +103,8 @@ export class BoundedLru<K, V> {
    * populated it) — so a single entry larger than the whole budget is kept rather than immediately dropped.
    */
   setWeight(key: K, bytes: number): void {
-    if (!(bytes >= 0) || !Number.isFinite(bytes)) {
-      // Guard the running total against a NaN/negative weight, which no removal path could ever restore.
-      throw new ValidationError(`weight must be a non-negative finite number; got ${bytes}`);
-    }
+    // Guard the running total against a NaN/negative weight, which no removal path could ever restore.
+    requireFiniteNumber(bytes, { min: 0, what: 'weight' });
     const entry = this.map.get(key);
     if (entry === undefined) return;
     this.totalBytes += bytes - entry.bytes;

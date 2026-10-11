@@ -286,6 +286,33 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     );
   });
 
+  it('refuses each bad number with one wording, and a limit past the safe range', async () => {
+    const w = world();
+    const refused = (options: Record<string, unknown>) =>
+      retireExpired(w.dropDeps, { now: T0, ...options } as never);
+    await expect(refused({ limit: 1e300 })).rejects.toThrow(
+      'retireExpired: `limit` must be an integer of at least 1; got 1e+300',
+    );
+    await expect(refused({ limit: 1.5 })).rejects.toThrow(
+      'retireExpired: `limit` must be an integer of at least 1; got 1.5',
+    );
+    await expect(refused({ maxScanSegments: 1.5 })).rejects.toThrow(
+      'retireExpired: `maxScanSegments` must be an integer of at least 1; got 1.5',
+    );
+    await expect(refused({ tombstoneGraceMs: Infinity })).rejects.toThrow(
+      'retireExpired: `tombstoneGraceMs` must be a finite number of at least 0; got Infinity',
+    );
+    await expect(retireExpired(w.dropDeps, { now: NaN })).rejects.toThrow(
+      'retireExpired: `now` must be a finite number (epoch milliseconds); got NaN',
+    );
+    await expect(refused({ shards: [0] })).rejects.toThrow(
+      'retireExpired: shards needs totalShards, which must be an integer of at least 1; got undefined',
+    );
+    await expect(refused({ shards: [2], totalShards: 2 })).rejects.toThrow(
+      'retireExpired: a shard must be an integer from 0 to 1; got 2',
+    );
+  });
+
   it('defaults the per-cycle cap to a bounded batch', () => {
     // Named so a change to the default is a deliberate, reviewed edit rather than a silent widening.
     expect(DEFAULT_RETIRE_LIMIT).toBe(100);

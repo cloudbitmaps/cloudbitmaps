@@ -411,9 +411,15 @@ describe('what the feed must add up to', () => {
     await refused({ counts: { a: 52, b: 2 } }, /counted at 52 ids and the feed held 53/);
     await refused({ counts: { a: 53 } }, /has no count for "b"/);
     await refused({ counts: { a: 53, b: 2, c: 1 } }, /names "c", which is not in feed.names/);
-    await refused({ counts: { a: 53, b: -2 } }, /counts\["b"\] must be a non-negative integer/);
-    await refused({ counts: { a: 53, b: 2.5 } }, /counts\["b"\] must be a non-negative integer/);
-    await refused({ counts: { a: '53', b: 2 } as never }, /must be a non-negative integer/);
+    await refused(
+      { counts: { a: 53, b: -2 } },
+      /counts\["b"\] must be an integer of at least 0; got/,
+    );
+    await refused(
+      { counts: { a: 53, b: 2.5 } },
+      /counts\["b"\] must be an integer of at least 0; got/,
+    );
+    await refused({ counts: { a: '53', b: 2 } as never }, /must be an integer of at least 0; got/);
     await refused({ counts: () => null as never }, /must give an object/);
     await refused({ counts: () => [53, 2] as never }, /must give an object/);
   });

@@ -26,6 +26,7 @@ import type {
   SegmentRef,
   Token,
 } from '../core/ports';
+import { requireInteger } from '../core/check';
 import {
   applyRegistryPatch,
   drawIncarnation,
@@ -177,9 +178,8 @@ export class MemoryStorageDriver implements IStorageDriver {
   }
 
   async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
-    if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
-      throw new ValidationError(`invalid range offset=${offset} length=${length}`);
-    }
+    requireInteger(offset, { min: 0, what: 'range offset' });
+    requireInteger(length, { min: 0, what: 'range length' });
     const { body } = this.require(key);
     if (offset + length > body.length) {
       throw new ValidationError(
@@ -235,8 +235,6 @@ export class MemoryStorageDriver implements IStorageDriver {
 /** Collision-proof object key for a generation: `<segmentKey> <generation>` (the name parts are encoded, so a space cannot appear inside one). */
 function genObjectKey(key: GenKey): string {
   validateSegmentRef(key);
-  if (!Number.isInteger(key.generation) || key.generation < 0) {
-    throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
-  }
+  requireInteger(key.generation, { min: 0, what: 'generation' });
   return `${segmentKey(key)} ${key.generation}`;
 }

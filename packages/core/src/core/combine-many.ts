@@ -19,6 +19,7 @@
  * from them. Every output chunk is built from decoded chunks and handed on, and the write path run-optimizes it, so an
  * output is byte for byte what the same ids would load.
  */
+import { requireInteger, requirePositiveInteger } from './check';
 import { refuseAbsent } from './absent-operands';
 import { assertChunkCardinalityInRange, checkedChunkKeys, decodeChunkBytes } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
@@ -342,28 +343,6 @@ function subtractedOperands(node: ExprNode, under: boolean, into: Set<number>): 
   );
 }
 
-function integerIn(value: unknown, min: number, max: number, what: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-    throw new ValidationError(
-      `${what} must be an integer from ${min} to ${max}; got ${
-        typeof value === 'number' ? String(value) : `a ${typeof value}`
-      }`,
-    );
-  }
-  return value;
-}
-
-function checkedKeep(value: unknown, what: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new ValidationError(
-      `${what} must be a non-negative integer; got ${
-        value === undefined ? 'nothing (it is required)' : String(value)
-      }`,
-    );
-  }
-  return value;
-}
-
 /**
  * Check a request: every expression, option and number, before any request is made. Throws {@link ValidationError}
  * naming the output index and the path. Pure.
@@ -373,10 +352,14 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
   if (!Array.isArray(outputs) || outputs.length === 0) {
     throw new ValidationError('outputs must be a non-empty array');
   }
-  checkedKeep(request.keep, 'keep');
-  integerIn(request.maxBufferedBytes, 1, Number.MAX_SAFE_INTEGER, 'maxBufferedBytes');
-  integerIn(request.publishConcurrency, 1, MAX_BATCH_PARALLELISM, 'publishConcurrency');
-  integerIn(request.concurrency, 1, MAX_BATCH_PARALLELISM, 'concurrency');
+  requireInteger(request.keep, { min: 0, what: 'keep', note: 'required' });
+  requirePositiveInteger(request.maxBufferedBytes, 'maxBufferedBytes');
+  requireInteger(request.publishConcurrency, {
+    min: 1,
+    max: MAX_BATCH_PARALLELISM,
+    what: 'publishConcurrency',
+  });
+  requireInteger(request.concurrency, { min: 1, max: MAX_BATCH_PARALLELISM, what: 'concurrency' });
   assertIdBound('after', request.after);
   assertIdBound('through', request.through);
   const index = new Map<string, number>();
@@ -409,7 +392,9 @@ export function compileCombineMany<R>(request: CombineManyRequest<R>): CompiledC
       );
     }
     const keep =
-      output.keep === undefined ? request.keep : checkedKeep(output.keep, `${where}.keep`);
+      output.keep === undefined
+        ? request.keep
+        : requireInteger(output.keep, { min: 0, what: `${where}.keep` });
     if (output.allowEmpty !== undefined && typeof output.allowEmpty !== 'boolean') {
       throw new ValidationError(`${where}.allowEmpty must be a boolean`);
     }

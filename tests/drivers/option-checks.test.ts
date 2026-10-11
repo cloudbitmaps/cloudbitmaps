@@ -160,7 +160,7 @@ describe.each(SIZES)(
     it.each(NOT_SIZES.map((v) => [String(v), v] as const))('%s', (_label, value) => {
       expect(() => build(value)).toThrow(ValidationError);
       expect(() => build(value)).toThrow(
-        new RegExp(`^${name} must be a positive safe integer; got `),
+        new RegExp(`^${name} must be an integer of at least 1; got `),
       );
     });
 

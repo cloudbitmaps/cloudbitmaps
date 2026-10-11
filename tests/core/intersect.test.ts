@@ -175,9 +175,9 @@ describe('chunk-skipping intersection', () => {
     await expect(
       collect(engine.intersect([{ segment: 's' }, { segment: 't' }], { concurrency: NaN })),
     ).rejects.toBeInstanceOf(ValidationError);
-    await expect(
-      collect(engine.intersect([{ segment: 's' }], { concurrency: 0 })),
-    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(collect(engine.intersect([{ segment: 's' }], { concurrency: 0 }))).rejects.toThrow(
+      'concurrency must be an integer of at least 1; got 0',
+    );
     await expect(collect(engine.intersect([]))).rejects.toBeInstanceOf(ValidationError);
   });
 });

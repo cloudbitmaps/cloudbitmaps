@@ -161,6 +161,14 @@ describe('everyNth refuses what it cannot answer', () => {
     }
   });
 
+  it('names n and the value in one wording', async () => {
+    const { seg } = await pinned([1, 2, 3]);
+    await expect(read(seg, 0)).rejects.toThrow('n must be an integer of at least 1; got 0');
+    await expect(read(seg, '3' as unknown as number)).rejects.toThrow(
+      'n must be an integer of at least 1; got "3"',
+    );
+  });
+
   it('a bad bound throws ValidationError', async () => {
     const { seg } = await pinned([1, 2, 3]);
     await expect(read(seg, 1, { after: -1 })).rejects.toBeInstanceOf(ValidationError);

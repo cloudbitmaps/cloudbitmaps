@@ -264,9 +264,12 @@ describe('guard.maxGrowth on the write verbs that route through load', () => {
   it.each([
     [
       { minCardinality: 1.5 },
-      /^outputs\[0\]\.guard\.minCardinality must be a non-negative integer; got 1\.5$/,
+      /^outputs\[0\]\.guard\.minCardinality must be an integer of at least 0; got 1\.5$/,
     ],
-    [{ minRetained: 2 }, /^outputs\[0\]\.guard\.minRetained must be a fraction in 0\.\.1; got 2$/],
+    [
+      { minRetained: 2 },
+      /^outputs\[0\]\.guard\.minRetained must be a finite number from 0 to 1; got 2$/,
+    ],
   ])(
     'the shared check keeps the batch messages of the older bounds (%o)',
     async (guard, message) => {

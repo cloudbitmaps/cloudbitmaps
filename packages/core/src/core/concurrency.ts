@@ -4,7 +4,7 @@
  * (`for await`). Pure + I/O-free, so it lives in `core/`; callers inject the async work.
  */
 
-import { ValidationError } from './errors';
+import { requirePositiveInteger } from './check';
 
 /**
  * Run `fn` over `items` with at most `limit` promises in flight at once, returning results in **input order**
@@ -20,9 +20,7 @@ export async function mapWithConcurrency<T, R>(
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  if (!Number.isInteger(limit) || limit < 1) {
-    throw new ValidationError(`concurrency limit must be a positive integer; got ${limit}`);
-  }
+  requirePositiveInteger(limit, 'concurrency limit');
   const results = new Array<R>(items.length);
   let next = 0;
   let failed = false;
@@ -60,10 +58,10 @@ export function boundedAll<T, R>(
   limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
-  if (!Number.isInteger(limit) || limit < 1) {
-    return Promise.reject(
-      new ValidationError(`concurrency limit must be a positive integer; got ${limit}`),
-    );
+  try {
+    requirePositiveInteger(limit, 'concurrency limit');
+  } catch (err) {
+    return Promise.reject(err);
   }
   if (items.length > limit) return inWaves(items, limit, fn);
   const calls: Promise<R>[] = [];

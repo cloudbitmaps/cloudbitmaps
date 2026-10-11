@@ -92,7 +92,7 @@ describe('validation, before any request', () => {
   it('refuses no outputs, and bad numbers', () => {
     expect(compile([])).toThrow(/outputs must be a non-empty array/);
     expect(compile([{ expr: 'a' }], { keep: undefined })).toThrow(
-      /keep must be a non-negative integer/,
+      'keep must be an integer of at least 0 (required); got undefined',
     );
     expect(compile([{ expr: 'a' }], { keep: -1 })).toThrow(/keep/);
     expect(compile([{ expr: 'a', keep: 1.5 }])).toThrow(/outputs\[0\]\.keep/);
@@ -102,5 +102,33 @@ describe('validation, before any request', () => {
     expect(compile([{ expr: 'a' }], { concurrency: 1025 })).toThrow(/concurrency/);
     expect(compile([{ expr: 'a' }], { after: -1 })).toThrow(/after/);
     expect(compile([{ expr: 'a' }], { through: 2 ** 32 })).toThrow(/through/);
+  });
+
+  it('refuses a publishConcurrency that is a fraction or past the batch cap, and takes the cap', () => {
+    expect(compile([{ expr: 'a' }], { publishConcurrency: 1.5 })).toThrow(
+      'publishConcurrency must be an integer from 1 to 1024; got 1.5',
+    );
+    expect(compile([{ expr: 'a' }], { publishConcurrency: 1025 })).toThrow(
+      'publishConcurrency must be an integer from 1 to 1024; got 1025',
+    );
+    expect(compile([{ expr: 'a' }], { publishConcurrency: 1024 })).not.toThrow();
+    expect(compile([{ expr: 'a' }], { publishConcurrency: 1 })).not.toThrow();
+  });
+
+  it('refuses a concurrency of 0, a negative and a fraction, and takes both ends of its range', () => {
+    for (const concurrency of [0, -1, 1.5]) {
+      expect(compile([{ expr: 'a' }], { concurrency })).toThrow(
+        `concurrency must be an integer from 1 to 1024; got ${concurrency}`,
+      );
+    }
+    expect(compile([{ expr: 'a' }], { concurrency: 1 })).not.toThrow();
+    expect(compile([{ expr: 'a' }], { concurrency: 1024 })).not.toThrow();
+  });
+
+  it('takes a per-output keep of 0 and refuses -1 by its output', () => {
+    expect(compile([{ expr: 'a', keep: 0 }])).not.toThrow();
+    expect(compile([{ expr: 'a', keep: -1 }])).toThrow(
+      'outputs[0].keep must be an integer of at least 0; got -1',
+    );
   });
 });

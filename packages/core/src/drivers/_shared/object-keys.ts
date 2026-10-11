@@ -10,7 +10,7 @@
  * namespace maps to `_default`, which cannot collide with a real namespace because a caller's `_default` encodes to
  * `%5Fdefault` while the sentinel is emitted literally.
  */
-import { ValidationError } from '@/core/errors';
+import { requireInteger } from '@/core/check';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
 import { encodeNameForKey, namespaceKeyPart } from './keys';
@@ -28,14 +28,11 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
 }
 
 /**
- * The full key of one generation's object, `<segmentPrefix><gen>.crbm`; a generation that is not a whole number from 0
- * is refused. A generation past the safe-integer range (2^53 or more) still builds a key, but one that
- * {@link parseGenerationFromKey} does not read back, so a listing does not see that object.
+ * The full key of one generation's object, `<segmentPrefix><gen>.crbm`. A generation that is not a safe integer from 0
+ * is refused, so every key built here is one {@link parseGenerationFromKey} reads back.
  */
 export function storageObjectKey(prefix: string | undefined, key: GenKey): string {
-  if (!Number.isInteger(key.generation) || key.generation < 0) {
-    throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
-  }
+  requireInteger(key.generation, { min: 0, what: 'generation' });
   return `${segmentObjectPrefix(prefix, key)}${key.generation}${SUFFIX}`;
 }
 

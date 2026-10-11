@@ -344,6 +344,20 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 100, maxDelayMs: 150 })).toEqual([100, 150]);
   });
 
+  it('an omitted maxDelayMs is the default cap, or the baseDelayMs given when that is larger', async () => {
+    expect(await sleepsFor({ baseDelayMs: 5000 })).toEqual([5000, 5000]);
+    expect(await sleepsFor({ baseDelayMs: 1500 })).toEqual([1500, 2000]);
+  });
+
+  it('a maxDelayMs of NaN is refused, not replaced by the default', () => {
+    const build = (retry: Record<string, number>) => () =>
+      new CloudRoaring({ storage: new MemoryStorage(), retry });
+    expect(build({ maxDelayMs: Number.NaN })).toThrow(
+      /retry\.maxDelayMs must be a finite number of at least 50 \(retry\.baseDelayMs\); got NaN/,
+    );
+    expect(build({ baseDelayMs: 0, maxDelayMs: 0 })).not.toThrow();
+  });
+
   // The hazard itself. Under a plain spread, each of these produces NaN delays — a ~1 ms hot loop.
   it.each(['baseDelayMs', 'maxDelayMs', 'backoffFactor', 'maxAttempts', 'jitter'])(
     'an explicitly-undefined `%s` falls back to the default rather than erasing it',
