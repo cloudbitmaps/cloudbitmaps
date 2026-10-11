@@ -10,8 +10,10 @@
  *
  * Two opens are never charged, because the segment's unit already pays for them: the generation the row named when
  * the scan listed it, which every erasure must read to decide membership, and an object this call wrote itself,
- * which it reads back to verify. A refusal here comes from a read, and in an erasure the reads that can be refused
- * come before the deletes.
+ * which it reads back to verify. A refusal here comes from a read. Most of an erasure's reads that can be refused come
+ * before its deletes; two kinds come after one: the look for a holder left once the call has deleted, and the zero-byte
+ * read of a generation the call deleted that the row then names. A refusal of either is thrown in place of the call's
+ * answer, so the call reports the budget, not what it deleted.
  */
 import type { GenKey, IStorageDriver, SegmentRef, StorageDeleteOptions } from '@cloudbitmaps/core';
 

@@ -12,8 +12,8 @@ import { CountingObjectStore } from '../helpers/counting';
  * What an erasure on a segment with no generation yet costs at the store a registry is over, the way a request is
  * billed: the registry requests it makes, counted at an object-store registry. With no object to delete it reads the
  * row once and writes nothing. With objects to delete it adds the read its renewal is made against, the renewal's
- * conditional write and the read the registry makes for that write's version, and one read of the row before each
- * delete. A second run, with nothing left, is back to the one read.
+ * conditional write and the read the registry makes for that write's version, one read of the row before each delete,
+ * and one after the last. A second run, with nothing left, is back to the one read.
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 const X = 9;
@@ -52,13 +52,13 @@ describe("an erasure's registry requests on a segment with no generation yet", (
   });
 
   it.each([1, 3])(
-    'with %i objects to delete: the renewal, a read before each delete, and nothing on the next run',
+    'with %i objects to delete: the renewal, a read before each delete and one after the last, and nothing on the next run',
     async (n) => {
       const w = world();
       await w.registry.create(REF, { currentGen: null });
       for (let g = 0; g < n; g++) await w.crashed(g);
       expect(await w.counted(() => eraseIdFromSegment(REF, X, w.deps))).toEqual({
-        reads: 3 + n,
+        reads: 4 + n,
         writes: 1,
       });
       expect(await w.counted(() => eraseIdFromSegment(REF, X, w.deps))).toEqual({

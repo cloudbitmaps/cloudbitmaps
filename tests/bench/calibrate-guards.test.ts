@@ -494,11 +494,11 @@ describe('calibrate guards — what a real run is held to', () => {
     // Nothing racing and the number free: two reads, the check, the object and the one conditional write, and no
     // listing, since a new segment has nothing outside its window to collect.
     expect(await load(0, false)).toEqual({ reads: 2, checks: 1, writes: 1, objects: 1, lists: 0 });
-    // The number taken: four more reads and two listings, one to number past the objects and one to collect, which
-    // re-reads the pointer before its listing, after it and before its delete. The segment's row records no list of
-    // kept generations (the listing numbered the load), so the collection records the window it kept with one more
-    // conditional write, which reads the row for its version first.
-    expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 2, objects: 1, lists: 2 });
+    // The number taken: five more reads and two listings, one to number past the objects and one to collect, which
+    // re-reads the pointer before its listing, after it, before its delete and after it. The segment's row records no
+    // list of kept generations (the listing numbered the load), so the collection records the window it kept with one
+    // more conditional write, which reads the row for its version first.
+    expect(await load(0, true)).toEqual({ reads: 7, checks: 1, writes: 2, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -530,7 +530,7 @@ describe('calibrate guards — what a real run is held to', () => {
     }
     // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the last makes as
     // many GET-class requests as the bound allows.
-    expect(p.get).toBe(15);
+    expect(p.get).toBe(16);
     expect(p.get).toBe((await load(guards.RETRY_BOUND - 1, true)).reads + 1);
   });
 
@@ -2148,7 +2148,7 @@ describe("a cold intersect's request count does not depend on the network", () =
 // listing every sixteenth generation. The benchmarks page prices it from the requests counted here, against local
 // drivers and the real registry protocol, until a run measures it. On S3 a listing bills at the PUT rate.
 describe('what a load requests: store.load()', () => {
-  it('writes one object and the pointer once, checks its number once, lists only every sixteenth load, and reads the pointer one to four times', async () => {
+  it('writes one object and the pointer once, checks its number once, lists only every sixteenth load, and reads the pointer one to five times', async () => {
     const storageCalls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
     const store = new CloudRoaring({
@@ -2201,7 +2201,7 @@ describe('what a load requests: store.load()', () => {
       pointerWrites: 1,
     });
     // From the third load on, collection deletes by name the generation the window pushed out, after a check that the
-    // current generation's object is there, and re-reads the pointer before it. It lists nothing.
+    // current generation's object is there, and reads the pointer before the delete and after it. It lists nothing.
     const collecting = await load(2);
     expect(collecting).toEqual({
       putImmutable: 1,
@@ -2209,11 +2209,11 @@ describe('what a load requests: store.load()', () => {
       getTail: 2,
       getRange: 0,
       delete: 1,
-      pointerReads: 2,
+      pointerReads: 3,
       pointerWrites: 1,
     });
-    // Every sixteenth generation lists instead, and reads the pointer before and after its listing. It needs no word that
-    // the current object is there.
+    // Every sixteenth generation lists instead, and reads the pointer before and after its listing, and after its delete.
+    // It needs no word that the current object is there.
     for (let g = 3; g < 16; g++) expect((await load(g)).list, `generation ${g}`).toBe(0);
     const listing = await load(16);
     expect(listing).toEqual({
@@ -2222,7 +2222,7 @@ describe('what a load requests: store.load()', () => {
       getTail: 1,
       getRange: 0,
       delete: 1,
-      pointerReads: 4,
+      pointerReads: 5,
       pointerWrites: 1,
     });
     // The published figures price these four, so they must be these four. In a single-bucket store on S3 the object,

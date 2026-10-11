@@ -582,6 +582,11 @@ for (const page of PAGES) {
   // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
     expectedEngine.firstLoad.each, // a first load's price a request, in the benchmarks table's expected row
+    // What a steady store.load() costs per million at the list prices, from the engine's counted requests: by name, the
+    // load that lists, and their average. Owned by the load-price claims gate, which holds every page to the estimator.
+    expectedEngine.steadyLoad.byName.perMillion,
+    expectedEngine.steadyLoad.listing.perMillion,
+    expectedEngine.steadyLoad.average.perMillion,
     '$0.03', // at-rest, the rounded form
     // What one expected cold intersect, andNot and iterate cost, a count at the list price: owned by /benchmarks.
     expectedEngine.coldIntersect.each,
