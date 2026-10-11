@@ -42,6 +42,15 @@ so, and so do the module headers in the code.
 - **The eject CLI's configuration errors are `ValidationError`.** A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` and an
   unknown `CR_EXPORT_FORMAT` throw it from `parseConfig`; the messages and the exit code (1) are the same.
 
+- **A drop and an erasure count a generation once when a storage listing yields its object twice.** A drop's
+  `wouldDelete`, `generationsDeleted` and `generationsRemaining` list each generation once, its `segment.dispose` event
+  counts each once, and an erasure deletes each generation it finds once. Of the shipped drivers, only `MemoryStorage`
+  can list a key twice, when an object is deleted and stored again while it is listed.
+
+- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
+  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
+- **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
+  object nothing checks. Wording only; no behaviour changed.
 - **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
   the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
   number. Where the segment's row records which generations are kept, the superseded generation is always the newest

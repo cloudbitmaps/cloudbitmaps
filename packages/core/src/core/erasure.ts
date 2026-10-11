@@ -15,6 +15,7 @@
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { mapWithConcurrency } from './concurrency';
+import { generationsOf } from './generation-list';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { type ChurnDeps, leaseChurn } from './leases';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
@@ -146,7 +147,7 @@ export async function eraseNamespace(
   let segmentsShredded = 0;
   // Segments are shredded with bounded concurrency, each behind its own fence (a get and a compare-and-swap), and
   // the ledger comes back in the listing's order whatever order they finish in. The `segment.erase` events are
-  // emitted as each segment finishes, so their order is no longer the listing's; the `namespace.erase` event
+  // emitted as each segment finishes, so their order is the order of finishing, not the listing's; the `namespace.erase` event
   // still comes last.
   const destroyed = await mapWithConcurrency(refs, ERASE_CONCURRENCY, async (ref) => {
     // Per-segment faults stay isolated so one failure cannot discard the ledger, mirroring `eraseSubject`'s
@@ -327,7 +328,7 @@ export async function dropSegment(
  * in the shred's own write, so only a tombstone a sweep wrote ever carries a sweep's mark, which is what lets a later
  * sweep purge it and never a crypto-shred's.
  */
-export interface SweepDrop {
+interface SweepDrop {
   readonly wanted: (row: RegistryRecord) => boolean;
   readonly stamp: (retention: RegistryRecord['retention']) => RegistryRecord['retention'];
 }
@@ -353,7 +354,7 @@ export async function dropSegmentFor(
 
   if (options.dryRun === true) {
     const record = await deps.registry.get(ref);
-    const wouldDelete = await listGenerations(deps.storage, ref);
+    const wouldDelete = await generationsOf(deps.storage, ref);
     return {
       ...base,
       dropped: false,
@@ -395,7 +396,7 @@ export async function dropSegmentFor(
   // it would refuse a later legitimate load of that name forever. No row and no objects ⇒ nothing existed ⇒ say
   // `absent` and touch nothing, which is what that reason is documented to mean.
   if (shred.reason === 'absent') {
-    const orphans = await listGenerations(deps.storage, ref);
+    const orphans = await generationsOf(deps.storage, ref);
     if (orphans.length === 0) {
       return {
         ...base,
@@ -454,9 +455,12 @@ export async function dropSegmentFor(
   // returns results in *input* order, so each pass contributes ascending generations and the concatenation stays
   // ascending. Failures are swallowed per item so the pool never aborts — one unreachable generation must not
   // leave the rest orphaned too.
+  // A throw from a listing propagates, and from the real run it does not mean the drop failed: the tombstone is written,
+  // so the segment is dropped and only bytes leaked. It is the signal to re-run, which takes the `'already'` path and
+  // sweeps again. The audit event for the shred is emitted before the sweep for the same reason.
   const generationsDeleted: number[] = [];
   for (let pass = 0; pass < MAX_STORAGE_SWEEPS; pass++) {
-    const present = await listGenerations(deps.storage, ref);
+    const present = await generationsOf(deps.storage, ref);
     if (present.length === 0) break;
     const outcomes = await mapWithConcurrency(present, ERASE_CONCURRENCY, async (generation) => {
       try {
@@ -481,7 +485,7 @@ export async function dropSegmentFor(
   // what is still in Storage whichever way the loop ended: empty, a delete that kept failing, or the pass budget
   // exhausted while a writer kept finishing. Inferring it would report `[]` in precisely the case that matters
   // — a final pass that deleted everything it saw, after which one more object appeared.
-  const generationsRemaining = await listGenerations(deps.storage, ref);
+  const generationsRemaining = await generationsOf(deps.storage, ref);
 
   // `segment.dispose` attests the *storage reclamation*, which is the weaker but still compliance-relevant fact,
   // and it is emitted AFTER the sweep because unlike a crypto-shred it is not established until the sweep runs.
@@ -504,25 +508,6 @@ export async function dropSegmentFor(
     cryptoShredded: shred.cryptoShredded,
     reason: shred.reason,
   };
-}
-
-/**
- * Every generation currently present in Storage for a segment, ascending.
- *
- * No error handling on purpose: `IStorageDriver.list` is mandatory (not optional in `ports.ts`), so a driver that
- * cannot list cannot exist, and one that *throws* from `list` should propagate.
- *
- * **Be precise about what a throw means at each call site.** From the `dryRun` branch it is accurate that the
- * call "has established nothing". From the real run it is NOT: by then the tombstone is written, so the segment
- * IS dropped and only the bytes leaked. The throw is still the right behaviour — it is the signal to re-run, and
- * a re-run takes the `'already'` path and re-attempts the sweep — but a caller who logs "drop failed" is wrong
- * about the segment's state. This is also why the audit event is emitted *before* the sweep: an irreversible
- * crypto-shred that really happened must not go unrecorded because a later, weaker step threw.
- */
-async function listGenerations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
-  const generations: number[] = [];
-  for await (const key of storage.list(ref)) generations.push(key.generation);
-  return generations.sort((a, b) => a - b);
 }
 
 /** A shred's result, with a token of the tombstone it wrote or found: where its audit events read the incarnation. */

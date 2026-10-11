@@ -76,7 +76,7 @@ export const DEFAULT_RETIRE_LIMIT = 100;
  * (a blob with a snapshot, an object under a legal hold) does not hold the purges behind it, since a purge that succeeds
  * starts the count again.
  */
-export const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
+const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
 
 /**
  * Default delay before a retirement's own tombstone row is purged: 24 h.
@@ -85,7 +85,7 @@ export const MAX_CONSECUTIVE_PURGE_FAULTS = 3;
  * a load that was mid-write when the drop landed cannot resurrect it. That window is
  * seconds to minutes in practice; a day of margin costs one tiny row and removes any need to reason about it.
  */
-export const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
+const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
 
 export interface RetireExpiredOptions {
   /** Scope the sweep to one namespace. Omit to sweep every namespace the registry knows. */
@@ -796,7 +796,7 @@ export async function retireExpired(
                 const p = readRetentionPolicy(row.retention);
                 return p !== null && p !== 'invalid' && p.expiresAt <= now;
               },
-              stamp: (retention) => ({ ...retention, [RETIRED_AT]: now }),
+              stamp: (retention) => ({ ...retention, [SWEEP_MARK]: now }),
             },
       );
       if (result === null) {
@@ -892,7 +892,7 @@ export async function retireExpired(
       // drop) is not a retirement of this sweep, and claiming it would let a later sweep purge an attestation.
       if (
         after?.status === 'destroyed' &&
-        (after.retention as Record<string, unknown> | undefined)?.[RETIRED_AT] === now
+        (after.retention as Record<string, unknown> | undefined)?.[SWEEP_MARK] === now
       ) {
         if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
         retired += 1;
@@ -953,15 +953,12 @@ export async function retireExpired(
   };
 }
 
-/** The key the sweep stamps on its own tombstones, so a purge is attributable rather than inferred. */
-const RETIRED_AT = SWEEP_MARK;
-
 /** Read the sweep's own retirement stamp off a row, or `null` if this tombstone is not one of ours. */
 function retirementStamp(meta: GovernanceMeta | undefined): number | null {
   if (meta === undefined || meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
     return null;
   }
-  const raw = (meta as Record<string, unknown>)[RETIRED_AT];
+  const raw = (meta as Record<string, unknown>)[SWEEP_MARK];
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= MIN_EXPIRES_AT_MS ? raw : null;
 }
 

@@ -44,7 +44,7 @@ export const FOOTER_CRC_COVERAGE = FOOTER.footerCrc32c; // 96
 
 /** `flags` bit positions. */
 export const FLAG_ENCRYPTED = 1 << 0;
-export const FLAG_INDEX_COMPRESSED = 1 << 1; // reserved
+// Bit 1 is reserved.
 export const FLAG_LITTLE_ENDIAN = 1 << 2; // =1 in v1
 /**
  * The object carries an extension block just before its index (a generation's metadata). Set only when there is

@@ -273,6 +273,23 @@ describe('ObjectStoreRegistry: reading a row the store is racing', () => {
     // A TransientError says "retry"; returning null here would say "this segment does not exist".
     await expect(reg.get(ref)).rejects.toBeInstanceOf(TransientError);
   });
+
+  it('reads again on a race raised by another copy of the package, and rethrows any other error', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, undefined, ticking());
+    await reg.create(ref, { currentGen: 5 });
+    const read = store.read.bind(store);
+    const named = (name: string): Error => Object.assign(new Error('from elsewhere'), { name });
+    let failWith: Error | undefined = named('ObjectVersionRaced'); // same name, not the same class
+    store.read = (key) => {
+      const err = failWith;
+      failWith = undefined;
+      return err === undefined ? read(key) : Promise.reject(err);
+    };
+    expect((await reg.get(ref))?.currentGen).toBe(5);
+    failWith = named('ObjectVersionRacedNot');
+    await expect(reg.get(ref)).rejects.toThrow('from elsewhere');
+  });
 });
 
 describe('ObjectStoreRegistry: delete under contention', () => {
