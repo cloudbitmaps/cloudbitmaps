@@ -483,6 +483,13 @@ a pointer would only add a row for every scan to read, and the fleet scan purges
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
 
+**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded or
+dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
+nothing for ever. A sweep that reads such a pointer removes it, fenced on the pointer's token, and leaves the tombstone
+as it was. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
+under `dryRun`, or on a registry that only tombstones its rows (where no pointer is filed to begin with). A pointer
+removal the registry refuses is counted in `purgeFaults`.
+
 **A pointer can outlive its row, and what removes it.** The pointer's key spells out the namespace and the segment name,
 so until it goes the name is in the bucket, in a key. It lingers when the purge did not run to its end:
 

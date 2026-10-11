@@ -13,6 +13,7 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An export no longer records a segment destroyed mid-run as an empty file, the eject command no longer fails on a namespace named `manifest.json`, and the retention sweep removes the due pointer of a tombstone it did not write.** A segment destroyed or dropped after the export listed it and before it was read used to be committed as a successful file of no ids; it is now recorded in `manifest.skipped` with `reason: 'destroyed'`, and no file is written. A namespace named `manifest.json` made the eject command's directory take the manifest's path, so the run ended with `EISDIR` after the whole dump and every re-run failed too; that namespace's segments are now recorded in `failed` with a `ValidationError` and the manifest is written. `retireExpired` now removes the due-index pointer of a segment that was crypto-shredded or dropped by hand after it was given a retention policy; before, the pointer stayed in the registry for ever, and every unscoped fleet scan read it. The tombstone is left as it was.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
 
 ## [0.20.0] — 2026-10-09

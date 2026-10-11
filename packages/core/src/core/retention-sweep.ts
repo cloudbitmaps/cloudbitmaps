@@ -43,7 +43,8 @@
  * landed and lost its response, a pointer older than an index scan's lookback) is removed by the next scan that reads
  * it: an index scan in its buckets, and an unscoped fleet scan, which reads every pointer, in all of them. Where a
  * delete only rewrites the row as a tombstone, none of this is done: nothing is removed for good, so a pointer would
- * only add a row for every scan to read.
+ * only add a row for every scan to read. The pointers a scan reads to a tombstone this sweep did not write (a
+ * crypto-shred, a drop by hand) are removed too, since the sweep will never act on that row; the row stays.
  */
 import { type IAuditSink, checkedAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
@@ -448,6 +449,25 @@ async function filePurgePointer(
 }
 
 /**
+ * Remove the pointers a scan read to a tombstone the sweep will never act on, each fenced on the token it was read
+ * with. Best-effort: a pointer left behind is read again by the next scan, which removes it then.
+ */
+async function forgetFoundPointers(
+  registry: IRegistryDriver,
+  found: readonly FoundPointer[],
+  onFault: (err: unknown) => void,
+): Promise<void> {
+  for (const pointer of found) {
+    try {
+      await registry.delete(pointer.ref, pointer.token);
+    } catch (err) {
+      // A lost race is the pointer changing under the delete, and is no fault; anything else is counted.
+      onFault(err);
+    }
+  }
+}
+
+/**
  * Remove the pointers to a purged tombstone: every one the index scan read to it, each fenced on the token it was
  * read with, and the one this sweep's grace would have filed, which a fleet scan has not read. Best-effort: a pointer
  * left behind costs one read when its bucket is next scanned, which then finds its row gone and removes it.
@@ -606,6 +626,18 @@ export async function retireExpired(
     const policy = readRetentionPolicy(rec.retention);
 
     if (rec.status === 'destroyed') {
+      // A tombstone this sweep did not write (a crypto-shred, a drop by hand) is never retired or purged here, and it
+      // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
+      if (retirementStamp(rec.retention) === null) {
+        if (!dryRun && removesRows) {
+          await forgetFoundPointers(
+            deps.registry,
+            scanned.pointers.get(segmentKey(ref)) ?? [],
+            noteFault,
+          );
+        }
+        continue;
+      }
       if (!purgeTombstones || !purging) continue;
       // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
       // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
@@ -613,8 +645,7 @@ export async function retireExpired(
       // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
       // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
       // for every writer. A marker cannot be forged by that ordering.
-      const retiredAt = retirementStamp(rec.retention);
-      if (retiredAt === null) continue; // not ours — a GDPR tombstone, or one from a manual drop
+      const retiredAt = retirementStamp(rec.retention)!; // not null: a foreign tombstone went on above
       if (now - retiredAt < grace) continue; // inside the fence window; not ledger noise
       if (attempted >= limit) {
         limited = true;

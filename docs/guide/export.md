@@ -103,7 +103,12 @@ And a store loads one straight back, with no per-id work:
 - **Encrypted segments are decrypted** transparently if the store has the keystore, so the export is **cleartext**.
   Protect it. A destroyed segment (crypto-shredded or dropped) resolves no generation, so it is skipped and listed in
   the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every segment row the registry
-  listed. (The registry's internal due-index rows are not segments, and are in none of the three.)
+  listed. (The registry's internal due-index rows are not segments, and are in none of the three.) A segment
+  destroyed after the listing named it and before its export began is skipped the same way: when a segment yields no
+  ids, its row is read again, and a row now destroyed or gone is recorded in `skipped[]` and no file is committed.
+- **The command refuses a namespace named `manifest.json`.** Its directory would be the manifest's path, so each of its
+  segments is recorded in `failed[]` with a `ValidationError` message, and the run still writes its manifest and
+  exports every other namespace.
 - **A segment that cannot be read does not stop the run.** A corrupt storage object, or an encrypted segment when the
   store has no keystore (the command wires none, so it cannot decrypt those), is recorded in the manifest's `failed[]`.
   The export continues, and that segment's partial output is discarded. So "a `manifest.json` exists" means the run
