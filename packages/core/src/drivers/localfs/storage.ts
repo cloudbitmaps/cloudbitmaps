@@ -16,9 +16,9 @@
  */
 import { constants as FS } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
+import { link, mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type {
   StorageCaps,
@@ -29,8 +29,48 @@ import type {
   TailRead,
 } from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
+import { checkTailLength } from '../_shared/tail';
 import { ExactCase } from './exact-case';
 import { O_NOFOLLOW, fsyncDir, isAbsent, isCode, mapFsError, writeAll } from './fs-util';
+
+/** A temp file this old belongs to no write still in progress: a crash or a failed close left it behind. */
+const ORPHAN_TEMP_AGE_MS = 60 * 60 * 1000;
+
+/** Remove the `*.tmp` files in `dir` that were last written longer ago than {@link ORPHAN_TEMP_AGE_MS}; best effort. */
+async function sweepOrphanTemps(dir: string): Promise<void> {
+  try {
+    const cutoff = Date.now() - ORPHAN_TEMP_AGE_MS;
+    for (const name of await readdir(dir)) {
+      if (!name.endsWith('.tmp')) continue;
+      const path = join(dir, name);
+      const info = await stat(path).catch(() => undefined);
+      if (info?.isFile() === true && info.mtimeMs < cutoff) await unlink(path).catch(() => {});
+    }
+  } catch {
+    // A sweep that fails leaves the files for the next write; it never fails this one.
+  }
+}
+
+/** Read exactly `length` bytes at `offset`, or throw: a short read is never returned zero-padded as real bytes. */
+async function readWhole(
+  handle: Awaited<ReturnType<typeof open>>,
+  key: GenKey,
+  length: number,
+  offset: number,
+): Promise<Uint8Array> {
+  const buf = new Uint8Array(length);
+  let filled = 0;
+  while (filled < length) {
+    const { bytesRead } = await handle.read(buf, filled, length - filled, offset + filled);
+    if (bytesRead === 0) {
+      throw new IntegrityError(
+        `short read of ${key.segment}.${key.generation}: wanted ${length}B at ${offset}, got ${filled}B`,
+      );
+    }
+    filled += bytesRead;
+  }
+  return buf;
+}
 
 export class LocalFsStorageDriver implements IStorageDriver {
   private readonly exactCase: ExactCase;
@@ -56,6 +96,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     assertStorageNamesFit(key);
     await this.exactCase.refuseVariant(finalPath);
     await mkdir(dirname(finalPath), { recursive: true });
+    await sweepOrphanTemps(dirname(finalPath));
 
     const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
     // 'wx' = O_CREAT|O_EXCL|O_WRONLY; add O_NOFOLLOW so a pre-planted symlink can't redirect the write.
@@ -111,22 +152,19 @@ export class LocalFsStorageDriver implements IStorageDriver {
           `range [${offset}, ${offset + length}) out of bounds for ${size}B`,
         );
       }
-      const buf = Buffer.alloc(length);
-      if (length > 0) await handle.read(buf, 0, length, offset);
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      return await readWhole(handle, key, length, offset);
     } finally {
       await handle.close();
     }
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    checkTailLength(maxBytes);
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();
-      const take = Math.min(Math.max(maxBytes, 0), size);
-      const buf = Buffer.alloc(take);
-      if (take > 0) await handle.read(buf, 0, take, size - take);
-      return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), size };
+      const take = Math.min(maxBytes, size);
+      return { bytes: await readWhole(handle, key, take, size - take), size };
     } finally {
       await handle.close();
     }
