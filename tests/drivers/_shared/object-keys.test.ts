@@ -29,9 +29,9 @@ describe('storage object keys', () => {
       const key = storageObjectKey(undefined, { segment: 'A/b', generation: 1 });
       expect(key).toBe(`_default/segments/${encodeNameForKey('A/b')}.1.crbm`);
       expect(key.split('/')).toHaveLength(3);
-      expect(segmentObjectPrefix('p', { namespace: 'N', segment: 'A/b' })).toBe(
-        `p/${encodeNameForKey('N')}/segments/${encodeNameForKey('A/b')}.`,
-      );
+      const prefix = segmentObjectPrefix('p', { namespace: 'N/x', segment: 'A/b' });
+      expect(prefix).toBe(`p/${encodeNameForKey('N/x')}/segments/${encodeNameForKey('A/b')}.`);
+      expect(prefix.split('/')).toHaveLength(4);
     });
 
     it('applies a caller prefix, trimming stray slashes', () => {

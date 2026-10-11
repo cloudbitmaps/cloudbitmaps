@@ -155,7 +155,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
 
 /**
  * Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. With `noteTail`, each tail read the reader makes is
- * shown to it as the driver answered it, its `version` included.
+ * shown to it with the bytes, `size` and `version` the driver answered, after the copy below when one is made.
  *
  * A tail's bytes reach the reader as a plain `Uint8Array`: the reader keeps a small object's chunk region by slicing
  * the tail, and a subclass's `slice` need not copy. A Node `Buffer`'s is a view, so a driver that answered with one

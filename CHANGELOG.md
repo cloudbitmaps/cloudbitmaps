@@ -51,7 +51,7 @@ so, and so do the module headers in the code.
   tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
   before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number
   past the safe range (2^53 or more, or -2^53 or less). Newly refused are a whole number of 2^53 or more on the
-  in-process and local-filesystem drivers and `BufferReader`, `-1.5` and `-Infinity` on the S3, GCS and Azure Blob
+  in-process and local-filesystem drivers and `BufferReader`, a negative fraction and `-Infinity` on the S3, GCS and Azure Blob
   drivers, and a whole number of -2^53 or less on every driver and `BufferReader`.
 - **A malformed size or switch given to a cloud backend is a `ValidationError` in every case.** A `Symbol` given as
   `partBytes`, `maxObjectBytes`, `simpleUploadThresholdBytes` or `blockBytes` threw a `TypeError` while the refusal's
