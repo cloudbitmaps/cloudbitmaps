@@ -14,6 +14,7 @@ export const MAX_METADATA_BYTES = 1024;
 export const MAX_METADATA_KEY_BYTES = 128;
 
 const UTF8 = new TextEncoder();
+const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const utf8Length = (s: string): number => UTF8.encode(s).length;
 
 /**
@@ -119,7 +120,7 @@ export function metadataFromBytes(
   }
   let text: string;
   try {
-    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    text = UTF8_STRICT.decode(bytes);
   } catch {
     fail('metadata is not valid UTF-8');
   }

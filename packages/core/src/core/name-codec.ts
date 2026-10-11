@@ -44,6 +44,7 @@ const KEY_SAFE = /[A-Za-z0-9._:-]/;
 const PATH_SAFE = /[A-Za-z0-9._-]/;
 
 const UTF8 = new TextEncoder();
+const UTF8_LENIENT = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
 
 /**
  * Percent-encode one character's UTF-8 bytes: `é` → `%C3%A9`.
@@ -101,7 +102,7 @@ function decodePercent(encoded: string): string {
   //
   // Decode-only, so nothing that works today changes: `encode` is untouched, no stored key moves, and the
   // only names whose decoding changes are ones that are currently rejected by that round-trip guard anyway.
-  return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(new Uint8Array(bytes));
+  return UTF8_LENIENT.decode(new Uint8Array(bytes));
 }
 
 /**

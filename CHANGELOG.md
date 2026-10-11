@@ -31,6 +31,10 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
+  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
+- **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
+  object nothing checks. Wording only; no behaviour changed.
 - **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
   the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
   number. Where the segment's row records which generations are kept, the superseded generation is always the newest
@@ -68,8 +72,6 @@ so, and so do the module headers in the code.
   the rollback went ahead without the key: make such a keystore throw `TransientError` for a fault worth riding out, as
   `IKeystore.openDek` now says. To undo a rollback of an encrypted segment, run it on a store whose keystore opens the
   segment's key.
-- **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
-  object nothing checks. Wording only; no behaviour changed.
 
 ### Fixed
 

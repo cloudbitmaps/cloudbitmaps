@@ -720,8 +720,7 @@ async function eraseOnce(
       }
       if (unanswered && now !== null && now.token === current.token) {
         // Not landed, or still on its way: a fresh write from the row just read, a bounded number of times.
-        const sleep = deps.clock?.sleep;
-        if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw failure;
+        if (deps.clock?.sleep === undefined || resends >= UNANSWERED_RESENDS) throw failure;
         const bound = UNANSWERED_BASE_MS * 2 ** resends;
         resends += 1;
         await jitteredWait(deps.clock, rng, bound);

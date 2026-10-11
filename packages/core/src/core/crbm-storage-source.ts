@@ -2904,8 +2904,8 @@ export async function publishGenerationKept(
       if (sameRow(now, record)) {
         // The write did not land, or is still on its way. Send a new one from the row just read, a bounded number of
         // times; the registry's fence lets at most one of the two copies land.
-        const sleep = options.clock?.sleep;
-        if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw outcomeUnknown(key, err);
+        if (options.clock?.sleep === undefined || resends >= UNANSWERED_RESENDS)
+          throw outcomeUnknown(key, err);
         const bound = UNANSWERED_BASE_MS * 2 ** resends;
         resends += 1;
         await jitteredWait(options.clock, options.rng, bound);
