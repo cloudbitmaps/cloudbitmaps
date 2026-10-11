@@ -458,10 +458,11 @@ describe('a rollback on a store that holds a keystore', () => {
     expect(opened).toBe(0); // a segment with no keys has none to open
   });
 
-  it('treats any failure to open the key of an encrypted segment as no key at hand: it still rolls back, and writes no summary', async () => {
+  it('treats a key it cannot open, or a key service it cannot reach in time, as no key at hand: it still rolls back below the pointer, and writes no summary', async () => {
     const failures: unknown[] = [
       new TransientError('key service answered 503'),
-      new Error('the key service timed out'),
+      // A timeout as `AbortSignal.timeout()` and the AWS SDK raise one.
+      Object.assign(new Error('the key service timed out'), { name: 'TimeoutError' }),
       new KeyUnavailableError('no key'),
       new IntegrityError('a key that does not unwrap'),
     ];
@@ -613,23 +614,24 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     });
   });
 
-  it('reads nothing more for an encrypted target it has no key to open, and leaves the row with no summary', async () => {
+  it('refuses an encrypted target it has no key to open, before reading it, and leaves the row', async () => {
     const w = world(key());
     await rolledBackBelowTwo(w);
+    const before = (await w.registry.get(SEG))!;
     const calls: Record<string, number> = {};
-    await rollbackSegment(
-      SEG,
-      2,
-      { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
-      { allowForward: true },
-    );
-    expect(calls.getTail).toBe(1);
-    const row = (await w.registry.get(SEG))!;
-    expect(row.currentGen).toBe(2);
-    expect(row.summary).toBeUndefined();
+    await expect(
+      rollbackSegment(
+        SEG,
+        2,
+        { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
+        { allowForward: true },
+      ),
+    ).rejects.toBeInstanceOf(KeyUnavailableError);
+    expect(calls.getTail ?? 0).toBe(0);
+    expect((await w.registry.get(SEG))!.token).toBe(before.token);
   });
 
-  it('reads nothing more for a target below the pointer, where a number cannot be taken again', async () => {
+  it('reads nothing more for a target below the pointer', async () => {
     const w = world();
     await twoGenerations(w);
     const calls: Record<string, number> = {};
