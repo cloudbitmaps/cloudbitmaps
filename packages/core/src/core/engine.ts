@@ -23,6 +23,8 @@ import { ChunkWindow } from './chunk-window';
 import type { Clock } from './determinism';
 import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
+import { InvalidationScope } from './invalidation-scope';
+import type { OpenRead } from './invalidation-scope';
 import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
@@ -66,6 +68,15 @@ export interface EngineDeps {
    * Read ops refuse before fan-out if they'd exceed it.
    */
   readonly budget?: Budget | null;
+  /**
+   * An engine over the same `cache` whose invalidations this one shares: an {@link SegmentEngine.invalidate} through
+   * either reaches the reads running on both. Engines that read through one chunk cache share their invalidations, or
+   * a read running on one when the other invalidates its segment writes the chunks it read before the invalidation
+   * back into the cache, and later reads through it are answered from them, an erased id included, until the cache
+   * evicts them. The `CloudRoaring` facade builds the engines of its pins and of its combines with a pinned operand
+   * this way. Throws {@link ValidationError} unless it is a `SegmentEngine` over the same `cache`.
+   */
+  readonly sharesInvalidationsWith?: SegmentEngine;
 }
 
 /**
@@ -143,11 +154,18 @@ interface StreamedChunks {
    */
   gen: string | number | undefined;
   /**
-   * The engine's invalidation count when the read began to resolve its generation. A stream that opens after it has
-   * moved is marked `invalidated`, on a source with no `currentVersion`: it may read newer bytes than the generation it
-   * planned under, which must not be cached under that generation's key.
+   * The invalidation epoch when the read began to resolve its generation. A stream that opens after it has moved is
+   * marked `invalidated`, on a source with no `currentVersion`: it may read newer bytes than the generation it planned
+   * under, which must not be cached under that generation's key.
    */
   readonly epoch: number;
+  /** The segment's cache-key prefix, which its invalidations are recorded under. */
+  readonly prefix: string;
+  /**
+   * The invalidation epoch when the stream opened: a chunk it delivers is not cached once its segment has been
+   * invalidated since.
+   */
+  openedAt: number;
   /** The keys the read will take, ascending. */
   readonly keys: readonly number[];
   /** The range requests the stream holds ahead, and how many it opens with. */
@@ -159,9 +177,10 @@ interface StreamedChunks {
   inStream: ReadonlySet<number> | undefined;
   stream: ChunkStream | undefined;
   /**
-   * Whether a chunk the stream delivers from now on is left out of the cache: the segment was invalidated after the
-   * stream opened, or, on a source with no `currentVersion`, the read moved to another generation while the stream was
-   * open, so what the stream still delivers cannot be told to be of either one.
+   * Whether a chunk the stream delivers from now on is left out of the cache, on a source with no `currentVersion`:
+   * an invalidation came between the read beginning and the stream opening, or the read moved to another generation
+   * while the stream was open, so what the stream still delivers cannot be told to be of either one. An invalidation
+   * of the segment after the stream opened is found through {@link openedAt}.
    */
   invalidated: boolean;
 }
@@ -343,12 +362,6 @@ function firstAbove(a: Uint32Array, value: number): number {
   return lo;
 }
 
-/** A chunk read in flight: `token` tells the read whether its entry is still the registered one. */
-interface OpenRead {
-  readonly token: object;
-  readonly read: Promise<CodecBitmap | null>;
-}
-
 export class SegmentEngine {
   private readonly storage: StorageChunkSource;
   private readonly cache: BoundedLru<string, CodecBitmap> | undefined;
@@ -360,18 +373,10 @@ export class SegmentEngine {
   /** Resolved per-op budget (null = disabled); undefined deps ⇒ the generous default. */
   private readonly budget: Budget | null;
   /**
-   * The chunk reads open right now, by cache key: a caller that misses the cache and finds its key here awaits that
-   * read instead of making its own. An entry lives from the request until it settles, so the map holds at most one
-   * promise per distinct key in flight.
+   * The invalidations this engine shares with every engine over its chunk cache that was built to share them
+   * ({@link EngineDeps.sharesInvalidationsWith}), and the chunk reads open on all of them.
    */
-  private readonly openReads = new Map<string, OpenRead>();
-  /**
-   * The chunk streams open right now. An {@link invalidate} of a segment marks its streams, which then cache no chunk
-   * they deliver, as a read whose entry an invalidation dropped does not (streams hold no `openReads` entry).
-   */
-  private readonly openStreams = new Set<StreamedChunks>();
-  /** How many times {@link invalidate} has been called: a read compares it with the count it began under. */
-  private invalidations = 0;
+  private readonly scope: InvalidationScope;
   /**
    * The cache-key prefixes ({@link segmentPrefix}) of the segments this engine reads, kept rather than encoded for each
    * chunk. A kept prefix is the one {@link invalidate} finds the segment's chunks by.
@@ -390,6 +395,16 @@ export class SegmentEngine {
     // throwing sink can't break the data path; `metricsOn` short-circuits all emission when unused.
     this.metrics = safeMetrics(deps.metrics ?? NOOP_METRICS);
     this.metricsOn = this.metrics !== NOOP_METRICS;
+    const shared = deps.sharesInvalidationsWith;
+    if (
+      shared !== undefined &&
+      (!(shared instanceof SegmentEngine) || shared.cache !== this.cache)
+    ) {
+      throw new ValidationError(
+        'sharesInvalidationsWith must be a SegmentEngine over the same chunk cache',
+      );
+    }
+    this.scope = shared?.scope ?? new InvalidationScope();
   }
 
   /** Membership: one chunk lookup — the cache, else one Storage fetch of that chunk. */
@@ -529,7 +544,7 @@ export class SegmentEngine {
   }
 
   private async *iterateAll(seg: SegmentRef): AsyncGenerator<number> {
-    const epoch = this.invalidations;
+    const epoch = this.scope.epoch;
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
@@ -547,7 +562,7 @@ export class SegmentEngine {
   }
 
   private async *iterateRange(seg: SegmentRef, range: IdRange): AsyncGenerator<number> {
-    const epoch = this.invalidations;
+    const epoch = this.scope.epoch;
     const w = windowOf(range) ?? WHOLE_ID_SPACE;
     if (w === 'empty') return;
     const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
@@ -576,7 +591,7 @@ export class SegmentEngine {
    * the caller's to keep.
    */
   async *iterateBatches(seg: SegmentRef, range?: IdRange): AsyncGenerator<Uint32Array> {
-    const epoch = this.invalidations;
+    const epoch = this.scope.epoch;
     const w = windowOf(range);
     if (w === 'empty') return;
     const chunkKeys =
@@ -620,7 +635,7 @@ export class SegmentEngine {
     if (!Number.isSafeInteger(n) || n < 1) {
       throw new ValidationError(`n must be a positive integer; got ${String(n)}`);
     }
-    const epoch = this.invalidations;
+    const epoch = this.scope.epoch;
     const w = windowOf(range);
     if (w === 'empty') return;
     const { loKey, loRem, hiKey, hiRem } = w ?? WHOLE_ID_SPACE;
@@ -883,7 +898,7 @@ export class SegmentEngine {
     // Within a call shorter than `cache.genTtlMs` the two share one snapshot, so the read is
     // generation-consistent — absent cache-pressure eviction (see `intersect`).
     const extract = async (seg: SegmentRef): Promise<Operand> => {
-      const epoch = this.invalidations;
+      const epoch = this.scope.epoch;
       const all = await this.chunkKeys(seg);
       const gen = await this.cacheVersion(seg);
       const keys = w === null ? all : keysWithin(all, w);
@@ -1152,6 +1167,8 @@ export class SegmentEngine {
       keys,
       concurrency,
       rampStart,
+      prefix: this.prefixes.of(seg),
+      openedAt: epoch,
       opened: false,
       inStream: undefined,
       stream: undefined,
@@ -1199,16 +1216,19 @@ export class SegmentEngine {
       }),
     );
     streamed.opened = true;
+    streamed.openedAt = this.scope.epoch;
     // Only a source with no `currentVersion` caches a chunk under the planned key, so only there can an invalidation
     // since the read began put newer bytes under an older key; elsewhere a chunk is cached under the version it read.
     streamed.invalidated =
-      this.storage.currentVersion === undefined && this.invalidations !== streamed.epoch;
-    this.openStreams.add(streamed);
+      this.storage.currentVersion === undefined && this.scope.epoch !== streamed.epoch;
   }
 
+  /**
+   * Stop the stream of `streamed`. Nothing else is kept for an open stream, so a read whose caller drops it without
+   * closing it leaves nothing behind in the engine.
+   */
   private closeStreamed(streamed: StreamedChunks): void {
     streamed.stream?.close();
-    this.openStreams.delete(streamed);
   }
 
   /**
@@ -1239,8 +1259,12 @@ export class SegmentEngine {
       const bitmap = decodeChunkBytes(this.codec, read.bytes, chunkKey, this.maxBitmapBytes);
       // Cached under the version the bytes came from, not the one the read planned under: a source that re-resolved
       // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
-      // segment was invalidated while the read ran.
-      if (this.cache && !streamed.invalidated) {
+      // segment was invalidated while the read ran, through this engine or another sharing its invalidations.
+      if (
+        this.cache &&
+        !streamed.invalidated &&
+        !this.scope.invalidatedSince(streamed.prefix, streamed.openedAt)
+      ) {
         const version = this.streamedVersion(streamed.gen, read.version);
         if (version !== null) {
           this.cache.set(this.chunkCacheKey({ ...streamed.seg, chunkKey }, version), bitmap);
@@ -1348,7 +1372,9 @@ export class SegmentEngine {
   }
 
   /**
-   * Drop every piece of state this engine derived from `ref`, and tell the Storage source to do the same.
+   * Drop every piece of state this engine, and every engine sharing its invalidations, derived from `ref`, and tell
+   * the Storage source to do the same. A read of the segment running on any of them when this is called caches nothing
+   * more it reads.
    *
    * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
    * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation
@@ -1360,13 +1386,8 @@ export class SegmentEngine {
    */
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
-    this.invalidations += 1;
-    for (const streamed of this.openStreams) {
-      if (segmentPrefix(streamed.seg) === prefix) streamed.invalidated = true;
-    }
+    this.scope.invalidate(prefix);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
-    // A read already open was asked for before this call, so a caller after it must not join it.
-    for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);
     this.storage.invalidate?.(ref);
   }
 
@@ -1430,15 +1451,15 @@ export class SegmentEngine {
       }
       if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
-    const open = this.openReads.get(cacheKey);
+    const open = this.scope.openReads.get(cacheKey);
     if (open) return open.read;
     const token = {};
     const entry: OpenRead = { token, read: this.fetchChunk(ref, gen, cacheKey, token) };
-    this.openReads.set(cacheKey, entry);
+    this.scope.openReads.set(cacheKey, entry);
     // Whether it resolves or rejects the entry goes, so a later caller reads again. An invalidation may have dropped
     // this entry and a newer read taken the key: leave that one.
     const settled = (): void => {
-      if (this.openReads.get(cacheKey) === entry) this.openReads.delete(cacheKey);
+      if (this.scope.openReads.get(cacheKey) === entry) this.scope.openReads.delete(cacheKey);
     };
     entry.read.then(settled, settled);
     return entry.read;
@@ -1502,7 +1523,8 @@ export class SegmentEngine {
     if (!bytes) return null;
     const bitmap = decodeChunkBytes(this.codec, bytes, ref.chunkKey, this.maxBitmapBytes);
     // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
-    if (key !== '' && this.openReads.get(cacheKey)?.token === token) this.cache?.set(key, bitmap);
+    if (key !== '' && this.scope.openReads.get(cacheKey)?.token === token)
+      this.cache?.set(key, bitmap);
     return bitmap;
   }
 }

@@ -96,6 +96,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/cache-key-pointer-id.test.ts',
   'tests/core/erase-swapped-object.test.ts',
   'tests/core/pin-memo-row-fingerprint.test.ts',
+  'tests/core/pin-invalidation-inflight.test.ts',
   'tests/drivers/_shared/registry-entropy.test.ts',
   'tests/core/union-andnot.test.ts',
   'tests/core/write-path-read-retry.test.ts',

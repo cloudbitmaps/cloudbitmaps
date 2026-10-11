@@ -318,5 +318,9 @@
   {
     "entry": "@cloudbitmaps/roaring IStorageDriver.getTail",
     "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core EngineDeps.sharesInvalidationsWith",
+    "reason": "the owner agreed: one invalidation scope shared by every engine on a chunk cache, so an invalidation reaches pinned engines"
   }
 ]
