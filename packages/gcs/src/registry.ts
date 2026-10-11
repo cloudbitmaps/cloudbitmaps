@@ -61,7 +61,7 @@ import { downloadFile, readOnce, singleHeader } from './read-once';
 import { ReadTimedOut, resolveReadTimeoutMs, startDeadline } from './read-timeout';
 import { saveOnce } from './send-once';
 
-export interface GcsRegistryDriverOptions {
+interface GcsRegistryDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
   /** The client the downloads go through; `storage` when absent (see `GcsStorageDriverOptions.readStorage`). */

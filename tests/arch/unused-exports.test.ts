@@ -3,19 +3,29 @@ import path from 'node:path';
 import ts from 'typescript';
 
 /*
- * Architectural lint, part 3: no module under packages/core/src exports a name that nothing else imports.
+ * Architectural lint, part 3: no module under packages/<pkg>/src exports a name that nothing else imports.
  *
  * An `export` is a promise to a reader that something else uses the name. One that nothing uses widens what a
  * reader must understand and what a refactor must keep, and the lint config has no unused-exports rule to catch
  * it. The package entry points (the files `exports` and `bin` in each manifest name) are the public surface and
  * are not checked: whether a name belongs there is the api-surface gate's question. Every other file's exports are
- * checked, and a name is used when any file under packages/*\/src or tests/ imports it, re-exports it, names
- * it in an `import('…')` type, or reads it off a namespace import.
+ * checked, and a name is used when any file under packages/<pkg>/src, tests/ or fuzz/targets/ imports it,
+ * re-exports it, names it in an `import('…')` type, or reads it off a namespace import. The fuzz targets are
+ * plain JavaScript that import the fuzz-build entries (which no manifest names), so they are the real consumers of
+ * what those entries export. Every package is covered: core, roaring, s3, gcs, azure-blob and tools, and the
+ * gate fails when a package directory is missing from its list.
+ *
+ * A name that api-surface/surface.json records also counts as used, in the package the entry belongs to and no
+ * other (`core/driver-kit` entries belong to core). The surface tool records a type under its own key when an
+ * entry point exports it, and under a `(referenced)` key when none does but a public declaration names it. The
+ * gate reads the snapshot and takes the first identifier of every entry, so nothing is listed by hand and the
+ * allowance follows the snapshot.
  *
  * What it reads, and what it does not. It matches by NAME, not by resolved file, so a name imported from one module
- * counts as used for a same-named export in another: that can hide an unused export, never invent one. It does not
- * see a name used only through a dynamic key (`ns[name]`), or a use inside a string or a comment. A name that is
- * used only inside its own file loses its `export` (or is deleted when nothing uses it at all).
+ * counts as used for a same-named export in another: that can hide an unused export, never invent one. A non-entry
+ * module's re-export counts as a use of the name, so a name that is re-exported but imported from nowhere is not
+ * flagged. It does not see a name used only through a dynamic key (`ns[name]`), or a use inside a string or a
+ * comment. A name that is used only inside its own file loses its `export` (or is deleted when nothing uses it at all).
  *
  * Known blind spots. Each makes the gate flag an export that is in use, so it fails loudly rather than passing
  * quietly: a dynamic `import()` (destructured or read by member), `vi.importActual`, the keys of a `vi.mock`
@@ -28,12 +38,25 @@ import ts from 'typescript';
  * that must not: a gate that fires on everything teaches people to route around it.
  */
 const ROOT = path.resolve(__dirname, '..', '..');
-const CORE_DIR = `packages${path.sep}core${path.sep}src${path.sep}`;
+
+/** Each package's source directory and a floor on its file count, below which the gate is checking nothing. */
+const PACKAGES: ReadonlyArray<readonly [string, number]> = [
+  ['core', 40],
+  ['roaring', 6],
+  ['s3', 6],
+  ['gcs', 7],
+  ['azure-blob', 4],
+  ['tools', 1],
+];
+const srcDir = (pkg: string): string => `packages${path.sep}${pkg}${path.sep}src${path.sep}`;
 
 export interface Source {
   readonly path: string;
   readonly text: string;
 }
+
+/** The package a repo-relative source path belongs to, or '' outside `packages/`. */
+const packageOf = (file: string): string => /^packages[\\/]([^\\/]+)[\\/]/.exec(file)?.[1] ?? '';
 
 /** The names a file exports under its own declarations, which a re-export `export { a } from` is not. */
 function exportedNames(sf: ts.SourceFile): string[] {
@@ -119,12 +142,14 @@ function usedNames(sf: ts.SourceFile): Set<string> {
 
 /**
  * The exports of `checked` that no other file in `all` takes: `file: name` for each. `entries` are the files whose
- * exports are the public surface; they are read for what they take and never reported.
+ * exports are the public surface; they are read for what they take and never reported. `referenced` holds, per
+ * package, the names the public API snapshot records, which count as used in that package.
  */
 export function unusedExports(
   all: readonly Source[],
   entries: ReadonlySet<string>,
   checked: (file: string) => boolean = () => true,
+  referenced: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): string[] {
   const parsed = all.map((s) => ({
     path: s.path,
@@ -136,21 +161,39 @@ export function unusedExports(
   for (const { path: p, sf } of parsed) {
     if (entries.has(p) || !checked(p)) continue;
     for (const name of exportedNames(sf)) {
-      const used = [...usedBy].some(([other, names]) => other !== p && names.has(name));
+      const used =
+        referenced.get(packageOf(p))?.has(name) === true ||
+        [...usedBy].some(([other, names]) => other !== p && names.has(name));
       if (!used) out.push(`${p}: ${name}`);
     }
   }
   return out.sort();
 }
 
-function walk(dir: string): string[] {
+function walk(dir: string, ext = '.ts'): string[] {
   if (!existsSync(dir)) return [];
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === 'dist') continue;
     const p = path.join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walk(p));
-    else if (p.endsWith('.ts') && !p.endsWith('.d.ts')) out.push(p);
+    if (statSync(p).isDirectory()) out.push(...walk(p, ext));
+    else if (p.endsWith(ext) && !p.endsWith('.d.ts')) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * The names the snapshot records, per package: the leading identifier of each entry (`pkg Name.member`,
+ * `pkg (referenced) Name`), under the package directory the entry's package name maps to.
+ */
+export function surfaceNames(entries: Iterable<string>): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const e of entries) {
+    const m = /^@[^/\s]+\/([^/\s]+)(?:\/\S+)? (?:\(referenced\) )?([A-Za-z_$][\w$]*)/.exec(e);
+    if (m?.[1] === undefined || m[2] === undefined) continue;
+    const names = out.get(m[1]) ?? new Set<string>();
+    names.add(m[2]);
+    out.set(m[1], names);
   }
   return out;
 }
@@ -172,22 +215,56 @@ function entryFiles(): Set<string> {
 // Parsing every source and test file takes seconds, and longer when other whole-repo scans run beside it.
 const LIMIT = { timeout: 30_000 };
 
-describe('no export of packages/core/src goes unused', () => {
-  it('every checked export is imported by another file', LIMIT, () => {
-    const packages = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => path.join(ROOT, 'packages', e.name, 'src'));
-    const files = [...packages.flatMap(walk), ...walk(path.join(ROOT, 'tests'))];
-    const all = files.map((p) => ({ path: path.relative(ROOT, p), text: readFileSync(p, 'utf8') }));
-    const entries = entryFiles();
-    expect([...entries].filter((p) => !existsSync(p))).toEqual([]);
-    const entryPaths = new Set([...entries].map((p) => path.relative(ROOT, p)));
-    // A missing directory or an empty match would pass with nothing checked. Core has about 76 source files, so a
-    // floor of 50 fails a rename or a wrong prefix while leaving room for files to be merged.
-    expect(existsSync(path.join(ROOT, CORE_DIR))).toBe(true);
-    expect(all.filter((f) => f.path.startsWith(CORE_DIR)).length).toBeGreaterThan(50);
-    expect(unusedExports(all, entryPaths, (file) => file.startsWith(CORE_DIR))).toEqual([]);
-  });
+describe('no export of any package source goes unused', () => {
+  it(
+    'every checked export is imported by another file or recorded in the API snapshot',
+    LIMIT,
+    () => {
+      const packages = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => path.join(ROOT, 'packages', e.name, 'src'));
+      const files = [
+        ...packages.flatMap((d) => walk(d)),
+        ...walk(path.join(ROOT, 'tests')),
+        ...walk(path.join(ROOT, 'fuzz', 'targets'), '.mjs'),
+      ];
+      const all = files.map((p) => ({
+        path: path.relative(ROOT, p),
+        text: readFileSync(p, 'utf8'),
+      }));
+      const entries = entryFiles();
+      expect([...entries].filter((p) => !existsSync(p))).toEqual([]);
+      const entryPaths = new Set([...entries].map((p) => path.relative(ROOT, p)));
+      // A package directory the list does not name would be silently unchecked, so the two must agree.
+      const onDisk = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
+        .filter(
+          (e) => e.isDirectory() && existsSync(path.join(ROOT, 'packages', e.name, 'package.json')),
+        )
+        .map((e) => e.name)
+        .sort();
+      expect(onDisk).toEqual(PACKAGES.map(([pkg]) => pkg).sort());
+      // A missing directory or an empty match would pass with nothing checked, so each package has a floor on its
+      // file count, about half of today's: a rename or a wrong prefix fails it while leaving room for files to be
+      // merged.
+      for (const [pkg, floor] of PACKAGES) {
+        expect(existsSync(path.join(ROOT, srcDir(pkg))), pkg).toBe(true);
+        expect(all.filter((f) => f.path.startsWith(srcDir(pkg))).length, pkg).toBeGreaterThan(
+          floor,
+        );
+      }
+      const surface = JSON.parse(
+        readFileSync(path.join(ROOT, 'api-surface', 'surface.json'), 'utf8'),
+      ) as {
+        entries: Record<string, string>;
+      };
+      const referenced = surfaceNames(Object.keys(surface.entries));
+      expect([...referenced.values()].reduce((n, set) => n + set.size, 0)).toBeGreaterThan(100);
+      const dirs = PACKAGES.map(([pkg]) => srcDir(pkg));
+      expect(
+        unusedExports(all, entryPaths, (file) => dirs.some((d) => file.startsWith(d)), referenced),
+      ).toEqual([]);
+    },
+  );
 });
 
 describe('the unused-exports detector fires on a planted unused export and spares the look-alikes', () => {
@@ -240,6 +317,47 @@ describe('the unused-exports detector fires on a planted unused export and spare
         none,
       ),
     ).toEqual([]);
+  });
+
+  it('reads the snapshot per package, in every entry shape', () => {
+    const ref = surfaceNames([
+      '@cloudbitmaps/p (referenced) A',
+      '@cloudbitmaps/p B.member',
+      '@cloudbitmaps/p/sub C',
+      '@cloudbitmaps/p (referenced) D.field',
+      '@cloudbitmaps/p C.m #2',
+      '@cloudbitmaps/p (referenced) R (value)',
+      '@cloudbitmaps/p I.[Symbol.iterator]',
+      '@cloudbitmaps/p (referenced) F [/x]',
+      '@cloudbitmaps/p H #2',
+      '@cloudbitmaps/p V (value)',
+      '@cloudbitmaps/p ns.X',
+      '@cloudbitmaps/q G',
+    ]);
+    expect([...(ref.get('p') ?? [])].sort()).toEqual([
+      'A',
+      'B',
+      'C',
+      'D',
+      'F',
+      'H',
+      'I',
+      'R',
+      'V',
+      'ns',
+    ]);
+    expect([...(ref.get('q') ?? [])]).toEqual(['G']);
+  });
+
+  it('spares a name the snapshot records for its own package only', () => {
+    const ref = surfaceNames(['@cloudbitmaps/p (referenced) A']);
+    const inP: Source = { path: 'packages/p/src/lib.ts', text: 'export const A = 1;' };
+    const inQ: Source = { path: 'packages/q/src/lib.ts', text: 'export const A = 1;' };
+    const other: Source = { path: 'packages/q/src/use.ts', text: 'const Z = 1;' };
+    expect(unusedExports([inP, other], none, () => true, ref)).toEqual([]);
+    expect(unusedExports([inQ, other], none, () => true, ref)).toEqual([
+      'packages/q/src/lib.ts: A',
+    ]);
   });
 
   it('does not count a name the file itself imports from another module as a use of its own export', () => {
