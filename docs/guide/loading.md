@@ -540,15 +540,18 @@ await store.rollback(ref, 4, { audit, allowForward: true });
 - A rollback deletes nothing, so a generation it rolled back from stays in the bucket until something collects it
   (see "What happens to the generations above the new pointer" below), and `seg.pinAt` can reopen it, with its
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
-  meanwhile makes it throw `WriteConflictError` instead of being undone. A rollback to a generation a concurrent load is
-  collecting can still lose that generation: the collection proves the row before each delete, and a rollback landing
-  between that proof and the delete is the one window it cannot close.
+  meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
+  `TransientError` (below). A rollback to a generation a concurrent load is collecting can still lose that generation:
+  the collection proves the row before each delete, and a rollback landing between that proof and the delete is the
+  one window it cannot close.
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
   that were never published, such as those of a load that died before its publish. On an encrypted segment it also
-  needs the segment's key, and with no keystore, or one that cannot open the key, it throws `KeyUnavailableError`
-  before it reads the target: an object sealed under a key no row holds, such as the one the loser of two concurrent
-  first loads leaves, passes every check that needs no key, and only opening it with the segment's key tells it apart.
+  needs the segment's key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap the
+  key, it throws `KeyUnavailableError` before it reads the target, since an object sealed under a key no row holds,
+  such as the one the loser of two concurrent first loads leaves, passes every check that needs no key, and only
+  opening it with the segment's key tells it apart. A key service that throws `TransientError` or times out is thrown
+  as it is, and nothing moves: run the rollback again once it answers.
 - A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
   segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
@@ -558,21 +561,32 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   opened with the store's keystore for that. A store with no keystore, or one whose keystore cannot open the segment's
   key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out as
   `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls the segment back to a generation below the
-  pointer and leaves the row with no summary of the target; the next load writes one. Any other failure of the
-  keystore is thrown, and nothing moves: a keystore of your own should throw `TransientError` for a fault worth riding
-  out. A target whose index or metadata does not open is refused, since no read could use it either. A target above
+  pointer and leaves the row with no summary of the target; the next load writes one. Such a rollback opens nothing,
+  so it checks only that the target is encrypted, and it can move onto an object sealed under a key no row holds, which
+  every read then refuses: one a first load wrote and never published, once later loads have numbered past it. Any
+  other failure of the keystore is thrown, and nothing moves: a keystore of your own should throw `TransientError` for
+  a fault worth riding out. A target whose index or metadata does not open is refused, since no read could use it
+  either. A target above
   the pointer (`allowForward`) is read once more after the swap, and if it is no longer the object that was read (an
   erasure deleted it and a load took its number meanwhile) the pointer and the old summary are put back and the
   rollback throws `NotFoundError`.
-- A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row shows it
-  landed, the target is checked as after any swap, and the pointer put back if the target went meanwhile. Otherwise the
-  rollback throws that `TransientError`, and the pointer may still move, since the write may yet land: run the rollback
-  again, which finds the pointer where it is.
+- A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row is the one
+  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and no kept
+  list, and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
+  pointer put back if the target went meanwhile. Otherwise the rollback throws that `TransientError`, and the pointer
+  may still move, since the write may yet land: run the rollback again, which finds the pointer where it is. A load or
+  another writer that moved the row meanwhile is left standing, and the rollback throws that `TransientError` rather
+  than `WriteConflictError`. On a cleartext segment two other writes leave the very row the swap would, and cannot be
+  told from it: another rollback onto the same target from the same row, and a load that wrote, under the target's
+  number, the very object the rollback read, onto a row that records no kept window (as after a rollback). The pointer
+  is then where the rollback asked for it, and the rollback reports the move as its own. On an encrypted segment the
+  swap's sealed summary tells them apart.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
   ([the audit trail](observability.md#audit-trail-security--compliance-events)), and this store drops its cached view of
-  the segment.
+  the segment. A move that another writer made and a rollback whose swap got no answer reports as its own (above) is
+  emitted by that rollback too.
 
 **Why rollback is not forward-only.** Forward-only is right for a writer: a load whose ids came from upstream loses
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an

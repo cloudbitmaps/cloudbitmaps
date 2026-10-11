@@ -84,7 +84,7 @@ restore: the row names a generation whose object is gone, and the summary still 
 smaller than `guard.minRetained` allows, or larger than `guard.maxGrowth` allows, is refused. Repair without either (`allowEmpty: true` lifts neither), and the
 load publishes a new generation and a new summary. The load also keeps the older
 generation a listing keeps, which is the one you can still roll back to: before it takes a generation by name it looks
-for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does not unwrap the key, a key service that answers `TransientError` or times out) rolls back to a generation below the pointer all the same and leaves the row with none, refuses one above the pointer with `KeyUnavailableError`, and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
+for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does not unwrap the key, or a keystore that throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK report a timeout) rolls back to a generation below the pointer all the same, opening nothing, and leaves the row with none; above the pointer it refuses with `KeyUnavailableError`, or throws the key service's `TransientError` as it is; and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
 could not open the key, is read from the object, and its object is checked against nothing. A summary that names another
 generation, a sealed one that does not open, and a clear one whose fingerprint names no object are not used.
 
@@ -586,8 +586,9 @@ moves the pointer back and throws `NotFoundError` saying `the pointer was put ba
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
 response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
 or still on the missing generation, the torn state this section resolves. A move that gets no answer at all
-(`TransientError`) is settled by reading the row: one the row shows landed is checked as above, and otherwise the
-rollback throws the `TransientError`, and the pointer may still move, since the write may yet land.
+(`TransientError`) is settled by reading the row: one the row shows landed (the row is the one the move leaves) is
+checked as above, and otherwise the rollback throws the `TransientError`, and the pointer may still move, since the
+write may yet land.
 Check with `store.generations(ref)`, which marks the current generation, and `checkConsistency()`; roll back again
 to a generation it lists, or restore the object. Neither failure records `segment.rollback` — the event is emitted
 only once the pointer is on the target — so keep the error with your incident record.

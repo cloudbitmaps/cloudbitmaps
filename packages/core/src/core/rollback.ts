@@ -54,7 +54,8 @@ export interface GenerationListDeps extends ChurnDeps {
    * The key of an encrypted segment, so a rollback can read its target's count and metadata and seal them into the
    * row. Without it, a rollback of an encrypted segment to a generation below the pointer still works and leaves the
    * row with no summary of the generation it moves to, which a reader then takes from the object; one above the
-   * pointer needs it, and is refused with `KeyUnavailableError`.
+   * pointer needs it, and is refused with `KeyUnavailableError`, or throws the key service's `TransientError` when the
+   * service did not answer in time.
    */
   readonly keystore?: IKeystore;
 }
@@ -156,9 +157,10 @@ export interface RollbackResult {
  * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
  *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
  *   One tail read of the target decides it, as does a footer that fails its own checks;
- * - a target **above the pointer of an encrypted segment** is refused with `KeyUnavailableError` when the segment's
- *   key is not at hand: it is where objects live that no load published, one sealed under a key no row holds among
- *   them, and only opening it with the segment's key shows that it is one of the segment's;
+ * - a target **above the pointer of an encrypted segment** is refused with `KeyUnavailableError` when the store has no
+ *   keystore, or its keystore holds none of the key's KEKs or one that does not unwrap the key: it is where objects live
+ *   that no load published, one sealed under a key no row holds among them, and only opening it with the segment's key
+ *   shows that it is one of the segment's. A key service that did not answer in time is thrown as it is, to retry;
  * - rolling to the generation **already current** is a no-op that reports itself, not an error, once one zero-byte
  *   read finds its object in the bucket. A pointer that names a missing object is refused with `NotFoundError`, as any
  *   missing target is.
@@ -167,15 +169,20 @@ export interface RollbackResult {
  * count and metadata into the row, in the compare-and-swap that moves the pointer: a reader that sees the target as
  * current sees what describes it. (One tail read, and a range read as well when the target's index is longer than the
  * tail read: a target of very many chunks.) A store with no keystore, or whose keystore cannot open the segment's key
- * (it holds none of the key's KEKs, one it holds does not unwrap it, or it is unreachable or timed out), still rolls an
- * encrypted segment back to a generation below the pointer and leaves the row with no summary of the target. Any other
- * failure of the keystore is thrown. The undo of a rollback whose target was collected meanwhile puts back the summary
- * the row had, and so does the undo of an `allowForward` rollback whose target was replaced meanwhile: an object above
- * the pointer can be deleted by an erasure and its number taken by a load, between the read and the swap, so after the
- * swap such a target is read once more, and the pointer put back unless it is the object whose summary was written.
- * A swap that gets no answer is settled by reading the row: one the row shows landed is checked as any swap is, and
- * otherwise its `TransientError` is thrown, since it may have landed or may still land, and a re-run finds the pointer
- * where it is.
+ * (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out as
+ * `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls an encrypted segment back to a generation below
+ * the pointer and leaves the row with no summary of the target; such a rollback opens nothing, so it can move onto an
+ * object sealed under a key no row holds. Any other failure of the keystore is thrown. The undo of a rollback whose
+ * target was collected meanwhile puts back the summary the row had, and so does the undo of an `allowForward` rollback
+ * whose target was replaced meanwhile: an object above the pointer can be deleted by an erasure and its number taken by
+ * a load, between the read and the swap, so after the swap such a target is read once more, and the pointer put back
+ * unless it is the object whose summary was written.
+ * A swap that gets no answer is settled by reading the row: one the row shows landed, the row being the one the swap
+ * leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may still
+ * land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves the
+ * very row this swap would, which on a cleartext segment two writes can: another rollback onto the same target from
+ * the same row, or a load that wrote the very object the rollback read under that number onto a row that records no
+ * kept window. That call then reports and audits the move as its own; the pointer is where it asked for it.
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
@@ -251,7 +258,11 @@ export async function rollbackSegment(
     record,
     deps.keystore,
     forward
-      ? `generation ${toGeneration} of "${ref.segment}" is above the current pointer (${record.currentGen ?? 'none'})`
+      ? {
+          why:
+            `generation ${toGeneration} of "${ref.segment}" is above the current pointer ` +
+            `(${record.currentGen ?? 'none'})`,
+        }
       : undefined,
   );
   const crypto: CrbmCrypto | undefined =
@@ -307,7 +318,7 @@ export async function rollbackSegment(
       if (isTransientError(err)) {
         // A swap that got no answer may have landed, and the check below has to run on one that did, or the pointer can
         // be left on a target collected meanwhile. The row says which.
-        const landed = await swapLanded(ref, record, toGeneration, deps.registry, err);
+        const landed = await swapLanded(ref, record, { toGeneration, summary }, deps.registry, err);
         swapped = { pointerId: landed.pointerId, token: landed.token };
         break;
       }
@@ -485,19 +496,21 @@ async function requirePresent(
 
 /**
  * The segment's data key for a rollback, or `undefined` when there is none to use: a cleartext segment, whose keystore
- * is not asked, or an encrypted one whose key is not at hand. Not at hand is no keystore, or a keystore failure that
- * {@link noKeyAtHand} names; any other failure of the keystore is a fault, and is thrown.
+ * is not asked, or an encrypted one whose key is not at hand. Not at hand is no keystore, or a keystore that says it
+ * cannot open the key ({@link keyNotHeld}) or did not answer in time ({@link keyServiceUnanswered}). Any other
+ * failure of the keystore is a fault of its own, and is thrown.
  *
- * `mustOpen` says why the target has to be opened with the key, when it does: the row does not vouch for the target,
+ * `mustOpen`, when given, says why the target has to be opened with the key: the row does not vouch for the target,
  * and an object sealed under a key no row holds passes every check that needs no key, so only opening the target with
  * the segment's key shows that it is one of the segment's. Then a key not at hand refuses the rollback with
- * {@link KeyUnavailableError}, before the target is read.
+ * {@link KeyUnavailableError}, before the target is read, and a key service that did not answer in time is thrown as it
+ * is: the call can succeed once it answers, which a refusal would not say.
  */
 async function rollbackKey(
   ref: SegmentRef,
   record: RegistryRecord,
   keystore: IKeystore | undefined,
-  mustOpen: string | undefined,
+  mustOpen: { readonly why: string } | undefined,
 ): Promise<Aead | undefined> {
   if (!isKeyed(record)) return undefined;
   let missing = 'the store has no keystore';
@@ -505,47 +518,61 @@ async function rollbackKey(
     try {
       return await keystore.openDek(record.wrappedDeks!);
     } catch (err) {
-      if (!noKeyAtHand(err)) throw err;
-      missing = `the keystore could not open the segment's key: ${nameOf(err) ?? 'error'}`;
+      const unanswered = keyServiceUnanswered(err);
+      if (!unanswered && !keyNotHeld(err)) throw err;
+      if (unanswered && mustOpen !== undefined) throw err;
+      missing = `the keystore could not open the segment's key: ${
+        isKeyUnavailableError(err)
+          ? 'it holds none of the KEKs the key is wrapped under'
+          : 'a KEK it holds does not unwrap the key'
+      }`;
     }
   }
   if (mustOpen === undefined) return undefined;
   throw new KeyUnavailableError(
-    `rollback: ${mustOpen}, and the segment is encrypted: only its key, opening the target, shows that it is one of ` +
-      `the segment's generations and not an object sealed under another key, and no key is at hand (${missing}). ` +
+    `rollback: ${mustOpen.why}, and the segment is encrypted: only its key, opening the target, shows that it is one ` +
+      `of the segment's generations and not an object sealed under another key, and no key is at hand (${missing}). ` +
       "Retry with a keystore that opens the segment's key.",
   );
 }
 
 /**
- * Whether a keystore's failure to open a segment's key means only that the key is not at hand: the keystore holds none
- * of its KEKs (`KeyUnavailableError`), one it holds does not unwrap it (`IntegrityError`), or it could not be reached in
- * time (`TransientError`, or an error named `TimeoutError`, as an aborted fetch and an SDK's request timeout are). A
- * rollback below the pointer goes on without the key, since this is the call an operator reaches for when something is
- * wrong, and the key service being down is often it. Any other failure, a fault in the keystore itself, is not this.
+ * Whether a keystore's failure says it cannot open the key: it holds none of its KEKs (`KeyUnavailableError`), or one it
+ * holds does not unwrap it (`IntegrityError`). Below the pointer a rollback goes on without the key, since this is the
+ * call an operator reaches for when something is wrong.
  */
-function noKeyAtHand(err: unknown): boolean {
-  return (
-    isKeyUnavailableError(err) ||
-    isIntegrityError(err) ||
-    isTransientError(err) ||
-    nameOf(err) === 'TimeoutError'
-  );
+function keyNotHeld(err: unknown): boolean {
+  return isKeyUnavailableError(err) || isIntegrityError(err);
 }
 
-/** An error's `name`, when it has one that is text. Never its message, which a keystore of your own may fill. */
-function nameOf(err: unknown): string | undefined {
-  const name = (err as { name?: unknown } | null)?.name;
-  return typeof name === 'string' ? name : undefined;
+/**
+ * Whether a keystore's failure says the key service did not answer in time: a `TransientError`, as the port asks a
+ * keystore to throw for a fault worth riding out, or an `Error` named exactly `TimeoutError`, which is what
+ * `AbortSignal.timeout()` and the AWS SDK's request timeouts raise. A plain abort (`AbortError`) and any other network
+ * error are not this, and neither is an error judged by its message. Below the pointer a rollback goes on without the
+ * key, since the key service being down is often why an operator rolls back; above it the error is thrown as it is.
+ */
+function keyServiceUnanswered(err: unknown): boolean {
+  return isTransientError(err) || (err instanceof Error && err.name === 'TimeoutError');
 }
 
 /**
  * The row after a swap that got no answer, when it shows that the swap landed; otherwise `unanswered` is thrown.
  *
- * It shows it when it is the row the rollback read, of the same incarnation and still active, with its pointer on the
- * target and nothing else changed but what the swap moves and its leases, which a reader can write the moment the
- * target is current. Another rollback onto the same target from the same row leaves that same row and is taken for
- * this one: the pointer is where both asked for it, and the check after the swap holds either way.
+ * It shows it when it is the row the swap leaves: the row the rollback read, of the same incarnation, with the swap's
+ * pointer and summary, no kept list (the swap drops it), and nothing else changed but its leases, which a reader can
+ * write the moment the target is current, and its pointerId. Another writer's publish of the same number is not that
+ * row: a load records the summary of its own object, and its kept window when the row it read had one. A sealed summary
+ * carries a fresh nonce, so on an encrypted segment only this call's own write matches. On a cleartext one, or with no
+ * summary, two other writes leave the very same row and are taken for this one: another rollback onto the same target
+ * from the same row, and a load that wrote the very object this call read under that number onto a row with no window.
+ * The pointer is then where this call asked for it, on the object it read, and the check after the swap holds either
+ * way, but this call audits a move another writer made.
+ *
+ * The undo after a row taken this way is fenced on that row, so a write after the read back is another writer's, as
+ * after a swap that got its answer. A write that renewed the pointerId between the swap and the read back cannot be
+ * told from the swap: the undo, when the target went, then lands over it, and the renewing writer meets the moved
+ * pointer at its next read of the row.
  *
  * Otherwise the swap's own error is thrown. On an unchanged row the write may still land; on a row that moved elsewhere
  * it never will; a row that cannot be read says neither. A re-run of the rollback finds the pointer where it is, and a
@@ -555,7 +582,7 @@ function nameOf(err: unknown): string | undefined {
 async function swapLanded(
   ref: SegmentRef,
   record: RegistryRecord,
-  toGeneration: number,
+  swap: { readonly toGeneration: number; readonly summary: RegistrySummary | undefined },
   registry: IRegistryDriver,
   unanswered: TransientError,
 ): Promise<RegistryRecord> {
@@ -566,7 +593,12 @@ async function swapLanded(
     if (isIntegrityError(readErr)) throw readErr;
     throw unanswered;
   }
-  if (now === null || now.currentGen !== toGeneration || !onlyLeasesDiffer(record, now, SWAP_MOVES))
-    throw unanswered;
+  const left: RegistryRecord = {
+    ...record,
+    currentGen: swap.toGeneration,
+    summary: swap.summary,
+    keptGens: undefined,
+  };
+  if (now === null || !onlyLeasesDiffer(left, now, ['pointerId'])) throw unanswered;
   return now;
 }

@@ -2351,9 +2351,9 @@ export class CloudRoaring {
    * what describes it. The store's keystore opens an encrypted target for this; without it, or when it cannot open the
    * key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out
    * as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback to a generation below the pointer still
-   * happens and the row carries no summary of the target. Any other failure of the keystore is thrown. A swap of the
-   * pointer that gets no answer is settled by reading the row: one that landed is checked as any is, and otherwise its
-   * `TransientError` is thrown.
+   * happens, opening nothing, and the row carries no summary of the target. Any other failure of the keystore is
+   * thrown. A swap of the pointer that gets no answer is settled by reading the row: one that landed, the row being the
+   * one the swap leaves, is checked as any is, and otherwise its `TransientError` is thrown.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
    * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
@@ -2368,8 +2368,9 @@ export class CloudRoaring {
    * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
    * without it: that is also where objects live that were never published, such as a load that wrote its object
    * and died before the publish. Undoing an earlier rollback is what the opt-in is for. On an encrypted segment it also
-   * needs the key: with no keystore, or one that cannot open the key, it is refused with `KeyUnavailableError` before
-   * the target is read, since an object sealed under a key no row holds passes every check that needs no key.
+   * needs the key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap it, it is
+   * refused with `KeyUnavailableError` before the target is read, since an object sealed under a key no row holds passes
+   * every check that needs no key, and a key service that did not answer in time is thrown as it is, to retry.
    *
    * Needs a backend.
    */
