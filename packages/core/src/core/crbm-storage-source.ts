@@ -147,7 +147,12 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
 
 /**
  * Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. With `noteTail`, each tail read the reader makes is
- * shown to it as the driver answered it, its `version` included; without it, the read is handed through as it is.
+ * shown to it as the driver answered it, its `version` included.
+ *
+ * A tail's bytes reach the reader as a plain `Uint8Array`: the reader keeps a small object's chunk region by slicing
+ * the tail, and a subclass's `slice` need not copy. A Node `Buffer`'s is a view, so a driver that answered with one
+ * would leave the reader holding the driver's memory, all of it, as the cache weighs only the region. Such an answer
+ * is copied here, once; a plain `Uint8Array`, which every shipped driver returns, is handed through as it is.
  */
 function storageBlobReader(
   driver: IStorageDriver,
@@ -158,15 +163,20 @@ function storageBlobReader(
     getRange(offset, length) {
       return driver.getRange(key, offset, length);
     },
-    getTail:
-      noteTail === undefined
-        ? (maxBytes) => driver.getTail(key, maxBytes)
-        : async (maxBytes) => {
-            const tail = await driver.getTail(key, maxBytes);
-            noteTail(tail);
-            return tail;
-          },
+    async getTail(maxBytes) {
+      const tail = ownedTail(await driver.getTail(key, maxBytes));
+      noteTail?.(tail);
+      return tail;
+    },
   };
+}
+
+/** `tail` with its bytes in a plain `Uint8Array`: a copy when the driver answered with a subclass (a Node `Buffer`). */
+function ownedTail(tail: TailRead): TailRead {
+  const { bytes } = tail;
+  return bytes instanceof Uint8Array && Object.getPrototypeOf(bytes) !== Uint8Array.prototype
+    ? { ...tail, bytes: new Uint8Array(bytes) }
+    : tail;
 }
 
 /**
