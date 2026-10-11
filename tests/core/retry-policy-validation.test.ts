@@ -119,3 +119,18 @@ describe('checkedRetryPolicy', () => {
     );
   });
 });
+
+describe('a store built with a retry policy', () => {
+  it('refuses a fractional maxAttempts and a maxDelayMs below the baseDelayMs it falls back beside', async () => {
+    const { CloudRoaring, MemoryStorage } = await import('@/index');
+    const build = (retry: Record<string, number>) =>
+      new CloudRoaring({ storage: new MemoryStorage(), retry });
+    expect(() => build({ maxAttempts: 2.5 })).toThrow(
+      'retry.maxAttempts must be an integer of at least 1; got 2.5',
+    );
+    expect(() => build({ baseDelayMs: 5000 })).toThrow(
+      'retry.maxDelayMs must be a finite number of at least 5000; got 2000',
+    );
+    expect(() => build({ baseDelayMs: 5000, maxDelayMs: 9000 })).not.toThrow();
+  });
+});
