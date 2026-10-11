@@ -483,6 +483,15 @@ a pointer would only add a row for every scan to read, and the fleet scan purges
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
 
+**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded or
+dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
+nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
+without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
+works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the
+cap wait for the next call, and `limited` reports retirements still eligible, not this cleanup. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
+under `dryRun`, or on a registry that only tombstones its rows (a delete there rewrites the pointer as a tombstone, which every scan would still read). A pointer
+removal the registry refuses is counted in `purgeFaults`.
+
 **A pointer can outlive its row, and what removes it.** The pointer's key spells out the namespace and the segment name,
 so until it goes the name is in the bucket, in a key. It lingers when the purge did not run to its end:
 
@@ -506,7 +515,9 @@ One race stays, and the fleet scan repairs it. A name created again with a polic
 nothing sits under (a same-day or back-dated expiry) can lose that pointer: `setRetention` takes the pointer already at
 the key as its own, and a sweep that read the segment before its row existed can remove it in the two round trips that
 follow. The purge's own pointer removal has the same window: it can remove a pointer a re-created name has just taken as
-its own, when that name's policy is due on the pointer's day. The row is untouched and still expires; only its expiry pointer is gone, so an index scan never finds it, and
+its own, when that name's policy is due on the pointer's day. So does the removal of a pointer to a tombstone the sweep
+did not write: a tombstone purged by hand and its name re-created inside the scan's window can lose the pointer the
+same way, in the round trips between the row's re-read and each delete. The row is untouched and still expires; only its expiry pointer is gone, so an index scan never finds it, and
 the default `'fleet'` scan, which reads every row, retires it. An index-only deployment is repaired only if it also
 schedules a fleet scan, which is why the index is the fast half of a pair.
 

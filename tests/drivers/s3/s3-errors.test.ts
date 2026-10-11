@@ -59,6 +59,8 @@ describe('S3 error classification', () => {
       expect(isTransient({ $metadata: { httpStatusCode: 500 } })).toBe(true);
       expect(isTransient({ name: 'TimeoutError' })).toBe(true);
       expect(isTransient({ code: 'ECONNRESET' })).toBe(true);
+      expect(isTransient({ code: 'EHOSTUNREACH' })).toBe(true);
+      expect(isTransient({ code: 'ENETUNREACH' })).toBe(true);
       expect(isTransient({ $retryable: { throttling: true } })).toBe(true);
     });
     // The SDK marks a signature refused for a skewed clock once it has corrected the clock; only then is it transient.
