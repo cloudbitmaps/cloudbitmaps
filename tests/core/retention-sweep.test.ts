@@ -303,7 +303,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
       'retireExpired: `tombstoneGraceMs` must be a finite number of at least 0; got Infinity',
     );
     await expect(retireExpired(w.dropDeps, { now: NaN })).rejects.toThrow(
-      'retireExpired: `now` must be a finite number; got NaN',
+      'retireExpired: `now` must be a finite number (epoch milliseconds); got NaN',
     );
     await expect(refused({ shards: [0] })).rejects.toThrow(
       'retireExpired: shards needs totalShards, which must be an integer of at least 1; got undefined',
