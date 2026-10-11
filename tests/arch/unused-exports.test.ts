@@ -169,8 +169,11 @@ function entryFiles(): Set<string> {
   return out;
 }
 
+// Parsing every source and test file takes seconds, and longer when other whole-repo scans run beside it.
+const LIMIT = { timeout: 30_000 };
+
 describe('no export of packages/core/src goes unused', () => {
-  it('every checked export is imported by another file', () => {
+  it('every checked export is imported by another file', LIMIT, () => {
     const packages = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => path.join(ROOT, 'packages', e.name, 'src'));
