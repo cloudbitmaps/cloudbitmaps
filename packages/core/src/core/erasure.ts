@@ -87,7 +87,9 @@ export async function destroySegment(
       `destroySegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental crypto-shred)`,
     );
   }
-  const { token, ...result } = await shredSegment(ref, deps, options.allowCleartext ?? false);
+  const { token, ...result } = await shredSegment(ref, deps, {
+    allowCleartext: options.allowCleartext ?? false,
+  });
   // Audit only a genuine crypto-shred — not the idempotent already-destroyed/absent no-ops, and not a
   // cleartext tombstone (whose Storage bytes stay readable, so it is not an irreversible erasure).
   if (result.cryptoShredded) {
@@ -166,7 +168,9 @@ export async function eraseNamespace(
     let result: DestroyResult;
     let token: Token | undefined;
     try {
-      ({ token, ...result } = await shredSegment(ref, deps, options.allowCleartext ?? false));
+      ({ token, ...result } = await shredSegment(ref, deps, {
+        allowCleartext: options.allowCleartext ?? false,
+      }));
     } catch (err) {
       result = {
         segment: ref.segment,
@@ -376,7 +380,7 @@ export async function dropSegmentFor(
 
   // Step 1, reused wholesale. `allowCleartext` is true because deleting objects does not need a key — the
   // encryption requirement belongs to crypto-shred, not to disposal.
-  const first = await shredSegment(ref, deps, true, 'dropSegment', sweep);
+  const first = await shredSegment(ref, deps, { allowCleartext: true, op: 'dropSegment', sweep });
   if (first === null) return null;
   let shred = first;
 
@@ -419,7 +423,7 @@ export async function dropSegmentFor(
       if (!isWriteConflictError(err)) throw err;
       // A row appeared between our `get` and our `create` — that is the racing writer we were trying to fence,
       // and it won. Fall back into the normal path, which now has a row to CAS into a tombstone.
-      shred = await shredSegment(ref, deps, true, 'dropSegment');
+      shred = await shredSegment(ref, deps, { allowCleartext: true, op: 'dropSegment' });
     }
   }
 
@@ -510,6 +514,13 @@ export async function dropSegmentFor(
   };
 }
 
+/** What a shred is told: whether a cleartext segment may be tombstoned, which command's name its errors carry, and the sweep it serves. */
+interface ShredOptions {
+  readonly allowCleartext: boolean;
+  readonly op?: 'destroySegment' | 'dropSegment';
+  readonly sweep?: SweepDrop;
+}
+
 /** A shred's result, with a token of the tombstone it wrote or found: where its audit events read the incarnation. */
 type Shred = DestroyResult & { readonly token?: Token };
 
@@ -522,23 +533,19 @@ type Shred = DestroyResult & { readonly token?: Token };
 async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
-  allowCleartext: boolean,
-  op?: 'destroySegment' | 'dropSegment',
+  options: ShredOptions & { readonly sweep?: undefined },
 ): Promise<Shred>;
 async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
-  allowCleartext: boolean,
-  op: 'destroySegment' | 'dropSegment',
-  sweep: SweepDrop | undefined,
+  options: ShredOptions & { readonly sweep: SweepDrop | undefined },
 ): Promise<Shred | null>;
 async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
-  allowCleartext: boolean,
-  op: 'destroySegment' | 'dropSegment' = 'destroySegment',
-  sweep?: SweepDrop,
+  options: ShredOptions,
 ): Promise<Shred | null> {
+  const { allowCleartext, op = 'destroySegment', sweep } = options;
   const base = { segment: ref.segment, namespace: ref.namespace };
   // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
   // to a lease write is waited out and costs none, up to the churn bound.

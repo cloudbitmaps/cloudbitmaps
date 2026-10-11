@@ -587,7 +587,7 @@ async function eraseOnce(
    */
   const holdsEach = async (
     generations: readonly number[],
-    stopAtHolder: boolean,
+    { stopAtHolder }: { readonly stopAtHolder: boolean },
   ): Promise<{ generation: number; held: boolean | null }[]> => {
     // The lowest index that holds the id so far. A generation past it can never be reached by the in-order walk
     // below, so a worker that would start one skips it: the reads wasted past the first holder are only those
@@ -641,7 +641,9 @@ async function eraseOnce(
     const toRead = (await generationsOf(deps.storage, ref))
       .reverse()
       .filter((generation) => !clean.has(generation));
-    return (await holdsEach(toRead, true)).find((outcome) => outcome.held === true)?.generation;
+    return (await holdsEach(toRead, { stopAtHolder: true })).find(
+      (outcome) => outcome.held === true,
+    )?.generation;
   };
 
   const cannotRemove = (generation: number): WriteConflictError =>
@@ -848,7 +850,7 @@ async function eraseOnce(
     const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
     const holders: number[] = []; // newest first
     const clean = new Set<number>();
-    for (const { generation, held } of await holdsEach(newestFirst, false)) {
+    for (const { generation, held } of await holdsEach(newestFirst, { stopAtHolder: false })) {
       if (held === true) holders.push(generation);
       else if (held === false) clean.add(generation);
     }
@@ -885,7 +887,9 @@ async function eraseOnce(
    */
   const underTombstone = async (): Promise<EraseIdResult> => {
     const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
-    const holder = (await holdsEach(newestFirst, true)).find((h) => h.held === true);
+    const holder = (await holdsEach(newestFirst, { stopAtHolder: true })).find(
+      (h) => h.held === true,
+    );
     if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
     const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
     const left = await holderLeft(new Set());
@@ -972,7 +976,7 @@ async function eraseOnce(
     const holdersAbove: number[] = []; // newest first, those that could not be searched included
     for (const { generation, held } of await holdsEach(
       newestFirst.filter((g) => g > from),
-      false,
+      { stopAtHolder: false },
     )) {
       if (held === true) holdersAbove.push(generation);
       else if (held === false) clean.add(generation);
@@ -983,7 +987,7 @@ async function eraseOnce(
     if (foundAbove === undefined) {
       for (const { generation, held } of await holdsEach(
         newestFirst.filter((g) => g < from),
-        true,
+        { stopAtHolder: true },
       )) {
         if (found(generation, held)) holderBelow = generation;
         else if (held === true) sealedBelow.push(generation);

@@ -141,15 +141,21 @@ function validateGovernance(meta: unknown, field: string): void {
 }
 
 /**
+ * Whose bytes a validator is looking at: a value a `caller` is writing (a bad one is a ValidationError, and the checked
+ * copy is rebuilt), or a row read back from `stored` bytes (a bad one is an IntegrityError, and the parsed value is kept).
+ */
+type RecordOrigin = 'caller' | 'stored';
+
+/**
  * Validate the wrapped-DEK list at the write/read boundary: a bounded array of `{ keyId, wrapped }` with
  * non-empty string fields and a per-entry size cap (so a row can't be bricked, and corrupt bytes are rejected
- * rather than reaching the keystore). `isStored` toggles the error class (write = ValidationError; read =
+ * rather than reaching the keystore). `origin` toggles the error class (write = ValidationError; read =
  * IntegrityError, invariant 5).
  */
-function validateWrappedDeks(value: unknown, isStored: boolean): void {
+function validateWrappedDeks(value: unknown, origin: RecordOrigin): void {
   if (value === undefined) return;
   const fail = (msg: string): never => {
-    throw isStored ? new IntegrityError(msg) : new ValidationError(msg);
+    throw origin === 'stored' ? new IntegrityError(msg) : new ValidationError(msg);
   };
   if (!Array.isArray(value)) fail('wrappedDeks must be an array');
   const list = value as unknown[];
@@ -191,18 +197,18 @@ function base64PadBitsAreZero(text: string): boolean {
  * metadata at its cap. A writer
  * stores the copy, so a caller that changes its object after the call, while the driver awaits the row, changes
  * nothing that is written. Whether a summary may be *used* is the reader's rule, not this one: this only bounds what a
- * row can hold. `isStored` picks the error class (write = ValidationError; read = IntegrityError, invariant 5), and a
+ * row can hold. `origin` picks the error class (write = ValidationError; read = IntegrityError, invariant 5), and a
  * read names the row by `ctx`.
  */
 function validateSummary(
   value: unknown,
-  isStored: boolean,
+  origin: RecordOrigin,
   ctx?: string,
 ): RegistrySummary | undefined {
   if (value === undefined) return undefined;
   const fail = (msg: string): never => {
     const where = ctx === undefined ? '' : `: ${ctx}`;
-    throw isStored
+    throw origin === 'stored'
       ? new IntegrityError(`registry record summary: ${msg}${where}`)
       : new ValidationError(`summary: ${msg}${where}`);
   };
@@ -262,7 +268,7 @@ function validateSummary(
   const canonical = canonicalMetadataJson(s.metadata, fail);
   if (canonical === '{}') fail('metadata is empty; a generation without metadata carries none');
   // A read only checks the stored shape and keeps the object it parsed, so it builds no copy.
-  if (isStored) return s as unknown as RegistrySummary;
+  if (origin === 'stored') return s as unknown as RegistrySummary;
   // Rebuilt from the canonical JSON, so its keys are in canonical order (JavaScript still lists integer-like keys
   // first, in numeric order, as it does in every object) and nothing of the caller's object is kept.
   const metadata = Object.freeze(JSON.parse(canonical) as Record<string, string | number>);
@@ -315,25 +321,25 @@ function validateSummaryKeys(
 /**
  * Validate a {@link RegistryRecord.keptGens} list's shape at the write or read boundary: an array of at most `max`
  * entries, each a non-negative safe integer, strictly ascending (which refuses a duplicate). A write returns a frozen
- * copy, so a caller that changes its array afterwards changes nothing that is written. `isStored` picks the error class
+ * copy, so a caller that changes its array afterwards changes nothing that is written. `origin` picks the error class
  * (write = ValidationError; read = IntegrityError, invariant 5). Whether the entries are below the pointer is not
  * checked here on a read: a list that disagrees with the pointer is one its reader does not use, not a row to refuse.
  */
 function validateKeptGens(
   value: unknown,
-  isStored: boolean,
+  origin: RecordOrigin,
   ctx?: string,
 ): readonly number[] | undefined {
   if (value === undefined) return undefined;
   const fail = (msg: string): never => {
     const where = ctx === undefined ? '' : `: ${ctx}`;
-    throw isStored
+    throw origin === 'stored'
       ? new IntegrityError(`registry record keptGens: ${msg}${where}`)
       : new ValidationError(`keptGens: ${msg}`);
   };
   if (!Array.isArray(value)) fail('must be an array');
   const list = value as unknown[];
-  const max = isStored ? MAX_STORED_KEPT_GENERATIONS : MAX_KEPT_GENERATIONS;
+  const max = origin === 'stored' ? MAX_STORED_KEPT_GENERATIONS : MAX_KEPT_GENERATIONS;
   if (list.length > max) fail(`has ${list.length} entries, cap ${max}`);
   let last = -1;
   for (const g of list) {
@@ -343,7 +349,7 @@ function validateKeptGens(
     if ((g as number) <= last) fail('entries must be strictly ascending');
     last = g as number;
   }
-  return isStored ? (list as number[]) : Object.freeze([...(list as number[])]);
+  return origin === 'stored' ? (list as number[]) : Object.freeze([...(list as number[])]);
 }
 
 const HOLDER = /^[0-9a-f]{16}$/;
@@ -353,19 +359,19 @@ const LEASE_ENTRY_KEYS: readonly string[] = ['holder', 'generation', 'until'];
  * Validate a {@link RegistryRecord.leases} list at the write or read boundary: an array of at most the writer's cap
  * (write) or the reader's (read), each entry exactly `{ holder, generation, until }`, the holder 16 lowercase hex digits
  * and unique, the two numbers non-negative safe integers. A write returns a frozen copy, and an empty list as
- * `undefined`, so a row that never held a lease is the row it was before leases. `isStored` picks the error class
+ * `undefined`, so a row that never held a lease is the row it was before leases. `origin` picks the error class
  * (write = ValidationError; read = IntegrityError, invariant 5). Whether an entry is still live, or its generation
  * exists, is not checked here: a collector reads that, and a row is not refused for it.
  */
 function validateLeases(
   value: unknown,
-  isStored: boolean,
+  origin: RecordOrigin,
   ctx?: string,
 ): readonly LeaseEntry[] | undefined {
   if (value === undefined) return undefined;
   const fail = (msg: string): never => {
     const where = ctx === undefined ? '' : `: ${ctx}`;
-    throw isStored
+    throw origin === 'stored'
       ? new IntegrityError(`registry record leases: ${msg}${where}`)
       : new ValidationError(`leases: ${msg}`);
   };
@@ -395,7 +401,7 @@ function validateLeases(
       }
     }
     out.push(
-      isStored
+      origin === 'stored'
         ? (entry as unknown as LeaseEntry)
         : Object.freeze({
             holder: holder as string,
@@ -404,7 +410,7 @@ function validateLeases(
           }),
     );
   }
-  if (isStored) return out;
+  if (origin === 'stored') return out;
   return out.length === 0 ? undefined : Object.freeze(out);
 }
 
@@ -470,14 +476,14 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRe
   validateKeyId(rec.keyId);
   validateGeneration(rec.currentGen);
   if (rec.status !== undefined) validateStatus(rec.status);
-  validateWrappedDeks(rec.wrappedDeks, false);
+  validateWrappedDeks(rec.wrappedDeks, 'caller');
   validateGovernance(rec.retention, 'retention');
   validateGovernance(rec.residency, 'residency');
-  const keptGens = validateKeptGens(rec.keptGens, false);
+  const keptGens = validateKeptGens(rec.keptGens, 'caller');
   validateKeptGensBelow(keptGens, rec.currentGen);
   const withKept = keptGens === undefined ? rec : { ...rec, keptGens };
   if (!('summary' in rec)) return withKept;
-  const summary = validateSummary(rec.summary, false);
+  const summary = validateSummary(rec.summary, 'caller');
   validateSummaryNames(summary, rec.currentGen);
   validateSummaryKeys(summary, rec.wrappedDeks);
   return { ...withKept, summary };
@@ -493,19 +499,19 @@ export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
   if ('keyId' in patch) validateKeyId(patch.keyId);
   validatePatchGeneration(patch);
   if (patch.status !== undefined) validateStatus(patch.status);
-  if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, false);
+  if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, 'caller');
   if ('retention' in patch) validateGovernance(patch.retention, 'retention');
   if ('residency' in patch) validateGovernance(patch.residency, 'residency');
   const withKept =
     patch.keptGens === undefined
       ? patch
-      : { ...patch, keptGens: validateKeptGens(patch.keptGens, false) };
+      : { ...patch, keptGens: validateKeptGens(patch.keptGens, 'caller') };
   const withLeases =
     'leases' in withKept
-      ? { ...withKept, leases: validateLeases(withKept.leases, false) }
+      ? { ...withKept, leases: validateLeases(withKept.leases, 'caller') }
       : withKept;
   if (!('summary' in patch)) return withLeases;
-  return { ...withLeases, summary: validateSummary(patch.summary, false) };
+  return { ...withLeases, summary: validateSummary(patch.summary, 'caller') };
 }
 
 /**
@@ -814,7 +820,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
-  validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
+  validateWrappedDeks(r.wrappedDeks, 'stored'); // invariant 5: reject a corrupt wrapped-DEK list on read-back
   // The governance blobs' SHAPE is checked on read-back too, because one of them carries semantics:
   // `retention.expiresAt` is read with an `in` test, which throws an untyped `TypeError` on a stored
   // `null`/string/number. That is reachable — the write boundary only checks
@@ -830,9 +836,9 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   // Shape only. Whether the summary agrees with the row's keys and names its `currentGen` is not checked here: a
   // stored row that disagrees is a summary its reader must not use, not a row to refuse, and refusing it would let
   // one row stop every listing that reaches it.
-  validateSummary(r.summary, true, ctx);
-  validateKeptGens(r.keptGens, true, ctx);
-  validateLeases(r.leases, true, ctx);
+  validateSummary(r.summary, 'stored', ctx);
+  validateKeptGens(r.keptGens, 'stored', ctx);
+  validateLeases(r.leases, 'stored', ctx);
 }
 
 /**
