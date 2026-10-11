@@ -41,8 +41,9 @@ refused.
 
 **A bound is judged after the write, before the publish.** The load writes the new generation's object first, unpublished,
 then judges it, and only then moves the pointer. A refused load has written its object and deletes it, one write and one
-delete, unless another write changed the segment's row meanwhile in more than its leases, in which case collection takes it. Nothing a reader sees
-changes. To judge the outputs of a `materializeMany` call without writing anything, use a
+delete. Once another write has changed the segment's row in more than its leases, one read of the object's footer first
+proves it the load's own, and an object the row names (as its pointer, in its kept window or in a lease) stays. Nothing a
+reader sees changes. To judge the outputs of a `materializeMany` call without writing anything, use a
 [dry run](#look-before-you-publish-a-dry-run).
 
 | `reason` | Means | What to do |
@@ -101,7 +102,12 @@ the outputs of a `materializeMany` call, count it with a dry run ([below](#recip
 - a failure in the collection's own reads or deletes, which can be raised after the publish landed, so a throw does not
   by itself mean the load did not take effect. A collection, by name or by listing, that finds another writer has moved
   the row since the load's publish (a load, a rollback, a purge) stops and returns what it deleted in `collected`: a load
-  that took effect does not throw for a race it won.
+  that took effect does not throw for a race it won;
+- a rollback that moved the pointer onto a generation the load had just deleted, one its collection took or its own
+  refused object: `NotFoundError`. After the publish it says the load took effect at its generation; after a refusal it
+  names the refusal, and the `segment.load-refused` event is already sent. Either way the segment's current generation
+  is missing from the bucket until a rollback moves the pointer to one that is there
+  ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
 
 The `*Into` verbs throw on the same superseded condition instead of reporting it.
 
@@ -452,8 +458,12 @@ before anything is written. It never touches the current generation or anything 
 **How `store.load` collects.** The segment's registry row records which generations below the pointer the last load
 kept, up to 64 of them. A load that found a list there writes the new one in the same write that moves the pointer (the
 newest `keep` of the old list and the generation it superseded) and, once that has landed, deletes **by name** each
-generation that fell out of it, after re-reading the row before each delete. It lists nothing. A segment that loads
-cleanly therefore pays one pointer read and one delete for collection at any `keep` up to 64, not a listing. A generation
+generation that fell out of it, after re-reading the row before each delete, and reads the row once more after the last
+delete, which sees a rollback that landed between the read before it and the delete
+([below](#a-rollback-that-races-a-collection)). It lists nothing. A segment that loads cleanly therefore pays two pointer
+reads and one delete for collection at any `keep` up to 64, not a listing: on S3 a steady load that deletes by name makes
+2 PUT-class requests, 5 GET-class and a delete, 8 requests, with the delete free ([what each term
+counts](cost.md#what-each-term-counts)). A generation
 is in the list only if a load published it, so a number a refused or crashed load took is never in the way of a window.
 A load lists the segment's objects instead in these cases:
 
@@ -541,7 +551,9 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile makes it throw `WriteConflictError` instead of being undone. A rollback to a generation a concurrent load is
   collecting can still lose that generation: the collection proves the row before each delete, and a rollback landing
-  between that proof and the delete is the one window it cannot close.
+  between that proof and the delete is the one window it cannot close. The collection detects it and the load throws
+  `NotFoundError`, and the pointer names a missing object until you roll back to a generation in the bucket
+  ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
 - A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
 - A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
   that were never published, such as those of a load that died before its publish.
@@ -778,10 +790,10 @@ Counted in memory (`bench/materialize-many-counts.cjs`, the `target` shape: 100 
 
 | budget | groups | range reads | chunk reads (the `budget` unit) | ledger high water |
 |---|---|---|---|---|
-| 256 MiB, the default | 81 | 19,005 | 4,852,500 | 201 MiB |
+| 256 MiB, the default | 78 | 18,870 | 4,815,000 | 201 MiB |
 | 2 GiB | 6 | 3,570 | 900,000 | 1,472 MiB |
 
-so at that size the default makes 4,852,500 chunk reads in 81 groups, about 32 times the 150,000 that one read of every chunk of every operand (100 operands of 1,500 chunks) makes, and 5.4 times the 2 GiB call's; a larger `maxBufferedBytes` is the lever.
+so at that size the default makes 4,815,000 chunk reads in 78 groups, about 32 times the 150,000 that one read of every chunk of every operand (100 operands of 1,500 chunks) makes, and 5.3 times the 2 GiB call's; a larger `maxBufferedBytes` is the lever.
 Planning sizes groups from the index, which cannot know how much two operands overlap, so an `and` of two large operands is
 priced at the smaller and is often far smaller in fact; the high water mark above shows how much of the budget a call used.
 
@@ -808,8 +820,8 @@ demand with `node bench/materialize-many-counts.cjs --check --all`.
 
 | | range reads | tail reads | row reads | **GET-class** | **PUT-class** | scratch segments |
 |---|---|---|---|---|---|---|
-| 1,000 `*Into` calls, nested groups through scratch segments | 137,037 | 2,736 | 3,988 | **143,761** | **3,404** | 818 |
-| one `materializeMany`, default 256 MiB (6 groups) | 590 | 1,100 | 1,815 | **3,505** | **1,768** | 0 |
+| 1,000 `*Into` calls, nested groups through scratch segments | 137,037 | 2,736 | 4,220 | **143,993** | **3,404** | 818 |
+| one `materializeMany`, default 256 MiB (6 groups) | 589 | 1,100 | 2,043 | **3,732** | **1,768** | 0 |
 
 GET-class is range reads, tail reads and registry row reads; PUT-class is object writes, registry writes and listings;
 deletes are free and not counted. The publishes, one object and one pointer write per output, are the floor of any
@@ -823,7 +835,8 @@ reads, and `put` the object write and pointer write of each published output and
 To reconstruct the total GET-class requests, add to `attributed.get` two reads (a tail read and a row read, fewer where the
 store already holds the operand's reader) for each operand a pin took, which with `pin` on is every named operand whether or not
 an output reads it, or for each of `opens` with `pin: false`; and for each publish the reads of its load, two for a destination
-that has a generation and three for one that has none, and one more when the guard refuses it. A test holds that recipe to a
+that has a generation and three for one that has none, and two more when the guard refuses it (its reclaim reads the row
+before it deletes its object and once after). A test holds that recipe to a
 recording driver over pinned and live operands, new and existing destinations, refused and published outputs and unused
 operands. Not known to the call: a multipart upload's extra requests, a listing, and what a publish that threw sent.
 In the counted call above `attributed.put` equals the drivers' PUT-class count and `attributed.get` is a small part of the
@@ -832,7 +845,7 @@ GET-class count; the counts are side by side in the JSON.
 **The budget.** `budget` counts chunk reads over all the groups, re-reads included. A call that passes none gets, when the store
 was built with a `budget` of its own, that one, so a store ceiling below the plan throws `BudgetExceededError` before any chunk
 is read, as it does for every other operation, and it can refuse a realistic call: the `target` shape above plans
-4,852,500 chunk reads at the default memory budget and 900,000 at 2 GiB, against a library default of
+4,815,000 chunk reads at the default memory budget and 900,000 at 2 GiB, against a library default of
 1,000,000. When the store is on the library default (a store whose `budget` is exactly 1,000,000 is treated as one on it), the
 call sizes its own from its plan, twice the chunk reads the plan needs and a thousand, so it trips only when an output has to
 run again past it. Pass `budget` to set one for the call, or `false` to lift it. `stats.budget` has the limit, the chunk reads
@@ -1124,8 +1137,8 @@ other reports `published: false` with `reason: 'superseded'`. If both took the s
 write it is refused by the write-once put and writes nothing. If not, the publish that lands second finds the row
 changed since its load read it, or finds a row where its load read none, and is refused, whatever its options: two
 first loads of a segment with no row race to create it, and the one that loses is refused whichever number it holds.
-Its object stays in the bucket when the refusal cannot prove it its own (another writer made the row): it is an
-orphan, collected as the paragraph on crashes below says, by the next load whose check meets it and at the latest by
+The refusal deletes its object once one read of its footer proves it the load's own. One the read cannot prove, or that
+the row names, stays in the bucket: it is an orphan, collected as the paragraph on crashes below says, by the next load whose check meets it and at the latest by
 the listing a load runs every sixteenth generation, and it is billed until then, or until `dropSegment` or the
 retention sweep removes the segment. A load that won the number can still be refused by its guard. Publishing the
 generation that is already current is a no-op that reports success, unless the publish is fenced (below), in which
@@ -1163,11 +1176,14 @@ what settles a write that got no answer: that is read again, as above.
 commits atomically: a hard link, a conditional PUT, a multipart complete) and the pointer still names the previous
 generation, which readers keep serving. A load that dies between the write and the publish leaves an orphan: an object
 that was never current. So does a load whose registry write ended without an answer that the row could settle (it throws
-`TransientError`), and a refused load that finds another write has changed the segment's row, since by then its
-generation number may name a re-created segment's object. A refused load that finds the row gone, or a cleartext load
-that finds a key on the row, deletes its object only once its footer proves it is the object this load wrote, and passes
-the version that read reported, so on a storage driver that reports `conditionalDelete` an object put under the number
-since is kept. Where the row is unchanged, the delete is by number: the object is this load's own write, of which the
+`TransientError`). A refused load that finds the row gone, or changed by another write, deletes its object only once its
+footer proves it is the object this load wrote, since by then its generation number may name another writer's object (a
+re-created segment's, say), and passes the version that read reported, so on a storage driver that reports
+`conditionalDelete` an object put under the number since is kept. One the read cannot prove stays, an orphan, and so does
+one the row names, as its pointer, in its kept window or in a lease: a publish whose write got no answer may have landed
+and been superseded, and the next writer's window keeps it. Deleting the rest matters below the pointer, where another
+load's publish leaves a stalled load's object: kept, it would be a rollback target, and a rollback would publish what no
+load published. Where the row is unchanged, the delete is by number: the object is this load's own write, of which the
 write reports no version. The orphan is named by no row's list, because only a generation that was current is recorded as kept, so it takes no
 place in a window. A load whose check meets it numbers above it by a listing and, once its own generation is current,
 that listing deletes the orphan, which is below the pointer and not named. An orphan stranded elsewhere below the pointer
@@ -1263,7 +1279,8 @@ row afterwards and reconcile with it:
 The row is re-proved before **every** delete, not once after the listing, because the deletes are one round trip each.
 If the segment changed underneath the pass, a collection that is not a load's throws `WriteConflictError`; re-run it, and
 note that a refusal part-way through may already have deleted objects it will now never report. A load's own pass stops
-instead and returns what it deleted. One more consequence of the reconcile:
+instead and returns what it deleted. A re-proof that finds the pointer on a generation the pass already deleted is not a
+race it won, on either pass, and throws `NotFoundError` ([below](#a-rollback-that-races-a-collection)). One more consequence of the reconcile:
 `keep` counts distinct generations, not listing entries, so a listing that enumerates the same generation twice cannot
 eat the grace window.
 
@@ -1276,3 +1293,62 @@ names the generation it asked to delete whether or not it was there.
 **`g < currentGen` is a safe bound only against a pointer read after the listing.** A pointer read before it can be
 higher than the one a purge and re-creation or a rollback leaves behind, which is why the ordinary branch above takes
 the lower of the two.
+
+### A rollback that races a collection
+
+Every loop that deletes generations reads the segment's row just before each delete. Four of them can meet a rollback:
+a load's collection (by name or by listing), a refused load's delete of its own object, the erasure's collection below
+the pointer, and the erasure's deletes of holders above the pointer or of first loads' objects on a row with no pointer.
+One round trip remains between that read and the delete, and a rollback onto the very generation being deleted can land
+inside it:
+
+```
+deleting call        reads the row: g may go ──────── round trip ──────────────────▶ deletes g
+rollbackSegment(g)              lists: g is there │ moves the pointer onto g │ lists: g is there
+                                                                                        └▶ the row names g, and g is gone
+```
+
+The rollback checks the bucket after it moves the pointer, so a delete that lands before that check is caught there:
+the rollback puts the pointer back and throws `NotFoundError`. A delete that lands after it is not, and the rollback
+reports success over an object that is gone. Below the pointer that is an ordinary rollback onto a generation a
+collection is taking; above it, a rollback with `allowForward` onto an erasure's holder or a refused load's own object.
+
+**Nothing can restore a deleted object, so the deleting call detects it.** Every read of the row it makes after a
+delete, and one more read after its last delete when nothing read the row since, is held to what it deleted. A row of
+the same incarnation whose pointer names one of those generations, with no object under that number, is the state: one
+zero-byte read of the object decides that last part, and it is made only when the row names a deleted number, because a
+number can be taken again (after a rollback below it, a load can number it afresh and publish, and then the object is
+there and nothing is wrong). On a storage driver that ignores a delete's condition, an erasure's stale delete can remove
+a load's object published under a number taken again; the same read reports that too. A tombstone's collection makes no
+such read: no rollback moves a `destroyed` row's pointer. One delete is not held to this: a refused erasure rewrite's
+delete of its own object above the winner's pointer, which a rollback with `allowForward` onto that object in the same
+round trip leaves named by the pointer, with nothing reported; `checkConsistency()` finds it.
+
+What the caller sees is `NotFoundError` naming the generation, in place of the answer it would have given:
+
+| The delete | The message says | Already sent |
+|---|---|---|
+| a load's collection, after its publish landed | the load took effect at its generation, and its collection deleted the one the pointer now names | `segment.publish` |
+| a refused load's delete of its own object | the load was refused, for its `reason`, and published nothing | `segment.load-refused` |
+| the erasure's collection, after its rewrite published | a collection deleted the generation | `segment.rewrite` |
+| the erasure's deletes when it rewrote nothing | an erasure deleted the generation | `segment.collect` when nothing left in the bucket holds the id; nothing when a holder is left |
+
+The message also allows for a rollback whose own check ran after the delete: that rollback found the object gone and
+put the pointer back, and the call can read the row between the two. `checkConsistency()` says which it was: it reports
+the segment as `missing-storage-generation` while the pointer names the missing object. Every read that opens the
+segment's current generation fails until then.
+
+**What to do.** `store.generations(ref)` lists what the bucket holds; roll back to one of them (`allowForward` for one
+above the pointer), or load the segment again, which moves the pointer onto the load's own new generation. The erasure
+also needs a re-run, as its ledger entry says ([reading the ledger](erasure.md#reading-the-ledger)).
+
+**What it costs.** One registry read after a loop's last delete, when no read followed it, and none for a loop that
+deleted nothing: a steady load makes one more GET than it would without it. On S3 a load that deletes by name costs
+$12.00 per million at the default prices, for 2 PUT-class requests, 5 GET-class and a delete
+([the cost guide](cost.md#what-each-term-counts)). The zero-byte read is made only when the row names a deleted number,
+which a load or a collection where nothing raced never sees.
+
+**What it does not do.** It detects; it repairs nothing, and the rollback that moved the pointer is not undone. The
+argument that it sees every such landing rests on a store that is consistent for a read after a write, as every
+shipped backend is: a delete that lands before the rollback's check is seen by the rollback, and one that lands after
+it can finish only after the rollback's move, so the call's next read of the row sees the move.

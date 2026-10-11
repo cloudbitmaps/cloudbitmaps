@@ -106,10 +106,11 @@ chunks lie in the object, not how many there are.
   Every load was a segment's first, and made 2 PUT + 3 GET single-part and, for a multipart load, 5 PUT-class + 3 GET.
 - **`andNot`** of a 1,999-chunk segment against ten excludes took 351.64 ms at the median and made 33 GETs: for each
   of the eleven operands, a pointer read, a tail read and one range read.
-- **A steady `store.load()` at `keep: 12` is measured.** One segment was loaded in 18 loads, and each load made the
-  requests of its kind (the table below). A segment's first load made 2 PUT + 3 GET. A reload made 2 PUT + 2 GET.
-  A load that deletes by name made 2 PUT + 4 GET and a delete, 7 requests. The load that lists made 3 PUT-class + 5 GET
-  and a delete, 9 requests.
+- **A steady `store.load()` at `keep: 12` is measured**, on the release the run installed. One segment was
+  loaded in 18 loads, and each load made the requests of its kind (the table below). A segment's first load made
+  2 PUT + 3 GET. A reload made 2 PUT + 2 GET. A load that deleted by name, and the one that listed, each made one GET
+  fewer than this release's: the table has what each made, and [below](#expected-not-measured) is what this release's
+  makes.
 - **The rounds sit above the rounds model.** A cold intersect took 3.9 rounds against the model's 3, and the sweeps
   7.5 and 12.1. The client had 128 sockets and no stage held more than 11 requests in flight, so a socket limit did not
   bind. The run does not say why the rounds are above the model.
@@ -121,8 +122,8 @@ chunks lie in the object, not how many there are.
 | A segment's first single-part `store.load()` in the calibration run, a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | A segment's first multipart `store.load()` in the calibration run, a 12.6 MB segment | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
 
-A steady load, by kind of load, at `keep: 12` on the same run: the requests are measured, and the price is the
-list price.
+A steady load, by kind of load, at `keep: 12` on the same run, of the release it installed: the requests are measured, and
+the price is the list price.
 
 | Kind of load | Loads | Requests | One | Per million | Median time |
 | --- | --- | --- | --- | --- | --- |
@@ -131,8 +132,8 @@ list price.
 | By name | 4 | 2 PUT + 4 GET + 1 delete | $0.0000116 | **$11.60** | 176.94 ms |
 | Listing | 1 | 3 PUT-class + 5 GET + 1 delete | $0.0000170 | **$17.00** | 220.58 ms |
 
-A cycle is 16 loads, of which 15 delete by name and one lists. Averaged over a cycle, a million single-part loads cost **$11.94**
-(**derived**, from the two kinds it is made of; the run listed once). The first load and the listing are one load each,
+A cycle is 16 loads, of which 15 delete by name and one lists. Averaged over a cycle, the run's price was $11.94 per
+million single-part loads (**derived**, from the two kinds it is made of; the run listed once). The first load and the listing are one load each,
 so their medians are single loads. The run measured `keep: 12` only: it does not establish the requests at another
 `keep`, and the delete is free.
 
@@ -177,10 +178,19 @@ pointer refresh, for the segments a long-lived reader keeps reading. The
 | --- | --- | --- | --- | --- |
 | `iterate` over a 1,999-chunk segment | 3 GETs: a pointer and a tail read, and one range | $0.0000012 | $1.20 | expected |
 
-The run did not time `iterate`. Its count follows the same rule as the combines the run measured. A segment's first, reload and steady loads are measured by the run above. For the sizing
+The run did not time `iterate`. Its count follows the same rule as the combines the run measured. A segment's first
+and reload loads are measured by the run above, and its steady loads on the release that run installed. For the sizing
 guide's medium and large deployments, whose chunks are larger, the requests are [counted for each overlap and
 layout](guide/sizing.md#how-much-the-overlap-matters). The layouts are the calibration's, of about 500-byte chunks;
 real ids are often denser, and the guide counts larger chunks.
+
+**This release's steady load makes one GET more than the release the calibration measured.** A load that collects reads the pointer once
+more after its collection's last delete, which sees a rollback that landed between the read before that delete and the
+delete ([the loading guide](guide/loading.md#a-rollback-that-races-a-collection)). A load that deletes by name costs
+$12.00 per million at the default prices, for 2 PUT + 5 GET and a free delete; the load that lists, $17.40 per million,
+for 3 PUT-class + 6 GET and a delete. Over a cycle of 16 that is $12.34 per million single-part loads. The counts
+are the engine's, held by `tests/tools/cost.test.ts` and `tests/bench/calibrate-stages.test.ts`, and are expected, not
+measured on S3.
 
 ## Large operands — run `2026-10-07-88cd3`
 
