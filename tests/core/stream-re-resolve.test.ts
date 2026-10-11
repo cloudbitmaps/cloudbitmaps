@@ -405,7 +405,10 @@ describe('a partly warm read under reader-cache pressure, and another store publ
       expect(first - (lapsedAt + PER)).toBeLessThanOrEqual(32 * PER);
       const back = ids.slice(first).filter((id) => genOf(id) === 0);
       expect(back.length, 'ids of the earlier generation after the move').toBe(0);
-      expect(lookups()).toBe(2 * CHUNKS);
+      // each chunk of each operand is looked up once under the generation the read started on, and the keys the read
+      // had left when it met the move once more, under the generation it planned them again from
+      expect(lookups()).toBeGreaterThanOrEqual(2 * CHUNKS);
+      expect(lookups()).toBeLessThanOrEqual(2 * CHUNKS + 2 * (CHUNKS - 40));
     },
     60_000,
   );
@@ -483,12 +486,14 @@ describe('under reader-cache pressure, an erasure while a read is open', () => {
 });
 
 /**
- * The written bound on what a read already in progress can still yield after the store it runs on erases an id, counted
- * once the read's window is full: the erasure returns while the read is handing out chunk 40 of 120. A combine can yield
- * the id from the key it is handing out and the `concurrency` keys it had already requested, so `concurrency` + 1 chunks
- * (33 by default); an `iterate` read chunk by chunk from the chunk in hand and the 31 it had requested, 32, and so
- * does a `count` that reads chunks; a streamed `iterate` from the chunk in hand alone. Each case erases the id at the last chunk the bound reaches, which the read
- * yields, and at the next, which it never does. The erasure is the store's own, so it holds whatever the TTL.
+ * What a read already in progress can still yield after the store it runs on erases an id, counted once the read's window
+ * is full: the erasure returns while the read is handing out chunk 40 of 120. The written bound is `concurrency` + 1 keys
+ * for a combine (33 by default) and 32 chunks for `iterate` and `count`, and a `count` that reads chunks reaches it: the
+ * chunk in hand and the 31 it had requested. A running `iterate` or combine stays well inside it: the erasure invalidates
+ * the segment, so at the next key the read takes it looks at its segments, finds the rewritten generation and plans its
+ * keys again from it, dropping what it had requested, streamed or read chunk by chunk. It yields the id from the chunk or
+ * key in hand alone. Each case erases the id at the last chunk the read reaches, which it yields, and at the next, which
+ * it never does. The erasure is the store's own, so it holds whatever the TTL.
  */
 describe("the bound after an erasure by the read's own store, counted past the ramp-up", () => {
   const AT = 40;
@@ -541,19 +546,18 @@ describe("the bound after an erasure by the read's own store, counted past the r
     return after;
   }
 
-  const C = DEFAULT_INTERSECT_CONCURRENCY;
   it.each([
-    ['intersect', 'stream', undefined, C + 1],
-    ['union', 'stream', undefined, C + 1],
-    ['andNot', 'stream', undefined, C + 1],
-    ['intersect', 'per-key', undefined, C + 1],
-    ['intersect', 'stream', 4, 5],
-    ['union', 'stream', 4, 5],
-    ['andNot', 'stream', 4, 5],
-    ['iterate', 'per-key', undefined, 32],
+    ['intersect', 'stream', undefined, 1],
+    ['union', 'stream', undefined, 1],
+    ['andNot', 'stream', undefined, 1],
+    ['intersect', 'per-key', undefined, 1],
+    ['intersect', 'stream', 4, 1],
+    ['union', 'stream', 4, 1],
+    ['andNot', 'stream', 4, 1],
+    ['iterate', 'per-key', undefined, 1],
     ['iterate', 'stream', undefined, 1],
   ] as const)(
-    '%s (%s, concurrency %s): an id erased from the chunks the bound counts (%s) is yielded, from the next one never',
+    '%s (%s, concurrency %s): an id erased from the chunks the read reaches (%s) is yielded, from the next one never',
     async (verb, mode, concurrency, chunks) => {
       expect(await yieldedAfterErasure(verb, mode, AT + chunks - 1, concurrency)).toBe(true);
       expect(await yieldedAfterErasure(verb, mode, AT + chunks, concurrency)).toBe(false);
