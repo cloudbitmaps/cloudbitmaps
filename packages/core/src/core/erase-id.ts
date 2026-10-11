@@ -124,10 +124,10 @@ import {
 } from './errors';
 import {
   collectBelowPointer,
-  deletedUnderPointer,
   gcOrphanGenerations,
   nextGeneration,
   pointerOnDeletedError,
+  watchDeletes,
 } from './generation-gc';
 import { UNANSWERED_BASE_MS, UNANSWERED_RESENDS, leaseChurn, onlyLeasesDiffer } from './leases';
 import { renewPointer } from './pointer-id';
@@ -308,7 +308,10 @@ export async function eraseIdFromSegment(
     const again = await eraseOnce(ref, id, deps, options, second);
     // Nothing under the tombstone holds the id: the first pass's report stands, with the generation it read.
     if (again.reason === 'destroyed') return result;
-    if (!again.erased) return again;
+    if (!again.erased) {
+      if (second.missing !== undefined) throw second.missing;
+      return again;
+    }
     // Erased under the tombstone: the report covers both passes, what each deleted and the newest holder either read.
     const collected = [...new Set([...result.collected, ...again.collected])].sort((a, b) => a - b);
     const newest = Math.max(result.fromGeneration ?? -1, again.fromGeneration ?? -1);
@@ -760,17 +763,13 @@ async function eraseOnce(
     holders: readonly number[],
   ): Promise<{ deleted: number[]; moved: ReturnType<typeof rowVerdict>; missing?: number }> => {
     const deleted: number[] = [];
-    const gone = new Set<number>();
-    // Whether a delete has landed since the row was last read.
-    let unread = false;
+    const watch = watchDeletes(deps, ref);
     let moved = await fenceInFlight();
     for (const generation of holders) {
       if (moved !== null) break;
       const row = await deps.registry.get(ref);
-      unread = false;
-      const missing = await deletedUnderPointer(deps.storage, premise, row, gone);
-      if (missing !== undefined)
-        return { deleted, moved: rowVerdict(row) ?? 'superseded', missing };
+      const missing = await watch.check(premise, row);
+      if (missing !== undefined) return { deleted, moved: 'superseded', missing };
       moved = rowVerdict(row);
       if (moved !== null) break;
       try {
@@ -783,16 +782,11 @@ async function eraseOnce(
         break;
       }
       deleted.push(generation);
-      gone.add(generation);
-      unread = true;
+      watch.deleted(generation);
     }
     // No read follows the last delete, so a rollback onto it would go unseen: one read of the row covers it.
-    if (unread) {
-      const row = await deps.registry.get(ref);
-      const missing = await deletedUnderPointer(deps.storage, premise, row, gone);
-      if (missing !== undefined)
-        return { deleted, moved: rowVerdict(row) ?? 'superseded', missing };
-    }
+    const missing = await watch.settle(premise);
+    if (missing !== undefined) return { deleted, moved: 'superseded', missing };
     return { deleted, moved };
   };
 
@@ -803,7 +797,7 @@ async function eraseOnce(
    * thrown while {@link stage} runs is translated by re-reading the row, which would report this as a race.
    */
   const notePointerOnDeleted = (missing: number): void => {
-    seen.missing = pointerOnDeletedError(ref, 'an erasure', missing);
+    seen.missing = pointerOnDeletedError(ref, { kind: 'erasure' }, missing);
   };
 
   /**
@@ -1280,9 +1274,13 @@ async function eraseOnce(
   // a load still in flight. The pointer can still move DOWN onto one of them — an operator's `rollbackSegment`,
   // or a purge-and-recreate (invariant 1) — which is why the collector re-proves the row before every delete
   // rather than trusting the one this call read, and why the receipt below reads what is left rather than
-  // assuming. A rollback that lands between a re-proof and its delete makes the collection throw `NotFoundError`,
-  // after the `segment.rewrite` event above.
-  const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+  // assuming. A rollback that lands between a re-proof and its delete, and that the row still shows when read again, makes
+  // the call throw `NotFoundError`, after the `segment.rewrite` event above: the collection stopped there.
+  const swept = await collectBelowPointer(ref, deps, { keep: 0 });
+  if (swept.missing !== undefined) {
+    throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
+  }
+  const collected = swept.deleted;
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };

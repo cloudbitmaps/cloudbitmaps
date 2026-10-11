@@ -18,7 +18,8 @@
  * pointer), so a refused load deletes its own object before returning. While the segment's row is unchanged (or
  * differs only in its leases) or `destroyed`, it deletes by number. Once the row is gone, or another write has
  * otherwise changed it, the object's number may name another writer's object (a re-created segment's, say), so a read
- * of the object's footer must prove it the load's own first, and an object the row's pointer names stays.
+ * of the object's footer must prove it the load's own first, and an object the row names stays: as its pointer, in its
+ * kept window or in a lease.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
@@ -46,9 +47,9 @@ import {
 } from './errors';
 import {
   collectAfterLoad,
-  deletedUnderPointer,
   nextLoadGeneration,
   pointerOnDeletedError,
+  watchDeletes,
 } from './generation-gc';
 import { ChunkLoadInput, type LoadInput, prepareLoadInput } from './load-input';
 import { copiedMetadata } from './metadata';
@@ -364,8 +365,8 @@ export type LoadRefusal =
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
    * deleted, or a row appeared where the load found none. Once another write has changed the row, or the row is gone,
    * the object is deleted when one read of its footer proves it this load's own (its number may by then name another
-   * writer's object, which stays), and kept when the row's pointer names it; once the row is `destroyed` (dropped or
-   * crypto-shredded), it is deleted.
+   * writer's object, which stays), and kept when the row names it, as its pointer, in its kept window or in a lease;
+   * once the row is `destroyed` (dropped or crypto-shredded), it is deleted.
    */
   | 'superseded';
 
@@ -373,8 +374,8 @@ export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
    * unchanged or `destroyed`, and, once the row is gone or another write has changed it, when its footer proves it this
-   * load's own and the row's pointer does not name it. A load that lost its generation number to another wrote nothing,
-   * and reports `size: 0`.
+   * load's own and the row does not name it, as its pointer, in its kept window or in a lease. A load that lost its
+   * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;
   /** Whether this generation is now the segment's current one. */
@@ -669,17 +670,6 @@ async function runLoad(
     (record.keptGens ?? []).includes(g) ||
     (record.leases ?? []).some((lease) => lease.generation === g);
 
-  /** This load's number, when a read of the row made after the reclaim's delete finds `held`'s pointer on it. */
-  const pointerLeftOn = async (held: RegistryRecord): Promise<number | undefined> =>
-    held.status === 'destroyed'
-      ? undefined // no rollback moves a tombstone's pointer
-      : deletedUnderPointer(
-          deps.storage,
-          held,
-          await deps.registry.get(ref),
-          new Set([generation]),
-        );
-
   /**
    * Reclaim this load's object after a DEFINITE refusal: a guard that said no before any publish, or a publish that
    * answered `false` or threw a refusal of its own. Never after an ambiguous outcome (a lost response, a timeout):
@@ -711,11 +701,12 @@ async function runLoad(
    * load's own write, of which the write reports no version.
    *
    * One round trip remains between the read of the row and the delete, and a rollback that lands inside it onto this
-   * object leaves the pointer on an object that is gone. So a delete under a row with a pointer is followed by one
-   * more read of it, and the generation it returns is the one that read found named and gone
-   * ({@link deletedUnderPointer}); `undefined` otherwise.
+   * object leaves the pointer on an object that is gone. So a delete under a row that is not `destroyed` is followed by
+   * one more read of it ({@link watchDeletes}), and the generation it returns is the one that read found named and
+   * gone; `undefined` otherwise. A row that is gone, or a tombstone, has no pointer a rollback moves.
    */
   const reclaim = async (): Promise<number | undefined> => {
+    const watch = watchDeletes(deps, ref);
     const now = await deps.registry.get(ref);
     // A row that differs only in its leases is the row this load read: no write that took its number landed.
     if (
@@ -725,13 +716,15 @@ async function runLoad(
         (row !== null && onlyLeasesDiffer(row, now)))
     ) {
       await deps.storage.delete(key);
-      return pointerLeftOn(now);
+      watch.deleted(generation);
+      return now.status === 'destroyed' ? undefined : watch.settle(now);
     }
     if (now !== null && rowNames(now, generation)) return undefined;
     const own = await provenObject(deps.storage, key, written.fingerprint);
     if (own === null) return undefined;
     await deps.storage.delete(key, { ifVersion: own.version });
-    return now === null ? undefined : pointerLeftOn(now);
+    watch.deleted(generation);
+    return now === null || now.status === 'destroyed' ? undefined : watch.settle(now);
   };
 
   // Set when a registry write of this load's publish ended without an answer: a refusal after that cannot say whether
@@ -746,11 +739,7 @@ async function runLoad(
 
   /** The error for a refusal whose reclaim left the pointer on the object it deleted, `refusal` saying which. */
   const refusedOverMissing = (refusal: string, missing: number): Error =>
-    pointerOnDeletedError(
-      ref,
-      `the load was refused (${refusal}) and published nothing, but its refusal, reclaiming its own object,`,
-      missing,
-    );
+    pointerOnDeletedError(ref, { kind: 'refused-load', refusal }, missing);
 
   const refuse = async (reason: LoadRefusal): Promise<LoadResult> => {
     const missing = await tidy();

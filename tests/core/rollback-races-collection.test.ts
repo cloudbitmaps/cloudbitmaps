@@ -1,13 +1,14 @@
 import { runConsistencyCheck } from '@cloudbitmaps/core';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { NotFoundError, WriteConflictError } from '@/core/errors';
-import { gcOrphanGenerations } from '@/core/generation-gc';
+import { NotFoundError, TransientError, WriteConflictError } from '@/core/errors';
+import { DELETE_SETTLE_WAITS_MS, gcOrphanGenerations, watchDeletes } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { RecordingAuditSink } from '@/index';
-import type { IStorageDriver } from '@/index';
+import type { Clock, IRegistryDriver, IStorageDriver, RegistryRecord } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { sameIncarnation } from '@/core/token';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
 
 /**
@@ -19,8 +20,10 @@ import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race
  *
  * The rollback's own check runs before the delete, so it reports success, and the row then names an object that is
  * gone. Nothing can put that object back, so each loop detects it instead: a row it reads after a delete (the next
- * re-read, or one read after its last delete) that names a generation it deleted raises `NotFoundError`, which tells
- * the caller to roll back to a generation still in the bucket. `checkConsistency` reports the state either way.
+ * re-read, or one read after its last delete) that names a generation it deleted, with no object under it, still
+ * naming it when read again at once and after each wait, raises `NotFoundError`, which tells the caller to check the
+ * segment's generations and roll back only while the pointer names a missing one. `checkConsistency` reports the state
+ * either way. A rollback whose own check runs after the delete puts the pointer back itself, and is not reported.
  *
  * Gated promises hold each loop between its read and its delete while the rollback runs to the end, and the clock
  * never waits, so a run is the same every time.
@@ -237,6 +240,31 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
     ]);
     await namesMissing(w, 0, [1]);
   });
+
+  it("an erasure's collection after its rewrite published: NotFoundError after the rewrite is audited, never erased: true", async () => {
+    const w = world();
+    await loadSegment(REF, [1, 2, 3, X], w.deps, { keep: 9 }); // 0 holds the id
+    await loadSegment(REF, [1, 2, X], w.deps, { keep: 9 }); // 1 is current and holds it
+    const at = gate();
+    const audit = new RecordingAuditSink();
+    // The current generation holds the id, so the erasure rewrites it as 2, then collects below it with `keep: 0`.
+    const erasure = eraseIdFromSegment(
+      REF,
+      X,
+      { ...w.deps, storage: stallingDelete(w.storage, 0, at) },
+      { audit },
+    );
+    await stalledAt(at, erasure);
+    await rollbackSegment(REF, 0, w.deps);
+    at.open();
+
+    await expect(erasure).rejects.toSatisfy(pointerOnDeleted(0, /an erasure/));
+    expect(audit.snapshot()).toEqual([
+      expect.objectContaining({ kind: 'segment.rewrite', generation: 2 }),
+    ]);
+    expect((await w.registry.get(REF))?.currentGen).toBe(0);
+    expect(await generations(w.storage)).not.toContain(0);
+  });
 });
 
 describe("a load's collection by name, raced by a rollback onto a generation it evicts", () => {
@@ -396,5 +424,350 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
     // Generation 1 still holds the id: the erasure did not finish, so it records nothing.
     expect(audit.snapshot()).toEqual([]);
     await namesMissing(w, 2, [0, 1]);
+  });
+});
+
+/**
+ * The same race when the rollback's own check runs after the delete: it lists the bucket after its move, finds the
+ * object gone and puts the pointer back. The loop's read after its delete can fall between the move and that undo, and
+ * sees the pointer on a missing generation for a moment. It reads the row again before it raises, at once and, with a
+ * clock that can wait, after each of a few waits, so a rollback that undoes itself in that time is no missing object:
+ *
+ *   deleting call       reads the row ─ round trip ─▶ deletes g │ reads the row: g, missing │ reads it again: put back
+ *   rollbackSegment(g)          moves the pointer onto g │ lists ──── g is gone ────▶ moves it back
+ */
+describe('a rollback that finds its target gone and puts the pointer back', () => {
+  /** `storage`, whose second listing, a rollback's check after its move, waits at `at`. */
+  function holdingCheck(storage: IStorageDriver, at: Gate): IStorageDriver {
+    let lists = 0;
+    const gated = Object.create(storage) as IStorageDriver;
+    gated.list = (ref) => {
+      lists += 1;
+      if (lists !== 2) return storage.list(ref);
+      return (async function* () {
+        at.reach();
+        await at.opened;
+        yield* storage.list(ref);
+      })();
+    };
+    return gated;
+  }
+
+  /**
+   * `storage`, whose first delete of `generation` waits at `at`, and whose first zero-byte read of it after that delete
+   * runs `then` first: the loop's look at the object the row names.
+   */
+  function stallingThenLooking(
+    storage: IStorageDriver,
+    generation: number,
+    at: Gate,
+    then: () => Promise<void>,
+  ): IStorageDriver {
+    let held = false;
+    let deleted = false;
+    let looked = false;
+    const gated = Object.create(storage) as IStorageDriver;
+    gated.delete = async (key, options) => {
+      if (!held && key.generation === generation) {
+        held = true;
+        at.reach();
+        await at.opened;
+      }
+      const out = await storage.delete(key, options);
+      if (key.generation === generation) deleted = true;
+      return out;
+    };
+    gated.getTail = async (key, maxBytes) => {
+      if (deleted && !looked && key.generation === generation) {
+        looked = true;
+        await then();
+      }
+      return storage.getTail(key, maxBytes);
+    };
+    return gated;
+  }
+
+  /**
+   * Run `start` (a loop over `storage`) until it stalls before deleting `generation`, run a rollback onto that generation
+   * that stops at its check, let the delete go, and let the rollback finish its check when `when` says: at the loop's
+   * look at the object (`'look'`), or at the loop's first wait (`'wait'`, on the clock it returns). Returns the loop's
+   * outcome and what the rollback threw.
+   */
+  async function undone<T>(
+    w: World,
+    generation: number,
+    start: (storage: IStorageDriver, clock: Clock) => Promise<T>,
+    when: 'look' | 'wait',
+    allowForward = false,
+  ): Promise<{ result: T; rollback: unknown }> {
+    const atDelete = gate();
+    const atCheck = gate();
+    // Set once the rollback starts, which is after the loop has reached its delete.
+    const rollback: { settled?: Promise<unknown> } = {};
+    const finishRollback = async (): Promise<void> => {
+      atCheck.open();
+      await rollback.settled;
+    };
+    const waiting: Clock = {
+      ...clock,
+      sleep: async (ms) => {
+        if (when === 'wait' && ms === DELETE_SETTLE_WAITS_MS[0]) await finishRollback();
+      },
+    };
+    const storage = stallingThenLooking(w.storage, generation, atDelete, async () => {
+      if (when === 'look') await finishRollback();
+    });
+    const loop = start(storage, waiting);
+    await stalledAt(atDelete, loop);
+    rollback.settled = rollbackSegment(
+      REF,
+      generation,
+      { ...w.deps, storage: holdingCheck(w.storage, atCheck) },
+      { allowForward },
+    ).then(
+      () => 'rolled back',
+      (err: unknown) => err,
+    );
+    await atCheck.reached;
+    expect((await w.registry.get(REF))?.currentGen).toBe(generation);
+    atDelete.open();
+    const result = await loop;
+    return { result, rollback: await rollback.settled };
+  }
+
+  const putBack = (e: unknown): boolean =>
+    e instanceof NotFoundError && /the pointer was put back/.test(e.message);
+
+  it('a collection pass, its last delete: no error, and the pointer is back', async () => {
+    const w = world();
+    await loaded(w, 3);
+    const { result, rollback } = await undone(
+      w,
+      0,
+      (storage) => gcOrphanGenerations(REF, { storage, registry: w.registry }, { keep: 2 }),
+      'look',
+    );
+    expect(result).toEqual([0]);
+    expect(rollback).toSatisfy(putBack);
+    await namesPresent(w, 3, [1, 2, 3]);
+  });
+
+  it("a load's collection by name: the load reports what it did", async () => {
+    const w = world();
+    await loadSegment(REF, [1], w.deps); // 0
+    await loadSegment(REF, [2], w.deps); // 1, keeps 0
+    const { result, rollback } = await undone(
+      w,
+      0,
+      (storage) => loadSegment(REF, [3], { ...w.deps, storage }),
+      'look',
+    );
+    expect(result).toMatchObject({ generation: 2, published: true, collected: [0] });
+    expect(rollback).toSatisfy(putBack);
+    await namesPresent(w, 2, [1, 2]);
+  });
+
+  it("a refused load's reclaim: the refusal is the answer", async () => {
+    const w = world();
+    await loadSegment(REF, [1, 2, 3], w.deps); // 0
+    const { result, rollback } = await undone(
+      w,
+      1,
+      (storage) => loadSegment(REF, [], { ...w.deps, storage }),
+      'look',
+      true,
+    );
+    expect(result).toMatchObject({ generation: 1, published: false, reason: 'empty' });
+    expect(rollback).toSatisfy(putBack);
+    await namesPresent(w, 0, [0]);
+  });
+
+  it("an erasure's delete of a holder above the pointer: erased: true", async () => {
+    const w = world();
+    await loadSegment(REF, [1, 2, 3], w.deps, { keep: 9 });
+    await loadSegment(REF, [1, 2, 3, X], w.deps, { keep: 9 });
+    await rollbackSegment(REF, 0, w.deps); // 1 is above the pointer, and holds the id
+    const { result, rollback } = await undone(
+      w,
+      1,
+      (storage) => eraseIdFromSegment(REF, X, { ...w.deps, storage }),
+      'look',
+      true,
+    );
+    expect(result).toMatchObject({ erased: true, fromGeneration: 1, collected: [1] });
+    expect(rollback).toSatisfy(putBack);
+    await namesPresent(w, 0, [0]);
+  });
+
+  it('an undo that lands only while the loop waits on its clock is no missing object either', async () => {
+    const w = world();
+    await loadSegment(REF, [1], w.deps); // 0
+    await loadSegment(REF, [2], w.deps); // 1, keeps 0
+    const { result, rollback } = await undone(
+      w,
+      0,
+      (storage, waiting) => loadSegment(REF, [3], { ...w.deps, storage, clock: waiting }),
+      'wait',
+    );
+    expect(result).toMatchObject({ generation: 2, published: true, collected: [0] });
+    expect(rollback).toSatisfy(putBack);
+    await namesPresent(w, 2, [1, 2]);
+  });
+});
+
+describe('a refused first load on a row with no pointer, raced by a forward rollback onto its object', () => {
+  it("the reclaim's read after its delete holds that row too: NotFoundError naming the refusal", async () => {
+    const w = world();
+    await w.registry.create(REF, { currentGen: null });
+    const at = gate();
+    // Fewer ids than the guard asks for: refused, under the row it read, so it deletes its object at 0 by number.
+    const load = loadSegment(
+      REF,
+      [1, 2],
+      { ...w.deps, storage: stallingDelete(w.storage, 0, at) },
+      { guard: { minCardinality: 5 } },
+    );
+    await stalledAt(at, load);
+    await rollbackSegment(REF, 0, w.deps, { allowForward: true });
+    at.open();
+
+    await expect(load).rejects.toSatisfy(pointerOnDeleted(0, /refused \(min-cardinality\)/));
+    await namesMissing(w, 0, []);
+  });
+});
+
+// The watch itself, over a registry that answers each read from a script and a bucket that holds `present`: which reads
+// it makes, which waits, and which answer each sequence of rows gives.
+describe("the watch over a delete loop's reads of the row", () => {
+  async function rows() {
+    const registry = new MemoryRegistryDriver();
+    await registry.create(REF, { currentGen: 1 });
+    const held = (await registry.get(REF)) as RegistryRecord;
+    await registry.delete(REF);
+    await registry.create(REF, { currentGen: 1 });
+    const other = (await registry.get(REF)) as RegistryRecord;
+    const at = (g: number | null, of: RegistryRecord = held): RegistryRecord => ({
+      ...of,
+      currentGen: g,
+    });
+    return { held, at, other };
+  }
+
+  function rig(
+    script: (RegistryRecord | null)[],
+    present: number[],
+    waits: boolean,
+    onSleep: () => void = () => undefined,
+  ) {
+    const reads: number[] = [];
+    const tails: number[] = [];
+    const sleeps: number[] = [];
+    const registry = {
+      get: () => {
+        reads.push(reads.length);
+        return Promise.resolve(script[Math.min(reads.length - 1, script.length - 1)] ?? null);
+      },
+    } as unknown as IRegistryDriver;
+    const storage = {
+      getTail: (key: { generation: number }) => {
+        tails.push(key.generation);
+        return present.includes(key.generation)
+          ? Promise.resolve({ bytes: new Uint8Array(0), size: 1 })
+          : Promise.reject(new NotFoundError(`no object ${key.generation}`));
+      },
+    } as unknown as IStorageDriver;
+    const sleep = (ms: number): Promise<void> => {
+      sleeps.push(ms);
+      onSleep();
+      return Promise.resolve();
+    };
+    const watch = watchDeletes({ storage, registry, ...(waits ? { clock: { sleep } } : {}) }, REF);
+    return { watch, reads, tails, sleeps };
+  }
+
+  it('answers only when the row read at once and after each wait still names the deleted generation, with no object', async () => {
+    const { held, at } = await rows();
+    const r = rig([at(3)], [], true);
+    r.watch.deleted(3);
+    expect(await r.watch.check(held, at(3))).toBe(3);
+    expect(r.sleeps).toEqual([...DELETE_SETTLE_WAITS_MS]);
+    expect(DELETE_SETTLE_WAITS_MS).toEqual([250, 500, 1_000]);
+    expect(r.reads).toHaveLength(4);
+    expect(r.tails).toEqual([3, 3, 3, 3, 3]);
+    // With no clock it reads the row once more, at once, and waits for nothing.
+    const bare = rig([at(3)], [], false);
+    bare.watch.deleted(3);
+    expect(await bare.watch.check(held, at(3))).toBe(3);
+    expect(bare.reads).toHaveLength(1);
+    expect(bare.sleeps).toEqual([]);
+  });
+
+  it('answers nothing once a read finds the pointer moved off, as a rollback that found its target gone moves it', async () => {
+    const { held, at } = await rows();
+    // Put back at once: the read made at once sees it, and nothing waits.
+    const atOnce = rig([at(1)], [], true);
+    atOnce.watch.deleted(3);
+    expect(await atOnce.watch.check(held, at(3))).toBeUndefined();
+    expect(atOnce.sleeps).toEqual([]);
+    // Put back during the second wait.
+    const later = rig([at(3), at(3), at(1)], [], true);
+    later.watch.deleted(3);
+    expect(await later.watch.check(held, at(3))).toBeUndefined();
+    expect(later.sleeps).toEqual([250, 500]);
+    expect(later.reads).toHaveLength(3);
+    // Onto a generation it did not delete, or a row gone, destroyed or made again.
+    const { other } = await rows();
+    expect(sameIncarnation(held, other)).toBe(false);
+    for (const next of [at(9), null, { ...at(3), status: 'destroyed' as const }, at(3, other)]) {
+      const moved = rig([next], [], true);
+      moved.watch.deleted(3);
+      expect(await moved.watch.check(held, at(3))).toBeUndefined();
+    }
+  });
+
+  it('judges a read that names another deleted generation the same way: missing, it is the answer; there, it is not', async () => {
+    const { held, at } = await rows();
+    const bothGone = rig([at(4)], [], true);
+    bothGone.watch.deleted(3);
+    bothGone.watch.deleted(4);
+    expect(await bothGone.watch.check(held, at(3))).toBe(4);
+    // A load took 4 again and published it: the object under it is that load's, and nothing is missing.
+    const taken = rig([at(4)], [4], true);
+    taken.watch.deleted(3);
+    taken.watch.deleted(4);
+    expect(await taken.watch.check(held, at(3))).toBeUndefined();
+    expect(taken.tails).toEqual([3, 4]);
+    // So is the deleted number itself, taken again and published between two reads of the row.
+    const present: number[] = [];
+    const retaken = rig([at(3)], present, true, () => present.push(3));
+    retaken.watch.deleted(3);
+    expect(await retaken.watch.check(held, at(3))).toBeUndefined();
+    expect(retaken.sleeps).toEqual([250]);
+  });
+
+  it('makes no read when the row names no deleted generation or the object is there, and settles only after a delete', async () => {
+    const { held, at } = await rows();
+    const r = rig([at(3)], [3], true);
+    r.watch.deleted(3);
+    expect(await r.watch.check(held, at(3))).toBeUndefined();
+    expect(r.reads).toHaveLength(0);
+    expect(await r.watch.check(held, at(2))).toBeUndefined();
+    expect(r.tails).toEqual([3]);
+    // The check read the row since the delete, so there is nothing to settle; a further delete is read once more.
+    expect(await r.watch.settle(held)).toBeUndefined();
+    expect(r.reads).toHaveLength(0);
+    r.watch.deleted(5);
+    expect(await r.watch.settle(held)).toBeUndefined();
+    expect(r.reads).toHaveLength(1);
+  });
+
+  it('throws a fault of the bucket read rather than guess', async () => {
+    const { held, at } = await rows();
+    const storage = {
+      getTail: () => Promise.reject(new TransientError('throttled')),
+    } as unknown as IStorageDriver;
+    const watch = watchDeletes({ storage, registry: {} as IRegistryDriver }, REF);
+    watch.deleted(3);
+    await expect(watch.check(held, at(3))).rejects.toThrow(TransientError);
   });
 });

@@ -37,72 +37,155 @@ import { sameIncarnation } from './token';
 export interface GenerationDeps {
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
+  /** What a delete loop waits on before it reads the row again ({@link watchDeletes}). Absent, it does not wait. */
+  readonly clock?: { readonly sleep?: (ms: number) => Promise<void> };
 }
 
 /**
- * The generation `row` names when it is one of `deleted`, on the incarnation `held` was read from, and its object is
- * not in the bucket; `undefined` otherwise.
+ * The waits, in milliseconds, before each further read of the row when a delete loop finds the pointer on a generation
+ * it deleted, with no object under it ({@link watchDeletes}). A rollback that moved the pointer there checks the bucket
+ * after its move, and when the check runs after the delete it finds the object gone and puts the pointer back: one
+ * listing of the segment's objects (one page while the segment holds under a thousand) and one compare-and-swap, two
+ * round trips, three when a lease write lands first. A rollback client farther from the store than the deleting
+ * client takes that much longer, so the loop reads the row once at once and, with a clock that can wait, three more
+ * times over 1.75 s in all, which covers clients a few hundred milliseconds away. Paid only when a read finds the
+ * pointer on a missing generation the loop deleted, never on a pass where nothing raced.
+ */
+export const DELETE_SETTLE_WAITS_MS: readonly number[] = Object.freeze([250, 500, 1_000]);
+
+/** What a delete loop has deleted, held to every read of the segment's row it makes after a delete. */
+export interface DeleteWatch {
+  /** Note a delete that landed. */
+  deleted(generation: number): void;
+  /** Every generation noted so far. */
+  readonly gone: ReadonlySet<number>;
+  /**
+   * `row`, a read of the row made after `held`, the row a delete was decided on, held to what was deleted: the deleted
+   * generation it leaves the pointer on, with no object under it once the row is read again, or `undefined`.
+   */
+  check(held: RegistryRecord, row: RegistryRecord | null): Promise<number | undefined>;
+  /** The same for one more read of the row, made only when a delete landed since the last {@link check}. */
+  settle(held: RegistryRecord): Promise<number | undefined>;
+}
+
+/**
+ * Hold a delete loop's reads of the row to what it deleted.
  *
  * Every loop that deletes generations reads the row before each delete, and one round trip remains between that read
- * and the delete. A rollback that lands inside it onto the generation being deleted passes its own check, a listing
- * made before the delete, and leaves the pointer on an object that is gone. Nothing can put the object back, so the
- * loop detects it instead: every read of the row it makes after a delete, and one more after its last delete when it
- * made no read since, is held to what it deleted. A tombstone is never the answer, since no rollback moves a
- * `destroyed` row's pointer, and neither is a row purged and made again, whose numbers are its own.
+ * and the delete. A rollback that lands inside it onto the generation being deleted passes its own check (a listing made
+ * before the delete) and leaves the pointer on an object that is gone. Nothing can put the object back, so the loop
+ * detects it instead: every read of the row it makes after a delete, and one more after its last delete when it made no
+ * read since, is held to what it deleted.
  *
- * A number can be taken again once its object is deleted (invariant 2): after a rollback below it, or above the pointer,
- * a load can number it afresh and publish. So a row that names a deleted number is held to the bucket with one zero-byte
- * read, a metadata request on every shipped driver, made only then: an object there is that writer's, and not missing.
- * Where the storage driver ignores a delete's condition, the loop's delete can take that writer's object too, and the
- * read then finds the pointer on a missing object, which it is. A read that fails in any other way than "not found"
- * throws: it says nothing about the object.
+ * A read names a deleted generation when its row is active, of the incarnation `held` was read from, and its pointer
+ * names one. A tombstone never does, since no rollback moves a `destroyed` row's pointer, and neither does a row purged
+ * and made again, whose numbers are its own. Then:
+ *
+ *  - The bucket is asked, with one zero-byte read, a metadata request on every shipped driver. A number can be taken
+ *    again once its object is deleted (invariant 2): after a rollback below it, a load can number it afresh and
+ *    publish, and then the object there is that load's, and nothing is missing. Where the storage driver ignores a
+ *    delete's condition, the loop's own delete can take that object too, and the read finds it missing, which it is.
+ *  - A missing object is not yet the answer. A rollback whose own check ran after the delete finds the object gone and
+ *    puts the pointer back, and the loop's read can fall between its move and that undo. So the row is read again, at
+ *    once and, with a clock that can wait, after each of {@link DELETE_SETTLE_WAITS_MS}, each read judged as the first
+ *    was, the bucket asked again; the answer is the generation the last of them names, only if every one names a
+ *    deleted generation with no object under it.
+ *
+ * A read of the bucket that fails in any other way than "not found" throws: it says nothing about the object.
  */
-export async function deletedUnderPointer(
-  storage: IStorageDriver,
-  held: RegistryRecord,
-  row: RegistryRecord | null,
-  deleted: ReadonlySet<number>,
-): Promise<number | undefined> {
-  if (row === null || row.status !== 'active' || row.currentGen === null) return undefined;
-  if (!deleted.has(row.currentGen) || !sameIncarnation(held, row)) return undefined;
-  const generation = row.currentGen;
-  try {
-    await storage.getTail({ namespace: row.namespace, segment: row.segment, generation }, 0);
-    return undefined;
-  } catch (err) {
-    if (isNotFoundError(err)) return generation;
-    throw err;
-  }
+export function watchDeletes(deps: GenerationDeps, ref: SegmentRef): DeleteWatch {
+  const gone = new Set<number>();
+  let unread = false;
+  const named = (held: RegistryRecord, row: RegistryRecord | null): number | undefined =>
+    row === null ||
+    row.status !== 'active' ||
+    row.currentGen === null ||
+    !gone.has(row.currentGen) ||
+    !sameIncarnation(held, row)
+      ? undefined
+      : row.currentGen;
+  const missing = async (generation: number): Promise<boolean> => {
+    try {
+      await deps.storage.getTail({ namespace: ref.namespace, segment: ref.segment, generation }, 0);
+      return false;
+    } catch (err) {
+      if (isNotFoundError(err)) return true;
+      throw err;
+    }
+  };
+  const sleep = deps.clock?.sleep;
+  const waits = sleep === undefined ? [0] : [0, ...DELETE_SETTLE_WAITS_MS];
+  /** The deleted generation `row` leaves the pointer on, with no object under it now; `undefined` otherwise. */
+  const onMissing = async (
+    held: RegistryRecord,
+    row: RegistryRecord | null,
+  ): Promise<number | undefined> => {
+    const generation = named(held, row);
+    return generation !== undefined && (await missing(generation)) ? generation : undefined;
+  };
+  const check = async (
+    held: RegistryRecord,
+    row: RegistryRecord | null,
+  ): Promise<number | undefined> => {
+    unread = false;
+    let generation = await onMissing(held, row);
+    for (const wait of waits) {
+      if (generation === undefined) return undefined;
+      if (wait > 0) await sleep!.call(deps.clock, wait);
+      generation = await onMissing(held, await deps.registry.get(ref));
+    }
+    return generation;
+  };
+  return {
+    deleted(generation: number): void {
+      gone.add(generation);
+      unread = true;
+    },
+    gone,
+    check,
+    settle: async (held) => (unread ? check(held, await deps.registry.get(ref)) : undefined),
+  };
 }
 
+/** Who deleted the generation a {@link pointerOnDeletedError} names, which leads its message. */
+export type Deleter =
+  | { readonly kind: 'collection' }
+  | { readonly kind: 'erasure' }
+  | { readonly kind: 'load'; readonly published: number }
+  | { readonly kind: 'refused-load'; readonly refusal: string };
+
 /**
- * The error for a pointer a delete loop found on a generation it deleted ({@link deletedUnderPointer}); `who` names
- * the deleter and leads the message. The writer that moved the pointer there is a rollback, or, where the storage driver
- * ignores a delete's condition, a load that took the number again and published. A rollback whose own check runs after
- * the delete finds the object gone and puts the pointer back, and the loop can read the row between the two, so the
- * message allows for that.
+ * The error for a pointer a delete loop found on a generation it deleted ({@link watchDeletes}). The writer that moved
+ * the pointer there is a rollback, or, where the storage driver ignores a delete's condition, a load that took the
+ * number again and published. A rollback slower than the loop's further reads can still put the pointer back after
+ * them, so the message says to look before acting.
  */
 export function pointerOnDeletedError(
   ref: SegmentRef,
-  who: string,
+  deleter: Deleter,
   generation: number,
 ): NotFoundError {
+  const who =
+    deleter.kind === 'collection'
+      ? 'a collection'
+      : deleter.kind === 'erasure'
+        ? 'an erasure'
+        : deleter.kind === 'load'
+          ? `the load took effect at generation ${deleter.published}, but its collection`
+          : `the load was refused (${deleter.refusal}) and published nothing, but its refusal, reclaiming its own object,`;
   return new NotFoundError(
     `segment "${ref.segment}": ${who} deleted generation ${generation}, and another writer moved the pointer onto ` +
-      'it between the read of the row that allowed the delete and the delete. Unless that writer was a rollback that ' +
-      "then found the object gone and put the pointer back, the segment's current generation is missing from the " +
-      'bucket and every read of it fails. A deleted object cannot be restored: roll back to a generation still in the ' +
-      'bucket.',
+      'it between the read of the row that allowed the delete and the delete; the row still named it, with no object ' +
+      "under it, when read again. Check the segment's generations (store.generations, or checkConsistency) before " +
+      'acting: if the pointer still names a generation missing from the bucket, every read of the segment fails, and ' +
+      'since a deleted object cannot be restored, roll back to a generation still in the bucket. A rollback that ' +
+      'found its target gone puts the pointer back itself.',
   );
 }
 
 /** {@link pointerOnDeletedError} for a load whose publish of `published` landed before its collection found it. */
 function tookEffectOverMissing(ref: SegmentRef, published: number, missing: number): NotFoundError {
-  return pointerOnDeletedError(
-    ref,
-    `the load took effect at generation ${published}, but its collection`,
-    missing,
-  );
+  return pointerOnDeletedError(ref, { kind: 'load', published }, missing);
 }
 
 /**
@@ -246,7 +329,7 @@ export async function gcOrphanGenerations(
 ): Promise<number[]> {
   const { deleted, missing } = await collectBelowPointer(ref, deps, options);
   if (missing !== undefined) {
-    throw pointerOnDeletedError(ref, 'a collection', missing);
+    throw pointerOnDeletedError(ref, { kind: 'collection' }, missing);
   }
   return deleted;
 }
@@ -283,7 +366,7 @@ interface ListingResult {
   /** Whether the pass ran to its end. A `quiet` pass that met a writer that moved the row stops early, and is not. */
   readonly complete: boolean;
   /**
-   * A generation the pass deleted that the row named when the pass read it afterwards ({@link deletedUnderPointer}),
+   * A generation the pass deleted that the row named when the pass read it afterwards ({@link watchDeletes}),
    * quiet or not. The pass stops there, and its caller raises it.
    */
   readonly missing?: number;
@@ -371,10 +454,9 @@ async function listingPass(
       ? undefined
       : new Set([...options.protect, ...named]);
 
-  // What the pass has deleted, in order and as a set, and whether a delete has landed since it last read the row.
+  // What the pass has deleted, in order, and the watch every read of the row after a delete is held to.
   const done: number[] = [];
-  const gone = new Set<number>();
-  let unread = false;
+  const watch = watchDeletes(deps, ref);
 
   /**
    * Re-prove that everything still queued for deletion is still collectable. Two different questions, because
@@ -388,14 +470,13 @@ async function listingPass(
    *    is why the pointer is re-proved before every delete (below).
    *
    * Before either, the read is held to what the pass has deleted: a rollback that landed between an earlier re-proof
-   * and its delete has moved the pointer onto an object that is gone ({@link deletedUnderPointer}).
+   * and its delete has moved the pointer onto an object that is gone ({@link watchDeletes}).
    */
   const stillCollectable = async (
     generation: number,
   ): Promise<'delete' | 'skip' | 'stop' | { readonly missing: number }> => {
     const still = await deps.registry.get(ref);
-    unread = false;
-    const missing = await deletedUnderPointer(deps.storage, after, still, gone);
+    const missing = await watch.check(after, still);
     if (missing !== undefined) return { missing };
     if (still === null) {
       if (quiet) return 'stop';
@@ -469,23 +550,17 @@ async function listingPass(
     }
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
     done.push(generation);
-    gone.add(generation);
-    unread = true;
+    watch.deleted(generation);
   }
   // No re-proof follows the last delete, so a rollback onto it would go unseen: one read of the row covers it. Not on a
   // tombstone, whose pointer no rollback moves.
-  if (unread && record.status !== 'destroyed') {
-    const missing = await deletedUnderPointer(
-      deps.storage,
-      after,
-      await deps.registry.get(ref),
-      gone,
-    );
+  if (record.status !== 'destroyed') {
+    const missing = await watch.settle(after);
     if (missing !== undefined) return { deleted: done, kept: [], complete: false, missing };
   }
   return {
     deleted: done,
-    kept: below.filter((g) => !gone.has(g) && !leasedSpared.has(g)).reverse(),
+    kept: below.filter((g) => !watch.gone.has(g) && !leasedSpared.has(g)).reverse(),
     complete: true,
   };
 }
@@ -527,7 +602,7 @@ export interface PublishedKept {
  *
  * So is a rollback onto a generation the pass deleted, which the pass finds by holding every read of the row it makes
  * after a delete to what it deleted, and by reading the row once more after its last delete
- * ({@link deletedUnderPointer}): it throws {@link NotFoundError}, saying the load took effect at `generation` and the
+ * ({@link watchDeletes}): it throws {@link NotFoundError}, saying the load took effect at `generation` and the
  * generation the pointer names is missing. That read is the one request this adds to a load whose pass deleted
  * anything.
  */
@@ -647,7 +722,7 @@ async function objectIsThere(storage: IStorageDriver, key: GenKey): Promise<bool
  * registry read or a delete that throws, propagates, with the pointer at `generation`.
  *
  * A rollback onto a name it deleted is not a stop: every read of the row after a delete is held to what it deleted, and
- * so is one more read after its last delete when it made none since ({@link deletedUnderPointer}). One that names a
+ * so is one more read after its last delete when it made none since ({@link watchDeletes}). One that names a
  * deleted generation throws {@link NotFoundError}, saying the load took effect at `generation`.
  */
 export async function deleteEvicted(
@@ -656,16 +731,12 @@ export async function deleteEvicted(
   options: { generation: number; evict: readonly number[]; leases?: LeaseGuard },
 ): Promise<number[]> {
   const deleted: number[] = [];
-  const gone = new Set<number>();
-  // The row the first delete was decided on, and whether a delete has landed since the pass last read the row.
+  const watch = watchDeletes(deps, ref);
+  // The row the first delete was decided on.
   let held: RegistryRecord | undefined;
-  let unread = false;
-  const missing = async (row: RegistryRecord | null): Promise<number | undefined> =>
-    held === undefined ? undefined : deletedUnderPointer(deps.storage, held, row, gone);
   for (const generation of options.evict) {
     const still = await deps.registry.get(ref);
-    unread = false;
-    const lost = await missing(still);
+    const lost = held === undefined ? undefined : await watch.check(held, still);
     if (lost !== undefined) throw tookEffectOverMissing(ref, options.generation, lost);
     if (still === null || still.currentGen === null || still.currentGen < options.generation) break;
     const named = usableKeptGens(still);
@@ -680,13 +751,10 @@ export async function deleteEvicted(
     held ??= still;
     await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
     deleted.push(generation);
-    gone.add(generation);
-    unread = true;
+    watch.deleted(generation);
   }
   // No read follows the last delete, so a rollback onto it would go unseen: one read of the row covers it.
-  if (unread) {
-    const lost = await missing(await deps.registry.get(ref));
-    if (lost !== undefined) throw tookEffectOverMissing(ref, options.generation, lost);
-  }
+  const lost = held === undefined ? undefined : await watch.settle(held);
+  if (lost !== undefined) throw tookEffectOverMissing(ref, options.generation, lost);
   return deleted;
 }
