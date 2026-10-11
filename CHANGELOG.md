@@ -30,6 +30,14 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A combine operand that is not a segment this library made is refused with `ValidationError` at the call.** A
+  stub with a `leaseError` method, a segment-shaped object, or a segment from a copy of the package from a release
+  before this one is refused when the combine is called. Before, a stub or a segment-shaped object failed later with
+  a `TypeError` or passed the check. A segment from another copy of this release is still taken, recognised by a
+  `Symbol.for` brand.
+- **The eject CLI's configuration errors are `ValidationError`.** A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` and an
+  unknown `CR_EXPORT_FORMAT` throw it from `parseConfig`; the messages and the exit code (1) are the same.
+
 - **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
   the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
   number. Where the segment's row records which generations are kept, the superseded generation is always the newest
