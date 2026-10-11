@@ -64,6 +64,7 @@ import {
   isTransient,
   transientFaultMessage,
 } from './azure-errors';
+import { collect } from './body';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
@@ -485,61 +486,4 @@ class AzureBlockBlobSink implements BlobSink {
     }
     return { size: this.total, sha256 };
   }
-}
-
-/** Destroy a response body left unread, which releases its connection. */
-function destroyBody(body: NodeJS.ReadableStream): void {
-  (body as { destroy?: () => void }).destroy?.();
-}
-
-/**
- * Collect an Azure download's Node readable body into a `Uint8Array`, at most `maxBytes` of it: the count is kept as
- * the body arrives, and the read stops with `oversize()` at the first byte past it, or at once when the response
- * advertises more. Called in the turn the download returns: the
- * loop listens for the body's errors from its first step, before the read's timer can abort it.
- */
-async function collect(
-  body: NodeJS.ReadableStream | undefined,
-  abortSignal: AbortSignal,
-  maxBytes: number,
-  oversize: () => Error,
-  advertised?: number,
-): Promise<Uint8Array> {
-  if (body === undefined) {
-    throw new NotFoundError('Azure download returned no body');
-  }
-  if (advertised !== undefined && advertised > maxBytes) {
-    destroyBody(body);
-    throw oversize();
-  }
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let done = false;
-  try {
-    for await (const chunk of body) {
-      const u8 =
-        typeof chunk === 'string'
-          ? new TextEncoder().encode(chunk)
-          : new Uint8Array(chunk as Buffer);
-      total += u8.length;
-      if (total > maxBytes) throw oversize();
-      chunks.push(u8);
-    }
-    done = true;
-  } catch (err) {
-    // The SDK fails a body whose connection dropped part-way with an `AbortError`. This read's own signal aborts only
-    // on its timer, whose error the read has already thrown, so an `AbortError` with the signal unaborted is the
-    // dropped connection, and retryable, as the registry reads it.
-    if (!abortSignal.aborted && (err as { name?: unknown } | null)?.name === 'AbortError') {
-      throw Object.assign(
-        new Error('Azure Blob read was cut off before the response completed', { cause: err }),
-        { code: 'ECONNRESET' },
-      );
-    }
-    throw err;
-  } finally {
-    // A read stopped before its end leaves the body open: destroying it closes the connection.
-    if (!done) destroyBody(body);
-  }
-  return concatBytes(chunks);
 }
