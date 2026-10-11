@@ -31,14 +31,14 @@
       "into": {
         "published": 68,
         "scratchSegments": 66,
-        "rangeReads": 19785,
+        "rangeReads": 19761,
         "tailReads": 252,
         "rowReads": 360,
         "objectWrites": 166,
         "rowWrites": 134,
         "listings": 0,
         "deletes": 32,
-        "getClass": 20397,
+        "getClass": 20373,
         "putClass": 300
       }
     },
