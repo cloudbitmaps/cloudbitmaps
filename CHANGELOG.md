@@ -23,6 +23,13 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A leased handle's `iterate()`, combines and `everyNth()` return a stream that can be driven by hand.** The stream of a
+  handle holding a lease was an object with `for await` and `batches()` only, so `stream.next()`, `stream.return()` and
+  `stream.throw()` were `undefined` on it though the `IdStream` doc promises them, and a leased and an unleased handle
+  could not stand in for one another. It now answers all three, as the engine's generator of an unleased handle does:
+  `return()` and `throw()` end the engine's read, iterating it gives it back, a check that throws ends it for good, and
+  `batches()` is the same. A leased `iterate()` costs what it did (measured on 2 million ids in memory, 3 runs of 9:
+  about 0.44 s per-id before and after).
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,

@@ -127,7 +127,7 @@ import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
-import { guardChunks, guardIdIterable, guardIds } from './lease-guards';
+import { guardIdIterable, guardIds, guardItems } from './lease-guards';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -3080,7 +3080,8 @@ export interface MaterializeOptions extends CombineOptions {
  *
  * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable. A live read is the
  * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
- * `throw()`, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
+ * `throw()`, and it is single-use (a second `for await` over it yields nothing). A handle that holds a lease returns a
+ * stream of the same shape, which checks the lease as it reads. `batches()` is a
  * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
  * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
  * fetched until a read is first pulled. A stream pulled with `next()` and dropped without `return()` is held by nothing
@@ -3217,7 +3218,7 @@ class CombineChunks {
 
 /** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
-  guard: guardChunks,
+  guard: guardItems,
   failing: (err) => ({
     [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
   }),
