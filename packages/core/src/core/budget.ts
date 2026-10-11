@@ -16,6 +16,7 @@
  * since that is O(generations) work the segment count alone does not show.
  */
 
+import { requirePositiveInteger } from './check';
 import { BudgetExceededError, ValidationError } from './errors';
 
 export interface Budget {
@@ -57,9 +58,7 @@ export function resolveBudget(opt: BudgetOption | undefined, fallback: Budget): 
     }
   }
   const maxRequests = opt?.maxRequests ?? fallback.maxRequests;
-  if (!Number.isInteger(maxRequests) || maxRequests < 1) {
-    throw new ValidationError(`budget.maxRequests must be a positive integer; got ${maxRequests}`);
-  }
+  requirePositiveInteger(maxRequests, 'budget.maxRequests');
   return { maxRequests };
 }
 

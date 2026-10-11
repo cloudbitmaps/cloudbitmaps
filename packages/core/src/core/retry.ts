@@ -16,6 +16,7 @@
  * changed underneath it. A write-once object collision is never replayed at all: the generation number is
  * taken, so the caller has to pick a new one.
  */
+import { requireFiniteNumber, requireInteger } from './check';
 import type { Clock, Rng } from './determinism';
 import { isTransientError, ValidationError } from './errors';
 
@@ -115,27 +116,18 @@ export function retryRead<T>(op: () => Promise<T>, retry: ReadRetry | undefined)
 /**
  * `policy`, checked when it is wired rather than at the first retry: a delay or factor that is not a finite number, a
  * negative delay, a factor below 1 or a jitter mode it does not know would make the backoff `NaN`, which a timer reads
- * as 1 ms, so bounded backoff silently became a hot retry loop.
+ * as 1 ms, so bounded backoff silently became a hot retry loop. `maxAttempts` is a whole number, and `maxDelayMs` is not
+ * below `baseDelayMs`, which it would otherwise cap every delay under.
  */
 export function checkedRetryPolicy(policy: RetryPolicy): RetryPolicy {
   const { maxAttempts, baseDelayMs, maxDelayMs, backoffFactor, jitter } = policy;
-  const fail = (field: string, rule: string, v: unknown): never => {
-    throw new ValidationError(
-      `retry.${field} must be ${rule}; got ${typeof v === 'number' ? String(v) : `a ${typeof v}`}`,
-    );
-  };
-  if (typeof maxAttempts !== 'number' || !Number.isFinite(maxAttempts) || maxAttempts < 1) {
-    fail('maxAttempts', 'a finite number >= 1', maxAttempts);
-  }
-  if (typeof baseDelayMs !== 'number' || !Number.isFinite(baseDelayMs) || baseDelayMs < 0) {
-    fail('baseDelayMs', 'a finite number of milliseconds >= 0', baseDelayMs);
-  }
-  if (typeof maxDelayMs !== 'number' || !Number.isFinite(maxDelayMs) || maxDelayMs < 0) {
-    fail('maxDelayMs', 'a finite number of milliseconds >= 0', maxDelayMs);
-  }
-  if (typeof backoffFactor !== 'number' || !Number.isFinite(backoffFactor) || backoffFactor < 1) {
-    fail('backoffFactor', 'a finite number >= 1', backoffFactor);
-  }
+  requireInteger(maxAttempts, { min: 1, what: 'retry.maxAttempts' });
+  requireFiniteNumber(baseDelayMs, { min: 0, what: 'retry.baseDelayMs' });
+  requireFiniteNumber(maxDelayMs, {
+    min: baseDelayMs,
+    what: 'retry.maxDelayMs',
+  });
+  requireFiniteNumber(backoffFactor, { min: 1, what: 'retry.backoffFactor' });
   if (jitter !== 'full' && jitter !== 'none') {
     throw new ValidationError(`retry.jitter must be 'full' or 'none'`);
   }
@@ -153,18 +145,9 @@ export async function withRetry<T>(
   deps: RetryDeps,
 ): Promise<T> {
   const retryable = deps.isRetryable ?? isTransientError;
-  // `Math.max(1, x)` guards 0 and negatives but NOT NaN — `Math.max(1, NaN)` is NaN, and `1 <= NaN` is false,
-  // so the loop below would never execute: `op()` never called, and the function rejects with the literal
-  // `undefined` from `lastErr`. Every retried read would fail without touching the backend, and callers would
-  // catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
-  // var unset is NaN. Fail loudly instead, and floor it so a fractional value can't sleep on a final attempt
-  // that never happens.
-  if (!Number.isFinite(policy.maxAttempts) || policy.maxAttempts < 1) {
-    throw new ValidationError(
-      `retry.maxAttempts must be a finite number >= 1 (got ${String(policy.maxAttempts)})`,
-    );
-  }
-  const attempts = Math.floor(policy.maxAttempts);
+  // A `NaN` count (`Number(process.env.X)` with the variable unset) would skip the loop, never call `op` and reject
+  // with the literal `undefined`; a policy that bypassed `checkedRetryPolicy` is refused here instead.
+  const attempts = requireInteger(policy.maxAttempts, { min: 1, what: 'retry.maxAttempts' });
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {

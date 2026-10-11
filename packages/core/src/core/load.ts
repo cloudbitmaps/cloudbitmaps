@@ -21,6 +21,7 @@
  * of the object's footer must prove it the load's own first, and an object the row names stays: as its pointer, in its
  * kept window or in a lease.
  */
+import { requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
@@ -163,18 +164,11 @@ export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadG
     );
   }
   const { minCardinality, minRetained, maxGrowth } = guard;
-  if (minCardinality !== undefined && (!Number.isInteger(minCardinality) || minCardinality < 0)) {
-    throw new ValidationError(
-      `${where}guard.minCardinality must be a non-negative integer; got ${shown(minCardinality)}`,
-    );
+  if (minCardinality !== undefined) {
+    requireInteger(minCardinality, { min: 0, what: `${where}guard.minCardinality` });
   }
-  if (
-    minRetained !== undefined &&
-    (!Number.isFinite(minRetained) || minRetained < 0 || minRetained > 1)
-  ) {
-    throw new ValidationError(
-      `${where}guard.minRetained must be a fraction in 0..1; got ${shown(minRetained)}`,
-    );
+  if (minRetained !== undefined) {
+    requireFiniteNumber(minRetained, { min: 0, max: 1, what: `${where}guard.minRetained` });
   }
   if (
     maxGrowth !== undefined &&
@@ -304,9 +298,7 @@ export async function judgeLoad(
   options: Pick<LoadOptions, 'allowEmpty' | 'guard'> = {},
 ): Promise<LoadJudgement> {
   validateUserRef(ref);
-  if (!Number.isSafeInteger(cardinality) || cardinality < 0) {
-    throw new ValidationError('judgeLoad: cardinality must be a non-negative integer');
-  }
+  requireInteger(cardinality, { min: 0, what: 'judgeLoad: cardinality' });
   const guard = checkedGuard(options.guard, '');
   // What a load refuses before its guard, in the order it refuses it.
   assertRegistryCanWrite(deps.registry, 'load');
@@ -557,9 +549,7 @@ async function runLoad(
   // Before any round trip: a core caller that forgot the codec learns it from this call's name, not the loader's.
   const codec = requireCodec(deps.codec, 'loadSegment');
   const keep = options.keep ?? 1;
-  if (!Number.isInteger(keep) || keep < 0) {
-    throw new ValidationError(`keep must be a non-negative integer; got ${String(keep)}`);
-  }
+  requireInteger(keep, { min: 0, what: 'keep' });
   const guard = checkedGuard(options.guard, '');
   // The metadata as of this call, checked and copied before any round trip: what is stored is what the caller passed
   // now, however long the load runs and whatever its object does meanwhile.

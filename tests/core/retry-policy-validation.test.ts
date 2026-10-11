@@ -1,4 +1,4 @@
-import { withRetry, DEFAULT_RETRY_POLICY } from '@/core/retry';
+import { checkedRetryPolicy, withRetry, DEFAULT_RETRY_POLICY } from '@/core/retry';
 import { ValidationError } from '@/core/errors';
 import type { Clock } from '@/core/determinism';
 
@@ -45,13 +45,8 @@ describe('withRetry — policy validation', () => {
     expect(String((err as Error).message)).toMatch(/maxAttempts/);
   });
 
-  it('floors a fractional maxAttempts rather than sleeping toward an attempt that never runs', async () => {
+  it('refuses a fractional maxAttempts before the operation runs', async () => {
     let called = 0;
-    const slept: number[] = [];
-    const countingClock = {
-      now: () => 0,
-      sleep: (ms: number) => (slept.push(ms), Promise.resolve()),
-    };
     await expect(
       withRetry(
         () => {
@@ -59,13 +54,10 @@ describe('withRetry — policy validation', () => {
           return Promise.reject(new Error('boom'));
         },
         { ...DEFAULT_RETRY_POLICY, maxAttempts: 2.7 },
-        { clock: countingClock, rng, isRetryable: () => true } as unknown as Parameters<
-          typeof withRetry
-        >[2],
+        deps,
       ),
-    ).rejects.toThrow('boom');
-    expect(called).toBe(2); // floor(2.7)
-    expect(slept).toHaveLength(1); // and no sleep after the final attempt
+    ).rejects.toThrow('retry.maxAttempts must be an integer of at least 1; got 2.7');
+    expect(called).toBe(0);
   });
 
   it('still runs the normal path', async () => {
@@ -80,5 +72,50 @@ describe('withRetry — policy validation', () => {
     );
     expect(out).toBe('fine');
     expect(called).toBe(1);
+  });
+});
+
+describe('checkedRetryPolicy', () => {
+  const refused = (patch: Record<string, unknown>): string => {
+    try {
+      checkedRetryPolicy({ ...DEFAULT_RETRY_POLICY, ...patch } as never);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ValidationError);
+      return (err as Error).message;
+    }
+    throw new Error('did not throw');
+  };
+
+  it('takes the default policy', () => {
+    expect(checkedRetryPolicy(DEFAULT_RETRY_POLICY)).toBe(DEFAULT_RETRY_POLICY);
+  });
+
+  it('refuses a maxAttempts that is not a whole number of at least 1', () => {
+    expect(refused({ maxAttempts: 2.5 })).toBe(
+      'retry.maxAttempts must be an integer of at least 1; got 2.5',
+    );
+    expect(refused({ maxAttempts: 0 })).toContain('retry.maxAttempts must be an integer');
+    expect(refused({ maxAttempts: 2 ** 53 })).toContain('retry.maxAttempts must be an integer');
+    expect(refused({ maxAttempts: '3' })).toContain('got "3"');
+  });
+
+  it('refuses a maxDelayMs below baseDelayMs and takes one equal to it', () => {
+    expect(refused({ baseDelayMs: 500, maxDelayMs: 100 })).toBe(
+      'retry.maxDelayMs must be a finite number of at least 500; got 100',
+    );
+    expect(
+      checkedRetryPolicy({ ...DEFAULT_RETRY_POLICY, baseDelayMs: 500, maxDelayMs: 500 }),
+    ).toBeDefined();
+  });
+
+  it('refuses a delay or factor that is not finite or is out of range', () => {
+    expect(refused({ baseDelayMs: -1 })).toContain(
+      'retry.baseDelayMs must be a finite number of at least 0',
+    );
+    expect(refused({ baseDelayMs: Number.NaN })).toContain('retry.baseDelayMs');
+    expect(refused({ maxDelayMs: Number.POSITIVE_INFINITY })).toContain('retry.maxDelayMs');
+    expect(refused({ backoffFactor: 0.5 })).toBe(
+      'retry.backoffFactor must be a finite number of at least 1; got 0.5',
+    );
   });
 });

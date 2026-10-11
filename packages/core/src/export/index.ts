@@ -26,6 +26,7 @@
  * masquerades as complete. Therefore "a manifest exists" means *the run finished*, not that every segment
  * succeeded — check `failed` (the CLI also exits non-zero when it's non-empty).
  */
+import { requirePositiveInteger } from '../core/check';
 import { ValidationError } from '../core/errors';
 import { isReservedRow } from '../core/registry-scan';
 import type { CodecInterface } from '../core/codec';
@@ -181,14 +182,7 @@ export async function runExport(
   }
   const batch = options.ndjsonBatchBytes;
   // `NaN` or `Infinity` never flushed, so a segment became one string; 0 or a negative wrote once per id.
-  if (
-    batch !== undefined &&
-    (typeof batch !== 'number' || !Number.isSafeInteger(batch) || batch < 1)
-  ) {
-    throw new ValidationError(
-      'runExport: ndjsonBatchBytes must be a whole number of bytes, 1 or more',
-    );
-  }
+  if (batch !== undefined) requirePositiveInteger(batch, 'runExport: ndjsonBatchBytes');
   const format = options.format ?? 'roaring';
   const ext = format === 'roaring' ? '.roaring' : '.ndjson';
   const batchCap = options.ndjsonBatchBytes ?? DEFAULT_NDJSON_BATCH_BYTES;

@@ -7,6 +7,7 @@
  * built from bitmaps, in memory or streamed), `bulkLoadCrbmGeneration` is the loader `load()` is built on, and
  * `publishGeneration` is the forward-only pointer advance every write ends with.
  */
+import { requireFiniteNumber } from './check';
 import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -702,20 +703,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // `0` turns the timed refresh off on purpose. Anything else that is not a finite, non-negative number (`NaN` from an
     // unset variable, a negative, a string) would turn it off too, silently, so another process's load or erasure would
     // never reach a long-lived reader: refused instead.
-    if (
-      currentGenTtlMs !== undefined &&
-      currentGenTtlMs !== null &&
-      (typeof currentGenTtlMs !== 'number' ||
-        !Number.isFinite(currentGenTtlMs) ||
-        currentGenTtlMs < 0)
-    ) {
-      throw new ValidationError(
-        `cache.genTtlMs must be a finite number of milliseconds, 0 or more (0: no timed refresh); got ${
-          typeof currentGenTtlMs === 'number'
-            ? String(currentGenTtlMs)
-            : `a ${typeof currentGenTtlMs}`
-        }`,
-      );
+    if (currentGenTtlMs !== undefined && currentGenTtlMs !== null) {
+      requireFiniteNumber(currentGenTtlMs, { min: 0, what: 'cache.genTtlMs' });
     }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.

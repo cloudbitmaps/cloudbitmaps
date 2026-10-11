@@ -22,6 +22,7 @@ import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
 import type { ChunkRead, GenerationMetadata, ReadChunksOptions } from '../ports';
+import { requirePositiveInteger } from '../check';
 import { crc32c } from './crc32c';
 import { ChunkWindow } from '../chunk-window';
 import { validateChunkKeyOrder } from '../validate';
@@ -717,16 +718,10 @@ export class CrbmReader {
     open: { window: { settle(): Promise<void> } | undefined },
   ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
     const width = options.concurrency ?? MAX_RANGES_IN_FLIGHT;
-    if (!Number.isInteger(width) || width < 1) {
-      throw new ValidationError(
-        `concurrency must be a positive integer; got ${options.concurrency}`,
-      );
-    }
+    requirePositiveInteger(width, 'concurrency');
     validateChunkKeyOrder(chunkKeys);
     const ramp = options.ramp ?? false;
-    if (typeof ramp === 'number' && (!Number.isInteger(ramp) || ramp < 1)) {
-      throw new ValidationError(`ramp must be a boolean or a positive integer; got ${ramp}`);
-    }
+    if (typeof ramp === 'number') requirePositiveInteger(ramp, 'ramp');
     const readRange = options.readRange ?? (<T>(read: () => Promise<T>): Promise<T> => read());
     const now = options.now ?? ((): number => 0);
     const slots = chunkKeys.map((key) => this.slotOf(key));

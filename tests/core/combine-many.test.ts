@@ -92,7 +92,7 @@ describe('validation, before any request', () => {
   it('refuses no outputs, and bad numbers', () => {
     expect(compile([])).toThrow(/outputs must be a non-empty array/);
     expect(compile([{ expr: 'a' }], { keep: undefined })).toThrow(
-      /keep must be a non-negative integer/,
+      /keep must be an integer of at least 0; got undefined/,
     );
     expect(compile([{ expr: 'a' }], { keep: -1 })).toThrow(/keep/);
     expect(compile([{ expr: 'a', keep: 1.5 }])).toThrow(/outputs\[0\]\.keep/);

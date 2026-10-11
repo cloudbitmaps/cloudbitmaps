@@ -44,6 +44,7 @@
  * So the index can only make the sweep *cheaper*, never *wronger*, and both drift directions are bounded by
  * machinery that already exists.
  */
+import { requireInteger } from './check';
 import { ValidationError } from './errors';
 import {
   MAX_NAME_LENGTH,
@@ -150,11 +151,7 @@ export function decodeDueName(name: string): SegmentRef | null {
  * epoch; anything older is the repair scan's job.
  */
 export function dueBucketsAt(now: number, lookbackBuckets: number): number[] {
-  if (!Number.isSafeInteger(lookbackBuckets) || lookbackBuckets < 0) {
-    throw new ValidationError(
-      `due index: lookbackBuckets must be a non-negative integer; got ${lookbackBuckets}`,
-    );
-  }
+  requireInteger(lookbackBuckets, { min: 0, what: 'due index: lookbackBuckets' });
   const current = dueBucket(now);
   const buckets: number[] = [];
   for (let b = current - lookbackBuckets; b <= current; b++) buckets.push(b);

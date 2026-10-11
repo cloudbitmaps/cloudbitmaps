@@ -13,6 +13,7 @@
  *
  * Nothing here ever reads a bad feed as fewer members: every check is a refusal, and a refusal ends the feed.
  */
+import { requireInteger } from './check';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { residentBound } from './combine-ledger';
 import { ValidationError } from './errors';
@@ -540,11 +541,7 @@ export class FeedCursor {
     }
     names.forEach((name, i) => {
       const said = (given as Record<string, unknown>)[name];
-      if (typeof said !== 'number' || !Number.isSafeInteger(said) || said < 0) {
-        throw new ValidationError(
-          `materializeMany feed: feed.counts["${name}"] must be a non-negative integer`,
-        );
-      }
+      requireInteger(said, { min: 0, what: `materializeMany feed: feed.counts["${name}"]` });
       if (said !== this.counts[i]) {
         throw new ValidationError(
           `materializeMany feed: operand "${name}" was counted at ${said} ids and the feed held ${this.counts[i]}: ` +
