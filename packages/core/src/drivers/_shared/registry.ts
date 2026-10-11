@@ -12,6 +12,7 @@ import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
 import { fingerprintParts } from '@/core/crbm/fingerprint';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import { renewsPointer } from '@/core/pointer-id';
+import { MAX_SUMMARY_CARDINALITY } from '@/core/summary';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
 import {
   MAX_KEPT_GENERATIONS,
@@ -51,7 +52,14 @@ export const RECORD_FIELDS = [
   'keptGens',
   'leases',
   'pointerId',
-] as const;
+] as const satisfies readonly (keyof RegistryRecord)[];
+/** Compile-time: a field {@link RegistryRecord} gains and this list lacks fails the type check here. */
+const everyFieldListed: [Exclude<keyof RegistryRecord, (typeof RECORD_FIELDS)[number]>] extends [
+  never,
+]
+  ? true
+  : never = true;
+void everyFieldListed;
 /** The fields the registry sets on a row and a caller's write never does. */
 const DRIVER_MANAGED: readonly string[] = ['token', 'pointerId'];
 /** The fields of the persisted envelope around a record. */
@@ -61,8 +69,6 @@ const MAX_GOVERNANCE_BYTES = 64 * 1024;
 /** Bounds on the wrapped-DEK list (one DEK wrapped under a few KEKs) — keeps the row small + rejects abuse. */
 const MAX_WRAPPED_DEKS = 8;
 const MAX_WRAPPED_DEK_BYTES = 4 * 1024;
-/** Ids a generation can hold: every 32-bit id. */
-const MAX_SUMMARY_CARDINALITY = 2 ** 32;
 /**
  * A sealed summary's fixed part: a 12-byte nonce, the u64 count, the object's fingerprint (a u64 size and a u32 footer
  * checksum), and a 16-byte tag.

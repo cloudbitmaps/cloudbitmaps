@@ -78,13 +78,13 @@ function encodeWith(name: string, safe: RegExp): string {
 function decodePercent(encoded: string): string {
   const bytes: number[] = [];
   for (let i = 0; i < encoded.length;) {
-    if (encoded[i] === '%' && i + 2 < encoded.length + 1) {
+    if (encoded[i] === '%' && i + 2 <= encoded.length) {
       const hex = encoded.slice(i + 1, i + 3);
       if (!/^[0-9A-Fa-f]{2}$/.test(hex)) return encoded; // not an escape we wrote
       bytes.push(parseInt(hex, 16));
       i += 3;
     } else {
-      for (const b of new TextEncoder().encode(encoded[i])) bytes.push(b);
+      for (const b of UTF8.encode(encoded[i]!)) bytes.push(b);
       i += 1;
     }
   }

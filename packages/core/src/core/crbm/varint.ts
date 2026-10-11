@@ -6,9 +6,10 @@
  * cardinalities ≤ 65536, payload lengths bounded by a size cap) — well within 32 bits — so this codec
  * accepts unsigned integers in `[0, 0xffffffff]` and rejects anything wider as a programming error.
  */
+import { U32_MAX } from '../bit-route';
 import { IntegrityError } from '../errors';
 
-const U32_CEIL = 0x1_0000_0000; // 2^32
+const U32_CEIL = U32_MAX + 1;
 
 /** Append the LEB128 encoding of a u32 `value` to `out`. */
 export function writeVarint(out: number[], value: number): void {

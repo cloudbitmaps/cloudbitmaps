@@ -98,6 +98,9 @@ import { validateSegmentRef } from '@/core/validate';
 
 /** Defensive cap on a single registry object read from storage, before allocation (rows are tiny; ~1 KB). */
 export const MAX_ROW_BYTES = 1 * 1024 * 1024;
+const UTF8 = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
+
 /** Bounded retry for `delete`'s read then delete or tombstone, under cross-process contention (then fails typed). */
 const MAX_DELETE_ATTEMPTS = 8;
 /** Bounded re-read when a store's pinned version is overwritten mid-read (see {@link ObjectVersionRaced}). */
@@ -125,6 +128,13 @@ export class ObjectVersionRaced extends Error {
     this.name = 'ObjectVersionRaced';
   }
 }
+
+/**
+ * Whether `err` is an {@link ObjectVersionRaced}, by its name: a store built against another copy of this package raises
+ * that copy's class, which `instanceof` does not recognise.
+ */
+const isVersionRaced = (err: unknown): boolean =>
+  err instanceof Error && err.name === 'ObjectVersionRaced';
 
 /** One object as read, with the opaque version that fences a later conditional write. */
 export interface ObjectRow {
@@ -413,7 +423,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     }
     // The name the key spells is the name the row must carry: a key outside the layout has none to hold it to.
     const stored = parseRegistryKey(this.prefix, objectKey) ?? undefined;
-    const env = parseRegistryEnvelope(new TextDecoder().decode(row.bytes), objectKey, stored);
+    const env = parseRegistryEnvelope(UTF8_DECODER.decode(row.bytes), objectKey, stored);
     return { env, bytes: row.bytes, version: row.version };
   }
 
@@ -423,7 +433,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       try {
         return await this.store.read(objectKey);
       } catch (err) {
-        if (!(err instanceof ObjectVersionRaced)) throw err;
+        if (!isVersionRaced(err)) throw err;
       }
     }
     throw new TransientError(
@@ -438,7 +448,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     env: RegistryEnvelope,
     expect: 'absent' | { version: string },
   ): Promise<void> {
-    const body = new TextEncoder().encode(serializeRegistryEnvelope(env));
+    const body = UTF8.encode(serializeRegistryEnvelope(env));
     if (body.length > MAX_ROW_BYTES) {
       // Belt-and-braces: the governance/DEK fields are already capped by validate*, so this cannot fire for
       // valid input — but never write a row that would later be unreadable.

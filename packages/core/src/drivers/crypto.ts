@@ -12,6 +12,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { Aead, AeadSealed, IKeystore, WrappedDek } from '../core/crypto';
 import { IntegrityError, KeyUnavailableError, ValidationError } from '../core/errors';
 
+const UTF8 = new TextEncoder();
 const KEY_BYTES = 32; // AES-256
 const NONCE_BYTES = 12; // GCM standard nonce
 const TAG_BYTES = 16; // GCM tag
@@ -74,7 +75,7 @@ export class NodeAead implements Aead {
 /** Wrap/unwrap a DEK under a KEK with AES-256-GCM, binding the wrapping to its `keyId` via AAD so a wrapping
  * can't be relabelled to another KEK. Stored blob = nonce ‖ ciphertext ‖ tag, base64. */
 function wrapKey(dek: Uint8Array, kek: Uint8Array, keyId: string): string {
-  const sealed = new NodeAead(kek).seal(dek, new TextEncoder().encode(keyId));
+  const sealed = new NodeAead(kek).seal(dek, UTF8.encode(keyId));
   return Buffer.concat([sealed.nonce, sealed.ciphertext, sealed.tag]).toString('base64');
 }
 
@@ -85,7 +86,7 @@ function unwrapKey(wrapped: string, kek: Uint8Array, keyId: string): Uint8Array 
   const nonce = blob.subarray(0, NONCE_BYTES);
   const tag = blob.subarray(blob.length - TAG_BYTES);
   const ciphertext = blob.subarray(NONCE_BYTES, blob.length - TAG_BYTES);
-  return new NodeAead(kek).open({ nonce, ciphertext, tag }, new TextEncoder().encode(keyId));
+  return new NodeAead(kek).open({ nonce, ciphertext, tag }, UTF8.encode(keyId));
 }
 
 /**

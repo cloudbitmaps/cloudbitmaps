@@ -13,7 +13,8 @@ export const MAX_METADATA_BYTES = 1024;
 /** Cap on one metadata key, in UTF-8 bytes. */
 export const MAX_METADATA_KEY_BYTES = 128;
 
-const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
+const UTF8 = new TextEncoder();
+const utf8Length = (s: string): number => UTF8.encode(s).length;
 
 /**
  * Validate `value` as generation metadata (`GenerationMetadata` in the ports) and return its canonical JSON: RFC 8785
@@ -87,7 +88,7 @@ export function metadataBytes(
 ): Uint8Array | undefined {
   if (value === undefined) return undefined;
   const json = canonicalMetadataJson(value, fail);
-  return json === '{}' ? undefined : new TextEncoder().encode(json);
+  return json === '{}' ? undefined : UTF8.encode(json);
 }
 
 /**
