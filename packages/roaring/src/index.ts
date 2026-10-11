@@ -3113,17 +3113,19 @@ const withBatches = (
   batches: () => AsyncIterable<Uint32Array>,
 ): IdStream => Object.assign(gen, { batches });
 
-/**
- * A stream that fails when it is first read, either way. A combine refuses its arguments this way, as the engine's
- * own checks do, so a caller's try/catch around the iteration catches it.
- */
-const failing = (err: unknown): IdStream => {
-  const rejecting = (): AsyncIterator<never> => ({ next: () => Promise.reject(err) });
-  return {
-    [Symbol.asyncIterator]: rejecting,
-    batches: () => ({ [Symbol.asyncIterator]: rejecting }),
+/** A generator that throws `err` on its first pull: what a refused read is, so its caller can drive it as any other. */
+const refusing = (err: unknown) =>
+  // eslint-disable-next-line require-yield
+  async function* (): AsyncGenerator<never> {
+    throw err;
   };
-};
+
+/**
+ * A stream that fails when it is first read, either way, and has the shape of one that does not: a generator, with
+ * `batches` attached. A combine refuses its arguments this way, as the engine's own checks do, so a caller's try/catch
+ * around the iteration catches it.
+ */
+const failing = (err: unknown): IdStream => withBatches(refusing(err)(), refusing(err));
 
 /** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
 const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>
@@ -3219,9 +3221,7 @@ class CombineChunks {
 /** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
 const AS_CHUNKS: CombineOutput<ChunkStream> = {
   guard: guardItems,
-  failing: (err) => ({
-    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
-  }),
+  failing: (err) => refusing(err)(),
   intersect: (engine, refs, opts) => engine.intersectChunks(refs, opts),
   union: (engine, refs, opts) => engine.unionChunks(refs, opts),
   andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts),
@@ -3872,16 +3872,16 @@ export class Segment {
   everyNth(n: number, options?: IdRange): AsyncIterable<number> {
     // The lease first: a leased handle past its lease throws, never reads empty.
     const lease = this.leaseError();
-    if (lease !== undefined) return failing(lease);
+    if (lease !== undefined) return refusing(lease)();
     const bad = optionsError(options, 'everyNth', CALL_KEYS.range);
-    if (bad !== undefined) return failing(bad);
+    if (bad !== undefined) return refusing(bad)();
     if (this.pinnedAt === undefined) {
-      return failing(
+      return refusing(
         new UnsupportedError(
           'everyNth needs a pinned handle: a live handle can place a rank by one generation ' +
             'and read it from another. Call `pin()` first.',
         ),
-      );
+      )();
     }
     const stream = this.engine.everyNth(
       this.ref,

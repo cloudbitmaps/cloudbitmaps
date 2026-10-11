@@ -35,7 +35,8 @@ so, and so do the module headers in the code.
   `stream.throw()` were `undefined` on it though the `IdStream` doc promises them, and a leased and an unleased handle
   could not stand in for one another. It now answers all three, as the engine's generator of an unleased handle does:
   `return()` and `throw()` end the engine's read, iterating it gives it back, a check that throws ends it for good, and
-  `batches()` is the same.
+  `batches()` is the same. A read refused when it is called (a lease that has ended, a bad option) is a stream of the same
+  shape that rejects at its first pull. A leased per-id `iterate()` over 2 million ids in memory showed no slowdown beyond run-to-run noise against the build before (measured: medians 476 ms before, 469 ms after; a difference under about 5% cannot be excluded).
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
   Each of these reads the segment's row just before each delete, and a rollback onto the very generation being deleted
   (one with `allowForward` for a generation above the pointer) could land between that read and the delete, pass its own

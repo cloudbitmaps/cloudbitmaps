@@ -17,8 +17,8 @@
 
 /** An async iterator that is also its own iterable, with `return` and `throw` always present, as a generator's are. */
 interface GuardedStream<T> extends AsyncIterableIterator<T> {
-  return(): Promise<IteratorResult<T, undefined>>;
-  throw(err: unknown): Promise<IteratorResult<T, undefined>>;
+  return(value?: unknown): Promise<IteratorResult<T, unknown>>;
+  throw(err: unknown): Promise<IteratorResult<T, unknown>>;
 }
 
 /** What an id stream is, as far as a guard is concerned: ids, and the same ids a chunk at a time. */
@@ -29,35 +29,57 @@ interface IdStream extends AsyncIterable<number> {
 /** An id stream that is guarded: the per-id stream is an iterator of its own, and `batches()` is guarded too. */
 type GuardedIds = GuardedStream<number> & { batches(): GuardedStream<Uint32Array> };
 
-const DONE = { done: true, value: undefined } as const;
+/** A finished result, new each time: a caller may keep or change what it is handed. */
+const done = (value?: unknown): IteratorReturnResult<unknown> => ({ done: true, value });
 
 /**
- * The one guard: `check` runs before the first pull, then after each item `shouldCheck` names (every item when it is
- * left out), once the item is pulled and before it is handed on. A check that throws ends the inner stream and rejects
- * with its error, and the guarded stream is over: later pulls are done.
+ * The one guard: `check` runs before the first pull, then once an item is pulled and before it is handed on. Every
+ * item is checked, or, when `keyOf` is given, the first item of each run of items with one key (the ids of one chunk).
+ * A check that throws ends the inner stream and rejects with its error, and the guarded stream is over: a pull that
+ * settles after that is done, whatever the source had already pulled for it. A key is remembered only once its check
+ * has passed.
  */
 const guard = <T>(
   inner: AsyncIterable<T>,
   check: () => void,
-  shouldCheck?: (item: T) => boolean,
+  keyOf?: (item: T) => number,
 ): GuardedStream<T> => {
   const it = inner[Symbol.asyncIterator]();
   let first = true;
   let over = false;
-  const end = async (): Promise<void> => {
+  let last = -1;
+  const end = async (value?: unknown): Promise<unknown> => {
     over = true;
-    await it.return?.();
+    await it.return?.(value);
+    return value;
   };
   const stop = async (err: unknown): Promise<never> => {
     await end();
     throw err;
+  };
+  /** What a pull hands on: nothing once the stream is over, and an item only after its check passes. */
+  const deliver = (
+    r: IteratorResult<T, unknown>,
+  ): Promise<IteratorResult<T, unknown>> | IteratorResult<T, unknown> => {
+    if (over) return done();
+    if (r.done === true) return r;
+    const key = keyOf?.(r.value);
+    if (key === undefined || key !== last) {
+      try {
+        check();
+      } catch (err) {
+        return stop(err);
+      }
+      if (key !== undefined) last = key;
+    }
+    return r;
   };
   return {
     [Symbol.asyncIterator]() {
       return this;
     },
     async next() {
-      if (over) return DONE;
+      if (over) return done();
       if (first) {
         first = false;
         try {
@@ -66,24 +88,22 @@ const guard = <T>(
           return stop(err);
         }
       }
-      const r = await it.next();
-      if (r.done === true) return r;
-      if (shouldCheck === undefined || shouldCheck(r.value)) {
-        try {
-          check();
-        } catch (err) {
-          return stop(err);
-        }
-      }
-      return r;
+      return deliver(await it.next());
     },
-    async return() {
-      await end();
-      return DONE;
+    async return(value?: unknown) {
+      return done(await end(value));
     },
     async throw(err: unknown) {
-      if (it.throw !== undefined) return it.throw(err) as Promise<IteratorResult<T, undefined>>;
-      return stop(err);
+      first = false;
+      if (it.throw === undefined) return stop(err);
+      let r: IteratorResult<T, unknown>;
+      try {
+        r = await it.throw(err);
+      } catch (thrown) {
+        over = true;
+        throw thrown;
+      }
+      return deliver(r);
     },
   };
 };
@@ -99,15 +119,7 @@ const guard = <T>(
 export const guardIdIterable = (
   inner: AsyncIterable<number>,
   check: () => void,
-): GuardedStream<number> => {
-  let chunk = -1;
-  return guard(inner, check, (id) => {
-    const key = id >>> 16;
-    if (key === chunk) return false;
-    chunk = key;
-    return true;
-  });
-};
+): GuardedStream<number> => guard(inner, check, (id) => id >>> 16);
 
 /** {@link guardIdIterable} for an `IdStream`, whose `.batches()` is guarded too. */
 export const guardIds = (inner: IdStream, check: () => void): GuardedIds =>
@@ -116,8 +128,8 @@ export const guardIds = (inner: IdStream, check: () => void): GuardedIds =>
   });
 
 /**
- * A stream of chunks that checks a lease before the first pull and before
- * each item is handed on: an item is one chunk (a batch of ids, or a chunk an `*Into` writes).
+ * A stream of chunks that checks a lease before the first pull and before each item is handed on: an item is one
+ * chunk (a batch of ids, or a chunk an `*Into` writes).
  */
 export const guardItems = <T>(inner: AsyncIterable<T>, check: () => void): GuardedStream<T> =>
   guard(inner, check);

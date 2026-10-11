@@ -344,10 +344,11 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   with no lease of its own.
 - **A stream checks the lease before its first pull and each time it reads a chunk.** A stream built while the lease is
   live and first pulled after it ended throws, even when its result is empty. A read that is under way when the lease ends
-  finishes the chunk it is on and throws at the next one, per id and per batch. `has`, `count` and `stat` check once, before
-  Once it has thrown the stream is over, and a later `next()` is `done`; `return()` and `throw()` end it the same way on
-  a leased handle as on an unleased one, and a leased stream has the same shape as an unleased one.
-  they read, so one that starts before the lease ends may return after it.
+  finishes the chunk it is on and throws at the next one, per id and per batch. Once a stream has thrown it is over, and
+  a later `next()` is `done`, however many pulls were waiting. A read refused when it is called (a lease that has
+  already ended) is a stream like any other, so its first `next()` rejects with `LeaseExpiredError`, and `return()` and
+  `throw()` end a leased stream the way they end an unleased one. `has`, `count` and `stat` check once, before they
+  read, so one that starts before the lease ends may return after it.
 - **Collection resumes after the lease.** A leased generation takes none of the `keep` window, and a load that spares it
   does not name it again. After the lease and a 60-second margin have ended, the next listing pass takes it: that is every
   sixteenth generation of the segment, or any load that has to list, so within 16 later loads of the segment. A segment
@@ -457,7 +458,8 @@ for await (const ids of audience.andNot([optOut]).batches()) await sendMany(ids)
   read-ahead already in flight.
 - **Driving it by hand.** An `IdStream` answers `next()`, `return()` and `throw()` as well as `for await`, and so does
   the stream of `batches()`, on a handle that holds a lease as on one that does not: `return()` ends the read and
-  `throw(err)` throws into it, as into a generator. Iterating a stream gives the same stream back.
+  `throw(err)` throws into it, as into a generator. Iterating a stream gives the same stream back. A read that is refused when it is called (a bad
+  option, an absent operand, a lease that has ended) has the same shape, and its first `next()` rejects with the refusal.
 - **`batches()` is its own read.** Each call starts a new read when it is called and fetches its chunks afresh, charged
   to the budget again, whether or not the per-id stream was read. The per-id stream is single-use:
   a second `for await` over it yields nothing. On a pinned handle a `batches()` read is of the pin's
