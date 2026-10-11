@@ -19,6 +19,7 @@ import type {
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
+import { defined } from './defined';
 import { AzureBlobStorageDriver } from './storage';
 import { AzureBlobRegistryDriver } from './registry';
 
@@ -119,23 +120,19 @@ export class AzureBlobStorage implements StorageBackend {
     }
     const shared = {
       containerClient: this.containerClient,
-      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
+      ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new AzureBlobStorageDriver({
       ...shared,
-      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
-      ...(options.blockBytes === undefined ? {} : { blockBytes: options.blockBytes }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({
+        maxObjectBytes: options.maxObjectBytes,
+        blockBytes: options.blockBytes,
+        conditionalDelete: options.conditionalDelete,
+      }),
     });
     this.registry = new AzureBlobRegistryDriver({
       ...shared,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

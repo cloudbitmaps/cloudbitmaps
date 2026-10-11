@@ -26,6 +26,7 @@ import type {
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { S3Client } from '@aws-sdk/client-s3';
+import { defined } from './defined';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
 import { SocketAdvisory, type PooledHandler } from './socket-advisory';
@@ -222,10 +223,12 @@ export class S3Storage implements StorageBackend {
       const maxSockets =
         requirePositiveInt('maxSockets', options.maxSockets) ?? DEFAULT_MAX_SOCKETS;
       this.client = new S3Client({
-        ...(options.region === undefined ? {} : { region: options.region }),
-        ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
-        ...(options.pathStyle === undefined ? {} : { forcePathStyle: options.pathStyle }),
-        ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+        ...defined({
+          region: options.region,
+          endpoint: options.endpoint,
+          forcePathStyle: options.pathStyle,
+          credentials: options.credentials,
+        }),
       });
       limitSockets(this.client, maxSockets);
     }
@@ -233,24 +236,20 @@ export class S3Storage implements StorageBackend {
     const shared = {
       client: this.client,
       bucket: options.bucket,
-      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
+      ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new S3StorageDriver({
       ...shared,
       sockets: this.sockets,
-      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
-      ...(options.partBytes === undefined ? {} : { partBytes: options.partBytes }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({
+        maxObjectBytes: options.maxObjectBytes,
+        partBytes: options.partBytes,
+        conditionalDelete: options.conditionalDelete,
+      }),
     });
     this.registry = new S3RegistryDriver({
       ...shared,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }
