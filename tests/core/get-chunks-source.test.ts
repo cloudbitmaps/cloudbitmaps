@@ -716,8 +716,11 @@ describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it re
 
   it('stops retrying the ranges of a stream that was abandoned: nothing is sent after the break but what was in flight', async () => {
     const { source, storage } = await world({ chunks: 400 });
+    // Every backoff waits on the gate: a retry that is still sleeping when the consumer leaves is what must not be sent.
+    const backoff = new Gate();
+    backoff.close();
     const retrying = new RetryingStorageChunkSource(source, {
-      clock: { ...manualClock(), sleep: () => new Promise((r) => setTimeout(r, 15)) },
+      clock: { ...manualClock(), sleep: () => backoff.wait() },
       rng: { next: () => 0.5 },
     });
     storage.beforeRange = async (n) => {
@@ -727,7 +730,8 @@ describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it re
       expect(chunk.key).toBe(0);
       break;
     }
-    await new Promise((r) => setTimeout(r, 300));
+    backoff.open(); // every backoff that was waiting ends now, and any later one ends at once
+    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
     expect(storage.ranges).toHaveLength(4); // the four the window opened with, each tried once
   });
 });
@@ -865,8 +869,11 @@ describe('CrbmStorageChunkSource.getChunks: a stream that fails', () => {
     process.on('unhandledRejection', onUnhandled);
     try {
       const { source, storage } = await world({ chunks: 400 });
+      // The backoff waits on the gate until the stream has failed: a retry that outlives the failure is what must not be sent.
+      const backoff = new Gate();
+      backoff.close();
       const retrying = new RetryingStorageChunkSource(source, {
-        clock: { ...manualClock(), sleep: () => new Promise((r) => setTimeout(r, 10)) },
+        clock: { ...manualClock(), sleep: () => backoff.wait() },
         rng: { next: () => 0.5 },
       });
       storage.beforeRange = async (n) => {
@@ -879,6 +886,7 @@ describe('CrbmStorageChunkSource.getChunks: a stream that fails', () => {
       );
       const sent = storage.ranges.length;
       expect(sent).toBe(4); // the window the stream opened with, each tried once
+      backoff.open();
       await tick(300);
       expect(storage.ranges.length, 'no attempt after the failure').toBe(sent);
       expect(storage.inFlight).toBe(0);

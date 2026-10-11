@@ -179,6 +179,9 @@ const DRIVERS: ReadonlyArray<readonly [string, () => IRegistryDriver]> = [
 describe('pointerId over random write sequences (invariant 2)', () => {
   it.each(DRIVERS)(
     '%s: renewed exactly by a create or a resolved field, never repeated',
+    // 40 random sequences of up to 24 writes each, on a registry that may touch the disk: well over the default
+    // 5 s limit on a loaded machine.
+    { timeout: 30_000 },
     async (_, make) => {
       await fc.assert(
         fc.asyncProperty(fc.array(opArb, { minLength: 1, maxLength: 24 }), async (ops) => {

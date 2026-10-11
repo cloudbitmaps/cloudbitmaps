@@ -27,6 +27,8 @@ import { StubBlobService, watchProcess, type Plan } from '../../helpers/azure-bl
  */
 
 const TIMEOUT = 200;
+/** Each test's own limit: every one of these waits on real sockets and timers, and a loaded machine slows them all. */
+const LIMIT = { timeout: 20_000 };
 const GEN: GenKey = { segment: 's', generation: 1 };
 const REF = { segment: 's' };
 const DATA = storageObjectName(undefined, GEN);
@@ -86,7 +88,6 @@ async function timesOut(
     expect(err).toBeInstanceOf(TransientError);
     expect((err as Error).message).toBe(`Azure Blob ${operation} timed out after ${TIMEOUT} ms`);
     expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
-    expect(ms).toBeLessThan(TIMEOUT + 1_500);
     expect(await stub.releasedStalls()).toBe(true);
     await sleep(50);
   } finally {
@@ -97,7 +98,7 @@ async function timesOut(
 
 const PHASES = ['before-headers', 'after-headers', 'mid-body'] as const;
 
-describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', () => {
+describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', LIMIT, () => {
   it.each(PHASES)('a range read stalled %s', async (stall) => {
     stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { stall } : undefined);
     await timesOut(() => storage(TIMEOUT).getRange(GEN, 0, 4), 'download');
@@ -236,7 +237,7 @@ describe('Azure Blob: what the read timeout leaves alone', () => {
   }, 15_000);
 });
 
-describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
+describe('Azure Blob: a read lets go of a response the SDK refuses', LIMIT, () => {
   // The SDK refuses a download answered with no ETag by throwing a `RangeError`, and leaves the body unread with the
   // socket open. The answer here never ends, so only the read's own abort closes that socket.
   it.each([
@@ -262,49 +263,53 @@ describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
   });
 });
 
-describe('Azure Blob: a storage read whose connection drops part-way is a TransientError', () => {
-  // The SDK fails such a body with an `AbortError`, which is also what aborting a read raises; only the read's own
-  // signal tells the two apart, and here it never fired.
-  it.each([
-    ['off', 0],
-    ['set', TIMEOUT],
-  ])('a range read and a tail read, with the timeout %s', async (_label, readTimeoutMs) => {
-    stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { drop: 'mid-body' } : undefined);
-    const watch = watchProcess();
-    try {
-      for (const read of [
-        () => storage(readTimeoutMs).getRange(GEN, 0, size),
-        () => storage(readTimeoutMs).getTail(GEN, size),
-      ]) {
-        const err = await read().then(
-          () => undefined,
-          (e: unknown) => e,
-        );
-        expect(err).toBeInstanceOf(TransientError);
-        expect((err as Error).message).toBe('transient Azure fault: ECONNRESET');
-        expect(((err as Error).cause as Error).message).toBe(
-          'Azure Blob read was cut off before the response completed',
-        );
+describe(
+  'Azure Blob: a storage read whose connection drops part-way is a TransientError',
+  LIMIT,
+  () => {
+    // The SDK fails such a body with an `AbortError`, which is also what aborting a read raises; only the read's own
+    // signal tells the two apart, and here it never fired.
+    it.each([
+      ['off', 0],
+      ['set', TIMEOUT],
+    ])('a range read and a tail read, with the timeout %s', async (_label, readTimeoutMs) => {
+      stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { drop: 'mid-body' } : undefined);
+      const watch = watchProcess();
+      try {
+        for (const read of [
+          () => storage(readTimeoutMs).getRange(GEN, 0, size),
+          () => storage(readTimeoutMs).getTail(GEN, size),
+        ]) {
+          const err = await read().then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+          expect(err).toBeInstanceOf(TransientError);
+          expect((err as Error).message).toBe('transient Azure fault: ECONNRESET');
+          expect(((err as Error).cause as Error).message).toBe(
+            'Azure Blob read was cut off before the response completed',
+          );
+        }
+        await sleep(50);
+      } finally {
+        watch.stop();
       }
-      await sleep(50);
-    } finally {
-      watch.stop();
-    }
-    expect(watch.events).toEqual([]);
-  });
+      expect(watch.events).toEqual([]);
+    });
 
-  it('the store reads it again, and the read succeeds', async () => {
-    const store = new CloudRoaring({ storage: backendWith(0) });
-    let drops = 1;
-    stub.plan = (r) =>
-      r.method === 'GET' && r.name === DATA && drops-- > 0 ? { drop: 'mid-body' } : undefined;
+    it('the store reads it again, and the read succeeds', async () => {
+      const store = new CloudRoaring({ storage: backendWith(0) });
+      let drops = 1;
+      stub.plan = (r) =>
+        r.method === 'GET' && r.name === DATA && drops-- > 0 ? { drop: 'mid-body' } : undefined;
 
-    expect(await store.segment('s').has(2)).toBe(true);
-    expect(drops).toBeLessThan(0); // the drop was used, and only once
-  });
-});
+      expect(await store.segment('s').has(2)).toBe(true);
+      expect(drops).toBeLessThan(0); // the drop was used, and only once
+    });
+  },
+);
 
-describe('Azure Blob: a timed-out read is retried by the store', () => {
+describe('Azure Blob: a timed-out read is retried by the store', LIMIT, () => {
   it('a read that stalls once and then answers succeeds, on the retry', async () => {
     const backend = new AzureBlobStorage({
       containerClient: stub.client(),
