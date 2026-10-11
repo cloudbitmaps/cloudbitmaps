@@ -3,6 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
+import { CloudRoaring, ValidationError } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
@@ -202,6 +204,39 @@ describe('export-segments CLI', () => {
       expect(mani.failed.map((f) => f.segment)).toEqual(['bad']); // persisted so an operator sees the gap
     });
 
+    it('records a namespace named manifest.json as failed, writes the manifest, and exports the rest', async () => {
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
+      const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+      await bulkLoadCrbmGeneration(
+        storage,
+        { namespace: 'manifest.json', segment: 'x', generation: 0 },
+        [1],
+        { registry },
+      );
+      await bulkLoadCrbmGeneration(
+        storage,
+        { namespace: 'ok', segment: 'good', generation: 0 },
+        [9],
+        {
+          registry,
+        },
+      );
+
+      // A re-run gets the same answer as the first run: neither stops on the namespace's name.
+      for (let run = 0; run < 2; run++) {
+        const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+        expect(manifest.segments.map((s) => s.segment)).toEqual(['good']);
+        expect(manifest.failed).toHaveLength(1);
+        expect(manifest.failed[0]).toMatchObject({ segment: 'x', namespace: 'manifest.json' });
+        expect(manifest.failed[0]!.error).toMatch(/manifest\.json/);
+        const written = JSON.parse(await readFile(join(out, 'manifest.json'), 'utf8')) as {
+          failed: unknown[];
+        };
+        expect(written.failed).toHaveLength(1);
+        expect(roaringIds(await readFile(join(out, 'ok', 'good.roaring')))).toEqual([9]);
+      }
+    });
+
     it('a segment written without a registry is invisible, and says so', async () => {
       // A load that passes a registry publishes a row, so the registry is a complete index of every loaded
       // segment and enumeration cannot miss one. A load that passes NO registry writes an object nothing points
@@ -224,8 +259,8 @@ describe('export-segments CLI', () => {
       const writer = await sink.open({ segment: 's' }, '.roaring');
       await writer.write(Buffer.from('partial'));
       await writer.abort?.();
-      // Abort deletes the .part and renames nothing into place.
-      expect(await readdir(join(out, '_default'))).toEqual([]);
+      // Abort deletes the .part, renames nothing into place, and leaves no empty namespace directory.
+      expect(await readdir(out)).toEqual([]);
     });
   });
 });
@@ -235,5 +270,128 @@ describe('export-segments: the format and the sink', () => {
     expect(
       parseConfig({ CR_EXPORT_ROOT: '/r', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: '' }).format,
     ).toBe('roaring');
+  });
+});
+
+describe('export-segments CLI: a namespace that differs from manifest.json only in case', () => {
+  let root: string;
+  let out: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'crbm-export-src-'));
+    out = await mkdtemp(join(tmpdir(), 'crbm-export-out-'));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  });
+
+  // The refusal ignores letter case on every filesystem: where case is ignored the variant would take the manifest's
+  // path, and elsewhere the same dump would not be portable to such a filesystem.
+  it('still writes the manifest as a file', async () => {
+    const storage = new LocalFsStorageDriver(join(root, 'storage'));
+    const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+    await bulkLoadCrbmGeneration(
+      storage,
+      { namespace: 'Manifest.json', segment: 'x', generation: 0 },
+      [1],
+      { registry },
+    );
+    await bulkLoadCrbmGeneration(
+      storage,
+      { namespace: 'ok', segment: 'good', generation: 0 },
+      [9],
+      { registry },
+    );
+    const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+    expect(manifest.segments.map((s) => s.segment)).toEqual(['good']);
+    expect(manifest.failed.map((f) => f.segment)).toEqual(['x']);
+    const written = JSON.parse(await readFile(join(out, 'manifest.json'), 'utf8')) as {
+      failed: unknown[];
+    };
+    expect(written.failed).toHaveLength(1);
+  });
+});
+
+describe('export-segments CLI: output directory edge cases', () => {
+  let root: string;
+  let out: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'crbm-export-src-'));
+    out = await mkdtemp(join(tmpdir(), 'crbm-export-out-'));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  });
+
+  it('refuses an output directory that already holds a manifest.json directory, and removes nothing', async () => {
+    const storage = new LocalFsStorageDriver(join(root, 'storage'));
+    const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
+    await mkdir(join(out, 'manifest.json'));
+    await writeFile(join(out, 'manifest.json', 'keep'), 'mine');
+    const run = main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+    await expect(run).rejects.toThrow(ValidationError);
+    await expect(run).rejects.toThrow(/remove or rename it/);
+    expect(await readFile(join(out, 'manifest.json', 'keep'), 'utf8')).toBe('mine');
+    expect(await readdir(out)).toEqual(['manifest.json']); // nothing was exported
+  });
+
+  it('leaves no namespace directory behind when its only segment is destroyed after the listing', async () => {
+    const storage = new LocalFsStorageDriver(join(root, 'storage'));
+    const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+    await bulkLoadCrbmGeneration(storage, { namespace: 'gone', segment: 'a', generation: 0 }, [1], {
+      registry,
+    });
+    await bulkLoadCrbmGeneration(storage, { namespace: 'ok', segment: 'b', generation: 0 }, [2], {
+      registry,
+    });
+    // The listing names `gone/a` as live; the row is destroyed before the export reaches it, so a writer is opened
+    // for it and then aborted.
+    const racing = new Proxy(registry, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop, target) as unknown;
+        if (prop !== 'list') {
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        }
+        return async function* (namespace?: string) {
+          const rows = [];
+          for await (const r of target.list(namespace)) rows.push(r);
+          const row = (await target.get({ namespace: 'gone', segment: 'a' }))!;
+          await target.compareAndSwap({ namespace: 'gone', segment: 'a' }, row.token, {
+            status: 'destroyed',
+          });
+          for (const r of rows) yield r;
+        };
+      },
+    });
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry: racing }),
+      retry: false,
+      cache: { genTtlMs: 0 },
+    });
+    const manifest = await store.exportSegments(fsSink(out));
+    expect(manifest.skipped).toEqual([{ segment: 'a', namespace: 'gone', reason: 'destroyed' }]);
+    expect(await readdir(out)).toEqual(['ok']);
+  });
+
+  it('gives namespaces A and a their own directories', async () => {
+    await writeFile(join(out, 'probe-a'), '');
+    const insensitive = await readFile(join(out, 'PROBE-A')).then(
+      () => true,
+      () => false,
+    );
+    if (insensitive) return; // one directory on this filesystem, as for the store itself
+    const storage = new LocalFsStorageDriver(join(root, 'storage'));
+    const registry = new LocalFsRegistryDriver(join(root, 'registry'));
+    await bulkLoadCrbmGeneration(storage, { namespace: 'A', segment: 's', generation: 0 }, [1], {
+      registry,
+    });
+    await bulkLoadCrbmGeneration(storage, { namespace: 'a', segment: 's', generation: 0 }, [2], {
+      registry,
+    });
+    await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+    expect(roaringIds(await readFile(join(out, 'A', 's.roaring')))).toEqual([1]);
+    expect(roaringIds(await readFile(join(out, 'a', 's.roaring')))).toEqual([2]);
   });
 });
