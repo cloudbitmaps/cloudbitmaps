@@ -22,7 +22,7 @@ import ts from 'typescript';
  * factory, `export * from`, `typeof ns.X` in a type position, destructuring a namespace (`const { A } = ns`),
  * `export { A as default }` read through a default import, and `import x = require()`. An unused overloaded
  * function is reported once per signature. A name flagged for one of these is read by a shape the gate cannot
- * follow: import it by name, or rename the collision, rather than loosening the detector.
+ * follow: import it by name rather than loosening the detector.
  *
  * The detector is a pure function so the test can plant a violation and watch it fire, and plant the look-alikes
  * that must not: a gate that fires on everything teaches people to route around it.

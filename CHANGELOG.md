@@ -31,6 +31,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A drop and an erasure count a generation once when a storage listing yields its object twice.** A drop's
+  `wouldDelete`, `generationsDeleted` and `generationsRemaining` list each generation once, its `segment.dispose` event
+  counts each once, and an erasure deletes each generation it finds once. Of the shipped drivers, only `MemoryStorage`
+  can list a key twice, when an object is deleted and stored again while it is listed.
+
 - **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
   no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
 - **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
