@@ -5,6 +5,10 @@ import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { SegmentEngine } from '@/core/engine';
+import { compileCombineMany, runCombineMany } from '@/core/combine-many';
+import type { StorageChunkSource } from '@/core/ports';
+import { roaringCodec } from '@/roaring-codec';
 
 /**
  * A segment that resolves to nothing is ambiguous in a way that matters only as an **operand**.
@@ -180,5 +184,91 @@ describe('an operand that was dropped or retired is refused like one that never 
     expect(await collect(w.audience.andNot([optout], { allowAbsentOperands: true }))).toEqual([
       1, 2, 3, 4,
     ]);
+  });
+});
+
+/**
+ * A source whose every segment is empty and absent, counting the `exists` reads in flight: a combine of many such
+ * operands asks after each of them, and must not ask after all of them at once (invariant 6).
+ */
+class AbsentEverywhere implements StorageChunkSource {
+  inFlight = 0;
+  peak = 0;
+  readonly asked: string[] = [];
+  async getChunk(): Promise<Uint8Array | null> {
+    return null;
+  }
+  async listChunkKeys(): Promise<number[]> {
+    return [];
+  }
+  async exists(ref: SegmentRef): Promise<boolean> {
+    this.asked.push(ref.segment);
+    this.inFlight += 1;
+    this.peak = Math.max(this.peak, this.inFlight);
+    // One turn of the microtask queue: every read the caller starts at once is in flight before any settles.
+    await null;
+    this.inFlight -= 1;
+    return false;
+  }
+}
+
+describe('the existence check is a bounded fan-out', () => {
+  const WIDE = 40;
+  const refs = Array.from({ length: WIDE }, (_, i): SegmentRef => ({ segment: `gone-${i}` }));
+
+  it('a combine asks after at most 16 operands at once, and names every one that is absent', async () => {
+    const source = new AbsentEverywhere();
+    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const error = await collect(engine.intersect(refs)).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(source.asked).toHaveLength(WIDE);
+    expect(source.peak).toBe(16);
+    const message = (error as Error).message;
+    expect(message.startsWith('intersect: operand "gone-0", "gone-1",')).toBe(true);
+    expect(message).toContain(`"gone-${WIDE - 1}" names a segment`);
+  });
+
+  it('an exclude list is asked after the same way, includes first', async () => {
+    const source = new AbsentEverywhere();
+    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    await expect(collect(engine.andNot(refs[0]!, refs.slice(1)))).rejects.toThrow(
+      /^andNot: operand "gone-0", "gone-1",/,
+    );
+    expect(source.peak).toBe(16);
+    expect(source.asked).toEqual(refs.map((r) => r.segment));
+  });
+
+  it('a batch combine asks after its operands with the same bound and the same words', async () => {
+    const source = new AbsentEverywhere();
+    const operands = refs.map((ref) => ({ name: ref.segment, ref }));
+    const compiled = compileCombineMany({
+      operands,
+      outputs: [
+        {
+          expr: { or: refs.map((r) => r.segment) },
+          publish: async () => undefined,
+        },
+      ],
+      keep: 1,
+      maxBufferedBytes: 1 << 26,
+      publishConcurrency: 1,
+      concurrency: 1,
+    });
+    const error = await runCombineMany(compiled, {
+      source,
+      codec: roaringCodec,
+      clock: { now: () => 0, sleep: async () => {} },
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(source.peak).toBe(16);
+    expect((error as Error).message).toMatch(
+      /^materializeMany: operand "gone-0", .*"gone-39" names a segment that does not exist or was dropped/,
+    );
   });
 });
