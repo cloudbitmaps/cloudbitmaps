@@ -1127,10 +1127,11 @@ describe('the steady-load stage', () => {
     // The harness asks before it creates anything, after the engine is known to collect by name, and records the answer
     // where the figures read it.
     const at = (needle: string): number => harnessSrc.indexOf(needle);
-    expect(at('readsRowAfterCollect(await import')).toBeGreaterThan(
-      at('collectsByName(await import'),
+    const asked = harnessSrc.search(
+      /readsRowAfterCollect\(\s*await import\('@cloudbitmaps\/roaring'\)/,
     );
-    expect(at('readsRowAfterCollect(await import')).toBeLessThan(at('layout = planLayout('));
+    expect(asked).toBeGreaterThan(at('collectsByName(await import'));
+    expect(asked).toBeLessThan(at('layout = planLayout('));
     expect(harnessSrc).toContain('{ readsRowAfterCollect: readsAfterCollect }');
     expect(harnessSrc).toContain('steadyLoadRequestsOf(readsAfterCollect)[kind]');
   });
