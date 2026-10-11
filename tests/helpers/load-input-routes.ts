@@ -154,6 +154,10 @@ export const IDS_ONLY: Readonly<Record<string, string>> = {
   'tests/core/erase-coalesced-reads.test.ts':
     'its loads only seed fixtures for the erasure read path, whose range requests it counts; a second run under ' +
     'the serialized input would repeat those counts and exercise no part of the load path',
+  'tests/core/running-read-replan-edges.test.ts':
+    'its loads build the segments a read starts from, and its store.load calls are the moves a running read is held ' +
+    'against, not the behaviour under test; a second run under the serialized input would repeat the reads and exercise ' +
+    'no part of the load path',
   'tests/core/stream-re-resolve.test.ts':
     'its loads build the segments a read starts from, and its one store.load is the trigger the read is held against, not ' +
     'the behaviour under test; a second run under the serialized input would repeat the reads and exercise no part of the ' +

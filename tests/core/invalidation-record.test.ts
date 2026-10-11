@@ -105,9 +105,13 @@ describe('an invalidation while a read resolves its generation, on a source with
       'b',
       [1, 2, 3].map((c) => joinId(c, 1)),
     );
+    const listed: string[] = [];
     const storage: StorageChunkSource = {
       getChunk: (r) => inner.getChunk(r),
-      listChunkKeys: (r) => inner.listChunkKeys(r),
+      listChunkKeys: (r) => {
+        listed.push(r.segment);
+        return inner.listChunkKeys(r);
+      },
       getChunks: (r, keys, options) => inner.getChunks(r, keys, options),
       cardinalities: () =>
         Promise.resolve(
@@ -124,7 +128,7 @@ describe('an invalidation while a read resolves its generation, on a source with
     };
     const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 1_000, clock });
     const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
-    return { cache, engine };
+    return { cache, engine, listed };
   }
   const fireOnce = () => {
     let fired = false;
@@ -156,11 +160,13 @@ describe('an invalidation while a read resolves its generation, on a source with
     expect(cache.size).toBeGreaterThan(0);
   });
 
-  // iterateBatches takes its epoch before its generation resolves, so an invalidation while it resolves is seen.
-  it('iterateBatches caches nothing it reads', async () => {
-    const { cache, engine } = setupResolving(fireOnce());
+  // iterateBatches takes its epoch before its generation resolves, so an invalidation while it resolves is seen: it
+  // lists its keys again and resolves the generation after the invalidation, and caches what it then reads under it.
+  it('iterateBatches lists its keys again, and caches only what it read after the invalidation', async () => {
+    const { cache, engine, listed } = setupResolving(fireOnce());
     for await (const batch of engine.iterateBatches({ segment: 'a' })) void batch;
-    expect(cache.size).toBe(0);
+    expect(listed).toEqual(['a', 'a']);
+    expect(cache.size).toBe(3);
   });
 
   // everyNth takes its epoch before its generation resolves too.
