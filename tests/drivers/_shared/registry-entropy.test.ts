@@ -108,6 +108,8 @@ describe('a re-created name never gets a token an earlier incarnation held', () 
 
   it.each(harnesses)(
     '%s: every token is new, and every earlier one is refused',
+    // Sixty incarnations, each a real create and delete on the file-backed registry: a few seconds on a loaded machine.
+    { timeout: 20_000 },
     async (_, make) => {
       const h = make(countingEntropy(7));
       const issued = await incarnations(h, 60);

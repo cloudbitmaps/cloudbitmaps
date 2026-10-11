@@ -49,6 +49,49 @@ so, and so do the module headers in the code.
   the pointer that a rollback then published, though no load had published it. The refusal now deletes the object once
   one read of its footer proves it the load's own, passing that read's version, and keeps one the row names, as its
   pointer, in its kept window or in a lease.
+### Added
+
+- **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
+  invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
+  and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
+  one cache without it share nothing, and a read running on one when the other invalidates its segment writes what it
+  read before the invalidation back into the cache, where later reads find it, an erased id included. Engines that
+  read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
+  `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
+
+### Fixed
+
+- **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
+  engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
+  pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,
+  `dropSegment`, `retireExpired` or `invalidate` ran wrote what it had read back into the cache once the request
+  landed, and the pin's later reads were answered from it, an erased id included, until the cache evicted it. Every
+  engine over the store's chunk cache now shares one record of its invalidations: such a read caches nothing more of
+  what it began reading before the invalidation, and the pin's next read opens its object again, failing with
+  `NotFoundError` once the object is gone, as the [reading guide](docs/guide/reading.md#how-a-pin-stays-correct) and
+  the `Segment.pin` doc say.
+- **A pinned read in progress keeps the erasure's in-flight bound.** The [erasure
+  guide](docs/guide/erasure.md#who-stops-seeing-the-id-and-when) and `PRIVACY.md` bound what a read in progress can
+  still yield after `eraseSubject`: up to 32 chunks for `iterate`. A pinned `iterate`, or a combine on the same store
+  with a pinned operand, never looked again, and went on yielding the erased generation from every range it had
+  already landed, and to the end of a small generation whose reader kept its chunks. A pinned stream now looks its pin
+  up again before its next chunk once its store has invalidated its segment: it opens its object again and fails with
+  `NotFoundError` if the object is gone or replaced, or its row is gone or destroyed, so a pinned read in flight when
+  the erasure lands fails rather than answers. Where the object is still there (a `load` that keeps it), that open
+  costs what any open of a pin does (a row read and a tail read with a registry, and a key unwrap on an encrypted
+  segment), and the stream carries on with the ranges it holds and reads none again. Another segment's invalidation
+  costs it no request, whether or not the reader cache still holds the pin's reader. The one exception is a store that
+  invalidates more than 1,024 other segments while the stream runs: the stream then looks its pin up once, which costs
+  that open only where the reader cache has let the pin's reader go.
+- **A read dropped without closing it no longer stays in memory.** An `iterate` or a combine pulled with `next()` and
+  then dropped without `return()`, as a `Promise.race` timeout around a pull does, was held by the engine for the
+  engine's whole life: its key list, and the source's suspended stream with the ranges it had already landed (up to
+  the read's `concurrency`, 32 by default, each at most 1 MiB or one chunk), one per abandoned read, with no bound.
+  The engine keeps no list of open streams now. A stream records when it opened, and before it caches a chunk asks
+  whether its segment has been invalidated since, from a record of the latest invalidation of up to 1,024 segments. A
+  segment not in the record, one never invalidated included, counts as invalidated at the newest invalidation the
+  record has let go, so once more than 1,024 segments are invalidated while a stream is open it caches no more of any
+  segment it reads; what it returns is unchanged.
 - **The reader cache's byte ceiling counts the heap a tiny reader holds, and an encrypted reader no longer pins a pool slab for its key.** `cache.readerMaxBytes` weighed an open reader as its parsed index, metadata and kept chunk bytes only: about 20 bytes for a one-chunk segment that retained about 3.7 KiB (about 190 times more), so a store that raised `cache.readerMax` for many small segments held far more bytes than the ceiling named. Each open reader now also counts a fixed 3.75 KiB, measured. A store of small segments at the defaults sees no change (64 MiB holds about 17,000 tiny readers, past the 1,024 count). A reader near its byte share counts 3.75 KiB more, so slightly fewer fit: readers that each keep a whole 64 KiB share fit about 965 of 1,024 at the defaults. A store that lowered `readerMaxBytes` for a small heap keeps fewer tiny segments open and reopens the rest as it reads them, and a ceiling below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Separately, an encrypted segment's key was a view on a slab of Node's shared buffer pool (8 KiB on Node 22, 64 KiB on recent Node 24), so each open encrypted reader could pin a whole slab that nothing counted (measured on Node 24.18: about 69 KB retained against 4 KB); the drivers' crypto now copies a key into memory of its own.
 - **`LocalFsStorage` keeps what it stores private to its user.** Generations, registry rows and the directories holding them were created with the process umask's defaults (`0644` and `0755` under the usual `022`), so any other user of a shared machine could read a cleartext segment and list the store. Files are now created `0600` and directories `0700`, whatever the umask. Directories above the root that did not exist are created with the default mode. A file or directory that already exists keeps its mode, except a registry row, which every write replaces with a new `0600` file: run `chmod -R go-rwx` on an existing root to match. Windows ignores modes, and behaves as before.
 - **The in-process and local-filesystem drivers refuse input they used to take and misread.** `new LocalFsStorage('')` (an unset `DATA_DIR ?? ''`) wrote generations and rows under the working directory; it, and any root that is not a non-empty string, now throws `ValidationError`. `MemoryStorage` and `LocalFsStorage` also throw `ValidationError` for an option key they do not take and for a `now` that is not a function. `getTail` on `MemoryStorage` and `LocalFsStorage` throws `ValidationError` for a `NaN`, fractional or infinite length (a length of zero or less is an empty tail with the size, as the port says), as `BufferReader.getTail` does too; `NaN` was read as a whole-object read by some and failed with a raw `RangeError` in others. A registry write (`create` or `compareAndSwap`) whose `keyId` is not a non-empty string is refused with `ValidationError` by every registry driver; one such write made its row unreadable and stopped every `list()` that reached it.

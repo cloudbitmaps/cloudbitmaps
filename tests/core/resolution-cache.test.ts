@@ -630,16 +630,23 @@ interface Held {
 }
 const held = (x: World): Held => inside(x.source).snapshots.peek(x.key(A)) as Held;
 
-/** How many of `refs` still reach an object after a full collection. */
+/** How many of `refs` still reach an object once collection has stopped freeing any. */
 async function alive(refs: readonly WeakRef<object>[]): Promise<number> {
   v8.setFlagsFromString('--expose_gc');
   const gc = vm.runInNewContext('gc') as () => void;
-  // A WeakRef keeps its target until the job that made it ends: collect on a later turn, twice.
-  for (let i = 0; i < 2; i++) {
+  const count = (): number => refs.filter((ref) => ref.deref() !== undefined).length;
+  // A WeakRef keeps its target until the job that made it ends, so collect on a later turn, and go on until a round
+  // frees nothing more (two rounds in a row with the same count), for at most ten rounds.
+  let last = -1;
+  let steady = 0;
+  for (let i = 0; i < 10 && steady < 2; i++) {
     await new Promise((resolve) => setImmediate(resolve));
     gc();
+    const now = count();
+    steady = now === last ? steady + 1 : 0;
+    last = now;
   }
-  return refs.filter((ref) => ref.deref() !== undefined).length;
+  return count();
 }
 
 describe('a refresh keeps nothing of what it replaced alive', () => {
