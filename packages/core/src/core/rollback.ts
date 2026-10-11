@@ -25,7 +25,7 @@ import {
   IntegrityError,
   KeyUnavailableError,
   NotFoundError,
-  type TransientError,
+  TransientError,
   ValidationError,
   isIntegrityError,
   isKeyUnavailableError,
@@ -54,8 +54,8 @@ export interface GenerationListDeps extends ChurnDeps {
    * The key of an encrypted segment, so a rollback can read its target's count and metadata and seal them into the
    * row. Without it, a rollback of an encrypted segment to a generation below the pointer still works and leaves the
    * row with no summary of the generation it moves to, which a reader then takes from the object; one above the
-   * pointer needs it, and is refused with `KeyUnavailableError`, or throws the key service's `TransientError` when the
-   * service did not answer in time.
+   * pointer needs it, and is refused with `KeyUnavailableError`, or throws `TransientError` when the key service did not
+   * answer in time (the keystore's own, or one whose `cause` is the timeout it threw).
    */
   readonly keystore?: IKeystore;
 }
@@ -160,7 +160,8 @@ export interface RollbackResult {
  * - a target **above the pointer of an encrypted segment** is refused with `KeyUnavailableError` when the store has no
  *   keystore, or its keystore holds none of the key's KEKs or one that does not unwrap the key: it is where objects live
  *   that no load published, one sealed under a key no row holds among them, and only opening it with the segment's key
- *   shows that it is one of the segment's. A key service that did not answer in time is thrown as it is, to retry;
+ *   shows that it is one of the segment's. A key service that did not answer in time is thrown as `TransientError`, to
+ *   retry;
  * - rolling to the generation **already current** is a no-op that reports itself, not an error, once one zero-byte
  *   read finds its object in the bucket. A pointer that names a missing object is refused with `NotFoundError`, as any
  *   missing target is.
@@ -180,9 +181,11 @@ export interface RollbackResult {
  * A swap that gets no answer is settled by reading the row: one the row shows landed, the row being the one the swap
  * leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may still
  * land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves the
- * very row this swap would, which on a cleartext segment two writes can: another rollback onto the same target from
- * the same row, or a load that wrote the very object the rollback read under that number onto a row that records no
- * kept window. That call then reports and audits the move as its own; the pointer is where it asked for it.
+ * very row this swap would. On a cleartext segment two writes can: another rollback onto the same target, whatever row
+ * it read, and a load that wrote under that number the very object the rollback read and recorded no kept window (onto
+ * a row that records none, as after a rollback, or with a `keep` above 64). On an encrypted segment a rollback with no
+ * key at hand writes no summary, so another such rollback onto the same target can too. That call then reports and
+ * audits the move as its own; the pointer is where it asked for it.
  *
  * What it does **not** do is delete anything. The generations above the new pointer stay in the bucket, which is
  * what makes the rollback reversible — roll forward again by naming one of them. They are also then *above*
@@ -503,8 +506,9 @@ async function requirePresent(
  * `mustOpen`, when given, says why the target has to be opened with the key: the row does not vouch for the target,
  * and an object sealed under a key no row holds passes every check that needs no key, so only opening the target with
  * the segment's key shows that it is one of the segment's. Then a key not at hand refuses the rollback with
- * {@link KeyUnavailableError}, before the target is read, and a key service that did not answer in time is thrown as it
- * is: the call can succeed once it answers, which a refusal would not say.
+ * {@link KeyUnavailableError}, before the target is read, and a key service that did not answer in time is thrown as
+ * {@link TransientError} (its own, or one whose `cause` is the timeout): the call can succeed once it answers, which a
+ * refusal would not say.
  */
 async function rollbackKey(
   ref: SegmentRef,
@@ -518,9 +522,15 @@ async function rollbackKey(
     try {
       return await keystore.openDek(record.wrappedDeks!);
     } catch (err) {
-      const unanswered = keyServiceUnanswered(err);
-      if (!unanswered && !keyNotHeld(err)) throw err;
-      if (unanswered && mustOpen !== undefined) throw err;
+      if (keyServiceUnanswered(err)) {
+        if (mustOpen === undefined) return undefined;
+        // Retryable, so it reaches the caller as the class a retry keys on, whatever shape the timeout had.
+        throw isTransientError(err)
+          ? err
+          : new TransientError('rollback: the key service did not answer in time', { cause: err });
+      }
+      if (!keyNotHeld(err)) throw err;
+      if (mustOpen === undefined) return undefined;
       missing = `the keystore could not open the segment's key: ${
         isKeyUnavailableError(err)
           ? 'it holds none of the KEKs the key is wrapped under'
@@ -550,7 +560,8 @@ function keyNotHeld(err: unknown): boolean {
  * keystore to throw for a fault worth riding out, or an `Error` named exactly `TimeoutError`, which is what
  * `AbortSignal.timeout()` and the AWS SDK's request timeouts raise. A plain abort (`AbortError`) and any other network
  * error are not this, and neither is an error judged by its message. Below the pointer a rollback goes on without the
- * key, since the key service being down is often why an operator rolls back; above it the error is thrown as it is.
+ * key, since the key service being down is often why an operator rolls back; above it the error reaches the caller as
+ * `TransientError`.
  */
 function keyServiceUnanswered(err: unknown): boolean {
   return isTransientError(err) || (err instanceof Error && err.name === 'TimeoutError');
@@ -563,11 +574,12 @@ function keyServiceUnanswered(err: unknown): boolean {
  * pointer and summary, no kept list (the swap drops it), and nothing else changed but its leases, which a reader can
  * write the moment the target is current, and its pointerId. Another writer's publish of the same number is not that
  * row: a load records the summary of its own object, and its kept window when the row it read had one. A sealed summary
- * carries a fresh nonce, so on an encrypted segment only this call's own write matches. On a cleartext one, or with no
- * summary, two other writes leave the very same row and are taken for this one: another rollback onto the same target
- * from the same row, and a load that wrote the very object this call read under that number onto a row with no window.
- * The pointer is then where this call asked for it, on the object it read, and the check after the swap holds either
- * way, but this call audits a move another writer made.
+ * carries a fresh nonce, so on an encrypted segment only this call's own write matches, when it wrote one. Otherwise
+ * other writes leave the very same row and are taken for this one: another rollback onto the same target, from
+ * whatever row it read, that wrote the same summary or, like this one, none; and on a cleartext segment a load that wrote
+ * under that number the very object this call read and recorded no window (onto a row with none, or with a `keep`
+ * above what a row records). The pointer is then where this call asked for it, on the object it read, and the check
+ * after the swap holds either way, but this call audits a move another writer made.
  *
  * The undo after a row taken this way is fenced on that row, so a write after the read back is another writer's, as
  * after a swap that got its answer. A write that renewed the pointerId between the swap and the read back cannot be

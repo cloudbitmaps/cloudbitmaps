@@ -2370,7 +2370,8 @@ export class CloudRoaring {
    * and died before the publish. Undoing an earlier rollback is what the opt-in is for. On an encrypted segment it also
    * needs the key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap it, it is
    * refused with `KeyUnavailableError` before the target is read, since an object sealed under a key no row holds passes
-   * every check that needs no key, and a key service that did not answer in time is thrown as it is, to retry.
+   * every check that needs no key, and a key service that did not answer in time is thrown as `TransientError`, to
+   * retry.
    *
    * Needs a backend.
    */

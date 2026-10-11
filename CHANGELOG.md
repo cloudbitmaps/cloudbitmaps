@@ -37,7 +37,8 @@ so, and so do the module headers in the code.
   loads leaves, and every read of the segment then failed with `IntegrityError`. It now throws `KeyUnavailableError`
   before it reads the target when the store has no keystore, or its keystore holds none of the key's KEKs or holds one
   that does not unwrap the key, saying which, and moves nothing. A key service that throws `TransientError` or times
-  out as `AbortSignal.timeout()` and the AWS SDK report a timeout is thrown as it is, to retry. With the key it opens
+  out as `AbortSignal.timeout()` and the AWS SDK report a timeout reaches the caller as `TransientError`, the timeout as
+  its `cause`, to retry. With the key it opens
   the target as before, and refuses one that does not open. A rollback below the pointer still goes ahead without the
   key in each of those cases, opening nothing, and leaves the row with no summary of the target. Any other failure of
   `openDek`, such as a `TypeError` from a keystore of your own, is thrown and moves nothing, where it was swallowed and
@@ -60,10 +61,12 @@ so, and so do the module headers in the code.
   the swap wrote and no kept list, and nothing else changed but its leases and its pointerId), it checks the target as
   after any swap: it puts the pointer back if the target went, and reports and audits the move if the target is there.
   Otherwise it throws the `TransientError`: the write may still land, and a re-run finds the pointer where it is, and a
-  load or another writer that moved the row meanwhile is left standing. On a cleartext segment two other writes leave
-  that very row and are reported and audited as the rollback's own: another rollback onto the same target from the same
-  row, and a load that wrote the very object the rollback read under its number onto a row that records no kept window;
-  on an encrypted segment the swap's sealed summary tells them apart. A row read back that is not one the library wrote
+  load or another writer that moved the row meanwhile is left standing. Some writes leave that very row and are
+  reported and audited as the rollback's own. On a cleartext segment: another rollback onto the same target, whatever
+  row it read, and a load that wrote the very object the rollback read under its number and recorded no kept window
+  (onto a row that records none, as after a rollback, or with a `keep` above 64). On an encrypted segment the swap's
+  sealed summary tells every other write apart, except when the rollback had no key at hand and wrote no summary, and
+  another such rollback onto the same target made the same move. A row read back that is not one the library wrote
   throws its `IntegrityError` instead.
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
   Each of these reads the segment's row just before each delete, and a rollback onto the very generation being deleted

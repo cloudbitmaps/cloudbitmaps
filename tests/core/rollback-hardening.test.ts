@@ -792,14 +792,33 @@ describe('a rollback above the pointer of an encrypted segment', () => {
     }
   });
 
-  it('throws a key service that did not answer in time as it is, to retry, and moves nothing', async () => {
+  it('throws a key service that answered TransientError as it is, to retry, and moves nothing', async () => {
     // Not KeyUnavailableError, which says to restore a KEK and not to retry: the same call can succeed a moment later.
-    for (const failure of [new TransientError('key service answered 503'), timedOut()]) {
-      const { err, moved } = await withFailingKeystore(failure);
-      expect(err).toBe(failure);
-      expect(moved).toBe(false);
-    }
+    const failure = new TransientError('key service answered 503');
+    const { err, moved } = await withFailingKeystore(failure);
+    expect(err).toBe(failure);
+    expect(moved).toBe(false);
   });
+
+  // A timeout reaches the caller as TransientError, the class a retry keys on, with the keystore's own error as its
+  // cause: as AbortSignal.timeout() raises one, and as the AWS SDK raises one.
+  const timeouts: [string, () => unknown][] = [
+    [
+      'a DOMException named TimeoutError',
+      () => new DOMException('The operation timed out.', 'TimeoutError'),
+    ],
+    ['an Error named TimeoutError', timedOut],
+  ];
+  for (const [shape, make] of timeouts) {
+    it(`throws a key service that timed out, ${shape}, as TransientError with it as the cause`, async () => {
+      const failure = make();
+      const { err, moved } = await withFailingKeystore(failure);
+      expect(err).toBeInstanceOf(TransientError);
+      expect((err as Error).message).toMatch(/rollback: the key service did not answer in time/);
+      expect((err as Error).cause).toBe(failure);
+      expect(moved).toBe(false);
+    });
+  }
 
   it('undoing a rollback needs the key too, and moves with it', async () => {
     const real = key();
@@ -910,6 +929,25 @@ describe('what counts as no key at hand, below the pointer', () => {
   it('is a timeout only from an Error, not from any object that carries the name', async () => {
     const fault = { name: 'TimeoutError', message: 'a plain object' };
     expect(await below(fault)).toBe(fault);
+  });
+
+  it('takes a timeout of either shape for no key at hand, and rolls back without the key', async () => {
+    for (const fault of [
+      new DOMException('The operation timed out.', 'TimeoutError'),
+      named('TimeoutError'),
+    ]) {
+      const real = key();
+      const w = world(real);
+      await loads(w, 2);
+      const timingOut: IKeystore = {
+        createDek: () => real.createDek(),
+        openDek: () => Promise.reject(fault),
+      };
+      await rollbackSegment(SEG, 0, { ...w.deps, keystore: timingOut });
+      const row = await rowOf(w);
+      expect(row.currentGen).toBe(0);
+      expect(row.summary).toBeUndefined();
+    }
   });
 
   it('is never judged by a message', async () => {

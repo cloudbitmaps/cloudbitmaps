@@ -565,8 +565,8 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   needs the segment's key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap the
   key, it throws `KeyUnavailableError` before it reads the target, since an object sealed under a key no row holds,
   such as the one the loser of two concurrent first loads leaves, passes every check that needs no key, and only
-  opening it with the segment's key tells it apart. A key service that throws `TransientError` or times out is thrown
-  as it is, and nothing moves: run the rollback again once it answers.
+  opening it with the segment's key tells it apart. A key service that throws `TransientError` or times out reaches
+  you as `TransientError` (a timeout as its `cause`), and nothing moves: run the rollback again once it answers.
 - A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
   segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
@@ -591,17 +591,19 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   pointer put back if the target went meanwhile. Otherwise the rollback throws that `TransientError`, and the pointer
   may still move, since the write may yet land: run the rollback again, which finds the pointer where it is. A load or
   another writer that moved the row meanwhile is left standing, and the rollback throws that `TransientError` rather
-  than `WriteConflictError`. On a cleartext segment two other writes leave the very row the swap would, and cannot be
-  told from it: another rollback onto the same target from the same row, and a load that wrote, under the target's
-  number, the very object the rollback read, onto a row that records no kept window (as after a rollback). The pointer
-  is then where the rollback asked for it, and the rollback reports the move as its own. On an encrypted segment the
-  swap's sealed summary tells them apart.
+  than `WriteConflictError`. Some writes leave the very row the swap would, and cannot be told from it. On a cleartext
+  segment: another rollback onto the same target, whatever row it read, and a load that wrote, under the target's
+  number, the very object the rollback read and recorded no kept window (onto a row that records none, as after a
+  rollback, or with a `keep` above 64). On an encrypted segment, the swap's sealed summary tells every other write
+  apart, except when the rollback had no key at hand and wrote no summary: then another such rollback onto the same
+  target cannot be told apart. The pointer is then where the rollback asked for it, and the rollback reports the move as
+  its own.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
   ([the audit trail](observability.md#audit-trail-security--compliance-events)), and this store drops its cached view of
-  the segment. A move that another writer made and a rollback whose swap got no answer reports as its own (above) is
-  emitted by that rollback too.
+  the segment. A rollback whose swap got no answer and that takes another writer's identical move for its own (above)
+  emits it too, so that one move is recorded twice.
 
 **Why rollback is not forward-only.** Forward-only is right for a writer: a load whose ids came from upstream loses
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
@@ -1375,7 +1377,8 @@ missing. A rollback's check is one listing of the segment's objects (one page be
 compare-and-swap, two or three round trips, so the waits cover a rollback client a few hundred milliseconds further
 from the store than the deleting call. A caller of the core functions that passes no clock gets only the read at once.
 A rollback whose undo takes longer than that can still be reported while it is undoing, which is why the message says
-to look before acting.
+to look before acting. A rollback whose swap got no answer is one: it puts the pointer back only after its own request
+timeout and a read of the row, often longer than the 1.75 s the deleting call waits.
 
 What the caller sees is `NotFoundError` naming the generation, in place of the answer it would have given:
 
