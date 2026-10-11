@@ -47,11 +47,13 @@ import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-k
 import type { BlobDownloadResponseParsed, ContainerClient } from '@azure/storage-blob';
 import {
   isConditionalConflict,
+  asMissingContainer,
   isNotFound,
   isPreconditionFailed,
   isTransient,
   transientFaultMessage,
 } from './azure-errors';
+import { collect, destroyBody } from './body';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
@@ -104,12 +106,12 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         if (err instanceof RangeError) {
           throw new IntegrityError(`registry read carries no usable ETag or length: ${key}`);
         }
-        throw mapError(err);
+        throw mapError(err, this.container.containerName);
       }
       try {
-        return await readRow(res, key, new URL(blob.url).host);
+        return await readRow(res, key, new URL(blob.url).host, abortSignal);
       } catch (err) {
-        throw isIntegrityError(err) ? err : mapError(err);
+        throw isIntegrityError(err) ? err : mapError(err, this.container.containerName);
       }
     });
   }
@@ -132,7 +134,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       if (expect !== 'absent' && isNotFound(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
-      if (!isConditionalConflict(err)) throw mapError(err);
+      if (!isConditionalConflict(err)) throw mapError(err, this.container.containerName);
       // The client's retry policy may have sent this write again after a lost response, and the replay meets the
       // row it just wrote. The row carries this write's id when that is what happened. The read-back is not
       // definitive: a writer that swapped in over ours before it shows its own id, and ours reports a conflict.
@@ -140,7 +142,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       try {
         stored = await storedWriteId(blob);
       } catch (readErr) {
-        throw mapError(readErr);
+        throw mapError(readErr, this.container.containerName);
       }
       if (stored === writeId) return;
       throw new WriteConflictError(`registry OCC conflict for ${key}`);
@@ -160,7 +162,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
       if (isPreconditionFailed(err) || isNotFound(err)) {
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.container.containerName);
     }
   }
 
@@ -171,7 +173,7 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
         yield item.name;
       }
     } catch (err) {
-      throw mapError(err);
+      throw mapError(err, this.container.containerName);
     }
   }
 }
@@ -184,101 +186,64 @@ export class AzureBlobRegistryStore implements ObjectRegistryStore {
  * is refused at the first byte past that length. A refused response is let go: the body stream is destroyed, and the
  * read's request aborted when it fails, so the socket closes rather than holding a response nobody reads.
  */
-function readRow(res: BlobDownloadResponseParsed, key: string, host: string): Promise<ObjectRow> {
-  return new Promise<ObjectRow>((resolve, reject) => {
-    const body: (NodeJS.ReadableStream & { destroy?: () => void }) | undefined =
-      res.readableStreamBody;
-    if (body === undefined) {
-      reject(new IntegrityError(`registry read returned no body: ${key}`));
-      return;
-    }
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let settled = false;
-    const fail = (err: unknown): void => {
-      if (settled) return;
-      settled = true;
-      body.destroy?.();
-      reject(err);
-    };
-    // Listened for before anything can end the stream, and for its whole life: a body stream that errors with nothing
-    // listening throws out of the event, where no caller can catch it, and an abort makes it error. The read is aborted
-    // only once it has failed, or by its timer, whose error the read has already thrown, so an `AbortError` this read
-    // settles with is the SDK's word for a connection cut off mid-body.
-    body.on('error', (err: unknown) =>
-      fail(
-        (err as { name?: unknown } | null)?.name === 'AbortError'
-          ? Object.assign(
-              new Error('Azure Blob read was cut off before the response completed', {
-                cause: err,
-              }),
-              {
-                code: 'ECONNRESET',
-              },
-            )
-          : err,
-      ),
+async function readRow(
+  res: BlobDownloadResponseParsed,
+  key: string,
+  host: string,
+  abortSignal: AbortSignal,
+): Promise<ObjectRow> {
+  const body = res.readableStreamBody;
+  if (body === undefined) throw new IntegrityError(`registry read returned no body: ${key}`);
+  // Every refusal below is raised before a byte is read, and lets the body go first.
+  const refuse = (err: Error): never => {
+    destroyBody(body);
+    throw err;
+  };
+  const status = res._response?.status;
+  const etag = res.etag;
+  const length = res.contentLength;
+  if (status !== 200) {
+    return refuse(new IntegrityError(`registry read answered HTTP ${status}, not 200: ${key}`));
+  }
+  // A client whose retry is set to read from a secondary (`retryOptions.secondaryHost`) sends a retried GET there, and a
+  // secondary can answer with a row one or more writes behind, under its own ETag. The registry reads strongly, so
+  // that answer is refused as transient, and the read is tried again.
+  const served = res._response?.request?.url;
+  if (served !== undefined && new URL(served).host !== host) {
+    return refuse(
+      new TransientError(`registry read answered by ${new URL(served).host}, not ${host}: ${key}`),
     );
-    // A stream that closes without ending or erring was cut off all the same: a dropped connection, and retryable.
-    body.on('close', () =>
-      fail(
-        Object.assign(new Error('Azure Blob read ended before the response completed'), {
-          code: 'ECONNRESET',
-        }),
-      ),
-    );
-    const status = res._response?.status;
-    const etag = res.etag;
-    const length = res.contentLength;
-    if (status !== 200) {
-      return fail(new IntegrityError(`registry read answered HTTP ${status}, not 200: ${key}`));
-    }
-    // A client whose retry is set to read from a secondary (`retryOptions.secondaryHost`) sends a retried GET there, and a
-    // secondary can answer with a row one or more writes behind, under its own ETag. The registry reads strongly, so
-    // that answer is refused as transient, and the read is tried again.
-    const served = res._response?.request?.url;
-    if (served !== undefined && new URL(served).host !== host) {
-      return fail(
-        new TransientError(
-          `registry read answered by ${new URL(served).host}, not ${host}: ${key}`,
-        ),
-      );
-    }
-    if (typeof etag !== 'string' || etag.length === 0) {
-      return fail(new IntegrityError(`registry read carries no ETag: ${key}`));
-    }
-    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) {
-      return fail(new IntegrityError(`registry read carries no usable length: ${key}`));
-    }
-    // On the advertised length, before buffering, so a hostile blob is never materialized.
-    if (length > MAX_ROW_BYTES) {
-      return fail(new IntegrityError(`registry object ${length}B exceeds cap ${MAX_ROW_BYTES}B`));
-    }
-    // Counted as the bytes arrive, against the advertised length, which is within the cap, so a length that
-    // understates the body cannot make the read hold more than it said.
-    body.on('data', (chunk: Buffer | string) => {
-      if (settled) return;
-      const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-      total += bytes.length;
-      if (total > length) {
-        return fail(new IntegrityError(`registry read sent more than ${length}B: ${key}`));
-      }
-      chunks.push(bytes);
-    });
-    // A body that ends short of its length is the SDK's to refuse, and it does: its stream fails one that ends early,
-    // rather than ending it. The length is the bytes on the wire, which a client set to decode a checksummed transfer
-    // receives fewer of, so it bounds the bytes here and is not held equal to them.
-    body.on('end', () => {
-      if (settled) return;
-      settled = true;
-      resolve({ bytes: new Uint8Array(Buffer.concat(chunks, total)), version: etag });
-    });
-  });
+  }
+  if (typeof etag !== 'string' || etag.length === 0) {
+    return refuse(new IntegrityError(`registry read carries no ETag: ${key}`));
+  }
+  if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) {
+    return refuse(new IntegrityError(`registry read carries no usable length: ${key}`));
+  }
+  // On the advertised length, before buffering, so a hostile blob is never materialized.
+  if (length > MAX_ROW_BYTES) {
+    return refuse(new IntegrityError(`registry object ${length}B exceeds cap ${MAX_ROW_BYTES}B`));
+  }
+  // Counted as the bytes arrive, against the advertised length, which is within the cap, so a length that
+  // understates the body cannot make the read hold more than it said. A body that ends short of its length is the
+  // SDK's to refuse, and it does: its stream fails one that ends early, rather than ending it. The length is the
+  // bytes on the wire, which a client set to decode a checksummed transfer receives fewer of, so it bounds the bytes
+  // here and is not held equal to them.
+  const bytes = await collect(
+    body,
+    abortSignal,
+    length,
+    () => new IntegrityError(`registry read sent more than ${length}B: ${key}`),
+  );
+  return { bytes, version: etag };
 }
 
-/** Reclassify a transient Azure fault as a retryable {@link TransientError}; pass everything else through. */
-function mapError(err: unknown): unknown {
-  return toTransient(err, isTransient, transientFaultMessage);
+/**
+ * Reclassify a transient Azure fault as a retryable {@link TransientError} and a missing container as a
+ * `ValidationError`; any other error is passed through.
+ */
+function mapError(err: unknown, container: string): unknown {
+  return toTransient(asMissingContainer(err, container), isTransient, transientFaultMessage);
 }
 
 export class AzureBlobRegistryDriver extends ObjectStoreRegistry {

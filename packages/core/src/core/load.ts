@@ -832,10 +832,11 @@ async function runLoad(
     // attempt's compare-and-swap or create is sent, so nothing landed from it. `publishGeneration` raises three: a
     // `destroyed` row, new key material for a segment that already has a generation, and a cleartext object for a row
     // with key material. The fence a load carries (the row's token, or its absence) refuses each of those rows first,
-    // so these are a second line rather than an answer a load expects. The registries raise
-    // a `ValidationError` only from checks made before a write is sent (the ref, the record or patch, the row's size
-    // cap), and never a `KeyUnavailableError`. Anything else may still land, and keeps the object: above all the
-    // `TransientError` of a registry write the publish could not settle by reading the row back.
+    // so these are a second line rather than an answer a load expects. The registries raise a `ValidationError` only
+    // from checks made before a write is sent (the ref, the record or patch, the row's size cap), or for a bucket or
+    // container that does not exist, where nothing can land, and never a `KeyUnavailableError`. Anything else may
+    // still land, and keeps the object: above all the `TransientError` of a registry write the publish could not
+    // settle by reading the row back.
     if (isValidationError(err) || isKeyUnavailableError(err)) {
       const missing = await tidy();
       if (missing !== undefined) throw refusedOverMissing(`${err.name}: ${err.message}`, missing);

@@ -6,6 +6,7 @@
  * unit-testable without a live MinIO/S3 or even the AWS SDK. The AWS error shapes come from `./aws-errors`.
  */
 
+import { ValidationError } from '@cloudbitmaps/core/driver-kit';
 import {
   errorName,
   httpStatus,
@@ -55,6 +56,21 @@ export function isNoSuchUpload(err: unknown): boolean {
  */
 export function isMissingBucket(err: unknown): boolean {
   return errorName(err) === 'NoSuchBucket';
+}
+
+/**
+ * `err`, or the {@link ValidationError} a missing bucket is: it names the bucket and what to check, and carries the
+ * service's error as its `cause`. A wiring fault is not an absent object, so it is not a `NotFoundError`: a read
+ * re-resolves on that, and would treat a misnamed bucket as a miss it can heal.
+ */
+export function asMissingBucket(err: unknown, bucket: string): unknown {
+  if (!isMissingBucket(err)) return err;
+  return Object.assign(
+    new ValidationError(
+      `the S3 bucket does not exist: ${bucket}; check the bucket name, and the region and endpoint of the client`,
+    ),
+    { cause: err },
+  );
 }
 
 /**

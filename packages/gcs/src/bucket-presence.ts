@@ -12,7 +12,7 @@
  *                                              ▼
  *                              list one object in the bucket
  *                               ├─ answered ──────────▶ remember the bucket; the 404 is an object's
- *                               ├─ 404 ───────────────▶ reject: the bucket does not exist
+ *                               ├─ 404 ───────────────▶ reject: ValidationError, the bucket does not exist
  *                               ├─ transient ─────────▶ reject: TransientError (asked again next time)
  *                               ├─ 403 ───────────────▶ remember it as unknowable; the 404 is an object's
  *                               └─ anything else ─────▶ the 404 is an object's (asked again next time)
@@ -27,7 +27,7 @@
 
 import { TransientError } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
-import { isTransient } from './gcs-errors';
+import { isTransient, missingBucketError } from './gcs-errors';
 import { scrubCredentials } from './scrub-error';
 
 export class BucketPresence {
@@ -39,7 +39,7 @@ export class BucketPresence {
     private readonly bucket: string,
   ) {}
 
-  /** Resolve when a 404 can be read as an object's; reject when the bucket does not exist or the listing failed in transit. */
+  /** Resolve when a 404 can be read as an object's; reject with `ValidationError` when the bucket does not exist, `TransientError` when the listing failed in transit. */
   async confirm(): Promise<void> {
     if (this.settled) return;
     this.asking ??= this.ask().finally(() => {
@@ -60,7 +60,7 @@ export class BucketPresence {
       const err = scrubCredentials(failure.raised);
       const status = (err as { code?: unknown } | null)?.code;
       if (status === 404) {
-        throw new Error(`the GCS bucket does not exist: ${this.bucket}`, { cause: err });
+        throw missingBucketError(this.bucket, err);
       }
       if (isTransient(err)) {
         throw new TransientError(

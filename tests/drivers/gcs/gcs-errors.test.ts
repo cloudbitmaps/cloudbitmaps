@@ -1,6 +1,8 @@
+import { isValidationError } from '@/core/errors';
 import {
   isDownloadRetryable,
   isInvalidRange,
+  asMissingBucket,
   isMissingBucket,
   isNotFound,
   isPreconditionFailed,
@@ -72,6 +74,26 @@ describe('GCS error classification', () => {
     expect(isMissingBucket(noObject)).toBe(false);
     expect(isNotFound(noObject)).toBe(true);
     expect(isMissingBucket({ code: 403, message: says })).toBe(false);
+  });
+
+  it('reads the bucket message whatever its case', () => {
+    const e = Object.assign(new Error('The specified bucket DOES NOT EXIST.'), { code: 404 });
+    expect(isMissingBucket(e)).toBe(true);
+    const inner = Object.assign(new Error('x'), {
+      code: 404,
+      errors: [{ message: 'Bucket Does Not Exist' }],
+    });
+    expect(isMissingBucket(inner)).toBe(true);
+  });
+
+  it('a missing bucket becomes a ValidationError that names it and keeps the service error as its cause', () => {
+    const noBucket = { code: 404, message: 'The specified bucket does not exist.', errors: [] };
+    const err = asMissingBucket(noBucket, 'my-bucket') as Error;
+    expect(isValidationError(err)).toBe(true);
+    expect(err.message).toMatch(/^the GCS bucket does not exist: my-bucket; check /);
+    expect(err.cause).toBe(noBucket);
+    const noObject = { code: 404, message: 'No such object: b/o', errors: [] };
+    expect(asMissingBucket(noObject, 'my-bucket')).toBe(noObject);
   });
 
   it('416 = out-of-range (never a transient)', () => {

@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A bucket or container that does not exist is a `ValidationError` on every cloud driver.** It names the bucket or
+  container and says what to check, with the service's error as its `cause`. It is not a `NotFoundError`, which a read
+  answers by looking again. Branch on `isValidationError`, not on the SDK's `NoSuchBucket` or `ContainerNotFound`. The
+  one exception is an S3 zero-length tail read, which reads as a missing object because S3 sends no error code on a
+  HEAD.
+
 - **A load can throw `NotFoundError` after its publish landed or after it was refused, and an erasure can report it in
   place of its answer.** It means a rollback moved the pointer onto a generation the call had just deleted, and the
   row still named it after the call read it again; a refused load answered with its refusal before. Catch it where you
@@ -47,6 +53,8 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An Azure Blob generation read whose body connection closes early is a `TransientError`,** as a registry read of a
+  row cut off part-way is.
 - **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
   tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
   before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number

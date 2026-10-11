@@ -40,12 +40,17 @@ function recordingClock(onSleep?: (ms: number) => Promise<void> | void) {
   };
 }
 
-function driverOver(bucket: StubS3Bucket, extra: Record<string, unknown> = {}) {
+function driverOver(
+  bucket: StubS3Bucket,
+  extra: Record<string, unknown> = {},
+  rng?: { next(): number },
+) {
   const recorded = recordingClock(extra.onSleep as ((ms: number) => Promise<void>) | undefined);
   const driver = new S3StorageDriver({
     client: bucket.client(),
     bucket: STUB_BUCKET,
     clock: recorded.clock,
+    ...(rng === undefined ? {} : { rng }),
     ...(extra.partBytes === undefined ? {} : { partBytes: extra.partBytes as number }),
   });
   return { driver, waits: recorded.waits };
@@ -235,14 +240,33 @@ describe('S3: a throttled write-once object is sent again, and its write id tell
     ['at its lowest', 0, [0, 0, 0]],
     ['just under each bound', 0.999, [499, 999, 1998]],
   ])('waits a random time under 500 ms, then 1 s, then 2 s: %s', async (_, draw, expected) => {
-    const random = vi.spyOn(Math, 'random').mockReturnValue(draw);
+    const draws: number[] = [];
+    const bucket = new StubS3Bucket();
+    const { driver, waits } = driverOver(
+      bucket,
+      {},
+      {
+        next: () => {
+          draws.push(draw);
+          return draw;
+        },
+      },
+    );
+    for (let i = 0; i < 3; i++) bucket.arm('PutObject', 'throttle');
+    await put(driver, new Uint8Array([1]));
+    expect(bucket.count('PutObject')).toBe(4);
+    expect(waits).toEqual(expected);
+    expect(draws).toHaveLength(3); // one draw per wait, none from the global source
+  });
+
+  it('draws the jitter from Math.random when no rng is injected', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999);
     try {
       const bucket = new StubS3Bucket();
       const { driver, waits } = driverOver(bucket);
       for (let i = 0; i < 3; i++) bucket.arm('PutObject', 'throttle');
       await put(driver, new Uint8Array([1]));
-      expect(bucket.count('PutObject')).toBe(4);
-      expect(waits).toEqual(expected);
+      expect(waits).toEqual([499, 999, 1998]);
     } finally {
       random.mockRestore();
     }
