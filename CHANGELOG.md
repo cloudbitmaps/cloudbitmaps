@@ -28,8 +28,46 @@ so, and so do the module headers in the code.
   read through one chunk cache must be built with it. Naming an engine over another cache throws `ValidationError`.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
+### Changed
+
+- **A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer
+  taken for a missing key.** A `rollback` with `allowForward` on an encrypted segment, from a store with no keystore or
+  one that could not open the segment's key, checked only that the target was in the bucket and encrypted, so it could
+  move the pointer onto an object sealed under a key no row holds, such as the one the loser of two concurrent first
+  loads leaves, and every read of the segment then failed with `IntegrityError`. It now throws `KeyUnavailableError`
+  before it reads the target when the store has no keystore, or its keystore holds none of the key's KEKs or holds one
+  that does not unwrap the key, saying which, and moves nothing. A key service that throws `TransientError` or times
+  out as `AbortSignal.timeout()` and the AWS SDK report a timeout reaches the caller as `TransientError`, the timeout as
+  its `cause`, to retry. With the key it opens
+  the target as before, and refuses one that does not open. A rollback below the pointer still goes ahead without the
+  key in each of those cases, opening nothing, and leaves the row with no summary of the target. Any other failure of
+  `openDek`, such as a `TypeError` from a keystore of your own, is thrown and moves nothing, where it was swallowed and
+  the rollback went ahead without the key: make such a keystore throw `TransientError` for a fault worth riding out, as
+  `IKeystore.openDek` now says. To undo a rollback of an encrypted segment, run it on a store whose keystore opens the
+  segment's key.
+
 ### Fixed
 
+- **A rollback to the generation already current checks that its object is there.** It reported a no-op without reading
+  anything, so over a pointer that named a missing object (a collection that raced an earlier rollback, or a swap that
+  landed, lost its answer and had its target collected since) re-running a rollback to that generation answered success
+  while every read failed. It now makes one zero-byte read of the object, and when the object is gone throws
+  `NotFoundError` naming the generations in the bucket, as a rollback to any missing generation does. A fault of that
+  read is thrown rather than taken for either answer.
+- **A rollback whose swap of the pointer gets no answer is settled by reading the row.** The swap's `TransientError`
+  reached the caller with nothing checked, so a swap that had landed was never verified: its target could be collected
+  meanwhile and the pointer left on a missing object, and a move that took effect was not audited. The rollback now
+  reads the row back. When it is the row the swap leaves (the row it read, with the target as its pointer, the summary
+  the swap wrote and no kept list, and nothing else changed but its leases and its pointerId), it checks the target as
+  after any swap: it puts the pointer back if the target went, and reports and audits the move if the target is there.
+  Otherwise it throws the `TransientError`: the write may still land, and a re-run finds the pointer where it is, and a
+  load or another writer that moved the row meanwhile is left standing. Some writes leave that very row and are
+  reported and audited as the rollback's own. On a cleartext segment: another rollback onto the same target, whatever
+  row it read, and a load that wrote the very object the rollback read under its number and recorded no kept window
+  (onto a row that records none, as after a rollback, or with a `keep` above 64). On an encrypted segment the swap's
+  sealed summary tells every other write apart, except when the rollback had no key at hand and wrote no summary, and
+  another such rollback onto the same target made the same move. A row read back that is not one the library wrote
+  throws its `IntegrityError` instead.
 - **A leased handle's `iterate()`, combines and `everyNth()` return a stream that can be driven by hand.** The stream of a
   handle holding a lease was an object with `for await` and `batches()` only, so `stream.next()`, `stream.return()` and
   `stream.throw()` were `undefined` on it though the `IdStream` doc promises them, and a leased and an unleased handle

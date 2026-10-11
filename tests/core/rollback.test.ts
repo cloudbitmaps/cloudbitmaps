@@ -661,9 +661,9 @@ describe('rollback — the facade, and the validation the core owes', () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
     for (const g of [0, 1]) await w.storage.delete({ ...SEG, generation: g });
-    // Target 0 rather than the current generation: rolling to the one already current short-circuits as a
-    // reported no-op before anything is looked up, which is correct — it changes nothing.
+    // Both the generation below the pointer and the current one, whose missing object a no-op does not report as fine.
     await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(/no generations remain/);
+    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toThrow(/no generations remain/);
   });
 });
 

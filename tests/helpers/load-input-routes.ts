@@ -75,6 +75,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/retention-hard-purge.test.ts',
   'tests/core/retention-policy.test.ts',
   'tests/core/retention-sweep.test.ts',
+  'tests/core/rollback-hardening.test.ts',
   'tests/core/rollback-metadata.test.ts',
   'tests/core/rollback-races-collection.test.ts',
   'tests/core/rollback-races-collection-controls.test.ts',
