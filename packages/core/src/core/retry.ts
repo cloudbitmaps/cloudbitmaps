@@ -76,6 +76,26 @@ export function applyJitter(policy: RetryPolicy, delayMs: number, rng: Rng): num
   return rng.next() * delayMs; // full jitter: uniform in [0, delayMs)
 }
 
+/** A clock that can wait: the one member {@link jitteredWait} uses. */
+export interface Sleeper {
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+}
+
+/**
+ * Wait a uniformly spread share of `boundMs`, whole milliseconds, by the clock's `sleep`. With no `rng` it waits the
+ * whole bound; with no `sleep` it does not wait.
+ */
+export function jitteredWait(
+  clock: Sleeper | undefined,
+  rng: Rng | undefined,
+  boundMs: number,
+): Promise<void> {
+  const sleep = clock?.sleep;
+  return sleep === undefined
+    ? Promise.resolve()
+    : sleep.call(clock, Math.floor((rng?.next() ?? 1) * boundMs));
+}
+
 /**
  * The store's read retry, as a write path takes it for the reads it makes along the way: a policy (the default when
  * absent) and what {@link withRetry} needs to run it.

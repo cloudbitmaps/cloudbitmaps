@@ -37,7 +37,14 @@ import type { Clock, Rng } from './determinism';
 import { incarnationField, sameIncarnation } from './token';
 import { pointerIdOf } from './pointer-id';
 import { nextKept } from './kept-generations';
-import { isLive, leaseChurn, onlyLeasesDiffer } from './leases';
+import {
+  UNANSWERED_BASE_MS,
+  UNANSWERED_RESENDS,
+  isLive,
+  leaseChurn,
+  onlyLeasesDiffer,
+} from './leases';
+import { jitteredWait } from './retry';
 import type { KeptAfter } from './kept-generations';
 import type { PublishedKept } from './generation-gc';
 import { BoundedLru } from './lru';
@@ -2487,14 +2494,6 @@ function refuseCleartextOntoKey(
 }
 
 /**
- * How many times a publish sends a fresh compare-and-swap after one that ended without an answer and left the row as it
- * was: four sends of the row write in all.
- */
-const UNANSWERED_RESENDS = 3;
-/** The wait before the first of those, in ms, as an upper bound: each next one doubles it, and a full jitter spreads it. */
-const UNANSWERED_RESEND_BASE_MS = 500;
-
-/**
  * What a publish over an existing row says about its leases: nothing, or the list with the ended entries dropped, or
  * (for a caller that deletes every generation below the pointer) none. Ended entries are ignored by every collector
  * whether or not they are pruned; pruning here costs no request, since the write is made anyway.
@@ -2906,9 +2905,9 @@ export async function publishGenerationKept(
         // times; the registry's fence lets at most one of the two copies land.
         const sleep = options.clock?.sleep;
         if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw outcomeUnknown(key, err);
-        const bound = UNANSWERED_RESEND_BASE_MS * 2 ** resends;
+        const bound = UNANSWERED_BASE_MS * 2 ** resends;
         resends += 1;
-        await sleep.call(options.clock, Math.floor((options.rng?.next() ?? 1) * bound));
+        await jitteredWait(options.clock, options.rng, bound);
         unanswered = outcomeUnknown(key, err);
         fresh = now;
         continue;

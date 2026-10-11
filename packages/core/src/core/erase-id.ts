@@ -141,7 +141,7 @@ import type {
   SegmentRef,
   Token,
 } from './ports';
-import { type ReadRetry, retryRead } from './retry';
+import { type ReadRetry, jitteredWait, retryRead } from './retry';
 import { metadataToCarry, summaryOf, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
@@ -724,7 +724,7 @@ async function eraseOnce(
         if (sleep === undefined || resends >= UNANSWERED_RESENDS) throw failure;
         const bound = UNANSWERED_BASE_MS * 2 ** resends;
         resends += 1;
-        await sleep.call(deps.clock, Math.floor((rng?.next() ?? 1) * bound));
+        await jitteredWait(deps.clock, rng, bound);
         row = now;
         continue;
       }

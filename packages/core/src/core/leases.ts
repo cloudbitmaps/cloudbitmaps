@@ -23,6 +23,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import type { Clock, Rng } from './determinism';
+import { jitteredWait } from './retry';
 import { sameIncarnation } from './token';
 import type { IRegistryDriver, LeaseEntry, RegistryRecord, SegmentRef, Token } from './ports';
 
@@ -49,8 +50,8 @@ export const MAX_STORED_LEASES = 256;
 export const LEASE_CAS_ATTEMPTS = MAX_LEASES_PER_SEGMENT + 8;
 
 /**
- * Fresh writes sent after one that got no answer and left the row as it was, by the lease writers and by an erasure's
- * renewal of the row.
+ * Fresh writes sent after one that got no answer and left the row as it was, by the lease writers, by an erasure's
+ * renewal of the row and by a publish: four sends of the row write in all.
  */
 export const UNANSWERED_RESENDS = 3;
 /** The upper bound of the first of those waits, in ms; each next one doubles it. */
@@ -173,10 +174,7 @@ export function leaseChurn(deps: ChurnDeps): LeaseChurn {
       if (used >= LEASE_ONLY_RETRIES || !onlyLeasesDiffer(held, now, alsoIgnore)) return undefined;
       const bound = Math.min(CONFLICT_BASE_MS * 2 ** Math.min(used, 4), CONFLICT_CAP_MS);
       used += 1;
-      const sleep = deps.clock?.sleep;
-      if (sleep !== undefined) {
-        await sleep.call(deps.clock, Math.floor((deps.rng?.next() ?? 1) * bound));
-      }
+      await jitteredWait(deps.clock, deps.rng, bound);
       return { row: await reread() };
     },
   };
@@ -224,7 +222,7 @@ export interface TakenLease {
 }
 
 const wait = (deps: LeaseDeps, bound: number): Promise<void> =>
-  deps.clock.sleep(Math.floor((deps.rng?.next() ?? 1) * bound));
+  jitteredWait(deps.clock, deps.rng, bound);
 
 const heldBy = (row: RegistryRecord | null, take: LeaseTake): boolean =>
   (row?.leases ?? []).some(
