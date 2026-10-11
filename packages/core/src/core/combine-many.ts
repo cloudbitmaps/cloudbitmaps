@@ -596,9 +596,15 @@ export interface GroupCostItem {
 
 /**
  * Work counters of the planner, for the tests that hold it to its cost: how many times a group was priced, how many
- * operands those prices walked, and how many group plans were built. Plain numbers, never read by the planner.
+ * operands those prices walked, and how many group plans were built. A call counts into the one it is given
+ * ({@link runCombineManyCounted}), and into none otherwise; the planner never reads them.
  */
-export const combineWork = { adds: 0, withs: 0, operandSteps: 0, planBuilds: 0 };
+export interface PlanWork {
+  adds: number;
+  withs: number;
+  operandSteps: number;
+  planBuilds: number;
+}
 
 /**
  * The resident bytes a group needs, kept as outputs are added so that one is priced in work proportional to its own
@@ -618,15 +624,19 @@ export class GroupCost {
   constructor(
     private readonly streamBytes: (operand: number) => number,
     private readonly publishConcurrency: number,
+    /** Where this pricing is counted, when it is. */
+    private readonly work?: PlanWork,
   ) {}
 
   /** The cost of the group with `o` added. */
   with(o: GroupCostItem): number {
-    combineWork.withs++;
+    if (this.work !== undefined) {
+      this.work.withs++;
+      this.work.operandSteps += o.compiled.operands.length;
+    }
     let streams = this.streams;
     let operands = this.operands.size;
     for (const i of o.compiled.operands) {
-      combineWork.operandSteps++;
       if (!this.operands.has(i)) {
         streams += this.streamBytes(i);
         operands++;
@@ -646,9 +656,11 @@ export class GroupCost {
   }
 
   add(o: GroupCostItem): void {
-    combineWork.adds++;
+    if (this.work !== undefined) {
+      this.work.adds++;
+      this.work.operandSteps += o.compiled.operands.length;
+    }
     for (const i of o.compiled.operands) {
-      combineWork.operandSteps++;
       if (!this.operands.has(i)) {
         this.operands.add(i);
         this.streams += this.streamBytes(i);
@@ -720,6 +732,16 @@ export async function runCombineMany<R>(
   return run.execute();
 }
 
+/** {@link runCombineMany}, counting the planner's work into `work`. Not exported from the package. */
+export async function runCombineManyCounted<R>(
+  compiled: CompiledCombineMany<R>,
+  deps: CombineManyDeps,
+  work: PlanWork,
+): Promise<CombineManyRun<R>> {
+  const run = new Run(compiled, deps, work);
+  return run.execute();
+}
+
 class Run<R> {
   private readonly req: CombineManyRequest<R>;
   private readonly source: StorageChunkSource;
@@ -756,7 +778,11 @@ class Run<R> {
   private running: ReadonlyArray<OutputState<R>> = [];
   private bounds: KeyBounds[] | undefined;
 
-  constructor(compiled: CompiledCombineMany<R>, deps: CombineManyDeps) {
+  constructor(
+    compiled: CompiledCombineMany<R>,
+    deps: CombineManyDeps,
+    private readonly work?: PlanWork,
+  ) {
     const checked = COMPILED.get(compiled);
     if (checked === undefined) {
       throw new ValidationError('runCombineMany takes the result of compileCombineMany');
@@ -1041,7 +1067,7 @@ class Run<R> {
     const room = this.req.maxBufferedBytes - base;
     const groups: GroupSummary[] = [];
     const fresh = (): GroupCost =>
-      new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency);
+      new GroupCost((i) => this.operands[i]!.bytes, this.req.publishConcurrency, this.work);
     let cost = fresh();
     let kept = 0;
     let current: Array<OutputState<R>> = [];
@@ -1102,7 +1128,7 @@ class Run<R> {
 
   /** The keys each operand is fetched at for `members`, and the keys the pass visits. */
   private buildGroup(members: readonly OutputState<R>[]): GroupPlan {
-    combineWork.planBuilds++;
+    if (this.work !== undefined) this.work.planBuilds++;
     const bounds = this.boundsList();
     const bits = new Map<number, KeyBits>();
     const visit = new KeyBits();
