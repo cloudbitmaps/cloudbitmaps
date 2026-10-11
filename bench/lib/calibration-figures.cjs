@@ -56,6 +56,17 @@ const { removeAll } = require('./remove-all.cjs');
  */
 const FIXED_WINDOW_THROUGH = Object.freeze({ version: [0, 12, 0], keys: 8 });
 
+/**
+ * `0.12.0` as numbers, a pre-release counting as the release it precedes (`0.12.0-rc.1` ran 0.12.0's engine); null for
+ * anything else, which is read as the current engine. A run reports the version of the packages it ran: an evidence run
+ * installs a published release, so that is the engine that ran. A rehearsal of unreleased source made before its version
+ * bump reports the last release instead, and is read against that release's window.
+ */
+function releaseOf(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(version));
+  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
 /** The window the engine of `packageVersion` ran with: how wide it opened and the most it held. */
 function windowOfRun(packageVersion, src) {
   const release = releaseOf(packageVersion);
@@ -75,7 +86,6 @@ const {
   STEADY_LOADS,
   STEADY_LOAD_REQUESTS,
   steadyLoadRequestsOf,
-  releaseOf,
   steadyKind,
 } = require('./calibrate-stages.cjs');
 const {
@@ -493,7 +503,13 @@ function derive(run, src) {
           steadyRecords.length === STEADY_LOADS,
         `its steady stage ran ${steadyRecords.length} loads at keep ${steady.keep}, not the harness's ${STEADY_LOADS} at ${STEADY_KEEP}`,
       );
-      const wanted = steadyLoadRequestsOf(run.measured?.packageVersion);
+      // What the harness found the engine does, run in memory before the run, picks the table: see steadyLoadRequestsOf.
+      const probed = run.measured?.readsRowAfterCollect;
+      check(
+        probed === undefined || typeof probed === 'boolean',
+        `its measured.readsRowAfterCollect is ${JSON.stringify(probed)}, not true or false`,
+      );
+      const wanted = steadyLoadRequestsOf(probed);
       steadyRecords.forEach((l, g) => {
         const kind = steadyKind(g, STEADY_KEEP);
         const want = wanted[kind];

@@ -99,7 +99,12 @@ const {
 const { countSize } = require('./lib/large-counts.cjs');
 const { runLargeSuite, projectionLines } = require('./lib/calibrate-large.cjs');
 const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
-const { coldIntersectIds, coldAndNotIds, collectsByName } = require('./lib/range-counts.cjs');
+const {
+  coldIntersectIds,
+  coldAndNotIds,
+  collectsByName,
+  readsRowAfterCollect,
+} = require('./lib/range-counts.cjs');
 const {
   DISCARDS_PER_RUN,
   DISCARDS_PER_STAGE,
@@ -563,6 +568,9 @@ async function main() {
   // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
   let pricing;
   let packageVersion;
+  // Whether the installed engine's load reads the row after its collection's last delete, asked in memory: it picks the
+  // table the steady loads are held to, and is recorded with the evidence so the figures read it against the same one.
+  let readsAfterCollect;
   let sdk;
   let layout;
   let spread = null;
@@ -590,6 +598,12 @@ async function main() {
       refuse(
         `the installed @cloudbitmaps/roaring does not collect by name at keep ${STEADY_KEEP}, which the steadyLoad ` +
           'stage measures; 0.17.0 is the first release that does. Nothing was created. Install it, or run from the 0.17.0 release.',
+      );
+    }
+    if (SUITE === 'default' && MODE !== 'project') {
+      readsAfterCollect = await readsRowAfterCollect(
+        await import('@cloudbitmaps/roaring'),
+        STEADY_KEEP,
       );
     }
     if (SUITE === 'large') {
@@ -973,6 +987,7 @@ async function main() {
     region: REHEARSE ? 'n/a (local container)' : region,
     measured: {
       packageVersion,
+      ...(readsAfterCollect === undefined ? {} : { readsRowAfterCollect: readsAfterCollect }),
       harness: harnessRef(ROOT),
       node: process.version,
       // The AWS SDK that sent every request, and the socket cap of the workload client's handler, which bounds how many
@@ -1994,7 +2009,7 @@ async function main() {
         }
         const perLoadRecords = loads.map((l, g) => {
           const kind = steadyKind(g, STEADY_KEEP);
-          const want = steadyLoadRequestsOf(packageVersion)[kind];
+          const want = steadyLoadRequestsOf(readsAfterCollect)[kind];
           if (l.put !== want.put || l.get !== want.get || l.free !== want.free) {
             (results.expectedMissed ??= []).push(
               `steadyLoad: generation ${g} (${kind}) made ${l.put} PUT-class, ${l.get} GET-class and ${l.free} deletes, ` +

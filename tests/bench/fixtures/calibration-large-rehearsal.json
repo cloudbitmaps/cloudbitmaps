@@ -568,12 +568,12 @@
   },
   "projected": {
     "put": 663,
-    "get": 28973
+    "get": 28919
   },
   "projectedStages": {
     "largeLoad": {
       "put": 70,
-      "get": 96
+      "get": 90
     },
     "largeIntersect": {
       "put": 0,
@@ -589,13 +589,13 @@
     },
     "largeInto": {
       "put": 535,
-      "get": 3810
+      "get": 3765
     }
   },
   "projectedDiscards": {
     "put": 42,
-    "get": 336,
-    "costliestSample": 112
+    "get": 333,
+    "costliestSample": 111
   },
   "partial": false,
   "phases": {

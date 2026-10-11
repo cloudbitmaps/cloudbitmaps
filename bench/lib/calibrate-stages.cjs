@@ -336,12 +336,9 @@ const STEADY_LOAD_REQUESTS = Object.freeze({
 });
 
 /**
- * The first release whose load reads the pointer after its collection's last delete. A run of an earlier release ran an
- * engine that made no such read, so it is held to {@link STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE}.
+ * What one load of each kind requested on an engine whose load does not read the pointer after its collection's last
+ * delete: one GET fewer to collect.
  */
-const READ_AFTER_DELETE_SINCE = Object.freeze([0, 21, 0]);
-
-/** What one load of each kind requested on a release before {@link READ_AFTER_DELETE_SINCE}: one GET fewer to collect. */
 const STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE = Object.freeze({
   first: STEADY_LOAD_REQUESTS.first,
   reload: STEADY_LOAD_REQUESTS.reload,
@@ -350,28 +347,13 @@ const STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE = Object.freeze({
 });
 
 /**
- * `0.12.0` as numbers, a pre-release counting as the release it precedes (`0.12.0-rc.1` ran 0.12.0's engine); null for
- * anything else, which is read as the current engine. A run reports the version of the packages it ran: an evidence run
- * installs a published release, so that is the engine that ran. A rehearsal of unreleased source made before its version
- * bump reports the last release instead, and is read against that release's engine.
+ * The requests a steady load of each kind makes on the engine a run installed, from what the harness found when it ran
+ * that engine in memory before the run (`measured.readsRowAfterCollect`, from `readsRowAfterCollect` in
+ * `range-counts.cjs`). Evidence with no such answer was written by a harness that held its steady loads to the table
+ * without the read, and recorded a load that made the read as a missed count, so it is read against that table.
  */
-function releaseOf(version) {
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(version));
-  return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-/** Whether `release`, from {@link releaseOf}, is `since` or later; null, the current engine, always is. */
-function releasedSince(release, since) {
-  if (release === null) return true;
-  for (let i = 0; i < 3; i += 1) {
-    if (release[i] !== since[i]) return release[i] > since[i];
-  }
-  return true;
-}
-
-/** The requests a steady load of each kind makes on the engine of the run that reported `packageVersion`. */
-function steadyLoadRequestsOf(packageVersion) {
-  return releasedSince(releaseOf(packageVersion), READ_AFTER_DELETE_SINCE)
+function steadyLoadRequestsOf(readsRowAfterCollect) {
+  return readsRowAfterCollect === true
     ? STEADY_LOAD_REQUESTS
     : STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE;
 }
@@ -394,7 +376,6 @@ module.exports = {
   LIST_CADENCE,
   STEADY_LOAD_REQUESTS,
   steadyLoadRequestsOf,
-  releaseOf,
   steadyKind,
   expectedSteady,
   STAGES,

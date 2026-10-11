@@ -944,6 +944,7 @@ describe('the steady-load stage', () => {
   };
   const rangeCounts = require_(join(ROOT, 'bench', 'lib', 'range-counts.cjs')) as {
     collectsByName: (engine: unknown, keep?: number) => Promise<boolean>;
+    readsRowAfterCollect: (engine: unknown, keep?: number) => Promise<boolean>;
   };
   const engineSrc = (rel: string): string =>
     readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', rel), 'utf8');
@@ -1088,6 +1089,50 @@ describe('the steady-load stage', () => {
     expect(at('collectsByName(await import')).toBeGreaterThan(-1);
     expect(at('collectsByName(await import')).toBeLessThan(at('layout = planLayout('));
     expect(harnessSrc).toContain('0.17.0 is the first release that does');
+  });
+
+  it('asks the installed engine whether its load reads the row after its last delete, and records the answer', async () => {
+    const real = { CloudRoaring, MemoryStorage };
+    expect(await rangeCounts.readsRowAfterCollect(real)).toBe(true);
+    // An engine whose load ends at its collection's delete: here the read after it is served past the probe's count.
+    class EndsAtTheDelete extends CloudRoaring {
+      constructor(options: ConstructorParameters<typeof CloudRoaring>[0]) {
+        const { storage, registry } = options.storage as unknown as {
+          storage: { delete: (...a: unknown[]) => Promise<void> };
+          registry: { get: (...a: unknown[]) => Promise<unknown> };
+        };
+        const counted = { delete: storage.delete, get: registry.get };
+        const uncounted = (Object.getPrototypeOf(registry) as typeof registry).get;
+        let deleted = false;
+        storage.delete = (...a) => {
+          deleted = true;
+          return counted.delete(...a);
+        };
+        registry.get = (...a) => (deleted ? uncounted.apply(registry, a) : counted.get(...a));
+        super(options);
+      }
+    }
+    expect(
+      await rangeCounts.readsRowAfterCollect({ CloudRoaring: EndsAtTheDelete, MemoryStorage }),
+    ).toBe(false);
+    // One that deletes nothing there is not asked, since the harness refuses it first; the probe says why it cannot answer.
+    class KeepsEverything extends CloudRoaring {
+      override load(...[ref, ids, options]: Parameters<CloudRoaring['load']>) {
+        return super.load(ref, ids, { ...options, keep: 1_000 });
+      }
+    }
+    await expect(
+      rangeCounts.readsRowAfterCollect({ CloudRoaring: KeepsEverything, MemoryStorage }),
+    ).rejects.toThrow(/deleted nothing on its first load past a window of 12/);
+    // The harness asks before it creates anything, after the engine is known to collect by name, and records the answer
+    // where the figures read it.
+    const at = (needle: string): number => harnessSrc.indexOf(needle);
+    expect(at('readsRowAfterCollect(await import')).toBeGreaterThan(
+      at('collectsByName(await import'),
+    );
+    expect(at('readsRowAfterCollect(await import')).toBeLessThan(at('layout = planLayout('));
+    expect(harnessSrc).toContain('{ readsRowAfterCollect: readsAfterCollect }');
+    expect(harnessSrc).toContain('steadyLoadRequestsOf(readsAfterCollect)[kind]');
   });
 
   it('claims the steady segment once, for its first load, and reloads it through the same helper', () => {
