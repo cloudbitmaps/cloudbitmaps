@@ -130,3 +130,57 @@ describe('registryListPrefix — namespace scoping', () => {
     }
   });
 });
+
+describe('registry keys: exact layout', () => {
+  it('maps a ref to <prefix>registry/<ns>/<segment>.reg', () => {
+    expect(registryObjectKey(undefined, { segment: 's' })).toBe('registry/_default/s.reg');
+    expect(registryObjectKey('cr', { namespace: 't1', segment: 's' })).toBe('cr/registry/t1/s.reg');
+  });
+
+  it('scopes the list prefix registry-wide or to one namespace', () => {
+    expect(registryListPrefix('cr')).toBe('cr/registry/');
+    expect(registryListPrefix('cr', 't1')).toBe('cr/registry/t1/');
+    expect(registryListPrefix(undefined, undefined)).toBe('registry/');
+  });
+
+  it('round-trips key → ref (mapping _default back to the absent namespace)', () => {
+    for (const ref of [{ segment: 's' }, { namespace: 't1', segment: 'seg-2' }]) {
+      expect(parseRegistryKey('cr', registryObjectKey('cr', ref))).toEqual({
+        segment: ref.segment,
+        namespace: (ref as { namespace?: string }).namespace,
+      });
+    }
+  });
+
+  it('returns null for a foreign / malformed key (not parsed as a ref)', () => {
+    for (const key of [
+      'cr/registry/not-a-registry-object.txt', // wrong suffix
+      'cr/registry/no-slash.reg', // no <ns>/<segment> split
+      'cr/segments/_default/s.reg', // not under registry/
+      'cr/registry/_default/.reg', // empty segment
+      'cr/registry/_default/../escape.reg', // grammar-invalid segment
+    ]) {
+      expect(parseRegistryKey('cr', key)).toBeNull();
+    }
+  });
+
+  it('refuses a key whose encoding does not ROUND-TRIP, so one segment cannot wear two names', () => {
+    // A foreign object placed under our prefix could spell a name two ways; reporting both would hand a
+    // sweep one segment under two identities. The driver only ever writes the canonical spelling.
+    expect(parseRegistryKey(undefined, 'registry/_default/a%2Fb.reg')).toEqual({
+      segment: 'a/b',
+      namespace: undefined,
+    });
+    // Lowercase escape — decodes to the same name, but we never wrote it.
+    expect(parseRegistryKey(undefined, 'registry/_default/a%2fb.reg')).toBeNull();
+    // A literal `%` that is not an escape we emit.
+    expect(parseRegistryKey(undefined, 'registry/_default/a%b.reg')).toBeNull();
+    // Same rule on the namespace half.
+    expect(parseRegistryKey(undefined, 'registry/a%2fb/s.reg')).toBeNull();
+    // …and the sentinel is not impersonable: `%5Fdefault` is the namespace literally named `_default`.
+    expect(parseRegistryKey(undefined, 'registry/%5Fdefault/s.reg')).toEqual({
+      segment: 's',
+      namespace: '_default',
+    });
+  });
+});

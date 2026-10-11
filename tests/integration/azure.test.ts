@@ -16,7 +16,7 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { isConditionalConflict } from '@/azure-blob/azure-errors';
-import { storageObjectName } from '@/azure-blob/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
@@ -434,7 +434,7 @@ describe('Azure conflict against the write own id (Azurite)', () => {
     it('stays a conflict when the blob was written with no id', async () => {
       const prefix = uniq('noid');
       const driver = new AzureBlobStorageDriver(opts(container, prefix));
-      const name = storageObjectName(prefix, gen(1));
+      const name = storageObjectKey(prefix, gen(1));
       await container
         .getBlockBlobClient(name)
         .upload(new Uint8Array([1]), 1, { conditions: { ifNoneMatch: '*' } });

@@ -38,9 +38,10 @@ import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
-  ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
+  requireBool,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { BlobDownloadResponseParsed, ContainerClient } from '@azure/storage-blob';
@@ -49,6 +50,7 @@ import {
   isNotFound,
   isPreconditionFailed,
   isTransient,
+  transientFaultMessage,
 } from './azure-errors';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
@@ -276,22 +278,7 @@ function readRow(res: BlobDownloadResponseParsed, key: string, host: string): Pr
 
 /** Reclassify a transient Azure fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
-  if (isTransient(err)) {
-    return new TransientError(
-      `transient Azure Blob fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
-      { cause: err },
-    );
-  }
-  return err;
-}
-
-/** {@link AzureBlobRegistryDriverOptions.conditionalDelete}, checked, or its default (on). */
-function resolveConditionalDelete(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (typeof value !== 'boolean') {
-    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
-  }
-  return value;
+  return toTransient(err, isTransient, transientFaultMessage);
 }
 
 export class AzureBlobRegistryDriver extends ObjectStoreRegistry {
@@ -300,7 +287,7 @@ export class AzureBlobRegistryDriver extends ObjectStoreRegistry {
       new AzureBlobRegistryStore(
         options.containerClient,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        resolveConditionalDelete(options.conditionalDelete),
+        requireBool('conditionalDelete', options.conditionalDelete) ?? true,
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

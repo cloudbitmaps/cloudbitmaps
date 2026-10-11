@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from '@/s3/storage';
 import { S3Storage } from '@/s3/backend';
-import { storageObjectKey } from '@/s3/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { isolateAwsEnv, type IsolatedAwsEnv } from '../../helpers/aws-env';

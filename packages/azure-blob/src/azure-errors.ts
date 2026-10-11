@@ -13,6 +13,7 @@
  * (`getProperties`) on a missing blob returns 404 with `.code` *undefined* (no response body), so NotFound is
  * keyed off the status, not the code.
  */
+import { isTransportFault } from '@cloudbitmaps/core/driver-kit';
 
 /** The HTTP status of an Azure `RestError`, if present (`err.statusCode` as a number). */
 function httpStatus(err: unknown): number | undefined {
@@ -88,7 +89,8 @@ export function isInvalidRange(err: unknown): boolean {
 
 /**
  * A transient Azure fault that is safe to retry: throttling (429 / `ServerBusy` / `OperationTimedOut`), any
- * 5xx, or a dropped/timed-out socket. Excludes the deterministic, caller-meaningful outcomes (409/412/404/416)
+ * 5xx, or a dropped/timed-out socket: a connection fault Node reports ({@link isTransportFault}), or a socket timeout
+ * under its older name, `ESOCKETTIMEDOUT`. Excludes the deterministic, caller-meaningful outcomes (409/412/404/416)
  * — those must never be reclassified as a blind transient (a retried doomed conditional write would just fail
  * again, and mask an OCC conflict).
  */
@@ -99,17 +101,14 @@ export function isTransient(err: unknown): boolean {
   const code = azureCode(err);
   if (code === 'ServerBusy' || code === 'OperationTimedOut' || code === 'InternalError')
     return true;
-  const net = networkCode(err);
-  return (
-    net === 'ECONNRESET' ||
-    net === 'ECONNABORTED' ||
-    net === 'ETIMEDOUT' ||
-    net === 'ESOCKETTIMEDOUT' ||
-    net === 'ECONNREFUSED' ||
-    net === 'EHOSTUNREACH' ||
-    net === 'ENETUNREACH' ||
-    net === 'EPIPE' ||
-    net === 'EAI_AGAIN' ||
-    net === 'ENOTFOUND'
-  );
+  return isTransportFault(err) || networkCode(err) === 'ESOCKETTIMEDOUT';
+}
+
+/**
+ * The message a transient Azure fault is handed on with: `transient Azure fault: <code>`, the Azure error code
+ * (`ServerBusy`) or Node's connection code (`ECONNRESET`), else the error's name.
+ */
+export function transientFaultMessage(err: unknown): string {
+  const name = (err as { name?: unknown } | null | undefined)?.name;
+  return `transient Azure fault: ${String(azureCode(err) ?? name ?? 'unknown')}`;
 }

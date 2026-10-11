@@ -1,7 +1,7 @@
 import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from '@/s3/storage';
 import { ValidationError } from '@/core/errors';
-import { storageObjectKey } from '@/s3/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 
 // Constructor-level checks need no network (the client is never called), so they run on the normal lane.
 const fakeClient = {} as unknown as S3Client;

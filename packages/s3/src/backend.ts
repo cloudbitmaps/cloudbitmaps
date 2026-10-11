@@ -13,7 +13,13 @@
  * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
  * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
  */
-import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import {
+  STORAGE_BACKEND,
+  ValidationError,
+  brandAsBackend,
+  refuseUnknownOptions,
+  requirePositiveInt,
+} from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
@@ -22,7 +28,6 @@ import type {
 import { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
-import { describe } from './read-timeout';
 import { SocketAdvisory, type PooledHandler } from './socket-advisory';
 import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
 
@@ -175,27 +180,6 @@ export function limitSockets(client: S3Client, maxSockets: number): void {
   };
 }
 
-/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
-function refuseUnknown(
-  name: string,
-  options: unknown,
-  keys: readonly string[],
-  hint: string,
-): void {
-  if (options === null || typeof options !== 'object') {
-    throw new ValidationError(
-      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
-    );
-  }
-  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
-  if (unknown.length > 0) {
-    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
-    throw new ValidationError(
-      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
-    );
-  }
-}
-
 export class S3Storage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -206,7 +190,12 @@ export class S3Storage implements StorageBackend {
   private readonly sockets: SocketAdvisory;
 
   constructor(options: S3StorageOptions) {
-    refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
+    refuseUnknownOptions(
+      'S3Storage',
+      options,
+      S3_STORAGE_OPTION_KEYS,
+      'an S3 client goes in `client`',
+    );
     if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
       throw new ValidationError('S3Storage needs a `bucket`: the name of one, a non-empty string');
     }
@@ -230,12 +219,8 @@ export class S3Storage implements StorageBackend {
       }
       this.client = options.client;
     } else {
-      const { maxSockets = DEFAULT_MAX_SOCKETS } = options;
-      if (!Number.isSafeInteger(maxSockets) || maxSockets < 1) {
-        throw new ValidationError(
-          `maxSockets must be a positive safe integer; got ${describe(options.maxSockets)}`,
-        );
-      }
+      const maxSockets =
+        requirePositiveInt('maxSockets', options.maxSockets) ?? DEFAULT_MAX_SOCKETS;
       this.client = new S3Client({
         ...(options.region === undefined ? {} : { region: options.region }),
         ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),

@@ -1,12 +1,17 @@
-import { storageObjectKey, parseGenerationFromKey, segmentObjectPrefix } from '@/s3/keys';
 import {
-  parseRegistryKey,
-  registryListPrefix,
-  registryObjectKey,
-} from '@/drivers/_shared/object-registry-keys';
+  normalizeObjectPrefix,
+  parseGenerationFromKey,
+  segmentObjectPrefix,
+  storageObjectKey,
+} from '@cloudbitmaps/core/driver-kit';
 import { ValidationError } from '@/core/errors';
+import { encodeNameForKey } from '@/core/name-codec';
 
-describe('S3 object-key grammar', () => {
+/**
+ * The storage object layout every object-store driver (S3, GCS, Azure Blob) builds its keys with: one definition, so a
+ * segment written through one driver reads identically through another on the same bucket.
+ */
+describe('storage object keys', () => {
   describe('storageObjectKey', () => {
     it('maps a GenKey to <ns>/segments/<segment>.<gen>.crbm', () => {
       expect(storageObjectKey(undefined, { segment: 's', generation: 3 })).toBe(
@@ -15,6 +20,18 @@ describe('S3 object-key grammar', () => {
       expect(
         storageObjectKey(undefined, { namespace: 'tenant1', segment: 's', generation: 0 }),
       ).toBe('tenant1/segments/s.0.crbm');
+      expect(
+        storageObjectKey('cloudbitmaps', { segment: 'seg1', generation: 42, namespace: 'ns' }),
+      ).toBe('cloudbitmaps/ns/segments/seg1.42.crbm');
+    });
+
+    it('encodes the segment and namespace names, so a name that needs encoding stays one path part', () => {
+      const key = storageObjectKey(undefined, { segment: 'A/b', generation: 1 });
+      expect(key).toBe(`_default/segments/${encodeNameForKey('A/b')}.1.crbm`);
+      expect(key.split('/')).toHaveLength(3);
+      const prefix = segmentObjectPrefix('p', { namespace: 'N/x', segment: 'A/b' });
+      expect(prefix).toBe(`p/${encodeNameForKey('N/x')}/segments/${encodeNameForKey('A/b')}.`);
+      expect(prefix.split('/')).toHaveLength(4);
     });
 
     it('applies a caller prefix, trimming stray slashes', () => {
@@ -29,7 +46,7 @@ describe('S3 object-key grammar', () => {
       );
     });
 
-    it('rejects a bad generation', () => {
+    it('rejects a generation that is not a whole number from 0', () => {
       for (const gen of [-1, 1.5, NaN]) {
         expect(() => storageObjectKey(undefined, { segment: 's', generation: gen })).toThrow(
           ValidationError,
@@ -37,27 +54,7 @@ describe('S3 object-key grammar', () => {
       }
     });
 
-    it('refuses a key whose encoding does not ROUND-TRIP, so one segment cannot wear two names', () => {
-      // A foreign object placed under our prefix could spell a name two ways; reporting both would hand a
-      // sweep one segment under two identities. The driver only ever writes the canonical spelling.
-      expect(parseRegistryKey(undefined, 'registry/_default/a%2Fb.reg')).toEqual({
-        segment: 'a/b',
-        namespace: undefined,
-      });
-      // Lowercase escape — decodes to the same name, but we never wrote it.
-      expect(parseRegistryKey(undefined, 'registry/_default/a%2fb.reg')).toBeNull();
-      // A literal `%` that is not an escape we emit.
-      expect(parseRegistryKey(undefined, 'registry/_default/a%b.reg')).toBeNull();
-      // Same rule on the namespace half.
-      expect(parseRegistryKey(undefined, 'registry/a%2fb/s.reg')).toBeNull();
-      // …and the sentinel is not impersonable: `%5Fdefault` is the namespace literally named `_default`.
-      expect(parseRegistryKey(undefined, 'registry/%5Fdefault/s.reg')).toEqual({
-        segment: 's',
-        namespace: '_default',
-      });
-    });
-
-    it('rejects a traversal / invalid segment or namespace name', () => {
+    it('rejects an invalid segment or namespace name', () => {
       for (const bad of ['', 'a'.repeat(257)]) {
         expect(() => storageObjectKey(undefined, { segment: bad, generation: 1 })).toThrow(
           ValidationError,
@@ -66,6 +63,27 @@ describe('S3 object-key grammar', () => {
           storageObjectKey(undefined, { namespace: bad, segment: 's', generation: 1 }),
         ).toThrow(ValidationError);
       }
+    });
+  });
+
+  describe('segmentObjectPrefix', () => {
+    it('is the listing prefix every generation key starts with', () => {
+      expect(segmentObjectPrefix(undefined, { segment: 's' })).toBe('_default/segments/s.');
+      expect(segmentObjectPrefix('p/', { segment: 's', namespace: 'ns' })).toBe('p/ns/segments/s.');
+      const key = storageObjectKey('p', { namespace: 'ns', segment: 's', generation: 5 });
+      expect(key.startsWith(segmentObjectPrefix('p', { namespace: 'ns', segment: 's' }))).toBe(
+        true,
+      );
+    });
+  });
+
+  describe('normalizeObjectPrefix', () => {
+    it('rejects a traversing or control-character prefix, and passes an ordinary one unchanged', () => {
+      for (const p of ['..', 'a/../b', './x', 'a\tb']) {
+        expect(() => normalizeObjectPrefix(p)).toThrow(ValidationError);
+      }
+      expect(normalizeObjectPrefix('a/b/c')).toBe('a/b/c');
+      expect(normalizeObjectPrefix(undefined)).toBeUndefined();
     });
   });
 
@@ -84,9 +102,23 @@ describe('S3 object-key grammar', () => {
       expect(parseGenerationFromKey(prefix, '_default/segments/s.crbm')).toBeNull(); // no gen
       expect(parseGenerationFromKey(prefix, '_default/segments/s.1.txt')).toBeNull(); // wrong suffix
       expect(parseGenerationFromKey(prefix, '_default/segments/s.1.5.crbm')).toBeNull(); // dotted middle
+      expect(parseGenerationFromKey(prefix, `${prefix}abc.crbm`)).toBeNull(); // not digits
+      expect(parseGenerationFromKey(prefix, 'other/segments/x.1.crbm')).toBeNull(); // foreign key
       expect(
         parseGenerationFromKey(prefix, '_default/segments/s.99999999999999999999.crbm'),
       ).toBeNull(); // > MAX_SAFE_INTEGER
+    });
+
+    it('reads a key that does not end in .crbm as no generation, whatever is left of it', () => {
+      expect(parseGenerationFromKey(prefix, '_default/segments/s.12.crbx')).toBeNull();
+      expect(parseGenerationFromKey(prefix, '_default/segments/s.123456')).toBeNull();
+      expect(parseGenerationFromKey(prefix, '_default/segments/s.12.crbm.')).toBeNull();
+    });
+
+    it('takes the segment prefix only at the start of the key, not anywhere inside it', () => {
+      // A real segment prefix ends in `.`; a prefix ending in a digit shows a match found inside the key.
+      expect(parseGenerationFromKey('1', '21.crbm')).toBeNull();
+      expect(parseGenerationFromKey('1', '11.crbm')).toBe(1);
     });
 
     it('does not match a different segment that merely shares the prefix string', () => {
@@ -106,42 +138,6 @@ describe('S3 object-key grammar', () => {
       // a different namespace's key won't parse under t1's prefix
       const otherKey = storageObjectKey('p', { namespace: 't2', segment: 's', generation: 9 });
       expect(parseGenerationFromKey(t1, otherKey)).toBeNull();
-    });
-  });
-
-  describe('registry keys', () => {
-    it('maps a ref to <prefix>registry/<ns>/<segment>.reg', () => {
-      expect(registryObjectKey(undefined, { segment: 's' })).toBe('registry/_default/s.reg');
-      expect(registryObjectKey('cr', { namespace: 't1', segment: 's' })).toBe(
-        'cr/registry/t1/s.reg',
-      );
-    });
-
-    it('scopes the list prefix registry-wide or to one namespace', () => {
-      expect(registryListPrefix('cr')).toBe('cr/registry/');
-      expect(registryListPrefix('cr', 't1')).toBe('cr/registry/t1/');
-      expect(registryListPrefix(undefined, undefined)).toBe('registry/');
-    });
-
-    it('round-trips key → ref (mapping _default back to the absent namespace)', () => {
-      for (const ref of [{ segment: 's' }, { namespace: 't1', segment: 'seg-2' }]) {
-        expect(parseRegistryKey('cr', registryObjectKey('cr', ref))).toEqual({
-          segment: ref.segment,
-          namespace: (ref as { namespace?: string }).namespace,
-        });
-      }
-    });
-
-    it('returns null for a foreign / malformed key (not parsed as a ref)', () => {
-      for (const key of [
-        'cr/registry/not-a-registry-object.txt', // wrong suffix
-        'cr/registry/no-slash.reg', // no <ns>/<segment> split
-        'cr/segments/_default/s.reg', // not under registry/
-        'cr/registry/_default/.reg', // empty segment
-        'cr/registry/_default/../escape.reg', // grammar-invalid segment
-      ]) {
-        expect(parseRegistryKey('cr', key)).toBeNull();
-      }
     });
   });
 });

@@ -15,7 +15,7 @@ import {
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { storageObjectName } from '@/gcs/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { GcsRegistryDriver } from '@/gcs/registry';
 import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
@@ -361,7 +361,7 @@ describe('GCS resumable conflict against the write own id (fake-gcs-server)', ()
 
   it('stays a conflict when the object was written with no id', async () => {
     const prefix = `${RUN}/wid-noid/${n++}`;
-    const name = storageObjectName(prefix, gen(1));
+    const name = storageObjectKey(prefix, gen(1));
     await storage
       .bucket(BUCKET)
       .file(name)
@@ -539,7 +539,7 @@ describe('GCS (fake-gcs-server): a single-request upload the client is told was 
     await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1, 2, 3) }]);
     const [meta] = await storage
       .bucket(BUCKET)
-      .file(storageObjectName(prefix, gen(1)))
+      .file(storageObjectKey(prefix, gen(1)))
       .getMetadata();
     expect((meta.metadata as { cbwid?: string }).cbwid).toMatch(/^[0-9a-f]{32}$/);
   });

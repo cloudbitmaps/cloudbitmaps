@@ -37,10 +37,11 @@ import {
   isIntegrityError,
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
-  TransientError,
   ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
+  requireBool,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import {
@@ -51,11 +52,11 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
-import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
+import { isConditionalConflict, isNotFound, isTransient, transientFaultMessage } from './s3-errors';
 import { sendOnce } from './send-once';
 import { destroyBody, readBounded } from './bounded-body';
 import { scrubCredentials } from './scrub-error';
-import { appliesDeleteIfMatch, checkConditionalDelete, probeClient } from './client-probe';
+import { appliesDeleteIfMatch, probeClient } from './client-probe';
 import type { ClientFacts } from './client-probe';
 
 export interface S3RegistryDriverOptions {
@@ -270,14 +271,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
 
 /** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */
 function mapError(err: unknown): unknown {
-  err = scrubCredentials(err);
-  if (isTransient(err)) {
-    return new TransientError(
-      `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
-      { cause: err },
-    );
-  }
-  return err;
+  return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
 }
 
 export class S3RegistryDriver extends ObjectStoreRegistry {
@@ -287,7 +281,7 @@ export class S3RegistryDriver extends ObjectStoreRegistry {
         options.client,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        checkConditionalDelete(options.conditionalDelete),
+        requireBool('conditionalDelete', options.conditionalDelete),
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),
