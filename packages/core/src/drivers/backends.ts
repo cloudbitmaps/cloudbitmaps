@@ -14,6 +14,10 @@ import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/por
 import { MemoryRegistryDriver, MemoryStorageDriver } from './memory';
 import { LocalFsStorageDriver } from './localfs/storage';
 import { LocalFsRegistryDriver } from './localfs/registry';
+import { checkNow, refuseUnknownOptions } from './_shared/options';
+import { ValidationError } from '@/core/errors';
+
+const CLOCK_OPTION_KEYS = ['now'] as const;
 
 export interface MemoryStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
@@ -33,6 +37,8 @@ export class MemoryStorage implements StorageBackend {
   readonly registry: IRegistryDriver;
 
   constructor(options: MemoryStorageOptions = {}) {
+    refuseUnknownOptions('MemoryStorage', options, CLOCK_OPTION_KEYS);
+    checkNow('MemoryStorage', options.now);
     this.storage = new MemoryStorageDriver();
     this.registry = new MemoryRegistryDriver(options.now === undefined ? {} : { now: options.now });
     brandAsBackend(this);
@@ -66,10 +72,17 @@ export class LocalFsStorage implements StorageBackend {
     readonly root: string,
     options: LocalFsStorageOptions = {},
   ) {
-    this.storage = new LocalFsStorageDriver(join(root, 'storage'));
+    if (typeof root !== 'string' || root.length === 0) {
+      throw new ValidationError(
+        `LocalFsStorage needs a root directory: a non-empty string, got ${root === '' ? 'an empty string' : typeof root}`,
+      );
+    }
+    refuseUnknownOptions('LocalFsStorage', options, CLOCK_OPTION_KEYS);
+    checkNow('LocalFsStorage', options.now);
+    this.storage = new LocalFsStorageDriver(join(root, 'storage'), { privateRoot: root });
     this.registry = new LocalFsRegistryDriver(
       join(root, 'registry'),
-      options.now === undefined ? {} : { now: options.now },
+      options.now === undefined ? { privateRoot: root } : { now: options.now, privateRoot: root },
     );
     brandAsBackend(this);
   }
