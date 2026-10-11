@@ -154,9 +154,8 @@ function staleListing(base: IRegistryDriver, act: () => Promise<void>): IRegistr
 
 for (const format of ['roaring', 'ndjson'] as const) {
   for (const abortFails of [false, true]) {
-    // Kills: a skip that never aborts the open writer (leaves a `.part` temp behind in the CLI's sink), a skip that
-    // drops the namespace, and a skip whose abort fault is not isolated. The shipped test only bounds aborts at <= 1
-    // and names no namespace.
+    // The open writer is aborted (so the CLI's sink leaves no `.part` temp), the skip names its namespace, and a
+    // fault from `abort` does not turn the skip into a failure.
     it(`(${format}) a namespaced segment destroyed after the listing is aborted exactly once and skipped with its namespace${abortFails ? ' even when abort throws' : ''}`, async () => {
       const { storage, registry } = new MemoryStorage();
       const ref = { namespace: 'ns', segment: 'victim' };

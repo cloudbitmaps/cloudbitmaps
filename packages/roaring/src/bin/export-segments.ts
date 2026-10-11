@@ -160,7 +160,11 @@ export function fsSink(out: string): ExportSink {
           // Discard the partial; best-effort so a failing cleanup never masks the caller's original fault.
           await handle.close().catch(() => {});
           await rm(tmpPath, { force: true });
-          await rmdir(dir).catch(() => {}); // only an empty directory goes; one holding files is left alone
+          // Only an empty directory goes; one holding files is left alone, and any other fault is the caller's to see.
+          await rmdir(dir).catch((err: NodeJS.ErrnoException) => {
+            if (err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST' && err.code !== 'ENOENT')
+              throw err;
+          });
         },
       };
     },

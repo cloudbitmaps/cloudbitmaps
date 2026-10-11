@@ -136,7 +136,7 @@ async function dueAndForeign(): Promise<{
 
 for (const scan of ['fleet', 'index'] as const) {
   describe(`foreign-tombstone pointer removal (scan: ${scan})`, () => {
-    // Kills: a delete without the token fence (it would remove a pointer that was re-filed after the scan read it).
+    // A pointer re-filed after the scan read it is kept: each delete is fenced on the token the scan saw.
     it('does not remove a pointer that changed after the scan read it, and counts no fault for the lost race', async () => {
       const { w, soon } = await dueAndForeign();
       let raced = false;
@@ -155,7 +155,7 @@ for (const scan of ['fleet', 'index'] as const) {
       expect(await pointerCount(w.registry, soon)).toBe(1); // the re-filed pointer survived
     });
 
-    // Kills: removing from the scan's snapshot without reading the row again. The tombstone is purged by hand and its
+    // The row is read again before its pointers go. The tombstone is purged by hand and its
     // name re-created with a policy due the same day after the scan read it, and the pointer at the key (unchanged,
     // so it carries the token the scan read) is now the live row's own.
     it('does not remove the pointer of a name re-created after the scan read its tombstone', async () => {
@@ -189,7 +189,7 @@ for (const scan of ['fleet', 'index'] as const) {
       expect(await pointerCount(w.registry, soon)).toBe(1); // the live row's pointer survived
     });
 
-    // Kills: removal under dryRun.
+    // A dry run removes nothing.
     it('leaves every pointer in place under dryRun', async () => {
       const { w, soon } = await dueAndForeign();
       const before = await pointerCount(w.registry, soon);
@@ -200,8 +200,7 @@ for (const scan of ['fleet', 'index'] as const) {
       expect(await pointerCount(w.registry, soon)).toBe(before);
     });
 
-    // Kills: removal on a registry without a permanent delete (a delete there rewrites the row as a tombstone, so
-    // every scan would read one more row).
+    // Where a delete only rewrites a row as a tombstone, removing a pointer would leave one more row for every scan.
     it('removes nothing on a registry that cannot delete a row for good', async () => {
       const { w, soon } = await dueAndForeign();
       const before = await pointerCount(w.registry, soon);
@@ -210,8 +209,7 @@ for (const scan of ['fleet', 'index'] as const) {
       expect(await pointerCount(w.registry, soon)).toBe(before);
     });
 
-    // Kills: a cleanup fault that propagates out of the sweep (it would abort the rest of the run), and one that is
-    // swallowed without being counted (an operator would never learn the registry refuses deletes).
+    // A refused delete never aborts the sweep, and is counted so an operator learns the registry refuses deletes.
     it('a refused pointer delete is counted, reported, and does not stop the sweep retiring the rest', async () => {
       const { w, soon } = await dueAndForeign();
       const registry = wrapRegistry(w.registry, {
@@ -230,3 +228,68 @@ for (const scan of ['fleet', 'index'] as const) {
     });
   });
 }
+
+describe('foreign-tombstone pointer removal: bounds and faults', () => {
+  const noticeable = ['foreign1', 'foreign2', 'foreign3'];
+
+  async function threeForeignAndOneDue() {
+    const w = await loadedStore(
+      {},
+      { seams: { clock: { now: () => T0, sleep: () => Promise.resolve() } } },
+    );
+    const soon = T0 + DAY;
+    for (const segment of [...noticeable, 'mine']) {
+      const ref: SegmentRef = { namespace: 'active', segment };
+      await w.load(ref, [1]);
+      await w.store.setRetention(ref, { expiresAt: soon });
+    }
+    for (const segment of noticeable) {
+      await dropSegment(
+        { namespace: 'active', segment },
+        { registry: w.registry, storage: w.storage },
+        { confirmSegment: segment },
+      );
+    }
+    return { w, soon };
+  }
+
+  for (const scan of ['fleet', 'index'] as const) {
+    // The cap is its own budget: it holds at `limit`, and a backlog of such tombstones does not hold back retirements.
+    it(`works at most limit foreign tombstones per call, apart from retirements (scan: ${scan})`, async () => {
+      const { w, soon } = await threeForeignAndOneDue();
+      const deps = { registry: w.registry, storage: w.storage };
+
+      const first = await retireExpired(deps, { scan, now: soon + 1, limit: 1 });
+      expect(first.retired).toBe(1);
+      expect(first.limited).toBe(false);
+      expect(await pointerCount(w.registry, soon)).toBe(2);
+
+      await retireExpired(deps, { scan, now: soon + 1, limit: 1 });
+      expect(await pointerCount(w.registry, soon)).toBe(1);
+    });
+  }
+
+  it('counts a refused re-read, leaves the pointer, and goes on to retire', async () => {
+    const { w, soon } = await dueAndForeign();
+    const registry = new Proxy(w.registry, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop, target) as unknown;
+        if (prop === 'get') {
+          return (ref: SegmentRef) => {
+            if (ref.segment === 'foreign') throw AccessDenied();
+            return target.get(ref);
+          };
+        }
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const res = await retireExpired(
+      { registry, storage: w.storage },
+      { scan: 'fleet', now: soon + 1 },
+    );
+    expect(res.retired).toBe(1);
+    expect(res.purgeFaults).toBe(1);
+    expect(res.firstPurgeFault).toBe('failed: Access Denied');
+    expect(await pointerCount(w.registry, soon)).toBe(1);
+  });
+});

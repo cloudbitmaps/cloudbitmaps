@@ -97,8 +97,9 @@ export interface RetireExpiredOptions {
   readonly now: number;
   /**
    * Maximum segments to retire in this cycle (default 100). It also bounds the purges attempted (a purge the registry
-   * refuses is not charged; {@link RetireExpiredResult.purgeFaults} says how purging stops after refusals) and the
-   * due-index pointers to nothing one call removes.
+   * refuses is not charged; {@link RetireExpiredResult.purgeFaults} says how purging stops after refusals), the
+   * due-index pointers to nothing one call removes, and, counted apart from the retirements, the tombstones this sweep
+   * did not write whose pointers one call removes.
    */
   readonly limit?: number;
   /** Report what would be retired and change nothing. */
@@ -239,7 +240,10 @@ export interface RetireExpiredResult {
   readonly wouldRetire: number;
   /** Tombstone rows actually deleted. Zero under `dryRun`; the `would-purge-tombstone` entries carry the preview. */
   readonly tombstonesPurged: number;
-  /** True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. */
+  /**
+   * True when `limit` cut the cycle short — **more segments are still eligible**. Re-run. The cap on removing pointers
+   * of tombstones this sweep did not write leaves it false.
+   */
   readonly limited: boolean;
   /**
    * Deletes this sweep attempted that were **refused for a reason other than a lost race**: a tombstone's purge

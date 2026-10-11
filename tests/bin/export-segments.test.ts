@@ -3,6 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
+import { CloudRoaring, ValidationError } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
@@ -271,17 +273,6 @@ describe('export-segments: the format and the sink', () => {
   });
 });
 
-/** True where `a` and `A` name one file (the macOS and Windows defaults): the manifest's path is then taken by `Manifest.json`. */
-async function caseInsensitiveFs(dir: string): Promise<boolean> {
-  await writeFile(join(dir, 'probe-a'), '');
-  try {
-    await readFile(join(dir, 'PROBE-A'));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 describe('export-segments CLI: a namespace that differs from manifest.json only in case', () => {
   let root: string;
   let out: string;
@@ -294,11 +285,9 @@ describe('export-segments CLI: a namespace that differs from manifest.json only 
     await rm(out, { recursive: true, force: true });
   });
 
-  // Kills the case-sensitive match. Skipped where the filesystem tells the two names apart (Linux CI), so it
-  // only runs on a developer's macOS or Windows box, which is where the collision exists.
+  // The refusal ignores letter case on every filesystem: where case is ignored the variant would take the manifest's
+  // path, and elsewhere the same dump would not be portable to such a filesystem.
   it('still writes the manifest as a file', async () => {
-    const ci = await caseInsensitiveFs(out);
-    if (!ci) return; // vitest's context.skip() is the idiomatic form once adopted
     const storage = new LocalFsStorageDriver(join(root, 'storage'));
     const registry = new LocalFsRegistryDriver(join(root, 'registry'));
     await bulkLoadCrbmGeneration(
@@ -341,14 +330,14 @@ describe('export-segments CLI: output directory edge cases', () => {
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
     await mkdir(join(out, 'manifest.json'));
     await writeFile(join(out, 'manifest.json', 'keep'), 'mine');
-    await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0)).rejects.toThrow(
-      /is a directory/,
-    );
+    const run = main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+    await expect(run).rejects.toThrow(ValidationError);
+    await expect(run).rejects.toThrow(/remove or rename it/);
     expect(await readFile(join(out, 'manifest.json', 'keep'), 'utf8')).toBe('mine');
     expect(await readdir(out)).toEqual(['manifest.json']); // nothing was exported
   });
 
-  it('leaves no namespace directory behind when every segment in it is skipped', async () => {
+  it('leaves no namespace directory behind when its only segment is destroyed after the listing', async () => {
     const storage = new LocalFsStorageDriver(join(root, 'storage'));
     const registry = new LocalFsRegistryDriver(join(root, 'registry'));
     await bulkLoadCrbmGeneration(storage, { namespace: 'gone', segment: 'a', generation: 0 }, [1], {
@@ -357,13 +346,33 @@ describe('export-segments CLI: output directory edge cases', () => {
     await bulkLoadCrbmGeneration(storage, { namespace: 'ok', segment: 'b', generation: 0 }, [2], {
       registry,
     });
-    const row = (await registry.get({ namespace: 'gone', segment: 'a' }))!;
-    await registry.compareAndSwap({ namespace: 'gone', segment: 'a' }, row.token, {
-      status: 'destroyed',
+    // The listing names `gone/a` as live; the row is destroyed before the export reaches it, so a writer is opened
+    // for it and then aborted.
+    const racing = new Proxy(registry, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop, target) as unknown;
+        if (prop !== 'list') {
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        }
+        return async function* (namespace?: string) {
+          const rows = [];
+          for await (const r of target.list(namespace)) rows.push(r);
+          const row = (await target.get({ namespace: 'gone', segment: 'a' }))!;
+          await target.compareAndSwap({ namespace: 'gone', segment: 'a' }, row.token, {
+            status: 'destroyed',
+          });
+          for (const r of rows) yield r;
+        };
+      },
     });
-    const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
-    expect(manifest.skipped.map((s) => s.segment)).toEqual(['a']);
-    expect((await readdir(out)).sort()).toEqual(['manifest.json', 'ok']);
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry: racing }),
+      retry: false,
+      cache: { genTtlMs: 0 },
+    });
+    const manifest = await store.exportSegments(fsSink(out));
+    expect(manifest.skipped).toEqual([{ segment: 'a', namespace: 'gone', reason: 'destroyed' }]);
+    expect(await readdir(out)).toEqual(['ok']);
   });
 
   it('gives namespaces A and a their own directories', async () => {
