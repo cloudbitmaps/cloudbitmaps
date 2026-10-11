@@ -52,16 +52,31 @@ export async function mapWithConcurrency<T, R>(
  * `Promise.all` over `items` with at most `limit` calls of `fn` in flight: the results in input order, or the first
  * failure, at once. Unlike {@link mapWithConcurrency} it does not wait for the calls still in flight before it rejects,
  * as `Promise.all` does not; it starts no call after a failure, and what the calls in flight answer is dropped. For reads
- * a caller abandons on the first fault, never for work that must finish or be accounted for once begun.
+ * a caller abandons on the first fault, never for work that must finish or be accounted for once begun. When every item
+ * fits under `limit` it is `Promise.all` itself, so a small fan-out costs and interleaves exactly as `Promise.all` does.
  */
-export async function boundedAll<T, R>(
+export function boundedAll<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
-  if (!Number.isInteger(limit) || limit < 1) {
-    throw new ValidationError(`concurrency limit must be a positive integer; got ${limit}`);
+  try {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new ValidationError(`concurrency limit must be a positive integer; got ${limit}`);
+    }
+    if (items.length <= limit) return Promise.all(items.map((item) => fn(item)));
+  } catch (err) {
+    return Promise.reject(err);
   }
+  return inWaves(items, limit, fn);
+}
+
+/** {@link boundedAll} over more items than `limit`: `limit` workers, each taking the next item as its last settles. */
+async function inWaves<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
   let failed = false;
@@ -76,6 +91,6 @@ export async function boundedAll<T, R>(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  await Promise.all(Array.from({ length: limit }, () => worker()));
   return results;
 }

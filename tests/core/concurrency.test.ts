@@ -116,17 +116,53 @@ describe('boundedAll', () => {
     expect(g.started).toEqual([0, 1]);
   });
 
+  it('is Promise.all when every item fits: all at once, and the first failure at once', async () => {
+    const g = gate();
+    const settled = boundedAll([0, 1, 2], 3, g.fn).then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+    expect(g.started).toEqual([0, 1, 2]);
+    await g.tick();
+    const boom = new Error('boom');
+    g.pending.get(2)!.reject(boom);
+    expect(await settled).toBe(boom);
+    expect(g.inFlight()).toBe(2);
+    expect(await boundedAll([1, 2], 2, async (x) => x * 3)).toEqual([3, 6]);
+  });
+
+  it('settles a fan-out that fits in as many turns of the microtask queue as Promise.all', async () => {
+    const turns = async (p: Promise<unknown>): Promise<number> => {
+      let done = false;
+      void p.then(() => (done = true));
+      let n = 0;
+      while (!done) {
+        await null;
+        n += 1;
+      }
+      return n;
+    };
+    const read = async (x: number): Promise<number> => x;
+    const items = Array.from({ length: 16 }, (_, i) => i);
+    expect(await turns(boundedAll(items, 16, read))).toBe(
+      await turns(Promise.all(items.map(read))),
+    );
+  });
+
   it('takes a call that throws as it is made as its failure', async () => {
     const started: number[] = [];
     const boom = new Error('thrown');
-    await expect(
-      boundedAll([0, 1, 2], 2, (x) => {
-        started.push(x);
-        if (x === 0) throw boom;
-        return Promise.resolve(x);
-      }),
-    ).rejects.toBe(boom);
-    expect(started).toEqual([0]);
+    for (const limit of [2, 3]) {
+      started.length = 0;
+      await expect(
+        boundedAll([0, 1, 2], limit, (x) => {
+          started.push(x);
+          if (x === 0) throw boom;
+          return Promise.resolve(x);
+        }),
+      ).rejects.toBe(boom);
+      expect(started).toEqual([0]);
+    }
   });
 
   it('rejects a non-positive or non-integer limit, and answers [] for no items', async () => {
