@@ -731,9 +731,10 @@ the intersection survived.
 segments, and unchecked, the first would resolve to nothing and suppress nobody, returning the full audience with no
 error. The dangerous direction is the quiet one: a mistyped include collapses an intersect to nothing and you notice,
 while a mistyped exclude removes a safeguard and you do not. Both throw a `ValidationError` naming the segment. A
-segment with a registry row but no ids is still accepted, because somebody created it deliberately: a row minted by
-`setRetention` before its first load, a tombstone, or a segment loaded empty. Only a name with no registry row is
-refused. `store.exists()` answers `false` for the first two, since a read of them finds nothing. Pass
+segment with a registry row that is not a tombstone is accepted even when it holds no ids, because somebody created it
+deliberately: a row minted by `setRetention` before its first load, or a segment loaded empty. A name with no registry
+row is refused, and so is a `destroyed` tombstone (a segment dropped, retired or crypto-shredded). `store.exists()`
+answers `false` for a row minted ahead of its first load, which a combine still accepts. Pass
 `allowAbsentOperands: true` to combine against a name that may not exist yet; it then reads as empty.
 
 To write many results over the same operands, see [many outputs from one pass](#many-outputs-from-one-pass-materializemany).
