@@ -31,6 +31,7 @@ describe.each([
     [Number.POSITIVE_INFINITY],
     [Number.NEGATIVE_INFINITY],
     [2 ** 53],
+    [-(2 ** 53)],
     [2 ** 60],
   ])('refuses a tail length of %s with a ValidationError', async (length) => {
     const { driver, done } = await make();

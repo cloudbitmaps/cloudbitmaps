@@ -36,6 +36,7 @@ describe('Azure Blob: an answer is checked against the request', () => {
       Number.POSITIVE_INFINITY,
       Number.NEGATIVE_INFINITY,
       2 ** 53,
+      -(2 ** 53),
     ]) {
       await expect(driver.getTail(GEN, maxBytes)).rejects.toBeInstanceOf(ValidationError);
     }

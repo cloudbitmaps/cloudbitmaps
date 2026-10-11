@@ -359,8 +359,8 @@ export interface IStorageDriver {
    * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**, and its `version`
    * where the driver has one ({@link TailRead}). `maxBytes` must be a safe integer: zero or less answers an empty tail
    * with the size, and one past the size the whole object. Any other `maxBytes` (`NaN`, a fraction, a negative one
-   * included, an infinity of either sign, a whole number of 2^53 or more) throws {@link ValidationError} before anything
-   * is read. A missing object throws {@link NotFoundError}.
+   * included, an infinity of either sign, a whole number past the safe range (2^53 or more, or -2^53 or less)) throws
+   * {@link ValidationError} before anything is read. A missing object throws {@link NotFoundError}.
    */
   getTail(key: GenKey, maxBytes: number): Promise<TailRead>;
   /**

@@ -738,8 +738,8 @@ driver to them (`IStorageDriver`'s doc comment states the same list):
   `ValidationError`, never a clamped or short read. `getTail` reports the object's true total size, and, where the
   driver has one, its `version`, from the same response as the bytes. A `getTail` length is a safe integer: zero or less
   answers an empty tail with the size, and one past the object's size the whole object. Any other length (`NaN`, a
-  fraction, a negative one included, an infinity of either sign, a whole number of 2^53 or more) throws `ValidationError`
-  before anything is read.
+  fraction, a negative one included, an infinity of either sign, a whole number past the safe range (2^53 or more, or
+  -2^53 or less)) throws `ValidationError` before anything is read.
 - A registry write whose `keyId` is not a non-empty string, or absent, throws `ValidationError` and stores nothing.
 - `delete` is idempotent: deleting an absent key is a no-op, with or without `ifVersion`.
 - `delete` with `ifVersion` does what `StorageCaps.conditionalDelete` says: with `true`, it removes the object only

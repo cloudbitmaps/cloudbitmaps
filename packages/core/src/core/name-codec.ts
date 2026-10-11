@@ -125,7 +125,7 @@ export function encodeNameForKey(name: string): string {
  * ADLS Gen2, where the namespace really is hierarchical, `prefix/../x` and `x` are the same object. Those are
  * the DR-restore and eject paths this library documents.
  *
- * `normalizeS3Prefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; the name, the input an
+ * `normalizeObjectPrefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; the name, the input an
  * attacker can influence, is escaped here instead.
  *
  * Every dot is escaped rather than just the first, so the result cannot end in one either.

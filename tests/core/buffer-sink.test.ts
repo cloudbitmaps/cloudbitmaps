@@ -21,6 +21,7 @@ describe('BufferReader.getTail', () => {
       Number.POSITIVE_INFINITY,
       Number.NEGATIVE_INFINITY,
       2 ** 53,
+      -(2 ** 53),
     ]) {
       await expect(reader.getTail(bad)).rejects.toThrow(/tail length/);
     }

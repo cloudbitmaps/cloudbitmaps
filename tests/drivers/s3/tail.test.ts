@@ -63,16 +63,21 @@ describe('S3StorageDriver.getTail on an empty object', () => {
 });
 
 describe('S3StorageDriver.getTail with a length that is not a safe integer', () => {
-  it.each([Number.NaN, 1.5, -1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 2 ** 53])(
-    'refuses %s before sending anything',
-    async (n) => {
-      const bucket = new StubS3Bucket();
-      store(bucket, new Uint8Array(10));
-      await expect(driverOver(bucket).getTail(GEN, n)).rejects.toBeInstanceOf(ValidationError);
-      expect(bucket.count('GetObject')).toBe(0);
-      expect(bucket.count('HeadObject')).toBe(0);
-    },
-  );
+  it.each([
+    Number.NaN,
+    1.5,
+    -1.5,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    2 ** 53,
+    -(2 ** 53),
+  ])('refuses %s before sending anything', async (n) => {
+    const bucket = new StubS3Bucket();
+    store(bucket, new Uint8Array(10));
+    await expect(driverOver(bucket).getTail(GEN, n)).rejects.toBeInstanceOf(ValidationError);
+    expect(bucket.count('GetObject')).toBe(0);
+    expect(bucket.count('HeadObject')).toBe(0);
+  });
 
   it('answers a whole length of zero or less with an empty tail, as every driver does', async () => {
     const bucket = new StubS3Bucket();

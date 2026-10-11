@@ -34,8 +34,8 @@ export interface BlobReader {
  * Check the length a tail read asks for, the one rule every tail read holds to (each storage driver's `getTail` and
  * {@link BufferReader.getTail}): a safe integer. Zero or less answers an empty tail with the size, and a length past
  * the object's size answers the whole object. Anything else is refused with `ValidationError` before anything is read:
- * `NaN`, a fraction (a negative one too), an infinity of either sign, and a whole number of 2^53 or more, so no reader
- * takes one for some other length.
+ * `NaN`, a fraction (a negative one too), an infinity of either sign, and a whole number past the safe range (2^53 or
+ * more, or -2^53 or less), so no reader takes one for some other length.
  */
 export function checkTailLength(maxBytes: number): void {
   if (!Number.isSafeInteger(maxBytes)) {

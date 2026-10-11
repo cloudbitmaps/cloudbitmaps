@@ -41,10 +41,10 @@ so, and so do the module headers in the code.
 
 - **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
   tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
-  before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number of
-  2^53 or more. The in-process and local-filesystem drivers and `BufferReader` read a whole number of 2^53 or more as the
-  whole object, and the S3, GCS and Azure Blob drivers answered `-1.5` and `-Infinity` with an empty tail; each now
-  throws.
+  before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number
+  past the safe range (2^53 or more, or -2^53 or less). Newly refused are a whole number of 2^53 or more on the
+  in-process and local-filesystem drivers and `BufferReader`, `-1.5` and `-Infinity` on the S3, GCS and Azure Blob
+  drivers, and a whole number of -2^53 or less on every driver and `BufferReader`.
 - **A malformed size or switch given to a cloud backend is a `ValidationError` in every case.** A `Symbol` given as
   `partBytes`, `maxObjectBytes`, `simpleUploadThresholdBytes` or `blockBytes` threw a `TypeError` while the refusal's
   message was built, and `AzureBlobStorage` read `blockBytes: null` as the default where it refused
@@ -96,9 +96,11 @@ so, and so do the module headers in the code.
 - **A reader keeps chunk bytes of its own when a storage driver answers a tail read with a Node `Buffer`.** A reader
   that keeps a small generation's chunk region took it by slicing the tail, and a `Buffer`'s `slice` is a view of the
   driver's memory, not a copy: the reader held the driver's whole buffer while the cache weighed only the region, and a
-  driver that reused its buffer changed the chunks the reader served, which then failed their checksum. A tail answered
-  with a `Uint8Array` subclass is now copied once, where the driver's answer reaches the reader. The shipped drivers
-  answer with a plain `Uint8Array`, which is used as it is.
+  driver that reused its buffer changed the chunks the reader served, which then failed their checksum. A tail whose
+  bytes are any `Uint8Array` other than a plain one of this realm (a `Buffer` or another subclass, or a `Uint8Array`
+  made in another realm, such as a `vm` context) is now copied once, where the driver's answer reaches the reader, with
+  its `size` and its `version` read from the answer whether they are its own fields or getters. The shipped drivers
+  answer with a plain `Uint8Array` of this realm, which is used as it is.
 - **A running `iterate` or combine reads a chunk a new generation added.** A read listed its segments' chunk keys before
   its first fetch and kept that list to the end, so when a load, a rollback or an erasure moved a segment while the read
   ran, the read went on from the new generation but only at the keys the old one held: a chunk the new generation added

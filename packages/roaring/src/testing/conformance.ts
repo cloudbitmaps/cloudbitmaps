@@ -400,7 +400,7 @@ export function storageDriverConformance(
       expect(negative.bytes.length).toBe(0);
       expect((await d.getTail(key(0), Number.MAX_SAFE_INTEGER)).bytes).toEqual(bytes);
       // A length that is not a safe integer is refused, never read as a different length: a fraction (a negative one
-      // too), an infinity of either sign, and a whole number past the safe range.
+      // too), an infinity of either sign, and a whole number past the safe range on either side.
       for (const length of [
         Number.NaN,
         1.5,
@@ -408,6 +408,7 @@ export function storageDriverConformance(
         Number.POSITIVE_INFINITY,
         Number.NEGATIVE_INFINITY,
         2 ** 53,
+        -(2 ** 53),
       ]) {
         await expect(d.getTail(key(0), length), String(length)).rejects.toBeInstanceOf(
           ValidationError,

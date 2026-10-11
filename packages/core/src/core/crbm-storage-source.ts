@@ -152,7 +152,8 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
  * A tail's bytes reach the reader as a plain `Uint8Array`: the reader keeps a small object's chunk region by slicing
  * the tail, and a subclass's `slice` need not copy. A Node `Buffer`'s is a view, so a driver that answered with one
  * would leave the reader holding the driver's memory, all of it, as the cache weighs only the region. Such an answer
- * is copied here, once; a plain `Uint8Array`, which every shipped driver returns, is handed through as it is.
+ * is copied here, once ({@link ownedTail}); a plain `Uint8Array` of this realm, which every shipped driver returns, is
+ * handed through as it is.
  */
 function storageBlobReader(
   driver: IStorageDriver,
@@ -171,12 +172,26 @@ function storageBlobReader(
   };
 }
 
-/** `tail` with its bytes in a plain `Uint8Array`: a copy when the driver answered with a subclass (a Node `Buffer`). */
-function ownedTail(tail: TailRead): TailRead {
+/**
+ * `tail` with its bytes in a plain `Uint8Array` of this realm. Any other `Uint8Array`, a subclass (a Node `Buffer`) or
+ * one made in another realm (a `vm` context), is copied once, and the copy is built from the answer's fields by name,
+ * so a `size` or `version` the driver serves from a getter on its own class carries over. The brand is read, not
+ * `instanceof`, which is false for another realm's arrays. A plain `Uint8Array` of this realm is handed through as it is.
+ */
+export function ownedTail(tail: TailRead): TailRead {
   const { bytes } = tail;
-  return bytes instanceof Uint8Array && Object.getPrototypeOf(bytes) !== Uint8Array.prototype
-    ? { ...tail, bytes: new Uint8Array(bytes) }
-    : tail;
+  if (
+    Object.prototype.toString.call(bytes) !== '[object Uint8Array]' ||
+    Object.getPrototypeOf(bytes) === Uint8Array.prototype
+  ) {
+    return tail;
+  }
+  const version = tail.version;
+  return {
+    bytes: new Uint8Array(bytes),
+    size: tail.size,
+    ...(version === undefined ? {} : { version }),
+  };
 }
 
 /**
