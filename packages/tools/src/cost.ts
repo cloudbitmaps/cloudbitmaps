@@ -655,6 +655,8 @@ function sizingBytes(spec: SegmentSizing): number {
 
 /** Core report builder shared by planning + grounded modes. `storageBytes` is total across all segments. */
 function buildReport(input: {
+  /** The public function that asked, named in what it refuses. */
+  readonly op: string;
   readonly storageBytes: number;
   readonly workload: Workload;
   readonly pricing: PricingProfile;
@@ -774,6 +776,22 @@ function buildReport(input: {
       (sweep.retirement.reads * storageGetUSD + sweep.retirement.writes * putUSD) +
     purgesPerMonth * (sweep.purge.reads * storageGetUSD + sweep.purge.writes * putUSD);
   const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD + retentionUSD;
+  // Finite inputs can still multiply to more than a double holds, and a report of "$Infinity/mo" prices nothing.
+  for (const [what, usd] of Object.entries({
+    reads: readsUSD,
+    intersects: intersectsUSD,
+    storage: storageUSD,
+    loads: loadsUSD,
+    pointerRefresh: refreshUSD,
+    retention: retentionUSD,
+    total,
+  })) {
+    if (!Number.isFinite(usd)) {
+      throw new ValidationError(
+        `${input.op}: the ${what} cost is not a finite number of dollars: the workload and pricing are too large to price`,
+      );
+    }
+  }
 
   // Crossover: the sustained read rate (other axes 0) where request cost alone passes the baseline less the fixed
   // monthly costs (storage and the pointer refresh), evaluated at this report's cache posture (misses).
@@ -937,6 +955,130 @@ function buildReport(input: {
 }
 
 /**
+ * The shape of each input object: the keys it takes, and the nested objects (or arrays of objects) under them. The
+ * one table every key check reads, so a misspelt key is refused at every level by the same rule.
+ */
+interface InputShape {
+  readonly keys: readonly string[];
+  readonly objects?: Readonly<Record<string, InputShape>>;
+  readonly rows?: Readonly<Record<string, InputShape>>;
+}
+
+/**
+ * The keys of an interface, from a record the compiler holds to that interface's fields: a field added to the
+ * interface without a line here is a type error, so the table cannot refuse a key the interface takes.
+ */
+function keysOf<T>(fields: Record<keyof T, true>): readonly string[] {
+  return Object.keys(fields);
+}
+
+const WORKLOAD_SHAPE: InputShape = {
+  keys: keysOf<Workload>({
+    readsPerSec: true,
+    intersectsPerSec: true,
+    cacheHitRate: true,
+    chunksPerIntersect: true,
+    operandsPerIntersect: true,
+    loadsPerMonth: true,
+    requestsPerLoad: true,
+    hotSegments: true,
+    readerProcesses: true,
+    genTtlMs: true,
+    retirementsPerMonth: true,
+    purgesPerMonth: true,
+    conditionalDelete: true,
+  }),
+};
+const SEGMENT_SHAPE: InputShape = {
+  keys: keysOf<SegmentSizing>({ sizeBytes: true, cardinality: true, count: true }),
+};
+const PRICING_SHAPE: InputShape = {
+  keys: keysOf<PricingProfile>({ name: true, storage: true, redis: true }),
+  objects: {
+    storage: {
+      keys: keysOf<PricingProfile['storage']>({
+        getPerMillion: true,
+        putPerMillion: true,
+        storagePerGiBMonth: true,
+        requestsPerPointerRead: true,
+        requestsPerSizedRead: true,
+      }),
+    },
+    redis: {
+      keys: keysOf<PricingProfile['redis']>({ monthlyUSD: true, sizedToData: true }),
+      objects: {
+        sizedToData: {
+          keys: keysOf<RedisSizing>({
+            source: true,
+            nodeTypes: true,
+            replicasPerShard: true,
+            reservedMemoryFraction: true,
+          }),
+          rows: {
+            nodeTypes: {
+              keys: keysOf<RedisNodeType>({
+                name: true,
+                memoryGiB: true,
+                ssdGiB: true,
+                hourlyUSD: true,
+                maxShards: true,
+              }),
+            },
+          },
+        },
+      },
+    },
+  },
+};
+const ESTIMATE_SHAPE: InputShape = {
+  keys: keysOf<EstimateInput>({ segments: true, workload: true, pricing: true }),
+  objects: { workload: WORKLOAD_SHAPE, pricing: PRICING_SHAPE },
+  rows: { segments: SEGMENT_SHAPE },
+};
+const GROUNDED_SHAPE: InputShape = {
+  keys: ['storageBytes', 'workload', 'pricing'],
+  objects: { workload: WORKLOAD_SHAPE, pricing: PRICING_SHAPE },
+};
+
+/**
+ * Refuses a key `shape` does not list, in `value` and in every nested object it describes, as a `ValidationError`
+ * naming the call, the key and where it sits (`workload`, `segments[0]`, `pricing.storage`). A misspelt key would
+ * drop what it names and still return a confident report. A key whose value is `undefined` reads as absent, as it
+ * does everywhere else in the library. A value that is not an object is left for the checks that know what it
+ * should be.
+ */
+function refuseUnknownKeys(
+  op: string,
+  where: string,
+  value: unknown,
+  shape: InputShape,
+  hint: string,
+): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return;
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!shape.keys.includes(key) && record[key] !== undefined) {
+      throw new ValidationError(
+        where === ''
+          ? `${op}: unknown option ${JSON.stringify(key)}; ${hint}`
+          : `${op}: unknown key ${JSON.stringify(key)} in ${where}; it takes { ${shape.keys.join(', ')} }`,
+      );
+    }
+  }
+  const at = (key: string): string => (where === '' ? key : `${where}.${key}`);
+  for (const [key, inner] of Object.entries(shape.objects ?? {})) {
+    refuseUnknownKeys(op, at(key), record[key], inner, hint);
+  }
+  for (const [key, inner] of Object.entries(shape.rows ?? {})) {
+    const rows: unknown = record[key];
+    if (!Array.isArray(rows)) continue;
+    for (let i = 0; i < rows.length; i++) {
+      refuseUnknownKeys(op, `${at(key)}[${i}]`, rows[i], inner, hint);
+    }
+  }
+}
+
+/**
  * Refuses a `pricing` that is not a profile with a storage price list, and a `workload` that is not an object (`null`
  * reads as none), as a `ValidationError` naming the call rather than a raw `TypeError` from inside the model.
  */
@@ -975,17 +1117,29 @@ export function estimateCost(input: EstimateInput): CostReport {
   // An index loop, so a hole in a sparse array is refused as an entry too.
   for (let i = 0; i < input.segments.length; i++) {
     const spec: unknown = input.segments[i];
-    if (spec === null || typeof spec !== 'object') {
+    if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
       throw new ValidationError(`estimateCost: segments[${i}] must be an object`);
     }
   }
   checkModelInputs('estimateCost', input.pricing, input.workload);
+  refuseUnknownKeys(
+    'estimateCost',
+    '',
+    input,
+    ESTIMATE_SHAPE,
+    'it takes { segments, workload?, pricing? }',
+  );
   const pricing = input.pricing ?? AWS_US_EAST_1_ONDEMAND;
   const workload = input.workload ?? {};
   let storageBytes = 0;
   let sizesFromCardinality = false;
-  for (const spec of input.segments) {
-    const count = Math.floor(requireFiniteNonNeg(spec.count ?? 1, 'segment.count'));
+  for (const [i, spec] of input.segments.entries()) {
+    const count = requireFiniteNonNeg(spec.count ?? 1, 'segment.count');
+    if (!Number.isInteger(count)) {
+      throw new ValidationError(
+        `estimateCost: segments[${i}].count must be a whole number of segments; got ${count}`,
+      );
+    }
     storageBytes += sizingBytes(spec) * count;
     if (
       spec.sizeBytes === undefined &&
@@ -995,11 +1149,15 @@ export function estimateCost(input: EstimateInput): CostReport {
       sizesFromCardinality = true;
     }
   }
-  return buildReport({ storageBytes, workload, pricing, grounded: false, sizesFromCardinality });
+  return buildReport({
+    op: 'estimateCost',
+    storageBytes,
+    workload,
+    pricing,
+    grounded: false,
+    sizesFromCardinality,
+  });
 }
-
-/** The keys {@link groundedReport} takes. */
-const GROUNDED_KEYS: ReadonlySet<string> = new Set(['storageBytes', 'workload', 'pricing']);
 
 /**
  * **Grounded** report from a measured byte total + a supplied workload. A segment handle's `stat()` reports the
@@ -1023,15 +1181,13 @@ export function groundedReport(input: {
   if (input === null || typeof input !== 'object') {
     throw new ValidationError('groundedReport: input must be an object such as { storageBytes }');
   }
-  // A misspelt key would drop what it names and still return a confident report, so every key is checked.
-  for (const key of Object.keys(input)) {
-    if (!GROUNDED_KEYS.has(key)) {
-      throw new ValidationError(
-        `groundedReport: unknown option "${key}"; it takes { storageBytes, workload?, pricing? } (pass a stat()'s ` +
-          '`sizeBytes` as storageBytes)',
-      );
-    }
-  }
+  refuseUnknownKeys(
+    'groundedReport',
+    '',
+    input,
+    GROUNDED_SHAPE,
+    "it takes { storageBytes, workload?, pricing? } (pass a stat()'s `sizeBytes` as storageBytes)",
+  );
   const bytes: unknown = input.storageBytes;
   if (bytes !== null && (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0)) {
     throw new ValidationError(
@@ -1042,6 +1198,7 @@ export function groundedReport(input: {
   checkModelInputs('groundedReport', input.pricing, input.workload);
   const measured = input.storageBytes !== null;
   return buildReport({
+    op: 'groundedReport',
     storageBytes: measured ? input.storageBytes : 0,
     workload: input.workload ?? {},
     pricing: input.pricing ?? AWS_US_EAST_1_ONDEMAND,
