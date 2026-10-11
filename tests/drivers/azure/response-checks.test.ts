@@ -26,13 +26,24 @@ async function stored(driver: AzureBlobStorageDriver, n: number): Promise<void> 
 }
 
 describe('Azure Blob: an answer is checked against the request', () => {
-  it('a tail length that is not a whole number is refused, not read', async () => {
+  it('a tail length that is not a safe integer is refused, not read', async () => {
     const driver = new AzureBlobStorageDriver({ containerClient: stub.client() });
     await stored(driver, 64);
-    for (const maxBytes of [Number.NaN, 1.5, Number.POSITIVE_INFINITY]) {
+    for (const maxBytes of [
+      Number.NaN,
+      1.5,
+      -1.5,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      2 ** 53,
+      -(2 ** 53),
+    ]) {
       await expect(driver.getTail(GEN, maxBytes)).rejects.toBeInstanceOf(ValidationError);
     }
     expect((await driver.getTail(GEN, 8)).bytes.length).toBe(8);
+    const none = await driver.getTail(GEN, -1);
+    expect([none.bytes.length, none.size]).toEqual([0, 64]);
+    expect((await driver.getTail(GEN, Number.MAX_SAFE_INTEGER)).bytes.length).toBe(64);
   });
 
   it('a tail answer short of the bytes asked for is refused', async () => {

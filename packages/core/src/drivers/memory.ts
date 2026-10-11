@@ -6,7 +6,7 @@
  * Not in `core/` (this is a driver), so it may hold concrete state.
  */
 import { createHash } from 'node:crypto';
-import { BufferSink } from '../core/blob';
+import { BufferSink, checkTailLength } from '../core/blob';
 import type { BlobSink } from '../core/blob';
 import type { Entropy } from '../core/determinism';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
@@ -35,7 +35,6 @@ import {
   validateNewRegistryRecord,
   validateRegistryPatch,
 } from './_shared/registry';
-import { checkTailLength } from './_shared/tail';
 import { entropyIsAvailable, webCryptoEntropy } from './_shared/entropy';
 
 interface MemoryRegistryDriverOptions {

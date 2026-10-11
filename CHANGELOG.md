@@ -29,6 +29,14 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **Shared driver helpers in `@cloudbitmaps/core/driver-kit`.** `storageObjectKey`, `segmentObjectPrefix` and
+  `parseGenerationFromKey` build and read back the storage object layout every object-store driver shares
+  (`<prefix><ns>/segments/<segment>.<gen>.crbm`); `refuseUnknownOptions`, `requirePositiveInt` and `requireBool` check a
+  constructor's options and refuse a bad one with `ValidationError`; `isTransportFault` says whether an error is a
+  connection Node reports as failed or cut off, and `toTransient` hands a transient fault on as `TransientError` with the
+  fault as its cause; `concatBytes` joins byte chunks into one buffer that owns its bytes. The S3, GCS and Azure Blob
+  drivers are built on them, so their key layout, option checks and shared connection-fault codes are defined once, and a
+  third-party driver can use them the same way.
 - **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
   invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
   and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
@@ -39,6 +47,20 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
+  tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
+  before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number
+  past the safe range (2^53 or more, or -2^53 or less). Newly refused are a whole number of 2^53 or more on the
+  in-process and local-filesystem drivers and `BufferReader`, a negative fraction and `-Infinity` on the S3, GCS and Azure Blob
+  drivers, and a whole number of -2^53 or less on every driver and `BufferReader`.
+- **A malformed size or switch given to a cloud backend is a `ValidationError` in every case.** A `Symbol` given as
+  `partBytes`, `maxObjectBytes`, `simpleUploadThresholdBytes` or `blockBytes` threw a `TypeError` while the refusal's
+  message was built, and `AzureBlobStorage` read `blockBytes: null` as the default where it refused
+  `maxObjectBytes: null`. A refused string is quoted in the message (`got "8"`).
+- **Each cloud driver words a transient fault one way.** The Azure Blob registry named the error's class
+  (`transient Azure Blob fault: RestError`) where the storage half named the Azure error code; both now say
+  `transient Azure fault: <code>` (`ServerBusy`, `ECONNRESET`), and name the class only when there is no code. A GCS
+  storage fault with no code is named by its class, as the registry's was, rather than `unknown`.
 - **The eject CLI's configuration errors are `ValidationError`.** A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` and an
   unknown `CR_EXPORT_FORMAT` throw it from `parseConfig`; the messages and the exit code (1) are the same.
 
@@ -96,6 +118,14 @@ so, and so do the module headers in the code.
   operands' versions while they run, at most 16 operands at a time, when they plan and when they plan again after a
   move. The first of those reads to fail fails the combine at once, and no more of them are sent. `materializeMany`
   asks whether its operands exist the same way.
+- **A reader keeps chunk bytes of its own when a storage driver answers a tail read with a Node `Buffer`.** A reader
+  that keeps a small generation's chunk region took it by slicing the tail, and a `Buffer`'s `slice` is a view of the
+  driver's memory, not a copy: the reader held the driver's whole buffer while the cache weighed only the region, and a
+  driver that reused its buffer changed the chunks the reader served, which then failed their checksum. A tail whose
+  bytes are any `Uint8Array` other than a plain one of this realm (a `Buffer` or another subclass, or a `Uint8Array`
+  made in another realm, such as a `vm` context) is now copied once, where the driver's answer reaches the reader, with
+  its `size` and its `version` read from the answer whether they are its own fields or getters. The shipped drivers
+  answer with a plain `Uint8Array` of this realm, which is used as it is.
 - **A running `iterate` or combine reads a chunk a new generation added.** A read listed its segments' chunk keys before
   its first fetch and kept that list to the end, so when a load, a rollback or an erasure moved a segment while the read
   ran, the read went on from the new generation but only at the keys the old one held: a chunk the new generation added

@@ -37,8 +37,7 @@ import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/re
 import { S3StorageDriver } from '@/s3/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
-import { storageObjectKey } from '@/s3/keys';
-import { storageObjectName as gcsObjectName } from '@/gcs/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import type { GenKey } from '@/core/ports';
 import { byFreeFunction, raceStaleHolderDelete } from '../helpers/retaken-number-race';
 import { S3Storage } from '@cloudbitmaps/s3';
@@ -527,7 +526,7 @@ describe('GCS storage (fake-gcs-server): the driver sends ifGenerationMatch; the
     });
     await writeText(driver, 'one');
     const { version } = await driver.getTail(GEN, 3);
-    const [meta] = await gcsFile(gcsObjectName(p, GEN)).getMetadata();
+    const [meta] = await gcsFile(storageObjectKey(p, GEN)).getMetadata();
     expect(version).toBe(String(meta.generation));
     await driver.delete(GEN);
     await writeText(driver, 'two');
@@ -535,7 +534,7 @@ describe('GCS storage (fake-gcs-server): the driver sends ifGenerationMatch; the
       'deleted',
     );
     expect(sent).toEqual([undefined, Number(version)]);
-    expect(await gcsExists(gcsObjectName(p, GEN))).toBe(false);
+    expect(await gcsExists(storageObjectKey(p, GEN))).toBe(false);
   });
 });
 

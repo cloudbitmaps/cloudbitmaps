@@ -45,9 +45,17 @@ import {
   TransientError,
   ValidationError,
   WriteConflictError,
+  concatBytes,
   isNotFoundError,
   isValidationError,
   isWriteConflictError,
+  normalizeObjectPrefix,
+  parseGenerationFromKey,
+  requireBool,
+  requirePositiveInt,
+  segmentObjectPrefix,
+  storageObjectKey,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   BlobSink,
@@ -72,12 +80,6 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import {
-  storageObjectKey,
-  normalizeS3Prefix,
-  parseGenerationFromKey,
-  segmentObjectPrefix,
-} from './keys';
-import {
   isConditionalConflict,
   isInvalidRange,
   isNoSuchUpload,
@@ -87,18 +89,14 @@ import {
   isThrottle,
   isTransient,
   totalFromContentRange,
+  transientFaultMessage,
 } from './s3-errors';
 import { resolveReadTimeoutMs, timedRead, type ReadSendOptions } from './read-timeout';
 import type { SocketAdvisory } from './socket-advisory';
 import { sendOnce } from './send-once';
 import { readBounded } from './bounded-body';
 import { scrubCredentials } from './scrub-error';
-import {
-  appliesDeleteIfMatch,
-  checkConditionalDelete,
-  probeClient,
-  type ClientFacts,
-} from './client-probe';
+import { appliesDeleteIfMatch, probeClient, type ClientFacts } from './client-probe';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
@@ -183,21 +181,15 @@ export class S3StorageDriver implements IStorageDriver {
 
   constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
-    this.explicitConditionalDelete = checkConditionalDelete(options.conditionalDelete);
+    this.explicitConditionalDelete = requireBool('conditionalDelete', options.conditionalDelete);
     this.sockets = options.sockets;
     this.bucket = options.bucket;
-    this.prefix = normalizeS3Prefix(options.prefix);
+    this.prefix = normalizeObjectPrefix(options.prefix);
     this.clock = options.clock ?? REAL_TIME;
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
     // reach the arithmetic below and size every part (and the advertised cap) from garbage.
-    for (const [name, value] of [
-      ['partBytes', options.partBytes],
-      ['maxObjectBytes', options.maxObjectBytes],
-    ] as const) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
-        throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
-      }
-    }
+    requirePositiveInt('partBytes', options.partBytes);
+    requirePositiveInt('maxObjectBytes', options.maxObjectBytes);
     // Past S3's own limits a cap is not reachable: the part grown to cover it would pass the part limit, an object up
     // to that size would be held in memory whole, and one PutObject of it would be refused.
     if (options.maxObjectBytes !== undefined && options.maxObjectBytes > S3_MAX_OBJECT_BYTES) {
@@ -319,9 +311,9 @@ export class S3StorageDriver implements IStorageDriver {
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const objectKey = storageObjectKey(this.prefix, key);
-    // `NaN` compares false either way, so the test is "not 0 or less", which it fails.
-    if (!(maxBytes <= 0) && !Number.isSafeInteger(maxBytes)) {
-      throw new ValidationError(`invalid tail length ${maxBytes}`);
+    // The rule every driver's tail read holds to: a safe integer, and zero or less an empty tail.
+    if (!Number.isSafeInteger(maxBytes)) {
+      throw new ValidationError(`invalid tail length ${String(maxBytes)}`);
     }
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
@@ -533,14 +525,7 @@ export class S3StorageDriver implements IStorageDriver {
    * read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    err = scrubCredentials(err);
-    if (isTransient(err)) {
-      return new TransientError(
-        `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
-        { cause: err },
-      );
-    }
-    return err;
+    return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
   }
 }
 
@@ -550,17 +535,6 @@ function withVersion(
   version: string | undefined,
 ): TailRead {
   return version === undefined ? tail : { ...tail, version };
-}
-
-/** Concatenate a list of byte chunks of known total length into one buffer. */
-function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
 }
 
 /**
@@ -621,7 +595,7 @@ class S3MultipartSink implements BlobSink {
       }
       this.uploadId = res.UploadId;
     }
-    const body = concatBytes(this.pending, this.pendingLen);
+    const body = concatBytes(this.pending);
     this.pending.length = 0;
     this.pendingLen = 0;
     this.partNumber += 1;
@@ -646,7 +620,7 @@ class S3MultipartSink implements BlobSink {
   async finish(): Promise<{ size: number; sha256: string }> {
     const sha256 = this.hash.digest('hex');
     if (this.uploadId === undefined) {
-      const body = concatBytes(this.pending, this.pendingLen);
+      const body = concatBytes(this.pending);
       await this.commit('PutObject', () =>
         sendOnce(
           this.client,

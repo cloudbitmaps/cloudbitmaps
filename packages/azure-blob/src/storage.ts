@@ -33,9 +33,17 @@ import {
   TransientError,
   ValidationError,
   WriteConflictError,
+  concatBytes,
   isNotFoundError,
   isValidationError,
   isWriteConflictError,
+  normalizeObjectPrefix,
+  parseGenerationFromKey,
+  requireBool,
+  requirePositiveInt,
+  segmentObjectPrefix,
+  storageObjectKey,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   BlobSink,
@@ -49,17 +57,12 @@ import type {
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { ContainerClient } from '@azure/storage-blob';
 import {
-  storageObjectName,
-  normalizeAzurePrefix,
-  parseGenerationFromName,
-  segmentObjectPrefix,
-} from './keys';
-import {
   isConditionalConflict,
   isInvalidRange,
   isNotFound,
   isPreconditionFailed,
   isTransient,
+  transientFaultMessage,
 } from './azure-errors';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
@@ -118,31 +121,15 @@ export class AzureBlobStorageDriver implements IStorageDriver {
 
   constructor(options: AzureBlobStorageDriverOptions) {
     this.container = options.containerClient;
-    if (options.conditionalDelete !== undefined && typeof options.conditionalDelete !== 'boolean') {
-      throw new ValidationError(
-        `conditionalDelete must be a boolean; got ${String(options.conditionalDelete)}`,
-      );
-    }
-    this.conditionalDelete = options.conditionalDelete ?? true;
-    this.prefix = normalizeAzurePrefix(options.prefix);
+    this.conditionalDelete = requireBool('conditionalDelete', options.conditionalDelete) ?? true;
+    this.prefix = normalizeObjectPrefix(options.prefix);
     this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
     // Fail fast at the boundary: nullish-coalescing only guards `undefined`, so an explicit 0 / negative /
     // fractional value would otherwise slip through and silently reject every write (cap) or corrupt the flush
     // threshold (block size).
-    const requestedBlock = options.blockBytes ?? AZURE_BLOCK_BYTES;
-    if (!Number.isSafeInteger(requestedBlock) || requestedBlock < 1) {
-      throw new ValidationError(
-        `blockBytes must be a positive safe integer; got ${requestedBlock}`,
-      );
-    }
-    if (
-      options.maxObjectBytes !== undefined &&
-      (!Number.isSafeInteger(options.maxObjectBytes) || options.maxObjectBytes < 1)
-    ) {
-      throw new ValidationError(
-        `maxObjectBytes must be a positive safe integer; got ${options.maxObjectBytes}`,
-      );
-    }
+    const requestedBlock =
+      requirePositiveInt('blockBytes', options.blockBytes) ?? AZURE_BLOCK_BYTES;
+    requirePositiveInt('maxObjectBytes', options.maxObjectBytes);
     // Past Azure's own limits a setting is not reachable: a block over 4,000 MiB is refused by the service, and so is a
     // blob that needs one.
     if (requestedBlock > AZURE_MAX_BLOCK_BYTES) {
@@ -182,7 +169,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectKey(this.prefix, key); // validates ref + generation
     const sink = new AzureBlockBlobSink(
       this.blob(objectName),
       this.blockBytes,
@@ -214,7 +201,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = storageObjectName(this.prefix, key);
+    const objectName = storageObjectKey(this.prefix, key);
     try {
       return await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
         const res = await this.blob(objectName).download(offset, length, { abortSignal });
@@ -240,16 +227,16 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
-    const objectName = storageObjectName(this.prefix, key);
+    const objectName = storageObjectKey(this.prefix, key);
     try {
       // Two round-trips (properties for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). The Blob service takes no suffix range, only `bytes=start-` and `bytes=start-end`, so a
       // tail read needs the size first, and it stays two. This is on the per-*generation* open path, which the
       // reader caches — NOT the per-op cache path (has/count/intersect) — so it's amortized.
       // Each request is timed on its own: the properties, then the ranged download and its body.
-      // `NaN` compares false either way, so the test is "not 0 or less", which it fails.
-      if (!(maxBytes <= 0) && !Number.isSafeInteger(maxBytes)) {
-        throw new ValidationError(`invalid tail length ${maxBytes}`);
+      // The rule every driver's tail read holds to: a safe integer, and zero or less an empty tail.
+      if (!Number.isSafeInteger(maxBytes)) {
+        throw new ValidationError(`invalid tail length ${String(maxBytes)}`);
       }
       // The download is conditional on the properties' ETag, so the size, the bytes and the version always describe
       // one blob. A blob replaced between the two requests answers 412: the pair is read again once, and a second
@@ -310,7 +297,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
-    const blob = this.blob(storageObjectName(this.prefix, key));
+    const blob = this.blob(storageObjectKey(this.prefix, key));
     const ifVersion = options?.ifVersion;
     if (ifVersion === undefined || !this.conditionalDelete) {
       // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
@@ -354,7 +341,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     try {
       // The async paging iterator drains every page; a segment has few generations, so the set is small.
       for await (const item of this.container.listBlobsFlat({ prefix })) {
-        const generation = parseGenerationFromName(prefix, item.name);
+        const generation = parseGenerationFromKey(prefix, item.name);
         if (generation !== null) {
           yield { namespace: ref.namespace, segment: ref.segment, generation };
         }
@@ -390,13 +377,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
    * retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    if (isTransient(err)) {
-      return new TransientError(
-        `transient Azure fault: ${(err as { code?: unknown } | null)?.code ?? 'unknown'}`,
-        { cause: err },
-      );
-    }
-    return err;
+    return toTransient(err, isTransient, transientFaultMessage);
   }
 }
 
@@ -408,17 +389,6 @@ function withVersion(
   version: string | undefined,
 ): TailRead {
   return version === undefined ? tail : { ...tail, version };
-}
-
-/** Concatenate byte chunks of known total length into one buffer. */
-function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
 }
 
 /**
@@ -483,7 +453,7 @@ class AzureBlockBlobSink implements BlobSink {
       // typed guard so the Azure hard limit is never a raw 4xx.
       throw new ValidationError(`upload exceeded the Azure ${AZURE_MAX_BLOCKS}-block limit`);
     }
-    const body = concatBytes(this.pending, this.pendingLen);
+    const body = concatBytes(this.pending);
     this.pending.length = 0;
     this.pendingLen = 0;
     const id = this.blockId(this.blockIds.length);
@@ -501,7 +471,7 @@ class AzureBlockBlobSink implements BlobSink {
     const options = { ...IF_ABSENT, metadata: writeIdMetadata(this.writeId) };
     try {
       if (this.blockIds.length === 0) {
-        const body = concatBytes(this.pending, this.pendingLen);
+        const body = concatBytes(this.pending);
         await this.blob.upload(body, body.length, options); // write-once (single-shot path)
       } else {
         if (this.pendingLen > 0) await this.flushBlock(); // the final block may be < blockBytes (allowed)
@@ -571,5 +541,5 @@ async function collect(
     // A read stopped before its end leaves the body open: destroying it closes the connection.
     if (!done) destroyBody(body);
   }
-  return concatBytes(chunks, total);
+  return concatBytes(chunks);
 }

@@ -32,9 +32,17 @@ import {
   TransientError,
   ValidationError,
   WriteConflictError,
+  concatBytes,
   isNotFoundError,
   isValidationError,
   isWriteConflictError,
+  normalizeObjectPrefix,
+  parseGenerationFromKey,
+  requireBool,
+  requirePositiveInt,
+  segmentObjectPrefix,
+  storageObjectKey,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   BlobSink,
@@ -51,18 +59,12 @@ import { once } from 'node:events';
 import type { Storage } from '@google-cloud/storage';
 import { BucketPresence } from './bucket-presence';
 import {
-  storageObjectName,
-  normalizeGcsPrefix,
-  parseGenerationFromName,
-  segmentObjectPrefix,
-} from './keys';
-import {
   isInvalidRange,
   isNotFound,
   isPreconditionFailed,
   isThrottle,
   isTransient,
-  isTransportFault,
+  transientFaultMessage,
 } from './gcs-errors';
 import { retryDownload } from './download-retry';
 import { scrubCredentials } from './scrub-error';
@@ -76,8 +78,8 @@ import {
   type Deadline,
 } from './read-timeout';
 
-/** Default object ceiling: GCS's 5 TiB per-object hard max. Set lower to fail fast on a runaway write. */
-const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
+/** GCS's hard limit on one object (5 TiB), and the default ceiling. Set lower to fail fast on a runaway write. */
+const GCS_MAX_OBJECT_BYTES = 5 * 1024 ** 4;
 
 /** The custom-metadata name an object's write id is stored under. Short: it travels with every write. */
 const WRITE_ID_KEY = 'cbwid';
@@ -156,33 +158,22 @@ export class GcsStorageDriver implements IStorageDriver {
 
   constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
-    if (options.conditionalDelete !== undefined && typeof options.conditionalDelete !== 'boolean') {
-      throw new ValidationError(
-        `conditionalDelete must be a boolean; got ${String(options.conditionalDelete)}`,
-      );
-    }
-    this.conditionalDelete = options.conditionalDelete ?? false;
+    this.conditionalDelete = requireBool('conditionalDelete', options.conditionalDelete) ?? false;
     this.clock = options.clock ?? REAL_TIME;
     this.readStorage = options.readStorage ?? options.storage;
     this.bucket = options.bucket;
-    this.prefix = normalizeGcsPrefix(options.prefix);
+    this.prefix = normalizeObjectPrefix(options.prefix);
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
     // reject every write (cap) or corrupt the upload-path choice (threshold).
-    for (const [name, value] of [
-      ['maxObjectBytes', options.maxObjectBytes],
-      ['simpleUploadThresholdBytes', options.simpleUploadThresholdBytes],
-    ] as const) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
-        throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
-      }
-    }
+    requirePositiveInt('maxObjectBytes', options.maxObjectBytes);
+    requirePositiveInt('simpleUploadThresholdBytes', options.simpleUploadThresholdBytes);
     // GCS's own limit on one object: a cap past it is advertised and never reachable.
-    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > 5 * 1024 ** 4) {
+    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > GCS_MAX_OBJECT_BYTES) {
       throw new ValidationError(
-        `maxObjectBytes must be at most GCS's 5 TiB object limit (${5 * 1024 ** 4}); got ${options.maxObjectBytes}`,
+        `maxObjectBytes must be at most GCS's 5 TiB object limit (${GCS_MAX_OBJECT_BYTES}); got ${options.maxObjectBytes}`,
       );
     }
-    this.maxObjectBytes = options.maxObjectBytes ?? DEFAULT_MAX_OBJECT_BYTES;
+    this.maxObjectBytes = options.maxObjectBytes ?? GCS_MAX_OBJECT_BYTES;
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
     this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
     this.presence = new BucketPresence(this.storage, this.bucket);
@@ -215,7 +206,7 @@ export class GcsStorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectKey(this.prefix, key); // validates ref + generation
     const sink = new GcsUploadSink(
       this.file(objectName),
       this.maxObjectBytes,
@@ -243,7 +234,7 @@ export class GcsStorageDriver implements IStorageDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = storageObjectName(this.prefix, key);
+    const objectName = storageObjectKey(this.prefix, key);
     try {
       // One request, buffering at most the bytes asked for. GCS `end` is inclusive. `decompress: false`, as for the tail:
       // the offsets are into the bytes as stored.
@@ -308,7 +299,11 @@ export class GcsStorageDriver implements IStorageDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
-    const objectName = storageObjectName(this.prefix, key);
+    const objectName = storageObjectKey(this.prefix, key);
+    // The rule every driver's tail read holds to: a safe integer, and zero or less an empty tail.
+    if (!Number.isSafeInteger(maxBytes)) {
+      throw new ValidationError(`invalid tail length ${String(maxBytes)}`);
+    }
     // One deadline for the whole call: the tail's attempts, and the metadata read it may fall back on.
     const deadline = this.deadline('tail read', key);
     try {
@@ -316,9 +311,6 @@ export class GcsStorageDriver implements IStorageDriver {
       if (maxBytes <= 0) {
         const meta = await this.metadataOf(objectName, deadline);
         return withVersion({ bytes: new Uint8Array(0), size: meta.size }, meta.version);
-      }
-      if (!Number.isSafeInteger(maxBytes)) {
-        throw new ValidationError(`invalid tail length ${maxBytes}`);
       }
       // One request: a suffix range (`Range: bytes=-N`, "the last N bytes") answers with the tail and, in
       // `Content-Range: bytes a-b/total`, the object's size. An object shorter than N comes back whole.
@@ -425,7 +417,7 @@ export class GcsStorageDriver implements IStorageDriver {
   }
 
   async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
-    const objectName = storageObjectName(this.prefix, key);
+    const objectName = storageObjectKey(this.prefix, key);
     const ifVersion = options?.ifVersion;
     const conditional = ifVersion !== undefined && this.conditionalDelete;
     // Idempotent: a racing/retried GC sweep of an absent object is a no-op. Not the SDK's `ignoreNotFound`, which takes
@@ -472,7 +464,7 @@ export class GcsStorageDriver implements IStorageDriver {
       throw this.mapError(err);
     }
     for (const f of files) {
-      const generation = parseGenerationFromName(prefix, f.name);
+      const generation = parseGenerationFromKey(prefix, f.name);
       if (generation !== null) {
         yield { namespace: ref.namespace, segment: ref.segment, generation };
       }
@@ -498,15 +490,8 @@ export class GcsStorageDriver implements IStorageDriver {
     }
     // Timed out on every attempt: transient, in words that name the read and the timeout.
     if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
-    // A connection that failed or was cut off, after the driver's retries: transient, whichever code Node gave it.
-    if (isTransportFault(err)) {
-      return new TransientError(
-        `transient GCS fault: ${String((err as { code?: unknown }).code)}`,
-        {
-          cause: err,
-        },
-      );
-    }
+    // A connection that failed or was cut off, after the driver's retries, is transient whichever code Node gave it:
+    // `isTransient` takes every transport fault.
     return this.mapError(err);
   }
 
@@ -517,14 +502,7 @@ export class GcsStorageDriver implements IStorageDriver {
    * in transit arrive typed, and anything else (a checksum mismatch, a credentials failure) as the SDK raised it.
    */
   private mapError(err: unknown): unknown {
-    err = scrubCredentials(err);
-    if (isTransient(err)) {
-      return new TransientError(
-        `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? 'unknown'}`,
-        { cause: err },
-      );
-    }
-    return err;
+    return toTransient(scrubCredentials(err), isTransient, transientFaultMessage);
   }
 }
 
@@ -556,17 +534,6 @@ function generationOf(version: string, key: GenKey): number {
     );
   }
   return Number(version);
-}
-
-/** Concatenate byte chunks of known total length into one buffer. */
-function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
 }
 
 /**
@@ -656,7 +623,7 @@ class GcsUploadSink implements BlobSink {
       this.failure ??= e; // a persistent listener so a stray 'error' is never an unhandled 'error' event
     });
     this.done.catch(() => undefined); // finish() awaits this; guard against unhandled rejection until then
-    const buf = concatBytes(this.buffered, this.bufferedLen);
+    const buf = concatBytes(this.buffered);
     this.buffered.length = 0;
     this.bufferedLen = 0;
     stream.write(buf); // ≤ threshold+one-chunk; backpressure is absorbed by the next write()'s drain-await / end()
@@ -666,7 +633,7 @@ class GcsUploadSink implements BlobSink {
     const sha256 = this.hash.digest('hex');
     if (this.stream === undefined) {
       // Small object: one simple (non-resumable) upload — write-once enforced everywhere, the emulator too.
-      await this.sendSimple(concatBytes(this.buffered, this.bufferedLen));
+      await this.sendSimple(concatBytes(this.buffered));
       return { size: this.total, sha256 };
     }
     try {

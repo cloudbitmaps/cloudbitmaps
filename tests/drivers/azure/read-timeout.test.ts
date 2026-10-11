@@ -6,7 +6,7 @@ import { build } from 'esbuild';
 import { AzureBlobStorage } from '@/azure-blob/backend';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
-import { storageObjectName } from '@/azure-blob/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { IntegrityError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
@@ -31,7 +31,7 @@ const TIMEOUT = 200;
 const LIMIT = { timeout: 20_000 };
 const GEN: GenKey = { segment: 's', generation: 1 };
 const REF = { segment: 's' };
-const DATA = storageObjectName(undefined, GEN);
+const DATA = storageObjectKey(undefined, GEN);
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 let stub: StubBlobService;
@@ -219,7 +219,7 @@ describe('Azure Blob: what the read timeout leaves alone', () => {
     for await (const k of s.list(REF)) listed.push(k.generation);
     expect(listed.sort()).toEqual([1, 2]);
     await s.delete(g);
-    expect(stub.blobs.has(storageObjectName(undefined, g))).toBe(false);
+    expect(stub.blobs.has(storageObjectKey(undefined, g))).toBe(false);
 
     const r = backend.registry;
     const other = { segment: 'other' };
@@ -339,7 +339,7 @@ describe('Azure Blob: a timed-out read is retried by the store', LIMIT, () => {
   // generation holds chunks 0, 3 and 6; the id 2 is in chunk 0. The erasure's GETs of it are, in order, the tail read's
   // download, the chunk it edits, then the two it carries through.
   const ERASE = { namespace: 'ns', segment: 'e' };
-  const ERASE_GEN0 = storageObjectName(undefined, { ...ERASE, generation: 0 });
+  const ERASE_GEN0 = storageObjectKey(undefined, { ...ERASE, generation: 0 });
 
   it.each([
     ['the tail read of the generation it rewrites', 1],

@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { GcsStorageDriver } from '@/gcs/storage';
 import { GcsStorage } from '@/gcs/backend';
-import { storageObjectName } from '@/gcs/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 
@@ -14,7 +14,7 @@ import type { GenKey } from '@/core/ports';
  */
 
 const KEY: GenKey = { segment: 's', generation: 1 };
-const NAME = storageObjectName(undefined, KEY);
+const NAME = storageObjectKey(undefined, KEY);
 
 const httpError = (code: number, message: string): Error =>
   Object.assign(new Error(message), { code, errors: [{ reason: message }] });

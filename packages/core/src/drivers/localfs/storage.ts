@@ -25,7 +25,7 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@/core/errors';
-import type { BlobSink } from '@/core/blob';
+import { checkTailLength, type BlobSink } from '@/core/blob';
 import type {
   StorageCaps,
   GenKey,
@@ -35,7 +35,6 @@ import type {
   TailRead,
 } from '@/core/ports';
 import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
-import { checkTailLength } from '../_shared/tail';
 import { ExactCase } from './exact-case';
 import {
   FILE_MODE,

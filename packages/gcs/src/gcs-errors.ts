@@ -7,6 +7,7 @@
  * `.code` (a number); dropped/timed-out sockets surface as a Node error with a string `.code` (`ECONNRESET`,
  * `ETIMEDOUT`, …).
  */
+import { isTransportFault as isNodeTransportFault } from '@cloudbitmaps/core/driver-kit';
 
 /** The HTTP status of a GCS `ApiError`, if present (`err.code` as a number, or `err.response.status`). */
 function httpStatus(err: unknown): number | undefined {
@@ -82,29 +83,19 @@ function isSdkConnectionProblem(reason: string): boolean {
 }
 
 /**
- * The codes Node gives a connection that failed or was cut off: refused, reset, aborted, timed out, a DNS failure, an
- * unreachable host or network, a broken pipe, and a chunked body cut off mid-stream (`ERR_STREAM_PREMATURE_CLOSE`).
- * Only these: a file the credentials name that is missing or unreadable (`ENOENT`, `EACCES`) and a TLS failure
- * (`EPROTO`, a certificate error) carry codes of the same shape, and would fail the same way again.
+ * A connection that failed or was cut off: one of the codes Node gives every driver's connection faults (refused,
+ * reset, aborted, timed out, a DNS failure, an unreachable host or network, a broken pipe), or a chunked body cut off
+ * mid-stream (`ERR_STREAM_PREMATURE_CLOSE`), which the GCS download path reports. A file the credentials name that is
+ * missing or unreadable (`ENOENT`, `EACCES`) and a TLS failure (`EPROTO`, a certificate error) carry codes of the same
+ * shape, and would fail the same way again, so they are not.
  */
-const TRANSPORT_CODES = new Set([
-  'ECONNRESET',
-  'ECONNREFUSED',
-  'ECONNABORTED',
-  'ETIMEDOUT',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'EPIPE',
-  'ERR_STREAM_PREMATURE_CLOSE',
-]);
+function isConnectionFault(err: unknown): boolean {
+  return isNodeTransportFault(err) || networkCode(err) === 'ERR_STREAM_PREMATURE_CLOSE';
+}
 
-/** A download that failed in transit rather than with an HTTP status: one of {@link TRANSPORT_CODES}. */
+/** A download that failed in transit rather than with an HTTP status: a connection fault ({@link isConnectionFault}). */
 export function isTransportFault(err: unknown): boolean {
-  if (httpStatus(err) !== undefined) return false;
-  const code = networkCode(err);
-  return code !== undefined && TRANSPORT_CODES.has(code);
+  return httpStatus(err) === undefined && isConnectionFault(err);
 }
 
 /**
@@ -142,6 +133,14 @@ export function isTransient(err: unknown): boolean {
   if (status === 408 || status === 429 || (status !== undefined && status >= 500 && status < 600))
     return true;
   // The same connection faults a download is retried on: one list, so a write and a read cannot disagree on one.
-  const net = networkCode(err);
-  return net !== undefined && TRANSPORT_CODES.has(net);
+  return isConnectionFault(err);
+}
+
+/**
+ * The message a transient GCS fault is handed on with: `transient GCS fault: <code>`, the HTTP status the SDK puts on
+ * `code` or Node's connection code, else the error's name.
+ */
+export function transientFaultMessage(err: unknown): string {
+  const e = err as { code?: unknown; name?: unknown } | null | undefined;
+  return `transient GCS fault: ${String(e?.code ?? e?.name ?? 'unknown')}`;
 }

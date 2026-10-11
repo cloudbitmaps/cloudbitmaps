@@ -24,8 +24,9 @@
  * the caller that depends on it. In short:
  *
  *  - Storage: `putImmutable` is write-once and throws `WriteConflictError` on a collision; a missing object makes
- *    `getRange`/`getTail` throw `NotFoundError`; an out-of-range read throws `ValidationError`; `getTail` returns
- *    the true total size, and the object's `version` where the driver has one; `delete` is idempotent; a driver that
+ *    `getRange`/`getTail` throw `NotFoundError`; an out-of-range read, and a `getTail` length that is not a safe
+ *    integer, throw `ValidationError`; `getTail` returns the true total size, and the object's `version` where the
+ *    driver has one; `delete` is idempotent; a driver that
  *    reports `conditionalDelete` deletes, given `ifVersion`, only the object that version names, in one step the
  *    backend applies, and throws `WriteConflictError` for another; `list` is strongly consistent, read-after-delete.
  *  - Registry: `create` and `compareAndSwap` are atomic conditional writes that throw `WriteConflictError` when
@@ -111,3 +112,21 @@ export {
   namespacePathPart,
 } from './drivers/_shared/keys';
 export { normalizeObjectPrefix, prefixPart } from './drivers/_shared/object-registry-keys';
+
+// Where a generation's object lives in an object store, and how a listed key is read back to its generation number:
+// one layout for every object-store driver, so a segment written through one reads identically through another.
+export {
+  parseGenerationFromKey,
+  segmentObjectPrefix,
+  storageObjectKey,
+} from './drivers/_shared/object-keys';
+
+// Option checks a backend or driver applies to its constructor's options, each refusing with `ValidationError`.
+export { refuseUnknownOptions, requireBool, requirePositiveInt } from './drivers/_shared/options';
+
+// A fault's classification: a connection Node reports as failed or cut off, and the hand-off of a transient fault as
+// `TransientError`. A driver's reading of its own service's statuses and codes stays the driver's.
+export { isTransportFault, toTransient } from './drivers/_shared/faults';
+
+// One buffer from the chunks a sink or a body read collected.
+export { concatBytes } from './drivers/_shared/bytes';
