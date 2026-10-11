@@ -47,3 +47,35 @@ export async function mapWithConcurrency<T, R>(
   if (failed) throw firstError;
   return results;
 }
+
+/**
+ * `Promise.all` over `items` with at most `limit` calls of `fn` in flight: the results in input order, or the first
+ * failure, at once. Unlike {@link mapWithConcurrency} it does not wait for the calls still in flight before it rejects,
+ * as `Promise.all` does not; it starts no call after a failure, and what the calls in flight answer is dropped. For reads
+ * a caller abandons on the first fault, never for work that must finish or be accounted for once begun.
+ */
+export async function boundedAll<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new ValidationError(`concurrency limit must be a positive integer; got ${limit}`);
+  }
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < items.length) {
+      const i = next++;
+      try {
+        results[i] = await fn(items[i]!);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}

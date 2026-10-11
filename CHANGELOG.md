@@ -71,10 +71,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **A combine asks the registry about at most 16 operands at once before it refuses one that names no segment.** It
-  asks whether each operand that holds no chunk exists; `intersect`, `union`, `andNot` and the `*Into` verbs asked about
-  all of them at once, so a combine of many such operands sent that many registry reads together. They now ask at most
-  16 at a time, as `materializeMany` already did. An operand that holds data is not asked about.
+- **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and the
+  `*Into` verbs list their operands' chunk keys, ask whether each operand that holds no chunk exists, and look up their
+  operands' versions while they run, at most 16 operands at a time, when they plan and when they plan again after a
+  move. The first of those reads to fail fails the combine at once, and no more of them are sent. `materializeMany`
+  asks whether its operands exist the same way.
 - **A running `iterate` or combine reads a chunk a new generation added.** A read listed its segments' chunk keys before
   its first fetch and kept that list to the end, so when a load, a rollback or an erasure moved a segment while the read
   ran, the read went on from the new generation but only at the keys the old one held: a chunk the new generation added

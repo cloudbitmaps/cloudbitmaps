@@ -8,7 +8,8 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SegmentEngine } from '@/core/engine';
 import { compileCombineMany, runCombineMany } from '@/core/combine-many';
 import type { StorageChunkSource } from '@/core/ports';
-import { roaringCodec } from '@/roaring-codec';
+import { roaringCodec, SafeBitmap } from '@/roaring-codec';
+import { joinId } from '@/core/bit-route';
 
 /**
  * A segment that resolves to nothing is ambiguous in a way that matters only as an **operand**.
@@ -187,61 +188,193 @@ describe('an operand that was dropped or retired is refused like one that never 
   });
 });
 
-/**
- * A source whose every segment is empty and absent, counting the `exists` reads in flight: a combine of many such
- * operands asks after each of them, and must not ask after all of them at once (invariant 6).
- */
-class AbsentEverywhere implements StorageChunkSource {
-  inFlight = 0;
+/** Counts the calls of one kind in flight, and the most there were at once. */
+class InFlight {
+  now = 0;
   peak = 0;
   readonly asked: string[] = [];
-  async getChunk(): Promise<Uint8Array | null> {
-    return null;
-  }
-  async listChunkKeys(): Promise<number[]> {
-    return [];
-  }
-  async exists(ref: SegmentRef): Promise<boolean> {
-    this.asked.push(ref.segment);
-    this.inFlight += 1;
-    this.peak = Math.max(this.peak, this.inFlight);
-    // One turn of the microtask queue: every read the caller starts at once is in flight before any settles.
-    await null;
-    this.inFlight -= 1;
-    return false;
+  async run<T>(name: string, answer: () => T | Promise<T>): Promise<T> {
+    this.asked.push(name);
+    this.now += 1;
+    this.peak = Math.max(this.peak, this.now);
+    try {
+      // One turn of the microtask queue: every call the caller starts at once is in flight before any settles.
+      await null;
+      return await answer();
+    } finally {
+      this.now -= 1;
+    }
   }
 }
 
-describe('the existence check is a bounded fan-out', () => {
+/** A promise that settles only when the test says so. */
+function held(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => (release = resolve));
+  return { promise, release };
+}
+
+/**
+ * A source whose every segment is empty and absent, counting the listings and the `exists` reads in flight: a combine of
+ * many such operands lists and asks after each of them, and must not do either for all of them at once (invariant 6).
+ * `answers` overrides what one segment's listing or `exists` does.
+ */
+class AbsentEverywhere implements StorageChunkSource {
+  readonly listing = new InFlight();
+  readonly existing = new InFlight();
+  constructor(
+    private readonly answers: {
+      readonly list?: Record<string, () => Promise<number[]>>;
+      readonly exists?: Record<string, () => Promise<boolean>>;
+    } = {},
+  ) {}
+  async getChunk(): Promise<Uint8Array | null> {
+    return null;
+  }
+  listChunkKeys(ref: SegmentRef): Promise<number[]> {
+    return this.listing.run(ref.segment, this.answers.list?.[ref.segment] ?? (() => []));
+  }
+  exists(ref: SegmentRef): Promise<boolean> {
+    return this.existing.run(ref.segment, this.answers.exists?.[ref.segment] ?? (() => false));
+  }
+}
+
+/** Every segment holds one id in each of `keys` chunks and is at version `v1`, counting the version lookups in flight. */
+class LoadedEverywhere implements StorageChunkSource {
+  readonly versions = new InFlight();
+  /** Version lookups made once the first chunk was read: the looks of a running read. */
+  readonly looks = new InFlight();
+  private reading = false;
+  private readonly bytes = SafeBitmap.fromValues([1]).serialize();
+  constructor(private readonly keys: number) {}
+  async getChunk(): Promise<Uint8Array | null> {
+    this.reading = true;
+    return this.bytes;
+  }
+  async listChunkKeys(): Promise<number[]> {
+    return Array.from({ length: this.keys }, (_, k) => k);
+  }
+  currentVersion(ref: SegmentRef): Promise<string> {
+    return (this.reading ? this.looks : this.versions).run(ref.segment, () => 'v1');
+  }
+}
+
+const failure = <T>(p: Promise<T>): Promise<unknown> =>
+  p.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+
+describe('a combine reads its operands a bounded number at a time', () => {
   const WIDE = 40;
   const refs = Array.from({ length: WIDE }, (_, i): SegmentRef => ({ segment: `gone-${i}` }));
 
-  it('a combine asks after at most 16 operands at once, and names every one that is absent', async () => {
+  it('lists at most 16 operands at once, asks after at most 16, and names every one that is absent', async () => {
     const source = new AbsentEverywhere();
     const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
-    const error = await collect(engine.intersect(refs)).then(
-      () => undefined,
-      (e: unknown) => e,
-    );
+    const error = await failure(collect(engine.intersect(refs)));
     expect(error).toBeInstanceOf(ValidationError);
-    expect(source.asked).toHaveLength(WIDE);
-    expect(source.peak).toBe(16);
+    expect(source.listing.asked).toHaveLength(WIDE);
+    expect(source.listing.peak).toBe(16);
+    expect(source.existing.asked).toHaveLength(WIDE);
+    expect(source.existing.peak).toBe(16);
     const message = (error as Error).message;
     expect(message.startsWith('intersect: operand "gone-0", "gone-1",')).toBe(true);
     expect(message).toContain(`"gone-${WIDE - 1}" names a segment`);
   });
 
-  it('an exclude list is asked after the same way, includes first', async () => {
+  it('lists and asks after an exclude list the same way, includes first', async () => {
     const source = new AbsentEverywhere();
     const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
     await expect(collect(engine.andNot(refs[0]!, refs.slice(1)))).rejects.toThrow(
       /^andNot: operand "gone-0", "gone-1",/,
     );
-    expect(source.peak).toBe(16);
-    expect(source.asked).toEqual(refs.map((r) => r.segment));
+    expect(source.listing.peak).toBe(16);
+    expect(source.listing.asked).toEqual(refs.map((r) => r.segment));
+    expect(source.existing.peak).toBe(16);
+    expect(source.existing.asked).toEqual(refs.map((r) => r.segment));
   });
 
-  it('a batch combine asks after its operands with the same bound and the same words', async () => {
+  it('looks up at most 16 operand versions at once when a running union looks', async () => {
+    const source = new LoadedEverywhere(12);
+    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    const ops = Array.from({ length: WIDE }, (_, i): SegmentRef => ({ segment: `s${i}` }));
+    const ids = await collect(engine.union(ops, { concurrency: 4 }));
+    expect(ids).toEqual(Array.from({ length: 12 }, (_, k) => joinId(k, 1)));
+    expect(source.versions.peak).toBe(16);
+    // A union looks every `concurrency` keys, each time at every operand.
+    expect(source.looks.asked.length).toBeGreaterThanOrEqual(2 * WIDE);
+    expect(source.looks.asked.length % WIDE).toBe(0);
+    expect(source.looks.peak).toBe(16);
+  });
+
+  it('rejects with the first failed existence check at once, and asks nothing more', async () => {
+    const slow = held();
+    const boom = new Error('the registry failed');
+    const source = new AbsentEverywhere({
+      exists: {
+        'gone-0': async () => {
+          throw boom;
+        },
+        'gone-1': async () => {
+          await slow.promise;
+          return false;
+        },
+      },
+    });
+    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    // Settles while the read of gone-1 is still in flight: the refusal does not wait for it.
+    expect(await failure(collect(engine.intersect(refs)))).toBe(boom);
+    expect(source.existing.now).toBeGreaterThan(0);
+    const asked = source.existing.asked.length;
+    expect(asked).toBeLessThanOrEqual(16);
+    slow.release();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(source.existing.asked).toHaveLength(asked);
+    expect(source.existing.now).toBe(0);
+  });
+
+  it('rejects with the first failed listing at once, and lists nothing more', async () => {
+    const slow = held();
+    const boom = new Error('the listing failed');
+    const source = new AbsentEverywhere({
+      list: {
+        'gone-0': async () => {
+          throw boom;
+        },
+        'gone-1': async () => {
+          await slow.promise;
+          return [];
+        },
+      },
+    });
+    const engine = new SegmentEngine({ storage: source, codec: roaringCodec });
+    expect(await failure(collect(engine.intersect(refs)))).toBe(boom);
+    expect(source.listing.now).toBeGreaterThan(0);
+    const listed = source.listing.asked.length;
+    expect(listed).toBeLessThanOrEqual(16);
+    slow.release();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(source.listing.asked).toHaveLength(listed);
+    expect(source.existing.asked).toHaveLength(0);
+  });
+
+  it('says, word for word, which operands of a combine are absent and what to do', async () => {
+    const engine = new SegmentEngine({ storage: new AbsentEverywhere(), codec: roaringCodec });
+    const error = await failure(
+      collect(
+        engine.intersect([{ namespace: 'suppression', segment: 'opt-out' }, { segment: 'typo' }]),
+      ),
+    );
+    expect((error as Error).message).toBe(
+      'intersect: operand "suppression/opt-out", "typo" names a segment that does not exist or was dropped, so it ' +
+        'would contribute nothing — an exclude would suppress no ids and an include would contribute none. Check the ' +
+        'name and the namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
+        '`allowAbsentOperands: true` if you meant it.',
+    );
+  });
+
+  it("asks after a batch combine's operands at most 16 at once, and names them word for word", async () => {
     const source = new AbsentEverywhere();
     const operands = refs.map((ref) => ({ name: ref.segment, ref }));
     const compiled = compileCombineMany({
@@ -257,18 +390,21 @@ describe('the existence check is a bounded fan-out', () => {
       publishConcurrency: 1,
       concurrency: 1,
     });
-    const error = await runCombineMany(compiled, {
-      source,
-      codec: roaringCodec,
-      clock: { now: () => 0, sleep: async () => {} },
-    }).then(
-      () => undefined,
-      (e: unknown) => e,
+    const error = await failure(
+      runCombineMany(compiled, {
+        source,
+        codec: roaringCodec,
+        clock: { now: () => 0, sleep: async () => {} },
+      }),
     );
     expect(error).toBeInstanceOf(ValidationError);
-    expect(source.peak).toBe(16);
-    expect((error as Error).message).toMatch(
-      /^materializeMany: operand "gone-0", .*"gone-39" names a segment that does not exist or was dropped/,
+    expect(source.existing.peak).toBe(16);
+    const named = refs.map((r) => `"${r.segment}"`).join(', ');
+    expect((error as Error).message).toBe(
+      `materializeMany: operand ${named} names a segment that does not exist or was dropped, so it would contribute ` +
+        'nothing — an exclude would suppress no ids and an include would contribute none. Check the name and the ' +
+        'namespace (a segment addressed without its `namespace` is a DIFFERENT segment). Pass ' +
+        '`allowAbsentOperands: true` if you meant it.',
     );
   });
 });

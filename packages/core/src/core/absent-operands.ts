@@ -2,30 +2,25 @@
  * The refusal of a combine operand that names no segment, shared by the streamed combines and the batch combine, so
  * the two ask the same way and say the same words. Pure: the registry is read through the `exists` it is given.
  */
-import { mapWithConcurrency } from './concurrency';
+import { boundedAll } from './concurrency';
 import { ValidationError } from './errors';
 
 /**
- * The most `exists` reads one refusal has in flight at once (invariant 6). A combine asks only after the operands that
- * hold no chunk at all, which on a combine as it is meant to be called is none, so this bounds a mistaken or hostile
- * call, not a normal one.
- */
-const ABSENT_CHECK_PARALLELISM = 16;
-
-/**
  * Throws {@link ValidationError} naming every one of `candidates` whose segment does not exist, asking `exists` of
- * each, at most {@link ABSENT_CHECK_PARALLELISM} at once, in their order. `op` begins the message (`intersect`,
- * `materializeMany`); `nameOf` is how the caller's operands are named in it, each in double quotes. A rejected `exists`
- * rejects the call, with the first error to come back.
+ * each, at most `limit` at once, in their order. A streamed combine asks only after operands that hold no chunk at all;
+ * the batch combine also asks after every operand it did not index (one no output names, or every operand when the range
+ * is empty). `op` begins the message (`intersect`, `materializeMany`); `nameOf` is how the caller's operands are named
+ * in it, each in double quotes. The first `exists` to reject rejects the call at once; none is asked after that.
  */
 export async function refuseAbsent<T>(
   op: string,
   candidates: readonly T[],
+  limit: number,
   exists: (candidate: T) => Promise<boolean>,
   nameOf: (candidate: T) => string,
 ): Promise<void> {
   if (candidates.length === 0) return;
-  const found = await mapWithConcurrency(candidates, ABSENT_CHECK_PARALLELISM, (c) => exists(c));
+  const found = await boundedAll(candidates, limit, exists);
   const absent = candidates.filter((_, i) => !found[i]);
   if (absent.length === 0) return;
   const named = absent.map((c) => `"${nameOf(c)}"`).join(', ');

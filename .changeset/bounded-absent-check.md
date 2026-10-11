@@ -3,4 +3,4 @@
 '@cloudbitmaps/roaring': patch
 ---
 
-A combine (`intersect`, `union`, `andNot` and the `*Into` verbs) asks the registry whether its operands with no chunks exist at most 16 at a time, as `materializeMany` already did, where it asked about all of them at once.
+A combine (`intersect`, `union`, `andNot` and the `*Into` verbs) lists its operands, asks whether those that hold no chunk exist, and looks up their versions at most 16 operands at a time, and fails at once on the first of those reads to fail; `materializeMany` asks whether its operands exist the same way.

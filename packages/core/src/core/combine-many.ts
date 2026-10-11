@@ -77,7 +77,7 @@ const WORKING_CHUNK = residentBytes(8_208);
 /** A request budget's headroom over what the plan needs, for a group that has to be re-run. */
 const BUDGET_HEADROOM_FACTOR = 2;
 const BUDGET_HEADROOM_FLOOR = 1_000;
-/** Operands whose index is read at once. */
+/** The most operands read at once: their indexes, whether one exists, and their registry rows. */
 const INDEX_PARALLELISM = 16;
 
 /** One named stored operand, as the pass reads it. */
@@ -993,6 +993,7 @@ class Run<R> {
     await refuseAbsent(
       'materializeMany',
       this.operands.filter((op) => op.error === undefined && (op.read ? op.chunkless : true)),
+      INDEX_PARALLELISM,
       (op) => {
         this.registryReads++;
         return source.exists!(op.spec.ref);

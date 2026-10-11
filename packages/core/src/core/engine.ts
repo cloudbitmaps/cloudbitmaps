@@ -21,6 +21,7 @@ import {
 } from './chunk-checks';
 import { ChunkStream } from './chunk-stream';
 import { ChunkWindow } from './chunk-window';
+import { boundedAll } from './concurrency';
 import type { Clock } from './determinism';
 import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
@@ -55,6 +56,12 @@ export const DEFAULT_INTERSECT_CONCURRENCY = 32;
 const COMBINE_WINDOW_START = 8;
 /** A combine's chunk streams open this many ranges wide (or `concurrency` wide, if that is less) and double per range taken. */
 const COMBINE_RANGE_START = 4;
+/**
+ * The most operands a combine reads at once before and between its chunk reads (invariant 6): listing their chunk keys,
+ * asking whether one that holds none exists, and looking up their versions. A combine of fewer operands reads them all at
+ * once.
+ */
+const OPERANDS_AT_ONCE = 16;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
@@ -1147,9 +1154,10 @@ export class SegmentEngine {
 
   /**
    * Each operand's chunk-key set inside the read's range and above the key `after`, and the version it was listed under
-   * ({@link listKeys}), include operands first.
+   * ({@link listKeys}), include operands first, each in its order. At most {@link OPERANDS_AT_ONCE} are listed at once;
+   * the first listing to fail rejects the plan at once, and no other is begun after it.
    */
-  private combineOperands(
+  private async combineOperands(
     segs: readonly SegmentRef[],
     excludeSegs: readonly SegmentRef[],
     w: IdWindow | null,
@@ -1160,7 +1168,8 @@ export class SegmentEngine {
       const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
       return { seg, keys: new Set(keys), chunkless: listed.length === 0, gen, epoch };
     };
-    return Promise.all([Promise.all(segs.map(extract)), Promise.all(excludeSegs.map(extract))]);
+    const all = await boundedAll([...segs, ...excludeSegs], OPERANDS_AT_ONCE, extract);
+    return [all.slice(0, segs.length), all.slice(segs.length)];
   }
 
   /**
@@ -1219,7 +1228,8 @@ export class SegmentEngine {
    * {@link nextSlot} once the read has looked at every operand's version, and planned again if one is not the version
    * the plan was made under. An operand the keys left do not read would otherwise never show the read its move: an
    * exclude whose keys the survivors do not reach, or an include of a union past its last key. A chunk that suggested a
-   * move is confirmed so, as in {@link nextChunkAfterLook}.
+   * move is confirmed so, as in {@link nextChunkAfterLook}. The versions are looked up at most {@link OPERANDS_AT_ONCE}
+   * at once, all of them: a look that finds no move has compared every one.
    */
   private async nextSlotAfterLook(run: CombineRun): Promise<CombineSlot | undefined> {
     const plan = run.plan;
@@ -1227,7 +1237,7 @@ export class SegmentEngine {
     plan.moves.moved = false;
     this.looked(run.looks);
     const all = [...plan.operands, ...plan.excludes];
-    const now = await Promise.all(all.map((o) => this.cacheVersion(o.seg)));
+    const now = await boundedAll(all, OPERANDS_AT_ONCE, (o) => this.cacheVersion(o.seg));
     if (now.some((version, i) => version !== all[i]!.gen)) await this.replanCombine(run);
     return run.plan.window.next();
   }
@@ -1638,8 +1648,8 @@ export class SegmentEngine {
    * chunks — a segment with data is self-evidently registered — so the check is a registry read exactly when
    * a combine was about to do something suspicious, and no reads at all otherwise. A source that cannot answer
    * `exists` (it has no notion of registration) skips the check rather than guessing. An operand is judged by
-   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious. Many
-   * chunkless operands are asked after a bounded number at a time, as {@link refuseAbsent} says.
+   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious. At most
+   * {@link OPERANDS_AT_ONCE} are asked after at once.
    */
   private async refuseAbsentOperands(
     resolved: readonly Operand[],
@@ -1650,6 +1660,7 @@ export class SegmentEngine {
     await refuseAbsent(
       op,
       resolved.filter((o) => o.chunkless),
+      OPERANDS_AT_ONCE,
       (o) => this.storage.exists!(o.seg),
       ({ seg }) => (seg.namespace === undefined ? seg.segment : `${seg.namespace}/${seg.segment}`),
     );
