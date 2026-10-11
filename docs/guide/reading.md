@@ -175,7 +175,9 @@ bound is stated; other pages link here.
   and the key that reader unwrapped, its decoded chunks, and those of every pin of the segment, so its next read
   resolves the current generation afresh. It also drops the segment's open chunk reads: a caller already waiting on one still gets its
   answer, a call made after the invalidation starts its own read, and the dropped read is not written to the cache.
-  It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
+  That holds for every read of the segment running on the store, a pinned handle's and a combine's with a pinned
+  operand included: a running `iterate` or combine caches nothing more of what it began reading before the
+  invalidation. It does no I/O. The store's own writes (`load`, `rollback`, the `*Into` verbs, `eraseSubject`,
   `dropSegment`, `retireExpired`) do this for themselves. Call it for what they cannot see: a `destroySegment` or
   `eraseNamespace` beside the store, or another process's publish, erasure or drop, when your own fan-out delivers
   the news.
@@ -206,8 +208,10 @@ taken: up to `concurrency` + 1 keys per operand (33 by default) for a combine, t
 `iterate`, the one it is handing out included; and up to 32 chunk keys for `count` where it reads chunks. Its answer then describes two
 instants. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and, on an
 encrypted segment, the key it unwrapped) until it moves on or ends, outside the reader cache's `readerMax` and
-`readerMaxBytes`: one reader per streamed operand, for as long as the read runs. [Pin the segment](#read-one-fixed-point-in-time)
-when that matters.
+`readerMaxBytes`: one reader per streamed operand, for as long as the read runs. A read its caller drops without
+ending it (a stream pulled with `next()` and then let go, with no `break` or `return()`) is held by nothing in the
+store, so the garbage collector frees it, and with it its hold on the reader.
+[Pin the segment](#read-one-fixed-point-in-time) when that matters.
 
 **A cached chunk is one object's.** The store caches each decoded chunk, and keeps each open reader, under the
 generation's number and its registry row's `pointerId`: the token of the last write that named a field a read resolves
@@ -406,7 +410,9 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   `dropSegment` of its segment. It also invalidates it on a `retireExpired` whose ledger lists its segment, retired or
   not, and on an `eraseSubject` that scans its segment while it is not destroyed. A dry run of `dropSegment` or
   `retireExpired` invalidates nothing. An invalidated pin opens its
-  object again, and fails if that object is gone or replaced, or its row is gone or destroyed.
+  object again, and fails if that object is gone or replaced, or its row is gone or destroyed. A read of the pin
+  already running when the invalidation comes, a combine with the pin as an operand included, caches nothing more of
+  what it began reading before it, so the pin's next read opens the object again too.
 
   Anything else leaves it as it is. After a `destroySegment` beside its store, or an erasure, a drop or a retirement
   through another store, in the same process or another, it answers from what it holds. That lasts until its store's
