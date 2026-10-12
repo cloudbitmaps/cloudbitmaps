@@ -129,6 +129,12 @@ describe('GcsStorageDriver.getTail (suffix range, one request)', () => {
     await expect(driverOver(bad).getTail(KEY, 10)).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it('answers a missing object a NotFoundError to a zero-length read too, from one metadata request', async () => {
+    const fake = new FakeTail(undefined);
+    await expect(driverOver(fake).getTail(KEY, 0)).rejects.toBeInstanceOf(NotFoundError);
+    expect(fake.requests).toEqual([{ kind: 'metadata' }]);
+  });
+
   describe('hostile responses', () => {
     const refuse = async (
       object: Uint8Array,

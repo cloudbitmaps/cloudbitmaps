@@ -50,6 +50,13 @@ describe('S3StorageDriver.getTail on an empty object', () => {
     await expect(driverOver(bucket).getTail(GEN, 64)).rejects.toBeInstanceOf(TransientError);
   });
 
+  it('answers a missing object a NotFoundError to a zero-length read too, from one HeadObject and no GetObject', async () => {
+    const bucket = new StubS3Bucket();
+    await expect(driverOver(bucket).getTail(GEN, 0)).rejects.toBeInstanceOf(NotFoundError);
+    expect(bucket.count('HeadObject')).toBe(1);
+    expect(bucket.count('GetObject')).toBe(0);
+  });
+
   it('is not a valid .crbm: opening it is an IntegrityError, not a range error', async () => {
     const bucket = new StubS3Bucket();
     store(bucket, new Uint8Array(0));

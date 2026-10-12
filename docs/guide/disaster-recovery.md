@@ -522,10 +522,11 @@ if (report.errored.length > 0) {
   followed by a GC of the superseded generation — or an `eraseSubject`, which collects its predecessor
   immediately — landing in the tiny per-segment read gap can still yield a transient false positive: run the
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
-- **Detection is backend-agnostic.** It relies only on `IStorageDriver.list()` + `IRegistryDriver.get()`, so it
-  covers **any** storage backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
-  backend-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
-  *exists* in storage. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
+- **Detection is backend-agnostic.** It relies only on `IStorageDriver.getTail()` (and `list()` for a segment that
+  read does not find or fails on) and on `IRegistryDriver.list()` + `get()`, so it covers **any** storage backend (S3 / GCS /
+  Azure Blob) with **any** registry backend — nothing about the check is backend-specific. What it verifies is
+  **presence**: that each segment's `currentGen` `.crbm` object *exists* in storage. It therefore catches the torn /
+  dangling-`currentGen` restore, but **not**:
   - **byte corruption inside a present object** — the trust boundary catches that on read, failing closed with
     `IntegrityError` (the per-chunk CRC), which is what the read spot-check in the procedure is for;
   - **a pointer that is valid but older than you intended** — a registry restored to an earlier point than you
@@ -537,13 +538,18 @@ if (report.errored.length > 0) {
     backend never see them (a store on a bare `IStorageDriver` serves the newest of them; see
     [readers still on an old generation](#readers-still-on-an-old-generation)); see
     [what a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back).
-- **`summaries: true` also checks what a count answers from.** The default check lists, and reads no object. With the
-  option it opens each segment's current object (one tail read each, a second for an index longer than that) and holds
-  the row's summary against it: the object its fingerprint names, the same id count and the same metadata. A segment
-  whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is a clear summary whose
-  fingerprint names no object, which no read uses. A sealed summary needs the store's keystore; a segment whose
-  summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row with no summary
-  has nothing to check.
+- **`summaries: true` also checks what a count answers from.** The default check reads no object: it asks whether
+  each one is there with a zero-length tail read, one request, and lists the segment's objects only when that read
+  does not find it. With the option it opens each segment's current object (one tail read each, a second for an index
+  longer than that) and holds the row's summary against it: the object its fingerprint names, the same id count and
+  the same metadata. A segment whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is
+  a clear summary whose fingerprint names no object, which no read uses. A sealed summary needs the store's keystore;
+  a segment whose summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row
+  with no summary has nothing to check.
+- **A store that answers reads but refuses listings does not make every segment errored.** An identity without list
+  permission, or a listing-only outage, leaves the zero-length read to answer, so each object that is there is
+  reported present. A segment whose object that read does not find is settled by the listing, and its error, if it
+  fails, is the segment's.
 - **A segment with no Storage generation is healthy, not torn.** A registry row whose `currentGen` is `null` says
   *this segment exists and has no Storage data yet* — a row minted by `setRetention` ahead of the first load, so the
   policy is recorded before the data. There is no generation that ought to exist, so nothing can be missing, and

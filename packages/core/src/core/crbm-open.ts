@@ -266,8 +266,9 @@ export async function openNamedGeneration(
   key: GenKey,
   crypto: CrbmCrypto | undefined,
   fingerprint: string,
+  noteTail?: (tail: TailRead) => void,
 ): Promise<CrbmReader | undefined> {
-  return openHeldTo(storage, key, { crypto }, undefined, fingerprint);
+  return openHeldTo(storage, key, { crypto }, undefined, fingerprint, noteTail);
 }
 
 /**
