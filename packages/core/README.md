@@ -48,7 +48,7 @@ The `.crbm` storage path lives in `src/core/`, one module per concern. Arrows re
 |---|---|
 | `crbm-write.ts` | writing one immutable generation from in-memory bitmaps, from a stream or from already-encoded chunks |
 | `publish.ts` | the forward-only pointer advance every write ends with, the lease patch, the refusal to point a keyed row at a cleartext generation, and the settling of a registry write that got no answer |
-| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead: ids, a decoded bitmap or a combine's chunks in, bucketed or checked into chunks, one generation written, and published unless the caller defers it; `load()` defers it and publishes through `publish.ts` after its guard |
+| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead: ids, a decoded bitmap or a combine's chunks in, made into chunks (ids bucketed, a bitmap split by its codec where the codec can, a combine's chunks checked), one generation written, and published when a registry is wired and the caller does not defer it; `load()` defers it and publishes through `publish.ts` after its guard |
 | `crbm-open.ts` | opening a stored generation without the cache: the blob reader over a driver object, the checked and noting opens, the identity checks that tie an open to the object it read, generation verification, and the rollback target open |
 | `crbm-storage-source.ts` | the read path: `CrbmStorageChunkSource`, its resolution cache and the pin machinery |
 

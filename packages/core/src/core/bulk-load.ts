@@ -1,6 +1,6 @@
 /**
  * The loader `load()` is built on: ids, a decoded bitmap or a combine's chunks in, one generation written, and published
- * unless the caller defers it, as `load()` does to publish after its guard.
+ * when a registry is wired and the caller does not defer it, as `load()` does to publish after its guard.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { KeyUnavailableError, ValidationError } from './errors';
