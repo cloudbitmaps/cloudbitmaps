@@ -218,7 +218,7 @@ constants and the source text:
   function bounds each, and a test fails when the harness runs a stage the table does not name, or the table names one
   the harness never runs, so a stage cannot spend money the ceiling never saw. The finished run is held to each
   stage's bound as well as to the total, so a stage that overspent is named. It counts both operands of an intersect, and
-  its retry bound must match the publish loop in `packages/core/src/core/crbm-storage-source.ts`: a test reads the loop's number out of the source and
+  its retry bound must match the publish loop in `packages/core/src/core/publish.ts`: a test reads the loop's number out of the source and
   fails if they differ, because a retyped number can be wrong. A load, `store.load()` of a new segment, checks that its
   generation number is free and lists nothing when it is, since it has nothing to collect (up to twice when the check
   finds the number taken, to number past the object and to collect, and once more it writes the row to record the window

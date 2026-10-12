@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '@/core/publish';
 import { CrbmReader } from '@/core/crbm/reader';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { eraseIdFromSegment } from '@/core/erase-id';
@@ -12,7 +12,8 @@ import { IntegrityError } from '@/core/errors';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { openGenerationReader, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { collect } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { Gate, Watched, tick } from '../helpers/live-buffers';

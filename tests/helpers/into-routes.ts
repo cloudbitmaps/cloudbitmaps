@@ -12,7 +12,7 @@ import { brandAsBackend } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { aadFor } from '@/core/crypto';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { incarnationOf } from '@/core/token';
 import type { MetricEvent } from '@/core/metrics';
 

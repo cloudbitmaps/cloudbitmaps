@@ -13,7 +13,7 @@ const CONFIRM_PHRASE = 'yes-spend-money';
 
 /**
  * Attempts `publishGeneration` makes to advance a segment pointer, from the loop in
- * `packages/core/src/core/crbm-storage-source.ts`.
+ * `packages/core/src/core/publish.ts`.
  *
  * The loop runs FIVE attempts, and nothing in core names that count (there is no `DEFAULT_MAX_RETRIES`), so it is
  * easy to retype wrong. A bound of 4 projects every load one attempt short — the exact "a projection the run can

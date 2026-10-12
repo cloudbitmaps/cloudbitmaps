@@ -1,7 +1,7 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { MemoryStorage, CloudRoaring } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

@@ -102,10 +102,10 @@ import {
   openGenerationReader,
   provenObject,
   provesOwnObject,
-  publishGeneration,
   verifyGeneration,
-  writeCrbmGenerationStream,
-} from './crbm-storage-source';
+} from './crbm-open';
+import { publishGeneration } from './publish';
+import { writeCrbmGenerationStream } from './crbm-write';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import type { CrbmReader } from './crbm/reader';
 import { mapWithConcurrency } from './concurrency';

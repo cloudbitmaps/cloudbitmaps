@@ -1,5 +1,5 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '@/core/publish';
 import { randomBytes } from 'node:crypto';
 import {
   MemoryStorage,

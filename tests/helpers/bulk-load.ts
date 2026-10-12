@@ -7,14 +7,14 @@
  * one (`tests/helpers/load-routing.ts`), so every test that seeds a segment through it, `loaded.ts`'s fixtures
  * included, writes through the bitmap path there.
  */
-import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/crbm-storage-source';
+import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/bulk-load';
 import { DecodedLoadInput, prepareLoadInput } from '@/core/load-input';
 import type { LoadInput } from '@/core/load-input';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
 import { kindOf, routedProject, routing, toSerialized } from './load-routing';
 
-export type { BulkLoadResult } from '@/core/crbm-storage-source';
+export type { BulkLoadResult } from '@/core/bulk-load';
 
 /** `store.load()`'s loader with the codec and clock the store would pass; an explicit option wins. */
 export const bulkLoadCrbmGeneration: typeof coreBulkLoad = async (

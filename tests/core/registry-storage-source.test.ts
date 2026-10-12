@@ -1,4 +1,4 @@
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '@/core/publish';
 vi.mock('@/core/crbm/reader', async (original) =>
   (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
 );

@@ -25,15 +25,9 @@ import { requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
-import {
-  bulkLoadAhead,
-  cleartextUnderRequiredEncryption,
-  provenObject,
-  openGenerationReader,
-  provesOwnObject,
-  publishGenerationKept,
-  type PublishResult,
-} from './crbm-storage-source';
+import { bulkLoadAhead, cleartextUnderRequiredEncryption } from './bulk-load';
+import { provenObject, openGenerationReader, provesOwnObject } from './crbm-open';
+import { publishGenerationKept, type PublishResult } from './publish';
 import type { Clock, Rng } from './determinism';
 import { onlyLeasesDiffer } from './leases';
 import { aadFor } from './crypto';
