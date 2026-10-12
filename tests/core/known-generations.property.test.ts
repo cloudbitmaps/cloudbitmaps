@@ -46,7 +46,7 @@ import { CountingObjectStore } from '../helpers/counting';
  *
  * The window the model keeps is the `keep` most recently current generations numbered below the new one; a rollback of
  * n steps lands on the generation made current n steps before, and one a rollback left above the pointer stays in the
- * ledger until a load numbers above it, unless the list would pass 128 entries.
+ * ledger until a load takes a number past it, unless the list would pass 128 entries.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };

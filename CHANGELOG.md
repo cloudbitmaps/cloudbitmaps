@@ -201,7 +201,7 @@ so, and so do the module headers in the code.
 
 - **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
   no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
-- **After a rollback, a load keeps the most recently current generations, from the first load on.** A load keeps `keep`
+- **The first load after a rollback keeps the generation the rollback restored.** So does every load after it, for as many as `keep` says. A load keeps `keep`
   generations below the one it publishes, and the row's ledger now records the order generations were made current and
   survives a rollback, so the window is the `keep` most recently current generations numbered below the new one, the
   generation the load superseded first. A load that lists the segment over a row that recorded no window kept the newest
@@ -214,7 +214,7 @@ so, and so do the module headers in the code.
   restored generation stays for as many loads as `keep` says, ahead of the generations the rollback moved away from (a
   window of the newest `keep` by number deleted it at the second load, leaving 3, 4 and 5). A generation the rollback left above the pointer stays in the
   ledger and is never collected while the pointer is below it, and takes no place in `keep`; it leaves the ledger when
-  a load numbers above it, unless the ledger would pass 128 entries. A pin taken on the restored generation reads it
+  a load takes a number past it, unless the ledger would pass 128 entries. A pin taken on the restored generation reads it
   until a load collects it, unless the pin is leased. The window is chosen without looking at leases, so a live lease on
   the generation a load supersedes after a rollback holds a place in the window instead of being spared beside it. The
   window is the newest `keep` by number only for a pass that has no ledger to go on, where the superseded generation's
