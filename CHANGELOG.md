@@ -14,9 +14,10 @@ so, and so do the module headers in the code.
 ### Breaking
 
 - **A pin's `fingerprint` is required.** `PinnedAt.fingerprint` is `string | null` (`null` only when `generation` is
-  `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A pin of a generation built without one is
-  refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and by a pinned read of
-  `CrbmStorageChunkSource`.
+  `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A pin of a generation built without a
+  string `version` and `fingerprint` is refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and
+  by a pinned read of `CrbmStorageChunkSource`, and `CrbmStorageChunkSource.pinGenerationAt` refuses one without a
+  fingerprint before it reads the row or takes a lease.
 
 - **A bucket or container that does not exist is a `ValidationError` on every cloud driver.** It names the bucket or
   container and says what to check, with the service's error as its `cause`. It is not a `NotFoundError`, which a read
