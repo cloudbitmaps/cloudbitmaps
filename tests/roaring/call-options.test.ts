@@ -216,6 +216,21 @@ describe('an option held in a getter or on a prototype is the option the call ru
       expect(opened).toEqual(['tenantB/old']);
     }
   });
+
+  it('andNot takes its operands before it reads its options, so a getter there cannot swap one in unchecked', async () => {
+    const { a, b } = await world();
+    const excludes: unknown[] = [b];
+    let reads = 0;
+    const options = {
+      get after() {
+        reads += 1;
+        excludes[0] = 42;
+        return undefined;
+      },
+    };
+    expect(await drain(a.andNot(excludes as Segment[], options))).toEqual([1]);
+    expect(reads).toBe(1);
+  });
 });
 
 describe('a seam the store calls through must have the methods it calls', () => {
