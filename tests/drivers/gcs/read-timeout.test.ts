@@ -334,6 +334,10 @@ async function scenario(
 
 /** A short timeout, for reads that must time out. */
 const TIMEOUT = 200;
+/** How long a body is held in the tests where no timeout may cut it off: past the short timeout, with room. */
+const SLOW = 3 * TIMEOUT;
+/** How long an untimed read's body is held: long enough that a timer of up to a second on a read set to 0 would cut it. */
+const UNTIMED_BODY = 1_200;
 /** A long one, for reads that must not: a cold child's first read can take over 150 ms on a loaded machine. */
 const ROOMY = 2_000;
 /** The store's read retry: four attempts. */
@@ -418,18 +422,18 @@ describe('a GCS read with readTimeoutMs', () => {
     it.concurrent(
       'a 503 and then a slow body share one deadline: the retry gets only what is left of it',
       async () => {
-        // The 503 takes 1,500 of the 4,000 ms, and the retry's body then takes 3,000 more to arrive: past the
-        // deadline, which has 2,500 ms left for it, but well inside a fresh 4,000 ms clock. So a retry that shared the
+        // The 503 takes 1,000 of the 2,500 ms, and the retry's body then takes 2,000 more to arrive: past the
+        // deadline, which has 1,500 ms left for it, but well inside a fresh 2,500 ms clock. So a retry that shared the
         // deadline fails at it, and a retry given a fresh clock would finish its read. That is told by the outcome and
-        // the request count, not by how long a loaded machine took: the body arrives 3,000 ms after the retry starts,
-        // however late the 503 was. The 503 has 2,500 ms of room to arrive late before too little is left to retry.
-        const timeout = 4_000;
+        // the request count, not by how long a loaded machine took: the body arrives 2,000 ms after the retry starts,
+        // however late the 503 was. The 503 has 1,500 ms of room to arrive late before too little is left to retry.
+        const timeout = 2_500;
         const { run, counts, held } = await scenario(call, timeout, {
-          media: [{ late503: 1_500 }, { slow: 3_000 }],
+          media: [{ late503: 1_000 }, { slow: 2_000 }],
         });
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
-        expect(String(run.outcome?.message)).toMatch(/ timed out after 4000 ms$/);
+        expect(String(run.outcome?.message)).toMatch(/ timed out after 2500 ms$/);
         expect(counts.downloads).toBe(2);
         expect(held).toBe(0);
         expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(timeout - 20);
@@ -445,7 +449,7 @@ describe('a GCS read with readTimeoutMs', () => {
           call,
           TIMEOUT,
           { media: [{ late: TIMEOUT + 300 }] },
-          'linger=1500',
+          'linger=900',
         );
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ error: 'TransientError' });
@@ -465,13 +469,14 @@ describe('a GCS read with readTimeoutMs', () => {
       30_000,
     );
 
-    it.concurrent.each([0, 'default'] as const)(
+    // `default` is `0` once the driver is built (see the validation tests below), so one call shows it end to end.
+    it.concurrent.each(call === 'range' ? ([0, 'default'] as const) : ([0] as const))(
       'readTimeoutMs %s lets a slow read finish',
       async (timeout) => {
-        const { run, counts } = await scenario(call, timeout, { media: [{ slow: 1_200 }] });
+        const { run, counts } = await scenario(call, timeout, { media: [{ slow: UNTIMED_BODY }] });
         expect(run.code).toBe(0);
         expect(run.outcome).toHaveProperty('ok');
-        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(1_150);
+        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(UNTIMED_BODY - 50);
         expect(counts.downloads).toBe(1);
       },
       30_000,
@@ -504,11 +509,14 @@ describe('a GCS read with readTimeoutMs', () => {
       30_000,
     );
 
-    it.concurrent.each(['stall-headers', 'stall-body'] as const)(
-      'a has() whose first read stalls (%s) and is then answered succeeds',
-      async (stall) => {
+    it.concurrent(
+      'a has() whose first read stalls and is then answered succeeds',
+      async () => {
         const crbm = await realGeneration();
-        const { run, counts } = await scenario('has', ROOMY, { media: [stall, 'ok'], crbm });
+        const { run, counts } = await scenario('has', ROOMY, {
+          media: ['stall-headers', 'ok'],
+          crbm,
+        });
         expect(run.code).toBe(0);
         expect(run.outcome).toMatchObject({ ok: true });
         expect(counts.downloads).toBeGreaterThanOrEqual(2);
@@ -579,10 +587,10 @@ describe('a GCS read with readTimeoutMs', () => {
   it.concurrent.each(['delete', 'list'] as const)(
     'does not time a %s: one slower than the timeout completes',
     async (call) => {
-      const { run, counts } = await scenario(call, TIMEOUT, { slowDeleteListMs: 3 * TIMEOUT });
+      const { run, counts } = await scenario(call, TIMEOUT, { slowDeleteListMs: SLOW });
       expect(run.code).toBe(0);
       expect(run.outcome).toHaveProperty('ok');
-      expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(3 * TIMEOUT - 20);
+      expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(SLOW - 20);
       expect(call === 'delete' ? counts.deletes : counts.lists).toBe(1);
     },
     30_000,

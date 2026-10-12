@@ -1823,7 +1823,7 @@ describe('no document claims behaviour this library does not have', () => {
   });
 
   it(
-    'reads a 100 KB line with no full stop in time that grows with its length, whatever it is made of',
+    'reads a 40 KB line with no full stop in time that grows with its length, whatever it is made of',
     { timeout: 120_000 },
     () => {
       // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one
@@ -1834,12 +1834,13 @@ describe('no document claims behaviour this library does not have', () => {
       // the full length, in this process, so a loaded machine slows both alike. Four times the input is about four
       // times the time for a single scan and sixteen for a scan per unit. The two lengths are read in turn, five times
       // over, and a reading is the least of its five, so a pause or a spell of load reaches both lengths alike and one
-      // slow run does not decide it. The growth counts against a shape only when its full-length reading is over
-      // 500 ms, a floor that keeps load noise on a reading of tens of milliseconds from failing it: so only a regression
-      // that takes a shape past 500 ms is caught. Several shapes read in a few milliseconds, and a regression that
-      // leaves one of them under the floor is not seen; what the test catches is a scan that goes quadratic or worse on
-      // 100 KB, as the old 2 s bound did.
-      const FULL = 102_400;
+      // slow run does not decide it. The growth counts against a shape only when it is over 6, where a single scan
+      // measures about 4, and the full-length reading is over 20 ms, a floor that keeps load noise on a reading of a
+      // few milliseconds from failing it. A scan per unit grows by sixteen, though a fixed cost per call hides part of
+      // it at this length, so a shape that scans a part of the line twice shows well under that. What the test catches
+      // is a scan that goes quadratic or worse. Several shapes read in a few milliseconds even at full length, and a
+      // regression that leaves one of them under the floor is not seen.
+      const FULL = 40_960;
       const expectLinear = (what: string, build: (length: number) => string): void => {
         const quarter = build(FULL / 4);
         const full = build(FULL);
@@ -1855,7 +1856,7 @@ describe('no document claims behaviour this library does not have', () => {
         }
         const growth = large / Math.max(small, 1);
         const verdict = `${what}: ${small.toFixed(1)} ms at a quarter, ${large.toFixed(1)} ms at full, ${growth.toFixed(1)}x`;
-        expect(large > 500 && growth > 9, verdict).toBe(false);
+        expect(large > 20 && growth > 6, verdict).toBe(false);
       };
       for (const unit of [
         '[a ',
