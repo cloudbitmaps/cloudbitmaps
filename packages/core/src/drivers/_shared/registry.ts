@@ -142,8 +142,9 @@ function validateGovernance(meta: unknown, field: string): void {
 
 /**
  * Whose value a validator is looking at: one a `caller` is writing (a bad one is a ValidationError, a list or summary
- * it returns is a frozen copy, and `keptGens` is held to the writer's cap of 64), or a row read back from `stored`
- * bytes (a bad one is an IntegrityError, the reader's cap of 256 applies, and the parsed value is kept).
+ * it returns is a frozen copy, and `keptGens` is held to {@link MAX_KEPT_GENERATIONS}), or a row read back from
+ * `stored` bytes (a bad one is an IntegrityError, `keptGens` is held to {@link MAX_STORED_KEPT_GENERATIONS}, and the
+ * parsed value is kept).
  */
 type RecordOrigin = 'caller' | 'stored';
 
@@ -357,8 +358,9 @@ const HOLDER = /^[0-9a-f]{16}$/;
 const LEASE_ENTRY_KEYS: readonly string[] = ['holder', 'generation', 'until'];
 
 /**
- * Validate a {@link RegistryRecord.leases} list at the write or read boundary: an array of at most the writer's cap
- * (write) or the reader's (read), each entry exactly `{ holder, generation, until }`, the holder 16 lowercase hex digits
+ * Validate a {@link RegistryRecord.leases} list at the write or read boundary: an array of at most
+ * {@link MAX_STORED_LEASES} entries whatever the origin (a write's own, smaller cap is applied against the row it
+ * patches), each entry exactly `{ holder, generation, until }`, the holder 16 lowercase hex digits
  * and unique, the two numbers non-negative safe integers. A write returns a frozen copy, and an empty list as
  * `undefined`, so a row that never held a lease is the row it was before leases. `origin` picks the error class
  * (write = ValidationError; read = IntegrityError, invariant 5). Whether an entry is still live, or its generation

@@ -1026,7 +1026,7 @@ describe('CrbmStorageChunkSource: what a chunk read does with the caller and the
 
   it('a transient fault in the stream comparing itself with the live segment moves it on to read afresh; any other fault stands', async () => {
     for (const fault of [new TransientError('throttled'), new Error('registry exploded')]) {
-      const { registry, clock, source } = await unopened(CHUNKS);
+      const { storage, registry, clock, source } = await unopened(CHUNKS);
       const it = source.getChunks(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
       expect((await it.next()).value.key).toBe(0);
       // The reader cache lets the segment go and its pointer's TTL lapses, so the next chunk resolves the segment
@@ -1044,6 +1044,7 @@ describe('CrbmStorageChunkSource: what a chunk read does with the caller and the
         }
         return real(ref);
       };
+      const tails = storage.tails;
       const afterFirst = it.next();
       if (fault instanceof TransientError) {
         const rest: number[] = [];
@@ -1053,6 +1054,9 @@ describe('CrbmStorageChunkSource: what a chunk read does with the caller and the
           rest.push(n.value.key);
         }
         expect(rest).toEqual([22, 44]);
+        expect(storage.tails - tails, 'the stream read afresh: it opened the segment again').toBe(
+          1,
+        );
       } else {
         await expect(afterFirst).rejects.toBe(fault);
       }
