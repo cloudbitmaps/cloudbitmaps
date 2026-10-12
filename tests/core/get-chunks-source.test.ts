@@ -960,7 +960,7 @@ describe('PinnedStorageChunkSource.getChunks', () => {
     const { source } = await world();
     const wrapper = new PinnedStorageChunkSource(
       source,
-      new Map([[segmentKey(REF), { generation: null, version: null }]]),
+      new Map([[segmentKey(REF), { generation: null, version: null, fingerprint: null }]]),
     );
     const none = await read(wrapper, REF, [0, 1]);
     expect(none.items).toEqual([
