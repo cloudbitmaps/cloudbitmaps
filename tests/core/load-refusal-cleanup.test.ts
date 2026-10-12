@@ -1,5 +1,5 @@
 import { runConsistencyCheck } from '@cloudbitmaps/core';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { KeyUnavailableError, NotFoundError, ValidationError } from '@/core/errors';
