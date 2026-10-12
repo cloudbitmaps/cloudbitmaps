@@ -45,7 +45,7 @@ literal the test carried before the switch, and checks that nothing else reads t
 | `core/combine-many.feed.property.test.ts` | cases, fed operands; cases, fed operands under a range | 60; 30 | 15; 8 |
 | `core/retention-hard-purge.test.ts` | segments created, retired and purged | 10,000 | 1,000 |
 | `core/erase-namespace-bounded.test.ts` | rows in the listing held to the ceiling (full passes no ceiling, so the shared default of 250,000 is what is held) | 250,000 | 25,000 |
-| `core/combine-ledger.test.ts` | bitmaps measured per cardinality | 8,000 | 2,000 |
+| `core/combine-ledger.test.ts` | bitmaps measured per cardinality | 8,000 | 4,000 |
 
 The nightly lane is [`.github/workflows/full-nightly.yml`](../.github/workflows/full-nightly.yml): `pnpm test` at full
 strength on `main`, on each Node version `ci.yml` tests, every night and on demand. It gates nothing; a red run fails the

@@ -33,7 +33,7 @@ export const HEAVY_SIZES = {
   /** `tests/core/erase-namespace-bounded.test.ts`: rows a namespace listing is held to (the shared default ceiling). */
   eraseNamespaceScanRows: { full: 250_000, reduced: 25_000 },
   /** `tests/core/combine-ledger.test.ts`: native bitmaps measured per chunk cardinality, in a fresh process each. */
-  combineLedgerSamples: { full: 8_000, reduced: 2_000 },
+  combineLedgerSamples: { full: 8_000, reduced: 4_000 },
 } as const;
 
 export type HeavyName = keyof typeof HEAVY_SIZES;
