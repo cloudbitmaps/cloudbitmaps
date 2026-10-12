@@ -59,6 +59,8 @@ const EXTRA = `export declare function extra(x: boolean): void;\n`;
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'api-surface-cli-'));
   git('init', '-q');
+  // No background repack started by a commit while a test reads or removes the repository.
+  git('config', 'maintenance.auto', 'false');
   put(
     'packages/a/package.json',
     JSON.stringify({
@@ -259,11 +261,49 @@ describe('--against', () => {
   });
 
   it('fails, rather than reporting no snapshot, when git cannot read the path at the ref', () => {
-    const tree = git('rev-parse', 'HEAD:api-surface').trim();
-    rmSync(join(repo, '.git/objects', tree.slice(0, 2), tree.slice(2)));
-    const r = run(['--against', 'HEAD']);
-    expect(r.status).toBe(1);
-    expect(r.out).not.toContain('nothing to compare against');
+    // Commits that name an object the repository never had: once as the `api-surface` tree, once as the snapshot's
+    // blob inside a readable tree, so both `git ls-tree` and `git show` failing are covered. Deleting a stored
+    // object's loose file is not enough: git may also hold the object in a pack (the background maintenance a commit
+    // starts can write one), and then reads it from there.
+    const missing = '1'.repeat(git('rev-parse', 'HEAD').trim().length);
+    const mktree = (listing: string): string =>
+      execFileSync('git', ['mktree', '--missing'], {
+        cwd: repo,
+        encoding: 'utf8',
+        input: listing,
+      }).trim();
+    const swap = (listing: string, entry: RegExp, oid: string): string => {
+      const out = listing.replace(entry, `$1${oid}$2`);
+      expect(out).toContain(oid);
+      return out;
+    };
+    const subtree = /^(040000 tree )\S+(\tapi-surface)$/m;
+    const root = git('ls-tree', 'HEAD');
+    const noBlob = mktree(
+      swap(git('ls-tree', 'HEAD:api-surface'), /^(100644 blob )\S+(\tsurface\.json)$/m, missing),
+    );
+    expect(() => git('cat-file', '-e', missing)).toThrow();
+    for (const tree of [
+      mktree(swap(root, subtree, missing)),
+      mktree(swap(root, subtree, noBlob)),
+    ]) {
+      const at = git(
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit-tree',
+        '-m',
+        'x',
+        '-p',
+        'HEAD',
+        tree,
+      ).trim();
+      const r = run(['--against', at]);
+      expect(r.status, r.out + r.err).toBe(1);
+      expect(r.out).not.toContain('nothing to compare against');
+      expect(r.err).not.toContain('is not a commit here');
+    }
   });
 
   it('needs no TypeScript: it reads committed files only', () => {
