@@ -146,9 +146,8 @@ describe('an unguarded write that found no row fences on that absence too', () =
     ]);
     expect((await backend.registry.get({ segment: 'dest' }))!.currentGen).toBe(0);
     expect(await collect(store.segment('dest').iterate())).toHaveLength(1000);
-    // The row changed under it, and its number is above that row's pointer, where another load can hold it by now, so
-    // the refusal leaves the object. The next load's check meets it, numbers above it by a listing, and that listing
-    // deletes it.
+    // The row changed under it, so the refusal cannot prove the number its own and leaves the object above the
+    // pointer. The next load's check meets it, numbers above it by a listing, and that listing deletes it.
     expect(await objects(backend, 'dest')).toEqual([0, 1]);
     expect(await store.load({ segment: 'dest' }, [7])).toMatchObject({
       generation: 2,
@@ -225,9 +224,8 @@ describe('an unguarded write that found no row fences on that absence too', () =
     expect(row.currentGen).toBeNull();
     expect(row.retention).toBeDefined();
     expect(await store.exists({ segment: 'dest' })).toBe(false);
-    // The row has no pointer, so its object is left in the bucket. The next load numbers past it; that row recorded no
-    // kept generations, so the load's listing keeps the newest one below its pointer, this object, and the load after it
-    // pushes it out.
+    // Its object is left in the bucket. The next load numbers past it; that row recorded no kept generations, so the
+    // load's listing keeps the newest one below its pointer, this object, and the load after it pushes it out.
     expect(await objects(backend, 'dest')).toEqual([0]);
     expect(await store.load({ segment: 'dest' }, [4])).toMatchObject({
       generation: 1,

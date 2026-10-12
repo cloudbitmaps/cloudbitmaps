@@ -15,13 +15,12 @@
  *
  * Refusing therefore has to clean up after itself. The object is already durable at that point, and it sits
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
- * pointer), so a refused load deletes its own object before returning. While the segment's row is unchanged (or
- * differs only in its leases) or `destroyed`, it deletes by number. Once the row is gone, or another write has
- * otherwise changed it, the object's number may name another writer's object (a re-created segment's, say), so a read
- * of the object's footer must prove it the load's own first, and an object the row names stays: as its pointer, in its
- * kept window or in a lease. Under a changed row, so does one at or above its pointer, or under a row with no pointer,
- * where another load can have taken the number again with the same bytes and still publish it, unless it is cleartext
- * under key material.
+ * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged (or
+ * differs only in its leases), gone or `destroyed`, or has key material when the load wrote cleartext. Under a row
+ * that is gone or keyed, a read of the object's footer must prove it the load's own first. Once another write has
+ * otherwise changed the row, the object stays: its number may by then name another writer's object, and a footer
+ * cannot tell that from this load's own when that writer loaded the same ids. It is an orphan until a later load's
+ * collection takes it, and until then a rollback can name it.
  */
 import { requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
@@ -363,21 +362,21 @@ export type LoadRefusal =
    * Another writer got there first. Either another load wrote the same generation number first, so the write-once
    * put refused this one and it wrote nothing (`size: 0`); or the segment's registry row changed while the load was
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
-   * deleted, or a row appeared where the load found none. Once another write has changed the row, or the row is gone,
-   * the object is deleted when one read of its footer proves it this load's own (its number may by then name another
-   * writer's object, which stays), and kept when the row names it, as its pointer, in its kept window or in a lease, or
-   * when it is above the pointer of a row another write changed, or under one with no pointer, unless it is cleartext
-   * under key material; once the row is `destroyed` (dropped or crypto-shredded), it is deleted.
+   * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
+   * the bucket, still billed, until a later load's collection deletes it or the segment is dropped, because its
+   * generation number may by then name another writer's object; until it goes, a rollback can name it. Once the row is
+   * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object its footer
+   * proves this load's own, and so is a cleartext one under a row with key material.
    */
   | 'superseded';
 
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
-   * unchanged or `destroyed`, once the row is gone when its footer proves it this load's own, and once another write
-   * has changed the row when its footer proves it this load's own, the row does not name it (as its pointer, in its kept
-   * window or in a lease) and it is below the row's pointer, or cleartext under key material. A load that lost its
-   * generation number to another wrote nothing, and reports `size: 0`.
+   * unchanged or `destroyed`, and, once one read of its footer proves it this load's own, when the row is gone or, for a
+   * cleartext object, has key material. Under any other row another write changed, the object stays in the bucket, an
+   * orphan a later load's collection takes, and until then a rollback can name it. A load that lost its generation
+   * number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;
   /** Whether this generation is now the segment's current one. */
@@ -664,16 +663,6 @@ async function runLoad(
   const { generation, checked } = await numbering;
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
-  /** Whether `record` names `generation`: as its pointer, in its kept window, or in a lease, ended or not. */
-  const rowNames = (record: RegistryRecord, g: number): boolean =>
-    record.currentGen === g ||
-    (record.keptGens ?? []).includes(g) ||
-    (record.leases ?? []).some((lease) => lease.generation === g);
-
-  /** Whether `record` has a pointer and `g` is strictly below it. */
-  const belowPointer = (record: RegistryRecord, g: number): boolean =>
-    record.currentGen !== null && g < record.currentGen;
-
   /**
    * Reclaim this load's object after a DEFINITE refusal: a guard that said no before any publish, or a publish that
    * answered `false` or threw a refusal of its own. Never after an ambiguous outcome (a lost response, a timeout):
@@ -689,24 +678,16 @@ async function runLoad(
    *
    * - The same row (an unchanged token): nothing was written since this load read it, so the number is its own.
    * - A `destroyed` row: no reader resolves any of its generations, so whatever is under the key is garbage.
-   * - A row that names this load's number, as its pointer, in its kept window or in a lease: something made the object
-   *   a generation of the segment, and it stays. A rollback with `allowForward` moves the pointer onto it; a publish
-   *   whose write went unanswered may have landed and then been superseded, so the next writer's window or a reader's
-   *   lease can name it.
-   * - A row with no pointer, or with its pointer below this load's number, unless it has key material and this load
-   *   wrote cleartext: the object stays, an orphan a later load's collection takes. Another load can hold the number by
-   *   now: an erasure deletes an object above the pointer that holds its id, and a load that reads the row after takes
-   *   the freed number. That load publishes from the row it read, so nothing stops it landing after this delete, and if
-   *   it loaded the same ids it wrote the same bytes, which the fingerprint below cannot tell from this load's own.
-   * - Any other row, or none: the object under the key must be proved this load's by its fingerprint, from one read of
-   *   its footer. One that is gone, is another object, or cannot be read is kept. The delete passes the version that
-   *   read reported, so on a storage driver that reports `conditionalDelete` it removes that object and no other: a
-   *   number taken again between the read and the delete keeps the object put under it since, and the refused delete
-   *   is a fault of the cleanup, which the refusal swallows. Below the pointer, where another writer's publish leaves a
-   *   stalled load's object, no publish can move the pointer onto the number any more (each moves it forward from the
-   *   row its writer read), and the object kept would be a rollback target, so a rollback could publish what this load
-   *   never published. A cleartext object under key material is never published onto that row, and has no place in an
-   *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable.
+   * - No row, or a row with key material when this load wrote cleartext (a cleartext object has no place in an
+   *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable):
+   *   the object under the key must be proved this load's by its fingerprint, from one read of its footer. One that
+   *   is gone, is another object, or cannot be read is kept. The delete passes the version that read reported, so on a
+   *   storage driver that reports `conditionalDelete` it removes that object and no other: a number taken again
+   *   between the read and the delete keeps the object put under it since, and the refused delete is a fault of the
+   *   cleanup, which the refusal swallows.
+   * - Any other row: the object stays, an orphan a later load's collection takes. The footer names the object's bytes,
+   *   not the load that wrote them, and a load of the same ids writes the same bytes, so the proof cannot tell this
+   *   load's object from a generation another load published under the number, or still will.
    *
    * The first two delete by number, with no condition: the decision comes from the row, and the object is this
    * load's own write, of which the write reports no version.
@@ -730,16 +711,13 @@ async function runLoad(
       watch.deleted(generation);
       return now.status === 'destroyed' ? undefined : watch.settle(now);
     }
-    if (now !== null && rowNames(now, generation)) return undefined;
     const keyed = now !== null && now.wrappedDeks !== undefined && now.wrappedDeks.length > 0;
-    if (now !== null && !belowPointer(now, generation) && !(keyed && !written.encrypted)) {
-      return undefined;
-    }
+    if (now !== null && !(keyed && !written.encrypted)) return undefined;
     const own = await provenObject(deps.storage, key, written.fingerprint);
     if (own === null) return undefined;
     await deps.storage.delete(key, { ifVersion: own.version });
     watch.deleted(generation);
-    return now === null || now.status === 'destroyed' ? undefined : watch.settle(now);
+    return now === null ? undefined : watch.settle(now);
   };
 
   // Set when a registry write of this load's publish ended without an answer: a refusal after that cannot say whether
@@ -747,9 +725,9 @@ async function runLoad(
   let unanswered = false;
 
   // Best-effort, where it is called: the refusal or the publish's own error is the answer, and a fault in the cleanup
-  // must not replace it. An object left behind is one no row names, which collection takes once a generation above it
-  // is current. The one answer it gives is the generation the pointer names after the reclaim deleted it, which a
-  // refusal turns into an error: the segment no longer reads.
+  // must not replace it. An object left behind is an orphan, which a later load's collection takes once a generation
+  // above it is current. The one answer it gives is the generation the pointer names after the reclaim deleted it,
+  // which a refusal turns into an error: the segment no longer reads.
   const tidy = (): Promise<number | undefined> => reclaim().catch(() => undefined);
 
   /** The error for a refusal whose reclaim left the pointer on the object it deleted, `refusal` saying which. */

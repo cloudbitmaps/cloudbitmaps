@@ -797,7 +797,8 @@ const PIN_PARALLELISM = 16;
 export interface MaterializeResult {
   /**
    * The generation written. Present even when refused: the refusal deleted that object, unless the destination's
-   * row changed while it was writing and the object is not below that row's pointer, which leaves it in the bucket.
+   * row changed while it was writing, which leaves it in the bucket, an orphan a later load's collection takes; until
+   * then a rollback can name it.
    */
   readonly generation: number;
   /**
@@ -2146,14 +2147,15 @@ export class CloudRoaring {
    * published, a retention change, a rollback or an erasure wrote the row, or the row was deleted.
    *
    * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
-   * collection deliberately never looks — while the segment's registry row is unchanged (or differs only in its
-   * leases) or `destroyed`. Once the row is gone, or another write has otherwise changed it, the generation number it
-   * holds may name another writer's object, so a read of the object's footer must prove it the load's own first, and
-   * an object the row names stays. Under a changed row the object goes only below its pointer, or as cleartext under
-   * key material, which has no place in an encrypted segment's bucket: at or above the pointer another load can hold
-   * the number by now, with the same bytes, and still publish it, so the load leaves the orphan rather than risk
-   * deleting live data. No row's list names it, so it takes no place in a window, and a listing deletes it once a later
-   * generation is current above it.
+   * collection deliberately never looks — but only while the segment's registry row is unchanged (or differs only
+   * in its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
+   * encrypted segment's bucket. Under a row that is gone or keyed, a read of the object's footer must prove it the
+   * load's own first. Once another write has otherwise changed the row, the generation number it holds may name
+   * another writer's object, and a footer names bytes, not the load that wrote them, so it leaves the orphan rather
+   * than risk deleting live data. A publish never records the orphan as kept, and a load's listing deletes it once a
+   * generation above it is current, where the row records its kept list; where the row records none (after a rollback,
+   * or with a `keep` above 64), that listing's window can keep it. Until it goes, a rollback can name it, and publishes
+   * what no load published.
    *
    * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
    * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists

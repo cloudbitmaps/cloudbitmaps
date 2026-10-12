@@ -10,18 +10,18 @@ import { collect } from '../helpers/loaded';
 import { REF, clock, gate, generations } from '../helpers/retaken-number-race';
 
 /**
- * A refused load's reclaim proves the object under its number its own by the object's fingerprint, its size and footer
- * CRC. Two loads of the same ids write the same bytes, so the proof cannot tell this load's object from another load's,
- * and once an erasure has deleted this load's object the number is free for that other load to take:
+ * A read of an object's footer names the object by its fingerprint, its size and footer CRC, which is its bytes. Two
+ * loads of the same ids write the same bytes, so such a read cannot tell a refused load's object from another load's,
+ * and once an erasure has deleted the refused load's object the number is free for that other load to take:
  *
- *   load B     writes 1 (ids 4, 8) ── its publish is refused ──▶ reads the row: pointer 0 ──▶ proves 1, deletes it
+ *   load B     writes 1 (ids 4, 8) ── its publish is refused ──▶ reads the row: pointer 0 ──▶ (proves 1, deletes it)
  *   erasure    (of 8) finds 1 above the pointer, renews the row, deletes 1 │
  *   load A     (ids 4, 8) reads the renewed row, takes 1 afresh, writes the same bytes ──▶ publishes 1
  *
- * Whichever lands first, A's publish or B's delete, the row ends up naming generation 1 with no object under it, and
- * every read of the segment fails: when A's publish lands first, B's read of the row after its delete reports it; when it
- * lands after B has returned, nothing does. Above the pointer nothing fences B's delete against a publish of the
- * number, so B deletes nothing there. The run is the same every time, its order held by gated promises.
+ * Were B to delete, whichever landed first, A's publish or B's delete, the row would end up naming generation 1 with
+ * no object under it, and every read of the segment would fail: when A's publish landed first, B's read of the row after
+ * its delete would report it; when it landed after B had returned, nothing would. So under a row another write changed
+ * B deletes nothing. The run is the same every time, its order held by gated promises.
  */
 
 const IDS = [4, 8];

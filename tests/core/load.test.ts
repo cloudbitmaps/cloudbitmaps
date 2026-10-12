@@ -276,10 +276,9 @@ describe('loadSegment — racing writers', () => {
     expect(await idsOf(w.storage, 1)).toEqual([7]);
   });
 
-  it('a refusal after another write changed the row leaves its object above the pointer, superseded and guarded alike', async () => {
-    // The delete by number is fenced on the row's token, not its pointer: a retention change moves no pointer and
-    // still makes the number this call holds one the row no longer proves its own. Above the pointer another load can
-    // hold that number by now, with the same bytes and a publish still to land, so the object stays for collection.
+  it('a refusal after another write changed the row leaves its object, superseded and guarded alike', async () => {
+    // The delete is fenced on the row's token, not its pointer: a retention change moves no pointer and still
+    // makes the number this call holds one it can no longer prove is its own.
     for (const [ids, reason] of [
       [[2], 'superseded'],
       [[], 'empty'],
@@ -420,11 +419,11 @@ describe('loadSegment — racing writers', () => {
     const r = await loadSegment(SEG, [2], { ...w.deps, storage: racingStorage }, { keep: 0 });
     expect(raced).toBe(true);
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
-    // The row changed under this call, and a generation number only identifies a generation within one incarnation,
-    // so the object is not deleted by number: one read of its footer proves it this load's own, and the delete passes
-    // the version that read reported. Below the winner's pointer it would otherwise be a rollback target.
+    // The object is deliberately NOT deleted here: the row changed under this call, and a generation number
+    // only identifies a generation within one incarnation. It is below the winner's pointer, so ordinary
+    // generation collection takes it — no leak, and no risk of deleting something that is not ours.
     expect((await w.registry.get(SEG))!.currentGen).toBe(9);
-    expect(await generations(w.storage)).toEqual([0, 9]);
+    expect(await generations(w.storage)).toContain(9);
   });
 
   it('refuses, and touches nothing, when the name is re-created underneath it', async () => {
@@ -622,8 +621,8 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
     ]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
     expect(await idsOf(w.storage, 0)).toEqual([1]);
-    // The row it met is another load's, with its pointer below the refused number, so the refusal leaves its object
-    // above the pointer, and the next load's check meets it, numbers past it by a listing, and that listing deletes it.
+    // The row it met is another load's, so the refusal cannot prove the number its own: its object stays above the
+    // pointer, and the next load's check meets it, numbers past it by a listing, and that listing deletes it.
     expect(await generations(w.storage)).toEqual([0, 1]);
     expect(await loadSegment(SEG, [3], w.deps)).toMatchObject({ generation: 2, published: true });
     expect(await generations(w.storage)).toEqual([0, 2]);

@@ -229,16 +229,6 @@ so, and so do the module headers in the code.
   `materializeMany` call, and 144,045 (137,089 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
-- **A refused load deletes its own object below the pointer once another write has changed the segment's row.** A load
-  refused after another writer changed the row kept its object, so a loader that stalled before its write could leave
-  an object below the pointer that a rollback then published, though no load had published it. The refusal now deletes
-  an object below the row's pointer once one read of its footer proves it the load's own, passing that read's version,
-  and keeps one the row names, as its pointer, in its kept window or in a lease. One above the pointer, or under a row
-  with no pointer, stays, as it did, for a later load's collection: an erasure deletes an object above the pointer that
-  holds the id it erases, a load can take that number again, and a load of the same ids writes the same bytes, which a
-  footer read cannot tell from the refused load's own. Deleting there could remove the generation that load goes on to
-  publish, and leave the pointer on a missing object, so that every read of the segment fails. A cleartext object under
-  a row with key material is still deleted wherever it is.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,

@@ -258,8 +258,7 @@ describe('an erasure and a first load onto a row with no pointer', () => {
     atWrite.open();
     expect(await load).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect((await w.registry.get(REF))!.currentGen).toBeNull();
-    // Its object, written after the erasure's last look, stays where no pointer names it: on a row with no pointer
-    // another first load can hold the number by now, so the refusal deletes nothing. The next erasure finds it.
+    // Its object, written after the erasure's last look, stays where no pointer names it; the next erasure finds it.
     expect(await generations(w.storage)).toEqual([1]);
     expect(await eraseIdFromSegment(REF, X, w.deps)).toMatchObject({
       erased: true,

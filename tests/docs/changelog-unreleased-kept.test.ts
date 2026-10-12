@@ -66,8 +66,9 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
     title:
       "A refused load deletes its own object once another write has changed the segment's row.",
     reason:
-      "narrowed in the same unreleased minor to an object below the row's pointer, since above it another load can " +
-      'publish the number with the same bytes; the entry is retitled to say so',
+      "the refused load's reclaim is back to the last release's in the same unreleased minor: under a row another " +
+      'write changed it keeps its object, since a footer names bytes and a load of the same ids writes the same ones, ' +
+      'so the entry would describe no change',
   },
 ];
 
