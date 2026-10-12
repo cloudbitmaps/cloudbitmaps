@@ -23,10 +23,25 @@ export function assertChunkCardinalityInRange(c: number): void {
   }
 }
 
-/** A segment's chunk keys, ascending — a shape read off the index, no payload. Keys are untrusted (invariant 5). */
+/**
+ * A segment's chunk keys, ascending — a shape read off the index, no payload. Keys are untrusted (invariant 5): each is
+ * an integer in `[0, CHUNK_COUNT)` and none repeats. One pass range-checks every key and notes whether the list is
+ * already strictly ascending, which an index read off a `.crbm` always is; only a list that is not is sorted and scanned
+ * for a repeat. The caller gets a list of its own.
+ */
 export function checkedChunkKeys(listed: Iterable<number>): number[] {
-  const keys = [...listed];
-  for (const k of keys) assertChunkKeyInRange(k);
+  const keys = Array.isArray(listed) ? (listed as number[]).slice() : [...listed];
+  let ascending = true;
+  let prev = -1;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i]!;
+    // The test `Number.isInteger(k) && k >= 0 && k < CHUNK_COUNT`, in a form the engine inlines.
+    if (!(typeof k === 'number' && k >= 0 && k < CHUNK_COUNT && (k | 0) === k))
+      assertChunkKeyInRange(k);
+    if (k <= prev) ascending = false;
+    prev = k;
+  }
+  if (ascending) return keys;
   keys.sort((a, b) => a - b);
   // A key listed twice would be read and yielded twice; the `.crbm` reader refuses one, a custom source may not.
   for (let i = 1; i < keys.length; i++) {

@@ -32,7 +32,12 @@ import { BoundedLru } from './lru';
 import { KeptSegmentKeys, segmentKey } from './keys';
 import { aadFor, sameKeys } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
-import { validateChunkKeyOrder, validateChunkRef, validateUserRef } from './validate';
+import {
+  validateChunkKey,
+  validateChunkKeyOrder,
+  validateChunkRef,
+  validateUserRef,
+} from './validate';
 import type {
   ChunkRef,
   ChunkRead,
@@ -378,7 +383,8 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
 /** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
   validateUserRef(ref);
-  for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+  // `validateUserRef` has checked the segment and namespace names once; each key needs only its range test.
+  for (const chunkKey of keys) validateChunkKey(chunkKey);
   validateChunkKeyOrder(keys);
 }
 

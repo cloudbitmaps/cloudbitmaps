@@ -59,6 +59,16 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Listing a wide segment's chunk keys costs a fraction of what it did.** A read that lists a segment's keys (`iterate`
+  and its pages, the operand of a combine, `count`'s fallback) copied the list three times, ran the range test through
+  `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the list in a
+  loop, and the check range-tests every key and notes whether the list is strictly ascending in one pass, sorting and
+  scanning for a repeat only a list that is not (a custom source's, say). Every key is still range-checked, and an
+  out-of-range, repeated or unsorted list is refused or ordered exactly as before. A chunk read (`getChunks`,
+  `getChunksAt`) also validates the segment's name once rather than once a key. The requests made are unchanged; a warm
+  page of 1,000 ids of a 65,536-chunk segment took about 1.8 times less time when measured, and a warm one-id page of a
+  2,000-chunk segment about 4 times less.
+
 - **The numbers the core and the store's admin calls check are refused by one rule and worded one way.** An integer is a
   safe integer, so a whole number of 2^53 or more is refused wherever one is taken (a `retireExpired` `limit` of `1e300`
   is refused, and so is an admin `concurrency` of `2 ** 53`), and the refusal is a `ValidationError` reading `<name> must
