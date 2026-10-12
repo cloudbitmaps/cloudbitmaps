@@ -23,7 +23,7 @@ import { generationsOf } from './generation-list';
 import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
-import { openNamedGeneration } from './crbm-storage-source';
+import { openNamedGeneration } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';

@@ -19,7 +19,7 @@
 import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
-import { openRollbackTarget, provesOwnObject } from './crbm-storage-source';
+import { openRollbackTarget, provesOwnObject } from './crbm-open';
 import { aadFor } from './crypto';
 import { generationsOf } from './generation-list';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
