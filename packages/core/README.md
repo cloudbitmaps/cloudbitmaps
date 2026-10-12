@@ -33,15 +33,15 @@ by name, what an application uses.
 The `.crbm` storage path lives in `src/core/`, one module per concern. Arrows read "imports":
 
 ```
-load.ts  erase-id.ts  rollback.ts  consistency.ts      callers of the write and open path
-   |          |            |             |
-   v          v            v             v
-bulk-load.ts ----> publish.ts ----> crbm-write.ts      write path: ids in, one generation written, pointer advanced
-   |
-   +--------------------------------> crbm-open.ts      open path: a stored generation opened and proved
-                                           ^
-crbm-storage-source.ts --------------------+           read path: the cached `CrbmStorageChunkSource`
+                bulk-load.ts                       write path: ids in, a generation written and published
+              /      |       \
+             v       v        v
+   publish.ts  crbm-write.ts  crbm-open.ts  <----  crbm-storage-source.ts     read path
 ```
+
+`publish.ts`, `crbm-write.ts` and `crbm-open.ts` import none of the others. Outside this group, `load.ts` imports
+`bulk-load.ts`, `publish.ts` and `crbm-open.ts`; `erase-id.ts` imports `publish.ts`, `crbm-write.ts` and
+`crbm-open.ts`; `rollback.ts` and `consistency.ts` import `crbm-open.ts`.
 
 | File | Holds |
 |---|---|
