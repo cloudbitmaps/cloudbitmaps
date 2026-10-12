@@ -56,7 +56,12 @@ export type Opts = { a: string };
 `;
 const EXTRA = `export declare function extra(x: boolean): void;\n`;
 
-beforeEach(() => {
+/** The commit every test starts from, and the snapshot it holds. */
+let base = '';
+
+// One repository for the whole file, built once: a test starts from `base` again, whatever the one before it did to the
+// working tree, the index or the history (`beforeEach` resets all three and removes what the test left untracked).
+beforeAll(() => {
   repo = mkdtempSync(join(tmpdir(), 'api-surface-cli-'));
   git('init', '-q');
   // No background repack started by a commit while a test reads or removes the repository.
@@ -77,8 +82,13 @@ beforeEach(() => {
   put('api-surface/allowed.json', '[]\n');
   expect(run(['--write']).status).toBe(0);
   commit();
+  base = git('rev-parse', 'HEAD').trim();
 });
-afterEach(() => rmSync(repo, { recursive: true, force: true }));
+beforeEach(() => {
+  git('reset', '-q', '--hard', base);
+  git('clean', '-q', '-f', '-d');
+});
+afterAll(() => rmSync(repo, { recursive: true, force: true }));
 
 const withMain = (edit: (s: string) => string): void =>
   put('packages/a/dist/index.d.ts', edit(MAIN));
@@ -411,11 +421,22 @@ interface Deep { x: string }
 import type { Ext } from 'ext';
 export {};
 `;
-  beforeEach(() => {
+  // The snapshot of the declarations below, written once; each test puts the files and that snapshot back.
+  let written = '';
+  beforeAll(() => {
     put('node_modules/ext/package.json', JSON.stringify({ name: 'ext', types: 'index.d.ts' }));
     put('node_modules/ext/index.d.ts', 'export interface Ext { y: 1 }\n');
     put('packages/a/dist/index.d.ts', HIDDEN);
     expect(run(['--write']).status).toBe(0);
+    written = readFileSync(join(repo, 'api-surface/surface.json'), 'utf8');
+    git('reset', '-q', '--hard', base);
+    git('clean', '-q', '-f', '-d');
+  });
+  beforeEach(() => {
+    put('node_modules/ext/package.json', JSON.stringify({ name: 'ext', types: 'index.d.ts' }));
+    put('node_modules/ext/index.d.ts', 'export interface Ext { y: 1 }\n');
+    put('packages/a/dist/index.d.ts', HIDDEN);
+    put('api-surface/surface.json', written);
   });
 
   it('records them, transitively, as referenced; a type from outside the workspace is not expanded', () => {
