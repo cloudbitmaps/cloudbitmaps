@@ -19,7 +19,9 @@
  * differs only in its leases) or `destroyed`, it deletes by number. Once the row is gone, or another write has
  * otherwise changed it, the object's number may name another writer's object (a re-created segment's, say), so a read
  * of the object's footer must prove it the load's own first, and an object the row names stays: as its pointer, in its
- * kept window or in a lease.
+ * kept window or in a lease. Under a changed row, so does one at or above its pointer, or under a row with no pointer,
+ * where another load can have taken the number again with the same bytes and still publish it, unless it is cleartext
+ * under key material.
  */
 import { requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
@@ -363,16 +365,18 @@ export type LoadRefusal =
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
    * deleted, or a row appeared where the load found none. Once another write has changed the row, or the row is gone,
    * the object is deleted when one read of its footer proves it this load's own (its number may by then name another
-   * writer's object, which stays), and kept when the row names it, as its pointer, in its kept window or in a lease;
-   * once the row is `destroyed` (dropped or crypto-shredded), it is deleted.
+   * writer's object, which stays), and kept when the row names it, as its pointer, in its kept window or in a lease, or
+   * when it is above the pointer of a row another write changed, or under one with no pointer, unless it is cleartext
+   * under key material; once the row is `destroyed` (dropped or crypto-shredded), it is deleted.
    */
   | 'superseded';
 
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
-   * unchanged or `destroyed`, and, once the row is gone or another write has changed it, when its footer proves it this
-   * load's own and the row does not name it, as its pointer, in its kept window or in a lease. A load that lost its
+   * unchanged or `destroyed`, once the row is gone when its footer proves it this load's own, and once another write
+   * has changed the row when its footer proves it this load's own, the row does not name it (as its pointer, in its kept
+   * window or in a lease) and it is below the row's pointer, or cleartext under key material. A load that lost its
    * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;
@@ -666,6 +670,10 @@ async function runLoad(
     (record.keptGens ?? []).includes(g) ||
     (record.leases ?? []).some((lease) => lease.generation === g);
 
+  /** Whether `record` has a pointer and `g` is strictly below it. */
+  const belowPointer = (record: RegistryRecord, g: number): boolean =>
+    record.currentGen !== null && g < record.currentGen;
+
   /**
    * Reclaim this load's object after a DEFINITE refusal: a guard that said no before any publish, or a publish that
    * answered `false` or threw a refusal of its own. Never after an ambiguous outcome (a lost response, a timeout):
@@ -685,13 +693,20 @@ async function runLoad(
    *   a generation of the segment, and it stays. A rollback with `allowForward` moves the pointer onto it; a publish
    *   whose write went unanswered may have landed and then been superseded, so the next writer's window or a reader's
    *   lease can name it.
+   * - A row with no pointer, or with its pointer below this load's number, unless it has key material and this load
+   *   wrote cleartext: the object stays, an orphan a later load's collection takes. Another load can hold the number by
+   *   now: an erasure deletes an object above the pointer that holds its id, and a load that reads the row after takes
+   *   the freed number. That load publishes from the row it read, so nothing stops it landing after this delete, and if
+   *   it loaded the same ids it wrote the same bytes, which the fingerprint below cannot tell from this load's own.
    * - Any other row, or none: the object under the key must be proved this load's by its fingerprint, from one read of
    *   its footer. One that is gone, is another object, or cannot be read is kept. The delete passes the version that
    *   read reported, so on a storage driver that reports `conditionalDelete` it removes that object and no other: a
    *   number taken again between the read and the delete keeps the object put under it since, and the refused delete
-   *   is a fault of the cleanup, which the refusal swallows. Above the pointer the object would wait for a later load's
-   *   collection; below it, where another writer's publish leaves a stalled load's object, it would be a rollback
-   *   target, so a rollback could publish what this load never published.
+   *   is a fault of the cleanup, which the refusal swallows. Below the pointer, where another writer's publish leaves a
+   *   stalled load's object, no publish can move the pointer onto the number any more (each moves it forward from the
+   *   row its writer read), and the object kept would be a rollback target, so a rollback could publish what this load
+   *   never published. A cleartext object under key material is never published onto that row, and has no place in an
+   *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable.
    *
    * The first two delete by number, with no condition: the decision comes from the row, and the object is this
    * load's own write, of which the write reports no version.
@@ -716,6 +731,10 @@ async function runLoad(
       return now.status === 'destroyed' ? undefined : watch.settle(now);
     }
     if (now !== null && rowNames(now, generation)) return undefined;
+    const keyed = now !== null && now.wrappedDeks !== undefined && now.wrappedDeks.length > 0;
+    if (now !== null && !belowPointer(now, generation) && !(keyed && !written.encrypted)) {
+      return undefined;
+    }
     const own = await provenObject(deps.storage, key, written.fingerprint);
     if (own === null) return undefined;
     await deps.storage.delete(key, { ifVersion: own.version });

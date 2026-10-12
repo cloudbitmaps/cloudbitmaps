@@ -258,14 +258,15 @@ describe('an erasure and a first load onto a row with no pointer', () => {
     atWrite.open();
     expect(await load).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect((await w.registry.get(REF))!.currentGen).toBeNull();
-    // Its object, written after the erasure's last look, is one no row names: the refusal deletes it once one read of
-    // its footer proves it the load's own, so nothing is left to hold the id, and the next erasure finds nothing.
-    expect(await generations(w.storage)).toEqual([]);
+    // Its object, written after the erasure's last look, stays where no pointer names it: on a row with no pointer
+    // another first load can hold the number by now, so the refusal deletes nothing. The next erasure finds it.
+    expect(await generations(w.storage)).toEqual([1]);
     expect(await eraseIdFromSegment(REF, X, w.deps)).toMatchObject({
-      erased: false,
-      reason: 'no-generation',
-      collected: [],
+      erased: true,
+      fromGeneration: 1,
+      collected: [1],
     });
+    expect(await generations(w.storage)).toEqual([]);
   });
 
   it('a holder written after the listing is found by the last check, which says re-run; the re-run deletes it', async () => {

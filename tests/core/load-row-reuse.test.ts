@@ -493,7 +493,7 @@ describe('a load reuses the row it read, and every fence on that row still holds
     expect(await generations(w.storage)).toEqual([0, 3]);
   });
 
-  it('a keystore first load that another writer publishes ahead of during its write is refused, and its object deleted', async () => {
+  it('a keystore first load that another writer publishes ahead of during its write is refused, and its object kept', async () => {
     const w = world();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
     const deps = { ...w.deps, keystore };
@@ -515,10 +515,10 @@ describe('a load reuses the row it read, and every fence on that row still holds
       await loadSegment(SEG, [1, 2, 3], { ...deps, storage: racing }, { allowEmpty: true }),
     ).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     // It found no row, so the row the other writer created refused its publish: that writer's generation is current,
-    // under its key. This load's object is encrypted under a key nothing stored, so no reader can open it; one read of
-    // its footer proves it this load's own, which needs no key, and the refusal deletes it.
+    // under its key. This load's object is encrypted under a key nothing stored, so no reader can open it; its number
+    // is above that row's pointer, so it is kept, as an orphan, for a later load's collection.
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
-    expect(await generations(w.storage)).toEqual([0]);
+    expect(await generations(w.storage)).toEqual([0, 1]);
   });
 
   it('an unguarded first load refused by a drop at its publish deletes its object', async () => {
@@ -564,25 +564,14 @@ describe('a load reuses the row it read, and every fence on that row still holds
         };
       },
     });
-    // The refusal deletes its object, proved its own; the delete is held back here so the object can still be opened.
-    const asked: { generation: number; ifVersion: string | undefined }[] = [];
-    const keeping = Object.create(w.storage) as IStorageDriver;
-    keeping.delete = async (key, options) => {
-      asked.push({ generation: key.generation, ifVersion: options?.ifVersion });
-    };
-    const r = await loadSegment(
-      SEG,
-      [1, 2, 3],
-      { ...deps, registry, storage: keeping },
-      { allowEmpty: true },
-    );
+    const r = await loadSegment(SEG, [1, 2, 3], { ...deps, registry }, { allowEmpty: true });
     // It found no row, so the other writer's row refuses its publish, and that writer's generation stays current.
     expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     const row = (await w.registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
-    expect(asked).toEqual([{ generation: 1, ifVersion: expect.any(String) }]);
-    // Its write read the row again after its ids and took that writer's key, so the object it wrote is sealed under the
-    // segment's own key, not under one nothing stored.
+    // Its number is above that row's pointer, so the refusal leaves its object. Its write read the row again after its
+    // ids and took that writer's key, so the object it leaves in the bucket is sealed under the segment's own key, not
+    // under one nothing stored.
     const aead = await keystore.openDek(row.wrappedDeks!);
     const reader = await openGenerationReader(
       w.storage,

@@ -252,10 +252,11 @@ the result (`'empty'`, `'min-cardinality'`, `'min-retained'` or `'max-growth'`),
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
-it wrote while the row is unchanged, changed only in its leases, dropped or crypto-shredded, or gone once the object's footer proves it the
-load's own, and leaves it in the bucket once another write has changed the
-row: once a generation above it is current, collection counts it within `keep` like any other generation below the
-pointer.
+it wrote while the row is unchanged, changed only in its leases, dropped or crypto-shredded, or gone once the object's
+footer proves it the load's own. Once another write has changed the row, it deletes the object when the footer proves
+it its own, the row does not name it, and it is below the row's pointer (or cleartext under a row with key material),
+and otherwise leaves it in the bucket: once a generation above it is current, collection counts it within `keep` like
+any other generation below the pointer.
 The `store.load` row lists the guards and what throws instead.
 
 **`input` is a `LoadInput`: ids, or a whole bitmap.** Ids are any sync **or async** iterable of integers in
