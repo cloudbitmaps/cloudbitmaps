@@ -467,12 +467,15 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
           }
         },
       ),
-      { numRuns: 300 },
+      { numRuns: 600 },
     );
-    // Each well below what 200 seeds gave at their lowest: 27, 30, 4 and 4 (means 48.7, 56.6, 14.0 and 13.5).
-    expect(renewed).toBeGreaterThan(10);
-    expect(refusedAndDeleted).toBeGreaterThan(10);
-    expect(staleRefused).toBeGreaterThan(1);
-    expect(retakenKept).toBeGreaterThan(1);
+    // The last two count a race about 3% of runs reach, so they spread like a Poisson count. At 300 runs their means were
+    // near 9, and about one execution in 600 drew a seed below a floor of 2. At 600 runs, 60 seeds in each project gave
+    // at their lowest 65, 54, 11 and 10 (means 87 to 95, 76 to 86, 19 and 18), and a floor of 4 on a mean of 18 fails
+    // about once in 40,000 executions.
+    expect(renewed).toBeGreaterThan(30);
+    expect(refusedAndDeleted).toBeGreaterThan(25);
+    expect(staleRefused).toBeGreaterThan(3);
+    expect(retakenKept).toBeGreaterThan(3);
   }, 120_000);
 });
