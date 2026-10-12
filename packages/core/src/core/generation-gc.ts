@@ -207,9 +207,11 @@ async function aboveEverything(
   ref: SegmentRef,
   deps: GenerationDeps,
   record: RegistryRecord | null,
+  seen?: number[],
 ): Promise<number> {
   let highest = record?.currentGen ?? -1;
   for await (const key of deps.storage.list(ref)) {
+    seen?.push(key.generation);
     if (key.generation > highest) highest = key.generation;
   }
   return numberAbove(highest);
@@ -232,6 +234,8 @@ interface LoadNumber {
    * the listing would have kept is a name the pass takes. `false` when the listing numbered the load.
    */
   readonly checked: boolean;
+  /** The generations that listing found, when the load listed: a seed of the ledger reads them instead of listing again. */
+  readonly listed?: readonly number[];
 }
 
 /**
@@ -265,7 +269,8 @@ export async function nextLoadGeneration(
   } catch (err) {
     if (isNotFoundError(err)) return { generation, checked: true };
   }
-  return { generation: await aboveEverything(ref, deps, row), checked: false };
+  const listed: number[] = [];
+  return { generation: await aboveEverything(ref, deps, row, listed), checked: false, listed };
 }
 
 /**

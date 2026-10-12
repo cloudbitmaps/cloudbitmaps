@@ -2,7 +2,7 @@ import { windowOf } from '@/core/known-generations';
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';
@@ -1205,7 +1205,7 @@ describe('a publish whose write got no answer records the same window as one tha
     expect(await generations(w.storage)).toEqual([1, 2, 3]);
   });
 
-  it('a write that landed on a row with no ledger: the load lists and keeps the newest two, and the ledger it left names its own generation alone', async () => {
+  it('a write that landed on a row with no ledger: the load lists, keeps the newest two, and the ledger it seeded names them', async () => {
     const w = world();
     await threeLoads(w);
     const row = (await w.base.get(SEG))!;
@@ -1214,14 +1214,13 @@ describe('a publish whose write got no answer records the same window as one tha
     const r = await next(w);
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(await generations(w.storage)).toEqual([1, 2, 3]); // the window, found by listing
-    // The write started a ledger: it names the load's generation alone, so it names no generation below the pointer.
-    expect(windowOf(await w.base.get(SEG))).toEqual([]);
+    // The write seeded the ledger with the window the listing kept (the write that landed carried the seed, and the one
+    // settled by reading recomputes the same).
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
     const again = await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });
     expect(again).toMatchObject({ generation: 4, published: true });
-    // It collects by name, from a ledger that does not name 1 and 2, which stay until a load that lists, at most sixteen
-    // generations on.
-    expect(windowOf(await w.base.get(SEG))).toEqual([3]);
-    expect(await generations(w.storage)).toEqual([1, 2, 3, 4]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([2, 3]);
+    expect(await generations(w.storage)).toEqual([2, 3, 4]);
   });
 
   it('a write that lost to another load deletes nothing and records nothing of its own', async () => {

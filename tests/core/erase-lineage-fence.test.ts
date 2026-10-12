@@ -1,6 +1,6 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { dropSegment } from '@/core/erasure';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';

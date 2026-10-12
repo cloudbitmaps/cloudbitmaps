@@ -507,18 +507,19 @@ describe("a swap with no answer is not taken for another writer's publish of the
     expect(await racedByALoad(w, [6], 9)).toBeUndefined();
   });
 
-  it('is the stated limit when the load writes the same object onto a row with no usable ledger: it reads as the swap', async () => {
-    // A row with no usable ledger, which the swap and the load each start with the target alone, so a load that writes
-    // the very object the rollback read leaves the very row the swap would. The pointer is where the rollback asked for
-    // it, on that object, and the rollback reports and audits the move as its own.
+  it('when the load seeds a ledger over a row with no usable ledger, which the swap does not write', async () => {
+    // A rollback never starts a ledger, so over a row with none it writes none; the load that takes the number writes
+    // the very object again and seeds a ledger from the bucket, so the rows differ and the swap is not taken for it. (It
+    // was the stated limit when a row that records no window was left by both.)
     const w = world();
     await loads(w, 6); // generation 5 holds [6]
     const original = (await rowOf(w)).summary;
     await rollbackSegment(SEG, 4, w.deps);
     const row = await rowOf(w);
     await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
-    expect(await racedByALoad(w, [6])).toBeUndefined();
+    expect(await racedByALoad(w, [6])).toBeInstanceOf(TransientError);
     expect((await rowOf(w)).summary).toEqual(original);
+    expect((await rowOf(w)).knownGens?.at(-1)?.generation).toBe(5);
   });
 });
 

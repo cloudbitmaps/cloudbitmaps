@@ -76,9 +76,6 @@ function leasesPatch(
   return { leases: live.length === 0 ? undefined : live };
 }
 
-/** What a publish records in the row, as {@link nextKnownOf} computes it: the ledger, when the caller gave a checksum for it. */
-type Recorded = Omit<KnownAfter, 'known'> & { readonly known: KnownAfter['known'] | undefined };
-
 /**
  * What a publish of `key.generation` over `prev` records: the ledger and the window ({@link nextKnown}). With no
  * `footerCrc` there is no entry to write for the generation, so no ledger and no window: the row then has none, and the
@@ -89,27 +86,28 @@ function nextKnownOf(
   key: GenKey,
   options: {
     readonly keep?: number;
-    readonly footerCrc?: number;
+    readonly footerCrc: number;
     readonly clearLeases?: boolean;
+    readonly seed?: readonly KnownGeneration[];
   },
-): Recorded {
-  if (options.footerCrc === undefined) return { known: undefined, list: undefined, evict: [] };
+): KnownAfter {
   return nextKnown(prev, key.generation, options.footerCrc, options.keep, {
     clearsLeases: options.clearLeases === true,
+    ...(options.seed === undefined ? {} : { seed: options.seed }),
   });
 }
 
 /** The fields of a write that record `next`: the ledger, when there is one. */
-function ledgerPatch(next: Recorded): { knownGens?: readonly KnownGeneration[] } {
-  return next.known === undefined ? {} : { knownGens: next.known };
+function ledgerPatch(next: KnownAfter): { knownGens: readonly KnownGeneration[] } {
+  return { knownGens: next.known };
 }
 
 /** `next` as the publish reports it, with the token of the row the write made when it is known. */
-function keptOf(next: Recorded | undefined, token: Token | undefined): PublishedKept {
+function keptOf(next: KnownAfter | undefined, token: Token | undefined): PublishedKept {
   return {
     list: next?.list,
     evict: next?.evict ?? [],
-    ...(next?.known === undefined ? {} : { known: next.known }),
+    ...(next === undefined ? {} : { known: next.known }),
     token,
   };
 }
@@ -205,10 +203,14 @@ interface PublishOptions {
   /**
    * The footer checksum of the object under `key` (the second half of its fingerprint), which the write that moves the
    * pointer records in the row's `knownGens` beside the generation. It comes from the object the caller wrote or opened,
-   * the same one its `summary` describes. Without it the publish records no ledger, and the row has none until a write
-   * gives it one: a row with no ledger is correct, and its next load lists.
+   * the same one its `summary` describes.
    */
-  footerCrc?: number;
+  footerCrc: number;
+  /**
+   * The window a ledger starts with, over a row that has no usable one ({@link readSeed}): the generations a count by
+   * `keep` keeps, which the write records as the ledger's entries before the new generation.
+   */
+  seed?: readonly KnownGeneration[];
 }
 
 /**
@@ -278,7 +280,7 @@ interface PublishOptions {
 export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
-  options: PublishOptions = {},
+  options: PublishOptions,
 ): Promise<PublishResult> {
   // A row read after a write that failed, which the next attempt acts on instead of reading it again.
   let fresh: RegistryRecord | null | undefined;
@@ -313,7 +315,7 @@ export async function publishGenerationKept(
     unanswered = undefined;
     lastRecord = record;
     // What this attempt's write records, and the token it is given: set by the write, read when it lands.
-    let next: Recorded | undefined;
+    let next: KnownAfter | undefined;
     let wrote: Token | undefined;
     if (failedOn !== undefined) {
       let landed: boolean;
@@ -582,7 +584,7 @@ const REFUSED: PublishResult = { published: false };
 export async function publishGeneration(
   registry: IRegistryDriver,
   key: GenKey,
-  options: PublishOptions = {},
+  options: PublishOptions,
 ): Promise<boolean> {
   return (await publishGenerationKept(registry, key, options)).published;
 }

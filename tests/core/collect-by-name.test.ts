@@ -383,9 +383,8 @@ describe('a load lists when its row records no list, or its number or current ob
     expect(w.storageCalls.list).toBe(2);
     // The window is the generation the rollback restored, which the load superseded, not 4, the newest by number.
     expect(await generations(w.memory)).toEqual([2, 5]);
-    // The ledger the rollback carried names every generation it knew, in the order they were made current, 5 last: the
-    // next load collects by name from it, with no listing.
-    expect(windowOf(await w.registry.get(SEG))).toEqual([0, 1, 3, 4, 2]);
+    // The publish seeded the ledger with the window, so the next load collects by name from it.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([2]);
   });
 });
 

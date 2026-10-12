@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { loadSegment, type LoadOptions } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { aadFor } from '@/core/crypto';
 import { destroySegment, dropSegment } from '@/core/erasure';
 import { KeyUnavailableError, TransientError, ValidationError } from '@/core/errors';

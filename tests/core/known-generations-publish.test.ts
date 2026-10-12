@@ -160,13 +160,17 @@ describe.each([
     await expectLedger(w, [1, 2, 0]);
   });
 
-  it('a rollback onto a row with no ledger starts one with the target alone', async () => {
+  it('a rollback onto a row with no usable ledger writes none: it never starts one', async () => {
     const w = world(encrypted);
     for (let g = 0; g < 3; g++) await loadSegment(SEG, idsOf(5 + g), w.deps, { keep: 9 });
     const row = await rowOf(w);
     await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
     await rollbackSegment(SEG, 1, w.deps);
-    await expectLedger(w, [1]);
+    expect((await rowOf(w)).currentGen).toBe(1);
+    expect((await rowOf(w)).knownGens).toBeUndefined();
+    // The next load seeds one from the bucket: the window a count by keep 9 keeps, then itself.
+    await loadSegment(SEG, idsOf(20), w.deps, { keep: 9 });
+    await expectLedger(w, [0, 2, 1, 3]);
   });
 
   it('the undo of a rollback whose target went puts the ledger and the summary back as the row had them', async () => {

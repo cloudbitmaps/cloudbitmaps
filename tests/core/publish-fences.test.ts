@@ -5,7 +5,7 @@ import { loadSegment } from '@/core/load';
 import { aadFor } from '@/core/crypto';
 import { summaryAgrees, usableSummary } from '@/core/summary';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';

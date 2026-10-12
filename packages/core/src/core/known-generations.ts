@@ -167,15 +167,16 @@ export interface KnownAfter {
  * The ledger is the window's entries in the order they were made current and the new generation last. When no window is
  * recorded, it carries the ledger it found (an entry for the new generation's number is a stale one and is replaced),
  * held to the cap with only the new generation protected; a row with no usable ledger starts one with the new
- * generation alone. A publish that clears leases is an erasure's rewrite, which deletes every older generation, so its
- * ledger is the new generation alone.
+ * generation alone, except that a `seed` (see `ledger-seed.ts`) replaces whatever the row carried: the window a count
+ * keeps, then the new generation, and the publish collects by that count. A publish that clears leases is an erasure's
+ * rewrite, which deletes every older generation, so its ledger is the new generation alone.
  */
 export function nextKnown(
   prev: RegistryRecord | null,
   generation: number,
   footerCrc: number,
   keep: number | undefined,
-  options: { readonly clearsLeases?: boolean } = {},
+  options: { readonly clearsLeases?: boolean; readonly seed?: readonly KnownGeneration[] } = {},
 ): KnownAfter {
   const self: KnownGeneration = { generation, footerCrc };
   const none = { list: undefined, evict: [] as number[] };
@@ -194,6 +195,12 @@ export function nextKnown(
     }
   }
   if (options.clearsLeases === true) return { known: [self], ...window };
+  if (options.seed !== undefined) {
+    // The window a count keeps, read from the bucket: the ledger names it, and the publish collects by that count.
+    const seed = options.seed.filter((e) => e.generation < generation);
+    const protect = new Set([...seed.map((e) => e.generation), generation]);
+    return { known: capKnown([...seed, self], protect), list: undefined, evict: [] };
+  }
   if (window.list !== undefined) {
     const members = new Set(window.list);
     const entries = (found ?? []).filter((e) => members.has(e.generation));
@@ -206,16 +213,17 @@ export function nextKnown(
 
 /**
  * The ledger a rollback onto `target` writes over `prev`: the ledger it found with the target moved to the end, as the
- * most recently current. A row with no usable ledger starts one with the target alone. A target the ledger did not name
+ * most recently current. A rollback never starts a ledger: over a row with no usable ledger it writes none, and the
+ * next publish seeds one. A target the ledger did not name
  * is an insert, and the ledger it makes is held to the cap with the target and the generation the rollback leaves
  * protected; a known target's ledger is written as read, unless another build wrote one that is past the writer's cap.
  */
 export function rollbackKnown(
   prev: RegistryRecord,
   target: KnownGeneration,
-): readonly KnownGeneration[] {
+): readonly KnownGeneration[] | undefined {
   const found = usableKnownGens(prev);
-  if (found === undefined) return [target];
+  if (found === undefined) return undefined;
   const moved = makeCurrent(found, target);
   const inserted = !found.some((e) => e.generation === target.generation);
   if (!inserted && moved.length <= MAX_KNOWN_GENERATIONS) return moved;

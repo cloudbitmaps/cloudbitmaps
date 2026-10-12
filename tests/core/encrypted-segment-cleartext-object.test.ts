@@ -9,7 +9,7 @@ import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
 import { IntegrityError, NotFoundError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { roaringCodec } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';

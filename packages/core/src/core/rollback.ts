@@ -318,7 +318,7 @@ export async function rollbackSegment(
       const { token } = await deps.registry.compareAndSwap(ref, against, {
         currentGen: toGeneration,
         summary,
-        knownGens: known,
+        ...(known === undefined ? {} : { knownGens: known }),
       });
       swapped = { pointerId: token, token };
       break;
@@ -602,7 +602,7 @@ async function swapLanded(
   swap: {
     readonly toGeneration: number;
     readonly summary: RegistrySummary | undefined;
-    readonly known: readonly KnownGeneration[];
+    readonly known: readonly KnownGeneration[] | undefined;
   },
   registry: IRegistryDriver,
   unanswered: TransientError,

@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { writeCrbmGeneration } from '@/core/crbm-write';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { joinId } from '@/core/bit-route';
