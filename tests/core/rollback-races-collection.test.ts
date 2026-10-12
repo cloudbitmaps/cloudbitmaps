@@ -365,11 +365,12 @@ describe("a refused load's reclaim of its own object, raced by a forward rollbac
     await namesMissing(w, 1, [0]);
   });
 
-  it('under a row another load changed, the object proved its own: the same', async () => {
+  it('under a row another load changed, it deletes nothing, so a rollback onto its object finds it there', async () => {
     const w = world();
     await loadSegment(REF, [1, 2, 3], w.deps); // 0
     // Right after this load writes its object at 1, another load publishes 2, so this one's publish is refused.
     let raced = false;
+    const deleted: number[] = [];
     const racing = Object.create(w.storage) as IStorageDriver;
     racing.putImmutable = async (key, write) => {
       const out = await w.storage.putImmutable(key, write);
@@ -379,17 +380,16 @@ describe("a refused load's reclaim of its own object, raced by a forward rollbac
       }
       return out;
     };
-    const at = gate();
-    const load = loadSegment(REF, [7, 8, 9], {
-      ...w.deps,
-      storage: stallingDelete(racing, 1, at),
-    });
-    await stalledAt(at, load);
+    racing.delete = async (key, options) => {
+      deleted.push(key.generation);
+      return w.storage.delete(key, options);
+    };
+    await expect(
+      loadSegment(REF, [7, 8, 9], { ...w.deps, storage: racing }),
+    ).resolves.toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(deleted).toEqual([]);
     await rollbackSegment(REF, 1, w.deps); // below the pointer, 2, so no opt-in is needed
-    at.open();
-
-    await expect(load).rejects.toSatisfy(pointerOnDeleted(1, /refused \(superseded\)/));
-    await namesMissing(w, 1, [0, 2]);
+    await namesPresent(w, 1, [0, 1, 2]);
   });
 });
 

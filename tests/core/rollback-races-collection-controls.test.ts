@@ -257,8 +257,8 @@ describe('an erasure whose collection below the pointer was raced stops before i
   });
 });
 
-describe('a refused load keeps an object that only a lease names', () => {
-  it('the lease holds it', async () => {
+describe('a refused load keeps its object under a row another load changed', () => {
+  it('one a reader leased included', async () => {
     const w = world();
     await loadSegment(REF, [1, 2, 3], w.deps);
     let lost = false;
