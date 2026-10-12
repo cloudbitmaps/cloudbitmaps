@@ -503,7 +503,7 @@ async function forgetPurgePointers(
 }
 
 /** The options of a sweep, validated, with every default filled in. */
-export interface ResolvedRetireOptions {
+interface ResolvedRetireOptions {
   readonly audit: IAuditSink | undefined;
   readonly namespace: string | undefined;
   readonly now: number;
