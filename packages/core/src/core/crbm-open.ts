@@ -171,8 +171,8 @@ export async function readRollbackTargetFooter(
 /**
  * The reader {@link RollbackTargetFooter}'s object opens as, from its remembered tail, when the object and the key
  * agree (an encrypted object opened with `crypto`, a cleartext one with none); `undefined` when they disagree, which
- * the caller refuses as a target the row cannot use. An object that is another generation's, and an index or metadata that
- * do not open, are an {@link IntegrityError}.
+ * the caller refuses as a target the row cannot use. An object that is another generation's, and an index or metadata
+ * that do not open, are an {@link IntegrityError}.
  */
 export async function openRollbackTargetFrom(
   footer: RollbackTargetFooter,
