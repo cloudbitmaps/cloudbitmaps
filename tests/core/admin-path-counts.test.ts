@@ -14,9 +14,11 @@ import { counting } from '../helpers/counting';
 
 /**
  * The consistency scan asks whether a segment's current object is there with one zero-length tail read (a HEAD on S3, a
- * metadata read on GCS and Azure), never a listing of its siblings, and asks nothing of it when the row's clear summary
+ * metadata read on GCS, a properties read on Azure), and lists the segment's objects only when that read, or the open's
+ * first read, fails, and asks nothing of it when the row's clear summary
  * makes the open that follows the answer. The load guard's size is the reader's `count()`, the same number as the sum
- * of its per-chunk cardinalities, without building the map. None of it changes what a check or a load reports.
+ * of its per-chunk cardinalities, without building the map. None of it changes what a load reports, or what a check reports,
+ * except for a store that answers reads but refuses listings.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
@@ -305,7 +307,7 @@ describe('checkConsistency reports the same in every fault case', () => {
     expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'slow down' }]);
   });
 
-  it('an object that goes while it is opened is an error of the segment, as when presence was settled first', async () => {
+  it('a NotFoundError from the open while the listing still finds the object is an error of the segment, with the open message', async () => {
     const w = await oneSegment(false);
     const storage = tailing(w.storage, (_key, max) =>
       max > 0 ? Promise.reject(new NotFoundError('gone mid-open')) : undefined,
@@ -346,6 +348,27 @@ describe('checkConsistency reports the same in every fault case', () => {
     );
     expect(report.inconsistent).toEqual([]);
     expect(report.errored.map((e) => e.segment)).toEqual(['s']);
+  });
+
+  it('a store that answers reads but refuses listings reports each object that is there as present', async () => {
+    const w = await oneSegment(false);
+    const gone: SegmentRef = { namespace: 'ns', segment: 'gone' };
+    await w.store.load(gone, [9]);
+    await w.backend.storage.delete({ ...gone, generation: 0 });
+    const storage = new Proxy(w.storage, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (p !== 'list') return value;
+        return (): AsyncIterable<GenKey> => ({
+          [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new Error('AccessDenied')) }),
+        });
+      },
+    });
+    for (const summaries of [false, true]) {
+      const report = await runConsistencyCheck({ storage, registry: w.registry }, { summaries });
+      expect(report.inconsistent).toEqual([]);
+      expect(report.errored).toEqual([{ segment: 'gone', namespace: 'ns', error: 'AccessDenied' }]);
+    }
   });
 
   it('a row whose pointer moved after the listing is judged at the live pointer, with summaries too', async () => {

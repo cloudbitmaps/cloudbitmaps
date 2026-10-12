@@ -523,7 +523,7 @@ if (report.errored.length > 0) {
   immediately — landing in the tiny per-segment read gap can still yield a transient false positive: run the
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
 - **Detection is backend-agnostic.** It relies only on `IStorageDriver.getTail()` (and `list()` for a segment that
-  read does not find) and on `IRegistryDriver.list()` + `get()`, so it covers **any** storage backend (S3 / GCS /
+  read does not find or fails on) and on `IRegistryDriver.list()` + `get()`, so it covers **any** storage backend (S3 / GCS /
   Azure Blob) with **any** registry backend — nothing about the check is backend-specific. What it verifies is
   **presence**: that each segment's `currentGen` `.crbm` object *exists* in storage. It therefore catches the torn /
   dangling-`currentGen` restore, but **not**:

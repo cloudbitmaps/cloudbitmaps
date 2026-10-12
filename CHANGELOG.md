@@ -59,11 +59,11 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **`checkConsistency` makes one object-store request per healthy segment, and lists only one it cannot confirm.** It
-  asks whether a segment's current object is there with a zero-length tail read (a `HEAD` on S3, a metadata request on
-  GCS and Azure Blob) where it listed all of the segment's objects. With `summaries: true` and a clear summary on the
-  row, the open's own tail read is the answer, so the segment costs one request where it cost a listing and a tail
-  read. A sealed summary, or one that is not used, is asked about first, as before. When the zero-length read fails in
+- **The default `checkConsistency` makes one object-store request per healthy segment, and lists only one it cannot
+  confirm.** It asks whether a segment's current object is there with a zero-length tail read (a `HEAD` on S3, a
+  metadata request on GCS, a properties request on Azure Blob) where it listed all of the segment's objects. With `summaries: true` and a clear summary on the
+  row, the open's own tail read is the answer, so the segment costs the open alone (one request on S3 and GCS, two on
+  Azure Blob, and one more for an index longer than the tail read) where it cost a listing as well. A sealed summary, or one that is not used, is asked about first, as before. When the zero-length read fails in
   any way, or the open fails before its first read answered, the segment's listing decides and its own error is the
   segment's, so a missing object, a missing bucket and a failing store are reported as they were, and an object that
   goes mid-open is still an error of the segment. One result differs: a store that answers reads but refuses listings

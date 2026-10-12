@@ -238,7 +238,8 @@ generation again once, at its next refresh: one tail read where the generation's
 read for the index as well where it does not. See [what an erasure
 costs](erasure.md#find-an-id-and-erase-it).
 
-**`checkConsistency` makes one object-store request per healthy segment, and lists only a segment it cannot confirm.**
+**The default `checkConsistency` makes one object-store request per healthy segment, and lists only a segment it cannot
+confirm.**
 It asks whether the segment's current object is there with a zero-length tail read: a `HEAD` on S3, a metadata request
 on GCS, the properties on Azure Blob. With `{ summaries: true }` it opens each current object to compare the row's
 summary with it. For a row with a clear summary that open's own tail read answers whether the object is there, so the
@@ -250,8 +251,8 @@ segment that looks torn or unreadable costs that listing as well.
 The model does not price it, since a consistency check is a run of your own, not a rate. At the default prices a
 million healthy segments cost $0.40 on S3 and GCS for the default check, and for the open of `summaries: true` where
 the summaries are clear (`requestsPerSizedRead` of 1). On Azure Blob the default check costs $0.40 (one request) and
-the open $0.80 (two). Each listing of a segment that does not confirm costs a list request on top: $5.00 per million on
-S3. The registry reads are separate: the scan reads every row, and each segment's row once more.
+the open $0.80 (two). An index longer than the tail read adds a range read: $0.40 more per million. Each listing of a
+segment that does not confirm costs a list request on top: $5.00 per million on S3. The registry reads are separate: the scan reads every row, and each segment's row once more.
 
 One result differs from a check that listed every segment: a store that answers reads but refuses listings (an identity
 without list permission, or a listing-only outage) reports each object that is there as present, where every segment
