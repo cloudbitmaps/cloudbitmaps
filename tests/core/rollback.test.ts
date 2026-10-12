@@ -7,7 +7,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { WriteConflictError } from '@/core/errors';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';

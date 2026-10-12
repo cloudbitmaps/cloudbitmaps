@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import roaring from 'roaring';
 import { aadFor } from '@/core/crypto';
-import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
+import { publishGeneration } from '@/core/publish';
 import { IntegrityError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import type { GenerationMetadata, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';

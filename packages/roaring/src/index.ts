@@ -3473,8 +3473,9 @@ export class Segment {
   }
 
   /**
-   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). Skipped
-   * entirely when no sink is wired, so the default path pays nothing.
+   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). With no sink wired it
+   * reads no clock and emits nothing, but a call still passes through this async frame; `has()` and `count()` return the
+   * engine's promise directly instead.
    */
   private async timed<T>(name: MetricOpName, fn: () => Promise<T>): Promise<T> {
     if (!this.metricsOn) return fn();
@@ -3494,6 +3495,7 @@ export class Segment {
   has(id: number): Promise<boolean> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
+    if (!this.metricsOn) return this.engine.has(this.ref, id);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
   /**
@@ -3517,6 +3519,7 @@ export class Segment {
   count(): Promise<number> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
+    if (!this.metricsOn) return this.engine.count(this.ref);
     return this.timed('count', () => this.engine.count(this.ref));
   }
   /**

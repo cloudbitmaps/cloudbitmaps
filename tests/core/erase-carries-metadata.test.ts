@@ -1,11 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { aadFor } from '@/core/crypto';
 import type { Aead, CrbmCrypto } from '@/core/crypto';
-import {
-  openGenerationReader,
-  verifyGeneration,
-  writeCrbmGenerationStream,
-} from '@/core/crbm-storage-source';
+import { openGenerationReader, verifyGeneration } from '@/core/crbm-open';
+import { writeCrbmGenerationStream } from '@/core/crbm-write';
 import { CrbmReader } from '@/core/crbm/reader';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, isNotFoundError } from '@/core/errors';

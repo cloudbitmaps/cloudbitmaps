@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
-import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
+import { publishGeneration } from '@/core/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';

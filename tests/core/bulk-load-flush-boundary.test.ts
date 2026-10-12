@@ -17,7 +17,7 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 // uses inputs far below the threshold. So this test deliberately crosses it.
 //
 // It is the slowest test in the suite by design; the alternative is leaving a data-loss branch uncovered.
-const FLUSH_AT = 1 << 20; // must match BULK_FLUSH_IDS in crbm-storage-source.ts
+const FLUSH_AT = 1 << 20; // must match BULK_FLUSH_IDS in bulk-load.ts
 const KEY = { segment: 'bulk', namespace: 'ns', generation: 1 } as const;
 
 describe('bulk-load across the flush boundary', () => {

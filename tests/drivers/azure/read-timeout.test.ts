@@ -7,7 +7,7 @@ import { AzureBlobStorage } from '@/azure-blob/backend';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
-import { writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { IntegrityError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { CloudRoaring } from '@/index';

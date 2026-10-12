@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import fc from 'fast-check';
 import { aadFor } from '@/core/crypto';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import type { GenerationMetadata, SegmentRef } from '@/core/ports';

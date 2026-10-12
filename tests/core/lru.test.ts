@@ -38,6 +38,29 @@ describe('BoundedLru', () => {
     expect(lru.has('x')).toBe(false);
   });
 
+  it('expires entries by get and by has when built with a ttlMs', () => {
+    const clock = fakeClock();
+    const lru = new BoundedLru<string, number>({ maxEntries: 10, ttlMs: 10, clock });
+    lru.set('a', 1);
+    lru.set('b', 2);
+    clock.advance(10);
+    expect(lru.has('a')).toBe(false);
+    expect(lru.get('b')).toBeUndefined();
+    expect(lru.size).toBe(0);
+  });
+
+  it('never reads the clock on get or has when built without a ttlMs', () => {
+    let reads = 0;
+    const clock: Clock = { now: () => (reads += 1), sleep: () => Promise.resolve() };
+    const lru = new BoundedLru<string, number>({ maxEntries: 10, clock });
+    lru.set('a', 1);
+    reads = 0;
+    expect(lru.get('a')).toBe(1);
+    expect(lru.has('a')).toBe(true);
+    expect(lru.get('missing')).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+
   describe('byte bound — reader-cache index footprint', () => {
     it('rejects an invalid maxBytes', () => {
       const clock = fakeClock();

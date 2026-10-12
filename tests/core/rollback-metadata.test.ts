@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { aadFor } from '@/core/crypto';
 import type { IKeystore } from '@/core/crypto';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { IntegrityError, KeyUnavailableError, NotFoundError, TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import type { GenerationMetadata, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
