@@ -70,7 +70,8 @@ const backendWith = (readTimeoutMs: number | undefined): AzureBlobStorage =>
 const isRegistryKey = (name: string): boolean => name.includes('registry/');
 
 /**
- * `read` rejects with the timeout's `TransientError`, naming `operation`, at about `TIMEOUT`; the stalled request's
+ * `read` rejects with the timeout's `TransientError`, naming `operation`, no sooner than `TIMEOUT`, and within 2 s of a timer
+ * set for it; the stalled request's
  * connection is closed; and nothing escapes to the process.
  */
 async function timesOut(
@@ -80,16 +81,21 @@ async function timesOut(
   const watch = watchProcess();
   try {
     const t0 = performance.now();
+    // A timer set for the same time at the same moment: a busy machine holds it back as far as the read's own, so how
+    // much later than it the read ends is the code's lateness, not the machine's.
+    let control = Number.POSITIVE_INFINITY;
+    const timer = setTimeout(() => (control = performance.now()), TIMEOUT);
     const err = await read().then(
       () => undefined,
       (e: unknown) => e,
     );
-    const ms = performance.now() - t0;
+    const end = performance.now();
+    clearTimeout(timer);
+    const ms = end - t0;
     expect(err).toBeInstanceOf(TransientError);
     expect((err as Error).message).toBe(`Azure Blob ${operation} timed out after ${TIMEOUT} ms`);
     expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
-    // A ceiling loose enough for a loaded runner, tight enough that a timer firing seconds late fails.
-    expect(ms).toBeLessThan(TIMEOUT + 5_000);
+    expect(end - control, 'ends soon after a timer set for the same time').toBeLessThan(2_000);
     expect(await stub.releasedStalls()).toBe(true);
     await sleep(50);
   } finally {
@@ -122,10 +128,14 @@ describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', LIMIT,
   });
 
   it('times each request on its own: a tail read whose two requests each take most of the timeout finishes', async () => {
-    const held = Math.round(TIMEOUT * 0.6);
-    stub.plan = (r) => (r.name === DATA ? { delayMs: held } : undefined);
-    const tail = await backendWith(TIMEOUT).storage.getTail(GEN, 16);
+    // Each request well inside the timeout (1.3 s of headroom), and the two together past it.
+    const timeoutMs = 3_000;
+    stub.plan = (r) => (r.name === DATA ? { delayMs: 1_700 } : undefined);
+    const started = performance.now();
+    const tail = await backendWith(timeoutMs).storage.getTail(GEN, 16);
     expect(tail.size).toBe(size);
+    // The two together outlast one timeout, so one clock across both would have cut the download off.
+    expect(performance.now() - started).toBeGreaterThan(timeoutMs);
     expect(stub.requests.map((r) => r.method)).toEqual(['HEAD', 'GET']);
   });
 

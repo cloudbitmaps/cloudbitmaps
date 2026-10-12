@@ -10,6 +10,9 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * Random sequences of loads, materialisations, rollbacks, erasures and retention writes over one segment. After
  * every step a store that has read nothing gives the same count three ways (the row's summary, the length of

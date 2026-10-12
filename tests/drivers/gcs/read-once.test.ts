@@ -43,7 +43,10 @@ class DrivenReads {
   }
   /** The driver's `n`th read (from 0), once it has opened it; the retry waits a random backoff first. */
   async read(n: number): Promise<Driven> {
-    while (this.reads.length <= n) await new Promise((r) => setTimeout(r, 5));
+    while (this.reads.length <= n) {
+      if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(5);
+      else await new Promise((r) => setTimeout(r, 5));
+    }
     return this.reads[n]!;
   }
 }
@@ -136,9 +139,18 @@ describe('readOnce', () => {
     expect(reads.reads).toHaveLength(2);
   });
 
+  // The driver's backoff between attempts is a timer it sets itself, so these tests run it on fake timers: the quiet
+  // that proves nothing was retried is the whole backoff window, passed in no wall time.
+  const BEYOND_BACKOFF_MS = 1_200;
+  const fakeBackoff = (): void => void vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it.each(['ENOENT', 'EACCES', 'EPROTO'])(
     'does not retry a %s (a credentials file, a TLS failure), and reports it as raised',
     async (code) => {
+      fakeBackoff();
       const reads = new DrivenReads();
       const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
       const driver = new GcsStorageDriver({ storage, bucket: 'b' });
@@ -146,13 +158,14 @@ describe('readOnce', () => {
       p.catch(() => undefined);
       const raised = Object.assign(new Error(`${code}: permanent`), { code });
       (await reads.read(0)).stream.destroy(raised);
-      await expect(p).rejects.toBe(raised);
-      await new Promise((r) => setTimeout(r, 1_200));
+      await vi.advanceTimersByTimeAsync(BEYOND_BACKOFF_MS);
       expect(reads.reads).toHaveLength(1);
+      await expect(p).rejects.toBe(raised);
     },
   );
 
   it('refuses a tail longer than it asked for on the first response, without a retry', async () => {
+    fakeBackoff();
     const reads = new DrivenReads();
     const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
     const driver = new GcsStorageDriver({ storage, bucket: 'b' });
@@ -162,12 +175,13 @@ describe('readOnce', () => {
       'content-length': '11',
       'content-range': 'bytes 0-10/11',
     });
-    await expect(p).rejects.toBeInstanceOf(ValidationError);
-    await new Promise((r) => setTimeout(r, 1_200)); // past the longest backoff, so a retry would have opened
+    await vi.advanceTimersByTimeAsync(BEYOND_BACKOFF_MS); // past the longest backoff, so a retry would have opened
     expect(reads.reads).toHaveLength(1);
+    await expect(p).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('does not retry a 501 itself, which the SDK did not either, and reports it as transient', async () => {
+    fakeBackoff();
     const reads = new DrivenReads();
     const storage = { bucket: () => ({ file: () => reads.file() }) } as unknown as Storage;
     const driver = new GcsStorageDriver({ storage, bucket: 'b' });
@@ -176,9 +190,9 @@ describe('readOnce', () => {
     const d = await reads.read(0);
     d.respond(501, {});
     d.stream.destroy(Object.assign(new Error('not implemented'), { code: 501 }));
-    await expect(p).rejects.toBeInstanceOf(TransientError); // any 5xx, for the store's own retry to judge
-    await new Promise((r) => setTimeout(r, 1_200));
+    await vi.advanceTimersByTimeAsync(BEYOND_BACKOFF_MS);
     expect(reads.reads).toHaveLength(1);
+    await expect(p).rejects.toBeInstanceOf(TransientError); // any 5xx, for the store's own retry to judge
   });
 
   it('retries a connection that failed before any response, on any network code, as the SDK did', async () => {
