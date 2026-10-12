@@ -215,7 +215,7 @@ describe('registry row schemas: only schema 5 is read', () => {
       );
       // The steps are named by the changelog's entry, with no anchor: the release date is not known where this is written.
       expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(
-        /steps: CHANGELOG\.md, 0\.21\.0, Breaking\)/,
+        /steps: https:\/\/github\.com\/cloudbitmaps\/cloudbitmaps\/blob\/main\/CHANGELOG\.md, the Breaking entry on registry schema 5\)/,
       );
     }
   });

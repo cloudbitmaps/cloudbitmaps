@@ -620,7 +620,8 @@ export function assertRegistrySchemaVersion(raw: unknown, ctx: string): number {
     throw new UnsupportedError(
       `registry row schemaVersion ${raw} is one this build does not read: it reads schema ` +
         `${REGISTRY_SCHEMA_VERSION} only. Export the segments with the release that wrote the row and load them ` +
-        `with this one into a new prefix (steps: CHANGELOG.md, 0.21.0, Breaking): ${ctx}`,
+        `with this one into a new prefix (steps: ` +
+        `https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md, the Breaking entry on registry schema 5): ${ctx}`,
     );
   }
   if (raw > REGISTRY_SCHEMA_VERSION) {

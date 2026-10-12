@@ -13,11 +13,13 @@
  * with an entry at or above its pointer (a rollback left one, so the window is not known); one whose guard found the
  * current object gone; and the first publish of an incarnation above generation 0.
  */
+import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
 import { footerCrcUnder } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import { isIntegrityError, isNotFoundError } from './errors';
 import { MAX_KEPT_GENERATIONS, keptWindow, usableKnownGens, windowOf } from './known-generations';
+import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, KnownGeneration, RegistryRecord, SegmentRef } from './ports';
 
 /** The most generations below the new one a seed names: what the writer cap leaves beside the new one and 64 leases. */
@@ -39,10 +41,16 @@ export function wantsSeed(
   return small && keep < generation && windowOf(row) === undefined;
 }
 
+/** How many footer reads a seed has in flight at once. */
+const SEED_READS = 8;
+
 /**
  * The entries a seed names, oldest first by number and the generation the row named as current last. `listed` is the
- * listing the load's numbering made, when it made one; otherwise the bucket is listed once. A generation gone from the
- * bucket, or whose footer fails its own checks, is left out; any other failed read throws, before anything is published.
+ * listing the load's numbering made, when it made one; otherwise the bucket is listed once. Every entry's checksum is
+ * read from its object's footer (a 104-byte read, under the store's read retry, {@link SEED_READS} at a time), the
+ * superseded generation's too: when a clear summary describes it with another checksum, the row and the bucket
+ * disagree about that number and it is left out. A generation gone from the bucket, or whose footer fails its own
+ * checks, is left out; any other failed read throws, before anything is published.
  */
 export async function readSeed(
   storage: IStorageDriver,
@@ -51,34 +59,35 @@ export async function readSeed(
   generation: number,
   keep: number,
   listed: readonly number[] | undefined,
+  readRetry?: ReadRetry,
 ): Promise<KnownGeneration[]> {
-  const present = listed ?? (await generationsOf(storage, ref));
+  const present = listed ?? (await retryRead(() => generationsOf(storage, ref), readRetry));
   const superseded = row?.currentGen ?? undefined;
   const below = present.filter((g) => g < generation);
   const { kept } = keptWindow(below, superseded, Math.min(keep, SEED_SPAN));
   const order = [...kept.filter((g) => g !== superseded), ...kept.filter((g) => g === superseded)];
   const summary = row?.summary;
-  const entries: KnownGeneration[] = [];
-  for (const g of order) {
-    const known =
-      g === superseded &&
-      summary !== undefined &&
-      summary.generation === g &&
-      'fingerprint' in summary
-        ? fingerprintParts(summary.fingerprint)?.footerCrc
-        : undefined;
-    if (known !== undefined) {
-      entries.push({ generation: g, footerCrc: known });
-      continue;
-    }
+  const described =
+    summary !== undefined && 'fingerprint' in summary
+      ? {
+          generation: summary.generation,
+          footerCrc: fingerprintParts(summary.fingerprint)?.footerCrc,
+        }
+      : undefined;
+  const read = await mapWithConcurrency(order, SEED_READS, async (g) => {
     try {
-      entries.push({
-        generation: g,
-        footerCrc: await footerCrcUnder(storage, { ...ref, generation: g }),
-      });
+      const footerCrc = await retryRead(
+        () => footerCrcUnder(storage, { ...ref, generation: g }),
+        readRetry,
+      );
+      if (g === superseded && described?.generation === g && described.footerCrc !== footerCrc) {
+        return undefined;
+      }
+      return { generation: g, footerCrc };
     } catch (err) {
       if (!isNotFoundError(err) && !isIntegrityError(err)) throw err;
+      return undefined;
     }
-  }
-  return entries;
+  });
+  return read.filter((e): e is KnownGeneration => e !== undefined);
 }

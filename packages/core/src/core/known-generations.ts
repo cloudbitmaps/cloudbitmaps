@@ -65,16 +65,18 @@ export function usableKnownGens(
 }
 
 /**
- * The generations the row keeps as its window: the ledger's numbers other than the pointer, when the ledger is usable
- * and none of them is above the pointer (an entry above it is one a rollback left, and the window is then not
- * known). `undefined` otherwise, and the load lists.
+ * The generations the row keeps as its window: the ledger's numbers other than the pointer, when the ledger is usable,
+ * none of them is above the pointer (an entry above it is one a rollback left) and there are no more than
+ * {@link MAX_KEPT_GENERATIONS} (a ledger carried through publishes with a larger `keep` names more than any window a
+ * `keep` that small keeps, and a count would keep fewer than it names). The window is then not known: `undefined`, and
+ * the load lists.
  */
 export function windowOf(record: RegistryRecord | null): readonly number[] | undefined {
   const known = usableKnownGens(record);
   if (known === undefined) return undefined;
   const pointer = record!.currentGen!;
   const below = known.slice(0, -1).map((e) => e.generation);
-  return below.some((g) => g >= pointer) ? undefined : below;
+  return below.length > MAX_KEPT_GENERATIONS || below.some((g) => g >= pointer) ? undefined : below;
 }
 
 /** Which generations below a new pointer a grace window holds, and which it lets go: both ascending. */

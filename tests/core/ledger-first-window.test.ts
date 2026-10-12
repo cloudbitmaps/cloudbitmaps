@@ -261,18 +261,4 @@ describe('what a seed reads from the bucket', () => {
     ).rejects.toBeInstanceOf(TransientError);
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
   });
-
-  it('names the superseded generation’s checksum from the row’s clear summary, with no footer read', async () => {
-    const w = world();
-    await load(w, 3);
-    await load(w, 3);
-    await dropLedger(w);
-    // The row's summary describes generation 1; a failing footer read of 1 would fail the load if the seed made it.
-    const storage = failingFooter(w.storage, 1, new TransientError('503'));
-    expect(await loadSegment(SEG, [9, 10], { ...w.deps, storage }, { keep: 3 })).toMatchObject({
-      generation: 2,
-      published: true,
-    });
-    expect((await w.registry.get(SEG))!.knownGens!.map((e) => e.generation)).toEqual([0, 1, 2]);
-  });
 });

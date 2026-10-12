@@ -58,8 +58,11 @@ No write-path module imports `crbm-storage-source.ts`, and it imports only `crbm
 
 ## The row's ledger of generations
 
-A registry row carries `knownGens`: the generations the segment made current and has not decided to delete, each with the
-CRC32C its object's footer stores, in the order they were made current, the current one last. Its entries below the
+A registry row carries `knownGens`: the generations the segment knows and has not decided to delete, each with the
+CRC32C its object's footer stores, the current one last. They are the ones it made current, in that order, and, when a
+publish over a row with no usable ledger seeds one, the ones a count by `keep` keeps in the bucket, which can include an
+object no load published (an orphan or a stray): an entry says the library knows the generation and its checksum, not
+that a load published it. Its entries below the
 pointer are the window a load keeps, so a load deletes what its publish pushed out of the window by name and lists
 the bucket only when it cannot rely on the row.
 
@@ -73,11 +76,13 @@ the bucket only when it cannot rely on the row.
 ```
 
 - **A publish writes it** in the compare-and-swap that moves the pointer. Over a row whose ledger is usable and names no
-  generation above the pointer, it is the newest `keep` of the old window, the generation that was current and the new
+  generation above the pointer and no more than 64 below it, it is the newest `keep` of the old window, the generation that was current and the new
   one. Over a row with no usable ledger (a hand repair, a restore, a pointer moved down by hand, a ledger a rollback
-  left with an entry above the pointer, a first publish above generation 0) the load lists the bucket and writes the window a count by `keep`
+  left with an entry above the pointer, one a run of publishes with a `keep` above 64 carried past 64 names, a first publish
+  above generation 0) the load lists the bucket and writes the window a count by `keep`
   keeps there: the generation the row named as current first, then the newest by number, each with a footer read
-  (the superseded generation's checksum comes from the row's clear summary when it describes it), oldest first by
+  (read eight at a time under the store's read retry, the superseded generation's too; a clear summary that describes it
+  with another checksum leaves it out), oldest first by
   number, the superseded one last, then the new generation. A generation gone from the bucket, or whose footer fails its
   checks, is left out. The publish then collects by that count.
 - **A rollback carries it**, moving its target to the end with the checksum of the footer it read, and writes none over

@@ -324,7 +324,7 @@ costs nothing. After 8 renewals lost to other writes (a load, a rollback or a re
 object that can hold the winner's id, above the pointer and one `rollback({ allowForward: true })` from being served,
 and reports `'superseded'`, until a later call takes it: the loser's re-run collects every generation below its own
 when it rewrites, an erasure of the winner's id deletes it as a holder, and once loads have numbered past it their
-collection takes it as it takes any orphan below the pointer, once no kept window holds it
+collection takes it as it takes any orphan below the pointer, once no window the row's ledger names holds it
 ([an orphan is collected later](loading.md#how-it-stays-correct)).
 The outcome is read off the registry row. A segment whose row is tombstoned
 mid-rewrite is searched as a fresh call searches a tombstone, so a cleartext object a drop left that still holds the
@@ -365,7 +365,7 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   when its swap got no answer); one onto that object between the renewal and the delete (with `allowForward`, or
   without it once a load has raised the pointer past the object) leaves the pointer on a missing object with nothing
   reported, and only `checkConsistency()` finds it. A load that numbers above the object in that round trip, onto a row
-  that records no kept window, can name the object in the window it records; after the delete that entry names a
+  with no usable ledger, can name the object in the ledger it seeds; after the delete that entry names a
   missing generation, which takes a place in the window until a later load's collection drops it, and fails no read.
 
 **A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
@@ -429,7 +429,7 @@ repaired. These limits hold on every driver:
   load's read of the row and its delete remains: if another erasure deletes that object as a holder and a load takes
   its number in it, that delete removes the load's generation.
 - Generation collection, the `keep: 0` collection an erasure runs among it, deletes by number what a listing or the
-  row's list of kept generations names, below the pointer, with no object read behind the decision. A number below the
+  row's ledger names, below the pointer, with no object read behind the decision. A number below the
   pointer is taken again only after the pointer moves down (a rollback, or a purge and re-create), inside the round
   trip between the collection's re-read of the row and its delete, which is the rollback case above.
 - `dropSegment`'s sweep, and the retention sweep's collection of a tombstoned segment, delete by number every object a

@@ -785,9 +785,21 @@ async function runLoad(
   // newer generation costs nothing it knew about.
   // A publish over a row with no usable window starts the ledger with the window a count keeps, read from the bucket.
   const currentObjectGone = needsBefore && before === null;
-  const seed = wantsSeed(row, generation, keep, currentObjectGone)
-    ? await readSeed(deps.storage, ref, row, generation, keep, listed)
-    : undefined;
+  let seed: Awaited<ReturnType<typeof readSeed>> | undefined;
+  if (wantsSeed(row, generation, keep, currentObjectGone)) {
+    try {
+      seed = await readSeed(deps.storage, ref, row, generation, keep, listed, deps.readRetry);
+    } catch (err) {
+      // Nothing was published: the row is as this load read it, so its own object is reclaimed as a refused load's is.
+      const missing = await tidy();
+      if (missing !== undefined)
+        throw refusedOverMissing(
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          missing,
+        );
+      throw err;
+    }
+  }
   let published: PublishResult;
   try {
     published = await publishGenerationKept(deps.registry, key, {

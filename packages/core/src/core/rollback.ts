@@ -184,8 +184,9 @@ export interface RollbackResult {
  * leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may still
  * land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves the
  * very row this swap would. On a cleartext segment two writes can: another rollback onto the same target, whatever row
- * it read, and a load that wrote under that number the very object the rollback read and recorded the ledger the
- * rollback would (onto a row with no usable ledger, where both are the generation alone). On an encrypted segment a rollback with no
+ * it read, and a load that wrote under that number the very object the rollback read and carried the ledger the
+ * rollback would (a load that carries a usable ledger, as one with a `keep` above 64 does; over a row with no usable
+ * ledger the rollback writes none and a load seeds one, so those rows differ). On an encrypted segment a rollback with no
  * key at hand writes no summary, so another such rollback onto the same target can too. That call then reports and
  * audits the move as its own; the pointer is where it asked for it.
  *
@@ -388,7 +389,10 @@ export async function rollbackSegment(
     let undoAgainst = swapped.token;
     for (;;) {
       try {
-        const restored = describingKnown(record, toGeneration);
+        // The target the rollback just found gone, or replaced, is not a generation the row knows any more.
+        const restored = describingKnown(record, toGeneration)?.filter(
+          (e) => e.generation !== toGeneration || e.generation === record.currentGen,
+        );
         await deps.registry.compareAndSwap(ref, undoAgainst, {
           currentGen: record.currentGen,
           summary: describingSummary(record),
@@ -582,8 +586,8 @@ function keyServiceUnanswered(err: unknown): boolean {
  * carries a fresh nonce, so on an encrypted segment only this call's own write matches, when it wrote one. Otherwise
  * other writes leave the very same row and are taken for this one: another rollback onto the same target, from
  * whatever row it read, that wrote the same summary and ledger or, like this one, no summary; and on a cleartext segment
- * a load that wrote under that number the very object this call read and recorded the same ledger (onto a row with no
- * usable ledger, where both are the generation alone). The pointer is then where this call asked for it, on the object it read, and the check
+ * a load that wrote under that number the very object this call read and carried the same ledger (a load that carries a
+ * usable ledger; over a row with no usable ledger the rollback writes none and a load seeds one, so those rows differ). The pointer is then where this call asked for it, on the object it read, and the check
  * after the swap holds either way, but this call audits a move another writer made.
  *
  * The undo after a row taken this way is fenced on that row, so a write after the read back is another writer's, as

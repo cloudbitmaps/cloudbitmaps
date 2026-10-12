@@ -37,6 +37,13 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  *     publish superseded, when that was in the bucket, and the newest `keep - 1` of the rest by number, and records
  *     them when `keep` fits the list.
  *
+ * A row's "list" is its ledger's window (`windowOf`: the ledger's numbers other than the pointer, when usable). The
+ * oracles are a release before ledgers' own, with three differences: the window is read through `win()` instead of the
+ * row's list field; the erasure oracle expects a window of `[]` always, where that release expected `[]` over a row that
+ * recorded a list and none over one that did not; and the oracles that hold only for a publish that took the row at its
+ * word (oracles 2, 4, 5 and 6) also hold for a publish settled by reading the row (`|| options.settled`), which a ledger
+ * makes the same as any other. The steps and floors for rows with no usable ledger are new.
+ *
  * Rollbacks pick their target four ways: any generation below the pointer, one the row's list names, the one the
  * current generation superseded, and the oldest.
  */
@@ -537,7 +544,8 @@ describe.each([
                     // A rewrite took every generation below its pointer, and the row says none is kept.
                     const after = (await registry.get(SEG))!;
                     expect(after.currentGen).toBe(erased.generation);
-                    // [] when the row it rewrote recorded a list to extend; none when it recorded none.
+                    // The rewrite always leaves the ledger with the rewritten generation alone: a window of [], whatever the row it
+                    // rewrote recorded. (A release before ledgers left [] over a row that recorded a list, none over one that did not.)
                     expect(win(after)).toEqual([]);
                     expect(
                       (await generations(storage)).filter((g) => g < erased.generation!),

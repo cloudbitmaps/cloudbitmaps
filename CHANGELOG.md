@@ -40,7 +40,9 @@ so, and so do the module headers in the code.
 - **A registry of your own stores `knownGens`, and a summary records `tailBytes`.** `RegistryRecord.keptGens` is gone.
   `knownGens` lists `{ generation, footerCrc }` for the generations the row's loads and rollbacks made current and no
   collection or erasure has since removed: the current one, the generations `keep` keeps below it, and the generations a
-  rollback left above the pointer. Its rules:
+  rollback left above the pointer. When a publish over a row with no usable ledger seeds one, it also lists the
+  generations a count by `keep` keeps in the bucket, which can include an object no load published (an orphan or a
+  stray): an entry says the library knows the generation and its footer checksum, not that a load published it. Its rules:
   - In the order the generations were made current, oldest first and the current one last; a rollback onto a generation
     moves it to the end. Stored in the order given: a registry that sorts it loses that order with no error.
   - At most 192 entries written and 384 read, in the clear on every row, an encrypted one included. The entries above the
@@ -54,12 +56,6 @@ so, and so do the module headers in the code.
   least 52 bytes. A rollback onto an object with bytes between its index and its footer, which only another writer
   makes, writes no summary when its tail is more than a summary records (8,392,820 bytes). The conformance suite holds a
   driver to each rule. A registry that drops `knownGens` is correct: the next load over each row lists the bucket and writes the ledger again.
-- **The disaster-recovery guide's strays table changes.** A load over a row with no usable ledger (a registry repaired by
-  hand, a pointer moved down by hand, a row restored without its ledger) lists the bucket and writes the window a count by
-  `keep` keeps, then collects as it did over a row that recorded one. After a restore to pointer 1 with generations 0 and
-  1 from before it and strays at 4 and 5, re-runs at `keep` 3 now leave 1, 2, 3 and 6, and at `keep` 5 leave 0, 1, 2, 3
-  and 6, whether or not the restored row names a window; the strays go at the load that passes them.
-
 - **A pin's `fingerprint` is required.** `PinnedAt.fingerprint` is `string | null` (`null` only when `generation` is
   `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A pin of a generation built without a
   string `version` and `fingerprint` is refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and
@@ -109,6 +105,12 @@ so, and so do the module headers in the code.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
 ### Changed
+
+- **The disaster-recovery guide's strays table changes.** A load over a row with no usable ledger (a registry repaired by
+  hand, a pointer moved down by hand, a row restored without its ledger) lists the bucket and writes the window a count by
+  `keep` keeps, then collects as it did over a row that recorded one. After a restore to pointer 1 with generations 0 and
+  1 from before it and strays at 4 and 5, re-runs at `keep` 3 now leave 1, 2, 3 and 6, and at `keep` 5 leave 0, 1, 2, 3
+  and 6, whether or not the restored row names a window; the strays go at the load that passes them.
 
 - **A cold `iterate()` or combine on a wide segment sends its first request sooner.** A stream over a wide segment
   looked up every chunk of the read in the cache, mapped every key to its index entry and planned every range of the

@@ -213,7 +213,7 @@ the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
 collected }`. The segment's row records the generations a load keeps (up to 64), so at any `keep` up to 64 a load that
 found nothing above its pointer deletes by name the generations its publish pushed out of the window, and lists the
-segment only on every 16th generation; with a `keep` above 64, on a row that records no list, or when its check of its
+segment only on every 16th generation; with a `keep` above 64, on a row with no usable ledger, or when its check of its
 generation number met an object or its check of the current generation's object found it gone, it lists
 ([how it collects](loading.md#generations-and-keep)). `collected` names what the pass deleted, and a generation
 deleted by name may have been gone already: a delete of an absent object succeeds and says nothing, so the list is not
@@ -833,7 +833,7 @@ cannot tombstone a row created after the decision: the retention sweep's tombsto
 behaviour. Implement it to make the library's deletes safe against a concurrent re-create;
 the registry conformance suite's `delete` cases are the test.
 
-**Registry rows are schema 5: every row carries `pointerId`, its `summary` names the object it describes, and its `knownGens` ledger names the generations it made current.** A
+**Registry rows are schema 5: every row carries `pointerId`, its `summary` names the object it describes, and its `knownGens` ledger names the generations it knows, each with its footer checksum.** A
 shipped registry stamps every row it writes `schemaVersion: 5` and reads rows stamped 5 and nothing else. A row stamped
 1 to 4 is refused with `UnsupportedError` naming the row: by `get`, by every
 `list()` that reaches it, and by every write, which reads the row first, so no write changes it. A stamp above 5 is
@@ -856,7 +856,7 @@ registry can have written: the token's form, the row's own incarnation, and a co
 `summary` is the row's cached description of its current generation: its id count, the fingerprint of its object (its
 size in bytes and its footer checksum, `<size>:<checksum>` as `pinnedAt.fingerprint` spells it) and the metadata it was
 loaded with, and `tailBytes`, the bytes from the end of the object's last chunk payload to its end (its extension block, index
-and footer), so a cold open can read its tail in one request. It is in the clear on a cleartext segment (`{ generation, cardinality, fingerprint, tailBytes, metadata? }`) and sealed
+and footer), recorded so a later release can read a cold open's tail in one request (nothing reads it yet). It is in the clear on a cleartext segment (`{ generation, cardinality, fingerprint, tailBytes, metadata? }`) and sealed
 under the segment's data key on an encrypted one (`{ generation, sealed }`: the count, the size, the checksum and
 `tailBytes` fixed-width, then the metadata; at least 52 bytes), so the row shows none of them. `tailBytes` is an integer from 104, a
 footer, to the object's size less its 8-byte preamble, and at most 8,392,820, the most one open reads, else `ValidationError` on a write and
@@ -882,13 +882,17 @@ that names the pointer at its own value, store it as it was when the write was c
 one without a fingerprint included, with `ValidationError` on the write), and, for a registry that persists rows, to
 refuse a row stamped with an earlier schema on every read and write.
 
-**`knownGens` is the ledger of the generations a row made current and has not decided to delete**, each `{ generation,
+**`knownGens` is the ledger of the generations a row knows and has not decided to delete**: the ones it made current and,
+when a publish over a row with no usable ledger seeds one, the ones a count by `keep` keeps in the bucket, which can include an
+object no load published (an orphan or a stray). An entry says the library knows the generation and its footer checksum, not that a
+load published it. Each is `{ generation,
 footerCrc }`: a non-negative safe integer and the CRC32C its object's footer stores (an integer from 0 to 2^32 - 1), in the order the
 generations were made current, oldest first and the current one last. A generation appears once, at its most recent
 time current: a rollback onto it moves it to the end. The entries before the last are the window a load keeps below the
 pointer, and what a rollback left; those numbered above `currentGen` are what a rollback left. A load collects by name
 from the entries below the pointer when none sits above it, which is the window the last load kept (up to 64); a row
-whose ledger is absent, or has an entry above the pointer, makes the next load list the bucket, keep what a count by
+whose ledger is absent, has an entry above the pointer or names more than 64 below it (a run of publishes with a `keep`
+above 64 carries up to 128), makes the next load list the bucket, keep what a count by
 `keep` keeps (the generation it superseded first, then the newest by number), and write that window as the ledger's
 entries before the new generation. A rollback carries the ledger it found and moves its target to the end, and writes
 none over a row that had none. A load writes at most 192 entries and a row is read with up to 384; a writer keeps an
@@ -905,7 +909,8 @@ registry cannot compare a sealed summary's; the library takes both from one obje
 but disagrees with its row (its last entry is not the pointer, its checksum is not a clear summary's, it sits on a row with no
 pointer or a `destroyed` one) is read and not used, as a summary that names another generation is. The registry stores a
 frozen copy, **in the order given**: a registry that sorts the list loses which generations were most recently current
-with no error. It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning `knownGens`
+with no error, and a registry that does not store the field at all makes every publish seed the ledger (one listing and
+up to `keep` footer reads, eight at a time, before each load's write). It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning `knownGens`
 drops it, a patch that leaves the pointer keeps it, and a patch that names it sets it, checked against the row it makes. A
 registry of your own must store and return the field in the order given, and drop it on a patch that moves the pointer
 without it. One that drops the field is correct and makes every load list. The conformance suite holds a driver to all of

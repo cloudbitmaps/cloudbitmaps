@@ -432,6 +432,8 @@ move it up.
   cannot tell its own object from a generation another load published or still will
   ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Once the registry records which generations
   were published, by an identity each write carries or a ledger of publishes, a rollback could refuse any other target.
+  The ledger now exists but cannot yet tell a published generation from a seeded one: a publish over a row with no usable
+  ledger seeds it from the bucket, an orphan or stray included.
 - **Segment handles across installed versions.** A segment handle carries a versioned brand, raised when what a
   combine reads from another copy's handle changes, and a combine refuses a handle whose brand differs from its own.
   Which versions' handles a combine accepts is part of the `1.0` compatibility promise.

@@ -66,7 +66,7 @@ const numbers = (row: RegistryRecord | null): number[] =>
   (row?.knownGens ?? []).map((e) => e.generation);
 
 describe.each(registries)('the ledger stays within its cap over %s', (_name, makeRegistry) => {
-  it('300 publishes with the default keep of an `*Into` destination all land: the ledger is the 128 most recently published', async () => {
+  it('300 `loadSegment` publishes with the `keep` an `*Into` call publishes with all land: the ledger is the 128 most recently published', async () => {
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
     const deps = { storage, registry, codec: roaringCodec };
@@ -84,7 +84,7 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
     }
   }, 120_000);
 
-  it('300 loads with keep 100 all land, the bucket keeps the 100 most recently current and the current one', async () => {
+  it('300 `loadSegment` loads with keep 100 all land, the bucket keeps the 100 most recently current and the current one', async () => {
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
     const deps = { storage, registry, codec: roaringCodec };
@@ -103,7 +103,7 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
     for (const g of present) expect(named.has(g), `generation ${g}`).toBe(true);
   }, 120_000);
 
-  it('300 loads with keep 72 among rollbacks, leases and erasures: every publish and every rollback lands, and the ledger never passes 192', async () => {
+  it('300 `loadSegment` loads with keep 72 among `rollbackSegment`, `takeLease` and `eraseIdFromSegment` calls: every publish and every rollback lands, and the ledger never passes 192', async () => {
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
     const clock = { now: () => FAR, sleep: () => Promise.resolve() };
@@ -170,6 +170,39 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
     expect(leases).toBeGreaterThan(5);
     expect(erasures).toBeGreaterThan(5);
   }, 240_000);
+});
+
+describe('the most a real writer leaves in a ledger', () => {
+  // The writer cap, 192 (MAX_KNOWN_GENERATIONS), cannot be reached by a real writer in this release. A publish keeps in
+  // the ledger what its window names (at most 65 entries for a `keep` of 64) or, carrying it, the 128 most recent, and
+  // does not yet hold the generations a live lease names: only `capKnown`, which the unit test drives with 150 leased
+  // entries, takes a leased set. So live leases on 64 generations change nothing about the size, which this holds at the
+  // window's.
+  it('64 live leases do not take a keep-64 ledger past its window', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const clock = { now: () => FAR, sleep: () => Promise.resolve() };
+    const deps = { storage, registry, codec: roaringCodec, clock };
+    for (let g = 0; g < 64; g++) {
+      await loadSegment(SEG, [g], deps, { keep: 64 });
+      const row = (await registry.get(SEG))!;
+      const taken = await takeLease(SEG, deps, {
+        holder: (g + 1).toString(16).padStart(16, '0'),
+        generation: g,
+        until: FAR + 3_600_000,
+        row,
+        current: true,
+      });
+      expect(taken, `lease ${g}`).not.toBe('moved');
+    }
+    for (let n = 64; n < 200; n++) {
+      const r = await loadSegment(SEG, [n], deps, { keep: 64 });
+      expect(r.published, `load ${n}`).toBe(true);
+      const row = (await registry.get(SEG))!;
+      expect(row.knownGens!.length, `after ${n}`).toBeLessThanOrEqual(KNOWN_FILL);
+    }
+    expect((await registry.get(SEG))!.knownGens!.at(-1)!.generation).toBe(199);
+  }, 120_000);
 });
 
 describe('what each boundary accepts of a ledger', () => {

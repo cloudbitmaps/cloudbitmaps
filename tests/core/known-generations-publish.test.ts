@@ -173,7 +173,7 @@ describe.each([
     await expectLedger(w, [0, 2, 1, 3]);
   });
 
-  it('the undo of a rollback whose target went puts the ledger and the summary back as the row had them', async () => {
+  it('the undo of a rollback whose target went puts the pointer and the summary back as the row had them, and the ledger without the target', async () => {
     const w = world(encrypted);
     for (let g = 0; g < 4; g++) await loadSegment(SEG, idsOf(5 + g), w.deps, { keep: 9 });
     const before = await rowOf(w);
@@ -199,7 +199,8 @@ describe.each([
     );
     const after = await rowOf(w);
     expect(after.currentGen).toBe(before.currentGen);
-    expect(after.knownGens).toEqual(before.knownGens);
+    // The target was found collected, so the row no longer knows it; every other entry is as it was.
+    expect(after.knownGens).toEqual(before.knownGens!.filter((e) => e.generation !== 1));
     expect(after.summary).toEqual(before.summary);
   });
 

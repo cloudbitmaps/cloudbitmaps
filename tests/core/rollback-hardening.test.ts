@@ -692,6 +692,23 @@ describe('the undo of a rollback whose target was collected meanwhile', () => {
     expect((await rowOf(w)).currentGen).toBe(2);
   });
 
+  it.each([
+    { name: 'cleartext', keystore: undefined },
+    { name: 'encrypted', keystore: key() },
+  ])('puts back the ledger without the target it proved collected: $name', async ({ keystore }) => {
+    const w = world(keystore);
+    await loads(w, 3);
+    expect((await rowOf(w)).knownGens!.map((e) => e.generation)).toEqual([0, 1, 2]);
+    const registry = onSwap(w.registry, 1, { after: collected(w) });
+    await expect(rollbackSegment(SEG, 0, { ...w.deps, registry }, {})).rejects.toThrow(
+      /was collected while the pointer was moving/,
+    );
+    const row = await rowOf(w);
+    expect(row.currentGen).toBe(2);
+    // A release before ledgers dropped the list here. The ledger keeps what the row still knows, and not the target.
+    expect(row.knownGens!.map((e) => e.generation)).toEqual([1, 2]);
+  });
+
   it('is not sent again over a row another writer renewed the pointer of, and says the move back failed', async () => {
     // The first call is the swap, the second the undo.
     const w = world();

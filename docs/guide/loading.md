@@ -600,8 +600,8 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   erasure deleted it and a load took its number meanwhile) the pointer and the old summary are put back and the
   rollback throws `NotFoundError`.
 - A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row is the one
-  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and no kept
-  list, and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
+  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and the ledger it wrote (none, over a row with no usable ledger: a rollback starts no ledger, a
+  load seeds one, so a load's write differs there), and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
   pointer put back if the target went meanwhile. Otherwise the rollback throws that `TransientError`, and the pointer
   may still move, since the write may yet land: run the rollback again, which finds the pointer where it is. A load or
   another writer that moved the row meanwhile is left standing, and the rollback throws that `TransientError` rather
