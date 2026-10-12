@@ -516,7 +516,7 @@ describe('an AND of two includes meets a move of its exclude through the exclude
     await bulkLoadCrbmGeneration(storage, at('b', 0), included, { registry });
     // The exclude holds chunks 0, 33 and 45 only. The read plans its reads of it at those keys, and it is at key 33,
     // read ahead of the consumer once the window opens past the first keys, that the read finds the exclude's cached
-    // chunk is no longer the exclude's version: well before the combine's look at its operands, every 32 keys.
+    // chunk is no longer the exclude's version: before the combine's look at its operands, every 32 keys (and before the read reaches chunk 25, which the exclude gains: a batch of exclude reads waits a few turns of the microtask queue for the keys that ask together, so the chunk it gains is one the read has not yet reached).
     await bulkLoadCrbmGeneration(storage, at('c', 0), [id(0, 9), id(33, 9), id(45, 9)], {
       registry,
     });
@@ -536,16 +536,16 @@ describe('an AND of two includes meets a move of its exclude through the exclude
     for await (const got of combine()) {
       out.push(got);
       if (out.length === 1) {
-        // Another store's publish: the exclude now also holds the id of chunk 10, and its TTL has lapsed here.
+        // Another store's publish: the exclude now also holds the id of chunk 25, and its TTL has lapsed here.
         await bulkLoadCrbmGeneration(
           storage,
           at('c', 1),
-          [id(0, 9), id(10, 1), id(33, 9), id(45, 9)],
+          [id(0, 9), id(25, 1), id(33, 9), id(45, 9)],
           { registry },
         );
         clock.advance(TTL + 1);
       }
     }
-    expect(out).toEqual(included.filter((x) => x !== id(10, 1)));
+    expect(out).toEqual(included.filter((x) => x !== id(25, 1)));
   });
 });

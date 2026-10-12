@@ -600,8 +600,15 @@ wide: a page that stops in its first range has requested that range alone. A ful
 segment too large for one range reads many times faster when the storage round trip dominates (a read that needs `n`
 ranges of each operand takes about `n / 32` round trips in sequence), and a read that fits one range, as the calibration
 shape does, is one round trip. An `andNot`, and a `union` with `exclude`, also read an exclude's chunks in the same round
-as the include's, where an `intersect` of two or more segments reads an exclude's chunk only once the intersection of
-that chunk is known to be non-empty. A range already requested is not cancelled when the caller stops: it finishes and
+as the include's. An `intersect` of two or more segments reads an exclude's chunk only once the intersection of that
+chunk is known to be non-empty, and reads the chunks of the keys that reach that point together as one stream of
+ranges: the keys that ask within sixteen turns of the microtask queue of one another are one batch, cut at the
+chunks the cache already holds, so a window of survivors costs about the requests its chunks span in the exclude's
+object, not one request each, and a read that takes the ids one at a time starts its keys in half-window bursts so
+that its batches stay that large. A batch sends at most one request for each key in it, a key whose intersection is
+empty is in none, and each chunk is read, counted in the cache's hits and misses, cached under the version it came
+from and checked against the segment's version as a chunk of an include is. A combine that stops sends no further batch,
+though the ranges of one already sent finish and are billed. A range already requested is not cancelled when the caller stops: it finishes and
 is billed, what it carries is dropped, and it is not retried, and the store reports a `storage.get` for it when it settles. On a source that reads chunk by chunk, a fetch already started finishes, lands in the chunk cache and is metered, and on one
 that retries a transient failure, its retries run to their limit after the caller has gone.
 

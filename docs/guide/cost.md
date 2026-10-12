@@ -137,6 +137,15 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
   one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
   at the default GET price, when the 100 shared chunks lie together and take one range each (measured on S3 in region: [the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made 6).
+  An `exclude` of an intersect of two or more segments is read in batches of the surviving keys that ask
+  for it together, at most `concurrency` keys (32 by default) a batch, and a read that takes the ids one at a time sends
+  a batch for about each half of that. Where the survivors' chunks sit together in the exclude's object, 1,000 surviving
+  keys cost it about 65 range requests read an id at a time and about 35 read a chunk at a time, as `intersectInto` does
+  (counted on the in-memory backend with 250 ids a chunk; it was 1,002), and never more than one for each surviving key
+  that holds a chunk of the exclude that the cache lacks. A key whose intersection is empty asks for nothing, so a large
+  opt-out list costs requests only where the survivors reach it.
+  Count these with the others in `chunksPerIntersect`; an `andNot` and a union read an exclude's chunks with the
+  includes', as ranges of their own.
   A segment whose chunks all arrive with its tail read takes no range request: when the whole object fits the tail read and its
   chunks total at most the reader cache's share per reader (`cache.readerMaxBytes` over `cache.readerMax`, 64 KiB by default),
   the reader keeps them, so such an operand makes 2 GETs, its pointer and its tail, and a cold intersect of two of them 4 (counted

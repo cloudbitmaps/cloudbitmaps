@@ -1528,6 +1528,48 @@ describe('the estimator counts the requests the engine makes', () => {
     },
   );
 
+  it('prices a cold intersect with an exclude at the GETs the engine makes, the exclude read in batches of survivors', async () => {
+    const { calls, pointer, open, reset } = countingStore();
+    // Segments over a tail read (256 KiB), so every chunk is a range request: 1,000 chunks of 250 ids. Both includes
+    // and the exclude hold 200 chunks that survive the AND, the exclude's ids thinned so that something remains.
+    const ids = (keys: number[], thin: boolean): number[] =>
+      keys.flatMap((k) =>
+        Array.from({ length: 250 }, (_, i) => i)
+          .filter((i) => !thin || i % 2 === 0)
+          .map((i) => k * 65_536 + i * 7 + 1),
+      );
+    const all = Array.from({ length: 1_000 }, (_, k) => k);
+    const survivors = all.slice(0, 200);
+    const loader = open();
+    await loader.load({ segment: 'a' }, ids(all, false));
+    await loader.load({ segment: 'b' }, ids(survivors, false));
+    await loader.load({ segment: 'x' }, ids(all, true));
+
+    reset();
+    reads.reset();
+    const cold = open();
+    for await (const id of cold.segment('a').intersect([cold.segment('b')], {
+      exclude: [cold.segment('x')],
+    })) {
+      void id;
+    }
+
+    expect(requestsIn(calls)).toEqual(['getRange', 'getTail']);
+    const chunkRequests = calls.getRange ?? 0;
+    // The exclude is read in batches of the survivors that ask together, not once for each of the 200: well under 200
+    // requests, and at least one for each of the three segments' chunks.
+    expect(chunkRequests).toBeGreaterThan(2);
+    expect(chunkRequests).toBeLessThan(2 + survivors.length / 4);
+    const engineGets = pointer.reads + (calls.getTail ?? 0) + chunkRequests;
+    // Three operands (the exclude included), each a pointer read and a tail read, then the chunk range requests.
+    expect(engineGets).toBe(2 * 3 + chunkRequests);
+    const model = decode(
+      price({ intersectsPerSec: ONCE, chunksPerIntersect: chunkRequests, operandsPerIntersect: 3 })
+        .intersects,
+    );
+    expect(model).toEqual({ put: 0, get: engineGets });
+  });
+
   it('prices a load at the requests store.load() makes once a segment has two generations behind it', async () => {
     const { calls, pointer, driver, open, reset } = countingStore();
     const store = open();
