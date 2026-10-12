@@ -544,9 +544,8 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ generation: 3, published: false, reason: 'superseded' });
     expect(w.writes.compareAndSwap).toBe(1);
     expect((await w.base.get(SEG))!.currentGen).toBe(4);
-    // The write can never land now, and the row changed, so the object is deleted once one read of its footer proves
-    // it this load's own, as after a lost race.
-    expect(await generations(w.storage)).toEqual([0, 1, 2, 4]);
+    // The write can never land now, and the row changed, so the object stays for collection, as after a lost race.
+    expect(await generations(w.storage)).toContain(3);
   });
 
   it('a token-only change during an unanswered write costs no wait and no fresh write: the row moved', async () => {
@@ -1213,7 +1212,7 @@ describe('a publish whose write got no answer records the same window as one tha
     expect(await generations(w.storage)).toEqual([2, 3, 4]);
   });
 
-  it('a write that lost to another load deletes only its own object and records nothing of its own', async () => {
+  it('a write that lost to another load deletes nothing and records nothing of its own', async () => {
     const w = world();
     await threeLoads(w);
     w.arm({
@@ -1225,10 +1224,9 @@ describe('a publish whose write got no answer records the same window as one tha
     const r = await next(w);
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     // The other load numbered past the object this one had written, and published 4; the row names what it kept. The
-    // refused object, below the pointer and named by no list, is deleted once one read of its footer proves it this
-    // load's own.
+    // refused object stays below the pointer, named by no list: a listing takes it.
     expect((await w.base.get(SEG))!.keptGens).toEqual([0, 1, 2]);
-    expect(await generations(w.storage)).toEqual([0, 1, 2, 4]);
+    expect(await generations(w.storage)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('a publish with no keep, as a bulk load makes, leaves the row recording no list', async () => {

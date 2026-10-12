@@ -205,8 +205,10 @@ interface PublishOptions {
  * have landed, and may still be in flight. The publish reads the row once more and decides from what it holds:
  *
  * - the pointer names `key.generation`, on the incarnation the write was made against (the row's `createdAt`), and
- *   `holdsOwnObject` proves the object under it the caller's: the write landed, and the publish returns `true`. Only
- *   the writer of a write-once object publishes its number, and a number is never taken while an object holds it;
+ *   `holdsOwnObject` finds the caller's bytes under it: the write is taken to have landed, and the publish returns
+ *   `true`. Only the writer of a write-once object publishes its number, and a number is never taken while an object
+ *   holds it, but it is taken again once its object is deleted, and a load of the same cleartext ids writes the same
+ *   bytes, so another writer's identical object under the number passes for the caller's;
  * - the row is still the one the write was made against (the same token, or still no row): the write may land yet. The
  *   publish then waits, on the injected clock, and sends a **new** write from the row it just read: a request of its
  *   own, not a replay of the driver's, carrying the same version, so under the registry's fence at most one of the two
@@ -540,12 +542,14 @@ export async function publishGeneration(
 
 /**
  * Whether `now` shows the effect of a publish's write that was made against `before`: an active row, on the same
- * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over the caller's own object.
+ * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over an object the caller's
+ * `holdsOwnObject` accepts.
  *
  * The incarnation is the one in the row's token ({@link sameIncarnation}): exact, and no clock. A row with no id in its
  * token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock reading that two
- * incarnations can share. So the object is always proved too, never assumed: the pointer and the incarnation alone
- * cannot say whose write this is. With no proof to ask for, the answer cannot be given, and that is an unknown outcome,
+ * incarnations can share. So the object is always checked too, never assumed: the pointer and the incarnation alone
+ * cannot say whose write this is. A load's check reads the footer, which names bytes, so another writer's identical
+ * object under the number passes it. With no proof to ask for, the answer cannot be given, and that is an unknown outcome,
  * never a guess.
  */
 async function landedHere(
@@ -568,7 +572,7 @@ async function landedHere(
 
 /**
  * Whether two reads of a row saw it unwritten in between: the same token, or no row both times. The settling never
- * compares `pointerId`: an unchanged token already proves that no write landed, and a write that did land is proved by
+ * compares `pointerId`: an unchanged token already proves that no write landed, and a write that did land is judged by
  * the object it names, through the caller's `holdsOwnObject` ({@link landedHere}).
  */
 function sameRow(a: RegistryRecord | null, b: RegistryRecord | null): boolean {

@@ -84,7 +84,8 @@ export interface KeptAfter {
  * The list a publish of `generation` over `prev` writes: the window of `keep` ({@link keptWindow}) over the row's list
  * and the generation that was current, which it superseded, and the names that fell out of it. Every entry of a usable
  * list is below the pointer, so the superseded generation is the newest of them, and the window is the newest `keep`.
- * Only generations that were current are named, so a number a refused or crashed load took is never in it.
+ * It adds only the generation that was current; the rest is the row's list carried forward, which names a number a
+ * refused or crashed load took when a listing recorded it.
  *
  * No list is written when the row has no usable list to extend (except for generation 0, which has nothing below it),
  * when `keep` is above {@link MAX_KEPT_GENERATIONS}, or when no `keep` is given.

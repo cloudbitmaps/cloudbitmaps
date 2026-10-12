@@ -315,7 +315,7 @@ export interface StorageDeleteOptions {
  *   under the key. A number can be taken again once its object is deleted, so this is what keeps a delete decided from
  *   one read, and delayed, from removing an object stored under the number since: the erasure's delete of a holder
  *   above the pointer passes the version it read when it searched that object, and a refused load's delete of an
- *   object it proved its own by a footer read passes the version of that read.
+ *   object whose footer, read once, matched what it wrote passes the version of that read.
  * - **A driver that wraps another forwards `ifVersion` and the `version` of a tail read, or reports
  *   `conditionalDelete: false`.** A wrapper that hands `delete` the key alone, and reports the inner driver's
  *   capability, makes every conditional delete through it unconditional without a word.

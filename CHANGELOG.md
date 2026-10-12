@@ -59,6 +59,16 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Listing a wide segment's chunk keys costs a fraction of what it did.** A read that lists a segment's keys (`iterate`
+  and its pages, the operand of a combine, `count`'s fallback) built the list through `Array.from`, ran the range test
+  through `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the list in a
+  loop, and the check range-tests every key and notes whether the list is strictly ascending in one pass, sorting and
+  scanning for a repeat only a list that is not (a custom source's, say). Every key is still range-checked, and an
+  out-of-range, repeated or unsorted list is refused or ordered exactly as before. A chunk read (`getChunks`,
+  `getChunksAt`) also validates the segment's name twice a read, as given and as a chunk ref copies it, rather than once
+  more for every key. The requests made are unchanged. Measured
+  warm, a page of 1,000 ids of a 65,536-chunk segment takes about half the time it did, a one-id page of a 2,000-chunk
+  segment about a quarter, and a cold first id of a 65,536-chunk segment a little over half.
 - **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
   cache always) no longer reads the clock on a hit, and with no metrics sink wired `has()` and `count()` return the
   engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured on
@@ -149,6 +159,28 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused erasure rewrite refuses a load that took its number with the same bytes, rather than deleting the load's
+  generation.** When another writer's publish refused an erasure's rewrite and left the pointer below it, the erasure
+  deleted its own object above that pointer once one read of its footer matched the rewrite's fingerprint. A footer
+  names an object by its bytes, and a load of the ids the rewrite held, in the clear, writes those very bytes under the
+  same number: once another erasure had deleted the rewrite's object as a holder, a load could take the number again,
+  and the refused erasure's delete removed that load's generation, before or after it published, so the row named an
+  object that is not in the bucket, every read of the segment failed, and nothing reported it. The erasure now reads
+  the row, then the footer, and renews the row it read before it deletes, with a compare-and-swap that names the
+  pointer at its value, as it does before deleting a holder, so a load that wrote those bytes and had not published is
+  refused at its publish and reports `superseded`. A renewal that loses to another write makes it read the row and
+  decide again; one lost to a write of leases alone, or to another erasure's renewal, as the losers of one race of
+  erasures lose to each other, is waited out and costs nothing, and after 8 renewals lost to other writes (a load, a
+  rollback, a retention write) it keeps the object, which can then hold another erasure's id until a later erasure
+  takes it. The renewal is one registry write more on a refused rewrite that discards its object, and one that gets no
+  answer is settled by reading the row, or throws its `TransientError` with nothing deleted. A generation a load
+  published with the same bytes, and a rollback then moved the pointer below, is still deleted as if it were the
+  rewrite: a pinned handle of it then fails with `NotFoundError` for any chunk it has yet to read, its lease names a missing generation, and a rollback to it finds it gone. One
+  round trip remains between the renewal and the delete: a rollback onto the object inside it, on a storage driver
+  whose versions come from the bytes (S3's ETag, without SSE-KMS or SSE-C) a load that takes the number inside it with
+  the same bytes, and on one that ignores the delete's condition (`LocalFsStorage`, and by default `GcsStorage` and an
+  S3 client sending to a host other than AWS S3) a load that takes the number inside it with any bytes, still leave the
+  pointer on a missing object ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and the
   `*Into` verbs read at most 16 operands at a time: the listing of their chunk keys on every plan, the plan a move
   makes included; the check, on the first plan, of whether each operand that holds no chunk exists; and the lookup of
@@ -236,11 +268,6 @@ so, and so do the module headers in the code.
   `materializeMany` call, and 144,045 (137,089 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
-- **A refused load deletes its own object once another write has changed the segment's row.** A load refused after
-  another writer changed the row kept its object, so a loader that stalled before its write could leave an object below
-  the pointer that a rollback then published, though no load had published it. The refusal now deletes the object once
-  one read of its footer proves it the load's own, passing that read's version, and keeps one the row names, as its
-  pointer, in its kept window or in a lease.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,
