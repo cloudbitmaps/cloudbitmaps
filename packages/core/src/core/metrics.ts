@@ -57,8 +57,10 @@ export type MetricEvent =
     }
   | {
       /**
-       * One decoded-chunk cache lookup (emitted only when a cache is configured). `hit: false` means the lookup found
-       * no cached chunk. A combine or `iterate` counts every chunk it needs when it opens its streams: a lookup each, or, on a cache that holds nothing, a miss each without one. A caller that
+       * One decoded-chunk cache lookup, or one chunk counted a miss without a lookup (emitted only when a cache is
+       * configured). `hit: false` means the cache did not hold the chunk. A combine or `iterate` counts every chunk it
+       * needs when it opens its streams: a lookup each, except that on a cache that holds nothing each chunk after the
+       * one a stream starts at is counted a miss without one. A caller that
        * missed while another caller's read of the same chunk was open waits on that read and adds no `storage.get`, and a
        * range carries several chunks, so the misses can outnumber the `storage.get` events; the `storage.get` count is
        * the number of requests for chunks. `materializeMany` never looks up the cache, so it emits none.

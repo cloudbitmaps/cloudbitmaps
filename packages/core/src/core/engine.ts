@@ -71,7 +71,8 @@ export interface EngineDeps {
   readonly storage: StorageChunkSource;
   /**
    * Optional cache of decoded (immutable) Storage chunks. A cache whose `size` is 0 is taken to hold nothing: a read
-   * that opens on it counts each chunk a miss without looking it up.
+   * that opens a stream on it looks up the chunk the stream starts at and counts each later chunk a miss without
+   * looking it up.
    */
   readonly cache?: BoundedLru<string, CodecBitmap>;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
