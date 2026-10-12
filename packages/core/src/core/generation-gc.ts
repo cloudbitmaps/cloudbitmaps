@@ -384,8 +384,11 @@ interface ListingResult {
  * after the listing joins `protect`, so a publish that landed meanwhile keeps its own window; with no usable list there
  * the pass keeps a window of `keep` below the pointer instead. Each delete is proved against the row's list once more.
  *
- * A window is {@link keptWindow}'s: with `superseded`, a load's pass keeps the generation its publish superseded first,
- * then the newest of the rest by number; without it, as for every pass that is not a load's, the newest `keep`.
+ * A pass that keeps by a count has a window of `keep`: with a usable ledger, its own names first, in the order they were
+ * made current, then the newest others by number; without one, {@link keptWindow}'s: with `superseded`, a load's pass
+ * keeps the generation its publish superseded first, then the newest of the rest by number, and without it, as for
+ * every pass that is not a load's, the newest `keep`. A pass with `skipKnown` also spares every name the row knows when
+ * it re-reads the row before a delete.
  *
  * A `quiet` pass is a load's, after its publish landed: a row another writer moved means the pass stops and reports what
  * it did, where any other pass throws {@link WriteConflictError}, because a load that took effect must not fail on a
@@ -635,12 +638,13 @@ export interface PublishedKept {
  * what the publish pushed out of that window ({@link deleteEvicted}) and lists the segment ({@link gcOrphanGenerations}'s
  * pass) only when it cannot rely on the row or must catch what a name does not:
  *
- *  - the publish recorded no window (a `keep` above {@link MAX_KEPT_GENERATIONS}, a row whose ledger names a generation
- *    above its pointer because a rollback left one, a row with no usable ledger, or a publish whose write was settled
- *    by reading the row): the pass keeps `keep` of the generations present below the pointer, `previous` first and then
+ *  - the publish recorded no window to collect by name (a `keep` above {@link MAX_KEPT_GENERATIONS}, a publish that
+ *    seeded its ledger from the bucket, a row with no usable ledger, or a publish whose write was settled by reading the
+ *    row): the pass keeps `keep` of the generations present below the pointer, the ledger's own most recently current
+ *    names first and then the newest others by number, or, over a row with no usable ledger, `previous` first and then
  *    the newest by number ({@link keptWindow}), and writes nothing: the publish already wrote the ledger, which is what
- *    the next load derives its window from. After a rollback, `previous` is the generation the rollback restored, which
- *    the newer ones it moved away from would otherwise push out of the window;
+ *    the next load derives its window from. It spares every name the row knows when it re-reads the row before a
+ *    delete, which a publish or a rollback that landed since can have added to;
  *  - the guard found the current generation's object gone, or, for a `keep` of 1 or more when the guard took the size
  *    from the row's summary and opened nothing, one zero-byte read of it does not find it (`proveCurrent`): the
  *    window then counts a generation that is not there, so the same pass keeps what is;

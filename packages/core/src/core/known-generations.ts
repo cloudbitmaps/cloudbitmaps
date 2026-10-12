@@ -101,15 +101,16 @@ interface KeptWindow {
 }
 
 /**
- * The generations below a new pointer that a grace window of `keep` holds, out of `below`: the generation the publish
- * superseded first, when it is among them, then the newest of the rest by number. When it is not among them (no
- * generation was current, or its object has gone from the bucket), the newest `keep`.
+ * The generations below a new pointer that a grace window of `keep` holds, out of `below`, when no ledger says which
+ * were made current most recently: the generation the publish superseded first, when it is among them, then the newest
+ * of the rest by number. When it is not among them (no generation was current, or its object has gone from the bucket),
+ * the newest `keep`.
  *
  * The superseded generation is the one reads were on until the publish, and, after a rollback, the one the operator
- * restored, which a pin taken since reads, and the one to roll back to if the new load is bad too. The
- * generations a rollback moved away from are newer by number, so a window by number alone would keep those and delete
- * it. The window a listing keeps when the row records no usable ledger comes from here, and so does a ledger's first window
- * (`ledger-seed.ts`).
+ * restored, which a pin taken since reads, and the one to roll back to if the new load is bad too. The generations a
+ * rollback moved away from are newer by number, so a window by number alone would keep those and delete it. The window
+ * a listing keeps over a row with no usable ledger comes from here, and so does a ledger's first window
+ * (`ledger-seed.ts`); once the row has a ledger, its order says which were made current most recently.
  */
 export function keptWindow(
   below: readonly number[],
