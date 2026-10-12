@@ -141,8 +141,9 @@ function validateGovernance(meta: unknown, field: string): void {
 }
 
 /**
- * Whose bytes a validator is looking at: a value a `caller` is writing (a bad one is a ValidationError, and the checked
- * copy is rebuilt), or a row read back from `stored` bytes (a bad one is an IntegrityError, and the parsed value is kept).
+ * Whose value a validator is looking at: one a `caller` is writing (a bad one is a ValidationError, a list or summary
+ * it returns is a frozen copy, and `keptGens` is held to the writer's cap of 64), or a row read back from `stored`
+ * bytes (a bad one is an IntegrityError, the reader's cap of 256 applies, and the parsed value is kept).
  */
 type RecordOrigin = 'caller' | 'stored';
 

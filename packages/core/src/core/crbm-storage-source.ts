@@ -458,7 +458,7 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
   return retry === undefined ? request() : retry(request);
 }
 
-/** The checks every chunk read starts with: a user's segment, chunk keys that are valid and strictly ascending. */
+/** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
   validateUserRef(ref);
   for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
@@ -1842,13 +1842,24 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             // failed is forgotten by the reader cache, so the stream meets a new snapshot. A fault in resolving starts
             // the stream over at the top, where a caller's retry runs the resolution.
             if (this.mayHaveMoved(key, at.snap, epoch) || at.snap.settled !== seen) {
-              const compared = await this.compareLive(ref, reader, at.snap, seen);
-              if (compared === null) {
-                movedOn = true;
-                break;
+              const live = this.liveSnapshot(ref);
+              if (live !== at.snap || live.settled !== seen) {
+                const looked = live.settled;
+                let same: boolean;
+                try {
+                  same = await readsObjectOf(live, reader);
+                } catch (err) {
+                  if (!isTransientError(err)) throw err;
+                  movedOn = true;
+                  break;
+                }
+                if (!same) {
+                  movedOn = true;
+                  break;
+                }
+                at.snap = live;
+                seen = looked;
               }
-              at.snap = compared.snap;
-              seen = compared.seen;
               epoch = this.invalidations;
             }
             // Counted as it is handed out: the next thing to happen to the stream is the consumer asking for more.
@@ -1873,7 +1884,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // generation swept from under the snapshot, and one whose object was replaced under the same number.
         // Anything else propagates at once, and so does a second miss with no chunk in between.
         if (healed) throw err;
-        if (!(await this.healable(ref, () => at.pending, err, retry))) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, at.pending, err, retry)))
+          throw err;
         // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
         // window does not open beside them.
         await chunks?.settled();
@@ -2019,7 +2031,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         if (attempt === 1) throw err;
         // A fault that is neither a miss nor corruption (a keystore's, say) is not asked about again: reading the
         // snapshot's reader here would call the keystore a second time.
-        if (!(await this.healable(ref, () => snap.reader, err))) throw err;
+        if (
+          !isNotFoundError(err) &&
+          !(
+            (isIntegrityError(err) || isValidationError(err)) &&
+            (await this.replacedUnder(ref, snap.reader, err))
+          )
+        )
+          throw err;
         this.dropStale(segmentKey(ref), snap);
       }
     }
@@ -2099,7 +2118,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     read: (reader: CrbmReader) => T | Promise<T>,
     ifGone: T,
-    retry?: <R>(request: () => Promise<R>) => Promise<R>,
+    retry?: Retry,
   ): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const at = this.resolution(ref);
@@ -2112,7 +2131,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
         // (corruption, a real second miss) propagates.
         if (attempt === 1) throw err;
-        if (!(await this.healable(ref, () => at.pending, err, retry))) throw err;
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, at.pending, err, retry)))
+          throw err;
         this.dropStale(segmentKey(ref), at.snap); // lazily: the happy path never needs the key
       }
     }
@@ -2146,23 +2166,6 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     });
   }
 
-  /**
-   * Whether a read that failed with `err` through `pending` may resolve again: a generation swept from under the
-   * snapshot, or an object replaced under its number ({@link replacedUnder}). Anything else is the read's own error.
-   */
-  private async healable(
-    ref: SegmentRef,
-    pending: () => Promise<CrbmReader | null>,
-    err: unknown,
-    retry?: Retry,
-  ): Promise<boolean> {
-    if (isNotFoundError(err)) return true;
-    // `pending` is asked for only here: a snapshot opens its reader when it is first read, so a fault that is neither
-    // a miss nor corruption (a keystore's, say) must not read it, which would call the keystore again.
-    if (!(isIntegrityError(err) || isValidationError(err))) return false;
-    return this.replacedUnder(ref, pending(), err, retry);
-  }
-
   /** The options a chunk stream is read with: the caller's tuning, its retry for each range, and this source's clock. */
   private readOptionsOf(
     options: ReadChunksOptions | undefined,
@@ -2174,31 +2177,6 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
       now: () => this.now(),
     };
-  }
-
-  /**
-   * Whether a running stream still reads the object its segment's live snapshot names. Looks at the live snapshot
-   * where the stream's has been replaced or its open has settled since `seen`; returns the snapshot and open now
-   * compared against, or `null` where the segment has moved (another object, or a transient fault in telling) and
-   * the stream must read afresh. What is compared is the open as it stands now: a reader that opens while the
-   * comparison waits is compared at the next chunk.
-   */
-  private async compareLive(
-    ref: SegmentRef,
-    reader: CrbmReader,
-    snap: Snapshot,
-    seen: Snapshot['settled'],
-  ): Promise<{ snap: Snapshot; seen: Snapshot['settled'] } | null> {
-    const live = this.liveSnapshot(ref);
-    if (live === snap && live.settled === seen) return { snap, seen };
-    const looked = live.settled;
-    try {
-      if (!(await readsObjectOf(live, reader))) return null;
-    } catch (err) {
-      if (!isTransientError(err)) throw err;
-      return null;
-    }
-    return { snap: live, seen: looked };
   }
 
   /**
@@ -2215,7 +2193,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     pending: Promise<CrbmReader | null>,
     err: unknown,
-    retry?: <R>(request: () => Promise<R>) => Promise<R>,
+    retry?: Retry,
   ): Promise<boolean> {
     if (!(isIntegrityError(err) || isValidationError(err))) return false;
     let reader: CrbmReader | null;
@@ -2568,7 +2546,7 @@ function leasesPatch(
   return { leases: live.length === 0 ? undefined : live };
 }
 
-/** What a publish is told, beyond the row and the key it moves the pointer to. */
+/** What a publish is told, beyond the registry and the generation key. */
 interface PublishOptions {
   wrappedDeks?: readonly WrappedDek[];
   expectFrom?: number;
