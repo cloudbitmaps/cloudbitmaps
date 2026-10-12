@@ -29,6 +29,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/consistency-summary.test.ts',
   'tests/core/admin-path-counts.test.ts',
   'tests/tools/cost.test.ts',
+  'tests/core/exclude-batching.test.ts',
   'tests/core/drop-segment.test.ts',
   'tests/core/erase-fences-inflight-load.test.ts',
   'tests/core/erase-retaken-number.test.ts',

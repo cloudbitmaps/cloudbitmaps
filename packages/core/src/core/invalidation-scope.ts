@@ -96,6 +96,11 @@ export class InvalidationScope extends InvalidationRecord {
     return this.openReads.get(key)?.read;
   }
 
+  /** Whether a read of `key` is open, without joining it. */
+  hasOpenRead(key: string): boolean {
+    return this.openReads.has(key);
+  }
+
   /** Register `entry` as the open read of `key`. */
   beginRead(key: string, entry: OpenRead): void {
     this.openReads.set(key, entry);

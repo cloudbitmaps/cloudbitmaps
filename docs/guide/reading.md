@@ -157,7 +157,16 @@ This is the one place the bound is stated; other pages link here.
   or a chunk the chunk cache does not hold: `iterate` and the combines always do, since they read the chunk keys from
   the index; a `has()` whose chunk is cached, a `count()` and a `stat()` answered from the row's summary do not. On an
   encrypted segment the key is unwrapped again through the keystore, one request to it, for the open or for the row's
-  sealed summary, which names the object a cached chunk is checked against.
+  sealed summary, which names the object a cached chunk is checked against. An open that starts from the object
+  (`iterate`, a combine, a pin) sends the tail read at once, beside the key request, rather than after it, so its wall
+  time is the longer of the two, not their sum. The open still holds the footer to the row's summary and decrypts only
+  once both have answered, and a keystore fault is the error you get even when the object is also missing. A `has()`
+  asks for the segment's version first, so its first open waits for the key, which opens the row's sealed summary, and
+  has nothing to overlap; an open it makes again after a failed one overlaps like the others. An open that sends its
+  tail early sends it whether or not the key opens, so a keystore that fails bills a tail GET for each such attempt
+  (with the default read retry, up to four for a keystore that keeps throwing `TransientError`), and its answer is
+  dropped. While a cold open
+  waits for the key it holds up to `tailBytes` (256 KiB by default) of the object's tail.
 - **What it means for another store's erasure or crypto-shred.** After an eviction a store can serve a cached chunk of a
   generation another store erased from, up to the same `cache.genTtlMs`. It also reads with the wrapped keys it kept:
   a store whose reader was evicted unwraps the key from them again through the keystore, so a crypto-shred by another
@@ -602,8 +611,18 @@ wide: a page that stops in its first range has requested that range alone. A ful
 segment too large for one range reads many times faster when the storage round trip dominates (a read that needs `n`
 ranges of each operand takes about `n / 32` round trips in sequence), and a read that fits one range, as the calibration
 shape does, is one round trip. An `andNot`, and a `union` with `exclude`, also read an exclude's chunks in the same round
-as the include's, where an `intersect` of two or more segments reads an exclude's chunk only once the intersection of
-that chunk is known to be non-empty. A range already requested is not cancelled when the caller stops: it finishes and
+as the include's. An `intersect` of two or more segments reads an exclude's chunk only once the intersection of that
+chunk is known to be non-empty. A chunk the chunk cache holds, or another read has in flight, is read as a read of it alone is:
+the cache's version check, or joining that read. A chunk that has to be requested is held with the others of its
+exclude and read with them as one stream of coalesced ranges, so a window of survivors costs about the requests its chunks
+span in the exclude's object, not one request each. Held chunks are read when half of `concurrency` of them are held (16 of
+32 by default); when no key has asked for 16 turns of the microtask queue and the caller is waiting on a slot, or the oldest
+held chunk is within half a window of the slot the caller is at (so a chunk is read at least that far ahead of a caller that
+works between chunks); and when every key of the read has been started. A batch sends at most one request for each chunk it holds, each chunk is counted in
+the cache's hits and misses, cached under the version it came from and checked against the segment's version as a chunk of
+an include is, and a segment named twice as an `exclude` is one batch. A source with no `getChunks`, and an `exclude`
+that has no generation, still read per key. A combine that stops sends no further batch, though the ranges of one already
+sent finish and are billed. A range already requested is not cancelled when the caller stops: it finishes and
 is billed, what it carries is dropped, and it is not retried, and the store reports a `storage.get` for it when it settles. On a source that reads chunk by chunk, a fetch already started finishes, lands in the chunk cache and is metered, and on one
 that retries a transient failure, its retries run to their limit after the caller has gone.
 

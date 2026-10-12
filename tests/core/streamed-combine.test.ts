@@ -75,7 +75,7 @@ describe('which operands stream', () => {
     expect(opened(storage).sort()).toEqual(['a:1,2,3,4', 'b:2,3,4,9', 's:3,4']);
   });
 
-  it('an exclude that waits on an AND of two includes is read per key, only where the AND is not empty', async () => {
+  it('an exclude that waits on an AND of two includes is read in a batch of the keys whose AND is not empty', async () => {
     const { storage, engine, metrics } = setup({
       a: ids([1, 2]),
       b: ids([2, 3, 1]),
@@ -85,8 +85,9 @@ describe('which operands stream', () => {
     seedSegment(storage, 'a', [joinId(1, 10), ...ids([2])]);
     seedSegment(storage, 'b', [joinId(1, 11), ...ids([2, 3])]);
     await collect(engine.intersect([ref('a'), ref('b')], { exclude: [ref('s')] }));
-    expect(opened(storage).sort()).toEqual(['a:1,2', 'b:1,2']);
-    expect(storage.singles).toEqual(['s:2']); // key 1 emptied the AND: its exclude chunk was never read
+    // Key 1 emptied the AND: its exclude chunk is in no batch, so the one the exclude is read over holds key 2 alone.
+    expect(opened(storage).sort()).toEqual(['a:1,2', 'b:1,2', 's:2']);
+    expect(storage.singles).toEqual([]);
     // Four chunks of the includes and the one exclude chunk looked up: no lookup for an exclude chunk that is never read.
     expect(metrics.snapshot().cache.misses).toBe(5);
   });
