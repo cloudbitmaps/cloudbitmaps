@@ -1,11 +1,13 @@
 /**
  * `tailBytes` is the bytes of an object after its chunk payloads: any extension block, the index and the footer. The
- * writer reports it for the object it wrote and the reader for the object it opened, and they must agree, since a
- * cold open sizes its first tail read from it. `footerCrcUnder` reads an object's footer CRC with no key.
+ * writer reports it for the object it wrote and the reader for the object it opened, and they must agree: a tail read
+ * of that many bytes holds the whole extension block, index and footer, so a reader opened with it as its `tailBytes`
+ * opens the object in one request. `footerCrcUnder` reads an object's footer CRC with no key.
  */
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { BufferReader, BufferSink } from '@/core/blob';
+import type { BlobReader } from '@/core/blob';
 import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from '@/core/crbm-open';
 import { CrbmReader } from '@/core/crbm/reader';
 import { CrbmWriter } from '@/core/crbm/writer';
@@ -48,6 +50,25 @@ async function build(
   return { bytes: sink.bytes(), identity: writer.identity };
 }
 
+/** A blob that records each request. */
+function counting(bytes: Uint8Array): { blob: BlobReader; calls: string[] } {
+  const inner = new BufferReader(bytes);
+  const calls: string[] = [];
+  return {
+    calls,
+    blob: {
+      getTail: (n) => {
+        calls.push(`tail ${n}`);
+        return inner.getTail(n);
+      },
+      getRange: (offset, length) => {
+        calls.push(`range ${offset} ${length}`);
+        return inner.getRange(offset, length);
+      },
+    },
+  };
+}
+
 const cases = [
   { name: 'narrow', chunks: 5, wide: false },
   { name: 'wide', chunks: 40_000, wide: true },
@@ -74,7 +95,7 @@ describe.each(cases)('tailBytes of a $name object', ({ chunks, wide }) => {
       );
       expect(reader.tailBytes).toBeGreaterThan(FOOTER_BYTES);
       expect(reader.sizeBytes).toBe(identity.size);
-      // A tail read of exactly that many bytes holds the whole index and footer.
+      // The default tail holds the whole index and footer of a narrow object, and not of a wide one.
       expect(wide).toBe(identity.tailBytes > DEFAULT_TAIL_BYTES);
       expect(reader.servedFromTail).toBe(!wide);
     },
@@ -113,6 +134,76 @@ describe('the write results carry tailBytes', () => {
       expect(written.fingerprint).toBe(reader.fingerprint);
     },
   );
+});
+
+describe('tailBytes of an empty generation', () => {
+  it.each(variants)(
+    'is the writer’s and the reader’s alike, from the end of the preamble (encrypted $encrypted, metadata $metadata)',
+    async ({ encrypted, metadata }) => {
+      const { bytes, identity } = await build(2, 0, { encrypted, metadata });
+      const reader = await CrbmReader.open(new BufferReader(bytes), {
+        ...(encrypted ? { crypto: cryptoFor(2) } : {}),
+      });
+      expect(reader.tailBytes).toBe(identity.tailBytes);
+      expect(bytes.length - reader.tailBytes).toBe(8); // the preamble, and no payload
+      if (metadata === undefined) expect(reader.tailBytes).toBe(FOOTER_BYTES);
+    },
+  );
+
+  it.each(['encoded', 'whole', 'stream'] as const)(
+    'every write path reports it (%s)',
+    async (path) => {
+      const storage = new MemoryStorageDriver();
+      const key: GenKey = { ...SEG, generation: 5 };
+      const written =
+        path === 'encoded'
+          ? await writeEncodedChunks(storage, key, [], {})
+          : path === 'whole'
+            ? await writeCrbmGeneration(storage, key, [])
+            : await writeCrbmGenerationStream(
+                storage,
+                key,
+                (async function* () {
+                  yield* [];
+                })(),
+              );
+      expect(written.tailBytes).toBe(FOOTER_BYTES);
+      expect(written.size - written.tailBytes).toBe(8);
+    },
+  );
+});
+
+describe('a tail read of tailBytes opens the object in one request', () => {
+  const shapes = [
+    { name: 'empty', chunks: 0 },
+    { name: 'narrow', chunks: 5 },
+    // One-byte chunks take 8 index bytes each: the index fits 256 KiB and the extension block before it does not.
+    { name: 'block straddling the default tail', chunks: 32_700 },
+    { name: 'wide', chunks: 40_000 },
+  ] as const;
+  for (const { name, chunks } of shapes) {
+    it.each(variants)(
+      `${name} (encrypted $encrypted, metadata $metadata)`,
+      async ({ encrypted, metadata }) => {
+        const { bytes, identity } = await build(3, chunks, { encrypted, metadata });
+        const crypto = encrypted ? { crypto: cryptoFor(3) } : {};
+        const exact = counting(bytes);
+        const reader = await CrbmReader.open(exact.blob, {
+          ...crypto,
+          tailBytes: identity.tailBytes,
+        });
+        expect(exact.calls).toEqual([`tail ${identity.tailBytes}`]);
+        expect(reader.servedFromTail).toBe(true);
+        expect(reader.tailBytes).toBe(identity.tailBytes);
+        // And no fewer: a byte less leaves part of the block or the index for a second request.
+        if (identity.tailBytes > FOOTER_BYTES) {
+          const short = counting(bytes);
+          await CrbmReader.open(short.blob, { ...crypto, tailBytes: identity.tailBytes - 1 });
+          expect(short.calls.length).toBeGreaterThan(1);
+        }
+      },
+    );
+  }
 });
 
 /** A bitmap as far as a write sees one: its bytes and its size. */
@@ -199,14 +290,21 @@ describe('the footer step of a rollback, and footerCrcUnder', () => {
     },
   );
 
-  it('names the same object as the reader’s fingerprint does', async () => {
-    const memory = new MemoryStorageDriver();
-    const { footerCrc } = await store(memory, 2, true);
-    const tail = await memory.getTail({ ...SEG, generation: 2 }, DEFAULT_TAIL_BYTES);
-    expect(fingerprintFor(tail.size, footerCrc)).toBe(
-      fingerprintFor(tail.size, await footerCrcUnder(memory, { ...SEG, generation: 2 })),
-    );
-  });
+  it.each([false, true])(
+    'names the same object as the reader’s fingerprint does (encrypted %s)',
+    async (encrypted) => {
+      const memory = new MemoryStorageDriver();
+      const key: GenKey = { ...SEG, generation: 6 };
+      const { bytes } = await build(6, 12, { encrypted, metadata: { a: 1 } });
+      await memory.putImmutable(key, (out) => out.write(bytes));
+      const reader = await CrbmReader.open(new BufferReader(bytes), {
+        ...(encrypted ? { crypto: cryptoFor(6) } : {}),
+      });
+      expect(fingerprintFor(reader.sizeBytes, await footerCrcUnder(memory, key))).toBe(
+        reader.fingerprint,
+      );
+    },
+  );
 
   it('passes NotFoundError through, and refuses a footer that fails its checks', async () => {
     const memory = new MemoryStorageDriver();
@@ -233,4 +331,39 @@ describe('the footer step of a rollback, and footerCrcUnder', () => {
     expect(await openRollbackTargetFrom(footer, key, undefined)).toBeUndefined();
     expect(trace).toHaveLength(1);
   });
+});
+
+describe('the key-less footer reads refuse a footer that fails its checks', () => {
+  /** A real object with one byte of its footer's CRC flipped: the magic still matches. */
+  async function storedWithBadCrc(storage: MemoryStorageDriver, generation: number): Promise<void> {
+    const { bytes } = await build(generation, 3, { encrypted: false });
+    bytes[bytes.length - 8]! ^= 0xff; // the footer CRC, at 96 of the footer's 104 bytes
+    await storage.putImmutable({ ...SEG, generation }, (out) => out.write(bytes));
+  }
+
+  it('a footer CRC that does not match', async () => {
+    const memory = new MemoryStorageDriver();
+    await storedWithBadCrc(memory, 1);
+    const key: GenKey = { ...SEG, generation: 1 };
+    await expect(footerCrcUnder(memory, key)).rejects.toThrow(IntegrityError);
+    await expect(footerCrcUnder(memory, key)).rejects.toThrow('.crbm footer CRC mismatch');
+    await expect(readRollbackTargetFooter(memory, key)).rejects.toThrow(
+      '.crbm footer CRC mismatch',
+    );
+  });
+
+  it.each([0, 50, FOOTER_BYTES, FOOTER_BYTES + 7])(
+    'an object of %i bytes, shorter than a preamble and a footer',
+    async (length) => {
+      const memory = new MemoryStorageDriver();
+      const key: GenKey = { ...SEG, generation: 2 };
+      const { bytes } = await build(2, 3, { encrypted: false });
+      const short = new Uint8Array(length);
+      short.set(bytes.subarray(Math.max(0, bytes.length - length)), 0);
+      await memory.putImmutable(key, async (out) => {
+        if (length > 0) await out.write(short);
+      });
+      await expect(footerCrcUnder(memory, key)).rejects.toThrow(`.crbm too small: ${length}B`);
+    },
+  );
 });

@@ -233,3 +233,72 @@ describe('the requests and errors of a rollback, by target', () => {
     `);
   });
 });
+
+/** One id per chunk, so the index outgrows the 256 KiB tail and the open needs a range read. */
+const wideIds = (): number[] => Array.from({ length: 40_000 }, (_, k) => k * 0x1_0000);
+
+describe('the requests and errors of a rollback, by target (more kinds)', () => {
+  it('an encrypted target below the pointer, with no keystore', async () => {
+    const keystore = keystoreOf();
+    const w = world(keystore);
+    const first = await w.load([1, 2]);
+    await w.load([3]);
+    expect(await traced(w, first)).toMatchInlineSnapshot(`
+      {
+        "outcome": "rolled to 0",
+        "trace": [
+          "list",
+          "getTail g0 262144",
+          "list",
+        ],
+      }
+    `);
+  });
+
+  it('an encrypted target above the pointer, with no keystore', async () => {
+    const keystore = keystoreOf();
+    const w = world(keystore);
+    await w.load([1]);
+    const top = await w.load([2]);
+    await rollbackSegment(SEG, 0, { storage: w.memory, registry: w.registry, keystore });
+    expect(await traced(w, top, { allowForward: true })).toMatchInlineSnapshot(`
+      {
+        "outcome": "KeyUnavailableError: rollback: generation 1 of "s" is above the current pointer (0), and the segment is encrypted: only its key, opening the target, shows that it is one of the segment's generations and not an object sealed under another key, and no key is at hand (the store has no keystore). Retry with a keystore that opens the segment's key.",
+        "trace": [
+          "list",
+        ],
+      }
+    `);
+  });
+
+  it('a wide target, whose index is past the 256 KiB tail', async () => {
+    const w = world();
+    const first = await w.load(wideIds());
+    await w.load([3]);
+    expect(await traced(w, first)).toMatchInlineSnapshot(`
+      {
+        "outcome": "rolled to 0",
+        "trace": [
+          "list",
+          "getTail g0 262144",
+          "getRange g0 720008 320000",
+          "list",
+        ],
+      }
+    `);
+  });
+
+  it('the current generation', async () => {
+    const w = world();
+    await w.load([1]);
+    const current = await w.load([2]);
+    expect(await traced(w, current)).toMatchInlineSnapshot(`
+      {
+        "outcome": "rolled to 1",
+        "trace": [
+          "getTail g1 0",
+        ],
+      }
+    `);
+  });
+});

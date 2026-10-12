@@ -171,7 +171,7 @@ export async function readRollbackTargetFooter(
 /**
  * The reader {@link RollbackTargetFooter}'s object opens as, from its remembered tail, when the object and the key
  * agree (an encrypted object opened with `crypto`, a cleartext one with none); `undefined` when they disagree, which
- * the caller refuses as a target the row cannot use. An object another generation's, and an index or metadata that
+ * the caller refuses as a target the row cannot use. An object that is another generation's, and an index or metadata that
  * do not open, are an {@link IntegrityError}.
  */
 export async function openRollbackTargetFrom(
@@ -207,8 +207,8 @@ export async function openRollbackTarget(
 
 /**
  * The footer CRC of the object under `key` ({@link CrbmReader.fingerprint} carries it), from one read of a footer's
- * worth with no key, so it is the same for a cleartext object and an encrypted one. {@link NotFoundError} when the key
- * holds no object; a footer that fails its own checks is an {@link IntegrityError}.
+ * worth, so it reads an encrypted object's CRC as it does a cleartext one's, with no key. {@link NotFoundError} when
+ * the key holds no object; a footer that fails its own checks is an {@link IntegrityError}.
  */
 export async function footerCrcUnder(storage: IStorageDriver, key: GenKey): Promise<number> {
   return (await readFooter(storageBlobReader(storage, key))).footerCrc;
