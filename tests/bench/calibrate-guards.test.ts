@@ -492,11 +492,9 @@ describe('calibrate guards — what a real run is held to', () => {
     // listing, since a new segment has nothing outside its window to collect.
     expect(await load(0, false)).toEqual({ reads: 2, checks: 1, writes: 1, objects: 1, lists: 0 });
     // The number taken: four more reads and two listings, one to number past the objects and one to collect, which
-    // re-reads the pointer before its listing, after it, before its delete and after it. The segment's row has no
-    // ledger (the listing numbered the load), so the publish seeds one: it reads the footer of each object its window
-    // keeps (a second tail read) and writes the ledger in the same conditional write as the pointer, so no separate
-    // write records the window.
-    expect(await load(0, true)).toEqual({ reads: 6, checks: 2, writes: 1, objects: 1, lists: 2 });
+    // re-reads the pointer before its listing, after it, before its delete and after it. A new segment's first publish
+    // is not seeded, so it reads no stray's footer: main made a second tail read here (checks: 2).
+    expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
