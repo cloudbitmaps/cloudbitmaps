@@ -41,6 +41,10 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`CrbmReader.tailBytes`** (`@cloudbitmaps/core`, re-exported by `@cloudbitmaps/roaring`): the bytes of the object
+  after its chunk payloads, that is its extension block when it has metadata, its index and its footer. A tail read of
+  that many bytes reaches all of them. It is the object's size less where its payloads end, known at open with no
+  further request; nothing else about an open or a write changes.
 - **Shared driver helpers in `@cloudbitmaps/core/driver-kit`.** `storageObjectKey`, `segmentObjectPrefix` and
   `parseGenerationFromKey` build and read back the storage object layout every object-store driver shares
   (`<prefix><ns>/segments/<segment>.<gen>.crbm`); `refuseUnknownOptions`, `requirePositiveInt` and `requireBool` check a

@@ -21,15 +21,15 @@ export async function writeCrbmGeneration(
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   options: { crypto?: CrbmCrypto; clock?: Yielder; metadata?: GenerationMetadata } = {},
-): Promise<{ size: number; sha256: string; fingerprint: string }> {
+): Promise<{ size: number; sha256: string; fingerprint: string; tailBytes: number }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
-  const { size, sha256, fingerprint } = await writeEncodedChunks(
+  const { size, sha256, fingerprint, tailBytes } = await writeEncodedChunks(
     driver,
     key,
     encodeEach(sorted),
     options,
   );
-  return { size, sha256, fingerprint };
+  return { size, sha256, fingerprint, tailBytes };
 }
 
 /** Each non-empty bitmap as the chunk it stores, in the order given. */
@@ -60,6 +60,8 @@ export async function writeEncodedChunks(
   chunkCount: number;
   cardinality: number;
   fingerprint: string;
+  /** The bytes after the chunk payloads ({@link CrbmReader.tailBytes}). */
+  tailBytes: number;
 }> {
   // The single longest blocking stretch in a bulk load: serialize + CRC32C + frame, once per chunk, ~62,000
   // times. `await writer.addChunk(...)` looks like it yields and does not — the sink buffers in memory, so the
@@ -67,7 +69,7 @@ export async function writeEncodedChunks(
   const tick = yieldEvery(options.clock);
   let chunkCount = 0;
   let cardinality = 0;
-  let identity: { readonly size: number; readonly footerCrc: number } | undefined;
+  let identity: CrbmWriter['identity'] | undefined;
   const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
     const writer = new CrbmWriter(sink, {
       generation: key.generation,
@@ -96,6 +98,7 @@ export async function writeEncodedChunks(
     chunkCount,
     cardinality,
     fingerprint: fingerprintFor(identity.size, identity.footerCrc),
+    tailBytes: identity.tailBytes,
   };
 }
 
@@ -109,6 +112,8 @@ interface StreamWriteResult {
   readonly cardinality: number;
   /** The fingerprint of what this call wrote ({@link CrbmReader.fingerprint}), which tells it from another object under its key. */
   readonly fingerprint: string;
+  /** The bytes after the chunk payloads ({@link CrbmReader.tailBytes}). */
+  readonly tailBytes: number;
 }
 
 /**
@@ -131,7 +136,7 @@ export async function writeCrbmGenerationStream(
   // already-resident chunks resolves on a microtask — so it needs the same periodic macrotask as the
   // non-streaming writer above.
   const tick = yieldEvery(options.clock);
-  let identity: { readonly size: number; readonly footerCrc: number } | undefined;
+  let identity: CrbmWriter['identity'] | undefined;
   const { size, sha256 } = await driver.putImmutable(key, async (sink) => {
     const writer = new CrbmWriter(sink, {
       generation: key.generation,
@@ -161,5 +166,6 @@ export async function writeCrbmGenerationStream(
     chunkKeys,
     cardinality,
     fingerprint: fingerprintFor(identity.size, identity.footerCrc),
+    tailBytes: identity.tailBytes,
   };
 }
