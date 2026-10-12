@@ -36,6 +36,7 @@ import {
   validateChunkKey,
   validateChunkKeyOrder,
   validateChunkRef,
+  validateSegmentRef,
   validateUserRef,
 } from './validate';
 import type {
@@ -383,7 +384,8 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
 /** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
   validateUserRef(ref);
-  // `validateUserRef` has checked the segment and namespace names once; each key needs only its range test.
+  // A chunk ref is a copy of this ref, so it carries only the ref's own enumerable names: checked once, not once a key.
+  if (keys.length > 0) validateSegmentRef({ ...ref });
   for (const chunkKey of keys) validateChunkKey(chunkKey);
   validateChunkKeyOrder(keys);
 }

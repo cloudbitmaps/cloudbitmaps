@@ -714,6 +714,28 @@ describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it re
     expect((await read(source, REF, [3, 3, 5])).chunks).toHaveLength(3);
   });
 
+  it('refuses a ref whose names are not its own before it reads anything, as a chunk ref copied from it is', async () => {
+    const { storage, registry, clock } = await world();
+    const cold = new CrbmStorageChunkSource(storage, { registry, clock, currentGenTtlMs: TTL });
+    class Inherited {
+      get segment(): string {
+        return REF.segment;
+      }
+    }
+    storage.ranges = [];
+    storage.tails = 0;
+    for (const ref of [new Inherited(), Object.create({ segment: REF.segment })] as SegmentRef[]) {
+      await expect(collect(cold.getChunks(ref, [0]))).rejects.toThrow(
+        'segment must be a string; got undefined',
+      );
+      await expect(collect(cold.getChunksAt(ref, 0, [0]))).rejects.toThrow(
+        'segment must be a string; got undefined',
+      );
+    }
+    expect(storage.ranges).toHaveLength(0);
+    expect(storage.tails).toBe(0);
+  });
+
   it('stops retrying the ranges of a stream that was abandoned: nothing is sent after the break but what was in flight', async () => {
     const { source, storage } = await world({ chunks: 400 });
     // Every backoff waits on the gate: a retry that is still sleeping when the consumer leaves is what must not be sent.

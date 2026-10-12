@@ -233,3 +233,31 @@ describe('a read of a wide segment asks storage for the same requests', () => {
     `);
   });
 });
+
+describe('checkedChunkKeys, given a list that is not a plain array', () => {
+  it('copies the list as the spread did, whatever kind of array a source hands over', () => {
+    class NoSort extends Array<number> {}
+    NoSort.prototype.sort = function (this: number[]) {
+      return this;
+    } as never;
+    const iteratingAs = (held: number[], yields: number[]): number[] =>
+      Object.defineProperty([...held], Symbol.iterator, {
+        value: function* () {
+          yield* yields;
+        },
+      });
+    const lists: (() => number[])[] = [
+      () => NoSort.from([3, 1, 2]),
+      () => NoSort.from([3, 1, 3]),
+      () => iteratingAs([1, 2], [70_000]),
+      () => iteratingAs([5, 3], [1, 2]),
+      () => new Proxy([3, 1, 2], {}),
+    ];
+    for (const make of lists) {
+      const got = outcome(() => checkedChunkKeys(make()));
+      expect(got).toEqual(outcome(() => referenceCheckedChunkKeys(make())));
+      if ('ok' in got)
+        expect(Object.getPrototypeOf(checkedChunkKeys(make()))).toBe(Array.prototype);
+    }
+  });
+});

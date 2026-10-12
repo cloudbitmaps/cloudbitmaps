@@ -30,7 +30,9 @@ export function assertChunkCardinalityInRange(c: number): void {
  * for a repeat. The caller gets a list of its own.
  */
 export function checkedChunkKeys(listed: Iterable<number>): number[] {
-  const keys = Array.isArray(listed) ? (listed as number[]).slice() : [...listed];
+  // Copied through the iterator into a plain Array: a source's subclass, Proxy or own iterator cannot show this check
+  // one set of keys and the caller another, and the sort below is the built-in one.
+  const keys = [...listed];
   let ascending = true;
   let prev = -1;
   for (let i = 0; i < keys.length; i++) {
