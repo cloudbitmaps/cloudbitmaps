@@ -62,7 +62,7 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
   carries a pointer read's. A fleet of readers pays the refresh once per reader,
   which `readerProcesses` carries. And it still quotes low where it cannot see: more hot segments than a reader
   keeps open (1,024 by default), which re-opens them as it reads them; the index every reader opens again after
-  each load; an intersect slow enough to outlive `cache.genTtlMs`, which re-reads its pointers; an operand whose
+  each load; an intersect slow enough to outlive `cache.genTtlMs`, which re-reads its pointers; an encrypted operand, or one whose row has no summary the store can use, whose
   index outgrows the tail read, one more GET; and a load that loses a publish race, which reads the pointer again.
 
 ## Real-cloud calibration — AWS

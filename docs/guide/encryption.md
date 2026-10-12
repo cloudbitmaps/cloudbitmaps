@@ -132,6 +132,11 @@ default read retry, a keystore that keeps throwing `TransientError` bills up to 
 open waiting for the key holds up to `tailBytes` (256 KiB by default) of the object's tail. A store with no keystore
 sends no tail read for an encrypted row.
 
+The tail read of an encrypted row is not sized from the row's summary, as a cleartext row's is: the summary is sealed
+under the key, so sizing from it would send the tail read after the key, which is the wait the overlap removes. A
+segment whose index is longer than the 256 KiB tail read (tens of thousands of chunks) therefore costs one range read
+for the index after the tail read, where the same cleartext segment costs none.
+
 A `has()` asks for the segment's version first, and the version needs the key, because the row's summary is sealed under
 it. Its first open therefore waits for the key before it opens the object, with nothing to overlap; an open it makes
 again after a failed one overlaps like the others.
