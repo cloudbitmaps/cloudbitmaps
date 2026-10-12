@@ -259,9 +259,33 @@ describe('--against', () => {
   });
 
   it('fails, rather than reporting no snapshot, when git cannot read the path at the ref', () => {
-    const tree = git('rev-parse', 'HEAD:api-surface').trim();
-    rmSync(join(repo, '.git/objects', tree.slice(0, 2), tree.slice(2)));
-    const r = run(['--against', 'HEAD']);
+    // A commit whose `api-surface` tree is an object the repository never had. Deleting a stored object's file is not
+    // enough: git may also hold it in a pack, and then reads it from there.
+    const missing = '1'.repeat(git('rev-parse', 'HEAD').trim().length);
+    const listing = git('ls-tree', 'HEAD').replace(
+      /^(040000 tree )\S+(\tapi-surface)$/m,
+      `$1${missing}$2`,
+    );
+    expect(listing).toContain(missing);
+    const tree = execFileSync('git', ['mktree', '--missing'], {
+      cwd: repo,
+      encoding: 'utf8',
+      input: listing,
+    }).trim();
+    const broken = git(
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit-tree',
+      '-m',
+      'x',
+      '-p',
+      'HEAD',
+      tree,
+    ).trim();
+    expect(() => git('cat-file', '-e', missing)).toThrow();
+    const r = run(['--against', broken]);
     expect(r.status).toBe(1);
     expect(r.out).not.toContain('nothing to compare against');
   });
