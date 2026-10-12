@@ -772,9 +772,9 @@ current versions.
   Below the pointer, collection treats the strays as any generation no load published there. A row restored from a
   backup carries the window its ledger (`knownGens`) names as of the restore, and a row repaired by hand names none: the
   first load that publishes over it writes the window a count by `keep` keeps from the bucket, the generation the row
-  named as current first and then the newest by number. From then on each load keeps that window, and the load that
-  passes the strays lists the segment and deletes every generation below its pointer that the window does not name, the
-  strays among them.
+  named as current first and then the newest by number. From then on each load draws its window from the ledger, the
+  `keep` most recently current generations, and the load that passes the strays lists the segment and deletes every
+  generation below its pointer that the ledger does not name, the strays among them.
 
   The re-runs that number below the strays are generations below the pointer too, so by the time the pointer passes
   the strays every number from the restored pointer to the highest stray can be there. With generations 0 and 1 from

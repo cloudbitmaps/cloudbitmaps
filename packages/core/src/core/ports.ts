@@ -535,7 +535,8 @@ export interface RegistryRecord extends SegmentRef {
    * include an object no load published (an orphan or a stray). An entry says the library knows the generation and its
    * footer checksum, not that a load published it. A generation appears once,
    * at its most recent time current (a rollback onto it moves it to the end). The entries before the last are the kept
-   * window, and what a rollback left; those numbered above `currentGen` are what a rollback left. In the clear on every
+   * window, the generations a live lease holds, and what a rollback left; those numbered above `currentGen` are what a
+   * rollback left. In the clear on every
    * row, an encrypted one included: a footer checksum of an encrypted object covers a random nonce and says nothing about
    * its count, size or content, but the entries above the pointer show anyone who reads the registry that a rollback
    * happened, and from which generation.
