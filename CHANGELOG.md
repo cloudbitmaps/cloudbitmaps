@@ -59,6 +59,20 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **The default `checkConsistency` makes one object-store request per healthy segment, and lists only one it cannot
+  confirm.** It asks whether a segment's current object is there with a zero-length tail read (a `HEAD` on S3, a
+  metadata request on GCS, a properties request on Azure Blob) where it listed all of the segment's objects. With `summaries: true` and a clear summary on the
+  row, the open's own tail read is the answer, so the segment costs the open alone (one request on S3 and GCS, two on
+  Azure Blob, and one more for an index longer than the tail read) where it cost a listing as well. A sealed summary, or one that is not used, is asked about first, as before. When the zero-length read fails in
+  any way, or the open fails before its first read answered, the segment's listing decides and its own error is the
+  segment's, so a missing object, a missing bucket and a failing store are reported as they were, and an object that
+  goes mid-open is still an error of the segment. One result differs: a store that answers reads but refuses listings
+  (an identity without list permission, or a listing-only outage) now reports each object that is there as present,
+  where every segment was reported errored. Per million segments on S3 the default check costs $0.40 where it cost
+  $5.00 for the listings. A guarded load and the summary check take the current size from the reader's `count()`, the
+  figure its open already holds, instead of building and adding a map of every chunk's cardinality: 3.7 ms of CPU a
+  call on a segment of 65,536 chunks, measured. The results and the errors are otherwise unchanged.
+
 - **Listing a wide segment's chunk keys costs a fraction of what it did.** A read that lists a segment's keys (`iterate`
   and its pages, the operand of a combine, `count`'s fallback) built the list through `Array.from`, ran the range test
   through `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the list in a

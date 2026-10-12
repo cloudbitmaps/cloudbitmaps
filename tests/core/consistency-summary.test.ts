@@ -8,7 +8,7 @@ import { counting } from '../helpers/counting';
 
 /**
  * `checkConsistency({ summaries: true })` holds each row's summary against its object and reports `summary-mismatch`
- * where they differ. It opens objects only when asked: the default check lists, as it always did. A sealed summary is
+ * where they differ. It opens objects only when asked: the default check only looks for them. A sealed summary is
  * held against its object when the store has the key, and is counted as unchecked when it does not.
  */
 
@@ -28,18 +28,20 @@ function world(encrypted: boolean) {
 }
 
 describe('checkConsistency with summaries', () => {
-  it('a coherent store reports nothing, and the default check opens no object', async () => {
+  it('a coherent store reports nothing, and the default check only looks for the object', async () => {
     const w = world(false);
     await w.store.load(SEG, [1, 2, 3], { metadata: { a: 1 } });
     const plain = await runConsistencyCheck({ storage: w.storage, registry: w.registry });
     expect(plain).toEqual({ checked: 1, inconsistent: [], errored: [] });
-    expect(w.calls.getTail ?? 0).toBe(0);
+    // One zero-length tail read, which proves the object is there and opens nothing.
+    expect(w.calls.getTail).toBe(1);
     const deep = await runConsistencyCheck(
       { storage: w.storage, registry: w.registry },
       { summaries: true },
     );
     expect(deep).toEqual({ checked: 1, inconsistent: [], errored: [], summariesUnchecked: 0 });
-    expect(w.calls.getTail).toBe(1);
+    // The open's own tail read is the only one more: it answers whether the object is there as well.
+    expect(w.calls.getTail).toBe(2);
   });
 
   it('a row whose count or metadata differs from its object is a summary-mismatch', async () => {
