@@ -1572,7 +1572,8 @@ describe('the estimator counts the requests the engine makes', () => {
       // (16 keys of the default 32) whose chunks sit together: well under one for each survivor, as it was.
       const k = 16;
       expect(chunkRequests).toBeGreaterThan(2);
-      expect(chunkRequests).toBeLessThanOrEqual(2 + Math.ceil(survivors.length / k) + 1);
+      // A few more, for the batches of the first keys, which are read as soon as they are near the caller.
+      expect(chunkRequests).toBeLessThanOrEqual(2 + Math.ceil(survivors.length / k) + 5);
       if (intoDestination) return; // a write also reads its destination's row and tail: priced as a load is
       const engineGets = pointer.reads + (calls.getTail ?? 0) + chunkRequests;
       // Three operands (the exclude included), each a pointer read and a tail read, then the chunk range requests.

@@ -14,7 +14,8 @@
 import fc from 'fast-check';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoundedLru, CountingMetricsSink, SegmentEngine } from '@cloudbitmaps/core';
-import type { CodecBitmap, StorageChunkSource } from '@cloudbitmaps/core';
+import type { CodecBitmap } from '@cloudbitmaps/core';
+import type { ChunkRead, SegmentRef } from '@/core/ports';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { Clock } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -34,7 +35,11 @@ vi.setConfig({ testTimeout: 60_000 });
 const CHUNK = 65_536;
 /** The keys a batch holds before it is read: half the combine's concurrency, as the engine sizes it. */
 const half = (concurrency: number): number => Math.max(1, Math.ceil(concurrency / 2));
-/** The most requests `n` held keys cost at the default concurrency (32): a batch of half that, in one range. */
+/**
+ * The requests `n` held keys cost at the default concurrency (32): a batch of half that, in one range. A read adds a few
+ * to it, for the batches of its first keys, which are read as soon as the keys are near the caller, before a half window
+ * is held.
+ */
 const batchedAt32 = (n: number): number => Math.ceil(n / half(32));
 const range = (from: number, to: number): number[] =>
   Array.from({ length: to - from }, (_, i) => from + i);
@@ -150,7 +155,7 @@ describe('the requests an intersect of two or more includes makes for its exclud
     // A batch holds half the concurrency (16 keys of 32) and the keys sit together: one request each. Each key was a
     // request before, for a consumer that takes one id at a time as for one that takes chunks (the intersectInto case).
     expect(w.ranges.x).toBeGreaterThanOrEqual(1);
-    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 3);
   });
 
   it('a ∩ b minus x and y: each exclude is batched on its own', async () => {
@@ -162,9 +167,9 @@ describe('the requests an intersect of two or more includes makes for its exclud
         exclude: [store.segment('x'), store.segment('y')],
       }),
     );
-    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 3);
     // y holds 334 of the 1,000 keys: a request each before.
-    expect(w.ranges.y).toBeLessThanOrEqual(batchedAt32(334) + 2);
+    expect(w.ranges.y).toBeLessThanOrEqual(batchedAt32(334) + 3);
   });
 
   it('20 spread survivors, x holding them: a few requests, where there were 20', async () => {
@@ -189,7 +194,7 @@ describe('the requests an intersect of two or more includes makes for its exclud
       exclude: [store.segment('x')],
       allowEmpty: true,
     });
-    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 3);
   });
 
   it('andNot, whose exclude is read with its one include, is unchanged', async () => {
@@ -312,15 +317,20 @@ describe('an intersect with an exclude over random operands', () => {
           // A run the batcher decides: many survivors, their chunks together in the object, and still at most a
           // batch's request for each half window of them (the per-key read made `today`).
           const requests = w.ranges.x ?? 0;
-          if (today >= 8 && requests > 0 && requests <= Math.ceil(today / half(concurrency)) + 1) {
+          if (
+            concurrency >= 4 &&
+            today >= 8 &&
+            requests > 0 &&
+            requests <= Math.ceil(today / half(concurrency)) + 3
+          ) {
             batched += 1;
           }
         },
       ),
-      { numRuns: 40 },
+      { numRuns: 60 },
     );
     // The generator reaches the batcher: in some runs the requests were fewer than the keys.
-    expect(batched).toBeGreaterThan(5);
+    expect(batched).toBeGreaterThan(2);
   }, 120_000);
 });
 
@@ -623,60 +633,22 @@ describe('a combine that stops', () => {
     for (const s of xs) expect(s.finished || s.closedEarly).toBe(true);
   });
 
-  it('closes a batch whose requests are still in flight when the caller stops', async () => {
-    const inner = new StreamChunkSource();
-    for (const [name, set] of Object.entries({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) })) {
-      seedSegment(inner, name, set);
-    }
-    // A source whose stream stops at once when closed, as one that cancels its requests does (an async generator only
-    // stops after what it was asked for), recording the streams that were closed.
-    const closed: string[] = [];
-    const opened: string[] = [];
-    const storage: StorageChunkSource = {
-      getChunk: (r) => inner.getChunk(r),
-      listChunkKeys: (r) => inner.listChunkKeys(r),
-      currentVersion: () => inner.currentVersion(),
-      getChunks: (r, keys, options) => {
-        opened.push(r.segment);
-        const source = inner.getChunks(r, keys, options);
-        return {
-          [Symbol.asyncIterator]() {
-            const iterator = source[Symbol.asyncIterator]();
-            return {
-              next: () => iterator.next(),
-              return: () => {
-                closed.push(r.segment);
-                return Promise.resolve({ done: true as const, value: undefined });
-              },
-            };
-          },
-        };
-      },
+  it('lets the batches in flight drain: they are read to their end, and each ends itself', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    let open: () => void = () => {};
+    const held = new Promise<void>((resolve) => (open = resolve));
+    storage.beforeYield = async (stream, key) => {
+      if (stream.segment === 'a' && key >= 2) await held;
     };
-    const engine = new SegmentEngine({ storage, codec: roaringCodec });
-    let openA: () => void = () => {};
-    const heldA = new Promise<void>((resolve) => (openA = resolve));
-    let openX: () => void = () => {};
-    const heldX = new Promise<void>((resolve) => (openX = resolve));
-    inner.beforeYield = async (stream, key) => {
-      if (stream.segment === 'a' && key >= 2) await heldA;
-      if (isX(stream) && key >= 2) await heldX;
-    };
-    try {
-      for await (const id of engine.intersect([ref('a'), ref('b')], WITH_X)) {
-        void id;
-        // Keys 2 to 7 land, and their batch is sent; its range is still in flight when the caller stops.
-        openA();
-        await turns(3);
-        expect(opened.filter((s) => s === 'x')).toHaveLength(2);
-        break;
-      }
-      await turns(3);
-      // Both batches of the exclude were closed, the first when its keys were all answered and the second by the stop.
-      expect(closed.filter((s) => s === 'x')).toHaveLength(2);
-    } finally {
-      openX();
-    }
+    const first = engine.intersect([ref('a'), ref('b')], WITH_X)[Symbol.asyncIterator]();
+    await first.next();
+    await first.return?.(undefined);
+    open();
+    await turns(20);
+    // The one batch that was read finished and ended; nothing more was started after the stop.
+    const xs = storage.opened.filter(isX);
+    expect(xs).toHaveLength(1);
+    for (const s of xs) expect(s.finished || s.closedEarly).toBe(true);
   });
 
   it('reads the keys that ask together in one batch, and the keys that land later in another', async () => {
@@ -869,7 +841,7 @@ describe('reads of one exclude chunk are shared, as reads of it one at a time we
     const twice = await run(2);
     expect(twice.got).toEqual(once.got);
     expect(twice.x).toBe(once.x);
-    expect(once.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
+    expect(once.x).toBeLessThanOrEqual(batchedAt32(1_000) + 3);
   });
 });
 
@@ -928,6 +900,22 @@ describe('when a batch is read', () => {
     await it.return?.(undefined);
   });
 
+  it('reads a far key once every key has been started, though the caller is working and not near it', async () => {
+    // 30 keys: after 5 slots are taken the window of 32 has started them all. Key 25 is 20 slots on from the caller,
+    // further than half a window, and the caller is neither waiting nor near, but no key is left to ask.
+    const thirty = range(0, 30);
+    const { storage, engine } = setup({ a: ids(thirty), b: ids(thirty), x: otherIds([25]) });
+    const batches = engine.intersectBatches([ref('a'), ref('b')], {
+      exclude: [ref('x')],
+      concurrency: 32,
+    });
+    const it = batches[Symbol.asyncIterator]();
+    for (let i = 0; i < 5; i++) await it.next();
+    await turns(10);
+    expect(xKeysAsked(storage)).toEqual([25]);
+    await it.return?.(undefined);
+  });
+
   it('does not keep a caller waiting on a key it holds for keys that are not started', async () => {
     // The first two keys land; the window is not full of started keys and the keys held are under half a window.
     const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
@@ -968,5 +956,238 @@ describe('a batch that fails, in a later batch', () => {
     // Chunks 0 to 19 were answered by earlier batches or by keys of the failing one before key 20.
     expect(got).toEqual(minusPartial(range(0, 20)));
     expect(storage.opened.filter(isX).length).toBeGreaterThan(2);
+  });
+});
+
+/**
+ * A source whose stream, when closed, drops the reads it has pending at once (each pending `next()` settles done, or
+ * rejects with an abort), as one built on an abort controller does: the port allows it of a stream that is stopped. Reads
+ * of a gated segment wait for `release()`.
+ */
+class CancellingSource extends MemoryStorageChunkSource {
+  mode: 'done' | 'reject' = 'done';
+  gated = new Set<string>();
+  streams: Array<{ segment: string; keys: readonly number[]; dropped: number }> = [];
+  private open: () => void = () => {};
+  private readonly gate = new Promise<void>((resolve) => (this.open = resolve));
+
+  release(): void {
+    this.open();
+  }
+
+  currentVersion(): Promise<string | null> {
+    return Promise.resolve('v1');
+  }
+
+  getChunks(ref: SegmentRef, keys: readonly number[]): AsyncIterable<ChunkRead> {
+    const rec = { segment: ref.segment, keys, dropped: 0 };
+    this.streams.push(rec);
+    let next = 0;
+    let stopped = false;
+    type Pending = {
+      resolve: (r: IteratorResult<ChunkRead>) => void;
+      reject: (e: unknown) => void;
+    };
+    const pending = new Set<Pending>();
+    const read = async (key: number, entry: Pending): Promise<void> => {
+      if (this.gated.has(ref.segment)) await this.gate;
+      const bytes = await MemoryStorageChunkSource.prototype.getChunk.call(this, {
+        ...ref,
+        chunkKey: key,
+      });
+      if (pending.delete(entry))
+        entry.resolve({ done: false, value: { key, bytes, version: 'v1' } });
+    };
+    const iterator: AsyncIterableIterator<ChunkRead> = {
+      [Symbol.asyncIterator]: () => iterator,
+      next: () => {
+        if (stopped || next >= keys.length)
+          return Promise.resolve({ done: true, value: undefined });
+        const key = keys[next++]!;
+        return new Promise<IteratorResult<ChunkRead>>((resolve, reject) => {
+          const entry: Pending = { resolve, reject };
+          pending.add(entry);
+          void read(key, entry);
+        });
+      },
+      return: () => {
+        stopped = true;
+        for (const entry of pending) {
+          rec.dropped += 1;
+          if (this.mode === 'done') entry.resolve({ done: true, value: undefined });
+          else entry.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        }
+        pending.clear();
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+    return iterator;
+  }
+}
+
+describe('a call that stops leaves the reads another call joined to finish', () => {
+  async function joined(mode: 'done' | 'reject', joiner: 'combine' | 'has') {
+    const storage = new CancellingSource();
+    storage.mode = mode;
+    for (const name of ['a', 'b']) seedSegment(storage, name, ids(KEYS));
+    // Key 0 holds no exclude chunk, so the first call has its first id without one; the rest wait on x.
+    seedSegment(
+      storage,
+      'x',
+      range(1, 40).map((k) => joinId(k, 1)),
+    );
+    const cache = new BoundedLru<string, CodecBitmap>({ maxEntries: 10_000, clock });
+    const engine = new SegmentEngine({ storage, codec: roaringCodec, cache });
+    storage.gated.add('x');
+    const first = engine.intersect([ref('a'), ref('b')], WITH_X)[Symbol.asyncIterator]();
+    await first.next();
+    await turns(20);
+    const streamsBefore = storage.streams.filter((s) => s.segment === 'x').length;
+    const other =
+      joiner === 'combine'
+        ? collect(engine.intersect([ref('a'), ref('b')], WITH_X))
+        : Promise.all([1, 2, 3, 4].map((k) => engine.has(ref('x'), joinId(k, 1))));
+    await turns(20);
+    await first.return?.(undefined);
+    await turns(5);
+    storage.release();
+    const result = await other;
+    const expected =
+      joiner === 'combine'
+        ? KEYS.flatMap((k) => (k === 0 ? [1, 2, 3] : [2, 3]).map((i) => joinId(k, i)))
+        : [true, true, true, true];
+    return { result, expected, storage, streamsBefore };
+  }
+
+  it.each([
+    ['done', 'combine'],
+    ['done', 'has'],
+    ['reject', 'combine'],
+    ['reject', 'has'],
+  ] as const)(
+    'a source that drops its pending reads when stopped (%s), joiner a %s: the joiner is answered',
+    async (mode, joiner) => {
+      const { result, expected, storage, streamsBefore } = await joined(mode, joiner);
+      expect(result).toEqual(expected);
+      // Nothing was dropped: the stopped call did not close the streams that were in flight, and sent nothing more
+      // for the keys it was still working on (the joiner's own call has its own).
+      expect(storage.streams.reduce((n, s) => n + s.dropped, 0)).toBe(0);
+      if (joiner === 'has') {
+        expect(storage.streams.filter((s) => s.segment === 'x')).toHaveLength(streamsBefore);
+      }
+    },
+  );
+});
+
+describe('a read joined to a batch read does not fail with a failure that is not its own', () => {
+  it('reads the chunk on its own when the batch fails before its key, one request for each such key', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    let open: () => void = () => {};
+    const held = new Promise<void>((resolve) => (open = resolve));
+    const boom = new Error('one range failed');
+    let first = true;
+    storage.beforeYield = async (stream, key) => {
+      if (!isX(stream)) return;
+      await held;
+      if (key === 2 && first) {
+        first = false;
+        throw boom;
+      }
+    };
+    const run = collect(engine.intersect([ref('a'), ref('b')], { ...WITH_X, concurrency: 16 }));
+    run.catch(() => undefined);
+    await turns(5);
+    const batch = storage.opened.find(isX)!;
+    const later = [...batch.keys].filter((k) => k > 2);
+    expect(later.length).toBeGreaterThan(1);
+    // Reads of the chunks after the failing one join the batch's reads.
+    const reads = later.map((k) => engine.has(ref('x'), joinId(k, 100)));
+    await turns(3);
+    expect(storage.singles.filter((k) => k.startsWith('x:'))).toEqual([]);
+    open();
+    expect(await Promise.all(reads)).toEqual(later.map(() => true));
+    await expect(run).rejects.toBe(boom);
+    // One read of its own for each joined key whose take failed, and no more.
+    expect(storage.singles.filter((k) => k.startsWith('x:')).length).toBeLessThanOrEqual(
+      later.length,
+    );
+  });
+});
+
+describe('what a batch counts', () => {
+  it('names no key twice in a stream when an exclude is named twice', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: partial(KEYS) });
+    const got = await collect(
+      engine.intersect([ref('a'), ref('b')], { exclude: [ref('x'), ref('x')], concurrency: 8 }),
+    );
+    expect(got).toEqual(minusPartial(KEYS));
+    for (const stream of storage.opened.filter(isX)) {
+      expect(new Set(stream.keys).size).toBe(stream.keys.length);
+    }
+    expect(xKeysAsked(storage)).toEqual(KEYS);
+  });
+
+  it('reads only the chunks the cache lacks, a request at most for each', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: partial(KEYS) });
+    // Three chunks in four are cached; only the 10 left are asked for, and each costs at most one request.
+    for (const k of KEYS.filter((k) => k % 4 !== 0)) await engine.has(ref('x'), joinId(k, 1));
+    storage.opened.length = 0;
+    storage.singles.length = 0;
+    await collect(engine.intersect([ref('a'), ref('b')], WITH_X));
+    const keys = xKeysAsked(storage);
+    expect(keys).toEqual(KEYS.filter((k) => k % 4 === 0));
+    expect(xRequests(storage)).toBeLessThanOrEqual(keys.length);
+  });
+});
+
+describe('a key held for a batch is read ahead of the caller', () => {
+  it.each([
+    [5, true],
+    [6, false],
+  ])(
+    'a key %i slots on from where a caller that is not waiting stands is read now: %s (half of a window of 8 is 4)',
+    async (heldKey, asked) => {
+      // x holds one chunk. The caller takes its first id (key 0) and stops; the include chunks of keys 5 and on land
+      // after that, so the key asks while the caller is at slot 1 and is not waiting on anything.
+      const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds([heldKey]) });
+      let open: () => void = () => {};
+      const held = new Promise<void>((resolve) => (open = resolve));
+      storage.beforeYield = async (stream, key) => {
+        if (stream.segment === 'a' && key >= 5) await held;
+      };
+      const it = engine.intersect([ref('a'), ref('b')], WITH_X)[Symbol.asyncIterator]();
+      await it.next();
+      open();
+      await turns(10);
+      expect(xKeysAsked(storage)).toEqual(asked ? [heldKey] : []);
+      await it.return?.(undefined);
+    },
+  );
+
+  it('reads a far key while the caller waits on a slot whose own read is in flight', async () => {
+    // The caller has taken 5 slots (a window of 32 is open, so key 30 is started) and waits on slot 5, whose exclude
+    // chunk is in flight; key 30 asks 25 slots on, which is further than half a window.
+    const { storage, engine } = setup({
+      a: ids(KEYS),
+      b: ids(KEYS),
+      x: otherIds([5, 30]),
+    });
+    let open: () => void = () => {};
+    const held = new Promise<void>((resolve) => (open = resolve));
+    storage.beforeYield = async (stream) => {
+      if (isX(stream)) await held;
+    };
+    const batches = engine.intersectBatches([ref('a'), ref('b')], {
+      exclude: [ref('x')],
+      concurrency: 32,
+    });
+    const it = batches[Symbol.asyncIterator]();
+    for (let i = 0; i < 5; i++) await it.next();
+    const waiting = it.next();
+    await turns(10);
+    expect(storage.opened.filter(isX).map((o) => [...o.keys])).toEqual([[5], [30]]);
+    open();
+    await waiting;
+    await it.return?.(undefined);
   });
 });

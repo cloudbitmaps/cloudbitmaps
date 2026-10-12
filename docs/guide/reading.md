@@ -605,8 +605,9 @@ chunk is known to be non-empty. A chunk the chunk cache holds, or another read h
 the cache's version check, or joining that read. A chunk that has to be requested is held with the others of its
 exclude and read with them as one stream of coalesced ranges, so a window of survivors costs about the requests its chunks
 span in the exclude's object, not one request each. Held chunks are read when half of `concurrency` of them are held (16 of
-32 by default), when the caller is waiting on one of them and no key has asked for 16 turns of the microtask queue, and when
-every key of the read has been started. A batch sends at most one request for each chunk it holds, each chunk is counted in
+32 by default); when no key has asked for 16 turns of the microtask queue and the caller is waiting on a slot, or the oldest
+held chunk is within half a window of the slot the caller is at (so a chunk is read at least that far ahead of a caller that
+works between chunks); and when every key of the read has been started. A batch sends at most one request for each chunk it holds, each chunk is counted in
 the cache's hits and misses, cached under the version it came from and checked against the segment's version as a chunk of
 an include is, and a segment named twice as an `exclude` is one batch. A source with no `getChunks`, and an `exclude`
 that has no generation, still read per key. A combine that stops sends no further batch, though the ranges of one already

@@ -69,13 +69,16 @@ so, and so do the module headers in the code.
   be requested are held and read as one stream of coalesced ranges, half of `concurrency` keys (16 of 32 by default) a
   batch, so a window of survivors costs about the requests its chunks span in the exclude's object. On the in-memory
   backend, 1,000 surviving keys of 250 ids each cost the exclude itself 1,000 range requests before and 63 now (the whole
-  intersect, with its two include ranges, 1,002 and 65), whether the ids are read one at a time or a chunk at a time; two
-  excludes of 1,000 and 334 keys cost 1,334 and 85 (1,336 and 87 in all), and 20 spread survivors 20 and 2. A batch sends at
+  intersect, with its two include ranges, 1,002 and 65) read a chunk at a time, and 65 to 125 (by how long a request
+  takes) read an id at a time; two excludes of 1,000 and 334 keys cost 1,334 and 85 (1,336 and 87 in all), and 20 spread
+  survivors 20 and 2. A batch sends at
   most one request for each key it holds, a segment named twice as an exclude is one batch, and a read of an exclude chunk
   that is in flight, by anything, is joined. A chunk is still read whole from one generation, cached under the version it
   was read from, counted once in the cache's hits and misses, and checked against the segment's version, and a running read
-  meets an exclude that gains an id as promptly as before. A batch covers ranges the way an include's stream does, so a
-  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: fewer requests, more bytes. A source with no
+  meets an exclude that gains an id as promptly as before, and a key it holds is read at least half a window ahead of
+  a consumer that works between chunks. A batch covers ranges the way an include's stream does, so a
+  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: 8 requests and 6,172,416 bytes where it was
+  32 and 262,656 (free inside the region, billed across regions). A source with no
   `getChunks`, and an exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to
   count the requests of this shape. No public signature changes.
 
@@ -314,7 +317,7 @@ so, and so do the module headers in the code.
   prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
   row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
   `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
-  `materializeMany` call, and 133,022 (126,066 range reads) as 1,000 `*Into` calls, whose excludes are read in batches. A publish that collects finishes a
+  `materializeMany` call, and 134,414 (127,458 range reads) as 1,000 `*Into` calls, whose excludes are read in batches. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
