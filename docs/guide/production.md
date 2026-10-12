@@ -332,7 +332,9 @@ const client = new S3Client({
 
 A combine reads each operand as a stream of ranges and keeps up to `concurrency` range requests per operand in flight
 (32 by default once its window has widened; it opens 4 wide): an `intersect` of two segments has up to 64 reads open,
-and an `andNot` against excludes up to 32 for the include plus 32 for each exclude read in the same round. Most reads need
+and an `andNot` against excludes up to 32 for the include plus 32 for each exclude read in the same round; an exclude
+of an `intersect` of two or more segments is read in batches whose requests never exceed the keys the window holds, so
+up to 32 more for each exclude. Most reads need
 far fewer: chunks that sit near each other are one range, so two segments whose shared chunks lie together are one
 request each. The client the store builds allows 128
 sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
@@ -493,7 +495,8 @@ hot path. An `iterate` or a combine that lists its keys again after a move
 with the chunk reads it has already taken, and throws `BudgetExceededError` at that key when the segment grew past the
 ceiling. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
 issue. For an `intersect` that is the surviving keys times the operands present at each, plus only those excludes
-that hold the key, so a large suppression list is not charged for keys it cannot affect. Bytes need no separate
+that hold the key, so a large suppression list is not charged for keys it cannot affect. An exclude read in batches
+(an `intersect` of two or more segments) is still charged a unit for each such key, though a batch sends fewer requests than it has keys. Bytes need no separate
 limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no
 payload: it answers from the row's summary, or from the index when the row has none it can use, so it approaches the ceiling only on a source that cannot serve cardinalities.
 

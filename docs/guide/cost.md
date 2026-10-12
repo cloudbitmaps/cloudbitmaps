@@ -137,6 +137,24 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
   one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
   at the default GET price, when the 100 shared chunks lie together and take one range each (measured on S3 in region: [the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made 6).
+  An `exclude` of an intersect of two or more segments is read in batches of the surviving keys it holds, half of
+  `concurrency` keys (16 of 32 by default) a batch. Where the survivors' chunks sit together in the exclude's object, 1,000
+  surviving keys cost the exclude itself 63 range requests, where it was 1,000, and the whole intersect 65, where it was
+  1,002 (counted on the in-memory backend with 250 ids a chunk, read a chunk at a time as `intersectInto` does; a consumer
+  that takes the ids one at a time makes smaller batches, 65 requests for the exclude with no storage latency and 125 at
+  20 ms a request). It never costs more than one request for each surviving key that holds a chunk of the exclude
+  that the cache lacks, and a chunk that is already being read is joined, not read again. A key whose intersection is empty
+  asks for nothing, so a large opt-out list costs requests only where the survivors reach it. A source with no `getChunks`,
+  and an `exclude` with no generation, still read per key, one request for each such key.
+  Count these with the others in `chunksPerIntersect`; an `andNot` and a union read an exclude's chunks with the
+  includes', as ranges of their own.
+  **A batch trades bytes for requests.** Survivors spread thinly through a dense exclude are read as parts of the same
+  ranges, as an include's chunks are (chunks within 256 KiB of each other, up to 1 MiB a request), so they cost fewer
+  requests and more bytes: with a survivor every 31 keys of an exclude of 1,000 chunks of 8 KiB, main made 32 requests for
+  262,656 bytes and a batch makes 8 to 10 for about 5.7 to 6.2 MB, by where its batches fall (at 25 ms a request and 100 MB/s
+  that is about 83 ms against 105 ms, about 27% longer). Inside the bucket's region S3 bills no bytes read, and the requests saved are
+  the saving; across regions the bytes are billed, and one request costs about what 20 KB of cross-region transfer does,
+  so such a shape can cost more. Limiting it needs a gap option on the chunk source, which this change does not add.
   A segment whose chunks all arrive with its tail read takes no range request: when the whole object fits the tail read and its
   chunks total at most the reader cache's share per reader (`cache.readerMaxBytes` over `cache.readerMax`, 64 KiB by default),
   the reader keeps them, so such an operand makes 2 GETs, its pointer and its tail, and a cold intersect of two of them 4 (counted

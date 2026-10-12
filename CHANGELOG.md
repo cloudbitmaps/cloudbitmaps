@@ -106,6 +106,25 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An `exclude` of an `intersect` or `intersectInto` of two or more segments is read in batches, not one request
+  for each surviving key.** A key whose intersection is empty still never reads its exclude chunk. A chunk the cache
+  holds, or another read has in flight, is read as before (the version check, or joining that read); the chunks that must
+  be requested are held and read as one stream of coalesced ranges, half of `concurrency` keys (16 of 32 by default) a
+  batch, so a window of survivors costs about the requests its chunks span in the exclude's object. On the in-memory
+  backend, 1,000 surviving keys of 250 ids each cost the exclude itself 1,000 range requests before and 63 now (the whole
+  intersect, with its two include ranges, 1,002 and 65) read a chunk at a time, and 65 to 125 (by how long a request
+  takes) read an id at a time; two excludes of 1,000 and 334 keys cost 1,334 and 85 (1,336 and 87 in all), and 20 spread
+  survivors 20 and 2. A batch sends at
+  most one request for each key it holds, a segment named twice as an exclude is one batch, and a read of an exclude chunk
+  that is in flight, by anything, is joined. A chunk is still read whole from one generation, cached under the version it
+  was read from, counted once in the cache's hits and misses, and checked against the segment's version, and a running read
+  meets an exclude that gains an id as promptly as before, and a key it holds is read at least half a window ahead of
+  a consumer that works between chunks. A batch covers ranges the way an include's stream does, so a
+  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: 8 to 10 requests and about 5.7 to 6.2 MB, by
+  where its batches fall, where it was 32 and 262,656, and about 27% longer at 25 ms a request and 100 MB/s (free inside
+  the region, billed across regions). A source with no
+  `getChunks`, and an exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to
+  count the requests of this shape. No public signature changes.
 - **The disaster-recovery guide's strays table changes.** A load over a row with no usable ledger (a registry repaired by
   hand, a pointer moved down by hand, a row restored without its ledger) lists the bucket and writes the window a count by
   `keep` keeps, then collects as it did over a row that recorded one. After a restore to pointer 1 with generations 0 and
@@ -291,7 +310,7 @@ so, and so do the module headers in the code.
   `materializeMany` with `pin: false` keep the keys they listed. Looking makes no request, with one exception: a combine
   with an `exclude` or a union that runs past `cache.genTtlMs` makes the pointer read of a refresh, once per
   `cache.genTtlMs`, for an operand it no longer reads. A look waits for its lookups, so a combine's streams can group
-  its chunks into ranges a little differently: counted on the in-memory batch benchmark, where nothing moves, the
+  its chunks into ranges a little differently: counted on the in-memory batch benchmark at that change, where nothing moves, the
   `*Into` route makes 19,761 range reads where it made 19,785 in one shape, and 137,089 where it made 137,037 in the
   refresh-shaped one. A read that lists its keys again is charged to the per-op budget again, with what it has already
   taken, and throws `BudgetExceededError` when a segment grew past it; the ranges a move requests again are not charged
@@ -347,7 +366,7 @@ so, and so do the module headers in the code.
   prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
   row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
   `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
-  `materializeMany` call, and 144,045 (137,089 range reads) as 1,000 `*Into` calls. A publish that collects finishes a
+  `materializeMany` call, and 134,414 (127,458 range reads) as 1,000 `*Into` calls, whose excludes are read in batches. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through

@@ -202,7 +202,13 @@ export interface Workload {
    * bytes the needed chunks span in each object: two segments sharing 100 chunks that sit side by side make one request
    * of each, `2`; the same 100 spread over each object make as many as it takes to cover most of the object, a
    * request per MiB, and read most of its bytes. Count it by running the engine over a layout of your own, as
-   * `bench/range-counts.cjs` does, or take it as one request per MiB the shared chunks span, per operand. The model adds each operand's pointer and index reads itself (see
+   * `bench/range-counts.cjs` does, or take it as one request per MiB the shared chunks span, per operand. An `exclude`
+   * of an intersect of two or more segments is read in batches of the surviving keys it holds, half of the combine's
+   * `concurrency` (16 of 32 by default) a batch, so it adds about one request for each batch whose chunks sit together in
+   * the object, and never more than one for each surviving key that holds a chunk of it the cache lacks (1,000 survivors:
+   * 63 requests, where it was 1,000). A source with no `getChunks`, and an exclude with no generation, still read it per
+   * key. An `andNot`, a union with an `exclude`, and an intersect of one segment read the exclude with the includes, as a
+   * range request for each run of its chunks that sit together, like an include's. The model adds each operand's pointer and index reads itself (see
    * {@link Workload.operandsPerIntersect}), so count chunk requests only. One more GET per operand whose index
    * outgrows the reader's tail read (256 KiB by default), which then reads the index whole, belongs here too, and so
    * does a pointer re-read by an intersect slow enough to outlive {@link Workload.genTtlMs}.
