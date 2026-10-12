@@ -17,7 +17,8 @@ import { incarnationField } from './token';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
-import { type ChurnDeps, leaseChurn } from './leases';
+import { casRetry } from './cas-retry';
+import type { ChurnDeps } from './leases';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateUserNamespace, validateUserRef } from './validate';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
@@ -547,47 +548,43 @@ async function shredSegment(
 ): Promise<Shred | null> {
   const { allowCleartext, op = 'destroySegment', sweep } = options;
   const base = { segment: ref.segment, namespace: ref.namespace };
-  // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
-  // to a lease write is waited out and costs none, up to the churn bound.
-  const churn = leaseChurn(deps);
-  let lost: RegistryRecord | undefined;
-  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-    let record = await deps.registry.get(ref);
-    if (lost !== undefined) {
-      // Waited out first, then read again: the CAS below is made against a row one round trip old, not one wait old.
-      const settled = await churn.settle(lost, record, () => deps.registry.get(ref));
-      if (settled !== undefined) {
-        record = settled.row;
-        attempt -= 1;
+  // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: `casRetry`
+  // waits out a race lost to a lease write without using an attempt, up to the churn bound.
+  return casRetry(
+    deps,
+    ref,
+    {
+      attempts: MAX_CAS_ATTEMPTS,
+      contention: () =>
+        new WriteConflictError(`${op}: contention shredding "${ref.segment}" — retry`),
+    },
+    async (record) => {
+      // A sweep retires only the row it judged expired: one purged or destroyed meanwhile is not its to claim, and one
+      // whose policy changed is not expired any more.
+      if (
+        sweep !== undefined &&
+        (record === null || record.status === 'destroyed' || !sweep.wanted(record))
+      ) {
+        return null;
       }
-    }
-    // A sweep retires only the row it judged expired: one purged or destroyed meanwhile is not its to claim, and one
-    // whose policy changed is not expired any more.
-    if (
-      sweep !== undefined &&
-      (record === null || record.status === 'destroyed' || !sweep.wanted(record))
-    ) {
-      return null;
-    }
-    if (record === null) {
-      // No authoritative row → nothing to crypto-shred.
-      return { ...base, destroyed: false, cryptoShredded: false, reason: 'absent' };
-    }
-    if (record.status === 'destroyed') {
-      return {
-        ...base,
-        destroyed: true,
-        cryptoShredded: false,
-        reason: 'already',
-        token: record.token,
-      };
-    }
-    const encrypted = record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
-    if (!encrypted && !allowCleartext) {
-      return { ...base, destroyed: false, cryptoShredded: false, reason: 'cleartext' };
-    }
-    const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
-    try {
+      if (record === null) {
+        // No authoritative row → nothing to crypto-shred.
+        return { ...base, destroyed: false, cryptoShredded: false, reason: 'absent' };
+      }
+      if (record.status === 'destroyed') {
+        return {
+          ...base,
+          destroyed: true,
+          cryptoShredded: false,
+          reason: 'already',
+          token: record.token,
+        };
+      }
+      const encrypted = record.wrappedDeks !== undefined && record.wrappedDeks.length > 0;
+      if (!encrypted && !allowCleartext) {
+        return { ...base, destroyed: false, cryptoShredded: false, reason: 'cleartext' };
+      }
+      const unmarked = sweep === undefined ? withoutSweepMark(record.retention) : null;
       const tombstone = await deps.registry.compareAndSwap(ref, record.token, {
         status: 'destroyed',
         wrappedDeks: undefined, // ← the crypto-shred: the only copy of the DEK wrappings is gone
@@ -608,11 +605,6 @@ async function shredSegment(
       // A genuine crypto-shred only when there were wrappings to drop; a cleartext opt-in tombstone leaves the
       // Storage bytes readable, so it is not an irreversible destruction (and does not emit `segment.erase`).
       return { ...base, destroyed: true, cryptoShredded: encrypted, token: tombstone.token };
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-      // A concurrent publish or policy write advanced the row — re-read and shred again.
-      lost = record;
-    }
-  }
-  throw new WriteConflictError(`${op}: contention shredding "${ref.segment}" — retry`);
+    },
+  );
 }
