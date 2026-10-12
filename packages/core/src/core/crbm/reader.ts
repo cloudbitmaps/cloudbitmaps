@@ -571,6 +571,47 @@ export class CrbmReader {
     return -1;
   }
 
+  /**
+   * {@link slotOf} for a key at or after the one that held slot `at`, which a walk over ascending keys has: the slot
+   * itself or the next are tried first, so a read of nearly every chunk costs no search.
+   */
+  private slotFrom(chunkKey: number, at: number): number {
+    const keys = this.index.keys;
+    if (keys[at] === chunkKey) return at;
+    if (keys[at + 1] === chunkKey) return at + 1;
+    let lo = at;
+    let hi = keys.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const k = keys[mid]!;
+      if (k === chunkKey) return mid;
+      if (k < chunkKey) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return -1;
+  }
+
+  /**
+   * The extents of the chunks `chunkKeys` name that this generation holds, in key order, each once (a key given twice
+   * is read once). A walk, so nothing is looked up until the plan pulls it.
+   */
+  private *neededExtents(chunkKeys: readonly number[]): Generator<ChunkExtent> {
+    let at = 0;
+    let previous = -1;
+    for (const key of chunkKeys) {
+      if (key === previous) continue;
+      previous = key;
+      const slot = this.slotFrom(key, at);
+      if (slot < 0) continue;
+      at = slot;
+      yield {
+        key: this.index.keys[slot]!,
+        offset: this.index.offsets[slot]!,
+        length: this.index.lengths[slot]!,
+      };
+    }
+  }
+
   has(chunkKey: number): boolean {
     return this.slotOf(chunkKey) >= 0;
   }
@@ -663,10 +704,13 @@ export class CrbmReader {
    * as {@link getChunk} answers for an absent key. A key given twice is read once and answered at both positions with
    * the same view.
    *
-   * The whole key list is planned once, up front, against this one generation's index. The ranges then run through a
-   * window of `options.concurrency` reads ({@link MAX_RANGES_IN_FLIGHT} by default) that counts a range until the
-   * consumer has taken it, so a stream never holds more than that many ranges, in flight or landed, however many keys
-   * it was given or how slowly it is read; with `options.ramp` the window opens 1, 2, 4 … wide. A range is at most 1 MiB
+   * The key list is planned against this one generation's index ({@link planChunkReads}), as a walk the window pulls
+   * from only as it opens a range, so a stream that stops early has planned little: the same ranges, in the same
+   * order, as a plan of the whole list would make, and each chunk's extent is checked before the range that carries
+   * it is requested. The ranges run through a window of `options.concurrency` reads ({@link MAX_RANGES_IN_FLIGHT} by
+   * default) that counts a range until the consumer has taken it, so a stream never holds more than that many ranges,
+   * in flight or landed, however many keys it was given or how slowly it is read; with `options.ramp` the window opens
+   * 1, 2, 4 … wide. A range is at most 1 MiB
    * unless it is one chunk, which is at most the payload cap, so the bound is that many times the per-chunk cap
    * (1 MiB, and 28 bytes more for an encrypted chunk). Nothing is read until the first item is asked for, and a
    * consumer that stops launches no more: ranges already in flight finish and are dropped, and a failure of one of
@@ -727,14 +771,10 @@ export class CrbmReader {
     if (typeof ramp === 'number') requirePositiveInteger(ramp, 'ramp');
     const readRange = options.readRange ?? (<T>(read: () => Promise<T>): Promise<T> => read());
     const now = options.now ?? ((): number => 0);
-    const slots = chunkKeys.map((key) => this.slotOf(key));
-    const needed = [...new Set(slots.filter((slot) => slot >= 0))];
-    const extents: ChunkExtent[] = needed.map((slot) => ({
-      key: this.index.keys[slot]!,
-      offset: this.index.offsets[slot]!,
-      length: this.index.lengths[slot]!,
-    }));
-    const reads = planChunkReads(extents, { start: PAYLOAD_START, end: this.payloadEnd });
+    const reads = planChunkReads(this.neededExtents(chunkKeys), {
+      start: PAYLOAD_START,
+      end: this.payloadEnd,
+    });
     let closed = false;
     const report = (bytes: number, ms: number): void => {
       try {
@@ -743,13 +783,12 @@ export class CrbmReader {
         // A sink that throws must not fail a read, or a range nobody is waiting for.
       }
     };
-    const window = new ChunkWindow<{ bytes: Uint8Array }>(
-      reads.map((_, i) => i),
-      async (i) => {
-        const read = reads[i]!;
+    const window = new ChunkWindow<LandedRange, PlannedRead>(
+      reads,
+      async (read) => {
         const held = this.keptRange(read.offset, read.length);
         // Nothing is sent, so nothing is reported: `onRequest` hears of requests.
-        if (held !== undefined) return { bytes: held };
+        if (held !== undefined) return { read, bytes: held };
         const startedAt = now();
         let sent = false;
         let moved = 0;
@@ -767,7 +806,7 @@ export class CrbmReader {
               `.crbm range [${read.offset}, +${read.length}) answered ${bytes.length} bytes, not the ${read.length} asked for`,
             );
           }
-          return { bytes };
+          return { read, bytes };
         } finally {
           // Every request that was sent is reported, whoever is left to want it.
           if (sent) report(moved, Math.max(0, now() - startedAt));
@@ -778,17 +817,19 @@ export class CrbmReader {
       typeof ramp === 'number' ? ramp : 1,
     );
     open.window = window;
-    let next = 0; // the next range to take
     // The range being handed out, and where in it. It is let go of with its last chunk, before the next range is
     // asked for, so a stream holds `width` ranges and not one more.
     const cur: { range: LandedRange | undefined; at: number } = { range: undefined, at: 0 };
     let last: Omit<ChunkRead, 'version'> | undefined;
     try {
+      let at = 0; // the slot of the last chunk handed out: the keys ascend, so the next is at or after it
       for (const [i, key] of chunkKeys.entries()) {
-        if (slots[i]! < 0) {
+        const slot = this.slotFrom(key, at);
+        if (slot < 0) {
           yield { key, bytes: null };
           continue;
         }
+        at = slot;
         if (last !== undefined && last.key === key) {
           yield { key, bytes: last.bytes };
           if (chunkKeys[i + 1] !== key) last = undefined;
@@ -797,16 +838,16 @@ export class CrbmReader {
         if (cur.range === undefined) {
           // No local names the landed range: a binding of this loop body lives as long as the generator's frame, and
           // would keep the range just consumed alive while the next one is awaited.
-          cur.range = { read: reads[next++]!, ...(await window.take()) };
+          cur.range = await window.take();
           cur.at = 0;
         }
         // Built by a call of its own and handed straight out, so no local of this loop keeps the chunk, or the range
         // it is a view into, alive while the consumer is slow.
         if (chunkKeys[i + 1] === key) {
-          last = this.nextChunk(cur, slots[i]!, key);
+          last = this.nextChunk(cur, slot, key);
           yield last;
         } else {
-          yield this.nextChunk(cur, slots[i]!, key);
+          yield this.nextChunk(cur, slot, key);
         }
       }
     } finally {

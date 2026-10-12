@@ -1475,15 +1475,23 @@ export class SegmentEngine {
     const getChunks = this.storage.getChunks!;
     let wanted = streamed.keys.slice(streamed.keys.indexOf(from));
     if (this.cache) {
-      const misses = [from];
+      const cache = this.cache;
+      const prefix = streamed.prefix;
+      // The keys the cache does not hold, built only once one is held: until then they are `wanted`'s own first keys.
+      let misses: number[] | undefined;
+      // A cache holding nothing cannot hold a key, so a first read in a process looks none up, and counts each a miss.
+      const empty = cache.size === 0;
       for (let i = 1; i < wanted.length; i++) {
         const chunkKey = wanted[i]!;
-        const hit = this.cache.get(this.chunkCacheKey({ ...seg, chunkKey }, gen));
-        if (!hit) misses.push(chunkKey);
+        const hit = empty ? undefined : cache.get(chunkKeyUnder(prefix, chunkKey, gen));
+        if (hit) misses ??= wanted.slice(0, i);
+        else misses?.push(chunkKey);
         if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
       }
-      if (misses.length < wanted.length) streamed.inStream = new Set(misses);
-      wanted = misses;
+      if (misses !== undefined) {
+        streamed.inStream = new Set(misses);
+        wanted = misses;
+      }
     }
     // Every range request the stream sends is reported, one `storage.get` each, when it settles: the ones a read took,
     // and the ones still in flight when it stopped, which are billed all the same.

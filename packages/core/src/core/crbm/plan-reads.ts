@@ -57,25 +57,26 @@ export interface ChunkRegion {
 
 /**
  * Plan the reads for `extents`: the needed chunks of one object, ascending by offset (the index lists chunks in key
- * order, which is object order), each at least a byte long, none overlapping another. The reads come back
- * ascending and disjoint, each covering one or more of the chunks, every chunk in exactly one read.
+ * order, which is object order), each at least a byte long, none overlapping another. The reads come out ascending
+ * and disjoint, each covering one or more of the chunks, every chunk in exactly one read.
+ *
+ * Lazy: the plan is a walk, so a consumer that takes the first reads pulls only the extents those reads cover (and
+ * the one after, which closes the last of them), and a plan over a very wide object costs nothing until it is read.
+ * Each extent is checked as the walk reaches it, before the read that would carry it is handed out, so no read ever
+ * covers an extent that was not checked; a plan taken to its end has checked them all. The reads are exactly the ones
+ * a plan made all at once would hold, in the same order.
  *
  * Throws {@link IntegrityError} for an extent that is not a pair of safe integers, or is outside `region`, or out of
  * order, or overlapping the one before it:
  * the index a plan is made from is untrusted bytes, and a read is never planned outside the chunk region.
  */
-export function planChunkReads(
-  extents: readonly ChunkExtent[],
+export function* planChunkReads(
+  extents: Iterable<ChunkExtent>,
   region: ChunkRegion,
-): readonly PlannedRead[] {
-  const reads: PlannedRead[] = [];
+): Generator<PlannedRead, void, undefined> {
   let chunks: ChunkExtent[] = [];
   let start = 0;
   let end = 0;
-  const flush = (): void => {
-    if (chunks.length > 0) reads.push({ offset: start, length: end - start, chunks });
-    chunks = [];
-  };
   let previousEnd = region.start;
   for (const extent of extents) {
     const extentEnd = extent.offset + extent.length;
@@ -99,11 +100,14 @@ export function planChunkReads(
       end = extentEnd;
       continue;
     }
-    flush();
+    if (chunks.length > 0) {
+      const done = chunks;
+      chunks = [];
+      yield { offset: start, length: end - start, chunks: done };
+    }
     chunks.push(extent);
     start = extent.offset;
     end = extentEnd;
   }
-  flush();
-  return reads;
+  if (chunks.length > 0) yield { offset: start, length: end - start, chunks };
 }

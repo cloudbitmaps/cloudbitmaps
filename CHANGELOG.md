@@ -59,6 +59,18 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A cold `iterate()` or combine on a wide segment sends its first request sooner.** A stream over a wide segment looked
+  up every chunk of the read in the cache, mapped every key to its index entry and planned every range of the whole key
+  list before it sent the first request, though it holds at most 32 ranges at once. The `.crbm` reader now plans as the
+  window opens ranges, so a read that stops early (a `break`, a page without a range) plans a few ranges rather than all of
+  them, and it finds each key's index entry by stepping on from the last rather than searching for it. Every extent is still
+  checked, in order, before the range that carries it is requested, and the index is still checked once at open, so a bad
+  index is refused when it was. The requests made, their order and the bytes read are unchanged. The chunk-cache scan at
+  open builds each key's cache key from the segment's kept prefix, and a cache that holds nothing, a process's first read,
+  looks no key up and counts each as the miss it is; every key is still counted once as a hit or a miss, and a chunk the
+  cache held at open is still looked up again when it is asked for. Measured on the in-memory driver, the first id of a
+  cold `iterate()` of a 65,536-chunk segment arrives in about a fifth of the time it did on an empty cache and about three
+  quarters of it where the cache holds other chunks; a read to its end takes no longer than it did.
 - **Listing a wide segment's chunk keys costs a fraction of what it did.** A read that lists a segment's keys (`iterate`
   and its pages, the operand of a combine, `count`'s fallback) built the list through `Array.from`, ran the range test
   through `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the list in a

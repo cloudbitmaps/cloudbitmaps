@@ -4,9 +4,16 @@ import { IntegrityError } from '@/core/errors';
 import {
   MAX_COALESCED_READ_BYTES,
   MAX_COALESCE_GAP_BYTES,
-  planChunkReads,
+  planChunkReads as planLazily,
 } from '@/core/crbm/plan-reads';
-import type { ChunkExtent, ChunkRegion } from '@/core/crbm/plan-reads';
+import type { ChunkExtent, ChunkRegion, PlannedRead } from '@/core/crbm/plan-reads';
+import { planAllAtOnce } from '../../helpers/plan-reference';
+
+/** The plan taken to its end. */
+const planChunkReads = (
+  extents: Iterable<ChunkExtent>,
+  region: ChunkRegion,
+): readonly PlannedRead[] => [...planLazily(extents, region)];
 
 const G = MAX_COALESCE_GAP_BYTES;
 const M = MAX_COALESCED_READ_BYTES;
@@ -192,6 +199,126 @@ describe('planChunkReads: cases', () => {
     ).toThrow(IntegrityError);
     expect(() => planChunkReads([{ key: 0, offset: 100, length: 0 }], region)).toThrow(
       IntegrityError,
+    );
+  });
+});
+
+describe('the lazy planner against the plan made all at once', () => {
+  type Outcome = { reads: readonly PlannedRead[] } | { error: string };
+  const run = (f: () => readonly PlannedRead[]): Outcome => {
+    try {
+      return { reads: f() };
+    } catch (e) {
+      expect(e).toBeInstanceOf(IntegrityError);
+      return { error: (e as Error).message };
+    }
+  };
+
+  /** Valid layouts, and ones with one extent made wrong in each way the planner refuses. */
+  const extentLists = shapes.chain((shape) => {
+    const { extents } = layout(shape);
+    if (extents.length === 0) return fc.constant(extents);
+    return fc.oneof(
+      { weight: 3, arbitrary: fc.constant(extents) },
+      {
+        weight: 2,
+        arbitrary: fc
+          .tuple(
+            fc.integer({ min: 0, max: extents.length - 1 }),
+            fc.constantFrom(
+              'overlap',
+              'zero',
+              'fraction',
+              'nan',
+              'unsafe',
+              'past-end',
+              'before-start',
+            ),
+          )
+          .map(([at, how]) => {
+            const bad = extents.map((e) => ({ ...e }));
+            const e = bad[at]!;
+            const previousEnd = at === 0 ? REGION.start : bad[at - 1]!.offset + bad[at - 1]!.length;
+            if (how === 'overlap') e.offset = previousEnd - 1;
+            else if (how === 'zero') e.length = 0;
+            else if (how === 'fraction') e.offset = e.offset + 0.5;
+            else if (how === 'nan') e.length = Number.NaN;
+            else if (how === 'unsafe') e.offset = 2 ** 53;
+            else if (how === 'past-end') e.length = REGION.end;
+            else e.offset = REGION.start - 1;
+            return bad;
+          }),
+      },
+    );
+  });
+
+  it('makes exactly the reads, in order, or raises exactly the error, for any extents', () => {
+    fc.assert(
+      fc.property(extentLists, (extents) => {
+        expect(run(() => planChunkReads(extents, REGION))).toEqual(
+          run(() => planAllAtOnce(extents, REGION)),
+        );
+      }),
+      { numRuns: 4000 },
+    );
+  });
+
+  it('hands out every read ahead of a bad extent, and never a read that covers one', () => {
+    fc.assert(
+      fc.property(extentLists, (extents) => {
+        const handed: PlannedRead[] = [];
+        try {
+          for (const read of planLazily(extents, REGION)) handed.push(read);
+        } catch {
+          // The reads handed out before the refusal are held to the checks below.
+        }
+        const refused = run(() => planAllAtOnce(extents, REGION));
+        if ('reads' in refused) {
+          expect(handed).toEqual(refused.reads);
+          return;
+        }
+        // A refused list: no handed read holds an extent the all-at-once planner would have refused, and those
+        // that were handed out are the plan of the extents before the refused one, less the read the refused one
+        // would have closed.
+        let good = 0;
+        for (; good < extents.length; good++) {
+          if (!('reads' in run(() => planAllAtOnce(extents.slice(0, good + 1), REGION)))) break;
+        }
+        const covered = handed.flatMap((r) => r.chunks);
+        expect(covered.length).toBeLessThanOrEqual(good);
+        expect(covered).toEqual(extents.slice(0, covered.length));
+        const before = planAllAtOnce(extents.slice(0, good), REGION);
+        expect(handed).toEqual(before.slice(0, handed.length));
+      }),
+      { numRuns: 2000 },
+    );
+  });
+
+  it('pulls only the extents the reads taken cover, and one more', () => {
+    fc.assert(
+      fc.property(shapes, fc.integer({ min: 0, max: 6 }), (shape, taken) => {
+        const { extents } = layout(shape);
+        let pulled = 0;
+        const counted = (function* () {
+          for (const e of extents) {
+            pulled += 1;
+            yield e;
+          }
+        })();
+        const walk = planLazily(counted, REGION);
+        const all = planAllAtOnce(extents, REGION);
+        const got: PlannedRead[] = [];
+        for (let i = 0; i < taken; i++) {
+          const step = walk.next();
+          if (step.done === true) break;
+          got.push(step.value);
+        }
+        expect(got).toEqual(all.slice(0, got.length));
+        const covered = got.reduce((n, r) => n + r.chunks.length, 0);
+        expect(pulled).toBeLessThanOrEqual(Math.min(extents.length, covered + 1));
+        expect(pulled).toBeGreaterThanOrEqual(covered);
+      }),
+      { numRuns: 1000 },
     );
   });
 });
