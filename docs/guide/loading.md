@@ -141,7 +141,7 @@ again and decides from what it holds:
 
 | The row, read again | The load |
 |---|---|
-| names this load's generation, over an object whose footer matches the one this load wrote | `published: true`: the write landed, and only its response was lost |
+| names this load's generation, over an object whose footer matches the one this load wrote | `published: true`: taken as the write having landed with only its response lost; another load's object with the same bytes passes this too (below) |
 | names this load's generation over an object whose footer does not match, or belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: nothing this load wrote is published |
 | has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. A load that found no row is refused by any row that appeared meanwhile, guarded or not |
 | is still as the write found it | the load sends a fresh compare-and-swap from the row it just read, after a wait on the store's clock: at most three, after under 500 ms, then 1 s, then 2 s. It is a new request, not a replay, and it carries the version the first one did, so the registry lets at most one of the two land. Each is settled by this same table. Still unanswered, the load throws the registry's own `TransientError` |
@@ -149,7 +149,7 @@ again and decides from what it holds:
 Whether the object under the row's pointer is the load's own is judged by its footer, never taken from the pointer and
 the incarnation alone. The footer names the object's bytes, not the load that wrote them: after an erasure deletes this
 load's object above the pointer, another load of the same cleartext ids can take the number, write the same bytes and
-publish, and this load then reports that publish as its own. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
+publish, and this load then reports that publish as its own. The same check runs after a write the registry refused as a conflict, since a client that re-sends a write can meet its own landed copy that way, so a load whose create or compare-and-swap was refused can report another load's identical publish as its own too, audit a `segment.publish` for it, and collect with its own `keep`, which can delete a generation the publishing load's kept list names. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
 
 **What a thrown `TransientError` leaves behind.** The object this load wrote stays, above the pointer, and nothing is

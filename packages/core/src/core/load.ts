@@ -665,7 +665,7 @@ async function runLoad(
    * a publish that may still land must not find its object gone.
    *
    * The object is durable and sits above `currentGen`, where collection never looks until a generation above it is
-   * current, so the refusal reclaims it here, and deletes only what one read shows holds the bytes it wrote. A
+   * current, so the refusal reclaims it here, and deletes only what the row it reads, or one read of the object's footer, says it wrote. A
    * generation number identifies a generation within one incarnation of a row, and nothing more (invariant 1): once the
    * row was purged, the object under this load's key can be another writer's, because a re-created name's numbering
    * restarts and its loads take numbers a drop or a collection freed, this one included. Deleting that would put a row
@@ -802,7 +802,7 @@ async function runLoad(
       // generation or onto a row `setRetention` made, and, where an erasure had already deleted this load's object
       // above that row's pointer, onto an object that is gone, so that every read of the segment would fail.
       ...(row === null ? { expectAbsent: true } : {}),
-      // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
+      // A registry write that fails without an answer, or meets a conflict, is reconciled by reading the row: the pointer at this number
       // is taken for this load's publish only over an object whose footer, read once, matches what this load wrote.
       holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
       // And the wait before a fresh write, when the first left the row as it was.
