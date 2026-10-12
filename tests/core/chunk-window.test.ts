@@ -112,3 +112,75 @@ describe('ChunkWindow', () => {
     expect(started.length).toBeLessThanOrEqual(11 + 16);
   });
 });
+
+describe('ChunkWindow over an iterator of reads', () => {
+  it('launches the same reads at the same widths as over the list, and pulls the iterator only as it opens a read', async () => {
+    for (const [ramp, max] of [
+      [false, 4],
+      [true, 8],
+      [true, 3],
+    ] as const) {
+      const fromList: number[] = [];
+      const fromIterator: number[] = [];
+      const list = Array.from({ length: 20 }, (_, i) => i * 7);
+      let pulled = 0;
+      const iterator = (function* () {
+        for (const k of list) {
+          pulled += 1;
+          yield k;
+        }
+      })();
+      const a = new ChunkWindow<number>(list, async (k) => (fromList.push(k), k), max, ramp);
+      const b = new ChunkWindow<number>(
+        iterator,
+        async (k) => (fromIterator.push(k), k),
+        max,
+        ramp,
+      );
+      for (let i = 0; i < list.length; i++) {
+        expect(await b.take()).toBe(await a.take());
+        expect(fromIterator).toEqual(fromList);
+        expect(pulled).toBe(fromIterator.length); // never a read ahead of what was launched
+      }
+    }
+  });
+
+  it('pulls nothing until the first take, and nothing past the window when the consumer stops', async () => {
+    let pulled = 0;
+    const iterator = (function* () {
+      for (let k = 0; k < 1_000; k++) {
+        pulled += 1;
+        yield k;
+      }
+    })();
+    const w = new ChunkWindow<number>(iterator, async (k) => k, 5, false);
+    expect(pulled).toBe(0);
+    await w.take();
+    expect(pulled).toBe(5);
+    await w.take();
+    expect(pulled).toBe(6);
+  });
+
+  it('raises what the iterator raises from the take that needed the read, and keeps the reads already launched', async () => {
+    const launched: number[] = [];
+    const iterator = (function* () {
+      yield 1;
+      yield 2;
+      throw new Error('the plan was refused');
+    })();
+    const w = new ChunkWindow<number>(iterator, async (k) => (launched.push(k), k), 4, false);
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+    expect(launched).toEqual([1, 2]);
+  });
+
+  it('raises the same error from every take after the iterator threw, rather than reading the spent iterator as done', async () => {
+    const iterator = (function* () {
+      yield 1;
+      throw new Error('the plan was refused');
+    })();
+    const w = new ChunkWindow<number>(iterator, async (k) => k, 4, false);
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+  });
+});

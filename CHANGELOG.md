@@ -59,6 +59,21 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A cold `iterate()` or combine on a wide segment sends its first request sooner.** A stream over a wide segment
+  looked up every chunk of the read in the cache, mapped every key to its index entry and planned every range of the
+  whole key list before it sent the first request, though it holds only a window of ranges at once (32 unless a
+  combine's `concurrency` sets another width). The `.crbm` reader now plans as the window opens ranges, so a read that
+  stops early (a `break`, a page without a range) plans a few ranges rather than all of them, and it finds each key's
+  index entry by stepping on from the last, searching only the entries after it when the key is not the next. Every
+  extent is still checked, in order, before the range that carries it is requested, and the index is still checked once
+  at open, so a bad index is refused when it was. The requests made, their order and the bytes read are unchanged. The
+  chunk-cache scan at open builds each key's cache key from the segment's kept prefix, and on a cache that holds
+  nothing, a process's first read, it looks up only the chunk the read starts at and counts each later one as the miss
+  it is; every key is still counted once as a hit or a miss, and a chunk the cache held at open is still looked up again
+  when it is asked for. Measured on the in-memory driver, the first id of a cold `iterate()` of a 65,536-chunk segment
+  arrives in a fifth to a half of the time it did on an empty cache (a process's very first read, which also compiles
+  the read path, gains least) and about three quarters of it where the cache holds other chunks; a read to its end takes
+  no longer than it did.
 - **The default `checkConsistency` makes one object-store request per healthy segment, and lists only one it cannot
   confirm.** It asks whether a segment's current object is there with a zero-length tail read (a `HEAD` on S3, a
   metadata request on GCS, a properties request on Azure Blob) where it listed all of the segment's objects. With `summaries: true` and a clear summary on the
