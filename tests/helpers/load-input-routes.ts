@@ -42,6 +42,8 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-sealed-only-order.test.ts',
   'tests/core/erase-foreign-sealed.test.ts',
   'tests/core/load-refusal-cleanup.test.ts',
+  'tests/core/load-reclaim-identical-bytes.test.ts',
+  'tests/core/load-refusal-below-pointer.test.ts',
   'tests/core/tail-bytes-owned.test.ts',
   'tests/core/due-index-fast-sweep.test.ts',
   'tests/core/encrypted-segment-cleartext-object.test.ts',
