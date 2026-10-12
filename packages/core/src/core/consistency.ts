@@ -3,7 +3,8 @@
  * generations can be restored **independently**, so a failover can recover the registry *ahead of* the storage
  * objects — leaving `currentGen` pointing at a generation whose `.crbm` isn't present yet. That is likelier
  * than it sounds even with both in one bucket: a restore scoped to a prefix, or replayed
- * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of the affected segment then throw. This scan
+ * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of
+ * the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
  * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
@@ -12,7 +13,7 @@
  * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which a driver may
  * serve eventually-consistently and so lag a recent in-place pointer advance: trusting it would both
  * miss a torn *live* generation and cry torn on a generation the pointer has already advanced past (GC'd during
- * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→list gap can still yield a
+ * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→read gap can still yield a
  * transient false positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run
  * to confirm a reported tear.
  */
@@ -20,12 +21,7 @@
 import { requirePositiveInteger } from './check';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
-import {
-  ValidationError,
-  isIntegrityError,
-  isKeyUnavailableError,
-  isNotFoundError,
-} from './errors';
+import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { openNamedGeneration } from './crbm-open';
@@ -104,11 +100,15 @@ type Outcome =
   | { readonly kind: 'issue'; readonly issue: ConsistencyIssue }
   | { readonly kind: 'error'; readonly error: ConsistencyErrorEntry };
 
-/** Hold a row's summary against the object it describes, which is present. */
+/**
+ * Hold a row's summary against the object it describes. `found` is called once the open's first read of the object has
+ * answered.
+ */
 async function checkSummary(
   ref: SegmentRef,
   live: RegistryRecord,
   deps: { readonly storage: IStorageDriver; readonly keystore?: IKeystore },
+  found?: () => void,
 ): Promise<Outcome> {
   const generation = live.currentGen as number;
   const keyed = live.wrappedDeks !== undefined && live.wrappedDeks.length > 0;
@@ -154,6 +154,7 @@ async function checkSummary(
     { namespace: ref.namespace, segment: ref.segment, generation },
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
     described.fingerprint,
+    found,
   );
   if (
     reader !== undefined &&
@@ -165,20 +166,24 @@ async function checkSummary(
 }
 
 /**
- * Whether the object under `key` is there. A zero-length tail read settles a present object, and any fault other than
- * `NotFoundError` propagates. `NotFoundError` is confirmed by listing the segment's generations: a driver cannot always
- * tell a missing object from a missing bucket on that read (S3 answers a `HEAD` of either with a bare 404), and the listing
- * is what raises the bucket's own error. An absence is the rare answer, so the listing is paid only for a torn segment.
+ * Whether the object under `key` is there. A zero-length tail read that answers settles it. When that read fails, in
+ * any way, the segment's listing decides, as it did before the read was made: a `NotFoundError` may be a missing bucket
+ * (S3 answers a `HEAD` of a missing object and of a missing bucket alike), and a `HEAD` that fails otherwise carries no
+ * error body, so S3 names no code for it and Azure Blob no message. The listing's own error is the segment's.
  */
 async function objectIsPresent(storage: IStorageDriver, key: GenKey): Promise<boolean> {
   try {
     await storage.getTail(key, 0);
     return true;
-  } catch (err) {
-    if (!isNotFoundError(err)) throw err;
+  } catch {
+    return await listed(storage, key);
   }
-  const listed = await generationsOf(storage, { namespace: key.namespace, segment: key.segment });
-  return listed.includes(key.generation);
+}
+
+/** Whether the segment's listing holds `key`'s generation; a listing that fails throws. */
+async function listed(storage: IStorageDriver, key: GenKey): Promise<boolean> {
+  const present = await generationsOf(storage, { namespace: key.namespace, segment: key.segment });
+  return present.includes(key.generation);
 }
 
 /**
@@ -194,16 +199,22 @@ function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
 
 /**
  * Verify every registered segment's `currentGen` `.crbm` actually exists in Storage. Enumerates the registry
- * (optionally one namespace) and, for each non-`destroyed` segment, checks the object store holds that
- * generation (a zero-length tail read of it). Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
+ * (optionally one namespace) and, for each non-`destroyed` segment, asks the object store for that generation with a
+ * zero-length tail read. Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
  * `errored`.
  *
+ * When that read fails, in any way, the segment's listing decides and its own error is the segment's, so a missing
+ * object, a missing bucket and a failing store are reported as when every segment was listed. One difference: a store
+ * that answers reads but refuses listings (an identity without list permission, or a listing-only outage) reports each
+ * object that is there as present, where every segment was reported errored.
+ *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
- * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata it
- * says, reporting `summary-mismatch` where they disagree, and for a clear summary whose fingerprint names no object,
- * which no read uses. A sealed summary
- * needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by default, since the
- * default check only looks for the object.
+ * than it) and holds the row's summary against it: the object it names by its fingerprint, and the count and metadata
+ * it says, reporting `summary-mismatch` where they disagree, and for a clear summary whose fingerprint names no
+ * object, which no read uses. For a row with a clear summary that open is the only request of the object; if it fails
+ * before its first read answered, the listing decides, and once that read has answered a failure is an error of the
+ * segment. A sealed summary needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by
+ * default, since the default check only looks for the object.
  */
 export async function runConsistencyCheck(
   deps: {
@@ -249,7 +260,8 @@ export async function runConsistencyCheck(
       const live = await deps.registry.get(ref);
       if (!live || live.status === 'destroyed') return { kind: 'ok' }; // vanished/shredded — no live pointer
       // A row with no Storage generation is *deliberately* Storage-less — a retention policy recorded before the first
-      // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing can be missing. Reporting it
+      // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing
+      // can be missing. Reporting it
       // would make `missing-storage-generation` fire on the healthy steady state of every such segment, which is the
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };
@@ -269,12 +281,15 @@ export async function runConsistencyCheck(
       };
       const checksSummary = options.summaries === true && live.summary !== undefined;
       if (checksSummary && summaryOpensObject(ref, live)) {
+        let found = false;
         try {
-          return await checkSummary(ref, live, deps);
+          return await checkSummary(ref, live, deps, () => (found = true));
         } catch (err) {
-          // The open's own tail read found no object. Asked again, so a read that failed after the object was found
-          // (it went mid-open) is an error of the segment, as it was when presence had been settled first.
-          if (isNotFoundError(err) && !(await objectIsPresent(deps.storage, key))) return missing;
+          // Once the open's first read has found the object, a failure is an error of the segment, as it was when the
+          // listing had found it first: an object that goes mid-open is not reported torn. Before that, the listing
+          // decides, as it did, and its own error is the segment's.
+          if (found) throw err;
+          if (!(await listed(deps.storage, key))) return missing;
           throw err;
         }
       }

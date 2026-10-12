@@ -89,10 +89,13 @@ its source held, and the library cannot know that source was meant to exclude th
 quiesce loads of the affected segments for the duration. A writer that lands *during* the rewrite is caught and
 the entry says `erased: false, note: 'superseded'` — because the publish was refused **by that fence**, because
 a racing **erasure** (which collects with `keep: 0`) deleted the generation the rewrite was still streaming, or
-because an operator's `rollback` moved the pointer while the call was deleting generations above it. Two
-erasures of different ids racing on one segment are safe: the loser's rewrite was derived from the generation the
-winner replaced, so it still holds the winner's id, and when it sits above the winner's pointer the loser deletes
-it before returning. **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
+because an operator's `rollback` moved the pointer while the call was deleting generations above it. When two
+erasures of different ids race on one segment, the loser's rewrite was derived from the generation the winner
+replaced, so it still holds the winner's id, and when it sits above the winner's pointer the loser deletes it before
+returning, unless writes other than lease writes and other erasures' renewals beat its renewal of the segment's
+row 8 times: it then keeps that object, one `rollback({ allowForward: true })` from being served, until a later call
+removes it: an erasure that rewrites the segment (the loser's re-run, while the loser's id is still in the current
+generation), an erasure of the winner's id, or the collection of loads that number past it ([how it stays correct](docs/guide/erasure.md#how-it-stays-correct)). **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
 which is not the same as the id still being present — if the racing writer was another erasure of the same id, it
 is already gone. For `'superseded'` re-run `eraseSubject`: it is idempotent, it erases the id if the id is still
 there, and a segment the id is no longer in is simply not listed — though "not listed" alone does not prove the

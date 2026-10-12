@@ -59,16 +59,30 @@ so, and so do the module headers in the code.
 
 ### Changed
 
-- **`checkConsistency` makes one object-store request per segment, and no listing.** It asks whether a segment's current
-  object is there with a zero-length tail read (a `HEAD` on S3, a metadata request on GCS and Azure Blob) where it listed
-  all of the segment's objects. With `summaries: true` and a clear summary on the row, the open's own tail read is the
-  answer, so the segment costs one request where it cost a listing and a tail read. A sealed summary, or one that is not used,
-  is asked about first, as before. A segment that looks torn is confirmed with the listing, so a missing object, a missing
-  bucket and a failing store are reported as they were. Per million segments on S3 that is about $0.40 where the default
-  check cost $5.00 for the listings. A guarded load and the summary check take the current size from the reader's `count()`,
-  the figure its open already holds, instead of building and adding a map of every chunk's cardinality: 3.7 ms of CPU a
-  call on a segment of 65,536 chunks, measured. The results and the errors are unchanged.
+- **`checkConsistency` makes one object-store request per healthy segment, and lists only one it cannot confirm.** It
+  asks whether a segment's current object is there with a zero-length tail read (a `HEAD` on S3, a metadata request on
+  GCS and Azure Blob) where it listed all of the segment's objects. With `summaries: true` and a clear summary on the
+  row, the open's own tail read is the answer, so the segment costs one request where it cost a listing and a tail
+  read. A sealed summary, or one that is not used, is asked about first, as before. When the zero-length read fails in
+  any way, or the open fails before its first read answered, the segment's listing decides and its own error is the
+  segment's, so a missing object, a missing bucket and a failing store are reported as they were, and an object that
+  goes mid-open is still an error of the segment. One result differs: a store that answers reads but refuses listings
+  (an identity without list permission, or a listing-only outage) now reports each object that is there as present,
+  where every segment was reported errored. Per million segments on S3 the default check costs $0.40 where it cost
+  $5.00 for the listings. A guarded load and the summary check take the current size from the reader's `count()`, the
+  figure its open already holds, instead of building and adding a map of every chunk's cardinality: 3.7 ms of CPU a
+  call on a segment of 65,536 chunks, measured. The results and the errors are otherwise unchanged.
 
+- **Listing a wide segment's chunk keys costs a fraction of what it did.** A read that lists a segment's keys (`iterate`
+  and its pages, the operand of a combine, `count`'s fallback) built the list through `Array.from`, ran the range test
+  through `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the list in a
+  loop, and the check range-tests every key and notes whether the list is strictly ascending in one pass, sorting and
+  scanning for a repeat only a list that is not (a custom source's, say). Every key is still range-checked, and an
+  out-of-range, repeated or unsorted list is refused or ordered exactly as before. A chunk read (`getChunks`,
+  `getChunksAt`) also validates the segment's name twice a read, as given and as a chunk ref copies it, rather than once
+  more for every key. The requests made are unchanged. Measured
+  warm, a page of 1,000 ids of a 65,536-chunk segment takes about half the time it did, a one-id page of a 2,000-chunk
+  segment about a quarter, and a cold first id of a 65,536-chunk segment a little over half.
 - **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
   cache always) no longer reads the clock on a hit, and with no metrics sink wired `has()` and `count()` return the
   engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured on
@@ -159,6 +173,28 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused erasure rewrite refuses a load that took its number with the same bytes, rather than deleting the load's
+  generation.** When another writer's publish refused an erasure's rewrite and left the pointer below it, the erasure
+  deleted its own object above that pointer once one read of its footer matched the rewrite's fingerprint. A footer
+  names an object by its bytes, and a load of the ids the rewrite held, in the clear, writes those very bytes under the
+  same number: once another erasure had deleted the rewrite's object as a holder, a load could take the number again,
+  and the refused erasure's delete removed that load's generation, before or after it published, so the row named an
+  object that is not in the bucket, every read of the segment failed, and nothing reported it. The erasure now reads
+  the row, then the footer, and renews the row it read before it deletes, with a compare-and-swap that names the
+  pointer at its value, as it does before deleting a holder, so a load that wrote those bytes and had not published is
+  refused at its publish and reports `superseded`. A renewal that loses to another write makes it read the row and
+  decide again; one lost to a write of leases alone, or to another erasure's renewal, as the losers of one race of
+  erasures lose to each other, is waited out and costs nothing, and after 8 renewals lost to other writes (a load, a
+  rollback, a retention write) it keeps the object, which can then hold another erasure's id until a later erasure
+  takes it. The renewal is one registry write more on a refused rewrite that discards its object, and one that gets no
+  answer is settled by reading the row, or throws its `TransientError` with nothing deleted. A generation a load
+  published with the same bytes, and a rollback then moved the pointer below, is still deleted as if it were the
+  rewrite: a pinned handle of it then fails with `NotFoundError` for any chunk it has yet to read, its lease names a missing generation, and a rollback to it finds it gone. One
+  round trip remains between the renewal and the delete: a rollback onto the object inside it, on a storage driver
+  whose versions come from the bytes (S3's ETag, without SSE-KMS or SSE-C) a load that takes the number inside it with
+  the same bytes, and on one that ignores the delete's condition (`LocalFsStorage`, and by default `GcsStorage` and an
+  S3 client sending to a host other than AWS S3) a load that takes the number inside it with any bytes, still leave the
+  pointer on a missing object ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and the
   `*Into` verbs read at most 16 operands at a time: the listing of their chunk keys on every plan, the plan a move
   makes included; the check, on the first plan, of whether each operand that holds no chunk exists; and the lookup of

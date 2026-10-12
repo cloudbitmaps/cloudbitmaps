@@ -161,7 +161,17 @@ export function validateChunkKeyOrder(keys: readonly number[]): void {
 /** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). A driver-boundary check. */
 export function validateChunkRef(ref: ChunkRef): void {
   validateSegmentRef(ref);
-  if (!Number.isInteger(ref.chunkKey) || ref.chunkKey < 0 || ref.chunkKey > CHUNK_KEY_MAX) {
+  validateChunkKey(ref.chunkKey);
+}
+
+/** The chunk-key half of {@link validateChunkRef}, for a caller that has already validated the segment: an integer in `[0, 65535]`. */
+export function validateChunkKey(chunkKey: number): void {
+  if (!(
+    typeof chunkKey === 'number' &&
+    chunkKey >= 0 &&
+    chunkKey <= CHUNK_KEY_MAX &&
+    (chunkKey | 0) === chunkKey
+  )) {
     throw new ValidationError(`chunkKey must be an integer in [0, ${CHUNK_KEY_MAX}]`);
   }
 }

@@ -32,7 +32,13 @@ import { BoundedLru } from './lru';
 import { KeptSegmentKeys, segmentKey } from './keys';
 import { aadFor, sameKeys } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
-import { validateChunkKeyOrder, validateChunkRef, validateUserRef } from './validate';
+import {
+  validateChunkKey,
+  validateChunkKeyOrder,
+  validateChunkRef,
+  validateSegmentRef,
+  validateUserRef,
+} from './validate';
 import type {
   ChunkRef,
   ChunkRead,
@@ -378,7 +384,9 @@ function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promi
 /** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
 function validateRead(ref: SegmentRef, keys: readonly number[]): void {
   validateUserRef(ref);
-  for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+  // A chunk ref is a copy of this ref, so it carries only the ref's own enumerable names: checked once, not once a key.
+  if (keys.length > 0) validateSegmentRef({ ...ref });
+  for (const chunkKey of keys) validateChunkKey(chunkKey);
   validateChunkKeyOrder(keys);
 }
 

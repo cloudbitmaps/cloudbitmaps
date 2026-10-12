@@ -138,7 +138,11 @@ describe('checkConsistency request counts', () => {
     const w = world();
     await w.store.load(seg(0), [1]);
     await w.backend.registry.create(seg(1), { status: 'active', currentGen: null } as never, {});
-    await runConsistencyCheck({ storage: w.storage, registry: w.registry });
+    await w.store.load(seg(2), [1]);
+    const row = (await w.backend.registry.get(seg(2)))!;
+    await w.backend.registry.compareAndSwap(seg(2), row.token, { status: 'destroyed' });
+    const report = await runConsistencyCheck({ storage: w.storage, registry: w.registry });
+    expect(report).toEqual({ checked: 3, inconsistent: [], errored: [] });
     expect(w.storageCalls.getTail).toBe(1);
     expect(w.storageCalls.list ?? 0).toBe(0);
   });
@@ -265,14 +269,27 @@ describe('checkConsistency reports the same in every fault case', () => {
     },
   );
 
-  it('a throttled zero-length read is errored with its message, though a listing would have answered', async () => {
+  it("a zero-length read that fails is settled by the listing, whose own error is the segment's", async () => {
     const w = await oneSegment(false);
     const storage = tailing(w.storage, (_key, max) =>
-      max === 0 ? Promise.reject(new TransientError('slow down')) : undefined,
+      max === 0 ? Promise.reject(new Error('UnknownError')) : undefined,
     );
-    const report = await runConsistencyCheck({ storage, registry: w.registry });
-    expect(report.inconsistent).toEqual([]);
-    expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'slow down' }]);
+    expect(await runConsistencyCheck({ storage, registry: w.registry })).toEqual({
+      checked: 1,
+      inconsistent: [],
+      errored: [],
+    });
+    const denied = new Proxy(storage, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (p !== 'list') return value;
+        return (): AsyncIterable<GenKey> => ({
+          [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new Error('AccessDenied')) }),
+        });
+      },
+    });
+    const report = await runConsistencyCheck({ storage: denied, registry: w.registry });
+    expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'AccessDenied' }]);
   });
 
   it('a throttled tail read of the open is errored with its message', async () => {
@@ -299,6 +316,36 @@ describe('checkConsistency reports the same in every fault case', () => {
     );
     expect(report.inconsistent).toEqual([]);
     expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'gone mid-open' }]);
+  });
+
+  it('an object deleted after the open first read it is an error of the segment, not a torn one', async () => {
+    const w = world();
+    // An index longer than the open's tail read, so the open reads the object twice.
+    await w.store.load(
+      SEG,
+      Array.from({ length: 65_536 }, (_, i) => i * 65_536),
+    );
+    let first = true;
+    const storage = new Proxy(w.storage, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (p !== 'getTail') return value;
+        return async (key: GenKey, max: number) => {
+          const tail = await (value as IStorageDriver['getTail']).call(t, key, max);
+          if (first && max > 0) {
+            first = false;
+            await w.backend.storage.delete(key);
+          }
+          return tail;
+        };
+      },
+    });
+    const report = await runConsistencyCheck(
+      { storage, registry: w.registry },
+      { summaries: true },
+    );
+    expect(report.inconsistent).toEqual([]);
+    expect(report.errored.map((e) => e.segment)).toEqual(['s']);
   });
 
   it('a row whose pointer moved after the listing is judged at the live pointer, with summaries too', async () => {
