@@ -141,13 +141,15 @@ again and decides from what it holds:
 
 | The row, read again | The load |
 |---|---|
-| names this load's generation, over the object this load wrote | `published: true`: the write landed, and only its response was lost |
-| names this load's generation over another writer's object, or belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: nothing this load wrote is published |
+| names this load's generation, over an object whose footer matches the one this load wrote | `published: true`: the write landed, and only its response was lost |
+| names this load's generation over an object whose footer does not match, or belongs to another incarnation of the name | `published: false`, `reason: 'superseded'`: nothing this load wrote is published |
 | has moved on, because another write changed it | `published: false`, `reason: 'superseded'`: this load's write can no longer land. A load that found no row is refused by any row that appeared meanwhile, guarded or not |
 | is still as the write found it | the load sends a fresh compare-and-swap from the row it just read, after a wait on the store's clock: at most three, after under 500 ms, then 1 s, then 2 s. It is a new request, not a replay, and it carries the version the first one did, so the registry lets at most one of the two land. Each is settled by this same table. Still unanswered, the load throws the registry's own `TransientError` |
 
-Whether the object under the row's pointer is the load's own is proved by its footer, never taken from the pointer and
-the incarnation alone. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
+Whether the object under the row's pointer is the load's own is judged by its footer, never taken from the pointer and
+the incarnation alone. The footer names the object's bytes, not the load that wrote them: after an erasure deletes this
+load's object above the pointer, another load of the same cleartext ids can take the number, write the same bytes and
+publish, and this load then reports that publish as its own. On Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the publish's own waits (derived from that schedule, not measured).
 
 **What a thrown `TransientError` leaves behind.** The object this load wrote stays, above the pointer, and nothing is
@@ -468,9 +470,10 @@ delete, which sees a rollback that landed between the read before it and the del
 ([below](#a-rollback-that-races-a-collection)). It lists nothing. A segment that loads cleanly therefore pays two pointer
 reads and one delete for collection at any `keep` up to 64, not a listing: on S3 a steady load that deletes by name makes
 2 PUT-class requests, 5 GET-class and a delete, 8 requests, with the delete free ([what each term
-counts](cost.md#what-each-term-counts)). A publish
-records only generations that were current, so the list it writes never names a number a refused or crashed load took;
-a listing on a row that records no list can ([below](#how-it-stays-correct)).
+counts](cost.md#what-each-term-counts)). What a publish adds to the list is
+the generation it superseded, which was current; the rest it carries forward from the row. A listing on a row that
+records no list records what it keeps from the bucket, which can include a number a refused or crashed load took, and
+the publishes after it carry that number until the window pushes it out ([below](#how-it-stays-correct)).
 A load lists the segment's objects instead in these cases:
 
 - every 16th generation, so what the by-name loads leave behind is gone within 16 generations: the object a crashed or
@@ -1212,7 +1215,9 @@ other reports `published: false` with `reason: 'superseded'`. If both took the s
 write it is refused by the write-once put and writes nothing. If not, the publish that lands second finds the row
 changed since its load read it, or finds a row where its load read none, and is refused, whatever its options: two
 first loads of a segment with no row race to create it, and the one that loses is refused whichever number it holds.
-The row the refusal then reads is another writer's, so its object stays in the bucket: it is an orphan, collected as the
+The row the refusal then reads is another writer's, so its object stays in the bucket (unless the loser wrote
+cleartext and the winner's row holds key material, or the row has since been dropped or purged, as the paragraph on
+crashes below says): it is an orphan, collected as the
 paragraph on orphans below says, and billed until then, or until `dropSegment` or the retention sweep removes the
 segment. A load that won the number can still be refused by its guard. Publishing the
 generation that is already current is a no-op that reports success, unless the publish is fenced (below), in which
@@ -1220,9 +1225,10 @@ case it is refused.
 
 **The row records the window, and the write that moves the pointer writes it.** The list of kept generations goes in the
 same compare-and-swap as the pointer, derived from the very row that write is conditioned on, so the list a load deletes
-by is the list that row held and no other. A publish names only generations that were current, never the number a
-refused load took; a listing that finds no list records the window it keeps from the bucket, which can (see the
-paragraph on orphans below). Anything else that moves the pointer (a `rollback`, a purge and re-create) leaves the row recording no list, which
+by is the list that row held and no other. A publish adds only the generation it superseded, which
+was current, and carries the rest of the row's list forward; a listing that finds no list records the window it keeps
+from the bucket, which can name the number a refused load took, and later publishes keep naming it until the window
+pushes it out (see the paragraph on orphans below). Anything else that moves the pointer (a `rollback`, a purge and re-create) leaves the row recording no list, which
 only makes the next load list; a write that leaves the pointer where it is (`setRetention`, a crypto-shred) keeps it. A
 row a rollback moved records no list, so the next load lists once and records it.
 
@@ -1254,29 +1260,34 @@ that was never current. So does a load whose registry write ended without an ans
 `TransientError`). A refused load that finds the row unchanged, changed only in its leases, or `destroyed` deletes its
 object by number: the decision comes from the row, and the object is this load's own write, of which the write reports
 no version. One that finds the row gone, or holding key material where the load wrote cleartext (which has no place in
-an encrypted segment's bucket), deletes its object only once one read of its footer proves it the object this load
-wrote, since by then its generation number may name another writer's object (a re-created segment's, say), and passes
-the version that read reported, so on a storage driver that reports `conditionalDelete` an object put under the number
-since is kept; one the read cannot prove stays, an orphan. Under any other row another write changed, the object stays,
-an orphan, whatever its number: the footer names the object's bytes, not the load that wrote them, and a load of the
-same ids writes the same bytes, so the read cannot tell this load's object from a generation another load published
-under the number, or still will. Above the pointer an erasure deletes an object that holds the id it erases and a load
-can take the freed number; below it a rollback can lower the pointer and let a load take the number again, and a
-generation another load published can sit in a window the row does not record.
+an encrypted segment's bucket), deletes its object only once one read of its footer matches the object this load wrote,
+since by then its generation number may name another writer's object (a re-created segment's, say). That keeps another
+object, but not one with the same bytes, which a re-created segment's load of the same cleartext ids writes: a refusal
+that straddles a purge can delete that load's generation, and nothing reports it. The grace a retention sweep waits
+before it purges a tombstone (`tombstoneGraceMs`, 24 h by default) is what keeps a purge out of a load's run. The delete
+passes the version that read reported, so on a storage driver that reports `conditionalDelete` an object put under the
+number since is kept; one the read does not match stays, an orphan. Under any other row another write changed, the
+object stays, an orphan, whatever its number: the footer names the object's bytes, not the load that wrote them, and a
+load of the same ids writes the same bytes, so the read cannot tell this load's object from a generation another load
+published under the number, or still will. Above the pointer an erasure deletes an object that holds the id it erases
+and a load can take the freed number; below it a rollback can lower the pointer and let a load take the number again,
+and a generation another load published can sit in a window the row does not record.
 
-**An orphan is collected later, and a rollback can name it until then.** A publish never records an orphan as kept,
-since it records only generations that were current. A load whose check meets it numbers above it by a listing and,
-once its own generation is current, that listing deletes the orphan where the row records its kept list, since it is
-below the pointer and not named. Where the row records none (after a rollback, or with a `keep` above 64), that
-listing keeps a window from what it finds, the
-generation the load superseded first and then the newest by number, and records it, so the orphan can take a place in
-the window and be named by the row until a later load pushes it out. An orphan stranded elsewhere below the pointer
-waits for the next listing, at most 16 generations on, unless a window holds it. Until it goes,
-[`rollbackSegment`](#roll-back-a-segment) can name it as a target: a rollback checks only that its target is stored,
-sealed to match the row, and opens, so a rollback onto an orphan publishes what no load published, an empty generation
-a guard refused among them. Before rolling back, check that a load published the target: its `segment.publish`
-audit event names it. There is no half-loaded state a reader can observe: a read resolves one generation and reads
-whole, checksum-verified chunks from it.
+**An orphan is collected later, and a rollback can name it until then.** A publish never adds an orphan to the row's
+list: what it adds is the generation it superseded, which was current. A load whose check meets it numbers above it by a
+listing and, once its own generation is current, that listing deletes the orphan, which is below the pointer, where the
+row records a kept list that does not name it. Where the row records none (after a rollback, or with a `keep` above 64),
+that listing keeps a window from what it finds, the generation the load superseded first and then the newest by number,
+and, at a `keep` up to 64, records it: the orphan can take a place in that window, and the publishes after it carry it
+in the row's list until the window pushes it out. An orphan stranded elsewhere below the pointer waits for the next
+listing, at most 16 generations on, unless a window holds it. Until it goes, [`rollbackSegment`](#roll-back-a-segment)
+can name it as a target: a rollback checks only that its target is stored, sealed to match the row, and opens, so a
+rollback onto an orphan publishes what no load published, an empty generation a guard refused among them. Nothing yet
+tells an orphan from a published generation under the same number: a number is taken again once its object is deleted
+(after a rollback below it, or an erasure's delete above the pointer), so a `segment.publish` audit event naming the
+number can belong to an earlier object under it ([the roadmap](../ROADMAP.md) plans a rollback that refuses a generation
+no load published). There is no half-loaded state a reader can observe: a read resolves one generation and reads whole,
+checksum-verified chunks from it.
 
 **A miss is a re-read, not a failure.** If the generation an unpinned read is on is swept, the storage driver throws
 `NotFoundError`. The storage source drops the stale snapshot, re-resolves `currentGen` and retries once, covering both

@@ -1102,7 +1102,7 @@ export class CloudRoaring {
    * row it is kept (hard invariant 1: deleting it after a purge-and-recreate would put a live row over a missing
    * generation).
    *
-   * Where the row is gone, or keyed over a cleartext write, the object is proved the load's own by its footer, and
+   * Where the row is gone, or keyed over a cleartext write, the object's footer must match what the load wrote, and
    * the delete passes the version that read reported, so on a storage driver that reports `conditionalDelete` an
    * object put under the number since is kept. Where the row is unchanged or `destroyed`, the check narrows the
    * window rather than closing it: the row read and the delete are two round trips, and the delete is by number,
@@ -2147,15 +2147,16 @@ export class CloudRoaring {
    * published, a retention change, a rollback or an erasure wrote the row, or the row was deleted.
    *
    * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
-   * collection deliberately never looks — but only while the segment's registry row is unchanged (or differs only
-   * in its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
-   * encrypted segment's bucket. Under a row that is gone or keyed, a read of the object's footer must prove it the
-   * load's own first. Once another write has otherwise changed the row, the generation number it holds may name
-   * another writer's object, and a footer names bytes, not the load that wrote them, so it leaves the orphan rather
-   * than risk deleting live data. A publish never records the orphan as kept, and a load's listing deletes it once a
-   * generation above it is current, where the row records its kept list; where the row records none (after a rollback,
-   * or with a `keep` above 64), that listing's window can keep it. Until it goes, a rollback can name it, and publishes
-   * what no load published.
+   * collection deliberately never looks — but only while the segment's registry row is unchanged (or differs only in
+   * its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
+   * encrypted segment's bucket. Under a row that is gone or keyed, one read of the object's footer must match what the
+   * load wrote first. Once another write has otherwise changed the row, the generation number it holds may name another
+   * writer's object, and a footer names bytes, not the load that wrote them, so it leaves the orphan rather than risk
+   * deleting live data. A publish never adds the orphan to the row's list, and a load's listing deletes it once a
+   * generation above it is current, unless the row's list names it; where the row records none (after a rollback, or
+   * with a `keep` above 64), that listing's window can keep it and, at a `keep` up to 64, record it, and the publishes
+   * after carry it until the window pushes it out. Until it goes, a rollback can name it, and publishes what no load
+   * published.
    *
    * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
    * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists

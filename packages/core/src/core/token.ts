@@ -36,8 +36,8 @@ export function incarnationField(token: Token | undefined): { readonly incarnati
  * - Only one does: different incarnations. A registry gives its rows one form of token, so a row without an id never
  *   becomes a row with one, nor the reverse.
  * - Neither does (a registry of someone else's whose tokens carry none): there is no id to compare, and the creation
- *   stamp is the only signal left. It is a clock reading, so a caller that acts on this answer proves its own object
- *   too.
+ *   stamp is the only signal left. It is a clock reading, so a caller that acts on this answer also checks the object
+ *   under the number by its footer.
  */
 export function sameIncarnation(
   a: { readonly token: Token; readonly createdAt: number },

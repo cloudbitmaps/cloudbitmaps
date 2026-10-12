@@ -62,11 +62,12 @@ export function ownedTail(tail: TailRead): TailRead {
 }
 
 /**
- * The object under `key`, when it is provably the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one
- * read of its footer, with the version the driver reported on that read (`undefined` from a driver that reports none).
- * `null` when it is another object, when it is gone, and when the read fails in any way: a caller that deletes what
- * this proves deletes nothing it cannot prove is its own, and passes the version as the delete's `ifVersion`, so a
- * number taken again between the read and the delete keeps the object put under it since.
+ * The object under `key`, when one read of its footer matches `fingerprint` ({@link CrbmReader.fingerprint}), with the
+ * version the driver reported on that read (`undefined` from a driver that reports none). `null` when it is another
+ * object, when it is gone, and when the read fails in any way. A fingerprint names the object's bytes, not the writer:
+ * an object another writer stored under the number with the same bytes matches too. A caller that deletes what this
+ * matches passes the version as the delete's `ifVersion`, so a number taken again between the read and the delete keeps
+ * the object put under it since.
  */
 export async function provenObject(
   storage: IStorageDriver,

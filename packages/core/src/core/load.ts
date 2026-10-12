@@ -17,10 +17,11 @@
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
  * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged (or
  * differs only in its leases), gone or `destroyed`, or has key material when the load wrote cleartext. Under a row
- * that is gone or keyed, a read of the object's footer must prove it the load's own first. Once another write has
- * otherwise changed the row, the object stays: its number may by then name another writer's object, and a footer
- * cannot tell that from this load's own when that writer loaded the same ids. It is an orphan until a later load's
- * collection takes it, and until then a rollback can name it.
+ * that is gone or keyed, one read of the object's footer must match what the load wrote first, which keeps another
+ * object, though not one with the same bytes: a re-created segment's load of the same cleartext ids writes those. Once
+ * another write has otherwise changed the row, the object stays: its number may by then name another writer's object,
+ * and a footer cannot tell that from this load's own when that writer loaded the same ids. It is an orphan until a
+ * later load's collection takes it, and until then a rollback can name it.
  */
 import { requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
@@ -359,18 +360,19 @@ export type LoadRefusal =
    * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
    * the bucket, still billed, until a later load's collection deletes it or the segment is dropped, because its
    * generation number may by then name another writer's object; until it goes, a rollback can name it. Once the row is
-   * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object its footer
-   * proves this load's own, and so is a cleartext one under a row with key material.
+   * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object whose footer
+   * matches what this load wrote (a re-created segment's load of the same cleartext ids writes a match), and so is a
+   * cleartext one under a row with key material.
    */
   | 'superseded';
 
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
-   * unchanged or `destroyed`, and, once one read of its footer proves it this load's own, when the row is gone or, for a
-   * cleartext object, has key material. Under any other row another write changed, the object stays in the bucket, an
-   * orphan a later load's collection takes, and until then a rollback can name it. A load that lost its generation
-   * number to another wrote nothing, and reports `size: 0`.
+   * unchanged or `destroyed`, and, once one read of its footer matches what the load wrote, when the row is gone or,
+   * for a cleartext object, has key material. Under any other row another write changed, the object stays in the
+   * bucket, an orphan a later load's collection takes, and until then a rollback can name it. A load that lost its
+   * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;
   /** Whether this generation is now the segment's current one. */
@@ -663,24 +665,26 @@ async function runLoad(
    * a publish that may still land must not find its object gone.
    *
    * The object is durable and sits above `currentGen`, where collection never looks until a generation above it is
-   * current, so the refusal reclaims it here, and deletes only what it can prove is its own. A generation number
-   * identifies a generation within one incarnation of a row, and nothing more (invariant 1): once the row was
-   * purged, the object under this load's key can be another writer's, because a re-created name's numbering restarts
-   * and its loads take numbers a drop or a collection freed, this one included. Deleting that would put a row over a
-   * missing generation, the forbidden `missing-storage-generation` state; leaving an orphan behind is strictly the
-   * better failure.
+   * current, so the refusal reclaims it here, and deletes only what one read shows holds the bytes it wrote. A
+   * generation number identifies a generation within one incarnation of a row, and nothing more (invariant 1): once the
+   * row was purged, the object under this load's key can be another writer's, because a re-created name's numbering
+   * restarts and its loads take numbers a drop or a collection freed, this one included. Deleting that would put a row
+   * over a missing generation, the forbidden `missing-storage-generation` state; leaving an orphan behind is strictly
+   * the better failure.
    *
    * - The same row (an unchanged token): nothing was written since this load read it, so the number is its own.
    * - A `destroyed` row: no reader resolves any of its generations, so whatever is under the key is garbage.
    * - No row, or a row with key material when this load wrote cleartext (a cleartext object has no place in an
    *   encrypted segment's bucket, where a rollback could point at it and a shred would attest its bytes unreadable):
-   *   the object under the key must be proved this load's by its fingerprint, from one read of its footer. One that
-   *   is gone, is another object, or cannot be read is kept. The delete passes the version that read reported, so on a
-   *   storage driver that reports `conditionalDelete` it removes that object and no other: a number taken again
+   *   the object under the key must match what this load wrote, by its fingerprint, from one read of its footer. One
+   *   that is gone, does not match, or cannot be read is kept. The delete passes the version that read reported, so on
+   *   a storage driver that reports `conditionalDelete` it removes that object and no other: a number taken again
    *   between the read and the delete keeps the object put under it since, and the refused delete is a fault of the
-   *   cleanup, which the refusal swallows.
+   *   cleanup, which the refusal swallows. The proof is of bytes: under no row, a re-created name's load of the same
+   *   cleartext ids writes the same ones, so a refusal that straddles a purge can delete that load's generation, which
+   *   nothing after it reports; the grace before a tombstone is purged keeps a purge out of a load's run.
    * - Any other row: the object stays, an orphan a later load's collection takes. The footer names the object's bytes,
-   *   not the load that wrote them, and a load of the same ids writes the same bytes, so the proof cannot tell this
+   *   not the load that wrote them, and a load of the same ids writes the same bytes, so a read of it cannot tell this
    *   load's object from a generation another load published under the number, or still will.
    *
    * The first two delete by number, with no condition: the decision comes from the row, and the object is this
@@ -799,7 +803,7 @@ async function runLoad(
       // above that row's pointer, onto an object that is gone, so that every read of the segment would fail.
       ...(row === null ? { expectAbsent: true } : {}),
       // A registry write that fails without an answer is reconciled by reading the row: the pointer at this number
-      // is this load's publish only over the object this load wrote, which one footer read proves.
+      // is taken for this load's publish only over an object whose footer, read once, matches what this load wrote.
       holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
       // And the wait before a fresh write, when the first left the row as it was.
       clock: deps.clock,
