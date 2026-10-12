@@ -320,20 +320,37 @@ describe('checkConsistency reports the same in every fault case', () => {
     expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'gone mid-open' }]);
   });
 
-  it('an object deleted after the open first read it is an error of the segment, not a torn one', async () => {
+  /**
+   * A 65,536-chunk segment, whose index is longer than the default 256 KiB tail, behind a storage that deletes the
+   * object once the first non-empty tail read has answered. `tails` and `ranges` count the open's reads.
+   */
+  async function deletedAfterFirstTail(hint?: number) {
     const w = world();
-    // An index longer than the open's tail read, so the open reads the object twice.
     await w.store.load(
       SEG,
       Array.from({ length: 65_536 }, (_, i) => i * 65_536),
     );
+    if (hint !== undefined) {
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, {
+        summary: { ...(row.summary as object), tailBytes: hint } as NonNullable<typeof row.summary>,
+      });
+    }
+    const seen = { tails: 0, ranges: 0 };
     let first = true;
     const storage = new Proxy(w.storage, {
       get(t, p, rx) {
         const value: unknown = Reflect.get(t, p, rx);
+        if (p === 'getRange') {
+          return (...args: unknown[]) => {
+            seen.ranges++;
+            return (value as (...a: unknown[]) => unknown).apply(t, args);
+          };
+        }
         if (p !== 'getTail') return value;
         return async (key: GenKey, max: number) => {
           const tail = await (value as IStorageDriver['getTail']).call(t, key, max);
+          if (max > 0) seen.tails++;
           if (first && max > 0) {
             first = false;
             await w.backend.storage.delete(key);
@@ -346,8 +363,25 @@ describe('checkConsistency reports the same in every fault case', () => {
       { storage, registry: w.registry },
       { summaries: true },
     );
+    return { report, seen };
+  }
+
+  it('an object deleted after the open first read it is an error of the segment, not a torn one', async () => {
+    // On a cleartext row whose summary covers the index the open reads once (the next test), so the fault is placed on
+    // an open whose hint is too small: the default tail size, which still passes the summary's bounds and is used, and
+    // which leaves the index to a second read. That second read is the one that meets the deleted object.
+    const { report } = await deletedAfterFirstTail(256 * 1024);
     expect(report.inconsistent).toEqual([]);
     expect(report.errored.map((e) => e.segment)).toEqual(['s']);
+  });
+
+  it('an open sized by an honest summary reads the object once, so a deletion after that read is not met', async () => {
+    // Fails on main, where the index is a second read and the deleted object is an error of the segment
+    // (errored ['s']); passes with the tail read sized from the summary.
+    const { report, seen } = await deletedAfterFirstTail();
+    expect(report.inconsistent).toEqual([]);
+    expect(report.errored).toEqual([]);
+    expect(seen).toEqual({ tails: 1, ranges: 0 });
   });
 
   it('a store that answers reads but refuses listings reports each object that is there as present', async () => {
