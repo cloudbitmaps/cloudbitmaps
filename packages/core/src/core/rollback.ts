@@ -19,7 +19,8 @@
 import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
-import { openRollbackTarget, provesOwnObject } from './crbm-open';
+import { openRollbackTargetFrom, provesOwnObject, readRollbackTargetFooter } from './crbm-open';
+import { describingKnown, rollbackKnown } from './known-generations';
 import { aadFor } from './crypto';
 import { generationsOf } from './generation-list';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -40,6 +41,7 @@ import type {
   IStorageDriver,
   GenerationMetadata,
   IRegistryDriver,
+  KnownGeneration,
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
@@ -182,8 +184,9 @@ export interface RollbackResult {
  * leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may still
  * land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves the
  * very row this swap would. On a cleartext segment two writes can: another rollback onto the same target, whatever row
- * it read, and a load that wrote under that number the very object the rollback read and recorded no kept window (onto
- * a row that records none, as after a rollback, or with a `keep` above 64). On an encrypted segment a rollback with no
+ * it read, and a load that wrote under that number the very object the rollback read and carried the ledger the
+ * rollback would (a load that carries a usable ledger, as one with a `keep` above 64 does; over a row with no usable
+ * ledger the rollback writes none and a load seeds one, so those rows differ). On an encrypted segment a rollback with no
  * key at hand writes no summary, so another such rollback onto the same target can too. That call then reports and
  * audits the move as its own; the pointer is where it asked for it.
  *
@@ -266,21 +269,24 @@ export async function rollbackSegment(
   );
   const crypto: CrbmCrypto | undefined =
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, toGeneration, scope) };
-  const { encrypted, reader } = await openRollbackTarget(
-    deps.storage,
-    { ...ref, generation: toGeneration },
-    crypto,
-  );
-  if (encrypted !== keyed) {
+  // One tail read of the target, whose footer says whether it is encrypted and carries the checksum the ledger records,
+  // and which the open below is answered from: the summary's size and tail and the ledger's checksum are of this one
+  // object, never of two reads.
+  const targetKey = { ...ref, generation: toGeneration };
+  const footer = await readRollbackTargetFooter(deps.storage, targetKey);
+  const reader = await openRollbackTargetFrom(footer, targetKey, crypto);
+  if (footer.encrypted !== keyed) {
     throw new IntegrityError(
-      `rollback: generation ${toGeneration} of "${ref.segment}" is ${encrypted ? 'encrypted' : 'cleartext'}, ` +
+      `rollback: generation ${toGeneration} of "${ref.segment}" is ${footer.encrypted ? 'encrypted' : 'cleartext'}, ` +
         `but the segment is ${keyed ? 'encrypted' : 'cleartext'}, so no read of the segment could use it; it was ` +
         'never one of its generations. Roll back to another generation.',
     );
   }
-  // The target's own count, metadata and fingerprint, read from its object, in the same write that moves the pointer, so a
-  // reader that sees it as current sees them, and holds the object it opens to the one read here. None when the key was
-  // not at hand to open an encrypted target.
+  // The target's own count, metadata, fingerprint and tail size, read from its object, in the same write that moves the
+  // pointer, so a reader that sees it as current sees them, and holds the object it opens to the one read here. None when
+  // the key was not at hand to open an encrypted target, and none for an object whose tail is more than a summary
+  // records, which a reader accepts for an object this library did not write: the row is legal without one, and a read
+  // opens the generation with the default tail.
   const summary: RegistrySummary | undefined =
     reader === undefined
       ? undefined
@@ -291,9 +297,12 @@ export async function rollbackSegment(
             cardinality: reader.count(),
             metadata: reader.metadata,
             fingerprint: reader.fingerprint,
+            tailBytes: reader.tailBytes,
           },
           aead,
         );
+  // The ledger moves the target to the end, as the most recently current, with the checksum of the object just read.
+  const known = rollbackKnown(record, { generation: toGeneration, footerCrc: footer.footerCrc });
 
   // Fenced on the row this decision was made against. A rollback is the most derived write there is — an
   // operator looked at a particular state and chose — so publishing it into a row that has moved since would
@@ -310,6 +319,7 @@ export async function rollbackSegment(
       const { token } = await deps.registry.compareAndSwap(ref, against, {
         currentGen: toGeneration,
         summary,
+        ...(known === undefined ? {} : { knownGens: known }),
       });
       swapped = { pointerId: token, token };
       break;
@@ -317,7 +327,13 @@ export async function rollbackSegment(
       if (isTransientError(err)) {
         // A swap that got no answer may have landed, and the check below has to run on one that did, or the pointer can
         // be left on a target collected meanwhile. The row says which.
-        const landed = await swapLanded(ref, record, { toGeneration, summary }, deps.registry, err);
+        const landed = await swapLanded(
+          ref,
+          record,
+          { toGeneration, summary, known },
+          deps.registry,
+          err,
+        );
         swapped = { pointerId: landed.pointerId, token: landed.token };
         break;
       }
@@ -373,9 +389,14 @@ export async function rollbackSegment(
     let undoAgainst = swapped.token;
     for (;;) {
       try {
+        // The target the rollback just found gone, or replaced, is not a generation the row knows any more.
+        const restored = describingKnown(record, toGeneration)?.filter(
+          (e) => e.generation !== toGeneration || e.generation === record.currentGen,
+        );
         await deps.registry.compareAndSwap(ref, undoAgainst, {
           currentGen: record.currentGen,
           summary: describingSummary(record),
+          ...(restored === undefined ? {} : { knownGens: restored }),
         });
         undone = true;
         break;
@@ -445,8 +466,8 @@ function describingSummary(record: RegistryRecord): RegistrySummary | undefined 
   return 'sealed' in summary === isKeyed(record) ? summary : undefined;
 }
 
-/** The fields a rollback's swap moves: the pointer and its summary, the kept list the row loses, and the pointerId. */
-const SWAP_MOVES = ['currentGen', 'summary', 'keptGens', 'pointerId'] as const;
+/** The fields a rollback's swap moves: the pointer, its summary, the ledger and the pointerId. */
+const SWAP_MOVES = ['currentGen', 'summary', 'knownGens', 'pointerId'] as const;
 
 /** Whether the row is an encrypted segment's: it carries wrapped keys. */
 function isKeyed(record: RegistryRecord): boolean {
@@ -559,14 +580,14 @@ function keyServiceUnanswered(err: unknown): boolean {
  * The row after a swap that got no answer, when it shows that the swap landed; otherwise `unanswered` is thrown.
  *
  * It shows it when it is the row the swap leaves: the row the rollback read, of the same incarnation, with the swap's
- * pointer and summary, no kept list (the swap drops it), and nothing else changed but its leases, which a reader can
- * write the moment the target is current, and its pointerId. Another writer's publish of the same number is not that
- * row: a load records the summary of its own object, and its kept window when the row it read had one. A sealed summary
+ * pointer, summary and ledger, and nothing else changed but its leases, which a reader can write the moment the target
+ * is current, and its pointerId. Another writer's publish of the same number is not that row: a load records the
+ * summary of its own object, and a ledger drawn from its window. A sealed summary
  * carries a fresh nonce, so on an encrypted segment only this call's own write matches, when it wrote one. Otherwise
  * other writes leave the very same row and are taken for this one: another rollback onto the same target, from
- * whatever row it read, that wrote the same summary or, like this one, none; and on a cleartext segment a load that wrote
- * under that number the very object this call read and recorded no window (onto a row with none, or with a `keep`
- * above what a row records). The pointer is then where this call asked for it, on the object it read, and the check
+ * whatever row it read, that wrote the same summary and ledger or, like this one, no summary; and on a cleartext segment
+ * a load that wrote under that number the very object this call read and carried the same ledger (a load that carries a
+ * usable ledger; over a row with no usable ledger the rollback writes none and a load seeds one, so those rows differ). The pointer is then where this call asked for it, on the object it read, and the check
  * after the swap holds either way, but this call audits a move another writer made.
  *
  * The undo after a row taken this way is fenced on that row, so a write after the read back is another writer's, as
@@ -582,7 +603,11 @@ function keyServiceUnanswered(err: unknown): boolean {
 async function swapLanded(
   ref: SegmentRef,
   record: RegistryRecord,
-  swap: { readonly toGeneration: number; readonly summary: RegistrySummary | undefined },
+  swap: {
+    readonly toGeneration: number;
+    readonly summary: RegistrySummary | undefined;
+    readonly known: readonly KnownGeneration[] | undefined;
+  },
   registry: IRegistryDriver,
   unanswered: TransientError,
 ): Promise<RegistryRecord> {
@@ -597,7 +622,7 @@ async function swapLanded(
     ...record,
     currentGen: swap.toGeneration,
     summary: swap.summary,
-    keptGens: undefined,
+    knownGens: swap.known,
   };
   if (now === null || !onlyLeasesDiffer(left, now, ['pointerId'])) throw unanswered;
   return now;

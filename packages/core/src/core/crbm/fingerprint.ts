@@ -3,6 +3,7 @@
  * spelling and its parse are here, apart from the reader, so the registry can check a summary's fingerprint without
  * the reader. Pure: no I/O.
  */
+import { IntegrityError } from '../errors';
 import { FOOTER_BYTES, PREAMBLE_BYTES } from './frame';
 
 /** What names an object: its size, then its footer's CRC. One spelling, for an open reader and a footer read alone. */
@@ -29,6 +30,18 @@ export function fingerprintParts(
   if (!Number.isSafeInteger(size) || size < PREAMBLE_BYTES + FOOTER_BYTES) return undefined;
   if (footerCrc > 0xffff_ffff) return undefined;
   return { size, footerCrc };
+}
+
+/**
+ * The footer CRC of a fingerprint a writer or a reader produced, which a row's ledger records beside the generation.
+ * Throws {@link IntegrityError} for text that is not a fingerprint, which neither produces.
+ */
+export function footerCrcOf(fingerprint: string): number {
+  const parts = fingerprintParts(fingerprint);
+  if (parts === undefined) {
+    throw new IntegrityError(`not an object's fingerprint: ${String(fingerprint).slice(0, 64)}`);
+  }
+  return parts.footerCrc;
 }
 
 /**

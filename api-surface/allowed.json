@@ -390,5 +390,37 @@
   {
     "entry": "@cloudbitmaps/roaring PinnedObject.fingerprint",
     "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core NewRegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core RegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core RegistryPatch",
+    "reason": "a patch names knownGens in place of keptGens: the same field the registry schema 5 ledger replaces; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ClearRegistrySummary.tailBytes",
+    "reason": "a clear summary records tailBytes, the bytes of the object's end one open reads, and is required: every summary a library writer makes carries one, and a registry schema 5 row without it is refused; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring NewRegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryPatch",
+    "reason": "a patch names knownGens in place of keptGens: the same field the registry schema 5 ledger replaces; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ClearRegistrySummary.tailBytes",
+    "reason": "a clear summary records tailBytes, the bytes of the object's end one open reads, and is required: every summary a library writer makes carries one, and a registry schema 5 row without it is refused; agreed with the maintainer"
   }
 ]

@@ -48,9 +48,9 @@ describe('checkConsistency with summaries', () => {
     const w = world(false);
     await w.store.load(SEG, [1, 2, 3], { metadata: { a: 1 } });
     const row = (await w.registry.get(SEG))!;
-    const fingerprint = (row.summary as { fingerprint: string }).fingerprint;
+    const { fingerprint, tailBytes } = row.summary as { fingerprint: string; tailBytes: number };
     await w.registry.compareAndSwap(SEG, row.token, {
-      summary: { generation: 0, cardinality: 99, fingerprint, metadata: { a: 1 } },
+      summary: { generation: 0, cardinality: 99, fingerprint, tailBytes, metadata: { a: 1 } },
     });
     const report = await w.store.checkConsistency({ summaries: true });
     expect(report.inconsistent).toEqual([
@@ -58,7 +58,7 @@ describe('checkConsistency with summaries', () => {
     ]);
     const again = (await w.registry.get(SEG))!;
     await w.registry.compareAndSwap(SEG, again.token, {
-      summary: { generation: 0, cardinality: 3, fingerprint, metadata: { a: 2 } },
+      summary: { generation: 0, cardinality: 3, fingerprint, tailBytes, metadata: { a: 2 } },
     });
     expect((await w.store.checkConsistency({ summaries: true })).inconsistent).toHaveLength(1);
     // The count and metadata it says, of another object than the one under its number.
@@ -69,6 +69,7 @@ describe('checkConsistency with summaries', () => {
         generation: 0,
         cardinality: 3,
         fingerprint: `${size}:${(crc ^ 1) >>> 0}`,
+        tailBytes,
         metadata: { a: 1 },
       },
     });
@@ -128,13 +129,13 @@ describe('checkConsistency with summaries', () => {
     await w.store.load(SEG, [1, 2, 3]);
     const row = (await w.registry.get(SEG))!;
     const aead = await w.keystore.openDek(row.wrappedDeks!);
-    const { fingerprint } = openSummary(
+    const { fingerprint, tailBytes } = openSummary(
       aead,
       SEG,
       row.summary as { generation: number; sealed: string },
     );
     await w.registry.compareAndSwap(SEG, row.token, {
-      summary: sealSummary(aead, SEG, 0, 99, fingerprint),
+      summary: sealSummary(aead, SEG, 0, 99, fingerprint, tailBytes),
     });
     const withKey = await w.store.checkConsistency({ summaries: true });
     expect(withKey.inconsistent.map((i) => i.issue)).toEqual(['summary-mismatch']);

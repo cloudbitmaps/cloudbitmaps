@@ -438,14 +438,17 @@ describe("a swap with no answer is not taken for another writer's publish of the
   // the pointer, and a load takes its number and publishes it; this call's swap, refused, loses its answer. The row then
   // names the target, but it is the load's, and the load's publish must stand.
 
-  /** The race, with the load writing `ids` under the target's number 5; what the rollback threw, if it threw. */
-  async function racedByALoad(w: World, ids: number[]): Promise<unknown> {
+  /**
+   * The race, with the load writing `ids` under the target's number 5, keeping `keep`; what the rollback threw, if it
+   * threw.
+   */
+  async function racedByALoad(w: World, ids: number[], keep = 9): Promise<unknown> {
     const audit = new RecordingAuditSink();
     const registry = noAnswer(w.registry, {
       lands: false,
       meanwhile: async () => {
         await w.storage.delete({ ...SEG, generation: 5 });
-        const r = await loadSegment(SEG, ids, w.load, { keep: 9 });
+        const r = await loadSegment(SEG, ids, w.load, { keep });
         expect(r).toMatchObject({ published: true, generation: 5 });
       },
     });
@@ -475,30 +478,48 @@ describe("a swap with no answer is not taken for another writer's publish of the
     expect(await racedByALoad(w, [6])).toBeInstanceOf(TransientError);
   });
 
-  it('when the row records a kept window, which the swap drops and the load writes, though the object is the same', async () => {
-    // A row with a window: the target above it is an object a load wrote and never published, and the load that takes
-    // its number writes it byte for byte again, so the two summaries read the same and only the window differs.
+  it('when the load records a ledger other than the one the swap writes, though the object is the same', async () => {
+    // A row with a ledger: the target above it is an object a load wrote and never published, and the load that takes
+    // its number writes it byte for byte again, so the two summaries read the same. The swap carries the whole ledger and
+    // adds the target; a load that keeps one generation writes the target and the one it superseded, so only the ledger
+    // differs.
     const w = world();
-    await loads(w, 5); // generation 4 is current, and the row records its window
+    await loads(w, 5); // generation 4 is current, and the row's ledger names 0 to 4
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [6], {
       registry: w.registry,
       publish: false,
     });
-    const err = await racedByALoad(w, [6]);
+    const err = await racedByALoad(w, [6], 1);
     expect(err).toBeInstanceOf(TransientError);
-    expect((await rowOf(w)).keptGens).toBeDefined();
+    expect((await rowOf(w)).knownGens?.map((e) => e.generation)).toEqual([4, 5]);
   });
 
-  it('is the stated limit when the load writes the same object onto a row with no window: it reads as the swap', async () => {
-    // After a rollback the row records no window, and the load that takes the number records none either, so a load
-    // that writes the very object the rollback read leaves the very row the swap would. The pointer is where the
-    // rollback asked for it, on that object, and the rollback reports and audits the move as its own.
+  it('is the stated limit when the load writes the same object and the same ledger: it reads as the swap', async () => {
+    // A load that keeps every generation writes the ledger the swap would, and, writing the very object the rollback
+    // read, leaves the very row the swap would. The pointer is where the rollback asked for it, on that object, and the
+    // rollback reports and audits the move as its own.
+    const w = world();
+    await loads(w, 5);
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [6], {
+      registry: w.registry,
+      publish: false,
+    });
+    expect(await racedByALoad(w, [6], 9)).toBeUndefined();
+  });
+
+  it('when the load seeds a ledger over a row with no usable ledger, which the swap does not write', async () => {
+    // A rollback never starts a ledger, so over a row with none it writes none; the load that takes the number writes
+    // the very object again and seeds a ledger from the bucket, so the rows differ and the swap is not taken for it. (It
+    // was the stated limit when a row that records no window was left by both.)
     const w = world();
     await loads(w, 6); // generation 5 holds [6]
     const original = (await rowOf(w)).summary;
     await rollbackSegment(SEG, 4, w.deps);
-    expect(await racedByALoad(w, [6])).toBeUndefined();
+    const row = await rowOf(w);
+    await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
+    expect(await racedByALoad(w, [6])).toBeInstanceOf(TransientError);
     expect((await rowOf(w)).summary).toEqual(original);
+    expect((await rowOf(w)).knownGens?.at(-1)?.generation).toBe(5);
   });
 });
 
@@ -669,6 +690,23 @@ describe('the undo of a rollback whose target was collected meanwhile', () => {
     );
     expect(audit.snapshot()).toEqual([]);
     expect((await rowOf(w)).currentGen).toBe(2);
+  });
+
+  it.each([
+    { name: 'cleartext', keystore: undefined },
+    { name: 'encrypted', keystore: key() },
+  ])('puts back the ledger without the target it proved collected: $name', async ({ keystore }) => {
+    const w = world(keystore);
+    await loads(w, 3);
+    expect((await rowOf(w)).knownGens!.map((e) => e.generation)).toEqual([0, 1, 2]);
+    const registry = onSwap(w.registry, 1, { after: collected(w) });
+    await expect(rollbackSegment(SEG, 0, { ...w.deps, registry }, {})).rejects.toThrow(
+      /was collected while the pointer was moving/,
+    );
+    const row = await rowOf(w);
+    expect(row.currentGen).toBe(2);
+    // A release before ledgers dropped the list here. The ledger keeps what the row still knows, and not the target.
+    expect(row.knownGens!.map((e) => e.generation)).toEqual([1, 2]);
   });
 
   it('is not sent again over a row another writer renewed the pointer of, and says the move back failed', async () => {

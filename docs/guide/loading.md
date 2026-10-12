@@ -462,18 +462,21 @@ generation the rollback restored ([what the first load after a rollback keeps](#
 `keep` is a non-negative integer: a negative, fractional, `NaN` or infinite value is refused with `ValidationError`
 before anything is written. It never touches the current generation or anything above it.
 
-**How `store.load` collects.** The segment's registry row records which generations below the pointer the last load
-kept, up to 64 of them. A load that found a list there writes the new one in the same write that moves the pointer (the
-newest `keep` of the old list and the generation it superseded) and, once that has landed, deletes **by name** each
-generation that fell out of it, after re-reading the row before each delete, and reads the row once more after the last
+**How `store.load` collects.** The segment's registry row carries a ledger of the generations it made current,
+`knownGens` ([the schema](api-reference.md#driver-kit--what-you-need-to-implement-a-driver)), whose entries below the
+pointer are the generations the last load kept, up to 64 of them. A load that found such a window there writes the new
+ledger in the same write that moves the pointer (the newest `keep` of the old window and the generation it superseded)
+and, once that has landed, deletes **by name** each generation that fell out of it, after re-reading the row before each delete, and reads the row once more after the last
 delete, which sees a rollback that landed between the read before it and the delete
 ([below](#a-rollback-that-races-a-collection)). It lists nothing. A segment that loads cleanly therefore pays two pointer
 reads and one delete for collection at any `keep` up to 64, not a listing: on S3 a steady load that deletes by name makes
 2 PUT-class requests, 5 GET-class and a delete, 8 requests, with the delete free ([what each term
-counts](cost.md#what-each-term-counts)). What a publish adds to the list is
-the generation it superseded, which was current; the rest it carries forward from the row. A listing on a row that
-records no list records what it keeps from the bucket, which can include a number a refused or crashed load took, and
-the publishes after it carry that number until the window pushes it out ([below](#how-it-stays-correct)).
+counts](cost.md#what-each-term-counts)). What a publish adds to the window is
+the generation it superseded, which was current; the rest it carries forward from the row. A publish over a row that has
+no usable window (a registry repaired by hand, a row restored without its ledger, one a rollback left with an entry above
+the pointer) writes the window its listing keeps instead: the generations a count by `keep` keeps from the bucket, which
+can include a number a refused or crashed load took, and the publishes after it carry that number until the window
+pushes it out ([below](#how-it-stays-correct)).
 A load lists the segment's objects instead in these cases:
 
 - every 16th generation, so what the by-name loads leave behind is gone within 16 generations: the object a crashed or
@@ -486,16 +489,16 @@ A load lists the segment's objects instead in these cases:
   summary opened nothing, so a load with a `keep` of 1 or more that is about to delete by name looks for the current
   object with one zero-byte read first, and lists unless it finds it. A `keep` of 0 deletes the generation it
   superseded, which is the object in question, so it makes no such read;
-- when the row records no list: a `keep` above 64, which a row cannot record, and the first load after a rollback,
-  which leaves the row recording none. That load keeps `keep` of the generations it finds below the pointer, the one
-  it superseded first and then the newest by number, and records them, so the next one collects by name. A `keep`
-  above 64 lists on every load.
+- when the row has no usable window: a `keep` above 64, which a window cannot hold, and the first load after a rollback,
+  which leaves the ledger with an entry above the pointer. That load keeps `keep` of the generations it finds below the
+  pointer, the one it superseded first and then the newest by number, and its publish writes them as the window, so the
+  next one collects by name. A `keep` above 64 lists on every load.
 
-The row's list is a cache of what a listing would keep, and the listing repairs it. A name in it can be missing from
+The row's window is a cache of what a listing would keep, and the listing repairs it. A name in it can be missing from
 the bucket after a lifecycle rule or a collection that was not a load's took the object; the window then holds fewer than
 `keep` real generations until the name ages out, at most `keep` loads, and nothing that should stay is deleted. A fleet
-that mixes `keep` values up to 64 with larger ones, or with writers that record no list, lists on the loads with the
-smaller `keep`, because the larger one drops the list: set the same `keep` on every writer. Because each load collects with its
+that mixes `keep` values up to 64 with larger ones, or with writers that record no window, lists on the loads with the
+smaller `keep`, because the larger one records none: set the same `keep` on every writer. Because each load collects with its
 own `keep`, a load with a smaller `keep` can delete a generation that a wider load's list names; the list is a request to
 keep, not a promise that the object is there.
 
@@ -509,7 +512,7 @@ neither is this one. An `*Into` always lists when it is given a `keep`.
 | Path | Collects? |
 |---|---|
 | `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1): by name at any `keep` up to 64, by listing on every 16th generation and in the cases above. |
-| an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination lists once, collects everything below its pointer beyond its `keep`, and records the window it kept. This is the step `store.load` exists to stop you forgetting. |
+| an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination lists twice when its number was free (once to seed the ledger, once to collect; it sends no separate write), collects everything below its pointer beyond its `keep`, and records the window it kept. This is the step `store.load` exists to stop you forgetting. |
 | `eraseSubject` | **Yes**, with `keep: 0`: the generation holding the bit must not survive the call. Collection's range leaves out three kinds of object, so the erasure deletes each itself, by name: a holder above the pointer, which a `rollback` leaves there; a first load's object that holds the id on a segment with no generation yet; and an object no read of the segment can open, which it cannot search and deletes whatever the id. |
 | `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched. |
 | `dropSegment` | Deletes every generation of the segment it drops, and reports any it could not in `generationsRemaining`. |
@@ -597,15 +600,15 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   erasure deleted it and a load took its number meanwhile) the pointer and the old summary are put back and the
   rollback throws `NotFoundError`.
 - A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row is the one
-  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and no kept
-  list, and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
+  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and the ledger it wrote (none, over a row with no usable ledger: a rollback starts no ledger, a
+  load seeds one, so a load's write differs there), and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
   pointer put back if the target went meanwhile. Otherwise the rollback throws that `TransientError`, and the pointer
   may still move, since the write may yet land: run the rollback again, which finds the pointer where it is. A load or
   another writer that moved the row meanwhile is left standing, and the rollback throws that `TransientError` rather
   than `WriteConflictError`. Some writes leave the very row the swap would, and cannot be told from it. On a cleartext
   segment: another rollback onto the same target, whatever row it read, and a load that wrote, under the target's
-  number, the very object the rollback read and recorded no kept window (onto a row that records none, as after a
-  rollback, or with a `keep` above 64). On an encrypted segment, the swap's sealed summary tells every other write
+  number, the very object the rollback read and recorded the ledger the rollback would (a load that keeps every
+  generation, onto a row whose ledger the rollback carried). On an encrypted segment, the swap's sealed summary tells every other write
   apart, except when the rollback had no key at hand and wrote no summary: then another such rollback onto the same
   target cannot be told apart. The pointer is then where the rollback asked for it, and the rollback reports the move as
   its own.
@@ -1223,14 +1226,15 @@ segment. A load that won the number can still be refused by its guard. Publishin
 generation that is already current is a no-op that reports success, unless the publish is fenced (below), in which
 case it is refused.
 
-**The row records the window, and the write that moves the pointer writes it.** The list of kept generations goes in the
-same compare-and-swap as the pointer, derived from the very row that write is conditioned on, so the list a load deletes
-by is the list that row held and no other. A publish adds only the generation it superseded, which
-was current, and carries the rest of the row's list forward; a listing that finds no list records the window it keeps
-from the bucket, which can name the number a refused load took, and later publishes keep naming it until the window
-pushes it out (see the paragraph on orphans below). Anything else that moves the pointer (a `rollback`, a purge and re-create) leaves the row recording no list, which
-only makes the next load list; a write that leaves the pointer where it is (`setRetention`, a crypto-shred) keeps it. A
-row a rollback moved records no list, so the next load lists once and records it.
+**The row records the window, and the write that moves the pointer writes it.** The ledger of kept generations goes in the
+same compare-and-swap as the pointer, derived from the very row that write is conditioned on, so the window a load deletes
+by is the window that row held and no other. A publish adds only the generation it superseded, which
+was current, and carries the rest of the row's window forward; a publish over a row with no usable window writes the
+window a listing keeps from the bucket, which can name the number a refused load took, and later publishes keep naming it
+until the window pushes it out (see the paragraph on orphans below). A purge and re-create leaves the row with no
+ledger, which only makes the next load list; a write that leaves the pointer where it is (`setRetention`, a crypto-shred
+aside) keeps it. A `rollback` carries the ledger it found, moving the target to its end, and starts none over a row that
+had none; the entries it leaves above the pointer make the window unknown, so the next load lists twice when its number was free (once to seed the ledger, once to collect; it sends no separate write) and writes the window with the pointer.
 
 **Which fence a publish carries.** Forward-only is right for a writer whose content does not depend on what was
 current: a load's ids come from upstream, so winning a race loses nothing it knew about. It is wrong for a writer that
@@ -1276,10 +1280,10 @@ and a generation another load published can sit in a window the row does not rec
 **An orphan is collected later, and a rollback can name it until then.** A publish never adds an orphan to the row's
 list: what it adds is the generation it superseded, which was current. A load whose check meets it numbers above it by a
 listing and, once its own generation is current, that listing deletes the orphan, which is below the pointer, where the
-row records a kept list that does not name it. Where the row records none (after a rollback, or with a `keep` above 64),
+row's window does not name it. Where the row has no usable window (after a rollback, or with a `keep` above 64),
 that listing keeps a window from what it finds, the generation the load superseded first and then the newest by number,
-and, at a `keep` up to 64, records it: the orphan can take a place in that window, and the publishes after it carry it
-in the row's list until the window pushes it out. An orphan stranded elsewhere below the pointer waits for the next
+and, at a `keep` up to 64, its publish wrote it: the orphan can take a place in that window, and the publishes after it
+carry it in the row's window until the window pushes it out. An orphan stranded elsewhere below the pointer waits for the next
 listing, at most 16 generations on, unless a window holds it. Until it goes, [`rollbackSegment`](#roll-back-a-segment)
 can name it as a target: a rollback checks only that its target is stored, sealed to match the row, and opens, so a
 rollback onto an orphan publishes what no load published, an empty generation a guard refused among them. Nothing yet
@@ -1330,20 +1334,18 @@ them: the check is the guard's read of the object, or, for a guard that took the
 zero-byte read before the pass takes a name. A load that makes no such check, one with `allowEmpty` and neither `minRetained` nor `maxGrowth`,
 cannot tell, and deletes the names its list pushed out.
 
-The listing pass a load runs on a row that records a list (every 16th generation, a check that met an object, a caller
+The listing pass a load runs on a row that has a window (every 16th generation, a check that met an object, a caller
 that asks for a listing) deletes every generation below the pointer that the row does not name, whether the row
 names it as the publish wrote it or as it reads after the listing (a load that published meanwhile keeps its own window),
-and re-proves before each delete that the row still names a list and still does not name the generation. Where it cannot
-prove a delete it stops, and the load returns. Where the row records none, it keeps `keep` of the generations it finds,
-the one the load superseded first and then the newest by number, and records them with one compare-and-swap on the row
-it just published. It puts the superseded generation first only while the lower of its two reads of the pointer, the one
+and re-proves before each delete that the row still has a window and still does not name the generation. Where it cannot
+prove a delete it stops, and the load returns. Where the row has none, it keeps `keep` of the generations it finds,
+the one the load superseded first and then the newest by number, the window its publish wrote. It puts the superseded generation first only while the lower of its two reads of the pointer, the one
 before its listing and the one after, is the load's own generation. Otherwise another writer moved the pointer before
 the pass first read it, or a rollback lowered it by the second read, and the generation that pointer superseded is not
 one this load knows, so the window is the newest by number. A publish that lands after the first read, or a rollback
 down and forward again to the load's generation, leaves the superseded generation first. Whatever it keeps, every
-generation it deletes is below that lower pointer. That compare-and-swap moves the row's token, so a derived writer in
-flight on the row, an erasure rewrite, meets a lost fence and re-derives, and it happens once for each row that records
-no list. A lost race there is not an error.
+generation it deletes is below that lower pointer. It writes nothing: the publish it follows wrote the window, so it
+moves the row's token once less than a pass that recorded its result in a write of its own.
 
 **A lease on a pinned generation is read from the row a collection already holds.** A load's collection, by name or by
 listing, spares a generation that a live lease in the row names, and goes on to the next: the by-name pass reads the row

@@ -13,6 +13,49 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **Registry rows are schema 5, and a store moves to 0.21 by loading its segments into a new prefix.** Every row 0.21
+  writes is stamped `schemaVersion: 5`. It carries `knownGens`, below, in place of `keptGens`, and its summary records
+  `tailBytes`. 0.21 reads rows stamped 5 only. A row stamped 1 to 4 is refused with `UnsupportedError`, naming its key
+  and these steps, by every read and write of it and by every `list()` that reaches it, so one such row stops each
+  fleet-wide call that lists its namespace. A 0.20 process refuses a schema-5 row the same way. There is no upgrade in
+  place and no downgrade. Move each store:
+  1. With the release that wrote the rows (0.20 for schema 4), export every segment (`store.exportSegments`,
+     [the export guide](docs/guide/export.md)). Save beside each file the row's whole `retention` and `residency`
+     objects, read from `backend.registry` (`get`, or `list` for a namespace), keys of your own included. If you load
+     with metadata, also save the generation's `metadata` from `seg.stat()`. Keep the manifest's `skipped` list: a
+     crypto-shredded segment is not exported, and its row, the record that it was destroyed, stays with the old prefix.
+  2. With 0.21, on a new prefix and with the same `encryption` options, load each file with its metadata:
+     `store.load(ref, { serialized })` for a `roaring` file, or its ids for an `ndjson` one. Then restore each row's
+     retention and residency exactly: read the row the load created with `backend.registry.get(ref)`, and write
+     `backend.registry.compareAndSwap(ref, row.token, { retention, residency })`, naming only the ones the old row had
+     (`setRetention` writes `expiresAt` alone).
+  3. Re-run, against the new prefix, every erasure (`eraseSubject`, `eraseNamespace`, a crypto-shred) processed since
+     the export began: the export holds what each segment held when it was read.
+  4. Move every reader and writer to the new prefix. Then delete the old prefix, including, on a versioned bucket, its
+     noncurrent versions and delete markers, and its soft-deleted objects where the storage keeps them.
+
+  Only each segment's current generation moves. These stay with the old prefix: the generations `keep` retained, every
+  generation a rollback could have moved onto, every lease, and every `pinnedAt` (a pin taken before the move cannot be
+  reopened after it). Generation numbers start again at 0.
+- **A registry of your own stores `knownGens`, and a summary records `tailBytes`.** `RegistryRecord.keptGens` is gone.
+  `knownGens` lists `{ generation, footerCrc }` for the generations the row's loads and rollbacks made current and no
+  collection or erasure has since removed: the current one, the generations `keep` keeps below it, and the generations a
+  rollback left above the pointer. When a publish over a row with no usable ledger seeds one, it also lists the
+  generations a count by `keep` keeps in the bucket, which can include an object no load published (an orphan or a
+  stray): an entry says the library knows the generation and its footer checksum, not that a load published it. Its rules:
+  - In the order the generations were made current, oldest first and the current one last; a rollback onto a generation
+    moves it to the end. Stored in the order given: a registry that sorts it loses that order with no error.
+  - At most 192 entries written and 384 read, in the clear on every row, an encrypted one included. The entries above the
+    pointer show anyone who reads the registry that a rollback happened, and from which generation.
+  - A patch that changes `currentGen` without naming it drops it, like `summary`.
+  - The shipped registries refuse, with `ValidationError`, a list that repeats a generation, is empty, sits on a row with no
+    pointer, ends with anything but the row's `currentGen`, or whose last entry's checksum disagrees with a clear summary's
+    fingerprint.
+
+  A clear `RegistrySummary` gains `tailBytes`, and a sealed one seals it after the checksum, so a sealed summary is at
+  least 52 bytes. A rollback onto an object with bytes between its index and its footer, which only another writer
+  makes, writes no summary when its tail is more than a summary records (8,392,820 bytes). The conformance suite holds a
+  driver to each rule. A registry that drops `knownGens` is correct: the next load over each row lists the bucket and writes the ledger again.
 - **A pin's `fingerprint` is required.** `PinnedAt.fingerprint` is `string | null` (`null` only when `generation` is
   `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A pin of a generation built without a
   string `version` and `fingerprint` is refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and
@@ -81,6 +124,11 @@ so, and so do the module headers in the code.
   32 and 262,656 (free inside the region, billed across regions). A source with no
   `getChunks`, and an exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to
   count the requests of this shape. No public signature changes.
+- **The disaster-recovery guide's strays table changes.** A load over a row with no usable ledger (a registry repaired by
+  hand, a pointer moved down by hand, a row restored without its ledger) lists the bucket and writes the window a count by
+  `keep` keeps, then collects as it did over a row that recorded one. After a restore to pointer 1 with generations 0 and
+  1 from before it and strays at 4 and 5, re-runs at `keep` 3 now leave 1, 2, 3 and 6, and at `keep` 5 leave 0, 1, 2, 3
+  and 6, whether or not the restored row names a window; the strays go at the load that passes them.
 
 - **A cold `iterate()` or combine on a wide segment sends its first request sooner.** A stream over a wide segment
   looked up every chunk of the read in the cache, mapped every key to its index entry and planned every range of the

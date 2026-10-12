@@ -190,22 +190,6 @@ export async function openRollbackTargetFrom(
 }
 
 /**
- * What one tail read of the object under `key` tells a rollback about it: whether the footer says it is encrypted, and,
- * when the object and the key agree (an encrypted object opened with `crypto`, a cleartext one with none), the reader
- * the open gives, which holds its count and metadata. No reader when they disagree, which the caller refuses as a
- * target the row cannot use, and none for an encrypted object when the caller has no key. A footer that fails its own
- * checks, an object another generation's, and an index or metadata that do not open are an {@link IntegrityError}.
- */
-export async function openRollbackTarget(
-  storage: IStorageDriver,
-  key: GenKey,
-  crypto: CrbmCrypto | undefined,
-): Promise<{ encrypted: boolean; reader: CrbmReader | undefined }> {
-  const footer = await readRollbackTargetFooter(storage, key);
-  return { encrypted: footer.encrypted, reader: await openRollbackTargetFrom(footer, key, crypto) };
-}
-
-/**
  * The footer CRC of the object under `key` ({@link CrbmReader.fingerprint} carries it), from one read of a footer's
  * worth, so it reads an encrypted object's CRC as it does a cleartext one's, with no key. {@link NotFoundError} when
  * the key holds no object; a footer that fails its own checks is an {@link IntegrityError}.

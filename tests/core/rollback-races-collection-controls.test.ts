@@ -272,7 +272,7 @@ describe('a refused load keeps its object under a row another load changed', () 
       const row = await w.registry.get(ref);
       if (row === null) throw new Error('the row is gone');
       await w.registry.compareAndSwap(ref, row.token, {
-        keptGens: [],
+        knownGens: row.knownGens!.slice(-1),
         leases: [{ holder: '0123456789abcdef', generation: 1, until: 4_000_000_000_000 }],
       });
       throw new TransientError('connection reset after the write');

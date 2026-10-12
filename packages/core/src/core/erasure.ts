@@ -592,7 +592,9 @@ async function shredSegment(
         // The current generation's cached count and metadata go with it: sealed, they cannot be opened without
         // the wrappings; clear, they would outlive the segment on its tombstone.
         summary: undefined,
-        // A tombstone holds nothing: a lease names a generation of a segment that now resolves none.
+        // A tombstone holds nothing: a lease names a generation of a segment that now resolves none, and the ledger
+        // vouches for objects of a segment no read resolves, which the pointer staying put would otherwise keep.
+        knownGens: undefined,
         leases: undefined,
         // A sweep's mark, in this same write, so no other tombstone ever carries it: any other tombstone write removes
         // one a restored or hand-edited row carried.

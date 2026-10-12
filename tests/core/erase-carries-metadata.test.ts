@@ -71,6 +71,7 @@ describe.each([
       cardinality: IDS.length - 1,
       metadata: META,
       fingerprint: reader.fingerprint,
+      tailBytes: reader.tailBytes,
     });
     expect(
       summaryAgrees(described!, { cardinality: reader.count(), metadata: reader.metadata }),
@@ -80,6 +81,7 @@ describe.each([
         generation: 1,
         cardinality: IDS.length - 1,
         fingerprint: reader.fingerprint,
+        tailBytes: reader.tailBytes,
         metadata: META,
       });
     } else {
@@ -119,6 +121,7 @@ describe.each([
     expect(usableSummary(SEG, row, await aeadOf(w))).toEqual({
       cardinality: IDS.length - 2,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
   });
@@ -134,6 +137,7 @@ describe.each([
       cardinality: IDS.length - 1,
       metadata: undefined,
       fingerprint: reader.fingerprint,
+      tailBytes: reader.tailBytes,
     });
   });
 
@@ -142,12 +146,12 @@ describe.each([
     await loadSegment(SEG, IDS, w.deps, { metadata: META });
     const aead = await aeadOf(w);
     const row = (await w.registry.get(SEG))!;
-    const { fingerprint } = usableSummary(SEG, row, aead)!;
+    const { fingerprint, tailBytes } = usableSummary(SEG, row, aead)!;
     // The row says a different count and different metadata than the object holds.
     const lie: RegistrySummary =
       aead === undefined
-        ? { generation: 0, cardinality: 999, fingerprint, metadata: { def: 'lie' } }
-        : sealSummary(aead, SEG, 0, 999, fingerprint, { def: 'lie' });
+        ? { generation: 0, cardinality: 999, fingerprint, tailBytes, metadata: { def: 'lie' } }
+        : sealSummary(aead, SEG, 0, 999, fingerprint, tailBytes, { def: 'lie' });
     await w.registry.compareAndSwap(SEG, row.token, { summary: lie });
 
     const result = await eraseIdFromSegment(SEG, 200_000, w.deps);
@@ -157,6 +161,7 @@ describe.each([
       cardinality: IDS.length - 1,
       metadata: META,
       fingerprint: (await readerOf(w, 1)).fingerprint,
+      tailBytes: (await readerOf(w, 1)).tailBytes,
     });
   });
 
@@ -223,6 +228,7 @@ describe('an erasure over an object whose metadata block was stripped', () => {
     expect(usableSummary(SEG, row, await aeadOf(w))).toEqual({
       cardinality: IDS.length - 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
   });
@@ -240,6 +246,7 @@ describe('an erasure over an object whose metadata block was stripped', () => {
     expect(usableSummary(SEG, after, await aeadOf(w))).toEqual({
       cardinality: IDS.length - 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: undefined,
     });
   });
@@ -256,9 +263,9 @@ describe('an erasure over an object whose metadata block was stripped', () => {
     await loadSegment(SEG, IDS, w.deps, { metadata: META });
     const aead = (await aeadOf(w))!;
     const row = (await w.registry.get(SEG))!;
-    const { fingerprint } = usableSummary(SEG, row, aead)!;
+    const { fingerprint, tailBytes } = usableSummary(SEG, row, aead)!;
     await w.registry.compareAndSwap(SEG, row.token, {
-      summary: sealSummary(aead, SEG, 0, IDS.length, fingerprint, { def: 'other' }),
+      summary: sealSummary(aead, SEG, 0, IDS.length, fingerprint, tailBytes, { def: 'other' }),
     });
 
     expect(await eraseIdFromSegment(SEG, 1, w.deps)).toMatchObject({ erased: true });
@@ -274,9 +281,12 @@ describe('an erasure over an object whose metadata block was stripped', () => {
     const row = (await w.registry.get(SEG))!;
     // The sealed bytes are another generation's: they do not open under this one's associated data.
     const aead = (await aeadOf(w))!;
-    const { fingerprint } = usableSummary(SEG, row, aead)!;
+    const { fingerprint, tailBytes } = usableSummary(SEG, row, aead)!;
     await w.registry.compareAndSwap(SEG, row.token, {
-      summary: { ...sealSummary(aead, SEG, 7, IDS.length, fingerprint, META), generation: 0 },
+      summary: {
+        ...sealSummary(aead, SEG, 7, IDS.length, fingerprint, tailBytes, META),
+        generation: 0,
+      },
     });
 
     expect(await eraseIdFromSegment(SEG, 1, w.deps)).toMatchObject({ erased: true });
@@ -298,6 +308,7 @@ describe('an erasure over an object whose metadata block was stripped', () => {
       generation: 1,
       cardinality: IDS.length - 1,
       fingerprint: (await readerOf(w, 1)).fingerprint,
+      tailBytes: (await readerOf(w, 1)).tailBytes,
     });
   });
 });
@@ -341,6 +352,7 @@ describe('the store carries the metadata through eraseSubject', () => {
       generation: 1,
       cardinality: IDS.length - 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
   });

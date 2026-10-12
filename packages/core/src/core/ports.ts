@@ -435,6 +435,12 @@ export interface ClearRegistrySummary {
    * footer stores.
    */
   readonly fingerprint: string;
+  /**
+   * The bytes from the end of the last chunk payload to the end of the object: the extension block, if any, the index and
+   * the footer. A cold open reads this many bytes from the object's end to open it in one request. An integer from 104,
+   * the footer's size, to the object's size less its 8-byte preamble, and at most 8,392,820.
+   */
+  readonly tailBytes: number;
   /** The generation's metadata, when it has any. Never the empty object. */
   readonly metadata?: GenerationMetadata;
 }
@@ -445,10 +451,24 @@ export interface SealedRegistrySummary {
   readonly generation: number;
   /**
    * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64, the object's size as a
-   * little-endian u64 and its footer checksum as a little-endian u32 (its fingerprint), then the metadata's canonical
-   * JSON, if any. The numbers are fixed-width, so the length reveals only the metadata's size.
+   * little-endian u64 and its footer checksum as a little-endian u32 (its fingerprint), its `tailBytes` as a
+   * little-endian u32, then the metadata's canonical JSON, if any. The numbers are fixed-width, so the length reveals only
+   * the metadata's size.
    */
   readonly sealed: string;
+}
+
+/**
+ * A generation a row knows it published: its number, and the checksum its object's footer stores. A rollback moves only
+ * onto a generation the row knows, and an object whose footer carries another checksum is another object under that
+ * number. The footer's checksum covers the index's checksum, which covers each chunk's, so it commits to the object's ids
+ * and shape; for a cleartext object it does not cover the extension block's bytes.
+ */
+export interface KnownGeneration {
+  /** A non-negative safe integer. */
+  readonly generation: number;
+  /** The object's footer CRC32C (the second half of its fingerprint `<size>:<crc>`), an integer from 0 to 2^32 - 1. */
+  readonly footerCrc: number;
 }
 
 /**
@@ -509,15 +529,27 @@ export interface RegistryRecord extends SegmentRef {
    */
   readonly summary?: RegistrySummary;
   /**
-   * The generations below `currentGen` that the last publish kept as its grace window, ascending. Optional: absent
-   * means the row does not know which generations are kept, and a load then lists the bucket to collect and records
-   * them; an empty list means none are. Trusted only while every entry is below `currentGen`. A patch that moves
+   * The generations this row knows and has not decided to delete, the current one included, with each object's footer
+   * checksum: the ones it made current, in the order they were made current, oldest first and the current one last, and,
+   * when a publish over a row with no usable ledger seeds one, the ones a count by `keep` keeps in the bucket, which can
+   * include an object no load published (an orphan or a stray). An entry says the library knows the generation and its
+   * footer checksum, not that a load published it. A generation appears once,
+   * at its most recent time current (a rollback onto it moves it to the end). The entries before the last are the kept
+   * window, and what a rollback left; those numbered above `currentGen` are what a rollback left. In the clear on every
+   * row, an encrypted one included: a footer checksum of an encrypted object covers a random nonce and says nothing about
+   * its count, size or content, but the entries above the pointer show anyone who reads the registry that a rollback
+   * happened, and from which generation.
+   *
+   * Optional: absent means the row does not know, and a load then lists the bucket to collect. A shipped registry stores
+   * the list in the order given, at most 192 entries written and 384 read, and refuses a list that repeats a
+   * generation, one whose last entry is not the row's `currentGen`, and one whose current entry's checksum disagrees with
+   * a clear `summary`'s fingerprint. A stored list that disagrees with its row is read and not used. A patch that moves
    * `currentGen` without naming it drops it.
    */
-  readonly keptGens?: readonly number[];
+  readonly knownGens?: readonly KnownGeneration[];
   /**
    * The leases on this segment's generations: each keeps one generation out of a load's collection until it ends.
-   * Optional; absent means none. Unlike {@link keptGens} it does not follow the pointer: a patch that moves
+   * Optional; absent means none. Unlike {@link knownGens} it does not follow the pointer: a patch that moves
    * `currentGen` leaves it as it was, and only a patch that names it, or the row going away, changes it. Entries
    * past their end are ignored by every collector and pruned by the next write that names the list. A row's identity
    * is its token, so a purged and re-created segment starts with none.
@@ -538,7 +570,7 @@ export interface RegistryRecord extends SegmentRef {
   /**
    * The token of the most recent write that named a field a read resolves through: the row's create, or a compare-and-swap
    * whose patch named `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary` (the resolved fields), at any value,
-   * the one the field already had included. A write that names only `leases`, `retention`, `residency` or `keptGens`
+   * the one the field already had included. A write that names only `leases`, `retention`, `residency` or `knownGens`
    * leaves it. The registry sets it; a caller never does. Compared by equality only, and never reused under one name,
    * since a token is not: a reader keys what it caches on a generation with it, so a lease or a policy write leaves a
    * warm reader's cache standing, and a write that changes the resolution never does.
@@ -561,8 +593,8 @@ export interface NewRegistryRecord {
   readonly residency?: GovernanceMeta;
   /** Must name `currentGen` when given. */
   readonly summary?: RegistrySummary;
-  /** Every entry below `currentGen`, ascending; see {@link RegistryRecord.keptGens}. */
-  readonly keptGens?: readonly number[];
+  /** In the order made current, the last entry the new row's `currentGen`; see {@link RegistryRecord.knownGens}. */
+  readonly knownGens?: readonly KnownGeneration[];
 }
 
 /**
@@ -572,8 +604,8 @@ export interface NewRegistryRecord {
  * Presence-based: a field the patch does not mention is left as it was. `summary` is the one exception, because it
  * describes the current generation: a patch that moves `currentGen` and does not mention `summary` drops the old
  * one rather than keep a description of another generation. A `summary` the patch gives must name the
- * `currentGen` the row will have. `keptGens` follows the pointer the same way: a patch that moves `currentGen` and does
- * not mention it drops it, and one that gives it must name only generations below the `currentGen` the row will have.
+ * `currentGen` the row will have. `knownGens` follows the pointer the same way: a patch that moves `currentGen` and does
+ * not mention it drops it, and one that gives it must end with the `currentGen` the row will have.
  * "Moves" means changes value: a patch that names `currentGen` at the value it has keeps both.
  *
  * A patch that names a resolved field (`currentGen`, `status`, `wrappedDeks`, `keyId`, `summary`), by presence and at any
@@ -589,7 +621,7 @@ export type RegistryPatch = Partial<
     | 'retention'
     | 'residency'
     | 'summary'
-    | 'keptGens'
+    | 'knownGens'
     | 'leases'
   >
 >;

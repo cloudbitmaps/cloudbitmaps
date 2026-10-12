@@ -1,3 +1,4 @@
+import { windowOf } from '@/core/known-generations';
 import { runConsistencyCheck } from '@cloudbitmaps/core';
 import { openGenerationReader } from '@/core/crbm-open';
 import { gcOrphanGenerations } from '@/core/generation-gc';
@@ -213,7 +214,7 @@ describe('a refused load whose row another writer changed', () => {
     );
     const row = (await w.registry.get(REF))!;
     expect(row.currentGen).toBe(2);
-    expect(row.keptGens).toEqual([1]);
+    expect(windowOf(row)).toEqual([1]);
     expect(await objects(w.storage)).toEqual([1, 2]);
     await consistent(w);
   });

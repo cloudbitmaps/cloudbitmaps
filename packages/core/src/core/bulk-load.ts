@@ -22,9 +22,10 @@ import type {
 import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
 import { ChunkLoadInput, DecodedLoadInput } from './load-input';
-import { summaryOf } from './summary';
+import { ownSummary } from './summary';
 import { encodeEach, writeEncodedChunks } from './crbm-write';
 import { provesOwnObject } from './crbm-open';
+import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept } from './publish';
 
 /**
@@ -415,16 +416,16 @@ export async function bulkLoadAhead(
     }
   }
 
-  const { size, sha256, chunkCount, cardinality, fingerprint } = await writeEncodedChunks(
-    driver,
-    key,
-    chunks,
-    { crypto, clock: options.clock, metadata: options.metadata },
-  );
-  const summary = summaryOf(
+  const { size, sha256, chunkCount, cardinality, fingerprint, tailBytes } =
+    await writeEncodedChunks(driver, key, chunks, {
+      crypto,
+      clock: options.clock,
+      metadata: options.metadata,
+    });
+  const summary = ownSummary(
     key,
     key.generation,
-    { cardinality, metadata: options.metadata, fingerprint },
+    { cardinality, metadata: options.metadata, fingerprint, tailBytes },
     crypto?.aead,
   );
   // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
@@ -433,6 +434,7 @@ export async function bulkLoadAhead(
     const published = await publishGenerationKept(options.registry, key, {
       wrappedDeks: newWrapped,
       summary,
+      footerCrc: footerCrcOf(fingerprint),
       cleartext: crypto === undefined,
       holdsOwnObject: () => provesOwnObject(driver, key, fingerprint),
       clock: options.clock,

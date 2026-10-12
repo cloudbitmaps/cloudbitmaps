@@ -391,6 +391,7 @@ describe.each(everyRegistry)('a crypto-shred clears the summary: %s', (_, makeRe
         generation: 2,
         cardinality: 7,
         fingerprint: '4096:7',
+        tailBytes: 300,
         metadata: { who: 'a person' },
       },
     });
@@ -410,7 +411,7 @@ describe.each(everyRegistry)('a crypto-shred clears the summary: %s', (_, makeRe
     await registry.create(REF, {
       currentGen: 2,
       wrappedDeks: [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }],
-      summary: { generation: 2, sealed: Buffer.alloc(48).toString('base64') },
+      summary: { generation: 2, sealed: Buffer.alloc(52).toString('base64') },
     });
     const result = await destroySegment(REF, { registry }, { confirmSegment: 's' });
     expect(result.cryptoShredded).toBe(true);

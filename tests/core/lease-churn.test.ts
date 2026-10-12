@@ -118,8 +118,12 @@ describe('onlyLeasesDiffer', () => {
     segment: 's',
     currentGen: 3,
     status: 'active',
-    keptGens: [1, 2],
-    summary: { generation: 3, cardinality: 5, fingerprint: '4096:1' },
+    knownGens: [
+      { generation: 1, footerCrc: 11 },
+      { generation: 2, footerCrc: 12 },
+      { generation: 3, footerCrc: 1 },
+    ],
+    summary: { generation: 3, cardinality: 5, fingerprint: '4096:1', tailBytes: 300 },
     retention: { expiresAt: 5 },
     createdAt: 1,
     updatedAt: 1,
@@ -143,8 +147,11 @@ describe('onlyLeasesDiffer', () => {
 
   it.each([
     ['the pointer', { currentGen: 4 }],
-    ['the kept window', { keptGens: [2] }],
-    ['the summary', { summary: { generation: 3, cardinality: 6, fingerprint: '4096:1' } }],
+    ['the ledger', { knownGens: [{ generation: 3, footerCrc: 1 }] }],
+    [
+      'the summary',
+      { summary: { generation: 3, cardinality: 6, fingerprint: '4096:1', tailBytes: 300 } },
+    ],
     ['a retention policy', { retention: { expiresAt: 6 } }],
     ['the status', { status: 'destroyed' as const }],
     ['the key wrappings', { wrappedDeks: [{ keyId: 'k', wrapped: 'AA==' }] }],
