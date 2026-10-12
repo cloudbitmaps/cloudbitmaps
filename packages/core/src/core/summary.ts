@@ -21,13 +21,7 @@ import { aadFor } from './crypto';
 import { U32_MAX } from './bit-route';
 import { IntegrityError, isIntegrityError } from './errors';
 import { fingerprintFor, fingerprintParts } from './crbm/fingerprint';
-import {
-  DEFAULT_MAX_INDEX_BYTES,
-  EXT_TRAILER_BYTES,
-  FOOTER_BYTES,
-  MAX_EXT_BYTES,
-  PREAMBLE_BYTES,
-} from './crbm/format';
+import { FOOTER_BYTES, PREAMBLE_BYTES } from './crbm/frame';
 import {
   MAX_METADATA_BYTES,
   canonicalMetadataJson,
@@ -59,12 +53,12 @@ export const MAX_SUMMARY_CARDINALITY = U32_MAX + 1;
 
 /**
  * The most a summary's `tailBytes` can be: the reader's own default caps on what an open fetches, an index of at most
- * {@link DEFAULT_MAX_INDEX_BYTES}, an extension block of at most {@link MAX_EXT_BYTES} and its trailer, and the footer.
- * The library's writer cannot reach it. A reader can report more for an object it did not write, since it accepts
- * bytes between the index and the footer.
+ * 8 MiB, an extension block of at most its cap and its trailer, and the footer. The library's writer cannot reach it. A
+ * reader can report more for an object it did not write, since it accepts bytes between the index and the footer. A
+ * literal, so the registry validators that use it do not import the format module; a test holds it to the sum of the
+ * format's constants.
  */
-export const MAX_TAIL_BYTES =
-  DEFAULT_MAX_INDEX_BYTES + MAX_EXT_BYTES + EXT_TRAILER_BYTES + FOOTER_BYTES;
+export const MAX_TAIL_BYTES = 8_392_820;
 
 /** Whether `tailBytes` is one a summary of an object of `size` bytes can carry. */
 export function tailBytesFit(tailBytes: unknown, size: number): boolean {

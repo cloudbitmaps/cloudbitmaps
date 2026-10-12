@@ -15,6 +15,12 @@ import {
   usableSummary,
 } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
+import {
+  DEFAULT_MAX_INDEX_BYTES,
+  EXT_TRAILER_BYTES,
+  FOOTER_BYTES,
+  MAX_EXT_BYTES,
+} from '@/core/crbm/format';
 
 /**
  * The summary a row carries for its current generation: how it is sealed on an encrypted segment, what a reader may
@@ -52,6 +58,12 @@ const row = (over: Partial<RegistryRecord>): RegistryRecord => ({
   token: 't',
   pointerId: 't',
   ...over,
+});
+
+it("the tail cap is the reader's own default caps on an index, an extension block with its trailer, and the footer", () => {
+  expect(MAX_TAIL_BYTES).toBe(
+    DEFAULT_MAX_INDEX_BYTES + MAX_EXT_BYTES + EXT_TRAILER_BYTES + FOOTER_BYTES,
+  );
 });
 
 describe('a clear summary', () => {

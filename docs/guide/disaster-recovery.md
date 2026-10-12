@@ -616,16 +616,16 @@ only once the pointer is on the target — so keep the error with your incident 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
 level or in the record), or that holds a value out of range, such as an unknown `status`, a malformed `wrappedDeks`
-list, a malformed `summary` (one without the fingerprint of its object included), a malformed `keptGens` or `leases`
+list, a malformed `summary` (one without the fingerprint of its object included), a malformed `knownGens` or `leases`
 list, a `token` in any form but the library's, or a `pointerId` that is not one of the row's own tokens. A token is 32
 lowercase hex digits of incarnation id, a decimal counter and a write part (16 lowercase hex digits), `.`-separated; a
 `pointerId` has the same form, the token's incarnation and a counter no higher than the token's. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
-`wrappedDeks` list. Rows are stamped `schemaVersion` 4, and the registry reads rows stamped 4 only. A row with another
+`wrappedDeks` list. Rows are stamped `schemaVersion` 5, and the registry reads rows stamped 5 only. A row with another
 `schemaVersion` is refused with `UnsupportedError` naming its key: a higher one was written by a newer release, and the
-fix is to upgrade the process reading it, not to touch the row; one stamped 1, 2 or 3 cannot be read, deleted or dropped
-by the library, and the fix is to move the bucket's segments to a new prefix by the steps in the [CHANGELOG](../../CHANGELOG.md#0200--2026-10-09), then delete the old one. A process that
-reads an older schema refuses a schema-4 row the same way.
+fix is to upgrade the process reading it, not to touch the row; one stamped 1 to 4 cannot be read, deleted or dropped
+by the library, and the fix is to move the bucket's segments to a new prefix by the steps in the [CHANGELOG](../../CHANGELOG.md)'s Breaking entry for registry schema 5, then delete the old one. A process that
+reads an older schema refuses a schema-5 row the same way.
 
 One refused row costs far more than its own segment:
 
@@ -769,32 +769,28 @@ current versions.
   above every object in the bucket, which puts them all below the pointer. List `store.generations(ref)` and load
   until the pointer is above the highest stray.
 
-  Below the pointer, collection treats the strays as any generation no load published there. What the load that
-  passes them keeps depends on whether the row records which generations are kept, which it does once a load with a
-  `keep` up to 64 has collected:
-
-  - where it does, that load lists the segment and deletes every generation below its pointer that the row does not
-    name, the strays among them;
-  - where it does not, that load keeps `keep` of what is below its pointer, the generation it superseded first and
-    then the newest by number, strays included, and each later load takes one more.
+  Below the pointer, collection treats the strays as any generation no load published there. A row restored from a
+  backup carries the window its ledger (`knownGens`) names as of the restore, and a row repaired by hand names none: the
+  first load that publishes over it writes the window a count by `keep` keeps from the bucket, the generation the row
+  named as current first and then the newest by number. From then on each load keeps that window, and the load that
+  passes the strays lists the segment and deletes every generation below its pointer that the window does not name, the
+  strays among them.
 
   The re-runs that number below the strays are generations below the pointer too, so by the time the pointer passes
   the strays every number from the restored pointer to the highest stray can be there. With generations 0 and 1 from
   before `T`, the pointer restored to 1, and strays at 4 and 5, re-runs publish 2 and 3, and the next numbers 6, past
-  the strays. Each re-run uses the same `keep`, and the bucket then holds:
+  the strays. Each re-run uses the same `keep`, and the bucket then holds, whether the restored row names a window or not:
 
-  | `keep` | the restored row records a window | the restored row records none |
-  |---|---|---|
-  | `1` | 3, 6 | 3, 6 (the re-run that published 2 recorded one) |
-  | `3` | 1, 2, 3, 6 | 3, 4, 5, 6 |
-  | `5` | 0, 1, 2, 3, 6 | 1, 2, 3, 4, 5, 6 |
+  | `keep` | the bucket after the load that passes the strays |
+  |---|---|
+  | `1` | 3, 6 |
+  | `3` | 1, 2, 3, 6 |
+  | `5` | 0, 1, 2, 3, 6 |
 
   So under the default `keep: 1` the load that passes the strays keeps only the generation it superseded, the last
-  re-run, and collects the rest, the strays and the restored generation included; the restored generation stays only
-  when no re-run numbered below the strays. If it must stay a rollback target, pass a `keep` of at least the highest
-  stray minus the restored pointer, plus one, on every re-run until the pointer is above the strays: `keep: 5` here,
-  which keeps generation 1 either way. A `keep` of the number of strays plus one, 3, keeps it only where the row
-  records a window.
+  re-run, and collects the rest, the strays and the restored generation included. If the restored generation must stay a
+  rollback target, pass a larger `keep` on every re-run until the pointer is above the strays: `keep: 3` keeps generation
+  1 here, and `keep: 5` keeps generation 0 as well. The strays go at the load that passes them whatever `keep` is, unless a window holds them.
 
   Do not hand-publish an object you cannot vouch for. A stray above the pointer is a whole object — every backend
   commits an object atomically, so a crash never leaves a partial one — but the bucket cannot tell you whether it was

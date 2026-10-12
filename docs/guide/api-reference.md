@@ -255,8 +255,8 @@ retention change, a rollback or an erasure wrote the row, or the row was deleted
 it wrote while the row is unchanged, changed only in its leases, dropped or crypto-shredded, and, once one read of the
 object's footer matches what the load wrote, when the row is gone or, for a cleartext object, has key material. Once
 another write has otherwise changed the row, it leaves the object in the bucket, an orphan: a load's listing deletes
-it once a generation above it is current, unless the row's kept list names it, and can keep it in its window where the
-row records none. Until it goes, `rollback` can name it as a target, and a rollback onto it publishes what no load
+it once a generation above it is current, unless the row's window names it, and can keep it in its window where the
+row has none. Until it goes, `rollback` can name it as a target, and a rollback onto it publishes what no load
 published ([an orphan is collected later](loading.md#how-it-stays-correct)).
 The `store.load` row lists the guards and what throws instead.
 
@@ -833,16 +833,16 @@ cannot tombstone a row created after the decision: the retention sweep's tombsto
 behaviour. Implement it to make the library's deletes safe against a concurrent re-create;
 the registry conformance suite's `delete` cases are the test.
 
-**Registry rows are schema 4: every row carries `pointerId`, and its `summary` names the object it describes.** A
-shipped registry stamps every row it writes `schemaVersion: 4` and reads rows stamped 4 and nothing else. A row stamped
-1, 2 or 3 is refused with `UnsupportedError` naming the row: by `get`, by every
-`list()` that reaches it, and by every write, which reads the row first, so no write changes it. A stamp above 4 is
-refused the same way. The library cannot read, change or delete such a row; the [CHANGELOG](../../CHANGELOG.md#0200--2026-10-09) gives the steps that move a bucket of them to a new prefix.
+**Registry rows are schema 5: every row carries `pointerId`, its `summary` names the object it describes, and its `knownGens` ledger names the generations it made current.** A
+shipped registry stamps every row it writes `schemaVersion: 5` and reads rows stamped 5 and nothing else. A row stamped
+1 to 4 is refused with `UnsupportedError` naming the row: by `get`, by every
+`list()` that reaches it, and by every write, which reads the row first, so no write changes it. A stamp above 5 is
+refused the same way. The library cannot read, change or delete such a row; the [CHANGELOG](../../CHANGELOG.md)'s Breaking entry for registry schema 5 gives the steps that move a bucket of them to a new prefix.
 
 `pointerId` is the token of the most recent write that named a field a read resolves through: the row's `create`, or a
 `compareAndSwap` whose patch names `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary` (the resolved fields), by
 presence and at any value, the value the field already has included. A patch that names only `leases`, `retention`,
-`residency` or `keptGens` leaves it. A reader keys what it caches on the generation with it (its readers, its decoded
+`residency` or `knownGens` leaves it. A reader keys what it caches on the generation with it (its readers, its decoded
 chunks, a pin's version), so a lease or a policy write leaves a warm reader as it was, and a write that names a
 resolved field never does. The registry sets it, from the token it gives the write: a writer whose write renewed
 it knows its new value without reading the row, since it is the token the write returned. A new record or a patch that
@@ -855,9 +855,13 @@ registry can have written: the token's form, the row's own incarnation, and a co
 
 `summary` is the row's cached description of its current generation: its id count, the fingerprint of its object (its
 size in bytes and its footer checksum, `<size>:<checksum>` as `pinnedAt.fingerprint` spells it) and the metadata it was
-loaded with. It is in the clear on a cleartext segment (`{ generation, cardinality, fingerprint, metadata? }`) and sealed
-under the segment's data key on an encrypted one (`{ generation, sealed }`: the count, the size and the checksum
-fixed-width, then the metadata), so the row shows none of them. Every write that writes a summary writes its object's
+loaded with, and `tailBytes`, the bytes from the end of the object's last chunk payload to its end (its extension block, index
+and footer), so a cold open can read its tail in one request. It is in the clear on a cleartext segment (`{ generation, cardinality, fingerprint, tailBytes, metadata? }`) and sealed
+under the segment's data key on an encrypted one (`{ generation, sealed }`: the count, the size, the checksum and
+`tailBytes` fixed-width, then the metadata; at least 52 bytes), so the row shows none of them. `tailBytes` is an integer from 104, a
+footer, to the object's size less its 8-byte preamble, and at most 8,392,820, the most one open reads, else `ValidationError` on a write and
+`IntegrityError` on a read. A reader accepts bytes between an object's index and its footer, so an object this library
+did not write can report a larger tail: a rollback onto it writes no summary, and the row is correct without one. Every write that writes a summary writes its object's
 fingerprint: a load, the `*Into` verbs, `materializeMany`, an erasure's rewrite and a rollback, which writes its
 target's. A reader holds every object it opens for the row's generation to that fingerprint, from the footer, before
 it reads the index: another object under the number is refused as a move (the read resolves the row again, and does
@@ -878,24 +882,38 @@ that names the pointer at its own value, store it as it was when the write was c
 one without a fingerprint included, with `ValidationError` on the write), and, for a registry that persists rows, to
 refuse a row stamped with an earlier schema on every read and write.
 
-**`keptGens` is the generations below `currentGen` that the last load kept, so the next load deletes by name.** It is a
-list of generation numbers, strictly ascending, each a non-negative safe integer and each below `currentGen`. Absent means
-the row does not know, and a load lists the bucket to collect and records what it kept; `[]` means none is kept. A load
-writes at most 64 entries (a larger `keep` records none), and a row is read with up to 256, so a later release can write
-more without a new schema. It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning
-`keptGens` drops it, a patch that leaves the pointer keeps it, and a patch or create that gives one must name only
-generations below the `currentGen` the row will have, and none on a row with no pointer (`ValidationError`, before
-anything is written). The registry stores a frozen copy. A malformed list on a stored row (not an array, an entry that is
-not a non-negative safe integer, one out of order or repeated, more than 256) is an `IntegrityError` naming the row, like
-a malformed `summary`; a well-formed list with an entry at or above `currentGen` is read and not used. A registry of your
-own must store and return the field, and drop it on a patch that moves the pointer without it: one that keeps a stale
-list across a move is not used for an entry at or above the pointer, but would hold a window that names the wrong
-generations. One that drops the field is correct and makes every load list. The conformance suite holds a driver to all
-of this.
+**`knownGens` is the ledger of the generations a row made current and has not decided to delete**, each `{ generation,
+footerCrc }`: a non-negative safe integer and the CRC32C its object's footer stores (an integer from 0 to 2^32 - 1), in the order the
+generations were made current, oldest first and the current one last. A generation appears once, at its most recent
+time current: a rollback onto it moves it to the end. The entries before the last are the window a load keeps below the
+pointer, and what a rollback left; those numbered above `currentGen` are what a rollback left. A load collects by name
+from the entries below the pointer when none sits above it, which is the window the last load kept (up to 64); a row
+whose ledger is absent, or has an entry above the pointer, makes the next load list the bucket, keep what a count by
+`keep` keeps (the generation it superseded first, then the newest by number), and write that window as the ledger's
+entries before the new generation. A rollback carries the ledger it found and moves its target to the end, and writes
+none over a row that had none. A load writes at most 192 entries and a row is read with up to 384; a writer keeps an
+entry that nothing protects only while the ledger holds fewer than 128, and never drops the new generation or its window.
+It is in the clear on every row, an encrypted one included: a footer checksum of an encrypted object covers a random nonce
+and says nothing of its count or size. The entries above the pointer show anyone who reads the registry that a rollback
+happened, and from which generation.
+
+Each rule is checked at both boundaries (`ValidationError` on a write, `IntegrityError` naming the row on a read): an
+array of entries with exactly those two fields, no generation repeated. A write is also refused when the list is empty,
+when the row has no pointer, when its last entry is not the `currentGen` the row will have, and when, beside a clear
+`summary` that describes that generation, its last entry's checksum is not the one the summary's fingerprint carries (a
+registry cannot compare a sealed summary's; the library takes both from one object). A stored ledger that is well formed
+but disagrees with its row (its last entry is not the pointer, its checksum is not a clear summary's, it sits on a row with no
+pointer or a `destroyed` one) is read and not used, as a summary that names another generation is. The registry stores a
+frozen copy, **in the order given**: a registry that sorts the list loses which generations were most recently current
+with no error. It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning `knownGens`
+drops it, a patch that leaves the pointer keeps it, and a patch that names it sets it, checked against the row it makes. A
+registry of your own must store and return the field in the order given, and drop it on a patch that moves the pointer
+without it. One that drops the field is correct and makes every load list. The conformance suite holds a driver to all of
+this.
 
 **`leases` is the holds on a segment's generations**, each `{ holder, generation, until }`: 16 lowercase hex digits naming
 the holder, the generation held, and an epoch-millisecond instant. A load's collection spares the generation of an entry
-that has not ended, and an entry has ended `LEASE_SKEW_MS` (60 seconds) after `until`. Unlike `keptGens` it does not follow
+that has not ended, and an entry has ended `LEASE_SKEW_MS` (60 seconds) after `until`. Unlike `knownGens` it does not follow
 the pointer: a patch that moves `currentGen` leaves it, and only a patch that names it, or the row going away, changes it.
 A writer writes at most 64 entries and a reader accepts 256; an empty list is stored as none; an entry carries no field
 beyond those three, and a stored row that carries one, a holder that is not 16 lowercase hex digits, a duplicate holder or
@@ -972,8 +990,8 @@ otherwise throws the registry's `TransientError` and deletes nothing.
 `TailRead` · `StorageDeleteOptions` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` (every row carries `token` and `pointerId`; see the
 [driver kit](#driver-kit--what-you-need-to-implement-a-driver)) · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` ·
 `RegistryStatus` (`'active' | 'destroyed'`) · `GovernanceMeta` · `SegmentSize` · `RegistrySummary`
-(`ClearRegistrySummary` `{ generation, cardinality, fingerprint, metadata? }` or `SealedRegistrySummary`
-`{ generation, sealed }`, the row's cached description of its current generation and the object it names) · `GenerationMetadata` (string keys, string or finite-number
+(`ClearRegistrySummary` `{ generation, cardinality, fingerprint, tailBytes, metadata? }` or `SealedRegistrySummary`
+`{ generation, sealed }`, the row's cached description of its current generation and the object it names) · `KnownGeneration` (`{ generation, footerCrc }`, one entry of a row's `knownGens` ledger) · `GenerationMetadata` (string keys, string or finite-number
 values, at most 1 KiB as canonical JSON) · `GenerationSummary` (`{ generation, cardinality, metadata? }`, what a
 `StorageChunkSource`'s optional `summary()` answers for a segment's current generation, and, with the object's
 `sizeBytes` from the same resolution, what its optional `stat()` answers) · `ChunkRead` (`{ key, bytes, version }`, one chunk of the stream the optional `getChunks(ref, keys, options?)` answers: the key, its bytes or `null`, and the version of the generation it was read from) · `ReadChunksOptions` (`{ retry?, concurrency?, ramp?, onRequest? }`: `onRequest` is called once for every range request the stream sends, when it settles, including one a consumer that stopped left in flight and one that failed (with 0 bytes), with the bytes it moved (the gaps between chunks included) and its milliseconds, and an error it throws is ignored, so a caller can count what it is billed for; `retry` is a runner for each storage request the call makes, so a caller that retries repeats the one request that failed; `concurrency` is how many range requests the stream holds ahead of its consumer, 32 by default; `ramp` opens that window 1, 2, 4 … wide, or, given a number, that many wide and doubling from there). A source that implements `getChunks` reads several chunks of one segment from one generation in fewer requests, as a stream in key order (ascending, a key may repeat); one that omits it is read chunk by chunk. Nothing is resolved or read until the first chunk is asked for. However many keys the stream is given, it holds at most `concurrency` ranges at once, in flight or landed and not yet taken, each at most 1 MiB (one chunk, at most the payload cap, when it is larger), and a consumer that stops early stops the reads: the requests already in flight finish and are dropped, and are not retried. A stream that fails raises at once and sends nothing further; the requests it left in flight finish in the background and never raise. One stream reads one generation; if that generation is swept or its object replaced while the stream runs, the `.crbm` source waits for those requests, so a heal never opens a second window beside them, then re-resolves the segment and carries on with the keys not yet yielded, and each chunk says which version it came from. A request that never answers delays a heal, as it would hang a read of one chunk, until the driver's read timeout (if it has one) ends it; it never delays an error. A plain chunk may be a view into a buffer of up to 1 MiB shared with its neighbours, and a key asked twice gets the same view, so do not write to it, and copy a chunk to keep it
@@ -990,9 +1008,9 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 |---|---|---|---|
 | `ValidationError` | your input is malformed — a bad id, an illegal segment name, an out-of-range option; or a bucket or container that does not exist, which the cloud drivers report with it (S3 excepted for a zero-length tail), naming the bucket and keeping the service's error as its `cause`. Most are raised **before any storage call**; an out-of-range read and a missing bucket are found by the call itself | fix the call (for a missing bucket: the name, and the region, endpoint, project or account of the client) | no — deterministic |
 | `WriteConflictError` | a write-once generation number was claimed twice, a registry compare-and-swap lost every retry, or generation collection found the segment re-created underneath it (the name now belongs to a different segment) | re-read the pointer and re-derive: re-run the operation (a load takes a fresh generation number) | no — but the *operation* is safe to re-run |
-| `IntegrityError` | bytes from storage are corrupt, oversized, fail a checksum, or fail AEAD authentication; or a registry row is not one the library wrote — not valid JSON, an envelope or record field it does not declare, no `schemaVersion`, a `status` other than `active` or `destroyed`, a token or a `pointerId` in no form a shipped registry writes (or a `pointerId` of another incarnation than the row's token, or written after it), a summary without the fingerprint of its object, or a segment or namespace other than the one whose key or file it sits under (a row copied to another name) | **investigate** — this says "this data is corrupt", not "try again". It names the chunk, or the row's key. Re-loading the segment from source repairs a generation. A bad row fails its own `get` **and every `list()` that reaches it** — its namespace's, and every unscoped one — so it stops `segments()`, the sweeps, the subject scans and `checkConsistency` across the fleet until the object is restored to a valid row or deleted | no |
+| `IntegrityError` | bytes from storage are corrupt, oversized, fail a checksum, or fail AEAD authentication; or a registry row is not one the library wrote — not valid JSON, an envelope or record field it does not declare, no `schemaVersion`, a `status` other than `active` or `destroyed`, a token or a `pointerId` in no form a shipped registry writes (or a `pointerId` of another incarnation than the row's token, or written after it), a summary without the fingerprint of its object or its `tailBytes`, a malformed `knownGens`, or a segment or namespace other than the one whose key or file it sits under (a row copied to another name) | **investigate** — this says "this data is corrupt", not "try again". It names the chunk, or the row's key. Re-loading the segment from source repairs a generation. A bad row fails its own `get` **and every `list()` that reaches it** — its namespace's, and every unscoped one — so it stops `segments()`, the sweeps, the subject scans and `checkConsistency` across the fleet until the object is restored to a valid row or deleted | no |
 | `NotFoundError` | an object or row the caller named does not exist. Every backend, the in-memory one included, throws it for a generation object that is not there; a registry `get` of a missing row returns `null` instead. A read also throws it for an object under the generation's number that is another object than the row's summary names: it is refused as a missing one is, and not served | usually the library handles it internally (a swept generation, or a number taken again, heals forward). Reaching you means the pointer names an object that is *permanently* absent, or one the row does not name — a torn restore. `checkConsistency({ summaries: true })` finds both. See [disaster recovery](disaster-recovery.md). A load, an erasure or a collection also raises it when another writer, a rollback as a rule, moved the pointer onto a generation the call had just deleted, and the row still named it, with no object under it, when the call read it again after a wait: the message names the generation. Check `store.generations(ref)` or `checkConsistency()` first: a rollback that found its target gone puts the pointer back itself, and only while the pointer still names a missing object is a rollback to a generation still in the bucket the fix ([a rollback that races a collection](loading.md#a-rollback-that-races-a-collection)) | no |
-| `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version, or a registry row with a `schemaVersion` other than 4 (a row stamped 1 to 3 was written by a release before 0.20, which this one does not read); or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a backend, or a registry of your own that returns rows without a `pointerId` | wire the store with what the operation needs, or upgrade the library; for a row of an earlier schema, move the bucket's segments to a new prefix as the [CHANGELOG](../../CHANGELOG.md) says | no |
+| `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version, or a registry row with a `schemaVersion` other than 5 (a row stamped 1 to 4 was written by a release before 0.21, which this one does not read); or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a backend, or a registry of your own that returns rows without a `pointerId` | wire the store with what the operation needs, or upgrade the library; for a row of an earlier schema, move the bucket's segments to a new prefix as the [CHANGELOG](../../CHANGELOG.md) says | no |
 | `StaleOperandError` | an operand a `materializeMany` call relied on changed while it ran: an operand an output subtracts changed before the publishes: its row or its object is no longer the pinned one (another generation, the name deleted and created again, or the number taken again by other bytes), `reason: 'moved'`; or an erasure ran in the store after a call with a feed began, `reason: 'erased'`. Carries `code: 'stale-operand'`, `operand` (its name in the call) and `reason` | run the call again against the current operand, or, for `'erased'`, with a feed read after the erasure | no — deterministic; the outputs that excluded it, or that were fed, were not published |
 | `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out. Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
@@ -1078,7 +1096,7 @@ does not re-export. A driver author told elsewhere on this page to import `Token
 `ExportedSegment` · `ExportFailure` · `ExportSkipped` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
 `StorageBackend` · `StorageChunkSource` · `PinnedAt` · `PinnedObject` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
 · `TailRead` · `StorageDeleteOptions` · `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryWriteOptions` · `RegistryStatus` · `GovernanceMeta`
-· `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `GenerationMetadata`
+· `RegistrySummary` · `ClearRegistrySummary` · `SealedRegistrySummary` · `KnownGeneration` · `GenerationMetadata`
 · `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
 `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
 `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·

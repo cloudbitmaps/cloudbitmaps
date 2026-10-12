@@ -1,7 +1,7 @@
 import { footerCrcUnder } from '@/core/crbm-open';
-import { TransientError } from '@/core/errors';
+import { NotFoundError, TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
-import type { IRegistryDriver, SegmentRef } from '@/core/ports';
+import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -222,5 +222,57 @@ describe('a publish whose write landed and got no answer, over a row with no led
     expect(await load(w, 2)).toBe(4);
     // A ledger of the load's generation alone left 1 in the bucket here: [1, 2, 3, 4].
     expect(await gens(w)).toEqual([2, 3, 4]);
+  });
+});
+
+describe('what a seed reads from the bucket', () => {
+  /** `storage`, whose 104-byte footer read of `generation` fails with `error`. */
+  function failingFooter(storage: MemoryStorageDriver, generation: number, error: Error) {
+    return new Proxy(storage as IStorageDriver, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        if (p !== 'getTail') return value.bind(t);
+        return (key: GenKey, max: number) =>
+          key.generation === generation && max === 104
+            ? Promise.reject(error)
+            : (value as IStorageDriver['getTail']).call(t, key, max);
+      },
+    });
+  }
+
+  it('leaves out a generation that is gone when its footer is read', async () => {
+    const w = world();
+    for (const g of [0, 1]) await plant(w, g);
+    await createRow(w, 1);
+    const storage = failingFooter(w.storage, 0, new NotFoundError('gone'));
+    await loadSegment(SEG, [1, 2, 3], { ...w.deps, storage }, { keep: 3 });
+    const ledger = (await w.registry.get(SEG))!.knownGens!.map((e) => e.generation);
+    expect(ledger).toEqual([1, 2]);
+  });
+
+  it('fails the load before its publish on any other failed read', async () => {
+    const w = world();
+    for (const g of [0, 1]) await plant(w, g);
+    await createRow(w, 1);
+    const storage = failingFooter(w.storage, 0, new TransientError('503'));
+    await expect(
+      loadSegment(SEG, [1, 2, 3], { ...w.deps, storage }, { keep: 3 }),
+    ).rejects.toBeInstanceOf(TransientError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+  });
+
+  it('names the superseded generation’s checksum from the row’s clear summary, with no footer read', async () => {
+    const w = world();
+    await load(w, 3);
+    await load(w, 3);
+    await dropLedger(w);
+    // The row's summary describes generation 1; a failing footer read of 1 would fail the load if the seed made it.
+    const storage = failingFooter(w.storage, 1, new TransientError('503'));
+    expect(await loadSegment(SEG, [9, 10], { ...w.deps, storage }, { keep: 3 })).toMatchObject({
+      generation: 2,
+      published: true,
+    });
+    expect((await w.registry.get(SEG))!.knownGens!.map((e) => e.generation)).toEqual([0, 1, 2]);
   });
 });

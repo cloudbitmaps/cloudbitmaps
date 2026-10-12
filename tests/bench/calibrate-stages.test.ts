@@ -1051,7 +1051,7 @@ describe('the steady-load stage', () => {
       engineSrc('generation-gc.ts'),
     );
     const maxKept = /export const MAX_KEPT_GENERATIONS = (\d+);/.exec(
-      engineSrc('kept-generations.ts'),
+      engineSrc('known-generations.ts'),
     );
     expect(cadence).not.toBeNull();
     expect(maxKept).not.toBeNull();

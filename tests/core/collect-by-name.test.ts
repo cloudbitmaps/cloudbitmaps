@@ -316,7 +316,7 @@ describe('a load lists when its row records no list, or its number or current ob
     const w = world();
     const row = async () => (await w.registry.get(SEG))!;
     await loadMany(w, 3, { keep: 65 });
-    // No window is recorded for these loads: each lists to collect. The ledger carries every generation they made current.
+    // No window is recorded for these loads, so each collects by listing. The ledger carries every generation they made current.
     expect((await row()).knownGens?.map((e) => e.generation)).toEqual([0, 1, 2]);
     w.reset();
     await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });

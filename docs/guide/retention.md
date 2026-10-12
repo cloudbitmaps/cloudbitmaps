@@ -327,11 +327,11 @@ Two limits to know before you automate it:
 
 ## Registry rows of another schema
 
-The registry reads rows stamped `schemaVersion` 4 only. A row stamped 1, 2 or 3, a deleted one included, is refused with
+The registry reads rows stamped `schemaVersion` 5 only. A row stamped 1 to 4, a deleted one included, is refused with
 `UnsupportedError` naming its key, by every read and write of its segment and by every listing that reaches it, so the
 library can neither delete, drop nor retire one, and a sweep of a namespace that holds one fails. A deleted row is kept
 as a `{ deleted: true }` envelope, and a segment name that was personal data survives in its record. Remove such rows
-with your storage's own tools, or move the store's segments to a new prefix by the steps in the [changelog](../../CHANGELOG.md#0200--2026-10-09) and then delete the old prefix, its noncurrent versions included.
+with your storage's own tools, or move the store's segments to a new prefix by the steps in the [changelog](../../CHANGELOG.md)'s Breaking entry for registry schema 5 and then delete the old prefix, its noncurrent versions included.
 
 ## There is no per-id TTL
 
