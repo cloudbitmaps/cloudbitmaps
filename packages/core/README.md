@@ -28,6 +28,31 @@ Its main entry is the flavor-author kit: the read engine, the standalone forms o
 `dropSegment`, `retireExpired` and the rest), and the retry and budget internals. `@cloudbitmaps/roaring` re-exports,
 by name, what an application uses.
 
+## How the storage path is laid out
+
+The `.crbm` storage path lives in `src/core/`, one module per concern. Arrows read "imports":
+
+```
+load.ts  erase-id.ts  rollback.ts  consistency.ts      callers of the write and open path
+   |          |            |             |
+   v          v            v             v
+bulk-load.ts ----> publish.ts ----> crbm-write.ts      write path: ids in, one generation written, pointer advanced
+   |
+   +--------------------------------> crbm-open.ts      open path: a stored generation opened and proved
+                                           ^
+crbm-storage-source.ts --------------------+           read path: the cached `CrbmStorageChunkSource`
+```
+
+| File | Holds |
+|---|---|
+| `crbm-write.ts` | writing one immutable generation: `writeCrbmGeneration` (from in-memory bitmaps), `writeCrbmGenerationStream` (streamed), the encoded-chunk writer, the bucketing of loaded ids into chunks |
+| `publish.ts` | the forward-only pointer advance every write ends with: `publishGeneration` and `publishGenerationKept`, the lease patch, the refusal to point a keyed row at a cleartext generation, and the settling of a registry write that got no answer |
+| `bulk-load.ts` | the loader `load()` is built on: `bulkLoadCrbmGeneration` and its read-ahead, which collect chunks from ids or a decoded bitmap, write them and publish |
+| `crbm-open.ts` | opening a stored generation without the cache: the blob reader over a driver object, the checked and noting opens, the identity checks that tie an open to the object it read, `verifyGeneration`, and the rollback target open |
+| `crbm-storage-source.ts` | the read path: `CrbmStorageChunkSource`, its resolution cache and the pin machinery |
+
+None of the write-path modules imports the read path, and `crbm-storage-source.ts` imports only `crbm-open.ts` from them.
+
 ## Documentation
 
 - [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md), including the
