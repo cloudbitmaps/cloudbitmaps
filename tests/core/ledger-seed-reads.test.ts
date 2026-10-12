@@ -88,6 +88,38 @@ describe.each([
     expect((await w.registry.get(SEG))!.knownGens!.map((e) => e.generation)).toEqual([0, 1, 2]);
   });
 
+  it('retries a throttled listing the seed makes, and publishes', async () => {
+    const w = world(encrypted);
+    await twoLoadsNoLedger(w);
+    let listings = 0;
+    const storage = new Proxy(w.storage as IStorageDriver, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        if (p !== 'list') return value.bind(t);
+        return (ref: SegmentRef) => {
+          if (++listings === 1) {
+            return (async function* () {
+              await Promise.resolve();
+              throw new TransientError('503');
+              yield undefined as never;
+            })();
+          }
+          return (value as IStorageDriver['list']).call(t, ref);
+        };
+      },
+    });
+    const r = await loadSegment(
+      SEG,
+      [7, 8],
+      { ...w.deps, storage, readRetry: NO_WAIT },
+      { keep: 3 },
+    );
+    expect(r).toMatchObject({ generation: 2, published: true });
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect((await w.registry.get(SEG))!.knownGens!.map((e) => e.generation)).toEqual([0, 1, 2]);
+  });
+
   it('fails the load with the read’s error when it never succeeds, and leaves its own object out of the bucket', async () => {
     const w = world(encrypted);
     await twoLoadsNoLedger(w);

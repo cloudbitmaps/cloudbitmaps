@@ -4,7 +4,10 @@ import { MemoryRegistryDriver } from '@/drivers/memory';
 import { registryConformance } from '@/testing/conformance';
 
 /**
- * The conformance suite must fail a registry that breaks the ledger and `tailBytes` rules. The suite registers its cases
+ * The conformance suite must fail a registry that breaks the ledger and `tailBytes` rules. It holds four here: a
+ * malformed ledger is refused, a `tailBytes` no object has is refused, a current entry whose checksum disagrees with a
+ * clear summary's fingerprint is refused, and the ledger round-trips in the order given. The other ledger cases (one not
+ * in number order is accepted, the ledger follows the pointer, and so on) are not held by this test. The suite registers its cases
  * through `describe` and `it`; here they are collected instead of registered and run by hand against a good registry
  * (every case passes) and against registries that each break one rule (the case that holds the rule fails). Removing a
  * new check from the suite, or weakening it, makes the matching registry pass it and this test fail.

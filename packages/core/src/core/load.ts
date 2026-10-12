@@ -790,7 +790,7 @@ async function runLoad(
     try {
       seed = await readSeed(deps.storage, ref, row, generation, keep, listed, deps.readRetry);
     } catch (err) {
-      // Nothing was published: the row is as this load read it, so its own object is reclaimed as a refused load's is.
+      // Nothing this load wrote was published, so its own object is reclaimed as a refused load's is (the reclaim re-reads the row).
       const missing = await tidy();
       if (missing !== undefined)
         throw refusedOverMissing(

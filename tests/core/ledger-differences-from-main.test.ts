@@ -1,6 +1,7 @@
 import { footerCrcUnder } from '@/core/crbm-open';
 import { WriteConflictError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
+import { eraseIdFromSegment } from '@/core/erase-id';
 import { rollbackSegment } from '@/core/rollback';
 import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -116,5 +117,87 @@ describe('strays above a restored pointer', () => {
     await restore(w, snapshot);
     expect(await load(w, 5)).toBe(7);
     expect(await gens(w.storage)).toEqual([0, 2, 3, 4, 7]);
+  });
+});
+
+/** `registry`, with `after` awaited once, after the first compare-and-swap it answers. */
+function afterFirstWrite(registry: MemoryRegistryDriver, after: () => Promise<void>) {
+  let fired = false;
+  return new Proxy(registry, {
+    get(t, p, rx) {
+      const value: unknown = Reflect.get(t, p, rx);
+      if (typeof value !== 'function') return value;
+      const fn = value as (...a: unknown[]) => Promise<unknown>;
+      if (p !== 'compareAndSwap') return fn.bind(t);
+      return async (...a: unknown[]) => {
+        const out = await fn.apply(t, a);
+        if (!fired) {
+          fired = true;
+          await after();
+        }
+        return out;
+      };
+    },
+  });
+}
+
+describe('a keep-2 load raced by a load with a keep above 64', () => {
+  // Generations 0 to 5 are loaded at keep 2, and a keep-2 load (6) is followed, after its first conditional write, by a
+  // load with keep 1000 (7). A release before ledgers recorded no list for the keep-1000 load, so the keep-2 load's later
+  // eviction was stopped by the changed row and left 3: 3, 4, 5, 6 and 7. The keep-1000 load here carries the ledger
+  // with 3 still named, so the keep-2 load's eviction of 3 goes through: 4, 5, 6 and 7.
+  it('lets the earlier load’s eviction through', async () => {
+    const w = world();
+    for (let i = 0; i < 6; i++) await load(w, 2);
+    const registry = afterFirstWrite(w.registry, async () => {
+      await load(w, 1000);
+    });
+    await load(w, 2, { registry });
+    expect(await gens(w.storage)).toEqual([4, 5, 6, 7]);
+  });
+});
+
+describe('the current object found gone only after the publish', () => {
+  // Generations 0 to 5 are loaded with the default keep (4 and 5 are left), 5 is removed from outside, and the repair
+  // publishes 6 and lists, keeping 4: 4 and 6, here and before ledgers. A release before ledgers recorded, with that
+  // listing, a window of [4], and the next load (7) collected 4 as it moved past the window: 6 and 7. The repair's
+  // ledger here names the gone 5 and 6, the listing kept 4 outside it, and the next load collects by name, which names
+  // neither 4 nor 5 as pushed out: 4, 6 and 7. The bucket holds 4 longer, until a load that lists.
+  it('keeps the generation the repair’s listing kept until a load that lists', async () => {
+    const w = world();
+    for (let i = 0; i < 6; i++) await loadSegment(SEG, [i, 100 + i, 200], w.deps);
+    await w.storage.delete({ ...SEG, generation: 5 });
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    expect(await gens(w.storage)).toEqual([4, 6]);
+    await loadSegment(SEG, [4, 5, 6], w.deps);
+    expect(await gens(w.storage)).toEqual([4, 6, 7]);
+  });
+});
+
+describe('generations an erasure deleted above the pointer', () => {
+  // Generations 0 to 7 are loaded at keep 12, 2, 5, 6 and 7 holding one id, a crashed object is left at 10, the row is
+  // rolled back to 1, a load publishes 11, the row is rolled back to 0, and a subject erasure of the id deletes 2, 5, 6
+  // and 7 above the pointer. Loads then publish 11 and 12 again, a stray is left at 5, and three more loads publish, the last at 16 (a number the stray at 5 and the others made it skip to). A release before ledgers had dropped its list at the rollback, so each load counted over what was there and the
+  // bucket after 16 was 0, 1, 3, 4, 10 and 11 to 16. Here the ledger still names the deleted 2, 5, 6 and 7 until a load
+  // drops them, and the names take places in the window: 0 and 10, outside the window the ledger names, go at the load
+  // that lists (generation 16), leaving 1, 3, 4, 5 and 11 to 16.
+  it('take places in the window, so the load that lists collects what a count would have kept', async () => {
+    const w = world();
+    for (let g = 0; g <= 7; g++) {
+      const held = [2, 5, 6, 7].includes(g) ? [7777] : [];
+      await loadSegment(SEG, [g, 100 + g, ...held], w.deps, { keep: 12 });
+    }
+    await plant(w, 10);
+    await rollbackSegment(SEG, 1, w.deps, {});
+    await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 12 });
+    await rollbackSegment(SEG, 0, w.deps, {});
+    await eraseIdFromSegment(SEG, 7777, w.deps);
+    await load(w, 12);
+    await load(w, 12);
+    await plant(w, 5);
+    await load(w, 12);
+    await load(w, 12);
+    await load(w, 12);
+    expect(await gens(w.storage)).toEqual([1, 3, 4, 5, 11, 12, 13, 14, 15, 16]);
   });
 });

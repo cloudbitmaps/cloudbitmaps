@@ -910,7 +910,7 @@ but disagrees with its row (its last entry is not the pointer, its checksum is n
 pointer or a `destroyed` one) is read and not used, as a summary that names another generation is. The registry stores a
 frozen copy, **in the order given**: a registry that sorts the list loses which generations were most recently current
 with no error, and a registry that does not store the field at all makes every publish seed the ledger (one listing and
-up to `keep` footer reads, eight at a time, before each load's write). It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning `knownGens`
+up to `min(keep, 127)` footer reads, eight at a time, before each load's write). It follows the pointer as `summary` does: a patch that moves `currentGen` without mentioning `knownGens`
 drops it, a patch that leaves the pointer keeps it, and a patch that names it sets it, checked against the row it makes. A
 registry of your own must store and return the field in the order given, and drop it on a patch that moves the pointer
 without it. One that drops the field is correct and makes every load list. The conformance suite holds a driver to all of

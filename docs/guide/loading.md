@@ -512,7 +512,7 @@ neither is this one. An `*Into` always lists when it is given a `keep`.
 | Path | Collects? |
 |---|---|
 | `store.load` | **It does.** Collection is part of the call, keeping `keep` generations (default 1): by name at any `keep` up to 64, by listing on every 16th generation and in the cases above. |
-| an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination lists once, collects everything below its pointer beyond its `keep`, and records the window it kept. This is the step `store.load` exists to stop you forgetting. |
+| an `*Into` | **You do.** Pass `keep` to collect on the way through: it lists the destination and deletes every generation below the new one beyond `keep`, however many earlier `*Into` calls kept. Without it nothing is collected, and the next `store.load` of the destination lists twice when its number was free (once to seed the ledger, once to collect; it sends no separate write), collects everything below its pointer beyond its `keep`, and records the window it kept. This is the step `store.load` exists to stop you forgetting. |
 | `eraseSubject` | **Yes**, with `keep: 0`: the generation holding the bit must not survive the call. Collection's range leaves out three kinds of object, so the erasure deletes each itself, by name: a holder above the pointer, which a `rollback` leaves there; a first load's object that holds the id on a segment with no generation yet; and an object no read of the segment can open, which it cannot search and deletes whatever the id. |
 | `retireExpired` | **Yes**, for the tombstones it wrote itself, and only with `purgeTombstones` (on by default) and after the grace period. It collects a straggler generation before purging the row. A tombstone a hand-run `dropSegment` or a crypto-shred left is never touched. |
 | `dropSegment` | Deletes every generation of the segment it drops, and reports any it could not in `generationsRemaining`. |
@@ -1234,7 +1234,7 @@ window a listing keeps from the bucket, which can name the number a refused load
 until the window pushes it out (see the paragraph on orphans below). A purge and re-create leaves the row with no
 ledger, which only makes the next load list; a write that leaves the pointer where it is (`setRetention`, a crypto-shred
 aside) keeps it. A `rollback` carries the ledger it found, moving the target to its end, and starts none over a row that
-had none; the entries it leaves above the pointer make the window unknown, so the next load lists once and writes it.
+had none; the entries it leaves above the pointer make the window unknown, so the next load lists twice when its number was free (once to seed the ledger, once to collect; it sends no separate write) and writes the window with the pointer.
 
 **Which fence a publish carries.** Forward-only is right for a writer whose content does not depend on what was
 current: a load's ids come from upstream, so winning a race loses nothing it knew about. It is wrong for a writer that

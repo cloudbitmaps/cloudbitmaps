@@ -103,7 +103,7 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
     for (const g of present) expect(named.has(g), `generation ${g}`).toBe(true);
   }, 120_000);
 
-  it('300 `loadSegment` loads with keep 72 among `rollbackSegment`, `takeLease` and `eraseIdFromSegment` calls: every publish and every rollback lands, and the ledger never passes 192', async () => {
+  it('300 `loadSegment` loads with keep 72 among `rollbackSegment`, `takeLease` and `eraseIdFromSegment` calls: every publish and every rollback lands, and the ledger stays within its writer cap', async () => {
     const storage = new MemoryStorageDriver();
     const registry = makeRegistry();
     const clock = { now: () => FAR, sleep: () => Promise.resolve() };
