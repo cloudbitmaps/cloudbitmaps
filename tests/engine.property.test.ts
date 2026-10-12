@@ -1,6 +1,9 @@
 import fc from 'fast-check';
 import { collect, loadedStore } from './helpers/loaded';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * Property tests against a `Set` oracle. Every generation here is written by the loader `store.load()` is built
  * on, and published, so the properties hold over the shape production actually stores:

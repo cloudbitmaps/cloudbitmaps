@@ -17,7 +17,7 @@ import { segmentKey } from '@/core/keys';
 import { SafeBitmap } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect, expectSameBytes } from '../helpers/chunk-stream';
-import { Gate, Watched, tick, worstWhileWaiting } from '../helpers/live-buffers';
+import { Gate, Watched, turns, worstWhileWaiting } from '../helpers/live-buffers';
 import type { ChunkRead, ReadChunksOptions, StorageChunkSource } from '@/core/ports';
 
 /** What a stream yields, gathered: the chunks lined up with the keys, and the version each one was read from. */
@@ -510,7 +510,7 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
   it('reads nothing, and resolves nothing, until the first chunk is asked for', async () => {
     const { source, storage } = await world();
     const stream = source.getChunks!(REF, [0, 44]);
-    await new Promise((r) => setTimeout(r, 20));
+    await turns();
     expect(storage.ranges).toHaveLength(0);
     const it = stream[Symbol.asyncIterator]();
     await it.next();
@@ -595,7 +595,7 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
       clock: manualClock(),
       rng: { next: () => 0.5 },
     });
-    storage.beforeRange = () => new Promise((r) => setTimeout(r, 5));
+    storage.beforeRange = () => turns(5);
     // Chunks 0, 6, 12, … are a gap past 256 KiB apart: each is its own range.
     const keys = [0, 36, 40, 44];
     await collect(retrying.getChunks!(REF, keys, { concurrency: 1 }));
@@ -623,7 +623,7 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
       clock: manualClock(),
       rng: { next: () => 0.5 },
     });
-    storage.beforeRange = () => new Promise((r) => setTimeout(r, 5));
+    storage.beforeRange = () => turns(5);
     for (const reading of [source, retrying]) {
       storage.ranges.length = 0;
       const requests: { bytes: number }[] = [];
@@ -633,7 +633,7 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
       })[Symbol.asyncIterator]();
       await stream.next();
       await stream.return?.();
-      await new Promise((r) => setTimeout(r, 40));
+      await turns();
       expect(storage.ranges.length).toBeGreaterThan(1);
       expect(requests).toHaveLength(storage.ranges.length);
     }
@@ -654,7 +654,7 @@ describe('CrbmStorageChunkSource.getChunks: a stream across waves', () => {
         expect(chunk.key).toBe(0);
         break;
       }
-      await new Promise((r) => setTimeout(r, 40));
+      await turns();
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
@@ -682,9 +682,9 @@ describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it re
           await swept;
         } else if (generation === 0 && n > 4) {
           // ...and the ones after it are slow: still in flight when the stream heals.
-          await new Promise((r) => setTimeout(r, 5));
+          await turns(5);
           await swept;
-          await new Promise((r) => setTimeout(r, 150));
+          await turns(150);
         }
       };
       const items = await collect(source.getChunks!(REF, SPREAD, { concurrency: width }));
@@ -801,14 +801,17 @@ describe('CrbmStorageChunkSource.getChunks: a consumer that stops sends nothing 
     async (mode) => {
       const { source, storage } = await world({ chunks: 400 });
       const pin = (await source.pinGeneration(REF))!;
-      // A caller's runner that sends a request again after a transient fault, as a retrying caller would.
+      // A caller's runner that sends a request again after a transient fault, as a retrying caller would; its backoff
+      // waits on the gate until the consumer has left, so a retry still sleeping then is what must not be sent.
+      const backoff = new Gate();
+      backoff.close();
       const retry = async <T>(request: () => Promise<T>): Promise<T> => {
         for (let attempt = 0; ; attempt++) {
           try {
             return await request();
           } catch (err) {
             if (!(err instanceof TransientError) || attempt >= 20) throw err;
-            await tick(3);
+            await backoff.wait();
           }
         }
       };
@@ -827,7 +830,8 @@ describe('CrbmStorageChunkSource.getChunks: a consumer that stops sends nothing 
         expect(chunk.key).toBe(0);
         break;
       }
-      await tick(250);
+      backoff.open();
+      await turns(250);
       expect(storage.ranges).toHaveLength(4); // the four the window opened with, each tried once
       expect(storage.inFlight).toBe(0);
     },
@@ -876,9 +880,11 @@ describe('CrbmStorageChunkSource.getChunks: a stream that fails', () => {
         clock: { ...manualClock(), sleep: () => backoff.wait() },
         rng: { next: () => 0.5 },
       });
+      const slow = new Gate();
+      slow.close();
       storage.beforeRange = async (n) => {
         if (n === 1) throw new Error('not transient');
-        await tick(20); // the others are slow, and then fail in a way that would be retried
+        await slow.wait(); // the others are slow, and then fail in a way that would be retried
         throw new TransientError('down');
       };
       await expect(collect(retrying.getChunks!(REF, SPREAD, { concurrency: 4 }))).rejects.toThrow(
@@ -886,8 +892,9 @@ describe('CrbmStorageChunkSource.getChunks: a stream that fails', () => {
       );
       const sent = storage.ranges.length;
       expect(sent).toBe(4); // the window the stream opened with, each tried once
+      slow.open();
       backoff.open();
-      await tick(300);
+      await turns(300);
       expect(storage.ranges.length, 'no attempt after the failure').toBe(sent);
       expect(storage.inFlight).toBe(0);
     } finally {

@@ -68,6 +68,12 @@ so, and so do the module headers in the code.
   `getChunksAt`) also validates the segment's name once rather than once a key. The requests made are unchanged; a warm
   page of 1,000 ids of a 65,536-chunk segment took about 1.8 times less time when measured, and a warm one-id page of a
   2,000-chunk segment about 4 times less.
+- **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
+  cache always) no longer reads the clock on a hit, and with no metrics sink wired `has()` and `count()` return the
+  engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured on
+  the in-memory driver, a warm `has()` takes about 13% less time per call. Values and errors are unchanged, a failure is still a
+  rejected promise, and with a metrics sink the same `op` events are emitted. With no sink a call settles in fewer
+  microtask turns than before.
 
 - **The numbers the core and the store's admin calls check are refused by one rule and worded one way.** An integer is a
   safe integer, so a whole number of 2^53 or more is refused wherever one is taken (a `retireExpired` `limit` of `1e300`

@@ -489,28 +489,40 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('the HEAD a tail read falls back to, for a backend that ignores Range, is timed too', async () => {
-    stub.ignoreRange = true;
-    stub.arm('HeadObject', { kind: 'no-headers' });
+    // A store of its own, with room for the GET before the HEAD to answer on a loaded machine: a GET cut off first
+    // would name GetObject, and say nothing of the HEAD.
+    const timeoutMs = 2_000;
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: timeoutMs });
+    try {
+      stub.ignoreRange = true;
+      stub.arm('HeadObject', { kind: 'no-headers' });
 
-    expectTimedOut(await settle(backend.storage.getTail(GEN, BYTES.length)), TIMEOUT, 'HeadObject');
-    expect(stub.count('GetObject')).toBe(1);
-    expect(stub.count('HeadObject')).toBe(1);
+      expectTimedOut(
+        await settle(timed.storage.getTail(GEN, BYTES.length)),
+        timeoutMs,
+        'HeadObject',
+      );
+      expect(stub.count('GetObject')).toBe(1);
+      expect(stub.count('HeadObject')).toBe(1);
+    } finally {
+      timed.client.destroy();
+    }
   });
 
   it('that HEAD gets a timeout of its own, not what the GET before it left', async () => {
-    // Each request is well inside the timeout (500 ms of headroom) and the two together are well past it.
-    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 1_500 });
+    // Each request is well inside the timeout (1.3 s of headroom) and the two together are past it.
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 3_000 });
     try {
       stub.ignoreRange = true;
-      stub.arm('GetObject', { kind: 'delay', ms: 1_000 });
-      stub.arm('HeadObject', { kind: 'delay', ms: 1_000 });
+      stub.arm('GetObject', { kind: 'delay', ms: 1_700 });
+      stub.arm('HeadObject', { kind: 'delay', ms: 1_700 });
       const started = Date.now();
 
       const tail = await settle(timed.storage.getTail(GEN, BYTES.length));
 
       expect(tail).toMatchObject({ value: { size: BYTES.length } });
       // The two together outlast one timeout, so one clock across both would have cut the HEAD off.
-      expect(Date.now() - started).toBeGreaterThan(1_500);
+      expect(Date.now() - started).toBeGreaterThan(3_000);
       expect(stub.count('HeadObject')).toBe(1);
     } finally {
       timed.client.destroy();

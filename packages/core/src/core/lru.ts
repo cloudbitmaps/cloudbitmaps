@@ -67,7 +67,7 @@ export class BoundedLru<K, V> {
   get(key: K): V | undefined {
     const entry = this.map.get(key);
     if (entry === undefined) return undefined;
-    if (entry.expiresAt <= this.clock.now()) {
+    if (this.ttlMs !== undefined && entry.expiresAt <= this.clock.now()) {
       this.drop(key, entry);
       return undefined;
     }
@@ -143,7 +143,7 @@ export class BoundedLru<K, V> {
   has(key: K): boolean {
     const entry = this.map.get(key);
     if (entry === undefined) return false;
-    if (entry.expiresAt <= this.clock.now()) {
+    if (this.ttlMs !== undefined && entry.expiresAt <= this.clock.now()) {
       this.drop(key, entry);
       return false;
     }
