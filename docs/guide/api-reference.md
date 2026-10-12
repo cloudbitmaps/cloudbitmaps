@@ -413,7 +413,7 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 
 ### Generation bookkeeping & erasure
 
-`PinnedAt` (`{ generation, version, fingerprint }` — what a pin holds for one segment; `version` is opaque, the generation with the row's `pointerId` it was resolved under; `fingerprint` names the object it pinned, so a replaced one is refused, and is required: it is `null` only when `generation` is `null`, `seg.pin()` always records it, and a pin of a generation built by hand without one throws `ValidationError`; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `PinnedObject` (`{ version, fingerprint }` — what a pinned read of `CrbmStorageChunkSource` checks the generation's object against; a read given a version without a fingerprint throws `ValidationError`) · `EraseDeps` · `DestroyResult` · `DropResult`
+`PinnedAt` (`{ generation, version, fingerprint }` — what a pin holds for one segment; `version` is opaque, the generation with the row's `pointerId` it was resolved under; `fingerprint` names the object it pinned, so a replaced one is refused, and is required: it is `null` only when `generation` is `null`, `seg.pin()` always records it, and a pin of a generation built by hand without a string `version` and `fingerprint` throws `ValidationError`; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `PinnedObject` (`{ version, fingerprint }` — what a pinned read of `CrbmStorageChunkSource` checks the generation's object against; a read given one without both as strings throws `ValidationError`) · `EraseDeps` · `DestroyResult` · `DropResult`
 
 ### Retention
 

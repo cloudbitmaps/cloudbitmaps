@@ -275,8 +275,8 @@ function weightOf(resolved: Resolved): number {
 
 /**
  * What a pin holds of the object it pinned: the version its cache entries are keyed by, and the object's
- * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records one,
- * and a pinned read given a version without one throws a `ValidationError`.
+ * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records both,
+ * and a pinned read given one without both as strings throws a `ValidationError`.
  */
 export interface PinnedObject {
   readonly version: string;

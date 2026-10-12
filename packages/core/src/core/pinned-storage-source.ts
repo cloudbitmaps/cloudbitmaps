@@ -41,7 +41,7 @@ import { segmentKey } from './keys';
  *
  * `fingerprint` is required for a pin of a generation (`null` only when `generation` is `null`): without it a read
  * could not tell a name purged and loaded again from the segment it pinned. `seg.pin()` always records it, and a
- * pin of a generation without one is refused with a `ValidationError`.
+ * pin of a generation without a string `version` and `fingerprint` is refused with a `ValidationError`.
  */
 export interface PinnedAt {
   readonly generation: number | null;
