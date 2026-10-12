@@ -407,12 +407,12 @@ class CombineWindow {
   /** Whether a caller is waiting on the next slot: it works on nothing else, so reads ahead of it cannot be late. */
   waiting = false;
   /**
-   * Runs when a caller begins to wait on a slot. It adds latency, not correctness: without it, keys held when the caller
-   * begins to wait are read only at the next ask or slot taken, and a read of ids one at a time is slower by a few percent.
+   * Runs when a caller asks for a slot: the exclude batches holding keys are read once the asking has gone quiet, if the
+   * caller is then waiting or near them. It adds latency, not correctness: no test isolates it, and without it keys held
+   * when the caller begins to wait or comes near are read only at the next ask, which made a read of ids one at a time
+   * 5 to 11% slower (wall time under 20 and 50 ms of storage latency).
    */
   onWait: (() => void) | undefined;
-  /** Runs after each slot is handed out: an exclude batch whose keys the caller has come near reads them then. */
-  onTake: (() => void) | undefined;
 
   /** How many slots have been handed out: the slot of the next one. */
   get position(): number {
@@ -463,7 +463,6 @@ class CombineWindow {
     this.taken += 1;
     this.last = slot.key;
     this.fill();
-    this.onTake?.();
     if (slot.error !== undefined) throw slot.error;
     return slot;
   }
@@ -1299,7 +1298,6 @@ export class SegmentEngine {
     );
     for (const batch of batches) batch.window = window;
     if (batches.length > 0) {
-      window.onTake = () => this.readNear(batches, window);
       window.onWait = () => {
         for (const batch of batches) if (batch.pending.length > 0) this.settleSoon(batch);
       };
@@ -1581,8 +1579,8 @@ export class SegmentEngine {
 
   /**
    * Ask `batch` for the exclude chunk at `key`. A batch is read when it holds half the combine's concurrency in keys; when
-   * the asking has gone quiet for {@link BATCH_QUIET_HOPS} turns of the microtask queue (checked as each key asks, as each
-   * slot is handed out, and as the caller begins to wait) and the caller is waiting on a slot, or has come within half a
+   * the asking has gone quiet for {@link BATCH_QUIET_HOPS} turns of the microtask queue (checked as each key asks and as
+   * the caller asks for each slot) and the caller is waiting on a slot, or has come within half a
    * window of the oldest key held, so a held key is read at least that far ahead of it; and when every key of the combine
    * has been started (none is left that could still ask).
    * Refused once the combine has stopped or planned again, so a key it was still working on sends nothing more.
@@ -1604,16 +1602,6 @@ export class SegmentEngine {
     if (batch.scheduled) return;
     batch.scheduled = true;
     void this.settleBatch(batch);
-  }
-
-  /**
-   * A slot was handed out: the batches whose oldest key the caller has come within half a window of are read once the
-   * asking has gone quiet, so the keys that are being started as the caller takes slots are read together.
-   */
-  private readNear(batches: readonly ExcludeBatch[], window: CombineWindow): void {
-    for (const batch of batches) {
-      if (batch.oldest - window.position <= batch.half) this.settleSoon(batch);
-    }
   }
 
   /**

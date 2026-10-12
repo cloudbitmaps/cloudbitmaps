@@ -50,4 +50,22 @@ describe('the figures of an exclude read in batches', () => {
       `63 requests, where it was 1,000`.replace('63', String(exclude)),
     );
   });
+
+  it('the guide and the changelog state the bytes of the spread-survivors shape the engine test pins', () => {
+    // tests/core/exclude-batching.test.ts: 8 to 10 requests and 5.6 to 6.3 MB, where reading each key was 32 and 262,656.
+    const cost = flat('docs/guide/cost.md');
+    const log = flat('CHANGELOG.md');
+    for (const text of [cost, log]) {
+      expect(text).toContain('8 to 10 ');
+      expect(text).toContain('5.7 to 6.2 MB');
+      expect(text).toContain('262,656');
+    }
+    expect(cost).toContain('main made 32 requests');
+    expect(cost).toContain('about 83 ms against 105 ms, about 27% longer');
+    expect(log).toContain('about 27% longer');
+    const engineTest = readFileSync(join(ROOT, 'tests/core/exclude-batching.test.ts'), 'utf8');
+    expect(engineTest).toContain('toBeGreaterThanOrEqual(8)');
+    expect(engineTest).toContain('toBeLessThanOrEqual(10)');
+    expect(engineTest).toContain('toBe(262_656)');
+  });
 });

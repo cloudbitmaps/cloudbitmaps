@@ -120,8 +120,9 @@ so, and so do the module headers in the code.
   was read from, counted once in the cache's hits and misses, and checked against the segment's version, and a running read
   meets an exclude that gains an id as promptly as before, and a key it holds is read at least half a window ahead of
   a consumer that works between chunks. A batch covers ranges the way an include's stream does, so a
-  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: 10 requests and 5,679,936 bytes where it was
-  32 and 262,656 (free inside the region, billed across regions). A source with no
+  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: 8 to 10 requests and about 5.7 to 6.2 MB, by
+  where its batches fall, where it was 32 and 262,656, and about 27% longer at 25 ms a request and 100 MB/s (free inside
+  the region, billed across regions). A source with no
   `getChunks`, and an exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to
   count the requests of this shape. No public signature changes.
 - **The disaster-recovery guide's strays table changes.** A load over a row with no usable ledger (a registry repaired by

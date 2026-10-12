@@ -69,6 +69,8 @@ function idsOf(keys: Iterable<number>, per = 250, offset = 1, thin = false): num
 interface Counted {
   /** Range requests the storage was asked for, by segment name. */
   readonly ranges: Record<string, number>;
+  /** Bytes the range requests asked for, by segment name. */
+  readonly bytes: Record<string, number>;
   /** The most range requests in flight at once, over all segments, since the last `reset`. */
   maxInFlight: number;
   /** Runs as each range request is made, with the segment it reads. */
@@ -83,6 +85,7 @@ interface Counted {
 function counted(delayMs = 0): Counted {
   const backend = new MemoryStorage();
   const ranges: Record<string, number> = {};
+  const bytes: Record<string, number> = {};
   let inFlight = 0;
   const storage = new Proxy(backend.storage, {
     get(target, prop, receiver) {
@@ -101,6 +104,7 @@ function counted(delayMs = 0): Counted {
   ): Promise<unknown> => {
     const name = (args[0] as { segment: string }).segment;
     ranges[name] = (ranges[name] ?? 0) + 1;
+    bytes[name] = (bytes[name] ?? 0) + (args[2] as number);
     inFlight += 1;
     state.maxInFlight = Math.max(state.maxInFlight, inFlight);
     try {
@@ -114,10 +118,12 @@ function counted(delayMs = 0): Counted {
   const loader = new CloudRoaring({ storage: backend });
   const state: Counted = {
     ranges,
+    bytes,
     maxInFlight: 0,
     hook: undefined,
     reset() {
       for (const k of Object.keys(ranges)) delete ranges[k];
+      for (const k of Object.keys(bytes)) delete bytes[k];
       state.maxInFlight = 0;
     },
     cold: () =>
@@ -1081,7 +1087,7 @@ describe('a call that stops leaves the reads another call joined to finish', () 
 
 describe('a read joined to a batch read does not fail with a failure that is not its own', () => {
   it('reads the chunk on its own when the batch fails before its key, one request for each such key', async () => {
-    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    const { storage, engine, metrics } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
     let open: () => void = () => {};
     const held = new Promise<void>((resolve) => (open = resolve));
     const boom = new Error('one range failed');
@@ -1107,6 +1113,10 @@ describe('a read joined to a batch read does not fail with a failure that is not
     open();
     expect(await Promise.all(reads)).toEqual(later.map(() => true));
     await expect(run).rejects.toBe(boom);
+    // Each chunk a stream asked for is one cache miss, and each joined read one more of its own; the reads the joiners
+    // make on their own after the failure are the same chunks again, and count nothing.
+    const asked = storage.opened.reduce((n, o) => n + o.keys.length, 0);
+    expect(metrics.snapshot().cache.misses).toBe(asked + later.length);
     // One read of its own for each joined key whose take failed, and no more.
     expect(storage.singles.filter((k) => k.startsWith('x:')).length).toBeLessThanOrEqual(
       later.length,
@@ -1189,5 +1199,55 @@ describe('a key held for a batch is read ahead of the caller', () => {
     open();
     await waiting;
     await it.return?.(undefined);
+  });
+});
+
+describe('survivors spread thinly through a dense exclude: fewer requests, more bytes', () => {
+  // The layout the docs state: an exclude of 1,000 chunks of 4,096 ids (8 KiB each) and a survivor every 31st key.
+  it('reads a batch as parts of the same ranges, as the guide says: 8 to 10 requests, at least 20 times the bytes', async () => {
+    const survivors = range(0, 32).map((j) => j * 31);
+    const w = counted();
+    await w.load('a', idsOf(survivors));
+    await w.load('b', idsOf(survivors));
+    await w.load('x', idsOf(range(0, 1_000), 4_096));
+
+    // What reading each survivor's chunk on its own cost: a request for each, and the bytes of each chunk.
+    const alone = w.cold();
+    await alone.segment('x').has(15 * CHUNK + 1); // opens the object through a chunk that is no survivor's
+    w.reset();
+    for (const k of survivors) await alone.segment('x').has(k * CHUNK + 1);
+    expect(w.ranges.x).toBe(survivors.length);
+    const perKeyBytes = w.bytes.x!;
+    expect(perKeyBytes).toBeGreaterThan(survivors.length * 8_000);
+
+    const store = w.cold();
+    w.reset();
+    await collect(
+      store.segment('a').intersect([store.segment('b')], { exclude: [store.segment('x')] }),
+    );
+    // The figures in docs/guide/cost.md and the changelog: 8 to 10 requests, about 5.7 to 6.2 MB, where it was 32 and 262,656.
+    expect(w.ranges.x).toBeGreaterThanOrEqual(8);
+    expect(w.ranges.x).toBeLessThanOrEqual(10);
+    expect(w.bytes.x!).toBeGreaterThanOrEqual(20 * perKeyBytes);
+    expect(w.bytes.x!).toBeGreaterThanOrEqual(5_600_000);
+    expect(w.bytes.x!).toBeLessThanOrEqual(6_300_000);
+    expect(perKeyBytes).toBe(262_656);
+  });
+});
+
+describe('what a batch counts as held', () => {
+  it('counts only the chunks that would be requested, not those the cache holds', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: partial(KEYS) });
+    // Every other chunk is cached: 20 are read, in batches of up to half the concurrency (4).
+    for (const k of KEYS.filter((k) => k % 2 === 1)) await engine.has(ref('x'), joinId(k, 1));
+    storage.opened.length = 0;
+    storage.singles.length = 0;
+    await collect(engine.intersect([ref('a'), ref('b')], WITH_X));
+    const keys = xKeysAsked(storage);
+    expect(keys).toEqual(KEYS.filter((k) => k % 2 === 0));
+    // 20 keys at 4 a batch is 5 streams; hits counted toward a batch would make it read at 2 keys (10 streams).
+    expect(storage.opened.filter(isX).length).toBeLessThanOrEqual(
+      Math.ceil(keys.length / half(8)) + 1,
+    );
   });
 });
