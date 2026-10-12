@@ -157,15 +157,15 @@ This is the one place the bound is stated; other pages link here.
   or a chunk the chunk cache does not hold: `iterate` and the combines always do, since they read the chunk keys from
   the index; a `has()` whose chunk is cached, a `count()` and a `stat()` answered from the row's summary do not. On an
   encrypted segment the key is unwrapped again through the keystore, one request to it, for the open or for the row's
-  sealed summary, which names the object a cached chunk is checked against. An open that starts from the object (`iterate`, a combine, a pin) sends the tail read at once, beside
-  the key request, rather than after it, so its wall time is the longer of the two, not their sum. The open still holds
-  the footer to the row's summary and decrypts only once both have answered, and a keystore fault is the error you get
-  even when the object is also missing. A `has()` asks for the segment's version first, so its first open waits for the
-  key, which opens the row's sealed summary, and has nothing to overlap; an open it makes again after a failed one
-  overlaps like the others. The tail read is sent whether or not the key opens, so a keystore that fails bills a tail
-  GET for each attempt (with the default read retry, up to four for a keystore that keeps throwing `TransientError`),
-  and its answer is dropped. While a cold open waits for the key it holds up to `tailBytes` (256 KiB by default) of the
-  object's tail.
+  sealed summary, which names the object a cached chunk is checked against. An open that starts from the object
+  (`iterate`, a combine, a pin) sends the tail read at once, beside the key request, rather than after it, so its wall
+  time is the longer of the two, not their sum. The open still holds the footer to the row's summary and decrypts only
+  once both have answered, and a keystore fault is the error you get even when the object is also missing. A `has()`
+  asks for the segment's version first, so its first open waits for the key, which opens the row's sealed summary, and
+  has nothing to overlap; an open it makes again after a failed one overlaps like the others. The tail read is sent
+  whether or not the key opens, so a keystore that fails bills a tail GET for each attempt (with the default read
+  retry, up to four for a keystore that keeps throwing `TransientError`), and its answer is dropped. While a cold open
+  waits for the key it holds up to `tailBytes` (256 KiB by default) of the object's tail.
 - **What it means for another store's erasure or crypto-shred.** After an eviction a store can serve a cached chunk of a
   generation another store erased from, up to the same `cache.genTtlMs`. It also reads with the wrapped keys it kept:
   a store whose reader was evicted unwraps the key from them again through the keystore, so a crypto-shred by another
