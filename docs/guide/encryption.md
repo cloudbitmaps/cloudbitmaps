@@ -117,6 +117,18 @@ crypto-shreds an encrypted segment and deletes its objects.
   stops at the ceiling every fleet scan keeps: `maxScanSegments`, default 250,000. A namespace over it throws
   `BudgetExceededError` with nothing erased. Pass a higher `maxScanSegments` when the namespace really is that large.
 
+## What an encrypted read costs
+
+An encrypted segment's first read of a generation (a cold open, or one after the reader cache let the segment go) asks
+your keystore to unwrap the key and reads the object's tail from storage. The two do not depend on each other, so an
+open that starts from the object (`iterate`, a combine, a pin) sends them together and takes the longer of the two, not the sum. Nothing from the
+tail is read before the key opens it: the tail's bytes stay untrusted until the footer has been held to the row's
+summary and the index has been decrypted. If the keystore fails, the read raises its error (`KeyUnavailableError`, or
+`TransientError` for a key service that did not answer in time) even when the object is also missing, and the tail GET
+already sent is billed and its answer dropped. A store with no keystore sends no tail read for an encrypted row. Where a read asks
+for the segment's version first, as `has()` does, it waits for the key before it opens the object, because the row's
+summary is sealed under that key; the open then has nothing left to overlap.
+
 ## What is sealed where
 
 Each piece of a segment is stored in one place, in the clear or sealed under the segment's key (AES-256-GCM, with the
