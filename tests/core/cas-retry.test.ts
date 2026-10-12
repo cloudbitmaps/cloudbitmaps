@@ -37,13 +37,18 @@ async function world() {
 }
 type W = Awaited<ReturnType<typeof world>>;
 
-/** A write of the row that changes only its leases, then the conflict the stale writer would see. */
-async function leaseConflict(w: W): Promise<never> {
+/** One write of the row that changes only its leases. */
+async function leaseWrite(w: W): Promise<void> {
   const row = (await w.registry.get(SEG))!;
   const entry: LeaseEntry = { holder: '0'.repeat(16), generation: 1, until: FAR };
   await w.registry.compareAndSwap(SEG, row.token, {
     leases: row.leases === undefined ? [entry] : undefined,
   });
+}
+
+/** A lease write, then the conflict the stale writer would see. */
+async function leaseConflict(w: W): Promise<never> {
+  await leaseWrite(w);
   throw new WriteConflictError('lost to a lease write');
 }
 
@@ -157,10 +162,7 @@ describe('casRetry', () => {
     // A write that lands while the loop sleeps.
     const clock: Clock = {
       now: () => T0,
-      sleep: async () => {
-        const row = (await w.registry.get(SEG))!;
-        await w.registry.compareAndSwap(SEG, row.token, { leases: undefined, updatedAt: T0 + 1 });
-      },
+      sleep: () => leaseWrite(w),
     };
     const tokens: string[] = [];
     let calls = 0;

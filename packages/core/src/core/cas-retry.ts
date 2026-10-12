@@ -4,10 +4,10 @@ import { type ChurnDeps, leaseChurn } from './leases';
 import type { IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 
 /** What `casRetry` needs: the registry, and the clock and rng that spread a wait out. */
-export type CasRetryDeps = ChurnDeps & { readonly registry: IRegistryDriver };
+type CasRetryDeps = ChurnDeps & { readonly registry: IRegistryDriver };
 
 /** How many attempts a caller gets, and the error it throws once they are spent. */
-export interface CasRetryPlan {
+interface CasRetryPlan {
   /** Attempts that count; a wait out of lease churn does not use one. */
   readonly attempts: number;
   /** The error thrown when every attempt lost. */
