@@ -28,6 +28,7 @@ import type {
   SegmentRef,
 } from '@cloudbitmaps/core';
 import {
+  IntegrityError,
   NotFoundError,
   UnsupportedError,
   ValidationError,
@@ -87,8 +88,8 @@ const NASTY_NAMES: readonly string[] = [
   'user@example.com',
   '\u65e5\u672c\u8a9e',
 ];
-async function expectValidationReject(p: Promise<unknown>): Promise<void> {
-  await expect(p).rejects.toBeInstanceOf(ValidationError);
+async function expectValidationReject(p: Promise<unknown>, what?: string): Promise<void> {
+  await expect(p, what).rejects.toBeInstanceOf(ValidationError);
 }
 
 /**
@@ -1091,11 +1092,12 @@ export function registryConformance(
       generation: 3,
       cardinality: 12_000_000,
       fingerprint: '1572864:2864434397',
+      tailBytes: 6_000,
       metadata: { def: 'v41', landedAt: 1_790_000_000_000 },
     };
     const sealedSummary: RegistrySummary = {
       generation: 4,
-      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v',
+      sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMw==',
     };
 
     it('round-trips a summary of either shape through create, get, list and compare-and-swap', async () => {
@@ -1120,6 +1122,7 @@ export function registryConformance(
         generation: 3,
         cardinality: 5,
         fingerprint: '4096:7',
+        tailBytes: 300,
         metadata: { day: 'mon' },
       };
       const mine = structuredClone(asCalled);
@@ -1133,6 +1136,7 @@ export function registryConformance(
         generation: 4,
         cardinality: 6,
         fingerprint: '4100:8',
+        tailBytes: 300,
         metadata: { day: 'tue' },
       };
       const theirs = structuredClone(next);
@@ -1157,12 +1161,22 @@ export function registryConformance(
 
     it('refuses a malformed summary and leaves the row unchanged', async () => {
       const d = makeDriver();
-      const bad = { generation: 3, cardinality: -1, fingerprint: '4096:7' } as RegistrySummary;
+      const bad = {
+        generation: 3,
+        cardinality: -1,
+        fingerprint: '4096:7',
+        tailBytes: 300,
+      } as RegistrySummary;
       await expectValidationReject(d.create(SEG, { currentGen: 3, summary: bad }));
       expect(await d.get(SEG)).toBeNull();
       // A summary names the object it describes: one without a fingerprint, or with one no object can have, is malformed.
       for (const fingerprint of [undefined, '', '7', '0:1', '4096:4294967296']) {
-        const unnamed = { generation: 3, cardinality: 5, fingerprint } as RegistrySummary;
+        const unnamed = {
+          generation: 3,
+          cardinality: 5,
+          fingerprint,
+          tailBytes: 300,
+        } as RegistrySummary;
         await expectValidationReject(d.create(SEG, { currentGen: 3, summary: unnamed }));
       }
       expect(await d.get(SEG)).toBeNull();
@@ -1171,55 +1185,163 @@ export function registryConformance(
       expect(await d.get(SEG)).toMatchObject({ token, summary: clearSummary });
     });
 
-    // ── `keptGens`: the generations a load keeps below the pointer ─────────────────────────────────────────
-    // A driver that kept the list across a patch that moved the pointer would hold a window that names the wrong
-    // generations, and a load would delete by name on the strength of it. One that dropped it is correct and slow.
-    it('round-trips the kept generations through create, get, list and compare-and-swap', async () => {
+    // A clear summary's `tailBytes` is the bytes an open reads from the object's end: from a footer's size to the object's
+    // size less its preamble, and no more than the cap of one open's tail read. A driver that stored any integer would
+    // let a row make every cold open read a size no object has.
+    it('refuses a clear summary whose tailBytes no object of its size can have, and a sealed one too short for it', async () => {
       const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 5, keptGens: [2, 4] });
-      expect((await d.get(SEG))!.keptGens).toEqual([2, 4]);
-      expect((await drainRecords(d.list()))[0]!.keptGens).toEqual([2, 4]);
-      await d.compareAndSwap(SEG, t0, { currentGen: 6, keptGens: [4, 5] });
-      expect((await d.get(SEG))!.keptGens).toEqual([4, 5]);
-      expect((await drainRecords(d.list()))[0]!.keptGens).toEqual([4, 5]);
+      const sized = (tailBytes: unknown): RegistrySummary =>
+        ({ generation: 3, cardinality: 5, fingerprint: '4096:7', tailBytes }) as RegistrySummary;
+      // 104 is a footer, 4088 is the size less the preamble, and 8,392,820 is the cap: all three are legal where they fit.
+      await d.create(SEG, { currentGen: 3, summary: sized(104) });
+      await d.delete(SEG);
+      await d.create(SEG, { currentGen: 3, summary: sized(4096 - 8) });
+      await d.delete(SEG);
+      const big: RegistrySummary = {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: '20000000:7',
+        tailBytes: 8_392_820,
+      };
+      await d.create(SEG, { currentGen: 3, summary: big });
+      await d.delete(SEG);
+      for (const tailBytes of [undefined, 103, 4096 - 7, 4096, 1.5, -1, '300', null]) {
+        await expectValidationReject(d.create(SEG, { currentGen: 3, summary: sized(tailBytes) }));
+      }
+      await expectValidationReject(
+        d.create(SEG, { currentGen: 3, summary: { ...big, tailBytes: 8_392_821 } }),
+      );
+      // A sealed blob of 51 bytes is a nonce, a tag and 23 bytes: one short of the count, the fingerprint and the tail size.
+      const wrappedDeks = [{ keyId: 'active', wrapped: 'YWN0aXZlLXdyYXBwZWQ=' }];
+      const sealed = (bytes: number): RegistrySummary => ({
+        generation: 3,
+        sealed: Buffer.alloc(bytes, 7).toString('base64'),
+      });
+      await expectValidationReject(
+        d.create(SEG, { currentGen: 3, wrappedDeks, summary: sealed(51) }),
+      );
+      await d.create(SEG, { currentGen: 3, wrappedDeks, summary: sealed(52) });
+      expect(await d.get(SEG)).toMatchObject({ currentGen: 3 });
     });
 
-    it('keeps the kept generations across a patch that leaves the pointer, and drops them when it moves it', async () => {
+    // ── `knownGens`: the generations a row made current, in the order it made them current ─────────────────────
+    // A driver that kept the ledger across a patch that moved the pointer would vouch for a pointer its last entry is not,
+    // and one that sorted it would lose which generations were most recently current.
+    const crc = (g: number): number => 1000 + g;
+    const ledger = (...gens: number[]): { generation: number; footerCrc: number }[] =>
+      gens.map((generation) => ({ generation, footerCrc: crc(generation) }));
+
+    it('round-trips knownGens through create, get, list and compare-and-swap, in the order given', async () => {
       const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 5, keptGens: [2, 4] });
+      const { token: t0 } = await d.create(SEG, { currentGen: 4, knownGens: ledger(3, 1, 4) });
+      expect((await d.get(SEG))!.knownGens).toEqual(ledger(3, 1, 4));
+      expect((await drainRecords(d.list()))[0]!.knownGens).toEqual(ledger(3, 1, 4));
+      await d.compareAndSwap(SEG, t0, { currentGen: 1, knownGens: ledger(4, 3, 1) });
+      expect((await d.get(SEG))!.knownGens).toEqual(ledger(4, 3, 1));
+      expect((await drainRecords(d.list()))[0]!.knownGens).toEqual(ledger(4, 3, 1));
+    });
+
+    it('follows the pointer: a patch that moves currentGen without naming it drops the ledger, one that keeps it or names only leases, retention or residency keeps it', async () => {
+      const d = makeDriver();
+      const entry = { holder: '00112233aabbccdd', generation: 5, until: 1_900_000_000_000 };
+      const { token: t0 } = await d.create(SEG, { currentGen: 5, knownGens: ledger(2, 4, 5) });
       const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 9 } });
-      expect((await d.get(SEG))!.keptGens).toEqual([2, 4]);
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 6 });
-      expect((await d.get(SEG))!.keptGens).toBeUndefined();
-      await d.compareAndSwap(SEG, t2, { currentGen: 7, keptGens: [] });
-      expect((await d.get(SEG))!.keptGens).toEqual([]);
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, { residency: { region: 'eu' } });
+      const { token: t3 } = await d.compareAndSwap(SEG, t2, { leases: [entry] });
+      const { token: t4 } = await d.compareAndSwap(SEG, t3, { currentGen: 5 });
+      expect((await d.get(SEG))!.knownGens).toEqual(ledger(2, 4, 5));
+      const { token: t5 } = await d.compareAndSwap(SEG, t4, { currentGen: 6 });
+      expect((await d.get(SEG))!.knownGens).toBeUndefined();
+      await d.compareAndSwap(SEG, t5, { currentGen: 7, knownGens: ledger(7) });
+      expect((await d.get(SEG))!.knownGens).toEqual(ledger(7));
     });
 
-    it('clears the kept generations when told to', async () => {
+    it('clears knownGens when told to', async () => {
       const d = makeDriver();
-      const { token } = await d.create(SEG, { currentGen: 5, keptGens: [4] });
-      await d.compareAndSwap(SEG, token, { keptGens: undefined });
-      expect((await d.get(SEG))!.keptGens).toBeUndefined();
+      const { token } = await d.create(SEG, { currentGen: 5, knownGens: ledger(4, 5) });
+      await d.compareAndSwap(SEG, token, { knownGens: undefined });
+      expect((await d.get(SEG))!.knownGens).toBeUndefined();
     });
 
-    it('refuses kept generations that are out of order, or not below the pointer, and leaves the row unchanged', async () => {
+    it('stores knownGens as they were when the write was called', async () => {
       const d = makeDriver();
-      await expectValidationReject(d.create(SEG, { currentGen: 5, keptGens: [4, 2] }));
-      await expectValidationReject(d.create(SEG, { currentGen: 5, keptGens: [2, 5] }));
-      expect(await d.get(SEG)).toBeNull();
-      const { token } = await d.create(SEG, { currentGen: 5, keptGens: [4] });
-      await expectValidationReject(d.compareAndSwap(SEG, token, { keptGens: [4, 5] }));
-      await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: 3, keptGens: [4] }));
-      expect(await d.get(SEG)).toMatchObject({ token, keptGens: [4] });
-    });
-
-    it('stores the kept generations as they were when the write was called', async () => {
-      const d = makeDriver();
-      const mine = [1, 2];
-      const created = d.create(SEG, { currentGen: 5, keptGens: mine });
-      mine.push(99);
+      const mine = ledger(1, 5);
+      const created = d.create(SEG, { currentGen: 5, knownGens: mine });
+      mine.push({ generation: 99, footerCrc: 1 });
+      mine[0]!.footerCrc = 5;
       await created;
-      expect((await d.get(SEG))!.keptGens).toEqual([1, 2]);
+      expect((await d.get(SEG))!.knownGens).toEqual(ledger(1, 5));
+    });
+
+    it('naming knownGens alone does not renew pointerId, and naming it beside currentGen does', async () => {
+      const d = makeDriver();
+      const { token: created } = await d.create(SEG, { currentGen: 5, knownGens: ledger(5) });
+      const { token: t1 } = await d.compareAndSwap(SEG, created, { knownGens: ledger(4, 5) });
+      expect(t1).not.toBe(created);
+      expect((await d.get(SEG))!.pointerId).toBe(created);
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, {
+        currentGen: 6,
+        knownGens: ledger(5, 6),
+      });
+      expect((await d.get(SEG))!.pointerId).toBe(t2);
+    });
+
+    it('refuses a malformed ledger and leaves the row unchanged', async () => {
+      const d = makeDriver();
+      const refused: ReadonlyArray<[string, unknown, number | null]> = [
+        ['not an array', { generation: 5, footerCrc: 1 }, 5],
+        ['an entry that is not an object', [5], 5],
+        ['an entry with an extra key', [{ generation: 5, footerCrc: 1, size: 9 }], 5],
+        ['a negative generation', [{ generation: -1, footerCrc: 1 }, ...ledger(5)], 5],
+        ['a fractional generation', [{ generation: 1.5, footerCrc: 1 }, ...ledger(5)], 5],
+        ['a footerCrc of -1', [{ generation: 4, footerCrc: -1 }, ...ledger(5)], 5],
+        ['a footerCrc of 1.5', [{ generation: 4, footerCrc: 1.5 }, ...ledger(5)], 5],
+        ['a footerCrc of 2^32', [{ generation: 4, footerCrc: 2 ** 32 }, ...ledger(5)], 5],
+        ['a repeated generation', [...ledger(4, 5), ...ledger(4)], 5],
+        ['193 entries', ledger(...Array.from({ length: 193 }, (_, i) => i)), 192],
+        ['a row with no pointer', ledger(5), null],
+        ['an empty list', [], 5],
+        ['a last entry that is not the pointer', ledger(5, 4), 5],
+      ];
+      for (const [what, knownGens, currentGen] of refused) {
+        await expectValidationReject(
+          d.create(SEG, { currentGen, knownGens } as NewRegistryRecord),
+          what,
+        );
+        expect(await d.get(SEG), what).toBeNull();
+      }
+      const { token } = await d.create(SEG, { currentGen: 5, knownGens: ledger(4, 5) });
+      await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: ledger(5, 4) }));
+      await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: ledger(4) }));
+      await expectValidationReject(
+        d.compareAndSwap(SEG, token, { currentGen: 3, knownGens: ledger(4, 5) }),
+      );
+      expect(await d.get(SEG)).toMatchObject({ token, knownGens: ledger(4, 5) });
+    });
+
+    it('accepts a ledger that is not in number order, one with entries above the pointer, and one of the writer cap', async () => {
+      const d = makeDriver();
+      // The ledger every rollback swap writes: the target last, the generations it left numbered above it.
+      const { token } = await d.create(SEG, { currentGen: 1, knownGens: ledger(0, 2, 3, 1) });
+      expect((await d.get(SEG))!.knownGens).toEqual(ledger(0, 2, 3, 1));
+      const full = ledger(...Array.from({ length: 192 }, (_, i) => i));
+      await d.compareAndSwap(SEG, token, { currentGen: 191, knownGens: full });
+      expect((await d.get(SEG))!.knownGens).toEqual(full);
+    });
+
+    it("refuses a current entry whose checksum disagrees with a clear summary's fingerprint, given in the same write or kept from the row", async () => {
+      const d = makeDriver();
+      const agreeing = [{ generation: 3, footerCrc: 2864434397 }];
+      const disagreeing = [{ generation: 3, footerCrc: 2864434398 }];
+      await expectValidationReject(
+        d.create(SEG, { currentGen: 3, summary: clearSummary, knownGens: disagreeing }),
+      );
+      expect(await d.get(SEG)).toBeNull();
+      const { token } = await d.create(SEG, { currentGen: 3, summary: clearSummary });
+      await expectValidationReject(d.compareAndSwap(SEG, token, { knownGens: disagreeing }));
+      expect(await d.get(SEG)).toMatchObject({ token });
+      await d.compareAndSwap(SEG, token, { knownGens: agreeing });
+      expect((await d.get(SEG))!.knownGens).toEqual(agreeing);
     });
 
     // ── `leases`: the holds on a segment's generations ───────────────────────────────────────────────────────
@@ -1232,7 +1354,10 @@ export function registryConformance(
       const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
       expect((await d.get(SEG))!.leases).toEqual([entry]);
       expect((await drainRecords(d.list()))[0]!.leases).toEqual([entry]);
-      const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 6, keptGens: [5] });
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, {
+        currentGen: 6,
+        knownGens: ledger(5, 6),
+      });
       expect((await d.get(SEG))!.leases).toEqual([entry]);
       const { token: t3 } = await d.compareAndSwap(SEG, t2, { retention: { expiresAt: 9 } });
       expect((await d.get(SEG))!.leases).toEqual([entry]);
@@ -1310,7 +1435,7 @@ export function registryConformance(
       }
     });
 
-    it('a compare-and-swap naming only leases, policy or the kept window moves the token and leaves pointerId', async () => {
+    it('a compare-and-swap naming only leases, policy or the ledger moves the token and leaves pointerId', async () => {
       const d = makeDriver();
       const { token: created } = await d.create(SEG, { currentGen: 5 });
       const entry = { holder: '00112233aabbccdd', generation: 5, until: 1_900_000_000_000 };
@@ -1319,8 +1444,8 @@ export function registryConformance(
         { leases: undefined },
         { retention: { expiresAt: 9 } },
         { residency: { region: 'eu' } },
-        { keptGens: [3, 4] },
-        { keptGens: undefined },
+        { knownGens: ledger(3, 5) },
+        { knownGens: undefined },
       ];
       let token = created;
       for (const patch of patches) {
@@ -1333,19 +1458,24 @@ export function registryConformance(
     });
 
     // The renewal a writer asks for with no other change: naming the pointer at its own value. "Moves" in a patch
-    // means "changes value", so the summary, the kept window and the leases stay with a pointer that stays.
-    it('a patch naming the pointer at the value it has keeps the summary, the kept window and the leases', async () => {
+    // means "changes value", so the summary, the ledger and the leases stay with a pointer that stays.
+    it('a patch naming the pointer at the value it has keeps the summary, the ledger and the leases', async () => {
       const d = makeDriver();
       const entry = { holder: '00112233aabbccdd', generation: 2, until: 1_900_000_000_000 };
       const { token: t0 } = await d.create(SEG, {
         currentGen: 3,
         summary: clearSummary,
-        keptGens: [1, 2],
+        knownGens: [...ledger(1, 2), { generation: 3, footerCrc: 2864434397 }],
       });
       const { token: t1 } = await d.compareAndSwap(SEG, t0, { leases: [entry] });
       const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 3 });
       const row = (await d.get(SEG))!;
-      expect(row).toMatchObject({ currentGen: 3, token: t2, pointerId: t2, keptGens: [1, 2] });
+      expect(row).toMatchObject({
+        currentGen: 3,
+        token: t2,
+        pointerId: t2,
+        knownGens: [...ledger(1, 2), { generation: 3, footerCrc: 2864434397 }],
+      });
       expect(row.summary).toEqual(clearSummary);
       expect(row.leases).toEqual([entry]);
     });
@@ -1683,9 +1813,13 @@ export interface RegistryDeleteHarness {
   plantRow?(ref: SegmentRef, text: string): Promise<void>;
 }
 
+/** The token a planted row carries: schema 1 held a bare decimal token; every later schema the incarnation form. */
+const plantedToken = (schemaVersion: number): string =>
+  schemaVersion === 1 ? '7' : '0123456789abcdef0123456789abcdef.7.0123456789abcdef';
+
 /**
- * A row as an earlier schema serialized one: stamped `schemaVersion`, with the token form that schema wrote and no
- * `pointerId`. Schema 1 held a bare decimal token; 2 and 3 the incarnation form.
+ * A row as an earlier schema serialized one: stamped `schemaVersion`, with the token form that schema wrote. Schemas 1
+ * to 3 carried no `pointerId`; schema 4 carried one and a `keptGens` list of numbers.
  */
 function earlierSchemaRowText(ref: SegmentRef, schemaVersion: number): string {
   return JSON.stringify({
@@ -1698,7 +1832,36 @@ function earlierSchemaRowText(ref: SegmentRef, schemaVersion: number): string {
       status: 'active',
       createdAt: 10,
       updatedAt: 20,
-      token: schemaVersion === 1 ? '7' : '0123456789abcdef0123456789abcdef.7.0123456789abcdef',
+      token: plantedToken(schemaVersion),
+      ...(schemaVersion === 4
+        ? { pointerId: '0123456789abcdef0123456789abcdef.3.fedcba9876543210', keptGens: [3] }
+        : {}),
+    },
+  });
+}
+
+/**
+ * A row as this schema serializes one, stamped 5, with `extra` fields added to (or, by `undefined`, taken from) the
+ * record: current generation 4, `knownGens` ending with it.
+ */
+function schemaFiveRowText(ref: SegmentRef, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    schemaVersion: 5,
+    deleted: false,
+    record: {
+      ...(ref.namespace === undefined ? {} : { namespace: ref.namespace }),
+      segment: ref.segment,
+      currentGen: 4,
+      status: 'active',
+      createdAt: 10,
+      updatedAt: 20,
+      token: plantedToken(5),
+      pointerId: '0123456789abcdef0123456789abcdef.3.fedcba9876543210',
+      knownGens: [
+        { generation: 3, footerCrc: 11 },
+        { generation: 4, footerCrc: 12 },
+      ],
+      ...extra,
     },
   });
 }
@@ -1774,11 +1937,12 @@ export function registryDeleteConformance(label: string, make: () => RegistryDel
       expect(await h.driver.get(SEG)).toMatchObject({ currentGen: 0, token: live });
     });
 
-    // A row an earlier schema wrote carries no `pointerId`, so this build cannot say what it resolves to: every read
-    // and every write that reads it first refuses it, loudly, rather than read it as empty or write over it.
+    // A row an earlier schema wrote carries no ledger of the generations it published (and below schema 4 no
+    // `pointerId` either), so this build cannot vouch for any of them: every read and every write that reads it first
+    // refuses it, loudly, rather than read it as empty or write over it.
     it('a row stamped with an earlier schema is refused by every read and write, naming its key (UnsupportedError)', async (ctx) => {
       if (make().plantRow === undefined) return ctx.skip();
-      for (const schemaVersion of [1, 2, 3]) {
+      for (const schemaVersion of [1, 2, 3, 4]) {
         const h = make();
         const ref = { namespace: 'tenant:acme', segment: `old-row-${schemaVersion}` };
         await h.plantRow!(ref, earlierSchemaRowText(ref, schemaVersion));
@@ -1787,8 +1951,7 @@ export function registryDeleteConformance(label: string, make: () => RegistryDel
         await expect(h.driver.get(ref)).rejects.toThrow(named);
         await expect(drainRecords(h.driver.list())).rejects.toBeInstanceOf(UnsupportedError);
         await expect(drainRecords(h.driver.list('tenant:acme'))).rejects.toThrow(named);
-        const token =
-          schemaVersion === 1 ? '7' : '0123456789abcdef0123456789abcdef.7.0123456789abcdef';
+        const token = plantedToken(schemaVersion);
         await expect(h.driver.compareAndSwap(ref, token, { currentGen: 5 })).rejects.toBeInstanceOf(
           UnsupportedError,
         );
@@ -1799,6 +1962,65 @@ export function registryDeleteConformance(label: string, make: () => RegistryDel
         await expect(h.driver.delete(ref)).rejects.toBeInstanceOf(UnsupportedError);
         expect(await h.stored(ref), 'the row is left as it was').toBe(true);
       }
+    });
+
+    // A stored row is untrusted bytes: a shape this schema cannot have is an IntegrityError naming the row, and a ledger
+    // that is well formed but disagrees with its row is read, not refused, so one such row stops no listing.
+    it('a planted schema-5 row that carries keptGens, or more than 384 ledger entries, is an IntegrityError naming its key', async (ctx) => {
+      if (make().plantRow === undefined) return ctx.skip();
+      const tooMany = Array.from({ length: 385 }, (_, i) => ({ generation: i, footerCrc: i }));
+      const shapes: ReadonlyArray<[string, Record<string, unknown>]> = [
+        ['keptGens', { keptGens: [3] }],
+        ['385 entries', { currentGen: 384, knownGens: tooMany }],
+        ['an entry with an extra key', { knownGens: [{ generation: 4, footerCrc: 12, size: 1 }] }],
+        [
+          'a repeated generation',
+          {
+            knownGens: [
+              { generation: 4, footerCrc: 1 },
+              { generation: 4, footerCrc: 1 },
+            ],
+          },
+        ],
+        ['a footerCrc of 2^32', { knownGens: [{ generation: 4, footerCrc: 2 ** 32 }] }],
+      ];
+      for (const [i, [what, extra]] of shapes.entries()) {
+        const h = make();
+        const ref = { namespace: 'tenant:acme', segment: `bad-ledger-${i}` };
+        await h.plantRow!(ref, schemaFiveRowText(ref, extra));
+        await expect(h.driver.get(ref), what).rejects.toBeInstanceOf(IntegrityError);
+        await expect(h.driver.get(ref), what).rejects.toThrow(new RegExp(`bad-ledger-${i}`));
+        await expect(drainRecords(h.driver.list('tenant:acme')), what).rejects.toBeInstanceOf(
+          IntegrityError,
+        );
+      }
+    });
+
+    it('a planted schema-5 row whose ledger disagrees with its pointer is read as stored, not refused', async (ctx) => {
+      if (make().plantRow === undefined) return ctx.skip();
+      const h = make();
+      const ref = { namespace: 'tenant:acme', segment: 'disagrees' };
+      const stale = [
+        { generation: 2, footerCrc: 11 },
+        { generation: 3, footerCrc: 12 },
+      ];
+      await h.plantRow!(ref, schemaFiveRowText(ref, { knownGens: stale }));
+      expect((await h.driver.get(ref))!.knownGens).toEqual(stale);
+      expect((await drainRecords(h.driver.list('tenant:acme')))[0]!.knownGens).toEqual(stale);
+    });
+
+    it('a planted schema-5 row is read', async (ctx) => {
+      if (make().plantRow === undefined) return ctx.skip();
+      const h = make();
+      const ref = { namespace: 'tenant:acme', segment: 'current' };
+      await h.plantRow!(ref, schemaFiveRowText(ref));
+      expect(await h.driver.get(ref)).toMatchObject({
+        currentGen: 4,
+        knownGens: [
+          { generation: 3, footerCrc: 11 },
+          { generation: 4, footerCrc: 12 },
+        ],
+      });
     });
   });
 }

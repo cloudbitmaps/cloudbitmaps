@@ -199,16 +199,28 @@ describe('a load numbers its generation from the row it read, with one existence
 
 describe('re-running the load after a registry restore, as the recovery guide says', () => {
   /**
-   * Six loads at the default `keep: 1` leave generations 4 and 5; the registry is restored to pointer 1, and
-   * generation 1's object with it. Then the load is re-run, with `keep`, until the pointer is above the strays.
+   * Generations 0 and 1 from before the restore point, the registry restored to pointer 1, and strays at 4 and 5. Then
+   * the load is re-run, with `keep`, until the pointer is above the strays. The restored row carries the ledger of the
+   * generations it knew at the restore point when `ledger` is set, and none otherwise (a row repaired by hand).
    */
-  async function restoreAndRerun(keep: number): Promise<{ taken: number[]; left: number[] }> {
+  async function restoreAndRerun(
+    keep: number,
+    ledger: boolean,
+  ): Promise<{ taken: number[]; left: number[] }> {
     const w = world();
-    for (let g = 0; g <= 5; g++) await loadSegment(SEG, [g], w.deps);
-    expect(await generations(w.memory)).toEqual([4, 5]);
-    const row = (await w.registry.get(SEG))!;
-    await w.registry.compareAndSwap(SEG, row.token, { currentGen: 1 });
-    await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 1 }, [1]);
+    for (const g of [0, 1, 4, 5])
+      await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: g }, [g]);
+    await w.registry.create(SEG, {
+      currentGen: 1,
+      ...(ledger
+        ? {
+            knownGens: [
+              { generation: 0, footerCrc: 1 },
+              { generation: 1, footerCrc: 2 },
+            ],
+          }
+        : {}),
+    });
     const taken: number[] = [];
     while ((await w.registry.get(SEG))!.currentGen! <= 5) {
       const r = await loadSegment(SEG, [100 + taken.length], w.deps, { keep });
@@ -219,17 +231,28 @@ describe('re-running the load after a registry restore, as the recovery guide sa
   }
 
   it('numbers below the strays first, then past them all', async () => {
-    expect((await restoreAndRerun(5)).taken).toEqual([2, 3, 6]);
+    expect((await restoreAndRerun(5, false)).taken).toEqual([2, 3, 6]);
+    expect((await restoreAndRerun(5, true)).taken).toEqual([2, 3, 6]);
   });
 
-  it('keeps the restored generation with a keep of the highest stray minus the restored pointer, plus one', async () => {
-    expect((await restoreAndRerun(5 - 1 + 1)).left).toEqual([1, 2, 3, 4, 5, 6]);
+  // The ledger is the window: what it names is kept by count, and the load that lists deletes every generation below its
+  // pointer it does not name, the strays among them.
+  it.each([
+    { keep: 1, left: [3, 6] },
+    { keep: 3, left: [1, 2, 3, 6] },
+    { keep: 5, left: [0, 1, 2, 3, 6] },
+  ])('with a ledger on the restored row, keep $keep leaves $left', async ({ keep, left }) => {
+    expect((await restoreAndRerun(keep, true)).left).toEqual(left);
   });
 
-  it('collects it with a keep of the number of strays plus one', async () => {
-    const { left } = await restoreAndRerun(2 + 1);
-    expect(left).not.toContain(1);
-    expect(left).toEqual([3, 4, 5, 6]);
+  // A row with no ledger gets one that names only the first re-run's generation, so the strays and the restored
+  // generation are generations no ledger names: the load that passes the strays lists, and deletes them whatever `keep`.
+  it.each([
+    { keep: 1, left: [3, 6] },
+    { keep: 3, left: [2, 3, 6] },
+    { keep: 5, left: [2, 3, 6] },
+  ])('with no ledger on the restored row, keep $keep leaves $left', async ({ keep, left }) => {
+    expect((await restoreAndRerun(keep, false)).left).toEqual(left);
   });
 });
 

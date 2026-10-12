@@ -77,7 +77,10 @@ function world(
  * it says of that object differs.
  */
 const withSummary =
-  (summary: Omit<ClearRegistrySummary, 'fingerprint'> | SealedRegistrySummary | undefined) =>
+  (
+    summary:
+      Omit<ClearRegistrySummary, 'fingerprint' | 'tailBytes'> | SealedRegistrySummary | undefined,
+  ) =>
   (row: RegistryRecord): RegistryRecord => ({
     ...row,
     summary:
@@ -86,6 +89,7 @@ const withSummary =
         : ({
             ...summary,
             fingerprint: (row.summary as { fingerprint?: string } | undefined)?.fingerprint,
+            tailBytes: (row.summary as { tailBytes?: number } | undefined)?.tailBytes,
           } as RegistrySummary),
   });
 

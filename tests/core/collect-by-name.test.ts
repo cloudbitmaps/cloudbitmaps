@@ -1,3 +1,4 @@
+import { windowOf } from '@/core/known-generations';
 import fc from 'fast-check';
 import { loadSegment, type LoadOptions } from '@/core/load';
 import {
@@ -242,7 +243,7 @@ describe('a load collects by name when its number was checked, whatever keep is'
     );
     expect(l2).toMatchObject({ generation: 7, published: true });
     expect(await generations(w.memory)).toEqual([4, 5, 7]);
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([4, 5]);
+    expect(windowOf(await w.registry.get(SEG))).toEqual([4, 5]);
     // The next load numbers 8 with its check, a clean path. The row names 4 and 5 as kept, so 4 is the name the
     // window pushes out, and no listing is needed to know that.
     w.reset();
@@ -308,18 +309,21 @@ describe('a load lists when its row records no list, or its number or current ob
     expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
     expect(await generations(w.memory)).toEqual([4]);
     // The rewrite records that nothing below its pointer is kept.
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([]);
+    expect(windowOf(await w.registry.get(SEG))).toEqual([]);
   });
 
-  it('a keep above 64 records no list, and lists on every load once it is outside the window', async () => {
+  it('a keep above 64 collects by listing on every load, and writes a ledger that a load with a small keep collects from by name', async () => {
     const w = world();
+    const row = async () => (await w.registry.get(SEG))!;
     await loadMany(w, 3, { keep: 65 });
-    expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+    // No window is recorded for these loads: each lists to collect. The ledger carries every generation they made current.
+    expect((await row()).knownGens?.map((e) => e.generation)).toEqual([0, 1, 2]);
     w.reset();
     await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });
-    // Its row records none, so this one lists, collects, and records what it kept.
-    expect(w.storageCalls.list).toBe(1);
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([1, 2]);
+    // The ledger names 0 and 1 below the pointer and 2 is the generation superseded: the window is by name, with no listing.
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([1, 2, 3]);
+    expect(windowOf(await row())).toEqual([1, 2]);
     w.reset();
     await loadSegment(SEG, [1, 2, 3, 4, 5, 6], w.deps, { keep: 2 });
     expect(w.storageCalls.list).toBeUndefined();
@@ -372,13 +376,16 @@ describe('a load lists when its row records no list, or its number or current ob
     const w = world();
     await loadMany(w, 5, { keep: 9 });
     await rollbackSegment(SEG, 2, { storage: w.memory, registry: w.registry });
-    expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+    expect(windowOf(await w.registry.get(SEG))).toBeUndefined();
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps);
     expect(r).toMatchObject({ generation: 5, published: true });
     expect(w.storageCalls.list).toBe(2);
     // The window is the generation the rollback restored, which the load superseded, not 4, the newest by number.
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([2]);
+    expect(await generations(w.memory)).toEqual([2, 5]);
+    // The ledger the rollback carried names every generation it knew, in the order they were made current, 5 last: the
+    // next load collects by name from it, with no listing.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([0, 1, 3, 4, 2]);
   });
 });
 
@@ -443,7 +450,7 @@ describe('every sixteenth generation lists, which bounds what the name-only pass
       expect(r).toMatchObject({ generation: 16, published: true });
       expect(await strays()).toEqual([]);
       const row = await w.registry.get(SEG);
-      expect(await generations(w.memory)).toEqual([...row!.keptGens!, 16]);
+      expect(await generations(w.memory)).toEqual([...windowOf(row)!, 16]);
     },
   );
 });
@@ -495,7 +502,7 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
       // An operator rolls back to 3; the next loads number above everything and keep a wide window, which names 3.
       await rollbackSegment(SEG, 3, { storage: w.memory, registry: w.registry });
       await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { keep: 3 });
-      expect((await w.registry.get(SEG))!.keptGens).toContain(3);
+      expect(windowOf(await w.registry.get(SEG))).toContain(3);
     });
     const r = await loadSegment(SEG, ids, { ...w.deps, registry });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
@@ -589,7 +596,13 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
       const w = world();
       await loadMany(w, 4, { keep: 9 });
       const row = (await w.registry.get(SEG))!;
-      await w.registry.compareAndSwap(SEG, row.token, { keptGens: kept });
+      // The ledger names `kept`, then the current generation, with the checksums the row already records.
+      const byGeneration = new Map(row.knownGens!.map((e) => [e.generation, e]));
+      const known =
+        kept === undefined
+          ? undefined
+          : [...kept, 3].map((g) => byGeneration.get(g) ?? { generation: g, footerCrc: 1000 + g });
+      await w.registry.compareAndSwap(SEG, row.token, { knownGens: known });
       return w;
     }
 
@@ -654,7 +667,7 @@ describe('a load whose publish landed does not fail on a race its collection mee
     const w = world();
     await loadMany(w, 18);
     expect(await generations(w.memory)).toEqual([16, 17]);
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([16]);
+    expect(windowOf(await w.registry.get(SEG))).toEqual([16]);
     // What loader A holds when loader B published 17 between A's publish of 16 and A's pass.
     await expect(
       collectAfterLoad(SEG, w.deps, {
@@ -682,17 +695,19 @@ describe('a load whose publish landed does not fail on a race its collection mee
     },
   );
 
-  it('a writer that records no list publishing in that gap: the pass keeps the newest keep below the pointer', async () => {
+  it('a writer that records no window publishing in that gap: its ledger still names what it found, and the pass spares it', async () => {
     const w = await atFifteen();
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
       await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 17 }, [1, 2], {
         registry: w.registry,
       });
-      expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+      // The write carries the ledger it found, with 17 last.
+      expect((await w.registry.get(SEG))!.knownGens?.at(-1)?.generation).toBe(17);
     });
     const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
     expect(a).toMatchObject({ generation: 16, published: true });
-    expect(await generations(w.memory)).toEqual([16, 17]);
+    // The other writer recorded no window, but its ledger carries what it found: 15 and 16, which the pass then finds named.
+    expect(await generations(w.memory)).toEqual([15, 16, 17]);
   });
 
   it('a rollback in that gap stops the pass, and the load still returns', async () => {
@@ -751,7 +766,7 @@ describe('a load whose publish landed does not fail on a race its collection mee
   it('the same for a row that records no list: the pass that keeps the window stops, and records nothing', async () => {
     const w = await atFifteen();
     const row = (await w.registry.get(SEG))!;
-    await w.registry.compareAndSwap(SEG, row.token, { keptGens: undefined });
+    await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
     await orphan(w.memory, 3);
     const registry = afterPassReads(w, 2, async () => {
       await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
@@ -759,7 +774,7 @@ describe('a load whose publish landed does not fail on a race its collection mee
     const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
     expect(a).toMatchObject({ generation: 16, published: true });
     expect((await w.registry.get(SEG))!.currentGen).toBe(15);
-    expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+    expect(windowOf(await w.registry.get(SEG))).toBeUndefined();
     expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
   });
 
@@ -849,8 +864,8 @@ describe('a load that repairs a segment whose current object is gone lists, and 
     expect(w.storageCalls.list).toBe(1);
     expect(r.collected).toEqual([]);
     expect(await generations(w.memory)).toEqual([4, 6]);
-    // And the row now names what is there.
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([4]);
+    // The ledger the publish wrote names 5, which is gone, and 6; the listing kept 4, which it does not name.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([5]);
   });
 
   it("a subject erasure that deletes an in-flight load's object above the pointer refuses that load", async () => {

@@ -1,3 +1,4 @@
+import { windowOf } from '@/core/known-generations';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { brandAsBackend } from '@/core/ports';
@@ -122,8 +123,9 @@ describe('a refused load under a row another write changed deletes nothing below
         generation: 2,
         published: true,
       });
-      // A `keep` above 64 records no list, so the row does not name the generation its window keeps.
-      expect((await registry.get(REF))?.keptGens).toEqual(keep > 64 ? undefined : [0, 1]);
+      // A `keep` above 64 records no window, and the ledger carries every generation made current, so either way the row
+      // names 0 and 1 below its pointer.
+      expect(windowOf(await registry.get(REF))).toEqual([0, 1]);
 
       lAfter.open();
       expect(await l).toMatchObject({ generation: 1, published: false, reason: 'superseded' });

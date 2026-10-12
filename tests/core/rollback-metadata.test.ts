@@ -58,6 +58,7 @@ describe('a rollback of a cleartext segment', () => {
     expect(await describedBy(w)).toEqual({
       cardinality: 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: B,
     });
 
@@ -68,6 +69,7 @@ describe('a rollback of a cleartext segment', () => {
       generation: 0,
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: A,
     });
     // And it is the target's own: the object holds the same.
@@ -84,6 +86,7 @@ describe('a rollback of a cleartext segment', () => {
       generation: 1,
       cardinality: 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: B,
     });
   });
@@ -97,6 +100,7 @@ describe('a rollback of a cleartext segment', () => {
       generation: 0,
       cardinality: 2,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
     });
   });
 
@@ -112,6 +116,7 @@ describe('a rollback of a cleartext segment', () => {
       generation: 0,
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: A,
     });
   });
@@ -155,6 +160,7 @@ describe('a rollback of an encrypted segment', () => {
     expect(openSummary(aead, SEG, row.summary as never)).toEqual({
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: A,
     });
     const reader = await openGenerationReader(
@@ -297,6 +303,7 @@ describe('the undo of a rollback whose target was collected while the pointer mo
       generation: 1,
       cardinality: 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: B,
     });
   });
@@ -317,6 +324,7 @@ describe('the undo of a rollback whose target was collected while the pointer mo
     ).toEqual({
       cardinality: 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: B,
     });
   });
@@ -404,6 +412,7 @@ describe('the store passes its keystore to a rollback', () => {
     ).toEqual({
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: A,
     });
   });
@@ -427,6 +436,7 @@ describe('a target whose index is longer than the tail read', () => {
       generation: 0,
       cardinality: wide.length,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: A,
     });
   });
@@ -453,6 +463,7 @@ describe('a rollback on a store that holds a keystore', () => {
       generation: 0,
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: A,
     });
     expect(opened).toBe(0); // a segment with no keys has none to open
@@ -610,6 +621,7 @@ describe('an allowForward rollback onto an object above the pointer that was rep
       generation: 2,
       cardinality: 9,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: B,
     });
   });

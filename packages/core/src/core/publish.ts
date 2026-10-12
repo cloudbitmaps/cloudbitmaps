@@ -14,7 +14,7 @@ import {
 import type { Yielder } from './cooperative';
 import type { Rng } from './determinism';
 import { sameIncarnation } from './token';
-import { nextKept } from './kept-generations';
+import { nextKnown } from './known-generations';
 import {
   UNANSWERED_BASE_MS,
   UNANSWERED_RESENDS,
@@ -23,12 +23,13 @@ import {
   onlyLeasesDiffer,
 } from './leases';
 import { jitteredWait } from './retry';
-import type { KeptAfter } from './kept-generations';
+import type { KnownAfter } from './known-generations';
 import type { PublishedKept } from './generation-gc';
 import type { WrappedDek } from './crypto';
 import type {
   GenKey,
   IRegistryDriver,
+  KnownGeneration,
   LeaseEntry,
   RegistryRecord,
   RegistryWriteOptions,
@@ -73,6 +74,44 @@ function leasesPatch(
   const live = held.filter((e) => isLive(e, now));
   if (live.length === held.length) return {};
   return { leases: live.length === 0 ? undefined : live };
+}
+
+/** What a publish records in the row, as {@link nextKnownOf} computes it: the ledger, when the caller gave a checksum for it. */
+type Recorded = Omit<KnownAfter, 'known'> & { readonly known: KnownAfter['known'] | undefined };
+
+/**
+ * What a publish of `key.generation` over `prev` records: the ledger and the window ({@link nextKnown}). With no
+ * `footerCrc` there is no entry to write for the generation, so no ledger and no window: the row then has none, and the
+ * next load lists.
+ */
+function nextKnownOf(
+  prev: RegistryRecord | null,
+  key: GenKey,
+  options: {
+    readonly keep?: number;
+    readonly footerCrc?: number;
+    readonly clearLeases?: boolean;
+  },
+): Recorded {
+  if (options.footerCrc === undefined) return { known: undefined, list: undefined, evict: [] };
+  return nextKnown(prev, key.generation, options.footerCrc, options.keep, {
+    clearsLeases: options.clearLeases === true,
+  });
+}
+
+/** The fields of a write that record `next`: the ledger, when there is one. */
+function ledgerPatch(next: Recorded): { knownGens?: readonly KnownGeneration[] } {
+  return next.known === undefined ? {} : { knownGens: next.known };
+}
+
+/** `next` as the publish reports it, with the token of the row the write made when it is known. */
+function keptOf(next: Recorded | undefined, token: Token | undefined): PublishedKept {
+  return {
+    list: next?.list,
+    evict: next?.evict ?? [],
+    ...(next?.known === undefined ? {} : { known: next.known }),
+    token,
+  };
 }
 
 /** What a publish is told, beyond the registry and the generation key. */
@@ -157,11 +196,19 @@ interface PublishOptions {
   clearLeases?: boolean;
   /**
    * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
-   * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
-   * current), derived from the very row the write is made against, and the result names the generations the window
-   * dropped. Without it, or above the most a row records, the row records none, and a collection lists.
+   * records the window in the row (the entries of `knownGens`: the newest `keep` of the row's own window and the
+   * generation that was current), derived from the very row the write is made against, and the result names the
+   * generations the window dropped. Without it, or above the most a row records, the row records no window, and a
+   * collection lists.
    */
   keep?: number;
+  /**
+   * The footer checksum of the object under `key` (the second half of its fingerprint), which the write that moves the
+   * pointer records in the row's `knownGens` beside the generation. It comes from the object the caller wrote or opened,
+   * the same one its `summary` describes. Without it the publish records no ledger, and the row has none until a write
+   * gives it one: a row with no ledger is correct, and its next load lists.
+   */
+  footerCrc?: number;
 }
 
 /**
@@ -266,7 +313,7 @@ export async function publishGenerationKept(
     unanswered = undefined;
     lastRecord = record;
     // What this attempt's write records, and the token it is given: set by the write, read when it lands.
-    let next: KeptAfter | undefined;
+    let next: Recorded | undefined;
     let wrote: Token | undefined;
     if (failedOn !== undefined) {
       let landed: boolean;
@@ -278,7 +325,7 @@ export async function publishGenerationKept(
       if (landed)
         return {
           published: true,
-          kept: { ...nextKept(failedOn, key.generation, options.keep), token: undefined },
+          kept: keptOf(nextKnownOf(failedOn, key, options), undefined),
           token: record?.token,
         };
       // The pointer names this number, but not over this publish's write: another writer's object under it, or
@@ -344,7 +391,7 @@ export async function publishGenerationKept(
       }
       if (record === null) {
         // First publish for the segment — carry the wrapped DEK(s) so encrypted reads can resolve the key.
-        next = nextKept(null, key.generation, options.keep);
+        next = nextKnownOf(null, key, options);
         wrote = (
           await registry.create(
             key,
@@ -352,7 +399,7 @@ export async function publishGenerationKept(
               currentGen: key.generation,
               wrappedDeks: options.wrappedDeks,
               ...(options.summary === undefined ? {} : { summary: options.summary }),
-              ...(next.list === undefined ? {} : { keptGens: next.list }),
+              ...ledgerPatch(next),
             },
             write,
           )
@@ -385,7 +432,7 @@ export async function publishGenerationKept(
         // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
         // from the branch below, which never touches the field.
         refuseCleartextOntoKey(key, record, options.cleartext);
-        next = nextKept(record, key.generation, options.keep);
+        next = nextKnownOf(record, key, options);
         wrote = (
           await registry.compareAndSwap(
             key,
@@ -394,7 +441,7 @@ export async function publishGenerationKept(
               currentGen: key.generation,
               ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
               ...(options.summary === undefined ? {} : { summary: options.summary }),
-              ...(next.list === undefined ? {} : { keptGens: next.list }),
+              ...ledgerPatch(next),
             },
             write,
           )
@@ -429,7 +476,7 @@ export async function publishGenerationKept(
           );
         }
         refuseCleartextOntoKey(key, record, options.cleartext);
-        next = nextKept(record, key.generation, options.keep);
+        next = nextKnownOf(record, key, options);
         wrote = (
           await registry.compareAndSwap(
             key,
@@ -437,7 +484,7 @@ export async function publishGenerationKept(
             {
               currentGen: key.generation,
               ...(options.summary === undefined ? {} : { summary: options.summary }),
-              ...(next.list === undefined ? {} : { keptGens: next.list }),
+              ...ledgerPatch(next),
               ...leasesPatch(record, options),
             },
             write,
@@ -446,7 +493,7 @@ export async function publishGenerationKept(
       }
       return {
         published: true,
-        kept: { ...(next ?? { list: undefined, evict: [] }), token: wrote },
+        kept: keptOf(next, wrote),
         token: wrote,
       }; // created or advanced the pointer to key.generation → it is now current
     } catch (err) {

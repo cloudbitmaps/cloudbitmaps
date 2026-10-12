@@ -3969,6 +3969,7 @@ export type {
   RegistryStatus,
   RegistrySummary,
   RegistryWriteOptions,
+  KnownGeneration,
   LeaseEntry,
   RetentionPolicy,
   RetireEntry,

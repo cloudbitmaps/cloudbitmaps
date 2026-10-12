@@ -56,6 +56,7 @@ describe('a cleartext load with metadata', () => {
       generation: 0,
       cardinality: 4,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
 
@@ -78,6 +79,7 @@ describe('a cleartext load with metadata', () => {
       generation: 0,
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
     });
     const reader = await openGenerationReader(storage, { ...SEG, generation: 0 }, undefined);
     expect(reader.metadata).toBeUndefined();
@@ -106,6 +108,7 @@ describe('a cleartext load with metadata', () => {
       generation: 0,
       cardinality: 2,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
     });
   });
 
@@ -120,6 +123,7 @@ describe('a cleartext load with metadata', () => {
       generation: 2,
       cardinality: 4,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
     });
     // The generation the window kept is the one before it, with its own.
     const kept = await openGenerationReader(storage, { ...SEG, generation: 1 }, undefined);
@@ -143,12 +147,14 @@ describe('a cleartext load with metadata', () => {
       generation: 0,
       cardinality: 4,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { from: 'bitmap' },
     });
     expect((await registry.get({ ...SEG, segment: 'b' }))!.summary).toEqual({
       generation: 0,
       cardinality: 4,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { from: 'bytes' },
     });
     const reader = await openGenerationReader(storage, { ...SEG, generation: 0 }, undefined);
@@ -180,6 +186,7 @@ describe('a cleartext load with metadata', () => {
         generation: r.generation,
         cardinality: count,
         fingerprint: expect.stringMatching(FINGERPRINT),
+        tailBytes: expect.any(Number),
         metadata: { verb },
       });
       const reader = await openGenerationReader(
@@ -203,6 +210,7 @@ describe('a cleartext load with metadata', () => {
       generation: 0,
       cardinality: 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { n: 0 },
     });
     await loadSegment(SEG, [1, 2], deps, { metadata: { n: 1 } });
@@ -210,6 +218,7 @@ describe('a cleartext load with metadata', () => {
       generation: 1,
       cardinality: 2,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { n: 1 },
     });
     const fresh = { ...SEG, segment: 'fresh' };
@@ -218,6 +227,7 @@ describe('a cleartext load with metadata', () => {
       generation: 0,
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { n: 2 },
     });
   });
@@ -236,6 +246,7 @@ describe('an encrypted load with metadata', () => {
     expect(openSummary(aead, SEG, summary as never)).toEqual({
       cardinality: 7,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { owner: 'a-recognisable-owner' },
     });
 
@@ -308,6 +319,7 @@ describe('an encrypted load with metadata', () => {
     expect(openSummary(aead, SEG, row.summary as never)).toEqual({
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: undefined,
     });
   });
@@ -346,6 +358,7 @@ describe('the loader that publishes by itself', () => {
       generation: 0,
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
     expect((await registry.get(SEG))!.summary).toEqual(written.summary);
@@ -368,6 +381,7 @@ describe('the loader that publishes by itself', () => {
     ).toEqual({
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
   });
@@ -383,6 +397,7 @@ describe('the loader that publishes by itself', () => {
       generation: 0,
       cardinality: 2,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
     });
     expect(await registry.get(SEG)).toBeNull();
   });

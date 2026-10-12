@@ -60,7 +60,7 @@ describe.each([
       expect(row.summary).not.toHaveProperty('fingerprint');
       expect(row.summary).not.toHaveProperty('cardinality');
       // A nonce, the count, the size and the checksum, and a tag: no metadata.
-      expect(Buffer.from((row.summary as { sealed: string }).sealed, 'base64')).toHaveLength(48);
+      expect(Buffer.from((row.summary as { sealed: string }).sealed, 'base64')).toHaveLength(52);
     } else {
       expect(row.summary).toMatchObject({ fingerprint: expect.stringMatching(/^\d+:\d+$/) });
     }

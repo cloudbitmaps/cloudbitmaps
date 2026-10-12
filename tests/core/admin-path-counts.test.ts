@@ -396,7 +396,7 @@ describe('checkConsistency reports the same in every fault case', () => {
     const aead = await w.keystore.openDek(row.wrappedDeks!);
     await w.backend.registry.compareAndSwap(SEG, row.token, {
       currentGen: 1,
-      summary: sealSummary(aead, SEG, 1, 3, '4096:1'),
+      summary: sealSummary(aead, SEG, 1, 3, '4096:1', 300),
     });
     const report = await runConsistencyCheck(
       { storage: w.storage, registry: w.registry, keystore: w.keystore },

@@ -1,6 +1,11 @@
 import fc from 'fast-check';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { MAX_KEPT_GENERATIONS, usableKeptGens } from '@/core/kept-generations';
+import {
+  KNOWN_FILL,
+  MAX_KEPT_GENERATIONS,
+  usableKnownGens,
+  windowOf,
+} from '@/core/known-generations';
 import { loadSegment } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
@@ -22,15 +27,18 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  *     a step that is not a load, an erasure or a purge deletes nothing. (A row can name a generation a load with a
  *     smaller `keep` took: each load collects with its own `keep`, so a name is a request to keep, not a promise
  *     that the object is there.)
- *  3. a row's list is ascending, below the pointer, and within the writer's cap;
+ *  3. a row's ledger ends with the pointer, names no generation twice, and holds at most KNOWN_FILL entries (nothing here
+ *     leases, so nothing is protected beyond the window and the new generation);
  *  4. after a load whose generation is a multiple of the cadence and which met no fault, nothing is below the
  *     pointer that the row does not name (an orphan is gone by the next periodic pass);
- *  5. a load that published and found a usable list wrote the newest `keep` of that list and the generation it
- *     superseded;
- *  6. a load that published over a row with no usable list (the first after a rollback, one with a `keep` above the
- *     cap, the first over a row a writer that records none left) keeps below its pointer exactly the generation its
- *     publish superseded, when that was in the bucket, and the newest `keep - 1` of the rest by number, and records
- *     them when `keep` fits the list.
+ *  5. a load that published and found a usable window wrote, as the ledger's entries below its new generation, the
+ *     newest `keep` of that window and the generation it superseded;
+ *  6. a load that published over a row with no usable window (the first after a rollback, one with a `keep` above the
+ *     cap, the first over a row with no ledger) keeps below its pointer exactly the generation its publish superseded,
+ *     when that was in the bucket, and the newest `keep - 1` of the rest by number. It records no window of its own:
+ *     the ledger it writes names the new generation alone, or what the row's ledger already named.
+ *
+ * These are today's collection outcomes, over the ledger in place of the list of numbers.
  *
  * Rollbacks pick their target four ways: any generation below the pointer, one the row's list names, the one the
  * current generation superseded, and the oldest.
@@ -306,8 +314,8 @@ describe.each([
             const present = await generations(storage);
             const previous = before?.currentGen ?? undefined;
             if (previous !== undefined) supersededBy.set(result.generation, previous);
-            // 5: the list a publish wrote, from the list it found.
-            const found = usableKeptGens(before);
+            // 5: the window a publish wrote, from the window it found.
+            const found = windowOf(before);
             if (
               found !== undefined &&
               keep <= MAX_KEPT_GENERATIONS &&
@@ -315,10 +323,11 @@ describe.each([
               row.currentGen === result.generation &&
               options.registry === undefined
             ) {
-              const all = [...found, before!.currentGen];
+              const all = [...found, before!.currentGen].sort((a, b) => a - b);
               const expected = all.slice(Math.max(0, all.length - keep));
-              // The load's own list is the row's unless another writer's list replaced it.
-              if (row.keptGens !== undefined) expect(row.keptGens).toEqual(expected);
+              // The load's own window is the row's unless another writer's ledger replaced it.
+              const wrote = windowOf(row);
+              if (wrote !== undefined) expect([...wrote].sort((a, b) => a - b)).toEqual(expected);
               byName += 1;
             }
             // 6: a publish that recorded no window collects by listing, and keeps the generation it superseded first.
@@ -334,8 +343,9 @@ describe.each([
                 present.filter((g) => g < result.generation),
                 `generation ${result.generation} over ${String(previous)} at keep ${keep}`,
               ).toEqual(window);
-              if (keep <= MAX_KEPT_GENERATIONS && keep < result.generation) {
-                expect(row.keptGens, 'the window it recorded').toEqual(window);
+              // It recorded no window: the ledger it wrote is the generation alone, or the ledger it found, carried.
+              if (before !== null && usableKnownGens(before) === undefined) {
+                expect(row.knownGens?.map((e) => e.generation)).toEqual([result.generation]);
               }
               listed += 1;
               // Where a window by number alone would have dropped the superseded generation.
@@ -348,25 +358,36 @@ describe.each([
                 restored += 1;
               }
             }
-            // 2: the newest `keep` of the generations the row names, that were there, are still there.
-            if (row.currentGen === result.generation && options.registry === undefined) {
-              const named = (row.keptGens ?? []).filter((g) => presentBefore.includes(g));
+            // 2: the newest `keep` of the generations the row names, that were there, are still there. The row names a
+            // window only when the publish drew one from a window it found; a publish that collects by listing carries the
+            // ledger it found, which is no window of this load's `keep`, and oracle 6 holds its listing to the rule.
+            if (
+              found !== undefined &&
+              keep <= MAX_KEPT_GENERATIONS &&
+              row.currentGen === result.generation &&
+              options.registry === undefined
+            ) {
+              const named = (windowOf(row) ?? []).filter((g) => presentBefore.includes(g));
               for (const g of named.slice(Math.max(0, named.length - keep))) {
                 expect(present, `kept generation ${g} at keep ${keep}`).toContain(g);
               }
             }
-            // 4: a periodic load that found nothing in doubt leaves no unnamed object below the pointer.
+            // 4: a periodic load that found nothing in doubt leaves no unnamed object below the pointer. A load that
+            // collects by count (no window to draw from) keeps what the count keeps, which can include an object the
+            // ledger does not name; the next periodic load that has a window deletes it.
             if (
+              found !== undefined &&
+              keep <= MAX_KEPT_GENERATIONS &&
               result.generation % LIST_COLLECTION_CADENCE === 0 &&
               keep < result.generation &&
               row.currentGen === result.generation &&
               options.registry === undefined &&
               options.storage === undefined &&
-              row.keptGens !== undefined
+              windowOf(row) !== undefined
             ) {
               periodic += 1;
               const unnamed = present.filter(
-                (g) => g < row.currentGen! && !row.keptGens!.includes(g),
+                (g) => g < row.currentGen! && !windowOf(row)!.includes(g),
               );
               expect(unnamed, `generation ${result.generation} keep ${keep}`).toEqual([]);
             }
@@ -380,12 +401,20 @@ describe.each([
             // 1
             expect(present, 'the current generation').toContain(row.currentGen);
             // 3
-            const list = row.keptGens;
-            if (list !== undefined) {
-              expect(list.length).toBeLessThanOrEqual(MAX_KEPT_GENERATIONS);
+            const ledger = row.knownGens;
+            if (ledger !== undefined) {
               expect(
-                list.every((g, i) => g < row.currentGen! && (i === 0 || list[i - 1]! < g)),
-              ).toBe(true);
+                ledger[ledger.length - 1]?.generation,
+                'the ledger ends with the pointer',
+              ).toBe(row.currentGen);
+              expect(new Set(ledger.map((e) => e.generation)).size, 'a generation twice').toBe(
+                ledger.length,
+              );
+              expect(ledger.length).toBeLessThanOrEqual(KNOWN_FILL);
+            }
+            const list = windowOf(row);
+            if (list !== undefined) {
+              expect(list.every((g) => g < row.currentGen!)).toBe(true);
             }
           };
 
@@ -419,7 +448,10 @@ describe.each([
               }
               case 'rollback': {
                 const below = present.filter((g) => g < current);
-                const named = (row?.keptGens ?? []).filter((g) => below.includes(g));
+                const named = (row?.knownGens ?? [])
+                  .slice(0, -1)
+                  .map((e) => e.generation)
+                  .filter((g) => below.includes(g));
                 const superseded = supersededBy.get(current);
                 const target =
                   step.target === 'kept' && named.length > 0
@@ -446,10 +478,8 @@ describe.each([
                     // A rewrite took every generation below its pointer, and the row says none is kept.
                     const after = (await registry.get(SEG))!;
                     expect(after.currentGen).toBe(erased.generation);
-                    // [] when the row it rewrote recorded a list to extend; none when it recorded none.
-                    expect(after.keptGens).toEqual(
-                      usableKeptGens(row) === undefined ? undefined : [],
-                    );
+                    // The ledger is the rewrite alone: every older generation is out of it before the collection.
+                    expect(after.knownGens?.map((e) => e.generation)).toEqual([erased.generation]);
                     expect(
                       (await generations(storage)).filter((g) => g < erased.generation!),
                     ).toEqual([]);

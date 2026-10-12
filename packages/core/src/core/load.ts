@@ -29,6 +29,7 @@ import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import { bulkLoadAhead, cleartextUnderRequiredEncryption } from './bulk-load';
 import { provenObject, openGenerationReader, provesOwnObject } from './crbm-open';
+import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept, type PublishResult } from './publish';
 import type { Clock, Rng } from './determinism';
 import { onlyLeasesDiffer } from './leases';
@@ -789,6 +790,7 @@ async function runLoad(
       row,
       wrappedDeks: written.wrappedDeks,
       summary: written.summary,
+      footerCrc: footerCrcOf(written.fingerprint),
       cleartext: !written.encrypted,
       ...(fromToken === undefined ? {} : { expectToken: fromToken, expectRow: row }),
       ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),

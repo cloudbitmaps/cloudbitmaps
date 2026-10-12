@@ -1,3 +1,4 @@
+import { windowOf } from '@/core/known-generations';
 import type { Clock } from '@/core/determinism';
 import { takeLease } from '@/core/leases';
 import { loadSegment } from '@/core/load';
@@ -94,8 +95,8 @@ const ascending = (list: readonly number[]): number[] => [...list].sort((a, b) =
 
 describe('the first load after a rollback keeps the generation it superseded', () => {
   it.each([
-    { keep: 1, bucket: [1, 4], kept: [1], next: { collected: [1], bucket: [4, 5] } },
-    { keep: 2, bucket: [1, 3, 4], kept: [1, 3], next: { collected: [1], bucket: [3, 4, 5] } },
+    { keep: 1, bucket: [1, 4], kept: [1], next: { collected: [0, 1, 2, 3], bucket: [4, 5] } },
+    { keep: 2, bucket: [1, 3, 4], kept: [1, 3], next: { collected: [0, 1, 2], bucket: [3, 4, 5] } },
   ])(
     'with keep $keep, a rollback onto a kept generation: the restored one stays, then the newest by number',
     async ({ keep, bucket, kept, next }) => {
@@ -107,8 +108,9 @@ describe('the first load after a rollback keeps the generation it superseded', (
       expect(r).toMatchObject({ generation: 4, published: true });
       expect(await generations(w.storage)).toEqual(bucket);
       expect(ascending(r.collected)).toEqual([0, 1, 2, 3].filter((g) => !bucket.includes(g)));
-      // The window is recorded, so the next load collects by name from it.
-      expect((await w.registry.get(SEG))!.keptGens).toEqual(kept);
+      // The ledger the rollback carried names every generation the row knew, so the next load collects by name from it:
+      // the window it keeps is the same, and it asks for the names the ledger still held that the listing had taken.
+      expect(ascending(windowOf(await w.registry.get(SEG))!)).toEqual(expect.arrayContaining(kept));
       const after = await loadSegment(SEG, [7, 8], w.deps, { keep });
       expect(after).toMatchObject({ generation: 5, published: true, collected: next.collected });
       expect(await generations(w.storage)).toEqual(next.bucket);
@@ -133,7 +135,8 @@ describe('the first load after a rollback keeps the generation it superseded', (
     const r = await loadSegment(SEG, [7], w.deps, { keep: 2 });
     expect(r).toMatchObject({ generation: 5, published: true });
     expect(await generations(w.storage)).toEqual([0, 4, 5]);
-    expect((await w.registry.get(SEG))!.keptGens).toEqual([0, 4]);
+    // The ledger the rollback carried, with 5 last: it still names what the listing took.
+    expect(ascending(windowOf(await w.registry.get(SEG))!)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('a rollback forward onto a generation above the pointer keeps that one', async () => {
@@ -161,9 +164,9 @@ describe('the first load after a rollback keeps the generation it superseded', (
 describe('a row that records no window keeps the generation a load superseded', () => {
   it("over a crashed load's object above the pointer, keeps the generation that was current, not the object", async () => {
     const w = world();
-    // A `keep` above 64 records no list, so every one of these loads collects by listing.
+    // A `keep` above 64 records no window, so every one of these loads collects by listing; the ledger carries them all.
     await loadEach(w, 3, { keep: 65 }); // generations 0 to 2
-    expect((await w.registry.get(SEG))!.keptGens).toBeUndefined();
+    expect(windowOf(await w.registry.get(SEG))).toEqual([0, 1]);
     // A load that wrote 3 and died before its publish.
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [7]);
     const r = await loadSegment(SEG, [7, 8, 9], w.deps, { keep: 1 });
@@ -292,12 +295,12 @@ describe('a lease on the restored generation', () => {
     const first = await loadSegment(SEG, [7], w.deps, { keep: 1 });
     expect(first).toMatchObject({ generation: 4, published: true, collected: [3, 2, 0] });
     expect(await generations(storage)).toEqual([1, 4]);
-    expect((await registry.get(SEG))!.keptGens).toEqual([1]);
 
-    // The next load pushes 1 out of the window by name, and its live lease spares it.
+    // The next load pushes 1 out of the window by name, and its live lease spares it. The ledger still names 0, 2 and 3,
+    // which the listing took, and the load asks for them too.
     const next = await loadSegment(SEG, [7, 8], w.deps, { keep: 1 });
-    expect(next).toMatchObject({ generation: 5, published: true, collected: [] });
+    expect(next).toMatchObject({ generation: 5, published: true, collected: [0, 2, 3] });
     expect(await generations(storage)).toEqual([1, 4, 5]);
-    expect((await registry.get(SEG))!.keptGens).toEqual([4]);
+    expect(windowOf(await registry.get(SEG))).toEqual([4]);
   });
 });

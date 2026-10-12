@@ -35,7 +35,7 @@ let home = '';
 
 const TOKEN = `${'0'.repeat(32)}.0.${'0'.repeat(16)}`;
 const ROW = JSON.stringify({
-  schemaVersion: 4,
+  schemaVersion: 5,
   deleted: false,
   record: {
     segment: 's',
