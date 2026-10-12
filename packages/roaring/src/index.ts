@@ -32,7 +32,6 @@ import {
   DEFAULT_BUDGET,
   DEFAULT_RETRY_POLICY,
   withRetry,
-  isStorageBackend,
   NOOP_METRICS,
   RetryingStorageChunkSource,
   SegmentEngine,
@@ -128,6 +127,7 @@ import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 import { guardIdIterable, guardIds, guardItems } from './lease-guards';
+import { wireStore } from './wire-store';
 import { checkOptions, keysOf, kindOf, optionsError, picked } from './options';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
@@ -834,168 +834,6 @@ export interface MaterializeResult {
 }
 
 /**
- * Resolve the `storage` option to a {@link StorageChunkSource} at construction (wiring-time only — no hot-path cost).
- *
- * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two, never by
- * `instanceof`, so a backend or driver from a different copy of the package still works (the same reason the error
- * predicates are brand-based): a raw {@link IStorageDriver} exposes `putImmutable`
- * (the byte-mover seam); a pre-built {@link StorageChunkSource} exposes `getChunk` (the engine's read seam). The
- * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
- * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
- * nullish/non-object value from a JS caller): fail fast with a typed error rather than crash on a probe.
- *
- * A backend is wrapped into a {@link CrbmStorageChunkSource} over its storage half, pinned to its registry,
- * with the config's `encryption` group; a bare driver is wrapped the same way but without a
- * registry; a pre-built source is used as-is. `keystore`/`requireEncryption` are meaningful **only** where the
- * store builds the source itself — pairing either with a pre-built source is a wiring mistake, so reject it
- * rather than silently ignore it. The `CrbmStorageChunkSource` constructor enforces the rest (a keystore /
- * `requireEncryption` needs a registry, so they need a backend; the driver needs range reads).
- *
- * Returns the resolved `source` (what the engine reads through) **and** the raw `driver` when one was passed —
- * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
- * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IStorageDriver` to
- * write through, so its writes throw {@link UnsupportedError}).
- */
-function resolveStorageSource(
-  options: CloudRoaringOptions,
-  clock: Pick<Clock, 'now'>,
-): {
-  source: StorageChunkSource;
-  driver: IStorageDriver | undefined;
-  registry: IRegistryDriver | undefined;
-} {
-  const storage: unknown = options.storage;
-  if (storage === null || typeof storage !== 'object') {
-    throw new ValidationError(
-      '`storage` must be a StorageBackend, an IStorageDriver, or a StorageChunkSource',
-    );
-  }
-  const asBackend = storage as Partial<StorageBackend>;
-  const isObject = (v: unknown): v is Record<string, unknown> =>
-    v !== null && typeof v === 'object';
-  const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
-  const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
-
-  // The BRAND decides, not the shape. `{ storage, registry }` is also the shape of core's free-function deps
-  // object, so before the brand any literal satisfied it — including one holding halves from two unrelated
-  // stores, which the store accepted and then answered empty for a segment that holds data.
-  const isBackend = isStorageBackend(storage);
-
-  // A branded backend that ALSO quacks like a driver or a source is genuinely ambiguous. Unreachable for the
-  // five classes, kept because the alternative to refusing is guessing.
-  if (isBackend && (hasGetChunk || hasPutImmutable)) {
-    throw new ValidationError(
-      '`storage` is a StorageBackend that also exposes ' +
-        `${hasGetChunk ? '`getChunk`' : '`putImmutable`'} — ambiguous. A backend must not also be a driver ` +
-        'or a source; pass whichever one you mean.',
-    );
-  }
-
-  // Unbranded, but carrying both halves. Three sub-cases, and they want different things said.
-  const hasStorageHalf = isObject(asBackend.storage);
-  const hasRegistryHalf = isObject(asBackend.registry);
-
-  // (a) A DRIVER that also carries a registry — the audit/metrics/tenant-scoping wrapper. Without this it
-  // falls through to the bare-driver path, where there is no pointer at all: generations resolve by
-  // list-scan, so the store answers from the HIGHEST object in the bucket rather than the published one, and
-  // a load that wrote an object but never published it is served as if it had been. Silently, and with the
-  // wrapper's registry sitting right there unused.
-  if (!isBackend && hasPutImmutable && hasRegistryHalf) {
-    throw new ValidationError(
-      '`storage` looks like a driver that also carries a `registry`. Passed as a bare driver it would have ' +
-        'no pointer at all — generations would resolve by list-scan, so reads could serve a generation that ' +
-        'was written but never published. If you meant a backend, use a backend class — S3Storage, GcsStorage, ' +
-        'AzureBlobStorage, LocalFsStorage or MemoryStorage — or, to pair a driver of your own with a registry, ' +
-        'brand the pair with `brandAsBackend` from `@cloudbitmaps/core/driver-kit`.',
-    );
-  }
-
-  // (b) Both halves, neither of them a driver or a source: the hand-assembled literal, or a spread of a real
-  // backend with one half swapped. Name the classes AND the door — the five classes cannot express an
-  // instrumented half or a foreign registry, which is exactly the case that lands here.
-  if (!isBackend && !hasGetChunk && !hasPutImmutable && hasStorageHalf && hasRegistryHalf) {
-    const storageOk =
-      typeof (asBackend.storage as Partial<IStorageDriver>).putImmutable === 'function';
-    const registryOk =
-      typeof (asBackend.registry as Partial<IRegistryDriver>).compareAndSwap === 'function';
-    // (c) …and if a half is not actually a driver, say THAT rather than lecturing about buckets.
-    if (!storageOk || !registryOk) {
-      const bad = !storageOk
-        ? '`storage` half is not an IStorageDriver (no `putImmutable`)'
-        : '`registry` half is not an IRegistryDriver (no `compareAndSwap`)';
-      throw new ValidationError(
-        '`storage` looks like a backend but its ' +
-          bad +
-          ' — use a backend class, or brand a pair of drivers with `brandAsBackend` from ' +
-          '`@cloudbitmaps/core/driver-kit`.',
-      );
-    }
-    throw new ValidationError(
-      '`storage` must be a backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ' +
-        'MemoryStorage. An object with `.storage` and `.registry` is not one: a backend builds both halves ' +
-        'from a single bucket and prefix, so they cannot disagree, and hand-assembling them re-opens exactly ' +
-        'that mismatch — a store whose pointer and generations live in different places reads as empty ' +
-        'rather than failing. A driver author who genuinely wants halves of their own — an instrumented driver, ' +
-        'a registry in a database you already run — brands the pair with `brandAsBackend` from ' +
-        '`@cloudbitmaps/core/driver-kit`, which is taking on that they agree.',
-    );
-  }
-
-  if (isBackend) {
-    const backend = storage as StorageBackend;
-    return {
-      source: new CrbmStorageChunkSource(backend.storage, {
-        registry: backend.registry,
-        keystore: options.encryption?.keystore,
-        requireEncryption: options.encryption?.required,
-        clock,
-        currentGenTtlMs: options.cache?.genTtlMs,
-        maxOpenSegments: options.cache?.readerMax,
-        maxOpenIndexBytes: options.cache?.readerMaxBytes,
-      }),
-      driver: backend.storage,
-      registry: backend.registry,
-    };
-  }
-
-  if (hasGetChunk && hasPutImmutable) {
-    throw new ValidationError(
-      '`storage` exposes both `getChunk` and `putImmutable` — ambiguous; pass a StorageBackend, an IStorageDriver, or a StorageChunkSource, not a hybrid',
-    );
-  }
-  if (!hasGetChunk && !hasPutImmutable) {
-    throw new ValidationError(
-      '`storage` must be a StorageBackend, an IStorageDriver, or a StorageChunkSource',
-    );
-  }
-  if (hasGetChunk) {
-    // Already a StorageChunkSource — used as-is. `keystore`/`requireEncryption` only apply when the store
-    // builds the source itself; with a pre-built source they are inert, so reject them rather than mislead.
-    if (options.encryption?.keystore !== undefined || options.encryption?.required === true) {
-      throw new ValidationError(
-        'keystore/requireEncryption apply only when the store builds its own read path; configure them on ' +
-          'the StorageChunkSource you passed instead',
-      );
-    }
-    return { source: storage as StorageChunkSource, driver: undefined, registry: undefined };
-  }
-  // A bare IStorageDriver: no pointer, so generations resolve by list-scan. Cleartext, read-only.
-  const driver = storage as IStorageDriver;
-  return {
-    source: new CrbmStorageChunkSource(driver, {
-      keystore: options.encryption?.keystore,
-      requireEncryption: options.encryption?.required,
-      clock,
-      currentGenTtlMs: options.cache?.genTtlMs,
-      maxOpenSegments: options.cache?.readerMax,
-      maxOpenIndexBytes: options.cache?.readerMaxBytes,
-    }),
-    driver,
-    registry: undefined,
-  };
-}
-
-/**
  * The deps every write-side helper on the store shares: raw storage + registry + the store's codec/crypto/clock, and
  * the store's read retry for the reads a write makes along the way (undefined when the store's retry is off).
  */
@@ -1138,64 +976,13 @@ export class CloudRoaring {
     });
     // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
     // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
-    const resolved = resolveStorageSource(options, clock);
-    // A backend that can say something about its own setup is handed the sink, never a no-op one.
-    if (metrics !== NOOP_METRICS && isStorageBackend(options.storage)) {
-      options.storage.attachMetrics?.(metrics);
-    }
-    let storage: StorageChunkSource = resolved.source;
-    // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
-    // out (e.g. the injected client already retries); a RetryPolicy tunes it.
-    if (options.retry !== false) {
-      // The policy is a partial and the rest is filled from the default, so tuning one field does not mean
-      // restating all five, and `{ onRetry }` alone is a legal, useful value.
-      //
-      // Each field is read with `??`, not by spreading over the default: a key that is present with the value
-      // `undefined` (the ordinary shape of a value read from env or JSON, which `exactOptionalPropertyTypes`
-      // being off lets through) must fall back to the default. A spread would let it replace the default with
-      // `undefined`, giving `NaN` delays that `SystemClock.sleep` turns into a ~1 ms hot retry loop, with the
-      // backoff bound and the herd protection gone and no error to show it.
-      const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
-      if (userOnRetry !== undefined && typeof userOnRetry !== 'function') {
-        throw new ValidationError('retry.onRetry must be a function');
-      }
-      // An omitted `maxDelayMs` is the default cap, or the `baseDelayMs` given when that is larger, so tuning only the
-      // base delay never leaves a cap below it. A `maxDelayMs` given below the `baseDelayMs` is refused.
-      const baseDelayMs = ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs;
-      const policy: RetryPolicy = {
-        maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
-        baseDelayMs,
-        maxDelayMs:
-          ov.maxDelayMs ??
-          (typeof baseDelayMs === 'number' && baseDelayMs > DEFAULT_RETRY_POLICY.maxDelayMs
-            ? baseDelayMs
-            : DEFAULT_RETRY_POLICY.maxDelayMs),
-        backoffFactor: ov.backoffFactor ?? DEFAULT_RETRY_POLICY.backoffFactor,
-        jitter: ov.jitter ?? DEFAULT_RETRY_POLICY.jitter,
-      };
-      const retryOpts: RetryingOptions = {
-        clock,
-        rng,
-        policy,
-        // Bridge transient-fault retries into the metrics stream, then call the user's own hook.
-        onRetry: (info) => {
-          metrics.onEvent({
-            kind: 'retry',
-            reason: 'transient',
-            attempt: info.attempt,
-            delayMs: info.delayMs,
-          });
-          userOnRetry?.(info);
-        },
-      };
-      storage = new RetryingStorageChunkSource(storage, retryOpts);
-      this.retryOptions = retryOpts;
-    }
+    const wired = wireStore(options, clock, rng, metrics);
+    this.retryOptions = wired.retryOptions;
     // Resolve the denial-of-wallet budget once (validates; `false` ⇒ null = disabled) and share it between the
     // engine (count/iterate/combines) and the facade's admin scans (subjectReport/eraseSubject).
     this.budget = resolveBudget(options.budget, DEFAULT_BUDGET);
     const deps: EngineDeps = {
-      storage,
+      storage: wired.storage,
       cache,
       codec: roaringCodec, // the facade injects the flagship codec; core stays codec-agnostic
       clock,
@@ -1206,8 +993,7 @@ export class CloudRoaring {
     this.cache = cache;
     // The UNWRAPPED `.crbm` source, kept for `pin()` — the only reader that resolves a specific generation.
     // `undefined` when the caller supplied a pre-built source, which has nothing to pin.
-    this.crbmSource =
-      resolved.source instanceof CrbmStorageChunkSource ? resolved.source : undefined;
+    this.crbmSource = wired.source instanceof CrbmStorageChunkSource ? wired.source : undefined;
     this.clock = clock;
     this.rng = rng;
     this.metrics = metrics;
@@ -1215,8 +1001,8 @@ export class CloudRoaring {
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood — except for
     // the reads a load's guard and an erasure make along the way, which take the store's read retry (`readRetry`),
     // since a read is safe to repeat and one fault there would otherwise fail the whole write.
-    this.storageDriver = resolved.driver;
-    this.registry = resolved.registry;
+    this.storageDriver = wired.driver;
+    this.registry = wired.registry;
     this.keystore = options.encryption?.keystore;
     this.requireEncryption = options.encryption?.required ?? false;
   }
