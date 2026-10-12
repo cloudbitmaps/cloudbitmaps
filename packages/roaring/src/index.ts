@@ -3494,6 +3494,7 @@ export class Segment {
   has(id: number): Promise<boolean> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
+    if (!this.metricsOn) return this.engine.has(this.ref, id);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
   /**
@@ -3517,6 +3518,7 @@ export class Segment {
   count(): Promise<number> {
     const lease = this.leaseError();
     if (lease !== undefined) return Promise.reject(lease);
+    if (!this.metricsOn) return this.engine.count(this.ref);
     return this.timed('count', () => this.engine.count(this.ref));
   }
   /**
