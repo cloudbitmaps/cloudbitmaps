@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudRoaring, CrbmStorageChunkSource, IntegrityError } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
-import { verifyGeneration } from '@/core/crbm-storage-source';
+import { verifyGeneration } from '@/core/crbm-open';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';

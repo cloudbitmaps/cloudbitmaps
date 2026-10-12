@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import fc from 'fast-check';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { aadFor } from '@/core/crypto';
 import { eraseIdFromSegment, type EraseIdResult } from '@/core/erase-id';
 import { NotFoundError, WriteConflictError } from '@/core/errors';

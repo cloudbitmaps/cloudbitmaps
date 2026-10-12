@@ -1,6 +1,6 @@
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { SegmentRef } from '@/index';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 

@@ -1,4 +1,5 @@
-import { publishGeneration, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '@/core/publish';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import { CloudRoaring, IntegrityError } from '@/index';

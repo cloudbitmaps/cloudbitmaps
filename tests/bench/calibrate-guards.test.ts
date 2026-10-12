@@ -415,10 +415,7 @@ describe('calibrate guards — what a real run is held to', () => {
   // project every load one attempt short. Read the bound out of the source rather than retyping it, so the two
   // cannot disagree silently.
   it('uses the same retry bound as publishGeneration actually loops', () => {
-    const src = readFileSync(
-      join(ROOT, 'packages', 'core', 'src', 'core', 'crbm-storage-source.ts'),
-      'utf8',
-    );
+    const src = readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', 'publish.ts'), 'utf8');
     const body = src.slice(src.indexOf('export async function publishGeneration'));
     const bound = /for \(let attempt = 0; attempt < (\d+); attempt\+\+\)/.exec(body);
     expect(

@@ -1,7 +1,8 @@
 import { mkdtemp, open as fsOpen, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { storageObjectPath } from '@/drivers/localfs/paths';
 import { SafeBitmap } from '@/roaring-codec';

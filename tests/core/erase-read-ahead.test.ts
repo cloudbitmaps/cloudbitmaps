@@ -1,5 +1,6 @@
 import { afterEach, vi } from 'vitest';
-import { publishGeneration, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '@/core/publish';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { CrbmReader } from '@/core/crbm/reader';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError } from '@/core/errors';

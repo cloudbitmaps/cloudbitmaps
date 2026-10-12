@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, RecordingAuditSink } from '@/index';

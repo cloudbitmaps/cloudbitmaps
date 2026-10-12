@@ -15,7 +15,7 @@ import { RETENTION_SWEEP_REQUESTS } from '@/tools/cost';
 import { retireExpired, DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep';
 import { setSegmentRetention } from '@/core/retention';
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '@/core/publish';
 import { loadSegment } from '@/core/load';
 import { dueBucket, dueBucketsAt, dueIndexRef, dueNamespace } from '@/core/due-index';
 import { TransientError, WriteConflictError } from '@/core/errors';
