@@ -33,7 +33,7 @@ import { readSeed, wantsSeed } from './ledger-seed';
 import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept, type PublishResult } from './publish';
 import type { Clock, Rng } from './determinism';
-import { onlyLeasesDiffer } from './leases';
+import { heldGenerations, onlyLeasesDiffer } from './leases';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
@@ -783,12 +783,23 @@ async function runLoad(
   // without that, anything published between the "before" read and this publish voids the guard's premise while the
   // guard still reports success. An unguarded load needs no fence on the pointer: its ids come from upstream, so a
   // newer generation costs nothing it knew about.
-  // A publish over a row with no usable window starts the ledger with the window a count keeps, read from the bucket.
+  // A publish over a row with no usable ledger starts one with the window a count keeps, read from the bucket.
   const currentObjectGone = needsBefore && before === null;
+  const leased: ReadonlySet<number> =
+    leasesNow === undefined ? new Set() : heldGenerations(row, leasesNow());
   let seed: Awaited<ReturnType<typeof readSeed>> | undefined;
-  if (wantsSeed(row, generation, keep, currentObjectGone)) {
+  if (wantsSeed(row, generation, keep, leased)) {
     try {
-      seed = await readSeed(deps.storage, ref, row, generation, keep, listed, deps.readRetry);
+      seed = await readSeed(
+        deps.storage,
+        ref,
+        row,
+        generation,
+        keep,
+        listed,
+        leased,
+        deps.readRetry,
+      );
     } catch (err) {
       // Nothing this load wrote was published, so its own object is reclaimed as a refused load's is (the reclaim re-reads the row).
       const missing = await tidy();

@@ -18,6 +18,7 @@ import { nextKnown } from './known-generations';
 import {
   UNANSWERED_BASE_MS,
   UNANSWERED_RESENDS,
+  heldGenerations,
   isLive,
   leaseChurn,
   onlyLeasesDiffer,
@@ -89,11 +90,19 @@ function nextKnownOf(
     readonly footerCrc: number;
     readonly clearLeases?: boolean;
     readonly seed?: readonly KnownGeneration[];
+    readonly leasesNow?: () => number;
   },
 ): KnownAfter {
+  // The generations a live lease holds stay in the ledger: the same ones this publish's collection spares. Without a
+  // clock a publish reads no leases, and its collection spares none either.
+  const leased =
+    options.leasesNow === undefined || options.clearLeases === true
+      ? undefined
+      : heldGenerations(prev, options.leasesNow());
   return nextKnown(prev, key.generation, options.footerCrc, options.keep, {
     clearsLeases: options.clearLeases === true,
     ...(options.seed === undefined ? {} : { seed: options.seed }),
+    ...(leased === undefined ? {} : { leased }),
   });
 }
 
@@ -194,10 +203,10 @@ interface PublishOptions {
   clearLeases?: boolean;
   /**
    * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
-   * records the window in the row (the entries of `knownGens`: the newest `keep` of the row's own window and the
-   * generation that was current), derived from the very row the write is made against, and the result names the
-   * generations the window dropped. Without it, or above the most a row records, the row records no window, and a
-   * collection lists.
+   * records the window in the row (the entries of `knownGens`: the `keep` most recently current of the generations
+   * below the new one, and the ones a live lease holds), derived from the very row the write is made against, and the
+   * result names the generations the window dropped. Without it, or above the most a row collects by name, the result
+   * names no window, and a collection lists.
    */
   keep?: number;
   /**

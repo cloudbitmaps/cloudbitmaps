@@ -1,9 +1,9 @@
 /**
  * The generations a segment's row knows it published: its known-generations ledger, `knownGens`. Each entry is a
  * generation's number and the footer checksum of its object, in the order the generations were made current, oldest
- * first and the current one last. The kept window a load collects by name is derived from it: the entries numbered
- * below the pointer, so a load deletes what its publish pushed out of that window by name instead of listing the
- * bucket.
+ * first and the current one last. The kept window a load collects by name is derived from it: each publish chooses
+ * the most recently current of the entries numbered below its own generation, so a load deletes what its publish pushed
+ * out of that window by name instead of listing the bucket.
  *
  * The record is a cache of what a listing would keep, never an inventory of the bucket: a generation can be named here
  * and gone from the bucket (a lifecycle rule took it, or a load with a smaller `keep` collected it), and the bucket
@@ -65,19 +65,34 @@ export function usableKnownGens(
 }
 
 /**
- * The generations the row keeps as its window: the ledger's numbers other than the pointer, when the ledger is usable,
- * none of them is above the pointer (an entry above it is one a rollback left) and there are no more than
- * {@link MAX_KEPT_GENERATIONS} (a ledger carried through publishes with a larger `keep` names more than any window a
- * `keep` that small keeps, and a count would keep fewer than it names). The window is then not known: `undefined`, and
- * the load lists.
+ * The generations the row keeps as its window: the numbers of the usable ledger's entries below the pointer, in the order
+ * they were made current, or `undefined` when the ledger is not usable. A collection compares against these. An entry
+ * numbered above the pointer is one a rollback left; no collection can take it, so it is no part of the window.
  */
 export function windowOf(record: RegistryRecord | null): readonly number[] | undefined {
   const known = usableKnownGens(record);
   if (known === undefined) return undefined;
   const pointer = record!.currentGen!;
-  const below = known.slice(0, -1).map((e) => e.generation);
-  return below.length > MAX_KEPT_GENERATIONS || below.some((g) => g >= pointer) ? undefined : below;
+  return known.filter((e) => e.generation < pointer).map((e) => e.generation);
 }
+
+/**
+ * Whether the row's ledger is a window a load with a small `keep` can extend: usable, and naming no more than
+ * {@link MAX_KEPT_GENERATIONS} generations below the pointer that no live lease holds. A ledger carried through
+ * publishes with a larger `keep` (`*Into`, `materializeMany`) names up to 127, and a count by a small `keep` would keep
+ * fewer than it names, so the next small-`keep` load seeds a window from the bucket instead of extending that one. A
+ * generation held only for a lease is no part of the window and does not count toward the limit.
+ */
+export function carriesWindow(record: RegistryRecord | null, leased: ReadonlySet<number>): boolean {
+  const below = windowOf(record);
+  return below !== undefined && below.filter((g) => !leased.has(g)).length <= MAX_KEPT_GENERATIONS;
+}
+
+/**
+ * How many generations below its own a publish vouches for at most: what the writer cap leaves beside the new
+ * generation and the 64 generations live leases can hold.
+ */
+export const KNOWN_SPAN = 127;
 
 /** Which generations below a new pointer a grace window holds, and which it lets go: both ascending. */
 interface KeptWindow {
@@ -93,8 +108,8 @@ interface KeptWindow {
  * The superseded generation is the one reads were on until the publish, and, after a rollback, the one the operator
  * restored, which a pin taken since reads, and the one to roll back to if the new load is bad too. The
  * generations a rollback moved away from are newer by number, so a window by number alone would keep those and delete
- * it. Every window a load keeps comes from here: the one its publish records in the row ({@link nextKnown}), and the one
- * a listing keeps when the row records none.
+ * it. The window a listing keeps when the row records no usable ledger comes from here, and so does a ledger's first window
+ * (`ledger-seed.ts`).
  */
 export function keptWindow(
   below: readonly number[],
@@ -161,56 +176,86 @@ export interface KnownAfter {
 /**
  * What a publish of `generation` (its object's footer checksum `footerCrc`) over `prev` writes into the row.
  *
- * The window is today's rule: `keep` of the numbers the row's window names and the generation that was current, the
- * superseded one first ({@link keptWindow}), with the names that fell out of it. It is recorded, and collected by name,
- * only when the row has a usable window to extend (except for generation 0, which has nothing below it), when `keep` is
- * at most {@link MAX_KEPT_GENERATIONS}, and when a `keep` is given.
+ * The ledger is in the order the generations were made current, so the order says which were current most recently.
+ * That ranks the window, and the window is drawn from the entries numbered below the new generation only: collection
+ * can only take generations numbered below the pointer. The window is the `keep` most recently current of them (at most
+ * {@link KNOWN_SPAN}), so the generation the publish superseded, the ledger's last entry, comes first, and after a
+ * rollback the ones the operator restored outrank the ones the rollback moved away from.
  *
- * The ledger is the window's entries in the order they were made current and the new generation last. When no window is
- * recorded, it carries the ledger it found (an entry for the new generation's number is a stale one and is replaced),
- * held to the cap with only the new generation protected; a row with no usable ledger starts one with the new
- * generation alone, except that a `seed` (see `ledger-seed.ts`) replaces whatever the row carried: the window a count
- * keeps, then the new generation, and the publish collects by that count. A publish that clears leases is an erasure's
- * rewrite, which deletes every older generation, so its ledger is the new generation alone.
+ * What it writes, in the order the entries were made current and the new generation last:
+ *
+ *  - the window;
+ *  - the entries below the new generation that `leased` names (a generation a live lease holds stays known, so it stays a
+ *    rollback target while the lease lives), whatever `keep` says;
+ *  - the entries numbered above the new generation, which a rollback left and a load numbered under: they are carried and
+ *    never evicted, and take no slot of `keep`, while the ledger holds fewer than {@link KNOWN_FILL} entries (see
+ *    {@link capKnown});
+ *  - the new generation. An entry already numbered `generation` is a stale one (its object went outside the ledger) and
+ *    is replaced.
+ *
+ * `evict` is the entries below the new generation that it leaves out, ascending: never a name at or above the new
+ * generation. With a `keep` of at most {@link MAX_KEPT_GENERATIONS} the publish collects by name, so `list` is the
+ * generations of the ledger below the new one; above that, or with no `keep`, `list` is `undefined` and `evict` empty, and
+ * a load lists. A row with a pointer and no usable ledger writes the new generation alone and lists, unless the caller
+ * passes a `seed` (see `ledger-seed.ts`): the window a count keeps, read from the bucket, then the new generation, and
+ * the publish collects by that count. A publish that clears leases is an erasure's rewrite, which deletes every older
+ * generation, so its ledger is the new generation alone.
  */
 export function nextKnown(
   prev: RegistryRecord | null,
   generation: number,
   footerCrc: number,
   keep: number | undefined,
-  options: { readonly clearsLeases?: boolean; readonly seed?: readonly KnownGeneration[] } = {},
+  options: {
+    readonly clearsLeases?: boolean;
+    readonly seed?: readonly KnownGeneration[];
+    readonly leased?: ReadonlySet<number>;
+  } = {},
 ): KnownAfter {
   const self: KnownGeneration = { generation, footerCrc };
-  const none = { list: undefined, evict: [] as number[] };
-  let window: { list: readonly number[] | undefined; evict: readonly number[] } = none;
-  const found = usableKnownGens(prev);
-  if (keep !== undefined && keep <= MAX_KEPT_GENERATIONS) {
-    if (generation === 0) {
-      window = { list: [], evict: [] };
-    } else {
-      const previous = prev?.currentGen ?? null;
-      const named = windowOf(prev);
-      if (previous !== null && named !== undefined) {
-        const { kept, evict } = keptWindow([...named, previous], previous, keep);
-        window = { list: kept, evict };
-      }
-    }
-  }
-  if (options.clearsLeases === true) return { known: [self], ...window };
-  if (options.seed !== undefined) {
+  const clears = options.clearsLeases === true;
+  const byName = keep !== undefined && keep <= MAX_KEPT_GENERATIONS;
+  if (options.seed !== undefined && !clears) {
     // The window a count keeps, read from the bucket: the ledger names it, and the publish collects by that count.
     const seed = options.seed.filter((e) => e.generation < generation);
     const protect = new Set([...seed.map((e) => e.generation), generation]);
     return { known: capKnown([...seed, self], protect), list: undefined, evict: [] };
   }
-  if (window.list !== undefined) {
-    const members = new Set(window.list);
-    const entries = (found ?? []).filter((e) => members.has(e.generation));
-    const all = new Set([...members, generation]);
-    return { known: capKnown([...entries, self], all), ...window };
+  const found = usableKnownGens(prev);
+  if (found === undefined && prev !== null && prev.currentGen !== null) {
+    // A row that dropped its ledger, or one that disagrees with its row: nothing says what it kept, so a load lists.
+    return { known: [self], list: undefined, evict: [] };
   }
-  const carried = (found ?? []).filter((e) => e.generation !== generation);
-  return { known: capKnown([...carried, self], new Set([generation])), ...window };
+  const all = found ?? [];
+  const below = all.filter((e) => e.generation < generation);
+  const above = clears ? [] : all.filter((e) => e.generation > generation);
+  const span = clears ? 0 : Math.min(keep ?? Number.MAX_SAFE_INTEGER, KNOWN_SPAN);
+  const vouch = new Set((span === 0 ? [] : below.slice(-span)).map((e) => e.generation));
+  const leased = clears ? new Set<number>() : (options.leased ?? new Set<number>());
+  const held = below.filter((e) => !vouch.has(e.generation) && leased.has(e.generation));
+  const chosen = new Set([
+    ...vouch,
+    ...held.map((e) => e.generation),
+    ...above.map((e) => e.generation),
+  ]);
+  const known = capKnown(
+    [...all.filter((e) => chosen.has(e.generation)), self],
+    new Set([...vouch, generation]),
+    leased,
+  );
+  if (!byName) return { known, list: undefined, evict: [] };
+  const named = new Set(known.map((e) => e.generation));
+  return {
+    known,
+    list: known
+      .filter((e) => e.generation < generation)
+      .map((e) => e.generation)
+      .sort(ascending),
+    evict: below
+      .filter((e) => !named.has(e.generation))
+      .map((e) => e.generation)
+      .sort(ascending),
+  };
 }
 
 /**

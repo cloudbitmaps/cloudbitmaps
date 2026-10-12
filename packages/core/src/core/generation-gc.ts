@@ -16,7 +16,7 @@
 import { requireInteger } from './check';
 import { IntegrityError, NotFoundError, WriteConflictError, isNotFoundError } from './errors';
 import { generationsOf } from './generation-list';
-import { keptWindow, windowOf } from './known-generations';
+import { KNOWN_SPAN, keptWindow, windowOf, usableKnownGens } from './known-generations';
 import { heldGenerations } from './leases';
 import type {
   GenKey,
@@ -400,8 +400,13 @@ async function listingPass(
     protect?: readonly number[];
     quiet?: boolean;
     leases?: LeaseGuard;
-    /** What the load's publish superseded, which its window keeps first. */
+    /** What the load's publish superseded, which its window keeps first when the row has no usable ledger. */
     superseded?: Superseded;
+    /**
+     * Spare every generation the row names when it is read again before a delete. For a pass that keeps by a count on
+     * an active row: a publish or a rollback that landed since the pass chose what to delete can have made a name known.
+     */
+    skipKnown?: boolean;
   },
 ): Promise<ListingResult> {
   const keep = options.keep ?? 1;
@@ -505,6 +510,14 @@ async function listingPass(
     }
     // A lease that landed since the row was first read: this name is spared, and the pass goes on to the next.
     if (guard !== undefined && heldGenerations(still, guard.now()).has(generation)) return 'skip';
+    // A name the row knows now was unknown when the pass chose its deletes: a publish or a rollback made it known.
+    if (
+      options.skipKnown === true &&
+      record.status !== 'destroyed' &&
+      usableKnownGens(still)?.some((e) => e.generation === generation) === true
+    ) {
+      return 'skip';
+    }
     return 'delete';
   };
 
@@ -538,7 +551,7 @@ async function listingPass(
           ? // The row's list is the window: everything below the pointer it does not name is garbage.
             below.filter((g) => !protect.has(g))
           : // Delete generations below the cutoff, except the `keep` of them the grace window holds, newest first.
-            keptWindow(below, prior, keep).evict.reverse();
+            outsideWindow(below, usableKnownGens(after), cutoff, prior, keep);
   // A generation a live lease holds is spared beside the ones the row names, and takes no slot of the window.
   const leasedSpared = new Set(candidates.filter((g) => held?.has(g) === true));
   const toDelete = candidates.filter((g) => !leasedSpared.has(g));
@@ -574,6 +587,35 @@ async function listingPass(
     if (missing !== undefined) return { deleted: done, missing };
   }
   return { deleted: done };
+}
+
+/**
+ * The generations of `below` (newest first, all below `cutoff`) that a pass keeping `keep` of them deletes, newest first.
+ *
+ * With a usable ledger the window starts from the ledger's own span: of the `min(keep, 127)` most recently current names
+ * it has below the cutoff, the ones present. Then the newest of the other present generations by number, until `keep` in
+ * all. The superseded generation is the ledger's newest name below the pointer, so it comes first with no rule of its
+ * own, and one whose object has gone does not count, so the window still holds `keep`. A name the ledger holds only for
+ * a lease is older than the span, takes no slot, and is spared beside the window (the caller's lease check). With no
+ * usable ledger the window is {@link keptWindow}'s: the superseded generation first, then the newest by number.
+ */
+function outsideWindow(
+  below: readonly number[],
+  known: readonly KnownGeneration[] | undefined,
+  cutoff: number,
+  superseded: number | undefined,
+  keep: number,
+): number[] {
+  if (known === undefined) return keptWindow(below, superseded, keep).evict.reverse();
+  const present = new Set(below);
+  const span = Math.min(keep, KNOWN_SPAN);
+  const named = known.filter((e) => e.generation < cutoff).map((e) => e.generation);
+  const held = new Set((span === 0 ? [] : named.slice(-span)).filter((g) => present.has(g)));
+  for (const g of below) {
+    if (held.size >= keep) break;
+    held.add(g);
+  }
+  return below.filter((g) => !held.has(g));
 }
 
 /** What a load's publish recorded in the row, as `publishGeneration` reports it. */
@@ -694,6 +736,7 @@ async function reconcile(
     quiet: true,
     leases,
     superseded,
+    skipKnown: true,
   });
   if (missing !== undefined) throw tookEffectOverMissing(ref, generation, missing);
   return deleted;
@@ -746,8 +789,14 @@ export async function deleteEvicted(
     const lost = held === undefined ? undefined : await watch.check(held, still);
     if (lost !== undefined) throw tookEffectOverMissing(ref, options.generation, lost);
     if (still === null || still.currentGen === null || still.currentGen < options.generation) break;
-    const named = windowOf(still);
-    if (named === undefined || generation >= still.currentGen || named.includes(generation)) break;
+    const known = usableKnownGens(still);
+    if (
+      known === undefined ||
+      generation >= still.currentGen ||
+      known.some((e) => e.generation === generation)
+    ) {
+      break;
+    }
     // A name a live lease holds is spared, and the pass goes on: the rest of the window's evictions still go.
     if (
       options.leases !== undefined &&
