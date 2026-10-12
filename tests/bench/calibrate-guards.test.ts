@@ -524,11 +524,13 @@ describe('calibrate guards — what a real run is held to', () => {
         );
       }
     }
-    // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the last makes as
-    // many GET-class requests as the bound allows.
+    // An upper bound one request above the worst real run. It was tight at 16 while an incarnation's first publish seeded
+    // its ledger (14 pointer reads, the check and a stray's footer read); without that seed the worst load makes 15. The
+    // bound stays 16 until the next calibration run on S3 lowers it with fresh evidence.
     expect(p.get).toBe(16);
     const nearest = await load(guards.RETRY_BOUND - 1, true);
-    expect(p.get).toBe(nearest.reads + nearest.checks);
+    expect(p.get).toBeGreaterThanOrEqual(nearest.reads + nearest.checks);
+    expect(p.get - (nearest.reads + nearest.checks)).toBeLessThanOrEqual(1);
   });
 
   it('flags a run that exceeded its projection, and only then', () => {
