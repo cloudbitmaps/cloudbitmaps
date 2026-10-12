@@ -7,6 +7,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { CloudRoaring } from '@/index';
 import type { GenKey, IRegistryDriver, IStorageDriver, RegistryPatch } from '@/index';
+import type { Clock, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
@@ -48,13 +49,13 @@ interface Sent {
 
 /**
  * Generation 0 holds X and Y, the first load holds its publish of 1, and the erasure of X runs until that publish
- * refuses its publish of 2 and its discard reaches `stallAt`. Returns the erasure's run, its gate, what it sent, and
- * the stores.
+ * refuses its publish of 2 and its discard reaches `stallAt`, every call on `clk`. Returns the erasure's run, its gate,
+ * what it sent, and the stores.
  */
-async function refusedRewrite(stallAt: Stall) {
+async function refusedRewrite(stallAt: Stall, clk: Clock = clock) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
-  const deps = { storage, registry, codec: roaringCodec, clock };
+  const deps = { storage, registry, codec: roaringCodec, clock: clk };
   await loadSegment(REF, [1, 2, X, Y], deps); // generation 0
 
   const l1AtPublish = gate();
@@ -173,6 +174,9 @@ describe("a refused rewrite's discard and a load that takes its number again wit
       const { first, l2, storage, registry } = await race(stallAt, l2Publish);
 
       expect(first).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
+      // The load publishes unless the discard's renewal landed before its publish: once that renewal lands first, the
+      // load's publish is fenced on a row the renewal retired.
+      expect(l2.published).toBe(l2Publish === 'at once' || stallAt === 'before its delete');
       // The row names a generation whose object is in the bucket, and the segment reads it: the load's when it
       // published, the first load's when the discard's renewal refused it.
       const row = await registry.get(REF);
@@ -265,6 +269,8 @@ describe("a refused rewrite's discard whose renewal of the row loses", () => {
     expect(await e1).toMatchObject({ erased: false, reason: 'superseded' });
     expect(sent).toEqual({ renewals: 2, deletes: 1 });
     expect(await generations(storage)).not.toContain(2);
+    expect((await registry.get(REF))?.currentGen).toBe(1);
+    expect(await reads(storage, registry)).toEqual([5, 6]);
   });
 
   it('with no answer, having not landed, and no clock to wait on: it throws and deletes nothing', async () => {
@@ -307,4 +313,253 @@ describe("a refused rewrite's discard whose renewal of the row loses", () => {
     expect(await generations(storage)).toContain(2);
     expect((await registry.get(REF))?.currentGen).toBe(1);
   });
+});
+
+/** A write of the row's leases alone: one lease, on the generation the pointer names. */
+const leaseOf = () => ({
+  leases: [{ holder: '0123456789abcdef', generation: 1, until: clock.now() + 60_000 }],
+});
+
+describe("a refused rewrite's discard whose footer read does not find its rewrite", () => {
+  it.each(['another object', 'no object'])(
+    'the footer read meets %s under its number: it keeps, with no renewal and no delete',
+    async (kind) => {
+      const { e1, atDiscard, sent, storage, registry, deps } =
+        await refusedRewrite('before its footer read');
+      expect(await eraseIdFromSegment(REF, Y, deps)).toMatchObject({ erased: true });
+      expect(await generations(storage)).not.toContain(2);
+      const l2At = gate();
+      let l2: Promise<LoadResult> | undefined;
+      if (kind === 'another object') {
+        // A load of other ids takes 2 afresh and holds its publish.
+        const l2Registry = Object.create(registry) as IRegistryDriver;
+        l2Registry.compareAndSwap = async (ref, expected, patch, options) => {
+          if (publishes(patch, 2)) {
+            l2At.reach();
+            await l2At.opened;
+          }
+          return registry.compareAndSwap(ref, expected, patch, options);
+        };
+        l2 = loadSegment(REF, [7, 8], { ...deps, registry: l2Registry });
+        await l2At.reached;
+      }
+      atDiscard.open();
+      expect(await e1).toMatchObject({ erased: false, reason: 'superseded' });
+      expect(sent).toEqual({ renewals: 0, deletes: 0 });
+      if (l2 !== undefined) {
+        expect(await generations(storage)).toContain(2);
+        l2At.open();
+        expect(await l2).toMatchObject({ generation: 2, published: true });
+        expect(await reads(storage, registry)).toEqual([7, 8]);
+      } else {
+        expect(await generations(storage)).not.toContain(2);
+      }
+    },
+  );
+});
+
+describe("a refused rewrite's discard and the writes it waits out", () => {
+  it(`a write of leases alone costs no attempt: after it and ${DISCARD_ATTEMPTS - 1} other lost renewals, the next lands and deletes`, async () => {
+    const { e1, atDiscard, sent, storage, registry } =
+      await refusedRewrite('after its footer read');
+    let expiry = clock.now() + 86_400_000;
+    let n = 0;
+    const swap = registry.compareAndSwap.bind(registry);
+    registry.compareAndSwap = async (ref, expected, patch, options) => {
+      if (publishes(patch, 1)) {
+        n += 1;
+        if (n === 1) await swap(REF, (await registry.get(REF))!.token, leaseOf());
+        else if (n <= DISCARD_ATTEMPTS) {
+          expiry += 1;
+          await setSegmentRetention(REF, { registry }, { expiresAt: expiry });
+        }
+      }
+      return swap(ref, expected, patch, options);
+    };
+    atDiscard.open();
+
+    expect(await e1).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(sent).toEqual({ renewals: DISCARD_ATTEMPTS + 1, deletes: 1 });
+    expect(await generations(storage)).not.toContain(2);
+    expect(await reads(storage, registry)).toEqual([5, 6]);
+  });
+
+  it('after waiting out a write of leases alone, it decides on the row it reads after the wait', async () => {
+    // The wait itself lets a retention write land: the row the discard renews must be the one read after the wait.
+    // What the next wait on the clock does before it returns.
+    const duringWait: (() => Promise<unknown>)[] = [];
+    const clk: Clock = {
+      now: clock.now,
+      sleep: async () => {
+        await duringWait.shift()?.();
+      },
+    };
+    const { e1, atDiscard, sent, storage, registry } = await refusedRewrite(
+      'after its footer read',
+      clk,
+    );
+    await registry.compareAndSwap(REF, (await registry.get(REF))!.token, leaseOf());
+    duringWait.push(() =>
+      setSegmentRetention(REF, { registry }, { expiresAt: clock.now() + 86_400_000 }),
+    );
+    atDiscard.open();
+
+    expect(await e1).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(sent).toEqual({ renewals: 2, deletes: 1 });
+    expect(await generations(storage)).not.toContain(2);
+  });
+
+  it('renewals that get no answer share one bound of 3 resends, across the waits between them', async () => {
+    const { e1, atDiscard, storage, registry } = await refusedRewrite('after its footer read');
+    let n = 0;
+    const swap = registry.compareAndSwap.bind(registry);
+    registry.compareAndSwap = async (ref, expected, patch, options) => {
+      if (publishes(patch, 1)) {
+        n += 1;
+        if (n === 3) await swap(REF, (await registry.get(REF))!.token, leaseOf());
+        else throw new TransientError('no answer, not landed');
+      }
+      return swap(ref, expected, patch, options);
+    };
+    atDiscard.open();
+
+    // Sends 1 and 2 get no answer; send 3, the second resend, loses to a lease write, waited out; send 4 gets no answer,
+    // and after send 5, the third resend, gets none either, the bound is spent.
+    await expect(e1).rejects.toBeInstanceOf(TransientError);
+    expect(n).toBe(5);
+    expect(await generations(storage)).toContain(2);
+  });
+});
+
+describe("an erasure's renewal of the row before it deletes a holder", () => {
+  it('a write of leases alone between the renewal and the delete does not stop the erasure', async () => {
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    const deps = { storage, registry, codec: roaringCodec };
+    await loadSegment(REF, [1, 2, 3], deps);
+    // A load writes generation 1, which holds 9, above the pointer, and holds its publish.
+    const atPublish = gate();
+    let held = false;
+    const gated = Object.create(registry) as MemoryRegistryDriver;
+    gated.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
+      if (!held && 'currentGen' in patch) {
+        held = true;
+        atPublish.reach();
+        await atPublish.opened;
+      }
+      return registry.compareAndSwap(ref, expected, patch);
+    };
+    const load = loadSegment(REF, [1, 2, 3, 9], { ...deps, registry: gated });
+    await atPublish.reached;
+    // A lease write lands right after the erasure's renewal of the row, before its delete of the holder.
+    const swap = registry.compareAndSwap.bind(registry);
+    const eraser = Object.create(registry) as MemoryRegistryDriver;
+    eraser.compareAndSwap = async (ref: SegmentRef, expected: string, patch) => {
+      const written = await swap(ref, expected, patch);
+      if ('currentGen' in patch && patch.currentGen === 0) {
+        await swap(ref, written.token, {
+          leases: [{ holder: '00000000000000aa', generation: 0, until: 1e15 }],
+        });
+      }
+      return written;
+    };
+    const erased = await eraseIdFromSegment(REF, 9, { ...deps, registry: eraser });
+    atPublish.open();
+    await load;
+    expect(erased).toMatchObject({ erased: true });
+  });
+});
+
+describe('refused rewrites of several erasures racing one that won', () => {
+  /**
+   * The winner erases Z while each loser erases an id of its own, all from generation 0. The losers read generation 0
+   * before the winner publishes, then number one after another above the winner's object once it has returned, so each
+   * rewrite sits above the winner's pointer and still holds Z, which the winner reported erased. Every loser's discard
+   * renews the row at once with the others, so each renewal but one loses to another loser's.
+   */
+  it.each([DISCARD_ATTEMPTS + 1, DISCARD_ATTEMPTS + 4])(
+    '%i losers: each deletes its rewrite, so nothing in the bucket holds the id the winner erased',
+    async (losers) => {
+      const Z = 99;
+      const ids = Array.from({ length: losers }, (_, i) => 1_000 + i);
+      const storage = new MemoryStorageDriver();
+      const registry: IRegistryDriver = new MemoryRegistryDriver();
+      const deps = { storage, registry, codec: roaringCodec, clock };
+      await loadSegment(REF, [1, 2, Z, ...ids], deps); // generation 0, one chunk
+
+      // The winner writes generation 1 and holds its publish.
+      const winnerAtPublish = gate();
+      const winnerRegistry = Object.create(registry) as IRegistryDriver;
+      winnerRegistry.compareAndSwap = async (ref, expected, patch, options) => {
+        if (publishes(patch, 1)) {
+          winnerAtPublish.reach();
+          await winnerAtPublish.opened;
+        }
+        return registry.compareAndSwap(ref, expected, patch, options);
+      };
+      const winner = eraseIdFromSegment(REF, Z, { ...deps, registry: winnerRegistry });
+      await winnerAtPublish.reached;
+
+      // Each loser reads generation 0, then waits at the listing that numbers its rewrite; its discard's first renewal
+      // waits for every loser's.
+      const allRenewing = gate();
+      let renewing = 0;
+      const runs = ids.map((id) => {
+        const atNumbering = gate();
+        const written = gate();
+        let listed = false;
+        let renewed = false;
+        const loserStorage = Object.create(storage) as IStorageDriver;
+        loserStorage.putImmutable = async (key, write) => {
+          const out = await storage.putImmutable(key, write);
+          written.reach();
+          return out;
+        };
+        loserStorage.list = (ref) => {
+          if (listed) return storage.list(ref);
+          listed = true;
+          return (async function* () {
+            atNumbering.reach();
+            await atNumbering.opened;
+            yield* storage.list(ref);
+          })();
+        };
+        const loserRegistry = Object.create(registry) as IRegistryDriver;
+        loserRegistry.compareAndSwap = async (ref, expected, patch, options) => {
+          if (!renewed && publishes(patch, 1)) {
+            renewed = true;
+            renewing += 1;
+            if (renewing === losers) allRenewing.open();
+            await allRenewing.opened;
+          }
+          return registry.compareAndSwap(ref, expected, patch, options);
+        };
+        const run = eraseIdFromSegment(REF, id, {
+          ...deps,
+          storage: loserStorage,
+          registry: loserRegistry,
+        });
+        return { run, atNumbering, written };
+      });
+      for (const { atNumbering } of runs) await atNumbering.reached;
+
+      winnerAtPublish.open();
+      expect(await winner).toMatchObject({ erased: true, generation: 1 });
+
+      // The losers number 2, 3, ... in turn, each above every object in the bucket.
+      for (const { atNumbering, written } of runs) {
+        atNumbering.open();
+        await written.reached;
+      }
+      for (const { run } of runs) {
+        expect(await run).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
+      }
+
+      expect(await generations(storage)).toEqual([1]);
+      expect(await eraseIdFromSegment(REF, Z, deps)).toMatchObject({
+        erased: false,
+        reason: 'not-member',
+      });
+    },
+  );
 });

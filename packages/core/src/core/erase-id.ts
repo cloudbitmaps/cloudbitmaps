@@ -60,8 +60,10 @@
  * its number after the winner's object was already in the bucket. Up there nothing collects it, and it was derived
  * from a generation the winner has replaced, so when the winner was another erasure it still holds the id that
  * erasure has just reported gone. That object is deleted before this call returns, once its footer matches the
- * rewrite's and a renewal of the row refuses any publish of the same bytes under that number, under the version the
- * footer read reported — see `discardRefused`.
+ * rewrite's and a renewal of the row has refused every publish fenced on a row read before it, under the version the
+ * footer read reported, unless {@link DISCARD_ATTEMPTS} renewals lose to other writes (a load, a rollback, a
+ * retention write): then it is kept, and can hold the winner's id, until a re-run of this erasure, whose `keep: 0`
+ * collection takes every generation below its own, deletes it — see `discardRefused`.
  *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
  * number above everything in the bucket, so a forward-only publish here always won — discarding a concurrent
@@ -152,9 +154,11 @@ import { validateUserRef } from './validate';
 const HOLDS_CONCURRENCY = 4;
 
 /**
- * Renewals a refused rewrite's discard makes before it keeps its object: the first, and one more each time another
- * writer's write lands between its read of the row and its renewal. A lease write it waits out costs none, and a write
- * that gets no answer is sent again within the same renewal.
+ * Renewals a refused rewrite's discard makes before it keeps its object: the first, and one more each time a write that
+ * is neither a write of leases alone nor another erasure's renewal of the row lands between its read of the row and its
+ * renewal. Those two are waited out, up to the limit on lease waits (`LEASE_ONLY_RETRIES`), and cost none, so the
+ * losers of one race of erasures all delete their rewrites; a write that gets no answer is sent again within the same
+ * renewal.
  */
 export const DISCARD_ATTEMPTS = 8;
 
@@ -241,7 +245,7 @@ export interface EraseIdResult {
   /**
    * The generation written without the id (present whenever one was written, even if `superseded`). A refused
    * rewrite whose object sits above the winner's pointer deletes that object again before it returns, when its footer
-   * matches the rewrite's and a renewal of the row refuses every publish of it.
+   * matches the rewrite's and a renewal of the row refuses every publish fenced on a row read before it.
    */
   readonly generation?: number;
   /**
@@ -1152,11 +1156,16 @@ async function eraseOnce(
    * is first matched to this rewrite's fingerprint by one read of its footer (one that is gone, is another object, or
    * cannot be read is kept), and then the row the position was read from is renewed ({@link rowRenewal}) before the
    * delete. Whoever wrote the object that read matched read its row before writing it, so before the renewal, and its
-   * publish, fenced on that row, is refused. A publish that landed first changed the row, so the renewal loses, and the
-   * call reads the row and decides again, keeping the object after {@link DISCARD_ATTEMPTS} lost renewals. Only this
-   * call's own renewal licenses the delete: another erasure's, landing between this call's read of the row and its
-   * footer read, lets a load read the renewed row and take the number before the footer read. A name purged and
-   * re-created is decided the same way, on its own row.
+   * publish, fenced on that row, is refused. A publish that landed after this call read the row makes the renewal lose,
+   * and the call reads the row and decides again. One that landed before it left the pointer on the number or above it,
+   * and the object is kept, unless a rollback has since moved the pointer below it: then the object is a generation a
+   * load published with this rewrite's very bytes, and it is deleted as if it were the rewrite, so a pin or a lease of it
+   * fails with `NotFoundError` from then on and a rollback to it finds it gone. A renewal lost to a write of leases
+   * alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; the object
+   * is kept after {@link DISCARD_ATTEMPTS} renewals lost to other writes. Only this call's own renewal licenses the
+   * delete: another erasure's, landing between this call's read of the row and its footer read, lets a load read the
+   * renewed row and take the number before the footer read. A name purged and re-created is decided the same way, on
+   * its own row.
    *
    * The delete passes the version the footer read reported, so on a storage driver that reports `conditionalDelete` it
    * removes that object and no other: an object put under the number after the renewal, by a load that read the renewed
@@ -1200,9 +1209,13 @@ async function eraseOnce(
         }
         return row;
       }
-      const settled = await churn.settle(row, renewed.lost, () => deps.registry.get(ref));
+      // A row changed only in its leases, or renewed by another erasure, is waited out and costs no attempt: losing to
+      // the other losers of one race must not leave an object holding the id the winner reported erased.
+      const settled = await churn.settle(row, renewed.lost, () => deps.registry.get(ref), [
+        'pointerId',
+      ]);
       if (settled === undefined && attempts >= DISCARD_ATTEMPTS) return renewed.lost;
-      if (settled !== undefined) attempts -= 1; // a lease write waited out costs no attempt
+      if (settled !== undefined) attempts -= 1;
       row = settled === undefined ? renewed.lost : settled.row;
     }
   };
