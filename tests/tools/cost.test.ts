@@ -8,6 +8,7 @@ import {
   CloudRoaring,
   CrbmStorageChunkSource,
   ValidationError,
+  type Segment,
   type StorageChunkSource,
 } from '@/index';
 import {
@@ -1528,47 +1529,64 @@ describe('the estimator counts the requests the engine makes', () => {
     },
   );
 
-  it('prices a cold intersect with an exclude at the GETs the engine makes, the exclude read in batches of survivors', async () => {
-    const { calls, pointer, open, reset } = countingStore();
-    // Segments over a tail read (256 KiB), so every chunk is a range request: 1,000 chunks of 250 ids. Both includes
-    // and the exclude hold 200 chunks that survive the AND, the exclude's ids thinned so that something remains.
-    const ids = (keys: number[], thin: boolean): number[] =>
-      keys.flatMap((k) =>
-        Array.from({ length: 250 }, (_, i) => i)
-          .filter((i) => !thin || i % 2 === 0)
-          .map((i) => k * 65_536 + i * 7 + 1),
+  it.each([
+    ['one id at a time', false],
+    ['a chunk at a time', true],
+  ])(
+    'prices a cold intersect with an exclude at the GETs the engine makes, read %s, the exclude in batches of survivors',
+    async (_, intoDestination) => {
+      const { calls, pointer, open, reset } = countingStore();
+      // Segments over a tail read (256 KiB), so every chunk is a range request: 1,000 chunks of 250 ids. Both includes
+      // and the exclude hold 200 chunks that survive the AND, the exclude's ids thinned so that something remains.
+      const ids = (keys: number[], thin: boolean): number[] =>
+        keys.flatMap((k) =>
+          Array.from({ length: 250 }, (_, i) => i)
+            .filter((i) => !thin || i % 2 === 0)
+            .map((i) => k * 65_536 + i * 7 + 1),
+        );
+      const all = Array.from({ length: 1_000 }, (_, k) => k);
+      const survivors = all.slice(0, 200);
+      const loader = open();
+      await loader.load({ segment: 'a' }, ids(all, false));
+      await loader.load({ segment: 'b' }, ids(survivors, false));
+      await loader.load({ segment: 'x' }, ids(all, true));
+
+      reset();
+      reads.reset();
+      const cold = open();
+      const [a, b, x] = ['a', 'b', 'x'].map((n) => cold.segment(n)) as [Segment, Segment, Segment];
+      if (intoDestination) {
+        await a.intersectInto(cold.segment('dest'), [b], { exclude: [x] });
+      } else {
+        for await (const id of a.intersect([b], { exclude: [x] })) void id;
+      }
+
+      const writes = intoDestination ? 1 : 0;
+      expect(requestsIn(calls).filter((k) => k !== 'putImmutable')).toEqual([
+        'getRange',
+        'getTail',
+      ]);
+      expect(calls.putImmutable ?? 0).toBe(writes);
+      const chunkRequests = calls.getRange ?? 0;
+      // The includes are at most one range each, and the exclude is a request for each half window of the survivors
+      // (16 keys of the default 32) whose chunks sit together: well under one for each survivor, as it was.
+      const k = 16;
+      expect(chunkRequests).toBeGreaterThan(2);
+      expect(chunkRequests).toBeLessThanOrEqual(2 + Math.ceil(survivors.length / k) + 1);
+      if (intoDestination) return; // a write also reads its destination's row and tail: priced as a load is
+      const engineGets = pointer.reads + (calls.getTail ?? 0) + chunkRequests;
+      // Three operands (the exclude included), each a pointer read and a tail read, then the chunk range requests.
+      expect(engineGets).toBe(2 * 3 + chunkRequests);
+      const model = decode(
+        price({
+          intersectsPerSec: ONCE,
+          chunksPerIntersect: chunkRequests,
+          operandsPerIntersect: 3,
+        }).intersects,
       );
-    const all = Array.from({ length: 1_000 }, (_, k) => k);
-    const survivors = all.slice(0, 200);
-    const loader = open();
-    await loader.load({ segment: 'a' }, ids(all, false));
-    await loader.load({ segment: 'b' }, ids(survivors, false));
-    await loader.load({ segment: 'x' }, ids(all, true));
-
-    reset();
-    reads.reset();
-    const cold = open();
-    for await (const id of cold.segment('a').intersect([cold.segment('b')], {
-      exclude: [cold.segment('x')],
-    })) {
-      void id;
-    }
-
-    expect(requestsIn(calls)).toEqual(['getRange', 'getTail']);
-    const chunkRequests = calls.getRange ?? 0;
-    // The exclude is read in batches of the survivors that ask together, not once for each of the 200: well under 200
-    // requests, and at least one for each of the three segments' chunks.
-    expect(chunkRequests).toBeGreaterThan(2);
-    expect(chunkRequests).toBeLessThan(2 + survivors.length / 4);
-    const engineGets = pointer.reads + (calls.getTail ?? 0) + chunkRequests;
-    // Three operands (the exclude included), each a pointer read and a tail read, then the chunk range requests.
-    expect(engineGets).toBe(2 * 3 + chunkRequests);
-    const model = decode(
-      price({ intersectsPerSec: ONCE, chunksPerIntersect: chunkRequests, operandsPerIntersect: 3 })
-        .intersects,
-    );
-    expect(model).toEqual({ put: 0, get: engineGets });
-  });
+      expect(model).toEqual({ put: 0, get: engineGets });
+    },
+  );
 
   it('prices a load at the requests store.load() makes once a segment has two generations behind it', async () => {
     const { calls, pointer, driver, open, reset } = countingStore();

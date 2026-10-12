@@ -31,14 +31,14 @@
       "into": {
         "published": 68,
         "scratchSegments": 66,
-        "rangeReads": 17551,
+        "rangeReads": 17575,
         "tailReads": 252,
         "rowReads": 392,
         "objectWrites": 166,
         "rowWrites": 134,
         "listings": 0,
         "deletes": 32,
-        "getClass": 18195,
+        "getClass": 18219,
         "putClass": 300
       }
     },
@@ -72,14 +72,14 @@
       "into": {
         "published": 768,
         "scratchSegments": 818,
-        "rangeReads": 127501,
+        "rangeReads": 126066,
         "tailReads": 2736,
         "rowReads": 4220,
         "objectWrites": 1818,
         "rowWrites": 1586,
         "listings": 0,
         "deletes": 232,
-        "getClass": 134457,
+        "getClass": 133022,
         "putClass": 3404
       }
     },

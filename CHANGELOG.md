@@ -64,17 +64,20 @@ so, and so do the module headers in the code.
 ### Changed
 
 - **An `exclude` of an `intersect` or `intersectInto` of two or more segments is read in batches, not one request
-  for each surviving key.** A key whose intersection is empty still never reads its exclude chunk. The keys whose
-  intersection is not empty that ask for their exclude chunk together are read as one stream of coalesced ranges over
-  those keys, leaving out the chunks the cache holds, so a window of survivors costs about the requests its chunks span in
-  the exclude's object. On the in-memory backend, 1,000 surviving keys of 250 ids each cost an exclude 1,002 range
-  requests before and about 65 now when the ids are read one at a time (about 35 a chunk at a time), 1,336 became about 86
-  for two excludes, and 20 spread survivors went from 22 requests to 4. A batch sends at most one request for each key in
-  it, so no shape costs more than before, and a chunk is still read whole from one generation, cached under the version it
-  was read from, counted once in the cache's hits and misses, and checked against the segment's version. A combine
-  whose excludes are batched starts its keys in half-window bursts so that a reader taking one id at a time keeps its
-  batches large; it still reads ahead by at least half of `concurrency` keys and never by more than it did. The cost model
-  and `docs/guide/cost.md` say how to count the requests of this shape. No public signature changes.
+  for each surviving key.** A key whose intersection is empty still never reads its exclude chunk. A chunk the cache
+  holds, or another read has in flight, is read as before (the version check, or joining that read); the chunks that must
+  be requested are held and read as one stream of coalesced ranges, half of `concurrency` keys (16 of 32 by default) a
+  batch, so a window of survivors costs about the requests its chunks span in the exclude's object. On the in-memory
+  backend, 1,000 surviving keys of 250 ids each cost the exclude itself 1,000 range requests before and 63 now (the whole
+  intersect, with its two include ranges, 1,002 and 65), whether the ids are read one at a time or a chunk at a time; two
+  excludes of 1,000 and 334 keys cost 1,334 and 85 (1,336 and 87 in all), and 20 spread survivors 20 and 2. A batch sends at
+  most one request for each key it holds, a segment named twice as an exclude is one batch, and a read of an exclude chunk
+  that is in flight, by anything, is joined. A chunk is still read whole from one generation, cached under the version it
+  was read from, counted once in the cache's hits and misses, and checked against the segment's version, and a running read
+  meets an exclude that gains an id as promptly as before. A batch covers ranges the way an include's stream does, so a
+  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: fewer requests, more bytes. A source with no
+  `getChunks`, and an exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to
+  count the requests of this shape. No public signature changes.
 
 - **A cold `iterate()` or combine on a wide segment sends its first request sooner.** A stream over a wide segment
   looked up every chunk of the read in the cache, mapped every key to its index entry and planned every range of the
@@ -311,7 +314,7 @@ so, and so do the module headers in the code.
   prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
   row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
   `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
-  `materializeMany` call, and 134,457 (127,501 range reads) as 1,000 `*Into` calls, whose excludes are read in batches. A publish that collects finishes a
+  `materializeMany` call, and 133,022 (126,066 range reads) as 1,000 `*Into` calls, whose excludes are read in batches. A publish that collects finishes a
   request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
   reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through

@@ -63,7 +63,7 @@ const COMBINE_RANGE_START = 4;
  * once.
  */
 const OPERANDS_AT_ONCE = 16;
-/** Turns of the microtask queue with no new key asking before an exclude's batch is read. */
+/** Turns of the microtask queue with no new key asking before a batch of an exclude whose keys are all started is read. */
 const BATCH_QUIET_HOPS = 16;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
@@ -257,9 +257,10 @@ interface BatchAsk {
 
 /**
  * The reads of one exclude that waits on an AND of two or more includes. A key asks for its exclude chunk only once its
- * AND is known not to be empty; the keys that ask in one drain of the microtask queue (an include range that lands
- * releases its keys together) are read as one stream of coalesced ranges over those keys alone, which the cache's
- * hits are left out of, and each key is answered from it. A batch sends at most one request per key that asked, so it
+ * AND is known not to be empty, and a chunk the cache holds or another read has in flight is read as before; the keys
+ * left, whose chunks would be requested, are held and read together as one stream of coalesced ranges over those keys
+ * alone, when half the combine's concurrency in keys is held, when the caller of the combine waits on one of them, or
+ * when every key has been started and none is left to ask. A batch sends at most one request per key it holds, so it
  * never costs more than reading each key on its own, and one request where the keys sit together in the object.
  */
 interface ExcludeBatch {
@@ -267,9 +268,15 @@ interface ExcludeBatch {
   readonly moves: Moves;
   /** The range requests each batch's stream holds ahead: the read's concurrency. */
   readonly concurrency: number;
-  /** Keys that asked since the last drain, in the order they asked. */
+  /** The keys held that make a batch read: half the concurrency, at least one. */
+  readonly half: number;
+  /** The window the keys are read for: what tells a batch that a caller waits on a key it holds. */
+  window: CombineWindow | undefined;
+  /** The keys held, in the order they asked. */
   pending: BatchAsk[];
-  /** Whether a read of `pending` is queued. */
+  /** The distinct keys held: an exclude named twice asks for each key twice. */
+  readonly held: Set<number>;
+  /** Whether a wait for the asking to go quiet is running. */
   scheduled: boolean;
   /** Set when the combine stops or plans again: nothing more is sent, and a late ask is refused. */
   closed: boolean;
@@ -391,14 +398,23 @@ class CombineWindow {
     private readonly keys: readonly number[],
     private readonly limit: number,
     private readonly read: (key: number) => Promise<CodecBitmap | null>,
-    /**
-     * Whether the keys' reads are batched ({@link ExcludeBatch}): the window then starts its keys in bursts, once half
-     * of it is used up, so the keys a batch reads start together and a reader that takes one key at a time still sends
-     * one request for about half a window of keys, not one for each.
-     */
-    private readonly bursts = false,
   ) {
     this.fill();
+  }
+
+  /** Whether a caller is waiting on the next slot now. */
+  waiting = false;
+  /** Runs when a caller begins to wait on a slot: an exclude batch holding that key reads it then. */
+  onWait: (() => void) | undefined;
+
+  /** The key of the next slot to be handed out, `undefined` once the keys are used up. */
+  headKey(): number | undefined {
+    return this.keys[this.taken];
+  }
+
+  /** Whether every key has been started: no key is left that could still ask. */
+  get started(): boolean {
+    return this.next_ >= this.keys.length;
   }
 
   private fill(): void {
@@ -406,7 +422,6 @@ class CombineWindow {
       this.limit,
       Math.max(COMBINE_WINDOW_START, 2 ** Math.min(this.taken, 30)),
     );
-    if (this.bursts && this.inFlight.length > width / 2) return;
     while (this.next_ < this.keys.length && this.inFlight.length < width) {
       const key = this.keys[this.next_++]!;
       this.inFlight.push(
@@ -421,7 +436,11 @@ class CombineWindow {
   /** The next key's chunk in ascending key order, `undefined` when the keys are used up; throws that key's error. */
   async next(): Promise<CombineSlot | undefined> {
     if (this.inFlight.length === 0) return undefined;
-    const slot = await this.inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
+    const head = this.inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
+    this.waiting = true;
+    this.onWait?.();
+    const slot = await head;
+    this.waiting = false;
     this.taken += 1;
     this.last = slot.key;
     this.fill();
@@ -1251,14 +1270,17 @@ export class SegmentEngine {
     };
     for (const o of operands) open(o, mode === 'all' ? undefined : (k) => o.keys.has(k));
     if (streamExcludes) for (const e of excludes) open(e, (k) => e.keys.has(k));
-    else for (const e of excludes) this.openBatch(e, moves, limit, batches);
+    else {
+      const shared = new Map<string, ExcludeBatch>();
+      for (const e of excludes) this.openBatch(e, moves, limit, batches, shared);
+    }
+    const window = new CombineWindow(keys, limit, (key) =>
+      this.combineChunk(operands, excludes, mode, key, moves),
+    );
+    for (const batch of batches) batch.window = window;
+    if (batches.length > 0) window.onWait = () => this.readHeld(batches, window.headKey());
     return {
-      window: new CombineWindow(
-        keys,
-        limit,
-        (key) => this.combineChunk(operands, excludes, mode, key, moves),
-        batches.length > 0,
-      ),
+      window,
       streams,
       batches,
       operands,
@@ -1467,7 +1489,7 @@ export class SegmentEngine {
             relevant.map((e) =>
               e.batch === undefined
                 ? this.storageChunk({ ...e.seg, chunkKey }, e.gen, { recheck: true, moves })
-                : this.askBatch(e.batch, chunkKey),
+                : this.excludeChunk(e, e.batch, chunkKey, moves),
             ),
           );
       for (const cut of cuts) {
@@ -1480,51 +1502,96 @@ export class SegmentEngine {
   }
 
   /**
-   * Read `exclude` in batches, when the source can read ranges and the exclude has a generation. Nothing is requested
-   * until a key asks.
+   * Read `exclude` in batches, when the source can read ranges and the exclude has a generation; one that names the same
+   * segment and version as an exclude already opened shares its batch. Nothing is requested until a key asks.
    */
   private openBatch(
     exclude: Operand,
     moves: Moves,
     concurrency: number,
     batches: ExcludeBatch[],
+    shared: Map<string, ExcludeBatch>,
   ): void {
     if (this.storage.getChunks === undefined || exclude.gen === null) return;
+    const identity = `${this.prefixes.of(exclude.seg)}${String(exclude.gen)}`;
+    const same = shared.get(identity);
+    if (same !== undefined) {
+      exclude.batch = same;
+      return;
+    }
     exclude.batch = {
       operand: exclude,
       moves,
+      half: Math.max(1, Math.ceil(concurrency / 2)),
       concurrency,
       pending: [],
+      held: new Set(),
       scheduled: false,
       closed: false,
       live: new Set(),
+      window: undefined,
     };
+    shared.set(identity, exclude.batch);
     batches.push(exclude.batch);
   }
 
   /**
-   * The exclude chunk at `chunkKey`, read with the other keys that ask in this drain of the microtask queue. Keys that
-   * reach it together (an include range that lands releases the keys it holds at once) make one request per range of
-   * them; a key that asks later, after the queue has drained, starts a batch of its own. Refused once the combine has
-   * stopped or planned again, so a key it was still working on sends nothing more.
+   * The chunk `exclude` holds at `chunkKey`, for a key whose AND is not empty. One the cache holds, or another read has
+   * in flight, is read as a read of that chunk alone is (cache lookup and version check, or joining the read); only a
+   * chunk that would be requested waits for the batch.
+   */
+  private excludeChunk(
+    exclude: Operand,
+    batch: ExcludeBatch,
+    chunkKey: number,
+    moves: Moves,
+  ): Promise<CodecBitmap | null> {
+    const ref = { ...exclude.seg, chunkKey };
+    const cacheKey = this.chunkCacheKey(ref, exclude.gen ?? undefined);
+    if (this.cache?.get(cacheKey) !== undefined || this.scope.openRead(cacheKey) !== undefined) {
+      return this.storageChunk(ref, exclude.gen, { recheck: true, moves });
+    }
+    return this.askBatch(batch, chunkKey);
+  }
+
+  /**
+   * Ask `batch` for the exclude chunk at `key`. A batch is read when it holds half the combine's concurrency in keys, and
+   * once the asking has gone quiet for {@link BATCH_QUIET_HOPS} turns of the microtask queue if the caller of the combine
+   * is waiting on a key it holds (so it cannot wait for ever on a key held back for others) or every key of the combine
+   * has been started (none is left that could still ask). Refused once the combine has stopped or planned again, so a
+   * key it was still working on sends nothing more.
    */
   private askBatch(batch: ExcludeBatch, key: number): Promise<CodecBitmap | null> {
     if (batch.closed)
       return Promise.reject(new Error('the combine this read belongs to has stopped'));
     return new Promise((resolve, reject) => {
       batch.pending.push({ key, resolve, reject });
-      if (!batch.scheduled) {
-        batch.scheduled = true;
-        void this.settleBatch(batch);
-      }
+      batch.held.add(key);
+      if (batch.held.size >= batch.half) this.flushBatch(batch);
+      else this.settleSoon(batch);
     });
   }
 
+  /** Start the wait of `batch` for its asking to go quiet, unless it is running. */
+  private settleSoon(batch: ExcludeBatch): void {
+    if (batch.scheduled) return;
+    batch.scheduled = true;
+    void this.settleBatch(batch);
+  }
+
+  /** A caller begins to wait on `head`: the batches that hold it are read once the asking has gone quiet. */
+  private readHeld(batches: readonly ExcludeBatch[], head: number | undefined): void {
+    if (head === undefined) return;
+    for (const batch of batches) {
+      if (batch.pending.some((ask) => ask.key === head)) this.settleSoon(batch);
+    }
+  }
+
   /**
-   * Wait until no key has asked for {@link BATCH_QUIET_HOPS} turns of the microtask queue, then read the keys that
-   * have. The keys one include range releases do not ask on one turn but a turn or so apart (an async stream hands its
-   * chunks out one a turn), and a timer is not available to core, so the batch waits for the asking to go quiet.
-   * Nothing a key waits on depends on the batch, so the wait always ends.
+   * Wait until no key has asked for {@link BATCH_QUIET_HOPS} turns of the microtask queue. If the caller is waiting on
+   * a key held, or every key of the combine has been started (so no more can ask), the keys held are read; otherwise
+   * they are held for the keys the combine has yet to start, until half a window of them is held or the caller waits on
+   * one. The wait is of microtask turns, so it always ends, and the loop is left rather than spun while keys are held.
    */
   private async settleBatch(batch: ExcludeBatch): Promise<void> {
     let seen = batch.pending.length;
@@ -1536,9 +1603,24 @@ export class SegmentEngine {
         quiet = 0;
       }
     }
-    const asks = batch.pending;
-    batch.pending = [];
     batch.scheduled = false;
+    const window = batch.window;
+    const head = window?.headKey();
+    if (
+      window === undefined ||
+      window.started ||
+      (window.waiting && batch.pending.some((ask) => ask.key === head))
+    ) {
+      this.flushBatch(batch);
+    }
+  }
+
+  /** Read the keys `batch` holds now. */
+  private flushBatch(batch: ExcludeBatch): void {
+    const asks = batch.pending;
+    if (asks.length === 0) return;
+    batch.pending = [];
+    batch.held.clear();
     try {
       this.readBatch(batch, asks);
     } catch (error) {
@@ -1548,12 +1630,13 @@ export class SegmentEngine {
   }
 
   /**
-   * Read the keys that asked: those the chunk cache holds are served from it, a key whose chunk is already being read
-   * joins that read, and the rest are one stream of coalesced ranges over the keys alone, so a request is sent for
-   * each range of them and never for a chunk nobody asked for. The stream is a {@link StreamedChunks} like an include's,
-   * so a chunk is cached under the version it was read from, counted as a cache hit or miss once, checked against the
-   * segment's version when it comes from the cache, and marks `moves` when it shows the segment moved. Every ask is
-   * answered, with its own key's chunk or the error its read raised.
+   * Read the keys that asked: one whose chunk is already being read (by another read, or by an earlier key of this batch
+   * that names it again) joins that read, and the rest are one stream of coalesced ranges over those keys alone, so a
+   * request is sent for each range of them and never for a chunk nobody asked for. The stream is a
+   * {@link StreamedChunks} like an include's, so a chunk is cached under the version it was read from, counted as a cache
+   * hit or miss once, checked against the segment's version when it comes from the cache, and marks `moves` when it
+   * shows the segment moved. Each key it reads is registered as the open read of its chunk, so a read of that chunk by
+   * anything else joins it. Every ask is answered, with its own key's chunk or the error its read raised.
    */
   private readBatch(batch: ExcludeBatch, asks: BatchAsk[]): void {
     if (batch.closed) {
@@ -1567,13 +1650,15 @@ export class SegmentEngine {
       for (const ask of asks) ask.resolve(null); // no generation: no bytes, as `storageChunk` answers
       return;
     }
-    const joined = new Set<number>();
+    // The asks that read the stream: one whose chunk is being read already, or that names a key an earlier ask of this
+    // batch does, joins that read instead.
+    const streams = new Set<BatchAsk>();
     const streamKeys: number[] = [];
-    for (const { key } of asks) {
-      if (this.scope.openRead(this.chunkCacheKey({ ...seg, chunkKey: key }, gen))) {
-        joined.add(key);
-      } else {
-        streamKeys.push(key);
+    for (const ask of asks) {
+      const open = this.scope.openRead(this.chunkCacheKey({ ...seg, chunkKey: ask.key }, gen));
+      if (open === undefined && streamKeys[streamKeys.length - 1] !== ask.key) {
+        streams.add(ask);
+        streamKeys.push(ask.key);
       }
     }
     const streamed = this.openStreamed(
@@ -1598,13 +1683,12 @@ export class SegmentEngine {
     for (const ask of asks) {
       let read: Promise<CodecBitmap | null>;
       try {
-        read =
-          streamed !== undefined && !joined.has(ask.key)
-            ? this.streamedChunk(streamed, ask.key)
-            : this.storageChunk({ ...seg, chunkKey: ask.key }, gen, {
-                recheck: true,
-                moves,
-              });
+        if (streamed !== undefined && streams.has(ask)) {
+          read = this.streamedChunk(streamed, ask.key);
+          this.registerRead({ ...seg, chunkKey: ask.key }, gen, read);
+        } else {
+          read = this.storageChunk({ ...seg, chunkKey: ask.key }, gen, { recheck: true, moves });
+        }
       } catch (error) {
         read = Promise.reject(error);
       }
@@ -1612,11 +1696,25 @@ export class SegmentEngine {
     }
   }
 
+  /** Register `read` as the open read of the chunk `ref`, so a read of it by anything else joins it, until it settles. */
+  private registerRead(
+    ref: ChunkRef,
+    gen: string | number | undefined,
+    read: Promise<CodecBitmap | null>,
+  ): void {
+    const cacheKey = this.chunkCacheKey(ref, gen);
+    const entry: OpenRead = { token: {}, read };
+    this.scope.beginRead(cacheKey, entry);
+    const done = (): void => this.scope.endRead(cacheKey, entry);
+    read.then(done, done);
+  }
+
   /** Stop `batch`: the keys still waiting are refused, and the streams of the batches in flight are closed. */
   private closeBatch(batch: ExcludeBatch): void {
     batch.closed = true;
     for (const streamed of batch.live) this.closeStreamed(streamed);
     batch.live.clear();
+    this.flushBatch(batch);
   }
 
   /**

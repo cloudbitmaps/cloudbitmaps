@@ -16,6 +16,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoundedLru, CountingMetricsSink, SegmentEngine } from '@cloudbitmaps/core';
 import type { CodecBitmap, StorageChunkSource } from '@cloudbitmaps/core';
 import { CloudRoaring, MemoryStorage } from '@/index';
+import type { Clock } from '@/index';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { BudgetExceededError } from '@/core/errors';
 import { joinId } from '@/core/bit-route';
@@ -30,6 +32,10 @@ import { collect, seedSegment } from '../helpers/loaded';
 vi.setConfig({ testTimeout: 60_000 });
 
 const CHUNK = 65_536;
+/** The keys a batch holds before it is read: half the combine's concurrency, as the engine sizes it. */
+const half = (concurrency: number): number => Math.max(1, Math.ceil(concurrency / 2));
+/** The most requests `n` held keys cost at the default concurrency (32): a batch of half that, in one range. */
+const batchedAt32 = (n: number): number => Math.ceil(n / half(32));
 const range = (from: number, to: number): number[] =>
   Array.from({ length: to - from }, (_, i) => from + i);
 /** Turns of the event loop (not of the microtask queue): what a macrotask-deferred flush would still be waiting out. */
@@ -60,6 +66,8 @@ interface Counted {
   readonly ranges: Record<string, number>;
   /** The most range requests in flight at once, over all segments, since the last `reset`. */
   maxInFlight: number;
+  /** Runs as each range request is made, with the segment it reads. */
+  hook: ((name: string) => void | Promise<void>) | undefined;
   reset(): void;
   /** A store that has read nothing, over the counted storage. */
   cold(): CloudRoaring;
@@ -91,6 +99,7 @@ function counted(delayMs = 0): Counted {
     inFlight += 1;
     state.maxInFlight = Math.max(state.maxInFlight, inFlight);
     try {
+      await state.hook?.(name);
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       return await value.apply(target, args);
     } finally {
@@ -101,6 +110,7 @@ function counted(delayMs = 0): Counted {
   const state: Counted = {
     ranges,
     maxInFlight: 0,
+    hook: undefined,
     reset() {
       for (const k of Object.keys(ranges)) delete ranges[k];
       state.maxInFlight = 0;
@@ -126,7 +136,7 @@ describe('the requests an intersect of two or more includes makes for its exclud
     return w;
   }
 
-  it('a ∩ b minus x, every key surviving: about one request for half a window of keys, not one a key', async () => {
+  it('a ∩ b minus x, every key surviving: one request for half a window of keys, not one a key', async () => {
     const w = await probe(every);
     const store = w.cold();
     w.reset();
@@ -137,10 +147,10 @@ describe('the requests an intersect of two or more includes makes for its exclud
     expect(got).toEqual(idsOf(every).filter((id) => !x.has(id)));
     expect(w.ranges.a).toBe(1);
     expect(w.ranges.b).toBe(1);
-    // A consumer that takes one id at a time sends a request for each half window (16 keys) of the 1,000 survivors; one
-    // that takes chunks does better (the intersectInto case below). Each key was a request before.
+    // A batch holds half the concurrency (16 keys of 32) and the keys sit together: one request each. Each key was a
+    // request before, for a consumer that takes one id at a time as for one that takes chunks (the intersectInto case).
     expect(w.ranges.x).toBeGreaterThanOrEqual(1);
-    expect(w.ranges.x).toBeLessThanOrEqual(70);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
   });
 
   it('a ∩ b minus x and y: each exclude is batched on its own', async () => {
@@ -152,9 +162,9 @@ describe('the requests an intersect of two or more includes makes for its exclud
         exclude: [store.segment('x'), store.segment('y')],
       }),
     );
-    expect(w.ranges.x).toBeLessThanOrEqual(70);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
     // y holds 334 of the 1,000 keys: a request each before.
-    expect(w.ranges.y).toBeLessThanOrEqual(30);
+    expect(w.ranges.y).toBeLessThanOrEqual(batchedAt32(334) + 2);
   });
 
   it('20 spread survivors, x holding them: a few requests, where there were 20', async () => {
@@ -168,7 +178,7 @@ describe('the requests an intersect of two or more includes makes for its exclud
     await collect(
       store.segment('a').intersect([store.segment('b')], { exclude: [store.segment('x')] }),
     );
-    expect(w.ranges.x).toBeLessThanOrEqual(6);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(20) + 1);
   });
 
   it('intersectInto with an exclude batches it too', async () => {
@@ -179,7 +189,7 @@ describe('the requests an intersect of two or more includes makes for its exclud
       exclude: [store.segment('x')],
       allowEmpty: true,
     });
-    expect(w.ranges.x).toBeLessThanOrEqual(40);
+    expect(w.ranges.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
   });
 
   it('andNot, whose exclude is read with its one include, is unchanged', async () => {
@@ -243,7 +253,7 @@ describe('an intersect with an exclude over random operands', () => {
       fc.asyncProperty(
         layout,
         fc.constantFrom(1, 250, 3_000),
-        fc.constantFrom(1, 250, 3_000),
+        fc.constantFrom(1, 250, 3_000, 6_000),
         fc.constantFrom(1, 2, 4, 8, 32),
         async (keys, per, perX, concurrency) => {
           const w = counted();
@@ -299,13 +309,18 @@ describe('an intersect with an exclude over random operands', () => {
           const warmSet = new Set(warm);
           const today = [...survivors].filter((k) => xSet.has(k) && !warmSet.has(k)).length;
           expect(w.ranges.x ?? 0).toBeLessThanOrEqual(today);
-          if (today >= 4 && (w.ranges.x ?? 0) < today) batched += 1;
+          // A run the batcher decides: many survivors, their chunks together in the object, and still at most a
+          // batch's request for each half window of them (the per-key read made `today`).
+          const requests = w.ranges.x ?? 0;
+          if (today >= 8 && requests > 0 && requests <= Math.ceil(today / half(concurrency)) + 1) {
+            batched += 1;
+          }
         },
       ),
       { numRuns: 40 },
     );
     // The generator reaches the batcher: in some runs the requests were fewer than the keys.
-    expect(batched).toBeGreaterThan(0);
+    expect(batched).toBeGreaterThan(5);
   }, 120_000);
 });
 
@@ -367,7 +382,7 @@ describe('which keys an exclude batch holds', () => {
       minusPartial(KEYS),
     );
     expect(xKeysAsked(storage)).toEqual(KEYS);
-    expect(xRequests(storage)).toBeLessThanOrEqual(KEYS.length / 8 + 1);
+    expect(xRequests(storage)).toBeLessThanOrEqual(Math.ceil(KEYS.length / half(8)) + 1);
     expect(storage.singles.filter((k) => k.startsWith('x:'))).toEqual([]);
   });
 
@@ -713,5 +728,245 @@ describe('what a batch does not change', () => {
       chunks.push(...Array.from(c.bitmap, (r) => joinId(c.chunkKey, r)));
     }
     expect(chunks).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// What the combine notices of an exclude that moves, and what it asks of the storage when several reads share one
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('an exclude that gains an id in a chunk it did not hold, while a read of it runs', () => {
+  const NS = 'ns';
+  const TTL = 10;
+  const KEYS_60 = range(0, 60);
+  const id = (chunk: number, low: number): number => chunk * CHUNK + low;
+
+  /**
+   * Whether the read serves the id the exclude gained at chunk `gained`: the read takes its first id, another store
+   * publishes a generation of the exclude that also holds `id(gained, 1)`, its TTL lapses, and the read is gathered.
+   * The exclude held chunks 0, 33 and 45, and every chunk is cached when the read begins.
+   */
+  async function servesGained(gained: number): Promise<boolean> {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const at = (segment: string, generation: number) => ({ namespace: NS, segment, generation });
+    const included = KEYS_60.map((k) => id(k, 1));
+    await bulkLoadCrbmGeneration(storage, at('a', 0), included, { registry });
+    await bulkLoadCrbmGeneration(storage, at('b', 0), included, { registry });
+    await bulkLoadCrbmGeneration(storage, at('c', 0), [id(0, 9), id(33, 9), id(45, 9)], {
+      registry,
+    });
+    let now = 0;
+    const clock: Clock & { advance(ms: number): void } = {
+      now: () => now,
+      sleep: async () => {},
+      advance: (ms) => void (now += ms),
+    };
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: TTL },
+      seams: { clock },
+    });
+    const seg = (name: string) => store.segment(name, { namespace: NS });
+    const combine = () => seg('a').intersect([seg('b')], { exclude: [seg('c')] });
+    await collect(combine());
+    const out: number[] = [];
+    for await (const got of combine()) {
+      out.push(got);
+      if (out.length === 1) {
+        await bulkLoadCrbmGeneration(
+          storage,
+          at('c', 1),
+          [id(0, 9), id(gained, 1), id(33, 9), id(45, 9)],
+          { registry },
+        );
+        clock.advance(TTL + 1);
+      }
+    }
+    return out.includes(id(gained, 1));
+  }
+
+  // Main serves it for a gained chunk up to 9 and subtracts it from 10 on: the read meets the move at the exclude
+  // chunk it reads ahead of the consumer (chunk 33), and batching must not make it later.
+  const STALE_THROUGH = 9;
+
+  it('serves the gained id for exactly the chunks the per-key read did, and subtracts it from the rest', async () => {
+    const positions = KEYS_60.filter((k) => k >= 1 && k !== 33 && k !== 45 && k < 50);
+    const stale: number[] = [];
+    for (const k of positions) if (await servesGained(k)) stale.push(k);
+    expect(stale).toEqual(positions.filter((k) => k <= STALE_THROUGH));
+  });
+});
+
+describe('reads of one exclude chunk are shared, as reads of it one at a time were', () => {
+  /** 25 survivors 40 keys apart in an exclude of 1,000 chunks of 8 KiB: each survivor's chunk is its own range. */
+  async function spread() {
+    const survivors = range(0, 25).map((j) => j * 40);
+    const w = counted();
+    await w.load('a', idsOf(range(0, 1_000)));
+    await w.load('b', idsOf(survivors));
+    await w.load('x', idsOf(range(0, 1_000), 4_096));
+    return { w, survivors };
+  }
+
+  it.each([1, 2, 4, 8])(
+    '%i identical intersects at once send no more requests for the exclude than one',
+    async (k) => {
+      const { w } = await spread();
+      const store = w.cold();
+      w.reset();
+      const outs = await Promise.all(
+        Array.from({ length: k }, () =>
+          collect(
+            store.segment('a').intersect([store.segment('b')], { exclude: [store.segment('x')] }),
+          ),
+        ),
+      );
+      for (const out of outs) expect(out).toEqual(outs[0]);
+      // 25 before, whatever k: the other combines join the reads of the first.
+      expect(w.ranges.x).toBeLessThanOrEqual(25);
+    },
+  );
+
+  it('point reads of the survivors while the batches are in flight send no request of their own', async () => {
+    const { w, survivors } = await spread();
+    const store = w.cold();
+    const seen = new Set<number>();
+    let reads: Array<Promise<boolean>> = [];
+    w.reset();
+    // As the exclude's first range is asked for, a point read of each survivor's id in it.
+    w.hook = (name) => {
+      if (name !== 'x' || seen.size > 0) return;
+      seen.add(1);
+      reads = survivors.map((k) => store.segment('x').has(k * CHUNK + 1));
+    };
+    const got = await collect(
+      store.segment('a').intersect([store.segment('b')], { exclude: [store.segment('x')] }),
+    );
+    await Promise.all(reads);
+    expect(got.length).toBeGreaterThan(0);
+    expect(w.ranges.x).toBeLessThanOrEqual(25);
+  });
+
+  it('an exclude named twice costs what naming it once does', async () => {
+    const survivors = range(0, 1_000);
+    const w = counted();
+    await w.load('a', idsOf(survivors));
+    await w.load('b', idsOf(survivors));
+    await w.load('x', idsOf(survivors, 250, 1, true));
+    const run = async (names: number) => {
+      const store = w.cold();
+      w.reset();
+      const x = store.segment('x');
+      const got = await collect(
+        store
+          .segment('a')
+          .intersect([store.segment('b')], { exclude: Array.from({ length: names }, () => x) }),
+      );
+      return { got, x: w.ranges.x ?? 0 };
+    };
+    const once = await run(1);
+    const twice = await run(2);
+    expect(twice.got).toEqual(once.got);
+    expect(twice.x).toBe(once.x);
+    expect(once.x).toBeLessThanOrEqual(batchedAt32(1_000) + 1);
+  });
+});
+
+describe('a batch is an open read', () => {
+  it('a point read of a chunk a batch has in flight joins it', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    let open: () => void = () => {};
+    const held = new Promise<void>((resolve) => (open = resolve));
+    storage.beforeYield = async (stream) => {
+      if (isX(stream)) await held;
+    };
+    const run = collect(engine.intersect([ref('a'), ref('b')], WITH_X));
+    await turns(3);
+    const first = storage.opened.find(isX)!;
+    expect(first).toBeDefined();
+    // The chunks of the batch in flight are read by someone else too: they join, and send nothing.
+    const reads = [...first.keys].map((k) => engine.has(ref('x'), joinId(k, 100)));
+    await turns(3);
+    expect(storage.singles.filter((k) => k.startsWith('x:'))).toEqual([]);
+    open();
+    expect(await Promise.all(reads)).toEqual([...first.keys].map(() => true));
+    await run;
+    expect(storage.singles.filter((k) => k.startsWith('x:'))).toEqual([]);
+  });
+
+  it('a second combine at once reads the chunks the first one is reading, not its own', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    const alone = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    await collect(alone.engine.intersect([ref('a'), ref('b')], WITH_X));
+    await Promise.all([
+      collect(engine.intersect([ref('a'), ref('b')], WITH_X)),
+      collect(engine.intersect([ref('a'), ref('b')], WITH_X)),
+    ]);
+    expect(xKeysAsked(storage)).toEqual(KEYS);
+  });
+});
+
+describe('when a batch is read', () => {
+  it('holds no more than half the concurrency in keys', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: partial(KEYS) });
+    await collect(engine.intersect([ref('a'), ref('b')], WITH_X));
+    const sizes = storage.opened.filter(isX).map((o) => o.keys.length);
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(half(8));
+    expect(sizes.reduce((p, q) => p + q, 0)).toBe(KEYS.length);
+  });
+
+  it('reads the keys held once every key has been started, though no one waits on them', async () => {
+    // Six keys of a combine of window 8: all are started at once. The consumer takes one id and stops asking.
+    const six = range(0, 6);
+    const { storage, engine } = setup({ a: ids(six), b: ids(six), x: otherIds(six) });
+    const it = engine.intersect([ref('a'), ref('b')], WITH_X)[Symbol.asyncIterator]();
+    await it.next();
+    await turns(5);
+    expect(xKeysAsked(storage)).toEqual(six);
+    await it.return?.(undefined);
+  });
+
+  it('does not keep a caller waiting on a key it holds for keys that are not started', async () => {
+    // The first two keys land; the window is not full of started keys and the keys held are under half a window.
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: otherIds(KEYS) });
+    let open: () => void = () => {};
+    const held = new Promise<void>((resolve) => (open = resolve));
+    storage.beforeYield = async (stream, key) => {
+      if (stream.segment === 'a' && key >= 2) await held;
+    };
+    const combine = engine.intersect([ref('a'), ref('b')], {
+      exclude: [ref('x')],
+      concurrency: 32,
+    });
+    const it = combine[Symbol.asyncIterator]();
+    const first = await it.next(); // would never settle if the batch waited for half of 32 keys
+    expect(first.done).toBe(false);
+    open();
+    await it.return?.(undefined);
+  });
+});
+
+describe('a batch that fails, in a later batch', () => {
+  it('serves the ids of every key before the failed batch, and raises from the first key it owed', async () => {
+    const { storage, engine } = setup({ a: ids(KEYS), b: ids(KEYS), x: partial(KEYS) });
+    const boom = new Error('second batch');
+    storage.beforeYield = (stream, key) => {
+      if (isX(stream) && key === 20) throw boom;
+    };
+    const got: number[] = [];
+    const run = async (): Promise<void> => {
+      for await (const id of engine.intersect([ref('a'), ref('b')], {
+        ...WITH_X,
+        concurrency: 4,
+      })) {
+        got.push(id);
+      }
+    };
+    await expect(run()).rejects.toBe(boom);
+    // Chunks 0 to 19 were answered by earlier batches or by keys of the failing one before key 20.
+    expect(got).toEqual(minusPartial(range(0, 20)));
+    expect(storage.opened.filter(isX).length).toBeGreaterThan(2);
   });
 });
