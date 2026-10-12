@@ -149,16 +149,22 @@ async function checkSummary(
   // The object must be the one the summary names, as well as hold what it says: another object under the number (a
   // restore that put back an object the row does not name) is what every read of the segment refuses. Its footer says
   // which, before its index is opened, so an object sealed under another key is found too.
+  // The open's tail read is sized from the summary's `tailBytes`: a sealed summary was opened with the key above, before
+  // any read of the object, so unlike a live open of an encrypted row there is no overlap with the key to give up.
   const reader = await openNamedGeneration(
     deps.storage,
     { namespace: ref.namespace, segment: ref.segment, generation },
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
-    described.fingerprint,
+    described,
     found,
   );
   if (
     reader !== undefined &&
-    summaryAgrees(described, { cardinality: reader.count(), metadata: reader.metadata })
+    summaryAgrees(described, {
+      cardinality: reader.count(),
+      metadata: reader.metadata,
+      tailBytes: reader.tailBytes,
+    })
   ) {
     return { kind: 'ok' };
   }

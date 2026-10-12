@@ -71,10 +71,14 @@ export function tailBytesFit(tailBytes: unknown, size: number): boolean {
   );
 }
 
-/** What a summary says about a generation: its id count, and its metadata when it has any. */
+/**
+ * What a summary says about a generation: its id count, and its metadata when it has any. `tailBytes`, when given, is
+ * the bytes of the object's end one open reads.
+ */
 export interface GenerationDescription {
   readonly cardinality: number;
   readonly metadata?: GenerationMetadata | undefined;
+  readonly tailBytes?: number | undefined;
 }
 
 /**
@@ -295,7 +299,8 @@ function canonicalOrNone(metadata: GenerationMetadata | undefined): string | und
 
 /**
  * Whether a summary's description of a generation is what its object holds: the same id count and the same metadata,
- * compared in canonical form, so key order never matters. A summary with metadata over an object with none, and the
+ * compared in canonical form, so key order never matters, and the same `tailBytes` when both say one (a cold open
+ * sizes its tail read from the row's, so a number the object does not bear out is not believed again). A summary with metadata over an object with none, and the
  * reverse, disagree: whether an encrypted object's metadata block is present is not authenticated (stripping it needs
  * no key), so the row's sealed copy is what a missing block is held against.
  */
@@ -305,7 +310,10 @@ export function summaryAgrees(
 ): boolean {
   return (
     summary.cardinality === object.cardinality &&
-    canonicalOrNone(summary.metadata) === canonicalOrNone(object.metadata)
+    canonicalOrNone(summary.metadata) === canonicalOrNone(object.metadata) &&
+    (summary.tailBytes === undefined ||
+      object.tailBytes === undefined ||
+      summary.tailBytes === object.tailBytes)
   );
 }
 

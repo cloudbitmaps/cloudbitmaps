@@ -7,7 +7,15 @@ import type { BlobReader } from './blob';
 import { ascending } from './order';
 import type { CrbmCrypto } from './crypto';
 import type { GenerationMetadata, GenKey, IStorageDriver, TailRead } from './ports';
-import { DEFAULT_TAIL_BYTES } from './crbm/format';
+import {
+  DEFAULT_MAX_INDEX_BYTES,
+  DEFAULT_TAIL_BYTES,
+  EXT_TRAILER_BYTES,
+  FOOTER_BYTES,
+  MAX_EXT_BYTES,
+  PREAMBLE_BYTES,
+} from './crbm/format';
+import { fingerprintParts } from './crbm/fingerprint';
 import {
   CrbmReader,
   footerSaysEncrypted,
@@ -17,6 +25,7 @@ import {
 } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { summaryAgrees } from './summary';
+import type { SummaryDescription } from './summary';
 
 /**
  * Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. With `noteTail`, each tail read the reader makes is
@@ -292,17 +301,26 @@ export function objectVersionOf(reader: CrbmReader): string | undefined {
 }
 
 /**
- * {@link openGenerationReader}, of the object `fingerprint` names: `undefined` when the object under the key is another
- * one, found from its footer before its index is opened, so an object sealed under another key is told apart as well.
+ * {@link openGenerationReader}, of the object `summary.fingerprint` names: `undefined` when the object under the key is
+ * another one, found from its footer before its index is opened, so an object sealed under another key is told apart as
+ * well. The tail read is sized from the summary's `tailBytes` ({@link sizedTailBytes}), so a wide generation's index
+ * comes in that read.
  */
 export async function openNamedGeneration(
   storage: IStorageDriver,
   key: GenKey,
   crypto: CrbmCrypto | undefined,
-  fingerprint: string,
+  summary: Pick<SummaryDescription, 'fingerprint' | 'tailBytes'>,
   noteTail?: (tail: TailRead) => void,
 ): Promise<CrbmReader | undefined> {
-  return openHeldTo(storage, key, { crypto }, undefined, fingerprint, noteTail);
+  return openHeldTo(
+    storage,
+    key,
+    { crypto, tailBytes: sizedTailBytes(summary, {}) },
+    undefined,
+    summary.fingerprint,
+    noteTail,
+  );
 }
 
 /**
@@ -336,6 +354,34 @@ export async function openChecked(
     );
   }
   return reader;
+}
+
+/**
+ * The size of the tail read an open makes when its row's summary says how many bytes of the object's end the open
+ * needs (`tailBytes`: any extension block, the index and the footer), so that one read reaches the index of a wide
+ * generation and no range read follows it. With no summary it is the source's own size ({@link openTailBytes}).
+ *
+ * The number came from a registry the library may not have written, so it only ever sizes a read: never below the
+ * source's own tail, at most the object less its preamble (the size its fingerprint names), and at most the source's
+ * `maxIndexBytes` (or the default) plus an extension block, its trailer and the footer, the most any open reads past
+ * its own tail. A hint that is not a whole number of bytes above zero is ignored. A wrong hint is a longer read or one
+ * more range read, never a different answer: the reader checks every byte it takes.
+ */
+export function sizedTailBytes(
+  summary: Pick<SummaryDescription, 'fingerprint' | 'tailBytes'> | undefined,
+  options: { readonly tailBytes?: number; readonly maxIndexBytes?: number },
+): number {
+  const base = openTailBytes(options);
+  if (summary === undefined) return base;
+  const { tailBytes } = summary;
+  const parts = fingerprintParts(summary.fingerprint);
+  if (parts === undefined || !Number.isSafeInteger(tailBytes) || tailBytes <= 0) return base;
+  const reach =
+    (options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES) +
+    MAX_EXT_BYTES +
+    EXT_TRAILER_BYTES +
+    FOOTER_BYTES;
+  return Math.max(base, Math.min(tailBytes, parts.size - PREAMBLE_BYTES, reach));
 }
 
 /**
