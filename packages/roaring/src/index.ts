@@ -1465,7 +1465,7 @@ export class CloudRoaring {
             : {
                 pinnedGeneration: pinnedAt.generation,
                 pinnedVersion: pinnedAt.version,
-                pinnedFingerprint: pinnedAt.fingerprint ?? null,
+                pinnedFingerprint: pinnedAt.fingerprint,
               }),
           current: (read?: { readonly fingerprint?: boolean }) =>
             this.currentRowOf(seg.ref, read?.fingerprint === true),
