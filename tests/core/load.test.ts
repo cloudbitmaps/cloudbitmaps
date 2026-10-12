@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { expectTypeOf } from 'vitest';
 import type { GuardRefusal, LoadJudgement, LoadRefusal } from '@cloudbitmaps/core';
 import { loadSegment } from '@/core/load';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { FOOTER_BYTES } from '@/core/crbm/format';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';

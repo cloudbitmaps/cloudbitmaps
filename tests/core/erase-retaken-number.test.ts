@@ -5,7 +5,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import type { GenKey, IRegistryDriver, IStorageDriver, StorageDeleteOptions } from '@/index';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import {

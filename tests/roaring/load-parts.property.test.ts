@@ -9,6 +9,9 @@ import { brandAsBackend } from '@/core/ports';
 import { counting } from '../helpers/counting';
 import { craftPortable } from '../helpers/portable-bytes';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * The loading guide's recipe for the parts of one segment built in separate processes, run as the guide prints it.
  *

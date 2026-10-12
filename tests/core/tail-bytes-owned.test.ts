@@ -15,7 +15,7 @@ import type {
   StorageDeleteOptions,
   TailRead,
 } from '@/core/ports';
-import { ownedTail, provenObject } from '@/core/crbm-storage-source';
+import { ownedTail, provenObject } from '@/core/crbm-open';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';

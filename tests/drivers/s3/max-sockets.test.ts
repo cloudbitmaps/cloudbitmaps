@@ -67,8 +67,12 @@ async function park(): Promise<string> {
   return `http://127.0.0.1:${(parked.address() as AddressInfo).port}`;
 }
 
-/** Wait until the server has accepted `count` connections, or `ms` has passed; the count it reached either way. */
-async function until(count: number, ms = 5_000): Promise<number> {
+/**
+ * Wait until the server has accepted `count` connections, or `ms` has passed; the count it reached either way. The
+ * deadline is only a bound on a hung run, since every caller waits for a count the client reaches; the quiet after it
+ * is a lower bound on how long an over-opening client has to show itself.
+ */
+async function until(count: number, ms = 10_000): Promise<number> {
   const end = Date.now() + ms;
   while (sockets.size < count && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
   // A little longer, so a client that opens more than `count` is seen doing it.
@@ -85,7 +89,7 @@ async function burst(client: S3Client, count: number, wanted: number): Promise<n
 
       .catch(() => undefined),
   );
-  const opened = await until(wanted, 1500);
+  const opened = await until(wanted);
   abort.abort();
   await Promise.all(reads);
   client.destroy();
@@ -102,7 +106,7 @@ const built = (endpoint: string, options: { maxSockets?: number } = {}): S3Clien
     ...options,
   }).client;
 
-describe('S3Storage maxSockets, on the client it builds', () => {
+describe('S3Storage maxSockets, on the client it builds', { timeout: 30_000 }, () => {
   it('allows 128 sockets by default, more than the SDK default of 50', async () => {
     expect(await burst(built(await park()), BURST, 128)).toBe(128);
   });
@@ -216,7 +220,7 @@ describe('S3Storage maxSockets, on the client it builds', () => {
   });
 });
 
-describe('a client the caller passes', () => {
+describe('a client the caller passes', { timeout: 30_000 }, () => {
   it('is untouched: same object, same handler, and its pool is still the SDK default', async () => {
     const client = new S3Client({ region: 'us-east-1' });
     const handler = client.config.requestHandler;

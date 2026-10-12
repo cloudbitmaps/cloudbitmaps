@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { RecordingAuditSink } from '@/core/audit';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { dropSegment } from '@/core/erasure';
 import { ValidationError } from '@/core/errors';

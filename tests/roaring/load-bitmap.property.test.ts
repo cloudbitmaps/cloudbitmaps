@@ -3,6 +3,9 @@ import roaring from 'roaring';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import type { LoadInput, LoadResult } from '@/index';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * Property: the same set loaded as ids, as `{ bitmap }`, as `{ serialized }` and as a bare `RoaringBitmap32`
  * writes byte-identical `.crbm` objects and returns equal results.

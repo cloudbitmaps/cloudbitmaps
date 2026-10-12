@@ -17,6 +17,9 @@ import type { Clock, SegmentRef } from '@/index';
 import { isNotFoundError } from '@/core/errors';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 const NS = 'ns';
 const A: SegmentRef = { namespace: NS, segment: 'a' };
 const B: SegmentRef = { namespace: NS, segment: 'b' };

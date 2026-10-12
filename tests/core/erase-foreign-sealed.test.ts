@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { RecordingAuditSink } from '@/core/audit';
 import type { CodecBitmap } from '@/core/codec';
-import { writeCrbmGenerationStream } from '@/core/crbm-storage-source';
+import { writeCrbmGenerationStream } from '@/core/crbm-write';
 import { crc32c } from '@/core/crbm/crc32c';
 import { FOOTER, FOOTER_BYTES, FOOTER_CRC_COVERAGE } from '@/core/crbm/format';
 import { aadFor } from '@/core/crypto';
