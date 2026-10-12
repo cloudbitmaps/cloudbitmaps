@@ -393,11 +393,11 @@
   },
   {
     "entry": "@cloudbitmaps/core NewRegistryRecord.keptGens",
-    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row made current with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/core RegistryRecord.keptGens",
-    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row made current with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/core RegistryPatch",
@@ -409,11 +409,11 @@
   },
   {
     "entry": "@cloudbitmaps/roaring NewRegistryRecord.keptGens",
-    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row made current with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/roaring RegistryRecord.keptGens",
-    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row made current with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/roaring RegistryPatch",

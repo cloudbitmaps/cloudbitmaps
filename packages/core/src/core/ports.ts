@@ -529,8 +529,11 @@ export interface RegistryRecord extends SegmentRef {
    */
   readonly summary?: RegistrySummary;
   /**
-   * The generations this row made current and has not decided to delete, the current one included, with each object's
-   * footer checksum, in the order they were made current: oldest first, the current one last. A generation appears once,
+   * The generations this row knows and has not decided to delete, the current one included, with each object's footer
+   * checksum: the ones it made current, in the order they were made current, oldest first and the current one last, and,
+   * when a publish over a row with no usable ledger seeds one, the ones a count by `keep` keeps in the bucket, which can
+   * include an object no load published (an orphan or a stray). An entry says the library knows the generation and its
+   * footer checksum, not that a load published it. A generation appears once,
    * at its most recent time current (a rollback onto it moves it to the end). The entries before the last are the kept
    * window, and what a rollback left; those numbered above `currentGen` are what a rollback left. In the clear on every
    * row, an encrypted one included: a footer checksum of an encrypted object covers a random nonce and says nothing about
