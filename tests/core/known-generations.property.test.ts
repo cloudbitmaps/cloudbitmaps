@@ -285,9 +285,7 @@ function modelPublish(
     pointer !== undefined &&
     ledger.filter((e) => e < pointer && !leased.has(e)).length > NAME_LIMIT;
   const seeded =
-    (pointer !== undefined && ledger === undefined) ||
-    (pointer === undefined && g > 0 && keep <= NAME_LIMIT) ||
-    (wide && keep <= NAME_LIMIT && keep < g);
+    (pointer !== undefined && ledger === undefined) || (wide && keep <= NAME_LIMIT && keep < g);
   if (seeded) {
     const below = presentBefore.filter((e) => e < g);
     const window = countedWindow(below, pointer, Math.min(keep, SPAN));
@@ -535,7 +533,8 @@ describe.each(registries)('the known-generations ledger against its model, over 
                   for (const e of expected.ledger.filter((x) => x < g && below.includes(x))) {
                     expect(after).toContain(e);
                   }
-                } else if (expected.seeded || keep > NAME_LIMIT) {
+                } else if (expected.seeded || keep > NAME_LIMIT || previous === undefined) {
+                  // (An incarnation's first publish counts too: its guard read no current object, so the pass lists.)
                   const keepSet = ledgerCounted(below, expected.ledger, g, keep);
                   const want = below.filter((e) => keepSet.has(e) || protectedByLease(e));
                   expect(after, `listing with a ledger, keep ${keep}, generation ${g}`).toEqual(

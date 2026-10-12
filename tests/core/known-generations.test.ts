@@ -3,6 +3,7 @@ import {
   MAX_KNOWN_GENERATIONS,
   KNOWN_SPAN,
   capKnown,
+  carriesWindow,
   describingKnown,
   makeCurrent,
   nextKnown,
@@ -101,13 +102,28 @@ describe('a usable ledger and its window', () => {
     ).toBeUndefined();
   });
 
-  it('is the entries below the pointer, unless one sits above it', () => {
+  it('is the entries below the pointer, in the order they were made current; entries above it are no part of it', () => {
     expect(windowOf(row(3, ledger(1, 2, 3)))).toEqual([1, 2]);
     expect(windowOf(row(3, ledger(3)))).toEqual([]);
-    expect(windowOf(row(1, ledger(2, 3, 1)))).toBeUndefined();
+    // Main: undefined whenever an entry sat above the pointer. Entries above are allowed now (a rollback left them).
+    expect(windowOf(row(1, ledger(2, 3, 1)))).toEqual([]);
+    expect(windowOf(row(1, ledger(0, 2, 3, 1)))).toEqual([0]);
     expect(windowOf(row(3, ledger(2, 1, 3)))).toEqual([2, 1]);
     expect(windowOf(row(3))).toBeUndefined();
     expect(windowOf(null)).toBeUndefined();
+  });
+
+  it('is a window a small keep extends when it names no more than 64 generations below the pointer that no lease holds', () => {
+    const below = (n: number): RegistryRecord =>
+      row(n, ledger(...Array.from({ length: n + 1 }, (_, g) => g)));
+    expect(carriesWindow(below(64), new Set())).toBe(true);
+    expect(carriesWindow(below(65), new Set())).toBe(false);
+    // A name held only for a lease is no part of the window and does not count toward the limit.
+    expect(carriesWindow(below(100), new Set(Array.from({ length: 36 }, (_, g) => g)))).toBe(true);
+    expect(carriesWindow(below(100), new Set(Array.from({ length: 35 }, (_, g) => g)))).toBe(false);
+    // A ledger that is not usable carries none; entries above the pointer do not count.
+    expect(carriesWindow(row(3), new Set())).toBe(false);
+    expect(carriesWindow(row(1, ledger(2, 3, 1)), new Set())).toBe(true);
   });
 });
 
@@ -287,29 +303,35 @@ describe('rollbackKnown and describingKnown', () => {
 });
 
 describe('when a publish seeds', () => {
+  const none = new Set<number>();
+
   it('seeds over a pointed active row with no usable ledger, at any keep', () => {
     for (const keep of [0, 1, 64, 65, 1000])
-      expect(wantsSeed(row(3), 4, keep, new Set<number>()), `${keep}`).toBe(true);
-    expect(wantsSeed(row(3, ledger(1, 2)), 4, 1, new Set<number>())).toBe(true);
-    expect(wantsSeed({ ...row(3), status: 'destroyed' }, 4, 1, new Set<number>())).toBe(false);
+      expect(wantsSeed(row(3), 4, keep, none), `${keep}`).toBe(true);
+    expect(wantsSeed(row(3, ledger(1, 2)), 4, 1, none)).toBe(true);
+    expect(wantsSeed({ ...row(3), status: 'destroyed' }, 4, 1, none)).toBe(false);
   });
 
-  it('seeds an incarnation’s first publish above generation 0 at a small keep, and no other', () => {
-    expect(wantsSeed(null, 3, 2, new Set<number>())).toBe(true);
-    expect(wantsSeed(row(null), 3, 2, new Set<number>())).toBe(true);
-    expect(wantsSeed(null, 0, 2, new Set<number>())).toBe(false);
-    expect(wantsSeed(null, 3, 65, new Set<number>())).toBe(false);
+  it('does not seed an incarnation’s first publish, whatever its number or keep', () => {
+    // Main seeded it above generation 0 at a small keep; nothing below it was made current by this incarnation.
+    expect(wantsSeed(null, 3, 2, none)).toBe(false);
+    expect(wantsSeed(row(null), 3, 2, none)).toBe(false);
+    expect(wantsSeed(null, 0, 2, none)).toBe(false);
+    expect(wantsSeed(null, 3, 65, none)).toBe(false);
   });
 
-  it('seeds over a usable ledger only after a rollback left an entry above the pointer, or the current object is gone', () => {
+  it('does not seed over a usable ledger after a rollback left an entry above the pointer, or when the current object is gone: the ledger gives the window', () => {
     const usable = row(3, ledger(1, 2, 3));
-    expect(wantsSeed(usable, 4, 2, new Set<number>())).toBe(false);
-    expect(wantsSeed(usable, 4, 2, new Set<number>())).toBe(true);
-    expect(wantsSeed(usable, 4, 65, new Set<number>())).toBe(false);
-    const rolledBack = row(1, ledger(2, 3, 1));
-    expect(wantsSeed(rolledBack, 4, 2, new Set<number>())).toBe(true);
-    // With keep at or above the number, today's count was skipped: the ledger is carried.
-    expect(wantsSeed(rolledBack, 4, 4, new Set<number>())).toBe(false);
-    expect(wantsSeed(rolledBack, 4, 65, new Set<number>())).toBe(false);
+    expect(wantsSeed(usable, 4, 2, none)).toBe(false);
+    expect(wantsSeed(row(1, ledger(2, 3, 1)), 4, 2, none)).toBe(false);
+    expect(wantsSeed(row(1, ledger(2, 3, 1)), 4, 4, none)).toBe(false);
+    expect(wantsSeed(row(1, ledger(2, 3, 1)), 4, 65, none)).toBe(false);
+  });
+
+  it('seeds over a ledger that names more than 64 generations below the pointer that no lease holds, at a small keep only', () => {
+    const wide = row(100, ledger(...Array.from({ length: 101 }, (_, g) => g)));
+    expect(wantsSeed(wide, 101, 2, none)).toBe(true);
+    expect(wantsSeed(wide, 101, 100, none)).toBe(false);
+    expect(wantsSeed(wide, 101, 2, new Set(Array.from({ length: 36 }, (_, g) => g)))).toBe(false);
   });
 });

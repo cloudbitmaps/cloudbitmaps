@@ -116,10 +116,12 @@ describe('a row a retention write made, and the object a refused load left under
       await load(w, 1);
       buckets.push(await gens(w));
     }
+    // Main seeded a ledger at the first publish, so the object at 0 went at the second load ([[0,1],[1,2],[2,3]]). A row
+    // with no pointer is an incarnation's first publish and is not seeded: 0 waits for a load that lists.
     expect(buckets).toEqual([
       [0, 1],
-      [1, 2],
-      [2, 3],
+      [0, 1, 2],
+      [0, 2, 3],
     ]);
   });
 });
@@ -137,9 +139,11 @@ describe('a pointer moved down by hand', () => {
     }
     await load(w, 3);
     buckets.push(await gens(w));
+    // The generation the row named as current is the seed's most recently current: the next load keeps it, 3, and
+    // collects 4 (a window by number kept 4 and collected 3).
     expect(buckets).toEqual([
       [3, 4, 5, 6],
-      [4, 5, 6, 7],
+      [3, 5, 6, 7],
     ]);
   });
 });
@@ -156,11 +160,13 @@ describe('a rollback over a row with no ledger', () => {
       await load(w, 3);
       buckets.push(await gens(w));
     }
-    // A release before ledgers kept the same. A ledger of the target alone deleted 3 and 4 at once.
+    // A release before ledgers kept the same at the first load. A ledger of the target alone deleted 3 and 4 at once. The
+    // restored generation, 2, is the seed's most recently current, so it stays for as many loads as `keep` says (a window
+    // by number deleted it at the second).
     expect(buckets).toEqual([
       [2, 3, 4, 5],
-      [3, 4, 5, 6],
-      [4, 5, 6, 7],
+      [2, 4, 5, 6],
+      [2, 5, 6, 7],
     ]);
   });
 });
@@ -191,7 +197,8 @@ describe('the first load after a rollback, with a ledger', () => {
     expect(await load(w, 2)).toBe(4);
     expect(await gens(w)).toEqual([1, 3, 4]);
     expect(await load(w, 2)).toBe(5);
-    expect(await gens(w)).toEqual([3, 4, 5]);
+    // The second load keeps the two most recently current, 1 and 4, and collects 3, which the rollback moved away from.
+    expect(await gens(w)).toEqual([1, 4, 5]);
   });
 });
 

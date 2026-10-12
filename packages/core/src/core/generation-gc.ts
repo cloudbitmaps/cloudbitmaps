@@ -535,6 +535,10 @@ async function listingPass(
     options.superseded !== undefined && cutoff === options.superseded.by
       ? options.superseded.generation
       : undefined;
+  // The generation this load superseded is not in the listing the pass made (a lifecycle rule took it): the row's list
+  // names a generation that is not there, so the window would hold fewer than `keep`. The pass counts instead, as a
+  // by-name pass does when it finds the object gone, and costs no request: it has already listed.
+  const supersededGone = prior !== undefined && keep >= 1 && !gens.includes(prior);
   // Leases are honoured only by a load's collection, and never on a tombstone, where every generation is garbage.
   const guard = record.status === 'destroyed' ? undefined : options.leases;
   const held = guard === undefined ? undefined : heldGenerations(after, guard.now());
@@ -550,7 +554,7 @@ async function listingPass(
           // here is either a load about to publish or an orphan we cannot tell apart from it. Deleting would race
           // that publish into a dangling pointer. It is collected once a pointer exists.
           []
-        : protect !== undefined
+        : protect !== undefined && !supersededGone
           ? // The row's list is the window: everything below the pointer it does not name is garbage.
             below.filter((g) => !protect.has(g))
           : // Delete generations below the cutoff, except the `keep` of them the grace window holds, newest first.

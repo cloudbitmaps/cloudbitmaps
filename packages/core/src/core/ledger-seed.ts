@@ -8,7 +8,7 @@
  * which keeps exactly the seed.
  *
  * It seeds at a ledger's birth only: the first publish over a pointed row with no usable ledger, whatever `keep` (a
- * written ledger cannot be "not known"); the first publish of an incarnation above generation 0; and a publish with a
+ * written ledger cannot be "not known"); and a publish with a
  * small `keep` over a ledger that names more than {@link MAX_KEPT_GENERATIONS} generations below the pointer that no live
  * lease holds (carried through publishes with a larger `keep`, so not a window a small `keep` extends). Every other
  * publish takes its window from the ledger ({@link nextKnown}). A generation a live lease holds, that is listed below the
@@ -42,7 +42,9 @@ export function wantsSeed(
 ): boolean {
   const small = keep <= MAX_KEPT_GENERATIONS;
   // An incarnation's first publish: no row, or a row with no pointer.
-  if (row === null || row.currentGen === null) return small && generation > 0;
+  // Nothing below an incarnation's first publish was made current by it, so a seed could only name objects no load of it
+  // published, which a rollback would take for published ones: its ledger is the new generation alone.
+  if (row === null || row.currentGen === null) return false;
   if (row.status !== 'active') return false;
   if (usableKnownGens(row) === undefined) return true;
   return small && keep < generation && !carriesWindow(row, leased);

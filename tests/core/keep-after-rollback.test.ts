@@ -185,17 +185,34 @@ describe('what a load keeps after a rollback when the bucket or the row changes 
     expect(await generations(w.storage)).toEqual([2, 4]);
   });
 
-  it('keeps what the ledger names when the superseded generation is gone from the bucket: the window holds fewer than keep until the name ages out', async () => {
+  it('keeps the newest keep present when the superseded generation is gone from the bucket', async () => {
     const w = world();
     await loadEach(w, 4, { keep: 9 });
     await rollbackSegment(SEG, 1, w.deps);
-    // A lifecycle rule took the object the pointer names. The ledger's window is 3 and 1, the two most recently current,
-    // and 1 is not there: this load, which lists to take a number, keeps what its ledger names.
+    // A lifecycle rule took the object the pointer names: the window holds what is there, by number.
     await w.storage.delete({ ...SEG, generation: 1 });
     const r = await loadSegment(SEG, [7], w.deps, { keep: 2 });
     expect(r).toMatchObject({ generation: 4, published: true });
-    expect(await generations(w.storage)).toEqual([3, 4]);
+    expect(await generations(w.storage)).toEqual([2, 3, 4]);
   });
+
+  it.each([
+    { keep: 1, bucket: [5, 6] },
+    { keep: 2, bucket: [4, 5, 6] },
+    { keep: 3, bucket: [2, 4, 5, 6] },
+  ])(
+    'generations 0 to 5 at keep 3, rollback(3), object 3 gone: a load at keep $keep that lists to take a number keeps $bucket, as before ledgers',
+    async ({ keep, bucket }) => {
+      const w = world();
+      await loadEach(w, 6, { keep: 3 });
+      await rollbackSegment(SEG, 3, w.deps);
+      await w.storage.delete({ ...SEG, generation: 3 });
+      const r = await loadSegment(SEG, [7], w.deps, { keep });
+      // 4 is taken, so the load lists and numbers above everything.
+      expect(r).toMatchObject({ generation: 6, published: true });
+      expect(await generations(w.storage)).toEqual(bucket);
+    },
+  );
 
   it('keeps the newest keep present when the superseded generation is gone from the bucket and the row has no ledger to go on', async () => {
     const w = world();
