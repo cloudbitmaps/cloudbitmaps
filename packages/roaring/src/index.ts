@@ -974,8 +974,7 @@ export class CloudRoaring {
       ttlMs: options.cache?.ttlMs,
       clock,
     });
-    // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
-    // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
+    // Resolve the storage seam, hand a backend the metrics sink, and wrap the source in the read retry: `wireStore`.
     const wired = wireStore(options, clock, rng, metrics);
     this.retryOptions = wired.retryOptions;
     // Resolve the denial-of-wallet budget once (validates; `false` ⇒ null = disabled) and share it between the
@@ -3796,17 +3795,9 @@ export class Segment {
       return out.failing(err);
     }
     if (verb === 'andNot') {
+      const refs = operands.map((o) => o.ref);
       const opts = options == null ? undefined : readOptions(options);
-      return this.guarded(
-        out,
-        handles,
-        out.andNot(
-          engine,
-          this.ref,
-          operands.map((o) => o.ref),
-          opts,
-        ),
-      );
+      return this.guarded(out, handles, out.andNot(engine, this.ref, refs, opts));
     }
     const refs = [this.ref, ...operands.map((o) => o.ref)];
     const opts = this.refsIn(options, exclude);
