@@ -489,12 +489,24 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('the HEAD a tail read falls back to, for a backend that ignores Range, is timed too', async () => {
-    stub.ignoreRange = true;
-    stub.arm('HeadObject', { kind: 'no-headers' });
+    // A store of its own, with room for the GET before the HEAD to answer on a loaded machine: a GET cut off first
+    // would name GetObject, and say nothing of the HEAD.
+    const timeoutMs = 2_000;
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: timeoutMs });
+    try {
+      stub.ignoreRange = true;
+      stub.arm('HeadObject', { kind: 'no-headers' });
 
-    expectTimedOut(await settle(backend.storage.getTail(GEN, BYTES.length)), TIMEOUT, 'HeadObject');
-    expect(stub.count('GetObject')).toBe(1);
-    expect(stub.count('HeadObject')).toBe(1);
+      expectTimedOut(
+        await settle(timed.storage.getTail(GEN, BYTES.length)),
+        timeoutMs,
+        'HeadObject',
+      );
+      expect(stub.count('GetObject')).toBe(1);
+      expect(stub.count('HeadObject')).toBe(1);
+    } finally {
+      timed.client.destroy();
+    }
   });
 
   it('that HEAD gets a timeout of its own, not what the GET before it left', async () => {

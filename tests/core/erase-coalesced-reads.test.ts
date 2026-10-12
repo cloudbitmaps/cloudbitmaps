@@ -18,7 +18,7 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { Gate, Watched, tick } from '../helpers/live-buffers';
 import { expectSameBytes } from '../helpers/chunk-stream';
 
-// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+// Segments of up to 2,000 chunks, loaded and then erased through, can outrun the default 5 s limit on a busy machine.
 vi.setConfig({ testTimeout: 30_000 });
 
 /**
