@@ -62,8 +62,10 @@
  * erasure has just reported gone. That object is deleted before this call returns, once its footer matches the
  * rewrite's and a renewal of the row has refused every publish fenced on a row read before it, under the version the
  * footer read reported, unless {@link DISCARD_ATTEMPTS} renewals lose to other writes (a load, a rollback, a
- * retention write): then it is kept, and can hold the winner's id, until a re-run of this erasure, whose `keep: 0`
- * collection takes every generation below its own, deletes it — see `discardRefused`.
+ * retention write): then it is kept, and can hold the winner's id, until a later call takes it: any erasure that
+ * rewrites the segment (this one's re-run among them, while its id is still in the current generation) numbers above it
+ * and its `keep: 0` collection takes it, an erasure of the winner's id deletes it as a holder, and once loads number
+ * past it their collection takes it as it takes any orphan — see `discardRefused`.
  *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
  * number above everything in the bucket, so a forward-only publish here always won — discarding a concurrent
@@ -1159,8 +1161,9 @@ async function eraseOnce(
    * publish, fenced on that row, is refused. A publish that landed after this call read the row makes the renewal lose,
    * and the call reads the row and decides again. One that landed before it left the pointer on the number or above it,
    * and the object is kept, unless a rollback has since moved the pointer below it: then the object is a generation a
-   * load published with this rewrite's very bytes, and it is deleted as if it were the rewrite, so a pin or a lease of it
-   * fails with `NotFoundError` from then on and a rollback to it finds it gone. A renewal lost to a write of leases
+   * load published with this rewrite's very bytes, and it is deleted as if it were the rewrite, so a pinned handle of it
+   * fails with `NotFoundError` for any chunk it has yet to read, a lease of it in the row names a missing generation, and
+   * a rollback to it finds it gone. A renewal lost to a write of leases
    * alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; the object
    * is kept after {@link DISCARD_ATTEMPTS} renewals lost to other writes. Only this call's own renewal licenses the
    * delete: another erasure's, landing between this call's read of the row and its footer read, lets a load read the
@@ -1255,7 +1258,8 @@ async function eraseOnce(
     // Every generation below the new pointer is deleted whatever a lease says, so the row drops its leases.
     clearLeases: true,
     // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
-    // rewrite's only over the object it wrote: the footer proves it, so another incarnation's cannot pass for it.
+    // rewrite's only over an object whose footer matches what it wrote: one of other bytes cannot pass for it, and one of
+    // the same bytes holds the rewrite's content.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
     clock: deps.clock,
     rng: deps.rng ?? deps.readRetry?.rng,

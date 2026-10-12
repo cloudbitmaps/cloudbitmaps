@@ -165,7 +165,7 @@ so, and so do the module headers in the code.
   takes it. The renewal is one registry write more on a refused rewrite that discards its object, and one that gets no
   answer is settled by reading the row, or throws its `TransientError` with nothing deleted. A generation a load
   published with the same bytes, and a rollback then moved the pointer below, is still deleted as if it were the
-  rewrite: a pinned handle or a lease of it then fails with `NotFoundError`, and a rollback to it finds it gone. One
+  rewrite: a pinned handle of it then fails with `NotFoundError` for any chunk it has yet to read, its lease names a missing generation, and a rollback to it finds it gone. One
   round trip remains between the renewal and the delete: a rollback onto the object inside it, on a storage driver
   whose versions come from the bytes (S3's ETag, without SSE-KMS or SSE-C) a load that takes the number inside it with
   the same bytes, and on one that ignores the delete's condition (`LocalFsStorage`, and by default `GcsStorage` and an

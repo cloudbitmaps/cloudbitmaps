@@ -238,7 +238,7 @@ Erasure ignores every lease. `eraseSubject` and `eraseIdFromSegment` delete the 
 collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the
 rewrite clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes
 that generation, leased or not, and leaves the row's leases as they are (the row writes it makes, the renewals before
-it deletes a generation above the pointer, an object it cannot search or its own refused rewrite, renew the row's
+it deletes a generation above the pointer, an object it cannot search or the object of its own refused rewrite, renew the row's
 `pointerId` and keep them),
 so an entry for a generation it deleted stays in the list until the entry's own time ends or the next publish or lease
 write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
@@ -324,7 +324,8 @@ costs nothing. After 8 renewals lost to other writes (a load, a rollback or a re
 object that can hold the winner's id, above the pointer and one `rollback({ allowForward: true })` from being served,
 and reports `'superseded'`, until a later call takes it: the loser's re-run collects every generation below its own
 when it rewrites, an erasure of the winner's id deletes it as a holder, and once loads have numbered past it their
-collection takes it as it takes any orphan below the pointer.
+collection takes it as it takes any orphan below the pointer, once no kept window holds it
+([an orphan is collected later](loading.md#how-it-stays-correct)).
 The outcome is read off the registry row. A segment whose row is tombstoned
 mid-rewrite is searched as a fresh call searches a tombstone, so a cleartext object a drop left that still holds the
 id is deleted; one whose row is purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
@@ -384,7 +385,7 @@ gone, is another object or cannot be read. Then it renews the row it read, as it
 load that wrote the object that read matched, which read the row before writing it, is refused at its publish. A
 renewal that loses means another write landed since: the call reads the row and decides again. One lost to a write of
 leases alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; after
-8 lost to other writes the call keeps the object, as racing writers above says. Only then does it delete,
+8 lost to other writes the call keeps the object, as racing writers above says. Once its own renewal lands, it deletes,
 passing the version the footer read reported, so a load that took the number after the renewal keeps its generation. A
 delete the driver refuses there is a fault of the cleanup, and the call reports what the row says. Any other fault of
 that delete, or of the renewal (its `TransientError` when it gets no answer that reading the row can settle), is
@@ -418,8 +419,9 @@ repaired. These limits hold on every driver:
   write's.
 - A read of the footer cannot tell a refused rewrite's object from a generation a load published with the same bytes.
   When a rollback has moved the pointer below such a generation before the refused rewrite reads the row, nothing is
-  left for the renewal to refuse, and the discard deletes that generation as its own: from then on a pinned handle or a
-  lease of it fails with `NotFoundError`, and a rollback to it finds it gone.
+  left for the renewal to refuse, and the discard deletes that generation as its own: from then on a pinned handle of it
+  fails with `NotFoundError` for any chunk it has yet to read, a lease of it names a missing generation, and a rollback
+  to it finds it gone.
 - A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
   its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
   no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load
