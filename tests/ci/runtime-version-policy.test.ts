@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
+import { workflowFiles } from '../helpers/workflows';
 
 // The runtime floor is declared in three places, and only a test keeps them together.
 //
@@ -75,15 +76,21 @@ describe('runtime version policy is consistent across every declaration', () => 
     expect(readFileSync(join(ROOT, '.nvmrc'), 'utf8').trim()).toBe(String(FLOOR_MAJOR));
   });
 
-  it('every CI matrix is exactly the active LTS + current release', () => {
-    const wf = parse(readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')) as {
-      jobs: Record<string, { strategy?: { matrix?: { node?: number[] } } }>;
-    };
-    const matrices = Object.entries(wf.jobs)
-      .map(([name, j]) => [name, j.strategy?.matrix?.node] as const)
-      .filter(([, node]) => node !== undefined);
+  it('every workflow matrix that names Node is exactly the active LTS + current release', () => {
+    // Every workflow, not only ci.yml: the nightly full-strength lane carries its own matrix and is told to keep it
+    // in step with CI's.
+    const matrices = workflowFiles().flatMap((file) => {
+      const wf = parse(readFileSync(join(ROOT, file), 'utf8')) as {
+        jobs?: Record<string, { strategy?: { matrix?: { node?: number[] } } }>;
+      };
+      return Object.entries(wf.jobs ?? {})
+        .map(([name, j]) => [`${file} / ${name}`, j.strategy?.matrix?.node] as const)
+        .filter(([, node]) => node !== undefined);
+    });
     // If the matrices vanish or get renamed, this test must fail rather than quietly assert nothing.
     expect(matrices.length).toBeGreaterThan(0);
+    expect(matrices.some(([where]) => where.includes('ci.yml'))).toBe(true);
+    expect(matrices.some(([where]) => where.includes('full-nightly.yml'))).toBe(true);
     for (const [name, node] of matrices) {
       expect(node, `job "${name}" matrix`).toEqual(EXPECTED_MATRIX);
     }
