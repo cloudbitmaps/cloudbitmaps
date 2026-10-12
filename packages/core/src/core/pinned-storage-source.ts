@@ -31,6 +31,7 @@ import type {
   SegmentSize,
 } from './ports';
 import type { CrbmStorageChunkSource, PinnedObject } from './crbm-storage-source';
+import { ValidationError } from './errors';
 import { ItemPull } from './item-pull';
 import { segmentKey } from './keys';
 
@@ -38,21 +39,21 @@ import { segmentKey } from './keys';
  * What a pin holds for one segment: the generation, the version identifying those exact bytes, and the pinned
  * object's fingerprint, so a read can tell that the generation it opens is still that object.
  *
- * `fingerprint` is optional: a pin built by hand without one reads an object nothing checks, so it cannot tell a name
- * purged and loaded again from the segment it pinned. `seg.pin()` always records it.
+ * `fingerprint` is required for a pin of a generation (`null` only when `generation` is `null`): without it a read
+ * could not tell a name purged and loaded again from the segment it pinned. `seg.pin()` always records it, and a
+ * pin without one is refused with a `ValidationError`.
  */
 export interface PinnedAt {
   readonly generation: number | null;
   readonly version: string | null;
-  readonly fingerprint?: string | null;
+  readonly fingerprint: string | null;
 }
 
 /** The part of a pin a pinned read checks the object against; none for a pin of no generation. */
 const heldBy = (pin: PinnedAt): PinnedObject | undefined => {
-  if (pin.version === null) return undefined;
-  return pin.fingerprint == null
-    ? { version: pin.version }
-    : { version: pin.version, fingerprint: pin.fingerprint };
+  return pin.version === null
+    ? undefined
+    : { version: pin.version, fingerprint: pin.fingerprint as string };
 };
 
 export class PinnedStorageChunkSource implements StorageChunkSource {
@@ -65,7 +66,14 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
      * wrong answer this exists to prevent.
      */
     private readonly pins: ReadonlyMap<string, PinnedAt>,
-  ) {}
+  ) {
+    for (const [key, pin] of pins) {
+      if (pin.generation !== null && (pin.version === null || typeof pin.fingerprint !== 'string'))
+        throw new ValidationError(
+          `pin for "${key}" names generation ${pin.generation} without its version and object fingerprint`,
+        );
+    }
+  }
 
   /**
    * The pin for this segment, or `undefined` if it is not pinned here.

@@ -275,12 +275,12 @@ function weightOf(resolved: Resolved): number {
 
 /**
  * What a pin holds of the object it pinned: the version its cache entries are keyed by, and the object's
- * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records one.
- * A pin built by hand without one is not checked: it reads whatever object is under its generation's key.
+ * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records one,
+ * and a pinned read given a version without one throws a `ValidationError`.
  */
 export interface PinnedObject {
   readonly version: string;
-  readonly fingerprint?: string;
+  readonly fingerprint: string;
 }
 
 /** A pinned read of a generation that is no longer the object the pin opened: stated as a fact, not a cause. */
@@ -1378,6 +1378,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     version?: string,
     fingerprint?: string,
   ): Promise<CrbmReader | null> {
+    if (version !== undefined && typeof fingerprint !== 'string')
+      throw new ValidationError(
+        `a pinned read of segment "${ref.segment}" generation ${generation} needs the fingerprint of the object it pinned`,
+      );
     const at = version ?? String(generation);
     const key = this.pinnedKey(ref, at, fingerprint);
     const epoch = this.invalidations;
@@ -1453,11 +1457,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     validateUserRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     if (reader === null) return null;
-    const fingerprint = held?.fingerprint;
     if (
       held !== undefined &&
-      fingerprint !== undefined &&
-      this.replacedPins.get(this.heldKey(ref, held.version, fingerprint)) !== undefined
+      this.replacedPins.get(this.heldKey(ref, held.version, held.fingerprint)) !== undefined
     )
       throw notThePinned(ref, generation);
     try {
@@ -1469,9 +1471,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // it was: replaced, which is a pin's NotFoundError, or not, and the error stands. Only these two errors pay
       // for the footer read. Told apart by their brands, not `instanceof`: the range error is a driver package's,
       // which may carry a copy of core of its own.
-      if (held === undefined || fingerprint === undefined) throw err;
+      if (held === undefined) throw err;
       if (!(isIntegrityError(err) || isValidationError(err))) throw err;
-      await this.throwIfReplaced(ref, generation, held.version, fingerprint);
+      await this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
       throw err;
     }
   }
@@ -1928,11 +1930,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       for (const key of keys) yield { key, bytes: null };
       return;
     }
-    const fingerprint = held?.fingerprint;
     if (
       held !== undefined &&
-      fingerprint !== undefined &&
-      this.replacedPins.get(this.heldKey(ref, held.version, fingerprint)) !== undefined
+      this.replacedPins.get(this.heldKey(ref, held.version, held.fingerprint)) !== undefined
     )
       throw notThePinned(ref, generation);
     try {
@@ -1954,10 +1954,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     } catch (err) {
       // As for a single chunk ({@link getChunkAt}): a pin's reader outlives its object when the name is purged and
       // loaded again, and its index then points into bytes that are not its own.
-      if (held === undefined || fingerprint === undefined) throw err;
+      if (held === undefined) throw err;
       if (!(isIntegrityError(err) || isValidationError(err))) throw err;
       const check = (): Promise<void> =>
-        this.throwIfReplaced(ref, generation, held.version, fingerprint);
+        this.throwIfReplaced(ref, generation, held.version, held.fingerprint);
       await viaRetry(retry, check);
       throw err;
     }
