@@ -45,10 +45,10 @@ crbm-storage-source.ts --------------------+           read path: the cached `Cr
 
 | File | Holds |
 |---|---|
-| `crbm-write.ts` | writing one immutable generation: `writeCrbmGeneration` (from in-memory bitmaps), `writeCrbmGenerationStream` (streamed), the encoded-chunk writer, the bucketing of loaded ids into chunks |
-| `publish.ts` | the forward-only pointer advance every write ends with: `publishGeneration` and `publishGenerationKept`, the lease patch, the refusal to point a keyed row at a cleartext generation, and the settling of a registry write that got no answer |
-| `bulk-load.ts` | the loader `load()` is built on: `bulkLoadCrbmGeneration` and its read-ahead, which collect chunks from ids or a decoded bitmap, write them and publish |
-| `crbm-open.ts` | opening a stored generation without the cache: the blob reader over a driver object, the checked and noting opens, the identity checks that tie an open to the object it read, `verifyGeneration`, and the rollback target open |
+| `crbm-write.ts` | writing one immutable generation from in-memory bitmaps, from a stream or from already-encoded chunks, and the bucketing of loaded ids into chunks |
+| `publish.ts` | the forward-only pointer advance every write ends with, the lease patch, the refusal to point a keyed row at a cleartext generation, and the settling of a registry write that got no answer |
+| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead, which collects chunks from ids or a decoded bitmap, writes them and publishes |
+| `crbm-open.ts` | opening a stored generation without the cache: the blob reader over a driver object, the checked and noting opens, the identity checks that tie an open to the object it read, generation verification, and the rollback target open |
 | `crbm-storage-source.ts` | the read path: `CrbmStorageChunkSource`, its resolution cache and the pin machinery |
 
 None of the write-path modules imports the read path, and `crbm-storage-source.ts` imports only `crbm-open.ts` from them.
