@@ -227,6 +227,15 @@ export function openCrbmReaderKeeping(
   return CrbmReader.open(blob, asked);
 }
 
+/**
+ * How many bytes the first tail read of an open asks for: the caller's `tailBytes` or the default, and a footer's worth
+ * at least. Not exported from a package entry: {@link CrbmReader.open} and a caller that sends that read ahead of it
+ * ask for the same size.
+ */
+export function openTailBytes(options: { readonly tailBytes?: number }): number {
+  return Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
+}
+
 export class CrbmReader {
   private constructor(
     private readonly blob: BlobReader,
@@ -336,7 +345,7 @@ export class CrbmReader {
 
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {
     // Always fetch at least a footer's worth, regardless of a smaller caller request.
-    const tailBytes = Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
+    const tailBytes = openTailBytes(options);
     const maxIndexBytes = options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     const { bytes: tail, size } = await blob.getTail(tailBytes);
     const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);

@@ -106,6 +106,15 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An encrypted generation's cold open sends its tail read beside the key request, not after it.** An open that
+  starts from the object (`iterate`, a combine, a pin) waited for the keystore's unwrap before it sent the tail
+  read; it sends both at once, and its wall time is the longer of the two, not their sum (a 15 ms keystore and a 27 ms
+  tail read, about 77 ms before and 60 ms after at 26 ms of storage and registry latency). A `has()` asks for the
+  segment's version first, so its first open still waits for the key; an open it makes again after a failed one
+  overlaps like the others. The requests are the same, in the same order, for a cleartext open and a warm one, with one
+  difference: when the keystore fails, the tail read was already sent and is billed, once per attempt (up to four with
+  the default read retry), and the caller still gets the keystore's error. A cold open waiting for the key holds up to
+  `tailBytes` (256 KiB by default) of the tail. A store with no keystore sends no tail read for an encrypted row.
 - **An `exclude` of an `intersect` or `intersectInto` of two or more segments is read in batches, not one request
   for each surviving key.** A key whose intersection is empty still never reads its exclude chunk. A chunk the cache
   holds, or another read has in flight, is read as before (the version check, or joining that read); the chunks that must

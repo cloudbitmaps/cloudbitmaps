@@ -52,6 +52,7 @@ import type {
   RegistrySummary,
   SegmentRef,
   SegmentSize,
+  TailRead,
   Token,
 } from './ports';
 import { CrbmReader } from './crbm/reader';
@@ -61,7 +62,7 @@ import { InvalidationRecord } from './invalidation-scope';
 import { ItemPull } from './item-pull';
 import { sizeOfFingerprint, summaryAgrees, usableSummary } from './summary';
 import type { GenerationDescription, SummaryDescription } from './summary';
-import { storageBlobReader, openChecked } from './crbm-open';
+import { storageBlobReader, openChecked, startTailRead } from './crbm-open';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
@@ -221,6 +222,11 @@ const goneUnder = (ref: SegmentRef, generation: number): NotFoundError =>
   new NotFoundError(
     `segment "${ref.segment}" generation ${generation} can no longer be read: its registry row is gone or destroyed`,
   );
+
+/** The storage key of the generation a resolution found. */
+function genKeyOf(ref: SegmentRef, target: { readonly generation: number }): GenKey {
+  return { namespace: ref.namespace, segment: ref.segment, generation: target.generation };
+}
 
 /**
  * What a resolution names: `<generation>`, or `<generation>:<pointerId>` where there is a row. One spelling, for the
@@ -1542,18 +1548,16 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     target: Target,
     crypto: CrbmCrypto | undefined,
     named?: string,
+    early?: Promise<TailRead>,
   ): Promise<CrbmReader> {
-    const genKey: GenKey = {
-      namespace: ref.namespace,
-      segment: ref.segment,
-      generation: target.generation,
-    };
     return openChecked(
       this.driver,
-      genKey,
+      genKeyOf(ref, target),
       { ...this.readerOptions, crypto, lineage: target.lineage },
       this.keepChunkBytesUpTo,
       named,
+      undefined,
+      early,
     );
   }
 
@@ -1564,11 +1568,27 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * it should hold the same count and metadata, or the summary is not believed again in this process
    * ({@link distrusted}). Neither check costs a request. A row with no summary it can use names no object, and its
    * generation's object is opened as it is.
+   *
+   * An encrypted generation's tail read is sent first, beside the key, because the key (a keystore call, a network
+   * round trip for a KMS keystore) and the tail are independent: only the index needs the key, and it comes out of the
+   * tail. The row's summary of an encrypted generation is sealed under the same key, so it is read after the key. The
+   * open then holds the footer to the summary and decrypts, as an open that waited for the key does, and nothing of the
+   * tail is read before then. The key is awaited first, so a keystore fault reaches the caller before a storage fault,
+   * and the request already sent is not cancelled: it is billed, and its answer or failure is dropped when the key
+   * fails.
    */
   private async openLive(ref: SegmentRef, live: Live): Promise<CrbmReader> {
+    const wrapped = live.target.wrappedDeks;
+    const early =
+      this.keystore !== undefined && wrapped !== undefined && wrapped.length > 0
+        ? startTailRead(this.driver, genKeyOf(ref, live.target), {
+            ...this.readerOptions,
+            lineage: live.target.lineage,
+          })
+        : undefined;
     const crypto = await live.crypto();
     const summary = await live.summary();
-    const reader = await this.openGeneration(ref, live.target, crypto, summary?.fingerprint);
+    const reader = await this.openGeneration(ref, live.target, crypto, summary?.fingerprint, early);
     this.rowChecked.add(reader);
     if (summary !== undefined && !summaryAgrees(summary, describe(reader))) {
       this.distrusted.set(this.distrustKey(ref, live.target.generation, live.target.lineage), true);

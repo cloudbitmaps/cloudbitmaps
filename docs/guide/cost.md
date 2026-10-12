@@ -237,8 +237,10 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   where the row has a summary the store can use),
   which the model does not price, and the report says so when `hotSegments` is past 1,024. On an encrypted segment it
   also unwraps the key again, a request to your keystore, which the model leaves out as it leaves out every keystore
-  call. Its pointer is not read again for the eviction: the store keeps the segment's resolution apart from its reader
-  (up to 8 × `cache.readerMax` segments), and reads the pointer when that lapses, which is the refresh priced here. A
+  call; an open that starts from the object sends its tail read beside that request, so when the keystore fails the
+  tail GET was sent and is billed all the same, for each attempt, which the model also leaves out. Its pointer is not
+  read again for the eviction: the store keeps the segment's resolution apart from its reader (up to
+  8 × `cache.readerMax` segments), and reads the pointer when that lapses, which is the refresh priced here. A
   store with no timed refresh keeps none, and reads the pointer at every reopen, unpriced. Nor does the model price the
   index each reader opens again after every load. Size the caches to keep the hot set open.
 

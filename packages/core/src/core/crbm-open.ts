@@ -7,8 +7,14 @@ import type { BlobReader } from './blob';
 import { ascending } from './order';
 import type { CrbmCrypto } from './crypto';
 import type { GenerationMetadata, GenKey, IStorageDriver, TailRead } from './ports';
-import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
-import { CrbmReader, footerSaysEncrypted, openCrbmReaderKeeping, readFooter } from './crbm/reader';
+import { DEFAULT_TAIL_BYTES } from './crbm/format';
+import {
+  CrbmReader,
+  footerSaysEncrypted,
+  openCrbmReaderKeeping,
+  openTailBytes,
+  readFooter,
+} from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { summaryAgrees } from './summary';
 
@@ -304,6 +310,7 @@ export async function openNamedGeneration(
  * number, and the chunk cache, the load guard and the erasure rewrite all trust it, so an object that disagrees
  * was written under another key or altered. Every open, the live read's, a pin's and the write paths', comes here.
  * With `named`, the object must also be the one that fingerprint names: another one is {@link NotFoundError}, a move.
+ * With `early`, the tail read {@link startTailRead} began, the open takes that read as its own instead of making one.
  */
 export async function openChecked(
   storage: IStorageDriver,
@@ -312,8 +319,17 @@ export async function openChecked(
   keepChunkBytesUpTo?: number,
   named?: string,
   noteTail?: (tail: TailRead) => void,
+  early?: Promise<TailRead>,
 ): Promise<CrbmReader> {
-  const reader = await openHeldTo(storage, key, options, keepChunkBytesUpTo, named, noteTail);
+  const reader = await openHeldTo(
+    storage,
+    key,
+    options,
+    keepChunkBytesUpTo,
+    named,
+    noteTail,
+    early,
+  );
   if (reader === undefined) {
     throw new NotFoundError(
       `segment "${key.segment}" generation ${key.generation} is another object than its registry row names`,
@@ -323,8 +339,52 @@ export async function openChecked(
 }
 
 /**
+ * Send the tail read an open of `key` makes, now, and hand back its answer for {@link openChecked}'s `early`: the open
+ * then waits on the one request instead of sending its own, so work the open waits on first, such as a keystore call,
+ * runs beside the request and not before it. Nothing is parsed here: the bytes are untrusted until the open reads them.
+ * The returned promise already has a handler attached, so a caller that never reaches the open (its key failed) leaves
+ * no unhandled rejection; the open that does reach it still sees the rejection.
+ */
+export function startTailRead(
+  storage: IStorageDriver,
+  key: GenKey,
+  options: CrbmReaderOptions,
+): Promise<TailRead> {
+  const tail = storageBlobReader(storage, key).getTail(openTailBytes(options));
+  tail.catch(() => undefined);
+  return tail;
+}
+
+/**
+ * `inner`, whose first tail read of `size` bytes is the one `early` already sent: that read answers with `early`'s
+ * answer (shown to `noteTail` as `inner` would show it) and sends no request, and any later read, or one of another
+ * size, is `inner`'s own. Built here, not inline in the open, so the reader that keeps it keeps no more than this.
+ */
+function takingEarly(
+  inner: BlobReader,
+  early: Promise<TailRead>,
+  size: number,
+  noteTail: ((tail: TailRead) => void) | undefined,
+): BlobReader {
+  let pending: Promise<TailRead> | undefined = early;
+  return {
+    getRange: (offset, length) => inner.getRange(offset, length),
+    getTail: (maxBytes) => {
+      const sent = pending;
+      pending = undefined;
+      // `Object.is`: a size that is not a number is the same size to the read that sent it and the one that asks.
+      if (sent === undefined || !Object.is(maxBytes, size)) return inner.getTail(maxBytes);
+      return sent.then((tail) => {
+        noteTail?.(tail);
+        return tail;
+      });
+    },
+  };
+}
+
+/**
  * {@link openChecked}'s open: `undefined` when `named` is given and the object under the key is another one. Either way
- * the open makes one tail read of the driver, which `noteTail` is shown.
+ * the open makes one tail read of the driver, which `noteTail` is shown, or takes the one `early` is.
  */
 async function openHeldTo(
   storage: IStorageDriver,
@@ -333,8 +393,11 @@ async function openHeldTo(
   keepChunkBytesUpTo: number | undefined,
   named: string | undefined,
   noteTail?: (tail: TailRead) => void,
+  early?: Promise<TailRead>,
 ): Promise<CrbmReader | undefined> {
-  const raw = storageBlobReader(storage, key, noteTail);
+  const inner = storageBlobReader(storage, key, noteTail);
+  const raw =
+    early === undefined ? inner : takingEarly(inner, early, openTailBytes(options), noteTail);
   let reader: CrbmReader;
   if (named === undefined) {
     reader = await openCrbmReaderKeeping(raw, options, keepChunkBytesUpTo);
@@ -344,10 +407,10 @@ async function openHeldTo(
     // check read, so this costs no request; and the reader keeps a blob that holds none of it, so what it retains is
     // what the reader cache weighs.
     let tail: { bytes: Uint8Array; size: number } | undefined = await raw.getTail(
-      Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES),
+      openTailBytes(options),
     );
     const blob: BlobReader = {
-      getRange: (offset, length) => raw.getRange(offset, length),
+      getRange: (offset, length) => inner.getRange(offset, length),
       getTail: async (maxBytes) => {
         const held = tail;
         if (
@@ -357,7 +420,7 @@ async function openHeldTo(
           const take = Math.min(maxBytes, held.bytes.length);
           return { bytes: held.bytes.subarray(held.bytes.length - take), size: held.size };
         }
-        return raw.getTail(maxBytes);
+        return inner.getTail(maxBytes);
       },
     };
     try {
