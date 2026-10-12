@@ -40,12 +40,12 @@ literal the test carried before the switch, and checks that nothing else reads t
 
 | test | what it sizes | full | reduced |
 |---|---|---|---|
-| `bench/calibrate-large` | random layouts the range-cap property is tried on | 40 | 10 |
-| `core/combine-many.property` | cases, one group; cases, many groups under a range | 30; 20 | 8; 6 |
-| `core/combine-many.feed.property` | cases, fed operands; cases, fed operands under a range | 60; 30 | 15; 8 |
-| `core/retention-hard-purge` | segments created, retired and purged | 10,000 | 1,000 |
-| `core/erase-namespace-bounded` | rows in the listing held to the ceiling (full passes no ceiling, so the shared default of 250,000 is what is held) | 250,000 | 25,000 |
-| `core/combine-ledger` | bitmaps measured per cardinality | 8,000 | 2,000 |
+| `bench/calibrate-large.test.ts` | random layouts the range-cap property is tried on | 40 | 10 |
+| `core/combine-many.property.test.ts` | cases, one group; cases, many groups under a range | 30; 20 | 8; 6 |
+| `core/combine-many.feed.property.test.ts` | cases, fed operands; cases, fed operands under a range | 60; 30 | 15; 8 |
+| `core/retention-hard-purge.test.ts` | segments created, retired and purged | 10,000 | 1,000 |
+| `core/erase-namespace-bounded.test.ts` | rows in the listing held to the ceiling (full passes no ceiling, so the shared default of 250,000 is what is held) | 250,000 | 25,000 |
+| `core/combine-ledger.test.ts` | bitmaps measured per cardinality | 8,000 | 2,000 |
 
 The nightly lane is [`.github/workflows/full-nightly.yml`](../.github/workflows/full-nightly.yml): `pnpm test` at full
 strength on `main`, on each Node version `ci.yml` tests, every night and on demand. It gates nothing; a red run fails the
