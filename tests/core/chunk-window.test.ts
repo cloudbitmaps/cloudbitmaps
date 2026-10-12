@@ -172,4 +172,15 @@ describe('ChunkWindow over an iterator of reads', () => {
     await expect(w.take()).rejects.toThrow('the plan was refused');
     expect(launched).toEqual([1, 2]);
   });
+
+  it('raises the same error from every take after the iterator threw, rather than reading the spent iterator as done', async () => {
+    const iterator = (function* () {
+      yield 1;
+      throw new Error('the plan was refused');
+    })();
+    const w = new ChunkWindow<number>(iterator, async (k) => k, 4, false);
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+    await expect(w.take()).rejects.toThrow('the plan was refused');
+  });
 });

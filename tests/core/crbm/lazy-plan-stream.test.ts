@@ -5,7 +5,6 @@ import type { BlobReader } from '@/core/blob';
 import { CrbmReader } from '@/core/crbm/reader';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { PAYLOAD_START } from '@/core/crbm/format';
-import { MAX_RANGES_IN_FLIGHT } from '@/core/crbm/plan-reads';
 import type { ChunkExtent } from '@/core/crbm/plan-reads';
 import { collect } from '../../helpers/chunk-stream';
 import { planAllAtOnce } from '../../helpers/plan-reference';
@@ -208,11 +207,10 @@ describe('a stream over a wide generation plans only what its window opens', () 
     expect(looked).toBeLessThan(CHUNKS); // a plan of the whole list reads 2 x 3,000
   });
 
-  it('a stream that is never read plans nothing', async () => {
+  it('a stream that is never read sends nothing', async () => {
     const sizes = new Map(Array.from({ length: 200 }, (_, k) => [k, 3 * KIB] as const));
     const { reader, spy } = await open(await build(sizes));
     reader.readChunks(Array.from({ length: 200 }, (_, k) => k));
     expect(spy.ranges).toEqual([]);
-    expect(MAX_RANGES_IN_FLIGHT).toBeGreaterThan(0);
   });
 });

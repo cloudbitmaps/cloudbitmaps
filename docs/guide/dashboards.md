@@ -23,7 +23,7 @@ The metrics sink pushes raw observations on the I/O path. There are six event ki
 | `kind` | When | Payload |
 | --- | --- | --- |
 | `storage.get` | one object-store GET for chunks: a range of a combine, `iterate` or `store.materializeMany`, carrying every chunk the read needs from a stretch of the object, or one chunk of a point read | `bytes` (the range's, gaps between its chunks included; 0 if a point read's chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
-| `cache` | one cache lookup (only when a cache is configured) | `hit`. With a cache, a miss that waits on a point read another caller already has open adds no `storage.get`, and a range carries several chunks, so `misses` can exceed the `storage.get` count; `storage.get` is the number of chunk requests |
+| `cache` | one chunk looked up in the cache, or counted a miss on a cache that holds nothing (only when a cache is configured) | `hit`. With a cache, a miss that waits on a point read another caller already has open adds no `storage.get`, and a range carries several chunks, so `misses` can exceed the `storage.get` count; `storage.get` is the number of chunk requests |
 | `retry` | a transient infrastructure fault (throttling, 5xx, a dropped connection) is about to be retried — the one kind of retry the store does | `reason: 'transient'`, `attempt`, `delayMs` |
 | `intersect` | one chunk-aligned combine | `op` (`intersect` / `union` / `andNot`; absent means `intersect`), `operands`, `fetchedChunks`, `skippedChunks` |
 | `op` | one timed operation | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto` / `materializeMany`), `ms` |

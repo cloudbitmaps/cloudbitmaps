@@ -21,6 +21,8 @@ export class ChunkWindow<T, K = number> {
   private taken = 0;
   private readonly list: readonly K[] | undefined;
   private readonly source: Iterator<K> | undefined;
+  /** What the source threw, so a later {@link take} throws it again rather than reading the spent source as done. */
+  private failure: { readonly cause: unknown } | undefined;
 
   constructor(
     keys: readonly K[] | Iterator<K>,
@@ -39,8 +41,14 @@ export class ChunkWindow<T, K = number> {
     if (this.list !== undefined) {
       return this.launched < this.list.length ? this.list[this.launched]! : DONE;
     }
-    const step = this.source!.next();
-    return step.done === true ? DONE : step.value;
+    if (this.failure !== undefined) throw this.failure.cause;
+    try {
+      const step = this.source!.next();
+      return step.done === true ? DONE : step.value;
+    } catch (cause) {
+      this.failure = { cause };
+      throw cause;
+    }
   }
 
   /** Resolves once every read launched and not yet taken has settled; it never rejects, as the reads never do. */
