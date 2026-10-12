@@ -21,10 +21,14 @@
  */
 import { setImmediate } from 'node:timers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BudgetExceededError } from '@/index';
+import { BudgetExceededError, CloudRoaring, MemoryStorage } from '@/index';
+import type { Clock } from '@/index';
 import type { SegmentRef } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import type { IStorageDriver } from '@/core/ports';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { collect } from '../helpers/chunk-stream';
 import { withoutRangedReads } from '../helpers/no-ranged-reads';
 import {
   ADDED,
@@ -489,5 +493,59 @@ describe('a read that plans again', () => {
       await new Promise((resolve) => setImmediate(resolve));
     }
     expect(streams.filter((s) => !s.ended)).toEqual([]);
+  });
+});
+
+// A cached chunk of an exclude that is no longer the exclude's version re-plans a running combine as it is read.
+function manualClock(): Clock & { advance(ms: number): void } {
+  let t = 0;
+  return { now: () => t, sleep: async () => {}, advance: (ms) => void (t += ms) };
+}
+
+describe('an AND of two includes meets a move of its exclude through the exclude chunk it reads', () => {
+  const NS = 'ns';
+  const KEYS = Array.from({ length: 60 }, (_, k) => k);
+  const id = (chunk: number, low: number): number => chunk * 65_536 + low;
+  const included = KEYS.map((k) => id(k, 1));
+
+  it('subtracts an id the exclude gained in a chunk it did not hold when the read began, as soon as it meets the move', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const at = (segment: string, generation: number) => ({ namespace: NS, segment, generation });
+    await bulkLoadCrbmGeneration(storage, at('a', 0), included, { registry });
+    await bulkLoadCrbmGeneration(storage, at('b', 0), included, { registry });
+    // The exclude holds chunks 0, 33 and 45 only. The read plans its reads of it at those keys, and it is at key 33,
+    // read ahead of the consumer once the window opens past the first keys, that the read finds the exclude's cached
+    // chunk is no longer the exclude's version: well before the combine's look at its operands, every 32 keys.
+    await bulkLoadCrbmGeneration(storage, at('c', 0), [id(0, 9), id(33, 9), id(45, 9)], {
+      registry,
+    });
+    const clock = manualClock();
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: TTL },
+      seams: { clock },
+    });
+    const combine = () =>
+      store.segment('a', { namespace: NS }).intersect([store.segment('b', { namespace: NS })], {
+        exclude: [store.segment('c', { namespace: NS })],
+      });
+    await collect(combine()); // every chunk of every operand is cached under the generation the next read plans under
+
+    const out: number[] = [];
+    for await (const got of combine()) {
+      out.push(got);
+      if (out.length === 1) {
+        // Another store's publish: the exclude now also holds the id of chunk 10, and its TTL has lapsed here.
+        await bulkLoadCrbmGeneration(
+          storage,
+          at('c', 1),
+          [id(0, 9), id(10, 1), id(33, 9), id(45, 9)],
+          { registry },
+        );
+        clock.advance(TTL + 1);
+      }
+    }
+    expect(out).toEqual(included.filter((x) => x !== id(10, 1)));
   });
 });

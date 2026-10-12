@@ -163,6 +163,13 @@ interface Moves {
   moved: boolean;
 }
 
+/** How one chunk lookup is made; see `storageChunk`. */
+interface StorageChunkOptions {
+  readonly recheck?: boolean;
+  readonly report?: boolean;
+  readonly moves?: Moves;
+}
+
 /**
  * When a running read next looks at its segments' versions: the lookup a read of one cached chunk makes, which costs no
  * request while the store holds the segment's resolution (within `cache.genTtlMs` of the registry read that made it).
@@ -523,7 +530,7 @@ export class SegmentEngine {
     checkBudget(this.budget, chunkKeys.length, 'count'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `listKeys`
     // Order does not matter to a sum, but the window hands chunks back in key order: no more state than that.
-    const window = this.chunkWindow(seg, chunkKeys, gen, false);
+    const window = this.chunkWindow(seg, chunkKeys, gen, { ramp: false });
     let total = 0;
     for (let i = 0; i < chunkKeys.length; i++) total += (await window.take())?.size ?? 0;
     return total;
@@ -572,12 +579,11 @@ export class SegmentEngine {
     seg: SegmentRef,
     chunkKeys: readonly number[],
     gen: string | number | null | undefined,
-    ramp: boolean,
-    moves?: Moves,
+    { ramp, moves }: { readonly ramp: boolean; readonly moves?: Moves },
   ): ChunkWindow<CodecBitmap | null> {
     return new ChunkWindow(
       chunkKeys,
-      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen, true, true, moves),
+      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen, { recheck: true, moves }),
       DEFAULT_INTERSECT_CONCURRENCY,
       ramp,
     );
@@ -612,7 +618,7 @@ export class SegmentEngine {
         close: () => this.closeStreamed(streamed),
       };
     }
-    const window = this.chunkWindow(seg, chunkKeys, gen, true, moves);
+    const window = this.chunkWindow(seg, chunkKeys, gen, { ramp: true, moves });
     return { take: () => window.take(), close: () => undefined };
   }
 
@@ -1405,7 +1411,7 @@ export class SegmentEngine {
         ? fetched.slice(present.length)
         : await Promise.all(
             relevant.map((e) =>
-              this.storageChunk({ ...e.seg, chunkKey }, e.gen, true, true, moves),
+              this.storageChunk({ ...e.seg, chunkKey }, e.gen, { recheck: true, moves }),
             ),
           );
       for (const cut of cuts) {
@@ -1424,7 +1430,7 @@ export class SegmentEngine {
    */
   private operandChunk(op: Operand, chunkKey: number, moves: Moves): Promise<CodecBitmap | null> {
     return op.streamed === undefined
-      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen, true, true, moves)
+      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen, { recheck: true, moves })
       : this.streamedChunk(op.streamed, chunkKey);
   }
 
@@ -1537,7 +1543,11 @@ export class SegmentEngine {
       const hit = this.cache?.get(this.chunkCacheKey(ref, streamed.gen));
       return hit
         ? this.cachedIfCurrent(ref, streamed.gen, hit, false, streamed.moves, streamed)
-        : this.storageChunk(ref, streamed.gen, true, false, streamed.moves);
+        : this.storageChunk(ref, streamed.gen, {
+            recheck: true,
+            report: false,
+            moves: streamed.moves,
+          });
     }
     return streamed.stream!.take(chunkKey).then((read) => {
       // A chunk of another version than the read looks under: the source moved the stream to the generation current
@@ -1612,7 +1622,7 @@ export class SegmentEngine {
       // moved while the stream may still be reading the earlier one: cache nothing more it delivers.
       if (streamed.opened && this.storage.currentVersion === undefined) streamed.invalidated = true;
     }
-    return this.storageChunk(ref, now, false, report);
+    return this.storageChunk(ref, now, { report });
   }
 
   /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
@@ -1734,9 +1744,7 @@ export class SegmentEngine {
   private async storageChunk(
     ref: ChunkRef,
     gen: string | number | null | undefined,
-    recheck = false,
-    report = true,
-    moves?: Moves,
+    { recheck = false, report = true, moves }: StorageChunkOptions = {},
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
     const cacheKey = this.chunkCacheKey(ref, gen);

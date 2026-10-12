@@ -962,3 +962,105 @@ describe('PinnedStorageChunkSource.getChunks', () => {
     ]);
   });
 });
+
+describe('CrbmStorageChunkSource: what a chunk read does with the caller and the live segment', () => {
+  /** A source that has resolved and opened nothing yet, so a fault in the first resolution or open is the read's own. */
+  async function unopened(chunks: number) {
+    const storage = new CountingStorage();
+    const registry = new MemoryRegistryDriver();
+    const clock = manualClock();
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, idsOf(0, chunks), {
+      registry,
+    });
+    const source = new CrbmStorageChunkSource(storage, { registry, clock, currentGenTtlMs: TTL });
+    return { storage, registry, clock, source };
+  }
+
+  /** A runner that sends a request again after a transient fault, as a retrying caller would. */
+  const retryOnce = async <T>(request: () => Promise<T>): Promise<T> => {
+    try {
+      return await request();
+    } catch (err) {
+      if (!(err instanceof TransientError)) throw err;
+      return request();
+    }
+  };
+
+  it('getChunksAt opens the pinned generation through the caller retry: a transient fault there is repeated, not raised', async () => {
+    const { storage, source } = await unopened(2);
+    let failed = 0;
+    storage.beforeTail = async () => {
+      storage.beforeTail = undefined;
+      failed++;
+      throw new TransientError('throttled');
+    };
+    const items = await collect(
+      source.getChunksAt(REF, 0, [0, 1], undefined, { retry: retryOnce }),
+    );
+    expect(failed).toBe(1);
+    expect(items.map((i) => i.key)).toEqual([0, 1]);
+  });
+
+  it('getChunks and getChunksAt refuse a ref that is not a user segment before reading anything, even with no keys', async () => {
+    const { storage, source } = await unopened(1);
+    storage.tails = 0;
+    for (const ref of [{ segment: 's', namespace: 'cbm.due.20000' }, { segment: '' }] as never[]) {
+      await expect(collect(source.getChunks(ref, []))).rejects.toBeInstanceOf(ValidationError);
+      await expect(collect(source.getChunksAt(ref, 0, []))).rejects.toBeInstanceOf(ValidationError);
+    }
+    expect(storage.tails).toBe(0);
+  });
+
+  it('`ramp` reaches the reader: a ramped stream stopped after its first chunk has asked for little, an unramped one for its window', async () => {
+    const spread = Array.from({ length: 12 }, (_, i) => i * 34); // each key its own range
+    const firstThenStop = async (ramp: boolean | undefined): Promise<number> => {
+      const { storage, source } = await unopened(400);
+      const it = source.getChunks(REF, spread, { concurrency: 8, ramp })[Symbol.asyncIterator]();
+      await it.next();
+      await it.return!(undefined);
+      return storage.ranges.length;
+    };
+    expect(await firstThenStop(true)).toBeLessThanOrEqual(2);
+    expect(await firstThenStop(undefined)).toBeGreaterThanOrEqual(8);
+  });
+
+  it('a transient fault in the stream comparing itself with the live segment moves it on to read afresh; any other fault stands', async () => {
+    for (const fault of [new TransientError('throttled'), new Error('registry exploded')]) {
+      const { storage, registry, clock, source } = await unopened(CHUNKS);
+      const it = source.getChunks(REF, [0, 22, 44], { concurrency: 1 })[Symbol.asyncIterator]();
+      expect((await it.next()).value.key).toBe(0);
+      // The reader cache lets the segment go and its pointer's TTL lapses, so the next chunk resolves the segment
+      // cold to compare it with the stream's snapshot, with no earlier resolution for a fault in that read to ride on.
+      (
+        source as unknown as { snapshots: { deleteWhere(p: (k: string) => boolean): void } }
+      ).snapshots.deleteWhere((k) => k.endsWith('s'));
+      clock.advance(TTL + 1);
+      const real = registry.get.bind(registry);
+      let armed = true;
+      registry.get = async (ref) => {
+        if (armed) {
+          armed = false;
+          throw fault;
+        }
+        return real(ref);
+      };
+      const tails = storage.tails;
+      const afterFirst = it.next();
+      if (fault instanceof TransientError) {
+        const rest: number[] = [];
+        for (let first = true; ; first = false) {
+          const n = await (first ? afterFirst : it.next());
+          if (n.done) break;
+          rest.push(n.value.key);
+        }
+        expect(rest).toEqual([22, 44]);
+        expect(storage.tails - tails, 'the stream read afresh: it opened the segment again').toBe(
+          1,
+        );
+      } else {
+        await expect(afterFirst).rejects.toBe(fault);
+      }
+      expect(armed, 'the comparison read the row').toBe(false);
+    }
+  });
+});

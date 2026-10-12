@@ -444,6 +444,27 @@ function describe(reader: CrbmReader): GenerationDescription {
   return { cardinality: reader.count(), metadata: reader.metadata };
 }
 
+/** Runs one storage request, and may run it again if it fails. */
+type Retry = <R>(request: () => Promise<R>) => Promise<R>;
+
+/** What a read holds while it resolves a segment: the live snapshot and the reader it is opening. */
+interface Resolving {
+  snap: Snapshot;
+  pending: Promise<CrbmReader | null>;
+}
+
+/** `request`, run through `retry` when the caller has one. */
+function viaRetry<R>(retry: Retry | undefined, request: () => Promise<R>): Promise<R> {
+  return retry === undefined ? request() : retry(request);
+}
+
+/** The checks every chunk read starts with: a user's segment, chunk keys that are valid and in ascending order (a key may repeat). */
+function validateRead(ref: SegmentRef, keys: readonly number[]): void {
+  validateUserRef(ref);
+  for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
+  validateChunkKeyOrder(keys);
+}
+
 /**
  * A memoized per-segment snapshot, on one resolution of the segment, whose TTL is the snapshot's. A live snapshot is a
  * resolved target, and a reader that is opened only when a read needs one: one resolution serves a `count` answered
@@ -1778,32 +1799,17 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     keys: readonly number[],
     options?: ReadChunksOptions,
   ): AsyncGenerator<ChunkRead> {
-    validateUserRef(ref);
-    for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
-    validateChunkKeyOrder(keys);
+    validateRead(ref, keys);
     const retry = options?.retry;
     const key = segmentKey(ref);
     let yielded = 0;
     let healed = false; // a heal since the last chunk yielded
     for (;;) {
-      let snap = this.liveSnapshot(ref);
+      const at = this.resolution(ref);
       let epoch = this.invalidations;
-      let pending = snap.reader;
       let chunks: ChunkStream | undefined;
       try {
-        // A caller that retries has the resolution and open run through it; a failed one forgets itself, so each
-        // try resolves anew.
-        let tried = false;
-        const reader = await (retry === undefined
-          ? pending
-          : retry(() => {
-              if (tried) {
-                snap = this.liveSnapshot(ref);
-                pending = snap.reader;
-              }
-              tried = true;
-              return pending;
-            }));
+        const reader = await this.resolveReader(ref, retry, at);
         if (reader === null) {
           for (; yielded < keys.length; yielded++) {
             yield { key: keys[yielded]!, bytes: null, version: null };
@@ -1815,14 +1821,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         const version = versionOfReader(reader);
         // What the open of the snapshot this stream last compared itself with had come to: when that snapshot's
         // reader opens later, the stream compares again, since it can be another object under the same name.
-        let seen = snap.settled;
-        chunks = reader.readChunks(keys.slice(yielded), {
-          ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-          ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
-          ...(retry === undefined ? {} : { readRange: retry }),
-          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
-          now: () => this.now(),
-        });
+        let seen = at.snap.settled;
+        chunks = reader.readChunks(keys.slice(yielded), this.readOptionsOf(options));
         // Pulled by hand, not by `for await`: a loop binding would keep the chunk just yielded (a view into a range, or
         // a decrypted chunk) alive while the next one is awaited.
         const pull = new ItemPull(chunks);
@@ -1841,11 +1841,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
             // which the rest of the read, a chunk served from the cache among it, reads from then on. An open that
             // failed is forgotten by the reader cache, so the stream meets a new snapshot. A fault in resolving starts
             // the stream over at the top, where a caller's retry runs the resolution.
-            if (this.mayHaveMoved(key, snap, epoch) || snap.settled !== seen) {
+            if (this.mayHaveMoved(key, at.snap, epoch) || at.snap.settled !== seen) {
               const live = this.liveSnapshot(ref);
-              if (live !== snap || live.settled !== seen) {
-                // What is compared is the open as it stands now: a reader that opens while the comparison waits is
-                // compared at the next chunk.
+              if (live !== at.snap || live.settled !== seen) {
                 const looked = live.settled;
                 let same: boolean;
                 try {
@@ -1859,7 +1857,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
                   movedOn = true;
                   break;
                 }
-                snap = live;
+                at.snap = live;
                 seen = looked;
               }
               epoch = this.invalidations;
@@ -1886,12 +1884,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // generation swept from under the snapshot, and one whose object was replaced under the same number.
         // Anything else propagates at once, and so does a second miss with no chunk in between.
         if (healed) throw err;
-        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err, retry)))
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, at.pending, err, retry)))
           throw err;
         // Only a heal waits: the ranges the failed stream still has in flight finish first, so the new stream's
         // window does not open beside them.
         await chunks?.settled();
-        this.dropStale(key, snap);
+        this.dropStale(key, at.snap);
         healed = true;
       }
     }
@@ -1919,15 +1917,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
     options?: ReadChunksOptions,
   ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
-    validateUserRef(ref);
-    for (const chunkKey of keys) validateChunkRef({ ...ref, chunkKey });
-    validateChunkKeyOrder(keys);
+    validateRead(ref, keys);
     const retry = options?.retry;
     const open = (): Promise<CrbmReader | null> =>
       this.readerAt(ref, generation, held?.version, held?.fingerprint);
     const segment = segmentKey(ref);
     let since = this.invalidated.epoch;
-    const reader = await (retry === undefined ? open() : retry(open));
+    const reader = await viaRetry(retry, open);
     if (reader === null) {
       for (const key of keys) yield { key, bytes: null };
       return;
@@ -1941,23 +1937,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       throw notThePinned(ref, generation);
     try {
       // Pulled by hand, as in getChunks: `yield*` would keep the chunk just yielded while the next is awaited.
-      const pull = new ItemPull(
-        reader.readChunks(keys, {
-          ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-          ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
-          ...(retry === undefined ? {} : { readRange: retry }),
-          ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
-          now: () => this.now(),
-        }),
-      );
+      const pull = new ItemPull(reader.readChunks(keys, this.readOptionsOf(options)));
       try {
         while (await pull.advance()) {
           if (this.invalidated.invalidatedSince(segment, since)) {
             // Looked up as a read of the generation would be: the invalidation forgot the pin's reader, so it is opened
             // again. The count is taken first, so an invalidation that lands while it opens is met at the next chunk.
             since = this.invalidated.epoch;
-            if ((await (retry === undefined ? open() : retry(open))) === null)
-              throw goneUnder(ref, generation);
+            if ((await viaRetry(retry, open)) === null) throw goneUnder(ref, generation);
           }
           yield pull.take((chunk) => chunk);
         }
@@ -1971,7 +1958,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       if (!(isIntegrityError(err) || isValidationError(err))) throw err;
       const check = (): Promise<void> =>
         this.throwIfReplaced(ref, generation, held.version, fingerprint);
-      await (retry === undefined ? check() : retry(check));
+      await viaRetry(retry, check);
       throw err;
     }
   }
@@ -2044,13 +2031,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         if (attempt === 1) throw err;
         // A fault that is neither a miss nor corruption (a keystore's, say) is not asked about again: reading the
         // snapshot's reader here would call the keystore a second time.
-        const checks = isNotFoundError(err) || isIntegrityError(err) || isValidationError(err);
         if (
-          !checks ||
-          (!isNotFoundError(err) && !(await this.replacedUnder(ref, snap.reader, err)))
-        ) {
+          !isNotFoundError(err) &&
+          !(
+            (isIntegrityError(err) || isValidationError(err)) &&
+            (await this.replacedUnder(ref, snap.reader, err))
+          )
+        )
           throw err;
-        }
         this.dropStale(segmentKey(ref), snap);
       }
     }
@@ -2130,25 +2118,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     read: (reader: CrbmReader) => T | Promise<T>,
     ifGone: T,
-    retry?: <R>(request: () => Promise<R>) => Promise<R>,
+    retry?: Retry,
   ): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      let snap = this.liveSnapshot(ref);
-      let pending = snap.reader;
+      const at = this.resolution(ref);
       try {
-        // A caller that retries has the resolution and open run through it; a failed one forgets itself, so each
-        // try resolves anew.
-        let tried = false;
-        const reader = await (retry === undefined
-          ? pending
-          : retry(() => {
-              if (tried) {
-                snap = this.liveSnapshot(ref);
-                pending = snap.reader;
-              }
-              tried = true;
-              return pending;
-            }));
+        const reader = await this.resolveReader(ref, retry, at);
         if (reader === null) return ifGone;
         return await read(reader);
       } catch (err) {
@@ -2156,12 +2131,52 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         // and one whose object was replaced under the same number (see `replacedUnder`). Anything else
         // (corruption, a real second miss) propagates.
         if (attempt === 1) throw err;
-        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, pending, err, retry)))
+        if (!isNotFoundError(err) && !(await this.replacedUnder(ref, at.pending, err, retry)))
           throw err;
-        this.dropStale(segmentKey(ref), snap); // lazily: the happy path never needs the key
+        this.dropStale(segmentKey(ref), at.snap); // lazily: the happy path never needs the key
       }
     }
     return ifGone;
+  }
+
+  /** The live snapshot of `ref` and the reader it is opening, as a read holds them while it resolves. */
+  private resolution(ref: SegmentRef): Resolving {
+    const snap = this.liveSnapshot(ref);
+    return { snap, pending: snap.reader };
+  }
+
+  /**
+   * The reader `at` resolves to. A caller that retries has the resolution and open run through its `retry`; a failed
+   * one forgets itself, so each try resolves anew and `at` is moved to the snapshot that try resolved.
+   */
+  private resolveReader(
+    ref: SegmentRef,
+    retry: Retry | undefined,
+    at: Resolving,
+  ): Promise<CrbmReader | null> {
+    if (retry === undefined) return at.pending;
+    let tried = false;
+    return retry(() => {
+      if (tried) {
+        at.snap = this.liveSnapshot(ref);
+        at.pending = at.snap.reader;
+      }
+      tried = true;
+      return at.pending;
+    });
+  }
+
+  /** The options a chunk stream is read with: the caller's tuning, its retry for each range, and this source's clock. */
+  private readOptionsOf(
+    options: ReadChunksOptions | undefined,
+  ): Parameters<CrbmReader['readChunks']>[1] {
+    return {
+      ...(options?.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+      ...(options?.ramp === undefined ? {} : { ramp: options.ramp }),
+      ...(options?.retry === undefined ? {} : { readRange: options.retry }),
+      ...(options?.onRequest === undefined ? {} : { onRequest: options.onRequest }),
+      now: () => this.now(),
+    };
   }
 
   /**
@@ -2178,7 +2193,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
     pending: Promise<CrbmReader | null>,
     err: unknown,
-    retry?: <R>(request: () => Promise<R>) => Promise<R>,
+    retry?: Retry,
   ): Promise<boolean> {
     if (!(isIntegrityError(err) || isValidationError(err))) return false;
     let reader: CrbmReader | null;
@@ -2531,6 +2546,95 @@ function leasesPatch(
   return { leases: live.length === 0 ? undefined : live };
 }
 
+/** What a publish is told, beyond the registry and the generation key. */
+interface PublishOptions {
+  wrappedDeks?: readonly WrappedDek[];
+  expectFrom?: number;
+  expectToken?: Token;
+  /**
+   * The row `expectToken` names, as the caller read it. With it, a row whose token has moved but which differs from
+   * this one only in its leases (a reader took or released one) does not refuse the publish: it goes on against the
+   * fresh row, after a jittered wait and without the caller redoing its work, up to a bound. Any other difference
+   * refuses as ever. Without it, a moved token refuses.
+   */
+  expectRow?: RegistryRecord | null;
+  /**
+   * Publish only while the segment still has **no registry row**.
+   *
+   * The fence for a caller whose decision rests on the row being ABSENT: every load that found no row sets it,
+   * guarded or not. `expectFrom` and `expectToken` cannot express it: both compare against a value read from a
+   * row, so when there was no row there is nothing to compare and both are simply omitted — leaving the publish a
+   * bare forward-only advance that happily lands over whatever appeared in the meantime.
+   *
+   * Without it, a guarded load into a segment that did not exist yet would judge "no row", pass its empty and
+   * `minRetained` bounds vacuously, and land an EMPTY generation over the ids a concurrent writer had just loaded,
+   * reporting `published: true`. An unguarded load would move the pointer over another first load's generation or
+   * onto a row `setRetention` made, and, where an erasure had deleted its object above that row's pointer, onto an
+   * object that is gone. Materialising into a destination that does not exist yet is the ordinary first run of a
+   * pipeline, so the `*Into` verbs reach this as often as `loadSegment` does.
+   */
+  expectAbsent?: boolean;
+  /**
+   * The generation's summary (see {@link RegistrySummary}), written by the write that moves the pointer to it. It
+   * names `key.generation`. Absent, the row is left with none for this generation.
+   */
+  summary?: RegistrySummary;
+  /**
+   * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
+   * instead of reading the row again, which is sound because that attempt writes only under the row's own
+   * fence: its compare-and-swap carries this row's token, and with no row it creates create-only, so a row
+   * that changed or appeared since makes the write lose and the next attempt reads the row afresh. Only the
+   * idempotent "already current" answer writes nothing, so a reused row never gives it.
+   */
+  row?: RegistryRecord | null;
+  /**
+   * The object was written without encryption. Its publish is refused, with {@link KeyUnavailableError}, onto a row
+   * that carries key material: a reader of that segment opens every generation with its key, and a later
+   * `destroySegment` would attest that shredding it made a readable object unreadable. A caller decides its key
+   * from the row it read before the write, so this closes the window in which another writer creates the
+   * segment encrypted meanwhile.
+   */
+  cleartext?: boolean;
+  /**
+   * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
+   * registry write failed and the row then names `key.generation`, to tell this publish's write from another
+   * writer's at the same number. Every caller that writes the object passes it. Without it, a write that ended
+   * without an answer over a row that names `key.generation` cannot be settled: the publish throws
+   * {@link TransientError} and the caller keeps its object.
+   */
+  holdsOwnObject?: () => Promise<boolean>;
+  /**
+   * What a publish waits on before it sends a fresh compare-and-swap, after a write that ended without an answer and
+   * left the row as it was. Without a `sleep`, such a write throws at once instead of being sent again.
+   */
+  clock?: Yielder;
+  /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
+  rng?: Rng;
+  /**
+   * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
+   * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
+   * held its generation for a while before another writer moved on.
+   */
+  onUnanswered?: () => void;
+  /**
+   * The clock that judges whether a lease has ended. With it, a publish over a row that holds ended leases drops
+   * them in the write that moves the pointer, which rewrites the row anyway. Without it, leases are left as they are.
+   */
+  leasesNow?: () => number;
+  /**
+   * Clear the row's leases in the write that moves the pointer: the caller's collection deletes every generation
+   * below the new pointer whatever a lease says, as a subject erasure's does.
+   */
+  clearLeases?: boolean;
+  /**
+   * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
+   * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
+   * current), derived from the very row the write is made against, and the result names the generations the window
+   * dropped. Without it, or above the most a row records, the row records none, and a collection lists.
+   */
+  keep?: number;
+}
+
 /**
  * Point a segment's registry `currentGen` at `key.generation` — the publish step that makes a freshly-written
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
@@ -2596,93 +2700,7 @@ function leasesPatch(
 export async function publishGenerationKept(
   registry: IRegistryDriver,
   key: GenKey,
-  options: {
-    wrappedDeks?: readonly WrappedDek[];
-    expectFrom?: number;
-    expectToken?: Token;
-    /**
-     * The row `expectToken` names, as the caller read it. With it, a row whose token has moved but which differs from
-     * this one only in its leases (a reader took or released one) does not refuse the publish: it goes on against the
-     * fresh row, after a jittered wait and without the caller redoing its work, up to a bound. Any other difference
-     * refuses as ever. Without it, a moved token refuses.
-     */
-    expectRow?: RegistryRecord | null;
-    /**
-     * Publish only while the segment still has **no registry row**.
-     *
-     * The fence for a caller whose decision rests on the row being ABSENT: every load that found no row sets it,
-     * guarded or not. `expectFrom` and `expectToken` cannot express it: both compare against a value read from a
-     * row, so when there was no row there is nothing to compare and both are simply omitted — leaving the publish a
-     * bare forward-only advance that happily lands over whatever appeared in the meantime.
-     *
-     * Without it, a guarded load into a segment that did not exist yet would judge "no row", pass its empty and
-     * `minRetained` bounds vacuously, and land an EMPTY generation over the ids a concurrent writer had just loaded,
-     * reporting `published: true`. An unguarded load would move the pointer over another first load's generation or
-     * onto a row `setRetention` made, and, where an erasure had deleted its object above that row's pointer, onto an
-     * object that is gone. Materialising into a destination that does not exist yet is the ordinary first run of a
-     * pipeline, so the `*Into` verbs reach this as often as `loadSegment` does.
-     */
-    expectAbsent?: boolean;
-    /**
-     * The generation's summary (see {@link RegistrySummary}), written by the write that moves the pointer to it. It
-     * names `key.generation`. Absent, the row is left with none for this generation.
-     */
-    summary?: RegistrySummary;
-    /**
-     * The segment's row as the caller already read it (`null`: it found none). The first attempt acts on it
-     * instead of reading the row again, which is sound because that attempt writes only under the row's own
-     * fence: its compare-and-swap carries this row's token, and with no row it creates create-only, so a row
-     * that changed or appeared since makes the write lose and the next attempt reads the row afresh. Only the
-     * idempotent "already current" answer writes nothing, so a reused row never gives it.
-     */
-    row?: RegistryRecord | null;
-    /**
-     * The object was written without encryption. Its publish is refused, with {@link KeyUnavailableError}, onto a row
-     * that carries key material: a reader of that segment opens every generation with its key, and a later
-     * `destroySegment` would attest that shredding it made a readable object unreadable. A caller decides its key
-     * from the row it read before the write, so this closes the window in which another writer creates the
-     * segment encrypted meanwhile.
-     */
-    cleartext?: boolean;
-    /**
-     * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
-     * registry write failed and the row then names `key.generation`, to tell this publish's write from another
-     * writer's at the same number. Every caller that writes the object passes it. Without it, a write that ended
-     * without an answer over a row that names `key.generation` cannot be settled: the publish throws
-     * {@link TransientError} and the caller keeps its object.
-     */
-    holdsOwnObject?: () => Promise<boolean>;
-    /**
-     * What a publish waits on before it sends a fresh compare-and-swap, after a write that ended without an answer and
-     * left the row as it was. Without a `sleep`, such a write throws at once instead of being sent again.
-     */
-    clock?: Yielder;
-    /** Spreads that wait (full jitter) so concurrent publishers do not retry together. Without it the wait is the bound. */
-    rng?: Rng;
-    /**
-     * Called once for each registry write that ended without an answer, before the row is read back. A caller whose
-     * publish then answers `false` can say that it cannot tell whether its own write landed first: the row may have
-     * held its generation for a while before another writer moved on.
-     */
-    onUnanswered?: () => void;
-    /**
-     * The clock that judges whether a lease has ended. With it, a publish over a row that holds ended leases drops
-     * them in the write that moves the pointer, which rewrites the row anyway. Without it, leases are left as they are.
-     */
-    leasesNow?: () => number;
-    /**
-     * Clear the row's leases in the write that moves the pointer: the caller's collection deletes every generation
-     * below the new pointer whatever a lease says, as a subject erasure's does.
-     */
-    clearLeases?: boolean;
-    /**
-     * How many generations below the new pointer the caller keeps. With it, the write that moves the pointer also
-     * records the window in the row (`keptGens`: the newest `keep` of the row's own list and the generation that was
-     * current), derived from the very row the write is made against, and the result names the generations the window
-     * dropped. Without it, or above the most a row records, the row records none, and a collection lists.
-     */
-    keep?: number;
-  } = {},
+  options: PublishOptions = {},
 ): Promise<PublishResult> {
   // A row read after a write that failed, which the next attempt acts on instead of reading it again.
   let fresh: RegistryRecord | null | undefined;
@@ -2986,7 +3004,7 @@ const REFUSED: PublishResult = { published: false };
 export async function publishGeneration(
   registry: IRegistryDriver,
   key: GenKey,
-  options: Parameters<typeof publishGenerationKept>[2] = {},
+  options: PublishOptions = {},
 ): Promise<boolean> {
   return (await publishGenerationKept(registry, key, options)).published;
 }
