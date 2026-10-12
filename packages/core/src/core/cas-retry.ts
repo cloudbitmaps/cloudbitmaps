@@ -17,9 +17,11 @@ interface CasRetryPlan {
 /**
  * Read a segment's row, run `step` on it, and run it again on a fresh read when `step` throws a write conflict.
  *
- * A step that lost to a write which changed only the row's leases is not counted: the loop waits out the churn (up to
- * the churn bound), reads the row again and runs `step` against that. Any other conflict uses one attempt. `step`
- * returns the caller's result, or throws: a write conflict retries, anything else leaves `casRetry` untouched.
+ * Every lost race uses one of `plan.attempts`, except one lost by a run that followed a wait. When the row read after a
+ * lost race differs from the one `step` was given only in its leases, the loop waits the churn out (up to the churn
+ * bound), reads the row again and runs `step` against that without using an attempt. A race lost on the last attempt
+ * is not waited out. `step` returns the caller's result, or throws: a write conflict retries, anything else leaves
+ * `casRetry` untouched.
  *
  * Exhausting `attempts` throws `plan.contention()`.
  */

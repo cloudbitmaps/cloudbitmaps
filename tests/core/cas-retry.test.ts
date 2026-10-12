@@ -160,9 +160,13 @@ describe('casRetry', () => {
     const w = await world();
     const row0 = (await w.registry.get(SEG))!;
     // A write that lands while the loop sleeps.
+    let waits = 0;
     const clock: Clock = {
       now: () => T0,
-      sleep: () => leaseWrite(w),
+      sleep: () => {
+        waits += 1;
+        return leaseWrite(w);
+      },
     };
     const tokens: string[] = [];
     let calls = 0;
@@ -176,6 +180,7 @@ describe('casRetry', () => {
       },
     );
     const latest = (await w.registry.get(SEG))!.token;
+    expect(waits).toBe(1);
     expect(tokens).toHaveLength(2);
     expect(tokens[0]).toBe(row0.token);
     expect(tokens[1]).toBe(latest);

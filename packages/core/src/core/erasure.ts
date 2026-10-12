@@ -548,8 +548,8 @@ async function shredSegment(
 ): Promise<Shred | null> {
   const { allowCleartext, op = 'destroySegment', sweep } = options;
   const base = { segment: ref.segment, namespace: ref.namespace };
-  // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: a lost race
-  // to a lease write is waited out and costs none, up to the churn bound.
+  // A shred is never optional, so a row that readers keep writing the leases of does not wear its attempts out: `casRetry`
+  // waits out a race lost to a lease write without using an attempt, up to the churn bound.
   return casRetry(
     deps,
     ref,

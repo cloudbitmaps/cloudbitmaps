@@ -245,7 +245,7 @@ export async function setSegmentRetention(
   validateUserRef(ref);
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
-  // A lost race to a lease write is waited out and costs no attempt, up to the churn bound.
+  // `casRetry` waits out a race lost to a lease write without using an attempt, up to the churn bound.
   return casRetry(
     deps,
     ref,
