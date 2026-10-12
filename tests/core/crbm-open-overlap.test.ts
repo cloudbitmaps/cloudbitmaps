@@ -4,9 +4,10 @@
  * gate opens, so the order is the code's and not the clock's.
  */
 import { randomBytes } from 'node:crypto';
-import { CrbmStorageChunkSource } from '@/index';
+import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import { brandAsBackend } from '@/core/ports';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { KeyUnavailableError, NotFoundError } from '@/core/errors';
+import { KeyUnavailableError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import type { IKeystore, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -41,6 +42,7 @@ function recording<T extends object>(
   label: string,
   methods: readonly string[],
   log: string[],
+  onCall?: (method: string, args: unknown[]) => void,
 ): T {
   return new Proxy(target, {
     get(obj, prop) {
@@ -49,6 +51,7 @@ function recording<T extends object>(
       if (typeof prop === 'string' && methods.includes(prop)) {
         return (...args: unknown[]) => {
           log.push(`${label}.${prop}`);
+          onCall?.(prop, args);
           return (value as (...a: unknown[]) => unknown).apply(obj, args);
         };
       }
@@ -62,6 +65,8 @@ interface World {
   registry: MemoryRegistryDriver;
   keystore: InProcessKeystore;
   log: string[];
+  /** The `maxBytes` of every tail read the storage was asked for. */
+  tailSizes: number[];
 }
 
 async function world(encrypted: boolean): Promise<World> {
@@ -72,14 +77,39 @@ async function world(encrypted: boolean): Promise<World> {
     registry,
     ...(encrypted ? { keystore } : {}),
   });
-  return { storage, registry, keystore, log: [] };
+  return { storage, registry, keystore, log: [], tailSizes: [] };
 }
 
 /** A source over `w` that logs every storage read and registry read, with `keystore` in place of the world's. */
-function sourceOn(w: World, keystore?: IKeystore): CrbmStorageChunkSource {
-  const storage: IStorageDriver = recording(w.storage, 'storage', ['getTail', 'getRange'], w.log);
-  const registry: IRegistryDriver = recording(w.registry, 'registry', ['get'], w.log);
-  return new CrbmStorageChunkSource(storage, { registry, ...(keystore ? { keystore } : {}) });
+function sourceOn(
+  w: World,
+  keystore?: IKeystore,
+  options: { tailBytes?: number; requireEncryption?: boolean } = {},
+): CrbmStorageChunkSource {
+  return new CrbmStorageChunkSource(loggedStorage(w), {
+    registry: loggedRegistry(w),
+    ...(keystore ? { keystore } : {}),
+    ...options,
+  });
+}
+
+function loggedStorage(w: World): IStorageDriver {
+  return recording(w.storage, 'storage', ['getTail', 'getRange'], w.log, (method, args) => {
+    if (method === 'getTail') w.tailSizes.push(args[1] as number);
+  });
+}
+
+function loggedRegistry(w: World): IRegistryDriver {
+  return recording(w.registry, 'registry', ['get'], w.log);
+}
+
+/** A store over the world's drivers, which can pin, and whose keystore is `keystore`. */
+function storeOn(w: World, keystore: IKeystore, storage: IStorageDriver = loggedStorage(w)) {
+  return new CloudRoaring({
+    storage: brandAsBackend({ storage, registry: loggedRegistry(w) }),
+    encryption: { keystore },
+    seams: { clock: { now: () => 1_000_000, sleep: () => Promise.resolve() } },
+  });
 }
 
 /** The world's keystore, logging each `openDek` and answering when `until` settles (at once without it). */
@@ -143,14 +173,14 @@ describe('an encrypted cold open sends its tail read beside the key fetch', () =
     ]);
   });
 
-  it('sends the tail read once, with the key already unwrapped', async () => {
+  it('a keystore that answers at once still leaves the cold open one tail read', async () => {
     const w = await world(true);
     const source = sourceOn(w, loggedKeystore(w));
     expect(await first(source)).not.toBeNull();
     expect(w.log.filter((entry) => entry === 'storage.getTail')).toHaveLength(1);
   });
 
-  it('a keystore fault surfaces as KeyUnavailableError, with no unhandled rejection', async () => {
+  it('a keystore fault surfaces as KeyUnavailableError when the tail read it sent answers', async () => {
     const w = await world(true);
     const key = gate();
     const source = sourceOn(w, loggedKeystore(w, key.promise));
@@ -168,7 +198,7 @@ describe('an encrypted cold open sends its tail read beside the key fetch', () =
     expect(unhandled).toEqual([]);
   });
 
-  it('a keystore fault with no tail answer yet raises the key error, and nothing is left unhandled', async () => {
+  it('a keystore fault raises the key error while the tail read is pending, and its later failure is unhandled by no one', async () => {
     const w = await world(true);
     const key = gate();
     const tail = gate<never>();
@@ -194,10 +224,13 @@ describe('an encrypted cold open sends its tail read beside the key fetch', () =
     const fault = new KeyUnavailableError('the keystore is down');
     let caught: unknown;
     const unhandled = await unhandledDuring(async () => {
+      // The test's own gate promise has a handler, so only the code under test can leave a rejection unhandled.
+      tail.promise.catch(() => undefined);
       const read = first(source).catch((err: unknown) => {
         caught = err;
       });
       await settle();
+      expect(w.log).toContain('storage.getTail');
       key.fail(fault);
       await settle();
       // The tail request fails after the caller has its answer.
@@ -269,5 +302,97 @@ describe('a cleartext open and a warm open make the requests they made', () => {
     w.log.length = 0;
     expect(await first(source)).not.toBeNull();
     expect(w.log).toEqual(['storage.getRange']);
+  });
+});
+
+describe('which opens send an early tail read, and of what size', () => {
+  it('the early tail read asks for the size an open asks for: a custom tailBytes, or a footer at least', async () => {
+    for (const [tailBytes, asked] of [
+      [4096, 4096],
+      [8, 104],
+    ] as const) {
+      const w = await world(true);
+      expect(await first(sourceOn(w, loggedKeystore(w), { tailBytes }))).not.toBeNull();
+      // One tail read, of the size the reader asks for: the early read is that read, not one beside it.
+      expect(w.tailSizes).toEqual([asked]);
+    }
+  });
+
+  it('a tailBytes that is not a number sends one tail read, not a second', async () => {
+    const w = await world(true);
+    await expect(
+      first(sourceOn(w, loggedKeystore(w), { tailBytes: Number.NaN })),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(w.tailSizes).toHaveLength(1);
+  });
+
+  it('requireEncryption with a keystore over a cleartext row sends no tail read', async () => {
+    const w = await world(false);
+    const source = sourceOn(w, loggedKeystore(w), { requireEncryption: true });
+    await expect(first(source)).rejects.toBeInstanceOf(KeyUnavailableError);
+    expect(w.log).toEqual(['registry.get']);
+  });
+
+  it('a pin sends its tail read beside the key request', async () => {
+    const w = await world(true);
+    const key = gate();
+    const read = storeOn(w, loggedKeystore(w, key.promise)).segment(SEG.segment).pin();
+    await settle();
+    expect(w.log).toEqual(['registry.get', 'storage.getTail', 'keystore.openDek']);
+    key.open();
+    await read;
+  });
+
+  it("a has()'s first open waits for the key before it sends the tail read", async () => {
+    const w = await world(true);
+    const key = gate();
+    const read = storeOn(w, loggedKeystore(w, key.promise)).segment(SEG.segment).has(3);
+    await settle();
+    // The version comes first, and the row's sealed summary needs the key: nothing to overlap yet.
+    expect(w.log).toEqual(['registry.get', 'keystore.openDek']);
+    key.open();
+    expect(await read).toBe(true);
+    expect(w.log).toEqual(['registry.get', 'keystore.openDek', 'storage.getTail']);
+  });
+
+  it("a has()'s open made again after a failed one overlaps, and a key fault then still wins", async () => {
+    const w = await world(true);
+    let tails = 0;
+    let keys = 0;
+    const flaky = new Proxy(loggedStorage(w), {
+      get(obj, prop) {
+        const value = Reflect.get(obj, prop, obj) as unknown;
+        if (prop === 'getTail') {
+          return (...args: unknown[]) =>
+            tails++ === 0
+              ? (w.log.push('storage.getTail'), Promise.reject(new TransientError('503')))
+              : (value as (...a: unknown[]) => unknown).apply(obj, args);
+        }
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(obj)
+          : value;
+      },
+    });
+    const fault = new KeyUnavailableError('key revoked');
+    const keystore: IKeystore = {
+      ...bindAll(w.keystore),
+      openDek: async (wrapped) => {
+        w.log.push('keystore.openDek');
+        if (keys++ > 0) throw fault;
+        return w.keystore.openDek(wrapped);
+      },
+    } as IKeystore;
+    const unhandled = await unhandledDuring(async () => {
+      await expect(storeOn(w, keystore, flaky).segment(SEG.segment).has(3)).rejects.toBe(fault);
+    });
+    expect(w.log).toEqual([
+      'registry.get',
+      'keystore.openDek',
+      'storage.getTail',
+      'registry.get',
+      'storage.getTail',
+      'keystore.openDek',
+    ]);
+    expect(unhandled).toEqual([]);
   });
 });
