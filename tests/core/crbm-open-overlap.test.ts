@@ -198,7 +198,7 @@ describe('an encrypted cold open sends its tail read beside the key fetch', () =
     expect(unhandled).toEqual([]);
   });
 
-  it('a keystore fault raises the key error while the tail read is pending, and its later failure is unhandled by no one', async () => {
+  it('a keystore fault raises the key error while the tail read is pending, and its later failure is handled', async () => {
     const w = await world(true);
     const key = gate();
     const tail = gate<never>();

@@ -119,17 +119,18 @@ crypto-shreds an encrypted segment and deletes its objects.
 
 ## What an encrypted read costs
 
-An encrypted segment's first read of a generation (a cold open, or one after the reader cache let the segment go)
-asks your keystore to unwrap the key and reads the object's tail from storage. The two do not depend on each other, so
-an open that starts from the object (`iterate`, a combine, a pin) sends them together and takes the longer of the two,
-not the sum. Nothing from the tail is read before the key opens it: the tail's bytes stay untrusted until the footer has
-been held to the row's summary and the index has been decrypted.
+When an encrypted segment's read opens a generation's object (a cold open, or one after the reader cache let the
+segment go), it asks your keystore to unwrap the key and reads the object's tail from storage. The two do not depend
+on each other, so an open that starts from the object (`iterate`, a combine, a pin) sends them together and takes the
+longer of the two, not the sum. Nothing from the tail is read before the key opens it: the tail's bytes stay untrusted
+until the footer has been held to the row's summary and the index has been decrypted.
 
 If the keystore fails, the read raises the keystore's error (`KeyUnavailableError`, or whatever your keystore throws,
-`TransientError` included) even when the object is also missing. The tail GET was already sent, so it is billed once for
-each attempt, and its answer is dropped: with the default read retry, a keystore that keeps throwing `TransientError`
-bills up to four tail reads for one read. A cold open waiting for the key holds up to `tailBytes` (256 KiB by default)
-of the object's tail. A store with no keystore sends no tail read for an encrypted row.
+`TransientError` included) even when the object is also missing. An open that sent its tail early (every one but a
+`has()`'s first) has already sent that GET, so it is billed once for each attempt, and its answer is dropped: with the
+default read retry, a keystore that keeps throwing `TransientError` bills up to four tail reads for one read. A cold
+open waiting for the key holds up to `tailBytes` (256 KiB by default) of the object's tail. A store with no keystore
+sends no tail read for an encrypted row.
 
 A `has()` asks for the segment's version first, and the version needs the key, because the row's summary is sealed under
 it. Its first open therefore waits for the key before it opens the object, with nothing to overlap; an open it makes
