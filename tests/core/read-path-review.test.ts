@@ -264,7 +264,7 @@ describe('checkConsistency with summaries', () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it('a row with no summary costs no object read', async () => {
+  it('a row with no summary costs no object open', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3]);
     const row = (await w.registry.get(SEG))!;
@@ -276,7 +276,9 @@ describe('checkConsistency with summaries', () => {
       { summaries: true },
     );
     expect(report.inconsistent).toEqual([]);
-    expect(calls.getTail ?? 0).toBe(0);
+    // The one zero-length read that asks whether the object is there; the object is not opened.
+    expect(calls.getTail).toBe(1);
+    expect(calls.getRange ?? 0).toBe(0);
   });
 
   it('a sealed summary moved from another generation, or a key that does not open, is unchecked', async () => {
