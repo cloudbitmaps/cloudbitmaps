@@ -522,7 +522,7 @@ if (report.errored.length > 0) {
   followed by a GC of the superseded generation — or an `eraseSubject`, which collects its predecessor
   immediately — landing in the tiny per-segment read gap can still yield a transient false positive: run the
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
-- **Detection is backend-agnostic.** It relies only on `IStorageDriver.list()` + `IRegistryDriver.get()`, so it
+- **Detection is backend-agnostic.** It relies only on `IStorageDriver.getTail()` + `IRegistryDriver.get()`, so it
   covers **any** storage backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
   backend-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
   *exists* in storage. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
@@ -537,7 +537,7 @@ if (report.errored.length > 0) {
     backend never see them (a store on a bare `IStorageDriver` serves the newest of them; see
     [readers still on an old generation](#readers-still-on-an-old-generation)); see
     [what a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back).
-- **`summaries: true` also checks what a count answers from.** The default check lists, and reads no object. With the
+- **`summaries: true` also checks what a count answers from.** The default check reads no object: it asks whether each one is there with a zero-length tail read, one request. With the
   option it opens each segment's current object (one tail read each, a second for an index longer than that) and holds
   the row's summary against it: the object its fingerprint names, the same id count and the same metadata. A segment
   whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is a clear summary whose

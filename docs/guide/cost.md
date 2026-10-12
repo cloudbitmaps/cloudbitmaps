@@ -238,10 +238,16 @@ generation again once, at its next refresh: one tail read where the generation's
 read for the index as well where it does not. See [what an erasure
 costs](erasure.md#find-an-id-and-erase-it).
 
-**`checkConsistency({ summaries: true })` costs one tail read per segment**, on top of the listing the default check
-makes: it opens each current object to compare the row's summary with it. The model does not price it, since a
-consistency check is a run of your own, not a rate; at the default prices a million segments cost $0.40 on S3 and GCS
-(`requestsPerSizedRead` of 1) and $0.80 on Azure Blob (2).
+**`checkConsistency` makes one object-store request per segment, never a listing.** It asks whether the segment's
+current object is there with a zero-length tail read: a `HEAD` on S3, a metadata request on GCS and on Azure Blob. With
+`{ summaries: true }` it opens each current object to compare the row's summary with it, and for a row with a clear
+summary that open's tail read is the answer to whether the object is there, so no request is added; a sealed summary
+(opened with the keystore) is asked about first, so its segment costs the zero-length read and then the open. A segment that looks torn costs a listing of its objects as well, to confirm it,
+since S3 answers a `HEAD` of a missing object and of a missing bucket alike. The model does
+not price it, since a consistency check is a run of your own, not a rate; at the default prices a million segments cost
+$0.40 on S3 and GCS for the default check, and for the open of `summaries: true` where the summaries are clear
+(`requestsPerSizedRead` of 1), and $0.40 and $0.80 on Azure Blob (2). The registry reads are separate: the scan reads
+every row, and each segment's row once more.
 
 **A pointer read is one request on every backend**: S3, GCS and Azure Blob each answer it with a single GET whose
 headers carry the version beside the bytes. **A tail read needs the object's size.** S3 and GCS answer it with a single

@@ -59,6 +59,16 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **`checkConsistency` makes one object-store request per segment, and no listing.** It asks whether a segment's current
+  object is there with a zero-length tail read (a `HEAD` on S3, a metadata request on GCS and Azure Blob) where it listed
+  all of the segment's objects. With `summaries: true` and a clear summary on the row, the open's own tail read is the
+  answer, so the segment costs one request where it cost a listing and a tail read. A sealed summary, or one that is not used,
+  is asked about first, as before. A segment that looks torn is confirmed with the listing, so a missing object, a missing
+  bucket and a failing store are reported as they were. Per million segments on S3 that is about $0.40 where the default
+  check cost $5.00 for the listings. A guarded load and the summary check take the current size from the reader's `count()`,
+  the figure its open already holds, instead of building and adding a map of every chunk's cardinality: 3.7 ms of CPU a
+  call on a segment of 65,536 chunks, measured. The results and the errors are unchanged.
+
 - **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
   cache always) no longer reads the clock on a hit, and with no metrics sink wired `has()` and `count()` return the
   engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured on

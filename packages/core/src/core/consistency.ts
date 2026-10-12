@@ -20,9 +20,14 @@
 import { requirePositiveInteger } from './check';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
-import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
+import {
+  ValidationError,
+  isIntegrityError,
+  isKeyUnavailableError,
+  isNotFoundError,
+} from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
-import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { openNamedGeneration } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
@@ -150,11 +155,9 @@ async function checkSummary(
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) },
     described.fingerprint,
   );
-  let cardinality = 0;
-  for (const n of reader?.cardinalities().values() ?? []) cardinality += n;
   if (
     reader !== undefined &&
-    summaryAgrees(described, { cardinality, metadata: reader.metadata })
+    summaryAgrees(described, { cardinality: reader.count(), metadata: reader.metadata })
   ) {
     return { kind: 'ok' };
   }
@@ -162,9 +165,37 @@ async function checkSummary(
 }
 
 /**
+ * Whether the object under `key` is there. A zero-length tail read settles a present object, and any fault other than
+ * `NotFoundError` propagates. `NotFoundError` is confirmed by listing the segment's generations: a driver cannot always
+ * tell a missing object from a missing bucket on that read (S3 answers a `HEAD` of either with a bare 404), and the listing
+ * is what raises the bucket's own error. An absence is the rare answer, so the listing is paid only for a torn segment.
+ */
+async function objectIsPresent(storage: IStorageDriver, key: GenKey): Promise<boolean> {
+  try {
+    await storage.getTail(key, 0);
+    return true;
+  } catch (err) {
+    if (!isNotFoundError(err)) throw err;
+  }
+  const listed = await generationsOf(storage, { namespace: key.namespace, segment: key.segment });
+  return listed.includes(key.generation);
+}
+
+/**
+ * Whether {@link checkSummary} will open the row's object with no request before it: a clear summary of the current
+ * generation that names an object. The open's first request is a tail read that fails with `NotFoundError` for a
+ * missing object, so it settles presence and the check needs no request of its own. Any other row (sealed, or a summary
+ * not used) may end the check before the object is read, so presence is asked first, as it always was.
+ */
+function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
+  const keyed = live.wrappedDeks !== undefined && live.wrappedDeks.length > 0;
+  return !keyed && usableSummary(ref, live, undefined) !== undefined;
+}
+
+/**
  * Verify every registered segment's `currentGen` `.crbm` actually exists in Storage. Enumerates the registry
- * (optionally one namespace) and, for each non-`destroyed` segment, checks the object store lists that
- * generation. Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
+ * (optionally one namespace) and, for each non-`destroyed` segment, checks the object store holds that
+ * generation (a zero-length tail read of it). Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
  * `errored`.
  *
  * With `summaries: true` it also opens each segment's current object (one tail read, and a second for an index longer
@@ -172,7 +203,7 @@ async function checkSummary(
  * says, reporting `summary-mismatch` where they disagree, and for a clear summary whose fingerprint names no object,
  * which no read uses. A sealed summary
  * needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by default, since the
- * default check only lists.
+ * default check only looks for the object.
  */
 export async function runConsistencyCheck(
   deps: {
@@ -222,12 +253,12 @@ export async function runConsistencyCheck(
       // would make `missing-storage-generation` fire on the healthy steady state of every such segment, which is the
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };
-      const present = await generationsOf(deps.storage, ref);
-      if (present.includes(live.currentGen)) {
-        if (options.summaries !== true || live.summary === undefined) return { kind: 'ok' };
-        return await checkSummary(ref, live, deps);
-      }
-      return {
+      const key: GenKey = {
+        namespace: ref.namespace,
+        segment: ref.segment,
+        generation: live.currentGen,
+      };
+      const missing: Outcome = {
         kind: 'issue',
         issue: {
           segment: rec.segment,
@@ -236,6 +267,19 @@ export async function runConsistencyCheck(
           issue: 'missing-storage-generation',
         },
       };
+      const checksSummary = options.summaries === true && live.summary !== undefined;
+      if (checksSummary && summaryOpensObject(ref, live)) {
+        try {
+          return await checkSummary(ref, live, deps);
+        } catch (err) {
+          // The open's own tail read found no object. Asked again, so a read that failed after the object was found
+          // (it went mid-open) is an error of the segment, as it was when presence had been settled first.
+          if (isNotFoundError(err) && !(await objectIsPresent(deps.storage, key))) return missing;
+          throw err;
+        }
+      }
+      if (!(await objectIsPresent(deps.storage, key))) return missing;
+      return checksSummary ? await checkSummary(ref, live, deps) : { kind: 'ok' };
     } catch (error) {
       // Fault isolation: one unreadable segment (a partial/transient object store mid-restore) must not abort
       // the whole triage. Record it and keep scanning the rest.

@@ -476,9 +476,7 @@ async function currentCardinality(
     if (!isNotFoundError(err)) throw err;
     return { cardinality: null, fromSummary: false };
   }
-  let total = 0;
-  for (const n of reader.cardinalities().values()) total += n;
-  return { cardinality: total, fromSummary: false };
+  return { cardinality: reader.count(), fromSummary: false };
 }
 
 /**

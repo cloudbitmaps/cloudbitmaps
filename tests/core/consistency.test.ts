@@ -73,14 +73,11 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'ok', generation: 0 }, [1], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'bad', generation: 0 }, [1], { registry });
-    const realList = storage.list.bind(storage);
-    vi.spyOn(storage, 'list').mockImplementation((ref) =>
-      // A real storage.list fails during iteration (the underlying GET), not at call time — model that.
-      (async function* () {
-        if (ref.segment === 'bad') throw new Error('storage unavailable');
-        yield* realList(ref);
-      })(),
-    );
+    const realTail = storage.getTail.bind(storage);
+    vi.spyOn(storage, 'getTail').mockImplementation(async (key, maxBytes) => {
+      if (key.segment === 'bad') throw new Error('storage unavailable');
+      return realTail(key, maxBytes);
+    });
     const report = await runConsistencyCheck({ storage, registry });
     expect(report.checked).toBe(2);
     expect(report.inconsistent).toEqual([]); // 'ok' is coherent; the fault didn't abort the scan
