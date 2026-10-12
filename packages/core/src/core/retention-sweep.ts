@@ -502,17 +502,27 @@ async function forgetPurgePointers(
   }
 }
 
+/** The options of a sweep, validated, with every default filled in. */
+export interface ResolvedRetireOptions {
+  readonly audit: IAuditSink | undefined;
+  readonly namespace: string | undefined;
+  readonly now: number;
+  readonly limit: number;
+  readonly purgeTombstones: boolean;
+  readonly grace: number;
+  readonly maxScanSegments: number;
+  readonly dryRun: boolean;
+  readonly scan: 'fleet' | 'index';
+  readonly lookbackBuckets: number;
+  readonly shards: readonly number[] | undefined;
+  readonly totalShards: number;
+}
+
 /**
- * Retire every segment whose retention policy has expired, and clean up the tombstones earlier sweeps left.
- *
- * Returns a ledger; **never throws for a per-segment fault** (those become entries). It does throw for a bad
- * argument, and for a fleet larger than `maxScanSegments` — a scan that cannot be held in memory is a fail-loud
- * condition, not a partial result to be mistaken for a complete sweep.
+ * Check a sweep's options and fill in the defaults. Pure: it reads nothing but `options`, and throws
+ * `ValidationError` for the first bad one, in the order the checks have always run.
  */
-export async function retireExpired(
-  deps: DropDeps,
-  options: RetireExpiredOptions,
-): Promise<RetireExpiredResult> {
+export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRetireOptions {
   checkedAuditSink(options.audit, 'retireExpired');
   // Shards are numbered from 0, below `totalShards`. Without `totalShards`, or with a number outside that range, a
   // replica owned everything or nothing, silently: replicas numbered from 1 left shard 0 unswept for good.
@@ -548,23 +558,412 @@ export async function retireExpired(
   requireFiniteNumber(grace, { min: 0, what: 'retireExpired: `tombstoneGraceMs`' });
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
   requirePositiveInteger(maxScanSegments, 'retireExpired: `maxScanSegments`');
-  const dryRun = options.dryRun === true;
+  return {
+    audit: options.audit,
+    namespace: options.namespace,
+    now,
+    limit,
+    purgeTombstones,
+    grace,
+    maxScanSegments,
+    dryRun: options.dryRun === true,
+    scan: options.scan ?? 'fleet',
+    lookbackBuckets: options.lookbackBuckets ?? DEFAULT_LOOKBACK_BUCKETS,
+    shards: options.shards,
+    totalShards: options.totalShards ?? 0,
+  };
+}
+
+/**
+ * The counters and the ledger of one sweep, and the two budgets that bound it.
+ *
+ * The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
+ * writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
+ * already retired. Counting only successes would let a partial storage outage march through the entire fleet
+ * with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
+ * while every segment in the namespace is tombstoned. So a step raises `attempted` before it calls out, and only
+ * gives the charge back (`refusedPurge`, or a retirement that turned out to be someone else's) where nothing was
+ * done.
+ */
+export class SweepTally {
+  readonly entries: RetireEntry[] = [];
+  eligible = 0;
+  retired = 0;
+  wouldRetire = 0;
+  tombstonesPurged = 0;
+  limited = false;
+  /** Deletes the registry refused for a reason other than a lost race. */
+  purgeFaults = 0;
+  /** The first one's reason. A lost race is the row or pointer changing under a fenced delete, which is the fence working. */
+  firstPurgeFault: `failed: ${string}` | undefined;
+  /** Retirements and tombstone purges begun, charged against `limit`. */
+  attempted = 0;
+  /** Tombstones the sweep did not write whose pointers it worked, bounded by `limit` apart from `attempted`. */
+  attemptedForeign = 0;
+  /**
+   * Purging stops after this many refused purges in a row, and a purge that succeeds starts the count again. Each
+   * refused attempt costs reads before it fails, and a blanket refusal would fail them all; one row's refusal must
+   * not hold the rest.
+   */
+  purgeRun = 0;
+  purging = true;
+
+  /** Record a step's ledger entry; a step that has nothing to report returns `null`. */
+  add(entry: RetireEntry | null): void {
+    if (entry !== null) this.entries.push(entry);
+  }
+
+  /** Count a delete the registry refused, unless it was a lost race. */
+  readonly noteFault = (err: unknown): void => {
+    if (isWriteConflictError(err)) return;
+    this.purgeFaults += 1;
+    this.firstPurgeFault ??= failureReason(err);
+  };
+
+  /** A purge the registry refused is not charged to `limit`, and after enough in a row purging stops. */
+  refusedPurge(): void {
+    this.attempted -= 1;
+    this.purgeRun += 1;
+    if (this.purgeRun >= MAX_CONSECUTIVE_PURGE_FAULTS) this.purging = false;
+  }
+}
+
+/** What a step reads: the sweep's resolved options, its drivers, what the scan found, and its tally. */
+interface SweepContext {
+  readonly deps: DropDeps;
+  readonly opts: ResolvedRetireOptions;
+  /** Whether a delete removes a row for good. */
+  readonly removesRows: boolean;
+  /** Every pointer the scan read to each candidate, by the candidate's segment key. */
+  readonly pointers: ReadonlyMap<string, readonly FoundPointer[]>;
+  readonly tally: SweepTally;
+}
+
+/**
+ * Work one tombstone row: purge it when it is this sweep's own and its grace has passed, or clear the pointers of one
+ * that is not. Returns the ledger entry, or `null` when there is nothing to report. Setting `tally.limited` ends the
+ * sweep.
+ */
+async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<RetireEntry | null> {
+  const { deps, opts, removesRows, pointers, tally } = ctx;
+  const { now, limit, grace, dryRun } = opts;
+  const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
+  const base = { segment: rec.segment, namespace: rec.namespace };
+  // A tombstone this sweep did not write (a crypto-shred, a drop by hand) is never retired or purged here, and it
+  // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
+  const stamp = retirementStamp(rec.retention);
+  if (stamp === null) {
+    const found = pointers.get(segmentKey(ref)) ?? [];
+    // At most `limit` such tombstones are worked per call, as the litter pass is, so a long backlog cannot make
+    // one call arbitrarily long. The row is read again first, since the scan may be minutes old: a tombstone
+    // purged by hand and its name re-created since has a live row, and a pointer of its own is not litter.
+    if (!dryRun && removesRows && found.length > 0 && tally.attemptedForeign < limit) {
+      tally.attemptedForeign += 1;
+      try {
+        const live = await deps.registry.get(ref);
+        if (live?.status === 'destroyed' && retirementStamp(live.retention) === null) {
+          await forgetFoundPointers(deps.registry, found, tally.noteFault);
+        }
+      } catch (err) {
+        tally.noteFault(err);
+      }
+    }
+    return null;
+  }
+  if (!opts.purgeTombstones || !tally.purging) return null;
+  // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
+  // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
+  // never touches `retention`, so the ordinary ordering — set a 30-day policy, then a GDPR request arrives
+  // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
+  // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
+  // for every writer. A marker cannot be forged by that ordering.
+  const retiredAt = stamp;
+  if (now - retiredAt < grace) return null; // inside the fence window; not ledger noise
+  if (tally.attempted >= limit) {
+    tally.limited = true;
+    return null;
+  }
+  tally.attempted += 1;
+  try {
+    if (!(await isFullyReclaimed(deps, ref))) {
+      // Self-heal rather than report-and-wait: `gcOrphanGenerations` takes EVERY generation of a destroyed
+      // row, and nothing else will ever call it for this segment (no load publishes onto a tombstone, and the
+      // erasure rewrite refuses one). Without this the row is stuck forever, the
+      // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
+      let collectFault: { error: unknown } | undefined;
+      if (!dryRun) {
+        await gcOrphanGenerations(ref, deps).catch((error: unknown) => {
+          collectFault = { error };
+        });
+      }
+      if (!(await isFullyReclaimed(deps, ref))) {
+        // A refused purge, as a refused row delete is below: not charged to `limit`, so the retirements behind it
+        // still get their turn (a role without delete permission makes every retirement a stuck tombstone, and
+        // charged, enough of them stopped every new one), and after enough in a row no more purges are tried this
+        // call. The collection's error, when it raised one, names the cause; a collection that lost a race to a
+        // write of the row is not a refusal, as a row delete's is not.
+        const lostRace = collectFault !== undefined && isWriteConflictError(collectFault.error);
+        if (!dryRun && !lostRace) {
+          tally.refusedPurge();
+          if (collectFault !== undefined) tally.noteFault(collectFault.error);
+          else {
+            // The collection answered and the objects are still there: a store that acknowledges a delete it did not
+            // make, or a write that landed after its listing. Counted all the same, with what was seen as its cause.
+            tally.purgeFaults += 1;
+            tally.firstPurgeFault ??=
+              "failed: the tombstone's objects were still there after its collection";
+          }
+        }
+        return { ...base, action: 'skipped', reason: 'tombstone-not-empty' };
+      }
+    }
+    // Fenced on the token of the row this decision was made from (the marker and its grace window), so a
+    // tombstone that was purged and re-created, or rewritten, since the scan is refused rather than deleted.
+    // Storage went first, above: the row is what keeps a straggler generation reachable by the collection.
+    // On a registry with a conditional delete the row is removed for good, under the version this delete
+    // reads, which carries that token; elsewhere it is tombstoned. Its pointers go only once it is gone: a
+    // delete that threw, its outcome unknown, removes nothing more, and the next scan reads the row again.
+    if (!dryRun) {
+      await deps.registry.delete(ref, rec.token);
+      tally.tombstonesPurged += 1;
+      tally.purgeRun = 0;
+      if (removesRows) {
+        await forgetPurgePointers(
+          deps.registry,
+          ref,
+          retiredAt + grace,
+          pointers.get(segmentKey(ref)) ?? [],
+          tally.noteFault,
+        );
+      }
+    }
+    return { ...base, action: dryRun ? 'would-purge-tombstone' : 'purged-tombstone' };
+  } catch (err) {
+    if (!isWriteConflictError(err)) {
+      // Refused for a reason other than a lost race. Not charged to the limit, so the retirements behind it still
+      // get their turn; and after enough in a row, no more purges are tried this call.
+      tally.refusedPurge();
+      tally.noteFault(err);
+    }
+    return { ...base, action: 'skipped', reason: failureReason(err) };
+  }
+}
+
+/**
+ * Work one live row: retire it when its policy has expired, after reading the row again. Returns the ledger entry, or
+ * `null` when the row is not the sweep's business. Setting `tally.limited` ends the sweep.
+ */
+async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<RetireEntry | null> {
+  const { deps, opts, removesRows, tally } = ctx;
+  const { now, limit, grace, dryRun } = opts;
+  const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
+  const base = { segment: rec.segment, namespace: rec.namespace };
+  const policy = readRetentionPolicy(rec.retention);
+  if (policy === null) return null; // no policy — this segment is not the sweep's business
+  if (policy === 'invalid') return { ...base, action: 'skipped', reason: 'invalid-policy' };
+  if (policy.expiresAt > now) return null; // not yet
+  tally.eligible += 1;
+  if (tally.attempted >= limit) {
+    // Stop SCANNING, not just stop acting. A `limit` entry per deferred row would make the ledger scale with the
+    // fleet rather than with the batch — 250,000 rows behind a bad backfill is ~15 MB of entries the caller did
+    // not ask for, all in one result object. They are not information: the next run picks them up, which is
+    // what `limited` says.
+    tally.limited = true;
+    return null;
+  }
+
+  try {
+    // Re-read the AUTHORITATIVE row before deleting anything. The enumeration is a snapshot, and on a large
+    // fleet the gap between drawing it and reaching this segment is the whole sweep — minutes. Cancelling an
+    // expiry is exactly the operator's recovery action for the bad-backfill case `limit` exists to survive, and
+    // it did not work if a sweep was already running: the segment was retired from the stale copy. One strong
+    // read per *eligible* segment, so the fleet enumeration stays a single `list()`. (`consistency.ts` takes the
+    // same care for a read-only check; an irreversible deletion deserves at least as much.)
+    const live = await deps.registry.get(ref);
+    const livePolicy = live === null ? null : readRetentionPolicy(live.retention);
+    if (
+      live === null ||
+      live.status === 'destroyed' ||
+      livePolicy === null ||
+      livePolicy === 'invalid' ||
+      livePolicy.expiresAt > now
+    ) {
+      return { ...base, action: 'skipped', reason: 'policy-changed' };
+    }
+
+    tally.attempted += 1;
+    // `confirmSegment` is satisfied structurally here — in a loop the guard is the same value twice, which is
+    // why `dryRun` is the real preview. The dry run goes through `dropSegment` too, so the preview reports the
+    // generations a real sweep would delete rather than a guess.
+    //
+    // The re-read above is not the last word: the drop reads the row again, and an extension, a clear, a purge or
+    // someone else's tombstone can land between the two. So the drop is told what this sweep may retire, judged on
+    // every row its shred is about to replace, and writes this sweep's mark in the tombstone's own write.
+    const result = await dropSegmentFor(
+      ref,
+      deps,
+      { confirmSegment: rec.segment, dryRun, audit: opts.audit },
+      dryRun
+        ? undefined
+        : {
+            wanted: (row) => {
+              const p = readRetentionPolicy(row.retention);
+              return p !== null && p !== 'invalid' && p.expiresAt <= now;
+            },
+            stamp: (retention) => ({ ...retention, [SWEEP_MARK]: now }),
+          },
+    );
+    if (result === null) {
+      tally.attempted -= 1;
+      return { ...base, action: 'skipped', reason: 'policy-changed' };
+    }
+    if (dryRun) {
+      tally.wouldRetire += 1;
+      return { ...base, action: 'would-retire', expiresAt: livePolicy.expiresAt, result };
+    }
+    if (!result.dropped) {
+      // `dropped: false` means the call found nothing to do, and the documented cause is a ref that does not
+      // address what the caller meant. Counting that as a retirement is how a sweep addressing the wrong segment
+      // reports success — so it is a ledger entry instead, carrying the reason `dropSegment` gave.
+      //
+      // Unreachable in practice now that the live re-read above proves the row exists (the only `dropped: false`
+      // path needs no row at all), except through the microsecond in which someone else deletes it. Kept, and
+      // labelled rather than claimed as covered: the invariant is "never count a no-op as a retirement", and it
+      // must hold if either that re-read or `dropSegment`'s reporting ever changes.
+      return { ...base, action: 'skipped', reason: `failed: drop reported ${result.reason}` };
+    }
+    tally.retired += 1;
+    const entry: RetireEntry = {
+      ...base,
+      action: 'retired',
+      expiresAt: livePolicy.expiresAt,
+      result,
+    };
+    // The pointer has done its job. Dropping it keeps a bucket from accumulating rows that every subsequent
+    // lookback re-reads forever — the index would otherwise grow monotonically and slowly undo its own
+    // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
+    // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
+    await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt, tally.noteFault);
+    if (
+      opts.purgeTombstones &&
+      result.generationsDeleted.length === 0 &&
+      result.generationsRemaining.length === 0
+    ) {
+      // The segment really held nothing, so `dropSegment` has just written a tombstone for a name that was
+      // empty. Left in place that row FENCES the name against every writer — and `setRetention` will mint a
+      // row for any name, including a typo'd one, so this is reachable from a single mistake. Nothing
+      // existed, so there is nothing a delete could resurrect: remove the row instead of bricking the name.
+      //
+      // **Only while `purgeTombstones` is on.** `false` is the caller asking for every row of this sweep's
+      // retirements to stay, this one included; it falls through to the stamp below, so a later sweep with
+      // purging on can still delete it after the grace window (an empty segment is trivially fully reclaimed).
+      // Nothing re-processes it meanwhile: a `destroyed` row is skipped before any policy is read.
+      //
+      // **Both halves of the predicate are load-bearing.** `generationsDeleted: []` alone does NOT mean the
+      // segment was empty — it is equally what a segment whose every `storage.delete` threw produces, because
+      // `dropSegment`'s sweep loop stops once a pass deletes nothing. Purging the row on that reading left
+      // the expired objects readable and billed, and then unreachable by everything that could have
+      // collected them: `gcOrphanGenerations` returns `[]` with no row to compare against, the next sweep
+      // never sees the name again (no row to enumerate), and `dropSegment` takes its `'absent'` path. The
+      // data that was contractually supposed to expire stayed, silently, forever. `generationsRemaining` is
+      // the honest question and `dropSegment` computes it one field over for exactly this reason.
+      //
+      // When something DOES remain, falling through is the right move rather than a special case: the row
+      // keeps its tombstone, so reads stay refused, and the tombstone-purge pass above re-sweeps it with
+      // `gcOrphanGenerations` (which takes every generation of a destroyed row) and purges the row once it is
+      // genuinely empty. The residual is visible in this entry's `result.generationsRemaining` meanwhile.
+      //
+      // Fenced on the tombstone just written, so a name purged and re-created by someone else since is not
+      // tombstoned by this delete: only a `destroyed` row is removed, and only at the token it was read with.
+      //
+      // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
+      // from a crypto-shred's tombstone, which no sweep may ever delete, so one transient registry fault would
+      // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it. The
+      // stamp itself only touches a `destroyed` row, so a name that was re-created meanwhile is left alone.
+      const tombstone = await deps.registry.get(ref).catch(() => null);
+      if (tombstone?.status === 'destroyed') {
+        const deleted = await deps.registry.delete(ref, tombstone.token).then(
+          () => true,
+          (err: unknown) => {
+            tally.noteFault(err);
+            return false;
+          },
+        );
+        if (deleted) return entry;
+      }
+    }
+    // The tombstone carries this sweep's mark from the write that made it, so a later sweep may purge the row (see
+    // the attribution note in `purgeTombstone`). File the pointer an index scan finds it by on the day its grace ends.
+    if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
+    return entry;
+  } catch (err) {
+    // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
+    // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
+    // settles which side of the tombstone we failed on.
+    const after = await deps.registry.get(ref).catch(() => null);
+    // Only this sweep's own tombstone, the one carrying its mark: a tombstone someone else wrote (a crypto-shred, a
+    // drop) is not a retirement of this sweep, and claiming it would let a later sweep purge an attestation.
+    if (
+      after?.status === 'destroyed' &&
+      (after.retention as Record<string, unknown> | undefined)?.[SWEEP_MARK] === now
+    ) {
+      if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
+      tally.retired += 1;
+      return {
+        ...base,
+        action: 'retired',
+        expiresAt: policy.expiresAt,
+        result: {
+          ...base,
+          dropped: true,
+          generationsDeleted: [],
+          generationsRemaining: [],
+          cryptoShredded: false,
+          reason: undefined,
+        },
+        fault: failureReason(err),
+      };
+    }
+    return { ...base, action: 'skipped', reason: failureReason(err) };
+  }
+}
+
+/**
+ * Retire every segment whose retention policy has expired, and clean up the tombstones earlier sweeps left.
+ *
+ * Returns a ledger; **never throws for a per-segment fault** (those become entries). It does throw for a bad
+ * argument, and for a fleet larger than `maxScanSegments` — a scan that cannot be held in memory is a fail-loud
+ * condition, not a partial result to be mistaken for a complete sweep.
+ */
+export async function retireExpired(
+  deps: DropDeps,
+  options: RetireExpiredOptions,
+): Promise<RetireExpiredResult> {
+  const opts = resolveRetireOptions(options);
+  const { now, limit, dryRun, shards, totalShards } = opts;
 
   // Drain the enumeration first, bounded. The sweep mutates rows as it goes (a tombstone CAS, a row delete), and
   // iterating a live listing while doing so is driver-dependent — a paged listing may or may not observe its own
   // writes. Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on
   // it, because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
-  const scan = options.scan ?? 'fleet';
   const scanned =
-    scan === 'index'
+    opts.scan === 'index'
       ? await rowsFromDueIndex(deps.registry, {
           now,
-          lookbackBuckets: options.lookbackBuckets ?? DEFAULT_LOOKBACK_BUCKETS,
-          namespace: options.namespace,
-          maxScanSegments,
+          lookbackBuckets: opts.lookbackBuckets,
+          namespace: opts.namespace,
+          maxScanSegments: opts.maxScanSegments,
         })
-      : await rowsFromFleet(deps.registry, { namespace: options.namespace, maxScanSegments });
-  const rows = scanned.rows;
+      : await rowsFromFleet(deps.registry, {
+          namespace: opts.namespace,
+          maxScanSegments: opts.maxScanSegments,
+        });
+
+  const owned = (ref: SegmentRef): boolean =>
+    shards === undefined ||
+    totalShards <= 1 ||
+    shards.includes(shardOf(segmentKey(ref), totalShards));
+  const mine = scanned.rows.filter(owned);
 
   // Whether a delete removes a row for good. Read after the enumeration: a registry that settles this lazily (S3, from
   // the host its client resolves) has done so by its first listing. Where it does not, a purge only rewrites the row as
@@ -572,331 +971,13 @@ export async function retireExpired(
   // read and a write at retirement and again at purge.
   const removesRows = deps.registry.capabilities().conditionalDelete === true;
 
-  const shards = options.shards;
-  const totalShards = options.totalShards ?? 0;
-  const owned = (ref: SegmentRef): boolean =>
-    shards === undefined ||
-    totalShards <= 1 ||
-    shards.includes(shardOf(segmentKey(ref), totalShards));
-  const mine = rows.filter(owned);
-
-  const entries: RetireEntry[] = [];
-  let eligible = 0;
-  let retired = 0;
-  let wouldRetire = 0;
-  let tombstonesPurged = 0;
-  let limited = false;
-  // Deletes the registry refused for a reason other than a lost race, and the first one's reason. A lost race is the
-  // row or pointer changing under a fenced delete, which is the fence working; anything else (a denied delete, a blob
-  // with a snapshot, a raw provider error) will happen again for the next one.
-  let purgeFaults = 0;
-  let firstPurgeFault: `failed: ${string}` | undefined;
-  const noteFault = (err: unknown): void => {
-    if (isWriteConflictError(err)) return;
-    purgeFaults += 1;
-    firstPurgeFault ??= failureReason(err);
-  };
-  // Purging stops after this many refused purges in a row, and a purge that succeeds starts the count again. Each refused
-  // attempt costs reads before it fails, and a blanket refusal would fail them all; one row's refusal must not hold the rest.
-  let purgeRun = 0;
-  let purging = true;
-  // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
-  // writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
-  // already retired. Counting only successes would let a partial storage outage march through the entire fleet
-  // with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
-  // while every segment in the namespace is tombstoned.
-  let attempted = 0;
-  // Tombstones the sweep did not write whose pointers it worked, bounded by `limit` apart from `attempted`.
-  let attemptedForeign = 0;
-
+  const tally = new SweepTally();
+  const ctx: SweepContext = { deps, opts, removesRows, pointers: scanned.pointers, tally };
   for (const rec of mine) {
-    const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
-    const base = { segment: rec.segment, namespace: rec.namespace };
-    const policy = readRetentionPolicy(rec.retention);
-
-    if (rec.status === 'destroyed') {
-      // A tombstone this sweep did not write (a crypto-shred, a drop by hand) is never retired or purged here, and it
-      // has no expiry left to act on, so the pointers the scan read to it name nothing: they go, and the row stays.
-      const stamp = retirementStamp(rec.retention);
-      if (stamp === null) {
-        const found = scanned.pointers.get(segmentKey(ref)) ?? [];
-        // At most `limit` such tombstones are worked per call, as the litter pass is, so a long backlog cannot make
-        // one call arbitrarily long. The row is read again first, since the scan may be minutes old: a tombstone
-        // purged by hand and its name re-created since has a live row, and a pointer of its own is not litter.
-        if (!dryRun && removesRows && found.length > 0 && attemptedForeign < limit) {
-          attemptedForeign += 1;
-          try {
-            const live = await deps.registry.get(ref);
-            if (live?.status === 'destroyed' && retirementStamp(live.retention) === null) {
-              await forgetFoundPointers(deps.registry, found, noteFault);
-            }
-          } catch (err) {
-            noteFault(err);
-          }
-        }
-        continue;
-      }
-      if (!purgeTombstones || !purging) continue;
-      // Attribution is a POSITIVE MARKER the sweep writes on its own retirements, never an inference from
-      // "destroyed + an expired policy". That inference would be wrong, and the consequence serious: `shredSegment`
-      // never touches `retention`, so the ordinary ordering — set a 30-day policy, then a GDPR request arrives
-      // mid-window and you `destroySegment` — leaves a **crypto-shred** tombstone carrying an expired policy.
-      // Deleting that row destroys the local attestation for a right-to-erasure execution and un-fences the name
-      // for every writer. A marker cannot be forged by that ordering.
-      const retiredAt = stamp;
-      if (now - retiredAt < grace) continue; // inside the fence window; not ledger noise
-      if (attempted >= limit) {
-        limited = true;
-        break;
-      }
-      attempted += 1;
-      try {
-        if (!(await isFullyReclaimed(deps, ref))) {
-          // Self-heal rather than report-and-wait: `gcOrphanGenerations` takes EVERY generation of a destroyed
-          // row, and nothing else will ever call it for this segment (no load publishes onto a tombstone, and the
-          // erasure rewrite refuses one). Without this the row is stuck forever, the
-          // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
-          let collectFault: { error: unknown } | undefined;
-          if (!dryRun) {
-            await gcOrphanGenerations(ref, deps).catch((error: unknown) => {
-              collectFault = { error };
-            });
-          }
-          if (!(await isFullyReclaimed(deps, ref))) {
-            // A refused purge, as a refused row delete is below: not charged to `limit`, so the retirements behind it
-            // still get their turn (a role without delete permission makes every retirement a stuck tombstone, and
-            // charged, enough of them stopped every new one), and after enough in a row no more purges are tried this
-            // call. The collection's error, when it raised one, names the cause; a collection that lost a race to a
-            // write of the row is not a refusal, as a row delete's is not.
-            const lostRace = collectFault !== undefined && isWriteConflictError(collectFault.error);
-            if (!dryRun && !lostRace) {
-              attempted -= 1;
-              purgeRun += 1;
-              if (purgeRun >= MAX_CONSECUTIVE_PURGE_FAULTS) purging = false;
-              if (collectFault !== undefined) noteFault(collectFault.error);
-              else {
-                // The collection answered and the objects are still there: a store that acknowledges a delete it did not
-                // make, or a write that landed after its listing. Counted all the same, with what was seen as its cause.
-                purgeFaults += 1;
-                firstPurgeFault ??=
-                  "failed: the tombstone's objects were still there after its collection";
-              }
-            }
-            entries.push({ ...base, action: 'skipped', reason: 'tombstone-not-empty' });
-            continue;
-          }
-        }
-        // Fenced on the token of the row this decision was made from (the marker and its grace window), so a
-        // tombstone that was purged and re-created, or rewritten, since the scan is refused rather than deleted.
-        // Storage went first, above: the row is what keeps a straggler generation reachable by the collection.
-        // On a registry with a conditional delete the row is removed for good, under the version this delete
-        // reads, which carries that token; elsewhere it is tombstoned. Its pointers go only once it is gone: a
-        // delete that threw, its outcome unknown, removes nothing more, and the next scan reads the row again.
-        if (!dryRun) {
-          await deps.registry.delete(ref, rec.token);
-          tombstonesPurged += 1;
-          purgeRun = 0;
-          if (removesRows) {
-            await forgetPurgePointers(
-              deps.registry,
-              ref,
-              retiredAt + grace,
-              scanned.pointers.get(segmentKey(ref)) ?? [],
-              noteFault,
-            );
-          }
-        }
-        entries.push({
-          ...base,
-          action: dryRun ? 'would-purge-tombstone' : 'purged-tombstone',
-        });
-      } catch (err) {
-        if (!isWriteConflictError(err)) {
-          // Refused for a reason other than a lost race. Not charged to the limit, so the retirements behind it still
-          // get their turn; and after enough in a row, no more purges are tried this call.
-          attempted -= 1;
-          purgeRun += 1;
-          if (purgeRun >= MAX_CONSECUTIVE_PURGE_FAULTS) purging = false;
-          noteFault(err);
-        }
-        entries.push({ ...base, action: 'skipped', reason: failureReason(err) });
-      }
-      continue;
-    }
-
-    if (policy === null) continue; // no policy — this segment is not the sweep's business
-    if (policy === 'invalid') {
-      entries.push({ ...base, action: 'skipped', reason: 'invalid-policy' });
-      continue;
-    }
-    if (policy.expiresAt > now) continue; // not yet
-    eligible += 1;
-    if (attempted >= limit) {
-      // Stop SCANNING, not just stop acting. A `limit` entry per deferred row would make the ledger scale with the
-      // fleet rather than with the batch — 250,000 rows behind a bad backfill is ~15 MB of entries the caller did
-      // not ask for, all in one result object. They are not information: the next run picks them up, which is
-      // what `limited` says.
-      limited = true;
-      break;
-    }
-
-    try {
-      // Re-read the AUTHORITATIVE row before deleting anything. The enumeration is a snapshot, and on a large
-      // fleet the gap between drawing it and reaching this segment is the whole sweep — minutes. Cancelling an
-      // expiry is exactly the operator's recovery action for the bad-backfill case `limit` exists to survive, and
-      // it did not work if a sweep was already running: the segment was retired from the stale copy. One strong
-      // read per *eligible* segment, so the fleet enumeration stays a single `list()`. (`consistency.ts` takes the
-      // same care for a read-only check; an irreversible deletion deserves at least as much.)
-      const live = await deps.registry.get(ref);
-      const livePolicy = live === null ? null : readRetentionPolicy(live.retention);
-      if (
-        live === null ||
-        live.status === 'destroyed' ||
-        livePolicy === null ||
-        livePolicy === 'invalid' ||
-        livePolicy.expiresAt > now
-      ) {
-        entries.push({ ...base, action: 'skipped', reason: 'policy-changed' });
-        continue;
-      }
-
-      attempted += 1;
-      // `confirmSegment` is satisfied structurally here — in a loop the guard is the same value twice, which is
-      // why `dryRun` is the real preview. The dry run goes through `dropSegment` too, so the preview reports the
-      // generations a real sweep would delete rather than a guess.
-      //
-      // The re-read above is not the last word: the drop reads the row again, and an extension, a clear, a purge or
-      // someone else's tombstone can land between the two. So the drop is told what this sweep may retire, judged on
-      // every row its shred is about to replace, and writes this sweep's mark in the tombstone's own write.
-      const result = await dropSegmentFor(
-        ref,
-        deps,
-        { confirmSegment: rec.segment, dryRun, audit: options.audit },
-        dryRun
-          ? undefined
-          : {
-              wanted: (row) => {
-                const p = readRetentionPolicy(row.retention);
-                return p !== null && p !== 'invalid' && p.expiresAt <= now;
-              },
-              stamp: (retention) => ({ ...retention, [SWEEP_MARK]: now }),
-            },
-      );
-      if (result === null) {
-        attempted -= 1;
-        entries.push({ ...base, action: 'skipped', reason: 'policy-changed' });
-        continue;
-      }
-      if (dryRun) {
-        wouldRetire += 1;
-        entries.push({ ...base, action: 'would-retire', expiresAt: livePolicy.expiresAt, result });
-        continue;
-      }
-      if (!result.dropped) {
-        // `dropped: false` means the call found nothing to do, and the documented cause is a ref that does not
-        // address what the caller meant. Counting that as a retirement is how a sweep addressing the wrong segment
-        // reports success — so it is a ledger entry instead, carrying the reason `dropSegment` gave.
-        //
-        // Unreachable in practice now that the live re-read above proves the row exists (the only `dropped: false`
-        // path needs no row at all), except through the microsecond in which someone else deletes it. Kept, and
-        // labelled rather than claimed as covered: the invariant is "never count a no-op as a retirement", and it
-        // must hold if either that re-read or `dropSegment`'s reporting ever changes.
-        entries.push({
-          ...base,
-          action: 'skipped',
-          reason: `failed: drop reported ${result.reason}`,
-        });
-        continue;
-      }
-      retired += 1;
-      entries.push({ ...base, action: 'retired', expiresAt: livePolicy.expiresAt, result });
-      // The pointer has done its job. Dropping it keeps a bucket from accumulating rows that every subsequent
-      // lookback re-reads forever — the index would otherwise grow monotonically and slowly undo its own
-      // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
-      // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
-      await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt, noteFault);
-      if (
-        purgeTombstones &&
-        result.generationsDeleted.length === 0 &&
-        result.generationsRemaining.length === 0
-      ) {
-        // The segment really held nothing, so `dropSegment` has just written a tombstone for a name that was
-        // empty. Left in place that row FENCES the name against every writer — and `setRetention` will mint a
-        // row for any name, including a typo'd one, so this is reachable from a single mistake. Nothing
-        // existed, so there is nothing a delete could resurrect: remove the row instead of bricking the name.
-        //
-        // **Only while `purgeTombstones` is on.** `false` is the caller asking for every row of this sweep's
-        // retirements to stay, this one included; it falls through to the stamp below, so a later sweep with
-        // purging on can still delete it after the grace window (an empty segment is trivially fully reclaimed).
-        // Nothing re-processes it meanwhile: a `destroyed` row is skipped before any policy is read.
-        //
-        // **Both halves of the predicate are load-bearing.** `generationsDeleted: []` alone does NOT mean the
-        // segment was empty — it is equally what a segment whose every `storage.delete` threw produces, because
-        // `dropSegment`'s sweep loop stops once a pass deletes nothing. Purging the row on that reading left
-        // the expired objects readable and billed, and then unreachable by everything that could have
-        // collected them: `gcOrphanGenerations` returns `[]` with no row to compare against, the next sweep
-        // never sees the name again (no row to enumerate), and `dropSegment` takes its `'absent'` path. The
-        // data that was contractually supposed to expire stayed, silently, forever. `generationsRemaining` is
-        // the honest question and `dropSegment` computes it one field over for exactly this reason.
-        //
-        // When something DOES remain, falling through is the right move rather than a special case: the row
-        // keeps its tombstone, so reads stay refused, and the tombstone-purge pass above re-sweeps it with
-        // `gcOrphanGenerations` (which takes every generation of a destroyed row) and purges the row once it is
-        // genuinely empty. The residual is visible in this entry's `result.generationsRemaining` meanwhile.
-        //
-        // Fenced on the tombstone just written, so a name purged and re-created by someone else since is not
-        // tombstoned by this delete: only a `destroyed` row is removed, and only at the token it was read with.
-        //
-        // **A delete that fails falls through to the stamp as well.** Left unstamped, the row is indistinguishable
-        // from a crypto-shred's tombstone, which no sweep may ever delete, so one transient registry fault would
-        // keep a fenced name for good. Stamped, it is this sweep's own tombstone, and a later sweep purges it. The
-        // stamp itself only touches a `destroyed` row, so a name that was re-created meanwhile is left alone.
-        const tombstone = await deps.registry.get(ref).catch(() => null);
-        if (tombstone?.status === 'destroyed') {
-          const deleted = await deps.registry.delete(ref, tombstone.token).then(
-            () => true,
-            (err: unknown) => {
-              noteFault(err);
-              return false;
-            },
-          );
-          if (deleted) continue;
-        }
-      }
-      // The tombstone carries this sweep's mark from the write that made it, so a later sweep may purge the row (see
-      // the attribution note above). File the pointer an index scan finds it by on the day its grace ends.
-      if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
-    } catch (err) {
-      // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
-      // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
-      // settles which side of the tombstone we failed on.
-      const after = await deps.registry.get(ref).catch(() => null);
-      // Only this sweep's own tombstone, the one carrying its mark: a tombstone someone else wrote (a crypto-shred, a
-      // drop) is not a retirement of this sweep, and claiming it would let a later sweep purge an attestation.
-      if (
-        after?.status === 'destroyed' &&
-        (after.retention as Record<string, unknown> | undefined)?.[SWEEP_MARK] === now
-      ) {
-        if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
-        retired += 1;
-        entries.push({
-          ...base,
-          action: 'retired',
-          expiresAt: policy.expiresAt,
-          result: {
-            ...base,
-            dropped: true,
-            generationsDeleted: [],
-            generationsRemaining: [],
-            cryptoShredded: false,
-            reason: undefined,
-          },
-          fault: failureReason(err),
-        });
-        continue;
-      }
-      entries.push({ ...base, action: 'skipped', reason: failureReason(err) });
-    }
+    tally.add(
+      rec.status === 'destroyed' ? await purgeTombstone(rec, ctx) : await retireLive(rec, ctx),
+    );
+    if (tally.limited) break;
   }
 
   // Pointers to nothing, from either scan: remove each, so it is not read for again. Only those for this sweep's own slice
@@ -917,22 +998,22 @@ export async function retireExpired(
         await deps.registry.delete(pointer.ref, pointer.token);
       } catch (err) {
         // Left for a later scan: litter, not a wrong sweep. A delete the registry refuses is counted.
-        noteFault(err);
+        tally.noteFault(err);
       }
     }
   }
 
   return {
     scanned: mine.length,
-    eligible,
-    retired,
-    wouldRetire,
-    tombstonesPurged,
-    limited,
-    purgeFaults,
-    ...(firstPurgeFault === undefined ? {} : { firstPurgeFault }),
+    eligible: tally.eligible,
+    retired: tally.retired,
+    wouldRetire: tally.wouldRetire,
+    tombstonesPurged: tally.tombstonesPurged,
+    limited: tally.limited,
+    purgeFaults: tally.purgeFaults,
+    ...(tally.firstPurgeFault === undefined ? {} : { firstPurgeFault: tally.firstPurgeFault }),
     dryRun,
-    entries,
+    entries: tally.entries,
   };
 }
 
