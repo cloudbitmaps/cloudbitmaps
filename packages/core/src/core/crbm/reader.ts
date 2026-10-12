@@ -107,9 +107,10 @@ export function indexCapacity(indexLength: number): number {
 
 export interface CrbmReaderOptions {
   /**
-   * How many bytes the first tail read asks for (default 256 KB; clamped up to at least the footer size). Any value of at
-   * least an object's `tailBytes` opens it in that one read. The chunks of a small object are kept from the open only
-   * when this read covers the whole object, so a value below the default can leave them to reads of their own.
+   * How many bytes the first tail read asks for, a whole number (default 256 KiB; clamped up to at least the footer
+   * size). Any value of at least an object's `tailBytes` opens it in that one read. Where an open keeps a small object's
+   * chunks (a `CrbmStorageChunkSource`'s does), it keeps them only when this read covers the whole object, so a value
+   * below the default can leave them to reads of their own.
    */
   readonly tailBytes?: number;
   /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap, plus the 28-byte nonce and tag on an encrypted object). The engine decodes under `maxBitmapBytes`; raise this with it. */

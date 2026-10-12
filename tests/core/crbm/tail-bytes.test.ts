@@ -177,8 +177,9 @@ describe('a tail read of tailBytes opens the object in one request', () => {
   const shapes = [
     { name: 'empty', chunks: 0 },
     { name: 'narrow', chunks: 5 },
-    // One-byte chunks take 8 index bytes each: the index fits 256 KiB and the extension block before it does not.
-    { name: 'block straddling the default tail', chunks: 32_700 },
+    // One-byte chunks take 8 index bytes each, so at 32,752 the index and footer fit 256 KiB and the extension block
+    // before them does not: the default tail needs a second read for the block, and a tail of tailBytes does not.
+    { name: 'block straddling the default tail', chunks: 32_752 },
     { name: 'wide', chunks: 40_000 },
   ] as const;
   for (const { name, chunks } of shapes) {
@@ -195,6 +196,11 @@ describe('a tail read of tailBytes opens the object in one request', () => {
         expect(exact.calls).toEqual([`tail ${identity.tailBytes}`]);
         expect(reader.servedFromTail).toBe(true);
         expect(reader.tailBytes).toBe(identity.tailBytes);
+        if (name === 'block straddling the default tail' && metadata !== undefined) {
+          const byDefault = counting(bytes);
+          await CrbmReader.open(byDefault.blob, crypto);
+          expect(byDefault.calls).toHaveLength(2);
+        }
         // And no fewer: a byte less leaves part of the block or the index for a second request.
         if (identity.tailBytes > FOOTER_BYTES) {
           const short = counting(bytes);
