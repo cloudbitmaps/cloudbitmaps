@@ -665,6 +665,24 @@ describe('a lease write during a writer fenced on the row token does not starve 
     ).rejects.toBeInstanceOf(WriteConflictError);
     expect(seen.calls).toBe(5);
   });
+
+  it('(g) and clearRetention ends in the conflict after its 5 attempts too', async () => {
+    const w = world();
+    await loadN(w, 1);
+    await setSegmentRetention(SEG, { registry: w.registry, clock: w.clock }, { expiresAt: FAR });
+    const seen = { calls: 0 };
+    const racing = hooked(
+      w.registry,
+      'compareAndSwap',
+      () => true,
+      () => otherWrite(w, seen.calls),
+      seen,
+    );
+    await expect(clearSegmentRetention(SEG, { registry: racing, clock: w.clock })).rejects.toThrow(
+      /^clearRetention: contention clearing the retention policy for segment "s"$/,
+    );
+    expect(seen.calls).toBe(5);
+  });
 });
 
 describe('64 holders taking and releasing while a writer works', () => {
