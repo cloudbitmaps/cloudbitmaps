@@ -998,3 +998,31 @@ describe('a registry generation is a safe integer', () => {
     );
   });
 });
+
+describe('registry validators: a bad wrappedDeks list is a ValidationError from a caller and an IntegrityError from stored bytes', () => {
+  const bad: unknown[] = [
+    [],
+    'not-an-array',
+    [{ keyId: '', wrapped: 'w' }],
+    [{ keyId: 'k', wrapped: '' }],
+  ];
+  const classOf = (fn: () => unknown): string => {
+    try {
+      fn();
+    } catch (err) {
+      if (err instanceof IntegrityError) return 'integrity';
+      if (err instanceof ValidationError) return 'validation';
+      throw err;
+    }
+    return 'accepted';
+  };
+  it.each(bad.map((b) => [JSON.stringify(b), b] as const))('%s', (_label, wrappedDeks) => {
+    expect(classOf(() => validateNewRegistryRecord({ currentGen: 0, wrappedDeks } as never))).toBe(
+      'validation',
+    );
+    expect(classOf(() => validateRegistryPatch({ wrappedDeks } as never))).toBe('validation');
+    expect(classOf(() => assertStoredRecordShape({ ...stored(TK), wrappedDeks }, 'row'))).toBe(
+      'integrity',
+    );
+  });
+});

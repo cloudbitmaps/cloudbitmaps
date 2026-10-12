@@ -7,7 +7,7 @@ import {
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { joinId } from '@/core/bit-route';
 import type { GenKey, IStorageDriver } from '@/core/ports';
-import { TransientError } from '@/index';
+import { TransientError, WriteConflictError, destroySegment } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 
@@ -231,5 +231,42 @@ describe('the erasure scan for the generations holding the id', () => {
     });
     const res = await erase(p);
     expect(res).toMatchObject({ erased: true, fromGeneration: 2 });
+  });
+});
+
+describe('an id erasure under a tombstone reads few generations once one holds the id', () => {
+  it('searches newest first and stops at the first holder, both before the collection and for what it left', async () => {
+    const GENERATIONS = 40;
+    const inner = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    for (let g = 0; g < GENERATIONS; g++) {
+      const key = { ...SEG, generation: g };
+      await writeCrbmGeneration(inner, key, [
+        { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2]) },
+      ]);
+      await publishGeneration(registry, key);
+    }
+    // A cleartext destroy leaves every object in place, readable by anyone.
+    await destroySegment(SEG, { registry }, { confirmSegment: 's', allowCleartext: true });
+    let opens = 0;
+    const storage: IStorageDriver = {
+      capabilities: () => inner.capabilities(),
+      getRange: (key, offset, length) => inner.getRange(key, offset, length),
+      getTail: (key, max) => {
+        opens++;
+        return inner.getTail(key, max);
+      },
+      putImmutable: (key, fn) => inner.putImmutable(key, fn),
+      list: (ref) => inner.list(ref),
+      // A driver whose deletes do not take: what the collection could not remove is still there to be found.
+      delete: async () => {},
+    };
+    await expect(
+      eraseIdFromSegment(SEG, ID, { storage, registry, codec: roaringCodec }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    // Two searches (the one that finds a holder, and the one for what the collection left), each at most a window of
+    // reads deep, not one read per generation.
+    expect(opens).toBeGreaterThan(0);
+    expect(opens).toBeLessThanOrEqual(12);
   });
 });
