@@ -238,7 +238,8 @@ Erasure ignores every lease. `eraseSubject` and `eraseIdFromSegment` delete the 
 collection that follows an erasure rewrite deletes every generation below the new one, a leased one included; the
 rewrite clears the row's leases. An erasure that finds the id only in a generation other than the current one deletes
 that generation, leased or not, and leaves the row's leases as they are (the row writes it makes, the renewals before
-it deletes a generation above the pointer or an object it cannot search, renew the row's `pointerId` and keep them),
+it deletes a generation above the pointer, an object it cannot search or its own refused rewrite, renew the row's
+`pointerId` and keep them),
 so an entry for a generation it deleted stays in the list until the entry's own time ends or the next publish or lease
 write prunes it: it spares nothing, since the object is gone, and it counts toward the 64 places until then. A
 `destroySegment`, a `dropSegment` and a retention expiry delete every generation and leave no lease on the tombstone.
@@ -316,7 +317,8 @@ older generation, above the pointer or below.
 another erasure, or an operator's `rollback`. Another erasure collects with `keep: 0`, so it can delete the generation
 this rewrite was still streaming, or the object it had just written. Two erasures of different ids racing on one
 segment are safe: the loser's rewrite still holds the winner's id, and when it sits above the winner's pointer the
-loser deletes it before returning, once its footer proves it the loser's own object.
+loser deletes it before returning, once its footer matches the loser's rewrite and the loser has renewed the row, which
+refuses any load that wrote those same bytes under that number ([a number taken again](#how-it-stays-correct)).
 The outcome is read off the registry row. A segment whose row is tombstoned
 mid-rewrite is searched as a fresh call searches a tombstone, so a cleartext object a drop left that still holds the
 id is deleted; one whose row is purged mid-rewrite is left out of the ledger, as a fresh call would leave it out. The rewrite publishes fenced on the generation it streamed and the row's token, and
@@ -351,9 +353,10 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   slower rollback can still be undoing itself, so check `store.generations(ref)` or `checkConsistency()` first: while
   the pointer names a missing object, reads that open the segment's current generation fail with `NotFoundError` until
   a rollback moves it to a generation in the bucket. One delete is not held to this: a refused rewrite's delete of its
-  own object above the winner's pointer, where the call reads the row, then the object's footer, then deletes. A
-  rollback with `allowForward` onto that object inside that window leaves the pointer on a missing object with nothing
-  reported, and only `checkConsistency()` finds it.
+  own object above the winner's pointer, where the call reads the row, then the object's footer, renews the row, then
+  deletes. A rollback that read the row before that renewal is refused with `WriteConflictError`; one onto that object
+  between the renewal and the delete (with `allowForward`, or without it once a load has raised the pointer past the
+  object) leaves the pointer on a missing object with nothing reported, and only `checkConsistency()` finds it.
 
 **A number taken again during an erasure.** A generation number can be taken again once its object is deleted. While
 a call deletes a holder by name, above the pointer or on a segment with no generation yet, another erasure of the same
@@ -366,11 +369,17 @@ segment's key. A driver that reports `conditionalDelete` deletes only that objec
 call deletes nothing more, and it reports `erased: true` when nothing left holds the id, or the reason the row gives,
 `'superseded'` as a rule. A refused rewrite that deletes its own object again above the winner's pointer (see racing
 writers above) meets the same race, another erasure deleting that object as a holder and a load taking its number, and
-does the same: it first proves the object under its number is the one it wrote, by a read of its footer, keeps one
-that is gone, is another object or cannot be read, and passes the version that read reported, so the load's
-generation stays. A delete the driver refuses there is a fault of the cleanup, and the call reports what the row says.
-Any other fault of that delete is thrown in place of the answer, as any storage delete fault of an erasure is. Which
-drivers report it:
+one more: a read of the footer names an object by its bytes, and a load of the ids the rewrite holds, in the clear,
+writes the rewrite's very bytes. So it first reads the footer of the object under its number and keeps one that is
+gone, is another object or cannot be read. Then it renews the row it read, as it does before deleting a holder, so a
+load that wrote the object that read matched, which read the row before writing it, is refused at its publish. A
+renewal that loses means another write landed since: the call reads the row and decides again, and after 8 such losses
+it keeps the object (a write of leases alone is waited out, and costs none of the 8). Only then does it delete,
+passing the version the footer read reported, so a load that took the number after the renewal keeps its generation. A
+delete the driver refuses there is a fault of the cleanup, and the call reports what the row says. Any other fault of
+that delete, or of the renewal (its `TransientError` when it gets no answer that reading the row can settle), is
+thrown in place of the answer, as any storage delete fault of an erasure is. A load the renewal refuses reports
+`superseded`, as it does after any write that landed while it ran: load again. Which drivers report it:
 
 | Storage | `conditionalDelete` |
 |---|---|
@@ -392,8 +401,10 @@ repaired. These limits hold on every driver:
 - On S3 the version is the object's ETag, which for an object stored without SSE-KMS or SSE-C is computed from its
   bytes. Two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes, share
   one, so a load that writes, under the number taken again, exactly the bytes of the holder (the same ids and metadata,
-  in the clear) is not told apart from it. An encrypted generation written through the shipped keystore seals every
-  chunk under a fresh random nonce, so its bytes differ from any other write's.
+  in the clear) is not told apart from it. At a refused rewrite's discard the renewal before the delete refuses every
+  load that wrote those bytes before it, so only one that took the number after the renewal, in the one round trip
+  before the delete, is lost that way. An encrypted generation written through the shipped keystore seals every chunk
+  under a fresh random nonce, so its bytes differ from any other write's.
 - A refused rewrite whose row is `destroyed` deletes its own object by number, and so does a refused load that finds
   its row unchanged, changed only in its leases, or `destroyed`: the decision comes from the row, and the write reports
   no version of what it wrote. Under a `destroyed` row every writer is refused until the row is purged, so no load

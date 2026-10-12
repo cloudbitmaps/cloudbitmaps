@@ -799,7 +799,7 @@ version names, refusing another with `WriteConflictError`, so a delete decided f
 remove an object stored under the key since: a generation number can be taken again once its object is deleted. An
 erasure passes the version of the read that made an object a holder whenever it deletes that object by name (a holder
 above the pointer or on a segment with no generation yet, or an object it cannot search), a refused rewrite the version
-of the footer read that proved its object above the winner's pointer its own, and a refused load the version of the
+of the footer read that matched its object above the winner's pointer, after a renewal of the row, and a refused load the version of the
 footer read that proved its object its own. `false` or absent: the version is ignored. A driver that learns this
 from its client may report `false` until its first delete given `ifVersion`; what the delete does is what it states,
 and the S3 driver is one. The in-memory driver reports `true`, the local-filesystem one `false`, the cloud ones as their

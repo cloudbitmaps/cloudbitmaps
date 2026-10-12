@@ -1400,8 +1400,9 @@ number can be taken again (after a rollback below it, a load can number it afres
 there and nothing is wrong). On a storage driver that ignores a delete's condition, an erasure's stale delete can remove
 a load's object published under a number taken again; the same read reports that too. A tombstone's collection makes no
 such read: no rollback moves a `destroyed` row's pointer. One delete is not held to this: a refused erasure rewrite's
-delete of its own object above the winner's pointer, which a rollback with `allowForward` onto that object in the same
-round trip leaves named by the pointer, with nothing reported; `checkConsistency()` finds it.
+delete of its own object above the winner's pointer, made after it renews the row, which a rollback onto that object in
+the round trip between the renewal and the delete leaves named by the pointer, with nothing reported;
+`checkConsistency()` finds it.
 
 **It gives the rollback's own check time to finish.** The more common order is the other one: the rollback's check runs
 after the delete, finds the object gone and puts the pointer back, and the deleting call's read lands between the move

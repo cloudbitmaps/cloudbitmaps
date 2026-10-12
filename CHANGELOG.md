@@ -149,6 +149,22 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A refused erasure rewrite no longer deletes a load's generation that has the same bytes.** When another writer's
+  publish refused an erasure's rewrite and left the pointer below it, the erasure deleted its own object above that
+  pointer once one read of its footer matched the rewrite's fingerprint. A footer names an object by its bytes, and a
+  load of the ids the rewrite held, in the clear, writes those very bytes under the same number: once another erasure
+  had deleted the rewrite's object as a holder, a load could take the number again, and the refused erasure's delete
+  removed that load's generation, before or after it published, so the row named an object that is not in the bucket,
+  every read of the segment failed, and nothing reported it. The erasure now renews the row it read after the footer
+  read and before the delete, with a compare-and-swap that names the pointer at its value, as it does before deleting
+  a holder, so a load that wrote those bytes before the renewal is refused at its publish and reports `superseded`. A
+  renewal that loses to another write makes it read the row and decide again, and after 8 such losses it keeps the
+  object; a write of leases alone is waited out. The renewal is one registry write more on a refused rewrite that
+  discards its object, and one that gets no answer is settled by reading the row, or throws its `TransientError` with
+  nothing deleted. One round trip remains between the renewal and the delete: a rollback onto the object inside it,
+  and on a storage driver whose versions come from the bytes (S3's ETag, without SSE-KMS or SSE-C) a load that takes
+  the number inside it with the same bytes, still leave the pointer on a missing object ([a number taken again during
+  an erasure](docs/guide/erasure.md#how-it-stays-correct)).
 - **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and the
   `*Into` verbs read at most 16 operands at a time: the listing of their chunk keys on every plan, the plan a move
   makes included; the check, on the first plan, of whether each operand that holds no chunk exists; and the lookup of
