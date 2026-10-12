@@ -752,9 +752,9 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
 
 /**
  * Work one live row: retire it when its policy has expired, after reading the row again. A retirement goes into the
- * ledger here, before its cleanup, so a fault that escapes the cleanup cannot take it out. Any other outcome is returned
- * as the ledger entry, or `null` when there is none: no policy, one not yet due, or the limit reached. Setting
- * `tally.limited` ends the sweep.
+ * ledger here, before its cleanup, so a fault that escapes the cleanup cannot take it out, and returns `null`. Any other
+ * outcome is returned as its ledger entry, or `null` when there is none: no policy, one not yet due, or the limit
+ * reached. Setting `tally.limited` ends the sweep.
  */
 async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<RetireEntry | null> {
   const { deps, opts, removesRows, tally } = ctx;
