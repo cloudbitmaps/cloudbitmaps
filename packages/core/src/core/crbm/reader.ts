@@ -545,7 +545,10 @@ export class CrbmReader {
 
   /** Chunk keys present in this generation, ascending. */
   chunkKeys(): number[] {
-    return Array.from(this.index.keys);
+    const keys = this.index.keys;
+    const out = new Array<number>(keys.length);
+    for (let i = 0; i < keys.length; i++) out[i] = keys[i]!;
+    return out;
   }
 
   /** Segment cardinality from the footer (no payload reads) — the cheap `count()` path. */
