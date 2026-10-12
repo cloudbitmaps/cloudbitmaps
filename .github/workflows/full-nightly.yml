@@ -1,35 +1,47 @@
 name: Full-strength tests (nightly)
 
-# The whole unit suite at FULL strength, on `main`, every night, and on demand.
+# The whole unit suite (`pnpm test`, integration excluded) at FULL strength, on `main`, every night, and on demand.
 #
 # A pull request runs `pnpm test` with the heavy tests at a reduced size (see `tests/helpers/strength.ts`): fewer
-# property cases, a smaller registry, fewer measured bitmaps. That keeps a push cheap. This workflow is what keeps the
+# property cases, a smaller listing, fewer measured bitmaps. That keeps a push cheap. This workflow is what keeps the
 # coverage: `CB_TEST_STRENGTH=full` makes each of those tests run the size it had before the reduction, so a
 # regression only the large size can show is caught within a day, on `main`, instead of never.
 #
 # It does not gate a pull request and is not among the required checks. A red run fails THIS workflow run: it shows
-# red on the Actions tab for `main`, and GitHub emails the person who last changed this file's schedule (and, for a
-# manual dispatch, the person who started it). The next nightly run is the retry, so a flaky first failure heals
-# itself; a second red night in a row is a real signal.
+# red on the Actions tab for `main`. GitHub notifies one user for a scheduled run, whoever last changed the cron line
+# (the workflow's creator before that), as that user's notification settings allow; for a manual dispatch, the person
+# who started it. A
+# property suite's failure is a counterexample, not a flake: replay it with the seed in the log
+# (`FC_SEED=<seed> CB_TEST_STRENGTH=full pnpm vitest run <file>`); the next night draws new cases and may well be green.
 #
-# Same Node versions as the `build & test` matrix in ci.yml. Keep the two in step.
+# Same Node versions as the `build & test` matrix in ci.yml; `tests/ci/runtime-version-policy.test.ts` holds both.
 
 on:
   schedule:
     - cron: '0 4 * * *' # 04:00 UTC nightly, an hour before the fuzz campaign starts
   workflow_dispatch:
-  # A 'full-strength' smoke run when THIS FILE changes, for the reason the fuzz workflow gives for its own: without it
-  # nothing on a pull request would run a line of it. Scoped to this path alone.
+  # A full-strength run (the whole unit suite, a few minutes a Node version) when this file, the switch or one of the
+  # heavy tests changes, so the pull request that touches them has run them at their full size. Without it nothing on a
+  # pull request would run a line of this workflow.
   pull_request:
     paths:
       - .github/workflows/full-nightly.yml
+      - tests/helpers/strength.ts
+      - tests/bench/calibrate-large.test.ts
+      - tests/core/combine-many.property.test.ts
+      - tests/core/combine-many.feed.property.test.ts
+      - tests/core/retention-hard-purge.test.ts
+      - tests/core/erase-namespace-bounded.test.ts
+      - tests/core/combine-ledger.test.ts
 
 permissions:
   contents: read
 
+# Per event, as in ci.yml, and a run is cancelled only on a pull request: a manual dispatch on `main` must not cancel the
+# night's scheduled run, which would end grey with no failure notice.
 concurrency:
-  group: full-nightly-${{ github.ref }}
-  cancel-in-progress: true
+  group: full-nightly-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   full:

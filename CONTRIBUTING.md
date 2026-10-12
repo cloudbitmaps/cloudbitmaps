@@ -65,9 +65,9 @@ RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflow
 says why each one is there.
 
 `pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:
-[`.github/workflows/full-nightly.yml`](.github/workflows/full-nightly.yml) runs the whole suite at full strength on
+[`.github/workflows/full-nightly.yml`](.github/workflows/full-nightly.yml) runs the whole unit suite (`pnpm test`) at full strength on
 `main` every night, on each Node version `ci.yml` tests, and on demand (`workflow_dispatch`). It is not a required check
-and gates no pull request; a red run shows on the Actions tab. Run it locally with `CB_TEST_STRENGTH=full pnpm test`,
+and gates no pull request; a red run shows on the Actions tab. It also runs on a pull request that changes the workflow, the switch or a heavy test. Run it locally with `CB_TEST_STRENGTH=full pnpm test`,
 before changing one of the heavy tests or the code under it. [`tests/README.md`](tests/README.md#full-strength) lists
 them and their sizes.
 
