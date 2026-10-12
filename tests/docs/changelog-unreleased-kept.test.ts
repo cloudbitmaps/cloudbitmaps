@@ -56,6 +56,12 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
       "the row's summary records the object's size in the same unreleased minor, so a cold stat() stays one registry " +
       'read; the entry that adds sizeBytes says where it comes from',
   },
+  {
+    title: 'The `PinnedAt.fingerprint` doc comment',
+    reason:
+      'the fingerprint is required in the same unreleased minor, so the comment no longer describes a pin without one; ' +
+      'the Breaking entry states the change',
+  },
 ];
 
 const FETCH = `fetch the history and the base branch (\`git fetch --unshallow origin main\`, or check out with \`fetch-depth: 0\`)`;

@@ -209,7 +209,7 @@ describe('stat().sizeBytes', () => {
       source,
       new Map<string, PinnedAt>([
         [segmentKey(SEG), pin],
-        [segmentKey(other), { generation: null, version: null }],
+        [segmentKey(other), { generation: null, version: null, fingerprint: null }],
       ]),
     );
 
