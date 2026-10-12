@@ -734,6 +734,8 @@ describe('CrbmStorageChunkSource.getChunks: what a stream bounds, and what it re
     }
     expect(storage.ranges).toHaveLength(0);
     expect(storage.tails).toBe(0);
+    // With no keys there is no chunk ref to copy, and such a ref is read, as on main.
+    expect(await collect(cold.getChunks(new Inherited() as SegmentRef, []))).toEqual([]);
   });
 
   it('stops retrying the ranges of a stream that was abandoned: nothing is sent after the break but what was in flight', async () => {

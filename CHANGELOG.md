@@ -65,7 +65,8 @@ so, and so do the module headers in the code.
   loop, and the check range-tests every key and notes whether the list is strictly ascending in one pass, sorting and
   scanning for a repeat only a list that is not (a custom source's, say). Every key is still range-checked, and an
   out-of-range, repeated or unsorted list is refused or ordered exactly as before. A chunk read (`getChunks`,
-  `getChunksAt`) also validates the segment's name once rather than once a key. The requests made are unchanged. Measured
+  `getChunksAt`) also validates the segment's name twice a read, as given and as a chunk ref copies it, rather than once
+  more for every key. The requests made are unchanged. Measured
   warm, a page of 1,000 ids of a 65,536-chunk segment takes about half the time it did, a one-id page of a 2,000-chunk
   segment about a quarter, and a cold first id of a 65,536-chunk segment a little over half.
 - **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
