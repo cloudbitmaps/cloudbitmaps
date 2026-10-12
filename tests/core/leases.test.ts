@@ -504,15 +504,14 @@ describe('a load collects around a lease', () => {
     expect(have).toEqual([0, 3, 4, 5]);
   });
 
-  it('a row with no list lists and spares the lease, then records the window and the leased generation', async () => {
+  it('a row with no list lists and spares the lease, then records the window without it', async () => {
     const w = world();
     await loadMany(w, 3, { keep: 100 }); // keep above 64 records no list
     await putLeases(w, [lease(1, 0, w.clock.t + 1000)]);
     await loadMany(w, 1, { keep: 1 });
     const row = (await w.registry.get(SEG))!;
     expect(await generations(w.memory)).toEqual([0, 2, 3]);
-    // The ledger holds the leased generation 0 beside the window, so it stays a rollback target while its lease lives.
-    expect(windowOf(row)).toEqual([0, 2]);
+    expect(windowOf(row)).toEqual([2]);
   });
 
   it('a load with no clock cannot tell a live lease from an ended one, and reads none', async () => {

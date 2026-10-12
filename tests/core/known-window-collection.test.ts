@@ -118,7 +118,7 @@ describe('a same-bytes publish misattributed to another load', () => {
 
   it('keep 0: the false report stands, and the collection spares the generation the ledger names', async () => {
     const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const registry: IRegistryDriver = new MemoryRegistryDriver();
     const deps = { storage, registry, codec: roaringCodec, clock };
     expect(await loadSegment(REF, [9], deps)).toMatchObject({ generation: 0, published: true });
 

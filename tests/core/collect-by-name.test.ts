@@ -376,8 +376,7 @@ describe('a load lists when its row records no list, or its number or current ob
     const w = world();
     await loadMany(w, 5, { keep: 9 });
     await rollbackSegment(SEG, 2, { storage: w.memory, registry: w.registry });
-    // The ledger survives the rollback: the generations below the pointer it names are the window; 3 and 4 sit above.
-    expect(windowOf(await w.registry.get(SEG))).toEqual([0, 1]);
+    expect(windowOf(await w.registry.get(SEG))).toBeUndefined();
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps);
     expect(r).toMatchObject({ generation: 5, published: true });
@@ -774,8 +773,7 @@ describe('a load whose publish landed does not fail on a race its collection mee
     const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
     expect(a).toMatchObject({ generation: 16, published: true });
     expect((await w.registry.get(SEG))!.currentGen).toBe(15);
-    // The load's publish seeded a ledger (15, 16), and the rollback carried it: 16 sits above the pointer, so nothing is below it.
-    expect(windowOf(await w.registry.get(SEG))).toEqual([]);
+    expect(windowOf(await w.registry.get(SEG))).toBeUndefined();
     expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
   });
 

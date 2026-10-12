@@ -1,4 +1,4 @@
-import { carriesWindow, windowOf } from '@/core/known-generations';
+import { windowOf } from '@/core/known-generations';
 import { loadSegment } from '@/core/load';
 import type { RegistryRecord, SegmentRef } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -42,14 +42,13 @@ describe.each([129, 200])(
   },
 );
 
-describe('a ledger with many names below the pointer', () => {
+describe('windowOf over a ledger with many names below the pointer', () => {
   const row = (below: number): RegistryRecord => {
     const known = Array.from({ length: below + 1 }, (_, g) => ({ generation: g, footerCrc: 1 }));
     return { currentGen: below, status: 'active', knownGens: known } as unknown as RegistryRecord;
   };
-  it('is a window at 64 names and not at 65', () => {
+  it('names 64 and not 65', () => {
     expect(windowOf(row(64))).toHaveLength(64);
-    expect(carriesWindow(row(64), new Set())).toBe(true);
-    expect(carriesWindow(row(65), new Set())).toBe(false);
+    expect(windowOf(row(65))).toBeUndefined();
   });
 });
