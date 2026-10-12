@@ -87,6 +87,8 @@ export class CrbmWriter {
   private readonly metadata: Uint8Array | undefined;
   /** Bytes written so far, the footer included once {@link finish} has run. */
   private written = 0;
+  /** Where the chunk payloads end: the extension block's start when there is metadata, else the index's. */
+  private payloadEnd = 0;
   private footerCrc32c: number | undefined;
 
   constructor(
@@ -150,6 +152,7 @@ export class CrbmWriter {
   async finish(): Promise<void> {
     if (this.finished) throw new ValidationError('CrbmWriter already finished');
     await this.ensurePreamble();
+    this.payloadEnd = this.offset;
 
     if (this.metadata !== undefined) {
       const block = this.extensionBlock(this.metadata);
@@ -185,11 +188,20 @@ export class CrbmWriter {
   /**
    * The finished object's size and its footer's CRC: what names it, as a reader's fingerprint does. A writer that
    * has to tell its own object from another stored later under the same key compares these with the object's
-   * footer. Throws before {@link finish}.
+   * footer. `tailBytes` is the bytes after the chunk payloads (any extension block, the index and the footer), which
+   * is what {@link CrbmReader.tailBytes} reports for the object. Throws before {@link finish}.
    */
-  get identity(): { readonly size: number; readonly footerCrc: number } {
+  get identity(): {
+    readonly size: number;
+    readonly footerCrc: number;
+    readonly tailBytes: number;
+  } {
     if (this.footerCrc32c === undefined) throw new ValidationError('CrbmWriter not finished');
-    return { size: this.written, footerCrc: this.footerCrc32c };
+    return {
+      size: this.written,
+      footerCrc: this.footerCrc32c,
+      tailBytes: this.written - this.payloadEnd,
+    };
   }
 
   private async ensurePreamble(): Promise<void> {

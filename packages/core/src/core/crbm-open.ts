@@ -8,7 +8,7 @@ import { ascending } from './order';
 import type { CrbmCrypto } from './crypto';
 import type { GenerationMetadata, GenKey, IStorageDriver, TailRead } from './ports';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
-import { CrbmReader, footerSaysEncrypted, openCrbmReaderKeeping } from './crbm/reader';
+import { CrbmReader, footerSaysEncrypted, openCrbmReaderKeeping, readFooter } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
 import { summaryAgrees } from './summary';
 
@@ -146,6 +146,50 @@ function rememberingTail(blob: BlobReader): BlobReader {
 }
 
 /**
+ * What one tail read of a rollback target says about it with no key: whether the footer says it is encrypted and its
+ * CRC, and the remembered tail an open from it ({@link openRollbackTargetFrom}) is answered from.
+ */
+interface RollbackTargetFooter {
+  readonly encrypted: boolean;
+  readonly footerCrc: number;
+  readonly blob: BlobReader;
+}
+
+/**
+ * The footer step of a rollback: one tail read of the object under `key`, which is remembered for the open that may
+ * follow. A footer that fails its own checks is an {@link IntegrityError}; a missing object is {@link NotFoundError}.
+ */
+export async function readRollbackTargetFooter(
+  storage: IStorageDriver,
+  key: GenKey,
+): Promise<RollbackTargetFooter> {
+  const blob = rememberingTail(storageBlobReader(storage, key));
+  await blob.getTail(DEFAULT_TAIL_BYTES);
+  return { ...(await readFooter(blob)), blob };
+}
+
+/**
+ * The reader {@link RollbackTargetFooter}'s object opens as, from its remembered tail, when the object and the key
+ * agree (an encrypted object opened with `crypto`, a cleartext one with none); `undefined` when they disagree, which
+ * the caller refuses as a target the row cannot use. An object that is another generation's, and an index or metadata
+ * that do not open, are an {@link IntegrityError}.
+ */
+export async function openRollbackTargetFrom(
+  footer: RollbackTargetFooter,
+  key: GenKey,
+  crypto: CrbmCrypto | undefined,
+): Promise<CrbmReader | undefined> {
+  if (footer.encrypted !== (crypto !== undefined)) return undefined;
+  const reader = await CrbmReader.open(footer.blob, { crypto });
+  if (reader.generation !== key.generation) {
+    throw new IntegrityError(
+      `segment "${key.segment}" generation ${key.generation}: its footer says generation ${reader.generation}`,
+    );
+  }
+  return reader;
+}
+
+/**
  * What one tail read of the object under `key` tells a rollback about it: whether the footer says it is encrypted, and,
  * when the object and the key agree (an encrypted object opened with `crypto`, a cleartext one with none), the reader
  * the open gives, which holds its count and metadata. No reader when they disagree, which the caller refuses as a
@@ -157,17 +201,17 @@ export async function openRollbackTarget(
   key: GenKey,
   crypto: CrbmCrypto | undefined,
 ): Promise<{ encrypted: boolean; reader: CrbmReader | undefined }> {
-  const blob = rememberingTail(storageBlobReader(storage, key));
-  await blob.getTail(DEFAULT_TAIL_BYTES);
-  const encrypted = await footerSaysEncrypted(blob);
-  if (encrypted !== (crypto !== undefined)) return { encrypted, reader: undefined };
-  const reader = await CrbmReader.open(blob, { crypto });
-  if (reader.generation !== key.generation) {
-    throw new IntegrityError(
-      `segment "${key.segment}" generation ${key.generation}: its footer says generation ${reader.generation}`,
-    );
-  }
-  return { encrypted, reader };
+  const footer = await readRollbackTargetFooter(storage, key);
+  return { encrypted: footer.encrypted, reader: await openRollbackTargetFrom(footer, key, crypto) };
+}
+
+/**
+ * The footer CRC of the object under `key` ({@link CrbmReader.fingerprint} carries it), from one read of a footer's
+ * worth, so it reads an encrypted object's CRC as it does a cleartext one's, with no key. {@link NotFoundError} when
+ * the key holds no object; a footer that fails its own checks is an {@link IntegrityError}.
+ */
+export async function footerCrcUnder(storage: IStorageDriver, key: GenKey): Promise<number> {
+  return (await readFooter(storageBlobReader(storage, key))).footerCrc;
 }
 
 /**

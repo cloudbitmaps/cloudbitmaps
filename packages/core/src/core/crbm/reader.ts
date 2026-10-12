@@ -106,7 +106,12 @@ export function indexCapacity(indexLength: number): number {
 }
 
 export interface CrbmReaderOptions {
-  /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
+  /**
+   * How many bytes the first tail read asks for, a whole number (default 256 KiB; clamped up to at least the footer
+   * size). Any value of at least an object's `tailBytes` opens it in that one read. Where an open keeps a small object's
+   * chunks (a `CrbmStorageChunkSource`'s does), it keeps them only when this read covers the whole object, so a value
+   * below the default can leave them to reads of their own.
+   */
   readonly tailBytes?: number;
   /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap, plus the 28-byte nonce and tag on an encrypted object). The engine decodes under `maxBitmapBytes`; raise this with it. */
   readonly maxPayloadBytes?: number;
@@ -168,15 +173,29 @@ function checkedFooter(
 }
 
 /**
+ * What the footer of the object behind `blob` says with no key and no index, from one tail read of a footer's worth:
+ * whether it is encrypted, and its CRC (the one in {@link CrbmReader.fingerprint}). A footer that fails its own checks
+ * throws, as an open would.
+ */
+export async function readFooter(
+  blob: BlobReader,
+): Promise<{ readonly encrypted: boolean; readonly footerCrc: number }> {
+  const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
+  const { fview, storedFooterCrc } = checkedFooter(tail, size);
+  return {
+    encrypted: (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) !== 0,
+    footerCrc: storedFooterCrc,
+  };
+}
+
+/**
  * Whether the object behind `blob` says it is encrypted, from one tail read of a footer's worth, with no key and no
  * index; a footer that fails its own checks throws, as an open would. For a caller that must not open an object with
  * the key it holds: an erasure looking for an id in a cleartext object under an encrypted segment, and a rollback
  * checking that its target is what the row says.
  */
 export async function footerSaysEncrypted(blob: BlobReader): Promise<boolean> {
-  const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
-  const { fview } = checkedFooter(tail, size);
-  return (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) !== 0;
+  return (await readFooter(blob)).encrypted;
 }
 
 /** Read a u64 footer field, rejecting values past JS safe-integer range (precision would be lost). */
@@ -255,6 +274,14 @@ export class CrbmReader {
   /** Total object bytes (from the one-GET tail read): the `sizeBytes` a segment's `stat()` reports. */
   get sizeBytes(): number {
     return this.objectSize;
+  }
+
+  /**
+   * The bytes of the object after its chunk payloads: any extension block, the index and the footer. A tail read of
+   * this many bytes covers all of them.
+   */
+  get tailBytes(): number {
+    return this.objectSize - this.payloadEnd;
   }
 
   /**
