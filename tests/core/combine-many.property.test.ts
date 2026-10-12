@@ -3,6 +3,7 @@
  * a chunk can take, with and without a range that cuts two chunks, in one group and in many.
  */
 import fc from 'fast-check';
+import { heavy } from '../helpers/strength';
 import { describe, expect, it } from 'vitest';
 import type { CombineExpr } from '@/core/combine-many';
 import { nativeOutput, runBatch, toNative } from '../helpers/combine-many';
@@ -100,7 +101,7 @@ describe('batch combine against native Roaring', () => {
         const { run } = await runBatch(POOL, specs);
         expectMatches(specs, run);
       }),
-      { numRuns: 30 },
+      { numRuns: heavy('combineManyOneGroupRuns') },
     );
   }, 120_000);
 
@@ -121,7 +122,7 @@ describe('batch combine against native Roaring', () => {
           expect(grouped.run.outputs).toEqual(whole.run.outputs);
         },
       ),
-      { numRuns: 20 },
+      { numRuns: heavy('combineManyRangeRuns') },
     );
   }, 120_000);
 });

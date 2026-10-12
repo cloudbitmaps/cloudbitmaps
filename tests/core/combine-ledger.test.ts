@@ -9,6 +9,7 @@ import {
   serializedBound,
 } from '@/core/combine-ledger';
 import { GroupCost } from '@/core/combine-many';
+import { heavy } from '../helpers/strength';
 
 describe('the resident-bytes ledger', () => {
   it('charges, refuses what does not fit, releases, and keeps a high-water mark', () => {
@@ -87,7 +88,7 @@ describe('resident bytes of a native bitmap', () => {
   it.each([1, 20, 200, 1_000, 3_000, 20_000])(
     'is bounded by the model at %i ids a chunk',
     (c) => {
-      const { residentPer, serializedPer } = measure(c, 8_000);
+      const { residentPer, serializedPer } = measure(c, heavy('combineLedgerSamples'));
       // A 5% allowance for the allocator's rounding at this sample size; the model carries far more than that.
       expect(residentBytes(serializedPer)).toBeGreaterThanOrEqual(residentPer * 0.95);
       expect(residentBound(c)).toBeGreaterThanOrEqual(residentBytes(serializedPer) * 0.9);

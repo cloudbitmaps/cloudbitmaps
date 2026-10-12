@@ -15,6 +15,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { CloudRoaring, MemoryStorage } from '@/index';
+import { heavy } from '../helpers/strength';
 
 // The large suite (`--suite large`): combines on operands of about 10^6, 5 x 10^6 and 10^7 ids. It is a suite of its
 // own, with its own stages, bound, expected counts and evidence directory, so the default suite's figures and gates
@@ -809,7 +810,9 @@ describe('the range cap', () => {
 
   it('is never exceeded by the engine over random selective layouts and ones built to approach it, for any verb and either operand', async () => {
     const rnd = seeded(7);
-    const layouts: Layout2[] = Array.from({ length: 40 }, () => randomLayout(rnd));
+    const layouts: Layout2[] = Array.from({ length: heavy('calibrateLargeRandomLayouts') }, () =>
+      randomLayout(rnd),
+    );
     // Random layouts use at most half the cap; these come near it: every wanted chunk a read of its own.
     for (const gap of [32, 33, 36, 40, 48]) layouts.push(nearCap(gap, 400));
     let worst = 0;

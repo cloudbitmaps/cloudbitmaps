@@ -4,6 +4,7 @@
  * random boundaries, with and without a range that cuts two chunks.
  */
 import fc from 'fast-check';
+import { heavy } from '../helpers/strength';
 import { describe, expect, it } from 'vitest';
 import type { CombineExpr } from '@/core/combine-many';
 import { nativeOutput, runBatch, toNative } from '../helpers/combine-many';
@@ -115,7 +116,7 @@ describe('a fed call against native Roaring and against the same operands stored
           });
         },
       ),
-      { numRuns: 60 },
+      { numRuns: heavy('combineManyFeedRuns') },
     );
   }, 180_000);
 
@@ -140,7 +141,7 @@ describe('a fed call against native Roaring and against the same operands stored
           expect(got.run.outputs).toEqual(want.run.outputs);
         },
       ),
-      { numRuns: 30 },
+      { numRuns: heavy('combineManyFeedRangeRuns') },
     );
   }, 180_000);
 });

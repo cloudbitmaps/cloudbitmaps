@@ -1,0 +1,57 @@
+name: Full-strength tests (nightly)
+
+# The whole unit suite at FULL strength, on `main`, every night, and on demand.
+#
+# A pull request runs `pnpm test` with the heavy tests at a reduced size (see `tests/helpers/strength.ts`): fewer
+# property cases, a smaller registry, fewer measured bitmaps. That keeps a push cheap. This workflow is what keeps the
+# coverage: `CB_TEST_STRENGTH=full` makes each of those tests run the size it had before the reduction, so a
+# regression only the large size can show is caught within a day, on `main`, instead of never.
+#
+# It does not gate a pull request and is not among the required checks. A red run fails THIS workflow run: it shows
+# red on the Actions tab for `main`, and GitHub emails the person who last changed this file's schedule (and, for a
+# manual dispatch, the person who started it). The next nightly run is the retry, so a flaky first failure heals
+# itself; a second red night in a row is a real signal.
+#
+# Same Node versions as the `build & test` matrix in ci.yml. Keep the two in step.
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # 04:00 UTC nightly, an hour before the fuzz campaign starts
+  workflow_dispatch:
+  # A 'full-strength' smoke run when THIS FILE changes, for the reason the fuzz workflow gives for its own: without it
+  # nothing on a pull request would run a line of it. Scoped to this path alone.
+  pull_request:
+    paths:
+      - .github/workflows/full-nightly.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full:
+    name: full-strength tests (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    env:
+      CB_TEST_STRENGTH: full
+    steps:
+      # The whole history, for the same reason as in ci.yml: the docs tests read the release tags, the merge base and
+      # the history of each committed calibration file.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test

@@ -64,6 +64,13 @@ jobs run the dependency audit, the smoke test on the declared Node floor, the La
 RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 says why each one is there.
 
+`pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:
+[`.github/workflows/full-nightly.yml`](.github/workflows/full-nightly.yml) runs the whole suite at full strength on
+`main` every night, on each Node version `ci.yml` tests, and on demand (`workflow_dispatch`). It is not a required check
+and gates no pull request; a red run shows on the Actions tab. Run it locally with `CB_TEST_STRENGTH=full pnpm test`,
+before changing one of the heavy tests or the code under it. [`tests/README.md`](tests/README.md#full-strength) lists
+them and their sizes.
+
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
 **no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
 want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
