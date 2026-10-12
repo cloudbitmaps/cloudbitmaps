@@ -5,7 +5,7 @@
 import { IntegrityError, NotFoundError, isNotFoundError } from './errors';
 import type { BlobReader } from './blob';
 import { ascending } from './order';
-import type { CrbmCrypto, WrappedDek } from './crypto';
+import type { CrbmCrypto } from './crypto';
 import type { GenerationMetadata, GenKey, IStorageDriver, TailRead } from './ports';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES } from './crbm/format';
 import { CrbmReader, footerSaysEncrypted, openCrbmReaderKeeping } from './crbm/reader';
@@ -60,10 +60,6 @@ export function ownedTail(tail: TailRead): TailRead {
     ...(version === undefined ? {} : { version }),
   };
 }
-
-/** Whether two rows carry the same wrapped keys. */
-export const sameKeys = (a: readonly WrappedDek[] | undefined, b: readonly WrappedDek[]): boolean =>
-  a !== undefined && JSON.stringify(a) === JSON.stringify(b);
 
 /**
  * The object under `key`, when it is provably the one `fingerprint` names ({@link CrbmReader.fingerprint}), from one

@@ -125,3 +125,7 @@ export function aadFor(
   view.setUint32(o, typeof scope === 'number' ? scope : 0, true);
   return out;
 }
+
+/** Whether two rows carry the same wrapped keys. */
+export const sameKeys = (a: readonly WrappedDek[] | undefined, b: readonly WrappedDek[]): boolean =>
+  a !== undefined && JSON.stringify(a) === JSON.stringify(b);

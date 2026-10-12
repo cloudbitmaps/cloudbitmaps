@@ -41,17 +41,18 @@ The `.crbm` storage path lives in `src/core/`, one module per concern. Arrows re
 
 `publish.ts`, `crbm-write.ts` and `crbm-open.ts` import none of the others. Outside this group, `load.ts` imports
 `bulk-load.ts`, `publish.ts` and `crbm-open.ts`; `erase-id.ts` imports `publish.ts`, `crbm-write.ts` and
-`crbm-open.ts`; `rollback.ts` and `consistency.ts` import `crbm-open.ts`.
+`crbm-open.ts`; `rollback.ts` and `consistency.ts` import `crbm-open.ts`. `combine-many.ts`, `pinned-storage-source.ts`
+(types only) and the package entry import `crbm-storage-source.ts`.
 
 | File | Holds |
 |---|---|
-| `crbm-write.ts` | writing one immutable generation from in-memory bitmaps, from a stream or from already-encoded chunks, and the bucketing of loaded ids into chunks |
+| `crbm-write.ts` | writing one immutable generation from in-memory bitmaps, from a stream or from already-encoded chunks |
 | `publish.ts` | the forward-only pointer advance every write ends with, the lease patch, the refusal to point a keyed row at a cleartext generation, and the settling of a registry write that got no answer |
-| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead, which collects chunks from ids or a decoded bitmap, writes them and publishes |
+| `bulk-load.ts` | the loader `load()` is built on, with its read-ahead: ids, a decoded bitmap or a combine's chunks in, bucketed or checked into chunks, one generation written, and published unless the caller defers it; `load()` defers it and publishes through `publish.ts` after its guard |
 | `crbm-open.ts` | opening a stored generation without the cache: the blob reader over a driver object, the checked and noting opens, the identity checks that tie an open to the object it read, generation verification, and the rollback target open |
 | `crbm-storage-source.ts` | the read path: `CrbmStorageChunkSource`, its resolution cache and the pin machinery |
 
-None of the write-path modules imports the read path, and `crbm-storage-source.ts` imports only `crbm-open.ts` from them.
+No write-path module imports `crbm-storage-source.ts`, and it imports only `crbm-open.ts` of the other four.
 
 ## Documentation
 

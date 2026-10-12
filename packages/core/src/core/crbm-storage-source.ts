@@ -30,7 +30,7 @@ import type { Clock } from './determinism';
 import { pointerIdOf } from './pointer-id';
 import { BoundedLru } from './lru';
 import { KeptSegmentKeys, segmentKey } from './keys';
-import { aadFor } from './crypto';
+import { aadFor, sameKeys } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { validateChunkKeyOrder, validateChunkRef, validateUserRef } from './validate';
 import type {
@@ -55,7 +55,7 @@ import { InvalidationRecord } from './invalidation-scope';
 import { ItemPull } from './item-pull';
 import { sizeOfFingerprint, summaryAgrees, usableSummary } from './summary';
 import type { GenerationDescription, SummaryDescription } from './summary';
-import { storageBlobReader, sameKeys, openChecked } from './crbm-open';
+import { storageBlobReader, openChecked } from './crbm-open';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
