@@ -1823,7 +1823,7 @@ describe('no document claims behaviour this library does not have', () => {
   });
 
   it(
-    'reads a 20 KB line with no full stop in time that grows with its length, whatever it is made of',
+    'reads a 40 KB line with no full stop in time that grows with its length, whatever it is made of',
     { timeout: 120_000 },
     () => {
       // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one
@@ -1840,7 +1840,7 @@ describe('no document claims behaviour this library does not have', () => {
       // it at this length, so a shape that scans a part of the line twice shows well under that. What the test catches
       // is a scan that goes quadratic or worse. Several shapes read in a few milliseconds even at full length, and a
       // regression that leaves one of them under the floor is not seen.
-      const FULL = 20_480;
+      const FULL = 40_960;
       const expectLinear = (what: string, build: (length: number) => string): void => {
         const quarter = build(FULL / 4);
         const full = build(FULL);

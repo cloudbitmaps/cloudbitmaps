@@ -395,7 +395,7 @@ describe('Azure Blob: a timed-out read is retried by the store', LIMIT, () => {
     async (_label, nth) => {
       // A store of its own with room for the reads that are not stalled: the stalled one is cut off at the timeout, and
       // the erasure's others must finish inside it however busy the machine is.
-      const store = new CloudRoaring({ storage: backendWith(1_000) });
+      const store = new CloudRoaring({ storage: backendWith(2_000) });
       await store.load(ERASE, [1, 2, 3, 200_000, 400_000]);
       let gets = 0;
       stub.plan = (r) =>

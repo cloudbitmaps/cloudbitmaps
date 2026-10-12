@@ -424,6 +424,9 @@ export {};
   // The snapshot of the declarations below, written once; each test puts the files and that snapshot back.
   let written = '';
   beforeAll(() => {
+    // From `base`, whatever the test before this describe left: the file's `beforeEach` runs before a test, not here.
+    git('reset', '-q', '--hard', base);
+    git('clean', '-q', '-f', '-d');
     put('node_modules/ext/package.json', JSON.stringify({ name: 'ext', types: 'index.d.ts' }));
     put('node_modules/ext/index.d.ts', 'export interface Ext { y: 1 }\n');
     put('packages/a/dist/index.d.ts', HIDDEN);

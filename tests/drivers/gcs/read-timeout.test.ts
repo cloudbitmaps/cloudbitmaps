@@ -336,6 +336,8 @@ async function scenario(
 const TIMEOUT = 200;
 /** How long a body is held in the tests where no timeout may cut it off: past the short timeout, with room. */
 const SLOW = 3 * TIMEOUT;
+/** How long an untimed read's body is held: long enough that a timer of up to a second on a read set to 0 would cut it. */
+const UNTIMED_BODY = 1_200;
 /** A long one, for reads that must not: a cold child's first read can take over 150 ms on a loaded machine. */
 const ROOMY = 2_000;
 /** The store's read retry: four attempts. */
@@ -471,10 +473,10 @@ describe('a GCS read with readTimeoutMs', () => {
     it.concurrent.each(call === 'range' ? ([0, 'default'] as const) : ([0] as const))(
       'readTimeoutMs %s lets a slow read finish',
       async (timeout) => {
-        const { run, counts } = await scenario(call, timeout, { media: [{ slow: SLOW }] });
+        const { run, counts } = await scenario(call, timeout, { media: [{ slow: UNTIMED_BODY }] });
         expect(run.code).toBe(0);
         expect(run.outcome).toHaveProperty('ok');
-        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(SLOW - 50);
+        expect(Number(run.outcome?.ms)).toBeGreaterThanOrEqual(UNTIMED_BODY - 50);
         expect(counts.downloads).toBe(1);
       },
       30_000,
