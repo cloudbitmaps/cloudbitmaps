@@ -1,4 +1,5 @@
-import { CloudRoaring, MemoryStorage, type MetricEvent } from '@/index';
+import type { SegmentEngine } from '@cloudbitmaps/core';
+import { CloudRoaring, MemoryStorage, ValidationError, type MetricEvent } from '@/index';
 
 /** A storage whose reads can be made to fail, to prove a read error arrives as a rejection. */
 class FlakyStorage extends MemoryStorage {
@@ -38,7 +39,7 @@ describe('has() and count() with metrics off', () => {
     expect(() => {
       promise = seg.has(-1);
     }).not.toThrow();
-    await expect(promise).rejects.toThrow();
+    await expect(promise).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('return a rejected promise when storage fails', async () => {
@@ -52,8 +53,8 @@ describe('has() and count() with metrics off', () => {
       count = seg.count();
     }).not.toThrow();
     await expect(has).rejects.toThrow('storage down');
-    // count answers from the registry row's summary when warm; it either answers or rejects, never throws
-    await (count as Promise<number>).catch(() => undefined);
+    // a cold count answers from the registry row's summary and reads no object, so the failing reads do not reach it
+    await expect(count).resolves.toBe(3);
   });
 });
 
@@ -99,16 +100,14 @@ async function turns(p: Promise<unknown>): Promise<number> {
   return n;
 }
 
-describe('a warm has() with metrics off', () => {
-  it('adds no promise frame of its own over the engine call', async () => {
-    const off = await loaded();
-    const on = await loaded({ onEvent: () => undefined });
-    const offSeg = off.store.segment('s');
-    const onSeg = on.store.segment('s');
-    await offSeg.has(1);
-    await onSeg.has(1);
-    const withOff = await turns(offSeg.has(1));
-    const withOn = await turns(onSeg.has(1));
-    expect(withOff).toBeLessThan(withOn);
+describe('a warm has() and count() with metrics off', () => {
+  it('add no promise frame of their own over the engine call', async () => {
+    const { store } = await loaded();
+    const seg = store.segment('s');
+    await seg.has(1);
+    await seg.count();
+    const engine = (store as unknown as { engine: SegmentEngine }).engine;
+    expect(await turns(seg.has(1))).toBe(await turns(engine.has({ segment: 's' }, 1)));
+    expect(await turns(seg.count())).toBe(await turns(engine.count({ segment: 's' })));
   });
 });

@@ -3473,8 +3473,9 @@ export class Segment {
   }
 
   /**
-   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). Skipped
-   * entirely when no sink is wired, so the default path pays nothing.
+   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). With no sink wired it
+   * reads no clock and emits nothing, but a call still passes through this async frame; `has()` and `count()` return the
+   * engine's promise directly instead.
    */
   private async timed<T>(name: MetricOpName, fn: () => Promise<T>): Promise<T> {
     if (!this.metricsOn) return fn();

@@ -62,7 +62,7 @@ so, and so do the module headers in the code.
 - **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
   cache always) no longer reads the clock on a hit, and with no metrics sink wired `has()` and `count()` return the
   engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured on
-  the in-memory driver, a warm `has()` takes about 13% less CPU. Values and errors are unchanged, a failure is still a
+  the in-memory driver, a warm `has()` takes about 13% less time per call. Values and errors are unchanged, a failure is still a
   rejected promise, and with a metrics sink the same `op` events are emitted. With no sink a call settles in fewer
   microtask turns than before.
 
