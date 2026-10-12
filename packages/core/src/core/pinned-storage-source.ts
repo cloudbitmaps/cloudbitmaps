@@ -41,7 +41,7 @@ import { segmentKey } from './keys';
  *
  * `fingerprint` is required for a pin of a generation (`null` only when `generation` is `null`): without it a read
  * could not tell a name purged and loaded again from the segment it pinned. `seg.pin()` always records it, and a
- * pin without one is refused with a `ValidationError`.
+ * pin of a generation without one is refused with a `ValidationError`.
  */
 export interface PinnedAt {
   readonly generation: number | null;
@@ -68,7 +68,10 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     private readonly pins: ReadonlyMap<string, PinnedAt>,
   ) {
     for (const [key, pin] of pins) {
-      if (pin.generation !== null && (pin.version === null || typeof pin.fingerprint !== 'string'))
+      if (
+        pin.generation !== null &&
+        (typeof pin.version !== 'string' || typeof pin.fingerprint !== 'string')
+      )
         throw new ValidationError(
           `pin for "${key}" names generation ${pin.generation} without its version and object fingerprint`,
         );
@@ -198,9 +201,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     // A live version starts with its generation number, so no live version can equal a pin's. The fingerprint keeps
     // two incarnations' pins apart where the version cannot: on a store with no registry it is the bare number.
     if (pin.version === null) return Promise.resolve(null);
-    return Promise.resolve(
-      `pin ${pin.version}${pin.fingerprint == null ? '' : `#${pin.fingerprint}`}`,
-    );
+    return Promise.resolve(`pin ${pin.version}#${pin.fingerprint}`);
   }
 
   exists(ref: SegmentRef): Promise<boolean> {

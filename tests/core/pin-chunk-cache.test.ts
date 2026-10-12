@@ -577,25 +577,91 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     expect(await dest.count()).toBe(0);
   });
 
-  it.each([
-    ['without a fingerprint', { generation: 0, version: 'v' }],
-    ['with a null one', { generation: 0, version: 'v', fingerprint: null }],
-    ['with a non-string one', { generation: 0, version: 'v', fingerprint: 7 }],
-  ])('refuses a pin built by hand %s with a ValidationError', async (_how, pin) => {
-    const backend = new MemoryStorage();
-    const { storage, registry } = backend;
-    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
-    const crbm = new CrbmStorageChunkSource(storage, { registry });
-    const version = rowVersionOf((await crbm.currentVersion(REF))!);
-    const bad = { ...pin, version } as unknown as PinnedAt;
-    expect(() => new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), bad]]))).toThrow(
-      ValidationError,
-    );
-    const held = { version, fingerprint: bad.fingerprint } as unknown as PinnedObject;
-    await expect(crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, held)).rejects.toThrow(
-      ValidationError,
-    );
-    await expect(crbm.cardinalitiesAt(REF, 0, held)).rejects.toThrow(ValidationError);
+  describe('a pin built by hand without the version and fingerprint of its object is refused', () => {
+    /** A one-generation store whose storage and registry reads are counted from the call it returns. */
+    const counted = async (withRegistry: boolean) => {
+      const backend = new MemoryStorage();
+      const { storage, registry } = backend;
+      const opts = withRegistry ? { registry } : {};
+      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, opts);
+      const crbm = new CrbmStorageChunkSource(storage, opts);
+      const pin = (await crbm.pinGeneration(REF))!;
+      crbm.invalidate(REF);
+      const reads = { storage: 0, registry: 0, lease: 0 };
+      const tail = storage.getTail.bind(storage);
+      storage.getTail = (key, maxBytes) => {
+        reads.storage += 1;
+        return tail(key, maxBytes);
+      };
+      const range = storage.getRange.bind(storage);
+      storage.getRange = (...args: Parameters<typeof storage.getRange>) => {
+        reads.storage += 1;
+        return range(...args);
+      };
+      const get = registry.get.bind(registry);
+      registry.get = (ref) => {
+        reads.registry += 1;
+        return get(ref);
+      };
+      const lease = {
+        take: () => {
+          reads.lease += 1;
+          return Promise.resolve('moved' as const);
+        },
+      };
+      return { crbm, pin, reads, lease };
+    };
+
+    it.each([
+      ['no fingerprint', (v: string) => ({ generation: 0, version: v })],
+      ['a null fingerprint', (v: string) => ({ generation: 0, version: v, fingerprint: null })],
+      ['a non-string fingerprint', (v: string) => ({ generation: 0, version: v, fingerprint: 7 })],
+      ['no version', (_v: string, f: string) => ({ generation: 0, fingerprint: f })],
+      [
+        'a null version',
+        (_v: string, f: string) => ({ generation: 0, version: null, fingerprint: f }),
+      ],
+    ])('the PinnedStorageChunkSource constructor refuses %s', async (_how, make) => {
+      const { crbm, pin, reads } = await counted(true);
+      const bad = make(pin.version, pin.fingerprint) as unknown as PinnedAt;
+      expect(() => new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), bad]]))).toThrow(
+        ValidationError,
+      );
+      expect(reads).toEqual({ storage: 0, registry: 0, lease: 0 });
+    });
+
+    it.each([
+      ['no fingerprint', (v: string) => ({ version: v })],
+      ['a null fingerprint', (v: string) => ({ version: v, fingerprint: null })],
+      ['a non-string fingerprint', (v: string) => ({ version: v, fingerprint: 7 })],
+      ['no version', (_v: string, f: string) => ({ fingerprint: f })],
+      ['neither', () => ({})],
+    ])('a pinned read refuses a held object with %s, before any read', async (_how, make) => {
+      for (const withRegistry of [true, false]) {
+        const { crbm, pin, reads } = await counted(withRegistry);
+        const held = make(pin.version, pin.fingerprint) as unknown as PinnedObject;
+        await expect(crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, held)).rejects.toThrow(
+          ValidationError,
+        );
+        await expect(crbm.listChunkKeysAt(REF, 0, held)).rejects.toThrow(ValidationError);
+        await expect(crbm.cardinalitiesAt(REF, 0, held)).rejects.toThrow(ValidationError);
+        expect(reads).toEqual({ storage: 0, registry: 0, lease: 0 });
+      }
+    });
+
+    it.each([
+      ['no fingerprint', (g: number) => ({ generation: g })],
+      ['a null fingerprint', (g: number) => ({ generation: g, fingerprint: null })],
+      ['a non-string fingerprint', (g: number) => ({ generation: g, fingerprint: 7 })],
+      ['no pin at all', () => undefined],
+    ])('pinGenerationAt refuses %s before the row, the lease or the object', async (_how, make) => {
+      for (const withRegistry of [true, false]) {
+        const { crbm, reads, lease } = await counted(withRegistry);
+        const at = make(0) as unknown as { generation: number; fingerprint: string };
+        await expect(crbm.pinGenerationAt(REF, at, lease)).rejects.toThrow(ValidationError);
+        expect(reads).toEqual({ storage: 0, registry: 0, lease: 0 });
+      }
+    });
   });
 
   it("retries pin()'s own read of the row, as the store's reads are retried", async () => {
@@ -2183,3 +2249,59 @@ async function collectIds(stream: AsyncIterable<number>): Promise<number[]> {
   for await (const id of stream) out.push(id);
   return out;
 }
+
+describe('a read of a generation with no pin held', () => {
+  const OLD3 = [1, 2, 65_536 + 1, 65_536 + 2, 2 * 65_536 + 1];
+
+  it('pays for no footer read when its chunk or its reopen fails, and keeps its own error', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD3, { registry });
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0)).not.toBeNull(); // opens its reader
+    let tails = 0;
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      return tail(key, maxBytes);
+    };
+    const range = storage.getRange.bind(storage);
+    storage.getRange = () => Promise.reject(new IntegrityError('bad bytes'));
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0)).rejects.toThrow('bad bytes');
+    expect(tails).toBe(0);
+    storage.getRange = range;
+    crbm.invalidate(REF);
+    tails = 0;
+    let damaged = 1;
+    storage.getTail = async (key, maxBytes) => {
+      tails += 1;
+      const got = await tail(key, maxBytes);
+      if (damaged-- <= 0) return got;
+      const bytes = Uint8Array.from(got.bytes);
+      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; // the reopen reads a damaged footer
+      return { bytes, size: got.size };
+    };
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0)).rejects.toThrow(IntegrityError);
+    expect(tails).toBe(1); // the reopen's own tail read, and no check after it
+  });
+
+  it('pays for no footer read when a chunk of its stream fails, and keeps its own error', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD3, { registry });
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    expect(await crbm.listChunkKeysAt(REF, 0)).toEqual([0, 1, 2]); // opens its reader
+    let tails = 0;
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      return tail(key, maxBytes);
+    };
+    storage.getRange = () => Promise.reject(new IntegrityError('bad bytes'));
+    const read = async (): Promise<void> => {
+      for await (const chunk of crbm.getChunksAt(REF, 0, [0, 1, 2])) void chunk;
+    };
+    await expect(read()).rejects.toThrow('bad bytes');
+    expect(tails).toBe(0);
+  });
+});

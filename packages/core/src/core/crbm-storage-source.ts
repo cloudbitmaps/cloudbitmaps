@@ -1150,6 +1150,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     lease?: PinLease,
   ): Promise<{ generation: number } & Required<PinnedObject>> {
     validateUserRef(ref);
+    if (typeof (at as Partial<typeof at> | undefined)?.fingerprint !== 'string')
+      throw new ValidationError(
+        `a pin of segment "${ref.segment}" needs the fingerprint of the object it names`,
+      );
     const { generation, fingerprint } = at;
     const gone = (why: string): NotFoundError =>
       new NotFoundError(
@@ -1198,7 +1202,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       memoised = this.snapshots.peek(this.pinnedKey(ref, version, fingerprint)) !== undefined;
     }
     try {
-      await this.readerAt(ref, generation, version, fingerprint);
+      await this.readerAt(ref, generation, { version, fingerprint });
     } catch (err) {
       // What this call opened is not the object asked for: it must not hold a place in the reader cache, and the
       // key it unwrapped, for reads that can only fail.
@@ -1375,13 +1379,17 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   private async readerAt(
     ref: SegmentRef,
     generation: number,
-    version?: string,
-    fingerprint?: string,
+    held?: PinnedObject,
   ): Promise<CrbmReader | null> {
-    if (version !== undefined && typeof fingerprint !== 'string')
+    if (
+      held !== undefined &&
+      (typeof held.version !== 'string' || typeof held.fingerprint !== 'string')
+    )
       throw new ValidationError(
-        `a pinned read of segment "${ref.segment}" generation ${generation} needs the fingerprint of the object it pinned`,
+        `a pinned read of segment "${ref.segment}" generation ${generation} needs the version and the fingerprint of the object it pinned`,
       );
+    const version = held?.version;
+    const fingerprint = held?.fingerprint;
     const at = version ?? String(generation);
     const key = this.pinnedKey(ref, at, fingerprint);
     const epoch = this.invalidations;
@@ -1455,7 +1463,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
   ): Promise<Uint8Array | null> {
     validateUserRef(ref);
-    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await this.readerAt(ref, generation, held);
     if (reader === null) return null;
     if (
       held !== undefined &&
@@ -1537,7 +1545,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
   ): Promise<number[]> {
     validateUserRef(ref);
-    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await this.readerAt(ref, generation, held);
     return reader === null ? [] : reader.chunkKeys();
   }
 
@@ -1551,7 +1559,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
   ): Promise<ReadonlyMap<number, number> | null> {
     validateUserRef(ref);
-    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : reader.cardinalities();
   }
 
@@ -1562,7 +1570,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
   ): Promise<SegmentSize | null> {
     validateUserRef(ref);
-    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
 
@@ -1921,8 +1929,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
     validateRead(ref, keys);
     const retry = options?.retry;
-    const open = (): Promise<CrbmReader | null> =>
-      this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const open = (): Promise<CrbmReader | null> => this.readerAt(ref, generation, held);
     const segment = segmentKey(ref);
     let since = this.invalidated.epoch;
     const reader = await viaRetry(retry, open);
@@ -2052,7 +2059,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
   ): Promise<GenerationSummary | null> {
     validateUserRef(ref);
-    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : summaryOfGeneration(reader.generation, describe(reader));
   }
 
@@ -2084,7 +2091,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     held?: PinnedObject,
   ): Promise<(GenerationSummary & SegmentSize) | null> {
     validateUserRef(ref);
-    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    const reader = await this.readerAt(ref, generation, held);
     return reader === null ? null : sizedSummary(reader);
   }
 
