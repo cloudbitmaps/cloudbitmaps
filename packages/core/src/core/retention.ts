@@ -30,7 +30,8 @@
  */
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
-import { type ChurnDeps, leaseChurn } from './leases';
+import { casRetry } from './cas-retry';
+import type { ChurnDeps } from './leases';
 import type { GovernanceMeta, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateUserRef } from './validate';
 
@@ -244,23 +245,20 @@ export async function setSegmentRetention(
   validateUserRef(ref);
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
-  /** The bucket this segment was already in, if any — its pointer has to be removed when the expiry moves. */
-  let previousExpiresAt: number | undefined;
   // A lost race to a lease write is waited out and costs no attempt, up to the churn bound.
-  const churn = leaseChurn(deps);
-  let lost: RegistryRecord | undefined;
-  for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
-    let record = await deps.registry.get(ref);
-    if (lost !== undefined) {
-      // Waited out first, then read again, so the write below is made against a fresh row.
-      const settled = await churn.settle(lost, record, () => deps.registry.get(ref));
-      if (settled !== undefined) {
-        record = settled.row;
-        attempt -= 1;
-      }
-    }
-    try {
-      previousExpiresAt = readExpiresAt(record);
+  return casRetry(
+    deps,
+    ref,
+    {
+      attempts: RETENTION_CAS_ATTEMPTS,
+      contention: () =>
+        new WriteConflictError(
+          `setRetention: contention writing the retention policy for segment "${ref.segment}"`,
+        ),
+    },
+    async (record) => {
+      /** The bucket this segment was already in, if any — its pointer has to be removed when the expiry moves. */
+      const previousExpiresAt = readExpiresAt(record);
       if (record === null) {
         // A policy ahead of the first load. `currentGen: null` is what makes this safe: the row exists purely so
         // the segment is enumerable, and it claims no Storage generation, so generation resolution takes the same
@@ -286,14 +284,7 @@ export async function setSegmentRetention(
         createdRow: false,
         indexed: await reindex(ref, deps, policy.expiresAt, previousExpiresAt),
       };
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-      // Lost the race (a load's publish, another policy write) — re-read and retry.
-      lost = record ?? undefined;
-    }
-  }
-  throw new WriteConflictError(
-    `setRetention: contention writing the retention policy for segment "${ref.segment}"`,
+    },
   );
 }
 
@@ -310,24 +301,22 @@ export async function clearSegmentRetention(
   deps: RetentionDeps,
 ): Promise<boolean> {
   validateUserRef(ref);
-  const churn = leaseChurn(deps);
-  let lost: RegistryRecord | undefined;
-  for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
-    let record = await deps.registry.get(ref);
-    if (lost !== undefined) {
-      // Waited out first, then read again, so the write below is made against a fresh row.
-      const settled = await churn.settle(lost, record, () => deps.registry.get(ref));
-      if (settled !== undefined) {
-        record = settled.row;
-        attempt -= 1;
-      }
-    }
-    if (record === null) return false; // nothing to clear — and creating a row to say so would be litter
-    if (record.status === 'destroyed') return false; // terminal; a tombstone has no expiry to cancel
-    if (record.retention === undefined || !(EXPIRES_AT in record.retention)) return false;
-    const rest = { ...record.retention };
-    delete rest[EXPIRES_AT];
-    try {
+  return casRetry(
+    deps,
+    ref,
+    {
+      attempts: RETENTION_CAS_ATTEMPTS,
+      contention: () =>
+        new WriteConflictError(
+          `clearRetention: contention clearing the retention policy for segment "${ref.segment}"`,
+        ),
+    },
+    async (record) => {
+      if (record === null) return false; // nothing to clear — and creating a row to say so would be litter
+      if (record.status === 'destroyed') return false; // terminal; a tombstone has no expiry to cancel
+      if (record.retention === undefined || !(EXPIRES_AT in record.retention)) return false;
+      const rest = { ...record.retention };
+      delete rest[EXPIRES_AT];
       // `retention: undefined` CLEARS the field (a patch clears by mentioning), which is what an emptied policy
       // object should become — a row carrying `{}` reads as "has retention metadata" to anything inspecting it.
       await deps.registry.compareAndSwap(ref, record.token, {
@@ -335,13 +324,7 @@ export async function clearSegmentRetention(
       });
       await reindex(ref, deps, undefined, readExpiresAt(record));
       return true;
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-      lost = record;
-    }
-  }
-  throw new WriteConflictError(
-    `clearRetention: contention clearing the retention policy for segment "${ref.segment}"`,
+    },
   );
 }
 
