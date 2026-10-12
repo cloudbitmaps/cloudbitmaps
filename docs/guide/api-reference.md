@@ -121,8 +121,8 @@ The registry needs delete permission on its prefix for it.
 removes the object only while it is the one that was read, and `backend.storage.capabilities().conditionalDelete`
 reports `true`; off, the version is ignored and the delete removes whatever is under the key. An erasure's delete of a
 holder by name (above the pointer, on a segment with no generation yet, or one it cannot search), a refused rewrite's
-delete of its own object above the winner's pointer, and a refused load's delete of the object its footer proved its
-own, are the ones the library sends that way, so a load that took the number since keeps its generation (within the
+delete of its own object above the winner's pointer, and a refused load's delete of the object whose footer matched
+what it wrote, are the ones the library sends that way, so a load that took the number since keeps its generation (within the
 limits in the erasure guide:
 [a number taken again during an erasure](erasure.md#how-it-stays-correct)). A precondition that no longer holds is a
 `WriteConflictError` while an object is under the key, and an absent object is a no-op whichever of `404` or `412` the
@@ -252,10 +252,12 @@ the result (`'empty'`, `'min-cardinality'`, `'min-retained'` or `'max-growth'`),
 There are two ways to get there first. Another load may have taken the same generation number, so this one wrote
 nothing (`size: 0`). Or the segment's registry row changed while the load was writing: another load published, a
 retention change, a rollback or an erasure wrote the row, or the row was deleted. A refused load deletes the object
-it wrote while the row is unchanged, changed only in its leases, dropped or crypto-shredded, or gone once the object's footer proves it the
-load's own, and leaves it in the bucket once another write has changed the
-row: once a generation above it is current, collection counts it within `keep` like any other generation below the
-pointer.
+it wrote while the row is unchanged, changed only in its leases, dropped or crypto-shredded, and, once one read of the
+object's footer matches what the load wrote, when the row is gone or, for a cleartext object, has key material. Once
+another write has otherwise changed the row, it leaves the object in the bucket, an orphan: a load's listing deletes
+it once a generation above it is current, unless the row's kept list names it, and can keep it in its window where the
+row records none. Until it goes, `rollback` can name it as a target, and a rollback onto it publishes what no load
+published ([an orphan is collected later](loading.md#how-it-stays-correct)).
 The `store.load` row lists the guards and what throws instead.
 
 **`input` is a `LoadInput`: ids, or a whole bitmap.** Ids are any sync **or async** iterable of integers in
@@ -800,7 +802,7 @@ remove an object stored under the key since: a generation number can be taken ag
 erasure passes the version of the read that made an object a holder whenever it deletes that object by name (a holder
 above the pointer or on a segment with no generation yet, or an object it cannot search), a refused rewrite the version
 of the footer read that proved its object above the winner's pointer its own, and a refused load the version of the
-footer read that proved its object its own. `false` or absent: the version is ignored. A driver that learns this
+footer read that matched its object to what it wrote. `false` or absent: the version is ignored. A driver that learns this
 from its client may report `false` until its first delete given `ifVersion`; what the delete does is what it states,
 and the S3 driver is one. The in-memory driver reports `true`, the local-filesystem one `false`, the cloud ones as their
 backend's `conditionalDelete` option says. A version names the object, not the key, except where the backend computes it

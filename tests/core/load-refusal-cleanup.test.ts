@@ -1,4 +1,6 @@
 import { runConsistencyCheck } from '@cloudbitmaps/core';
+import { openGenerationReader } from '@/core/crbm-open';
+import { gcOrphanGenerations } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { KeyUnavailableError, NotFoundError, ValidationError } from '@/core/errors';
 import { rollbackSegment } from '@/core/rollback';
@@ -110,10 +112,10 @@ describe('a refusal the publish raises as an error', () => {
 
 describe('a refused load whose row another writer changed', () => {
   /**
-   * The object a refused load wrote, once another writer has changed the row, is deleted only when one read of its
-   * footer proves it the load's own, under the version that read reported, and kept when the row's pointer names it. Left
-   * in the bucket, an object below the pointer is a rollback target, and a rollback would publish what the load never
-   * published:
+   * The object a refused load wrote, once another writer has changed the row, stays in the bucket: its number may by
+   * then name another writer's object, which a read of its footer cannot tell from this load's own when that writer
+   * loaded the same ids. Left there, an object below the pointer is an orphan a later load's listing takes, and until
+   * then a rollback target, since a rollback checks only that its target is stored, sealed to match the row, and opens:
    *
    *   stale loader   reads the row at 5, finds 6 free ── stalls before its put ──────────▶ writes 6, is refused
    *   two loads                       publish 6 (deleting 5), then 7 (deleting 6) │
@@ -133,8 +135,8 @@ describe('a refused load whose row another writer changed', () => {
     expect(report.inconsistent).toEqual([]);
   };
 
-  it("deletes a stalled loader's object below the pointer, so no rollback can publish it", async () => {
-    const w = world();
+  /** A stalled loader of an empty set refused below the pointer, as the diagram above runs it. */
+  async function stalledBelowThePointer(w: ReturnType<typeof world>): Promise<void> {
     for (let g = 0; g <= 5; g++) await loadSegment(REF, [g + 1], w.deps, { keep: 0 }); // current 5
     const at = gate();
     let held = false;
@@ -165,10 +167,27 @@ describe('a refused load whose row another writer changed', () => {
       published: false,
       reason: 'superseded',
     });
-    expect(await objects(w.storage)).toEqual([7]);
-    await expect(rollbackSegment(REF, 6, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+  }
+
+  it("keeps a stalled loader's object below the pointer, and a listing takes it", async () => {
+    const w = world();
+    await stalledBelowThePointer(w);
+    expect(await objects(w.storage)).toEqual([6, 7]);
     expect((await w.registry.get(REF))!.currentGen).toBe(7);
     await consistent(w);
+    expect(await gcOrphanGenerations(REF, w.deps, { keep: 0 })).toEqual([6]);
+    expect(await objects(w.storage)).toEqual([7]);
+    await expect(rollbackSegment(REF, 6, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('until a listing takes it, a rollback can name it, and publishes what no load published', async () => {
+    const w = world();
+    await stalledBelowThePointer(w);
+    await expect(rollbackSegment(REF, 6, w.deps)).resolves.toMatchObject({ generation: 6 });
+    expect((await w.registry.get(REF))!.currentGen).toBe(6);
+    // The generation the rollback restored is the refused load's empty one.
+    const reader = await openGenerationReader(w.storage, { ...REF, generation: 6 }, undefined);
+    expect(reader.count()).toBe(0);
   });
 
   it('keeps an object that landed unanswered and that the next publish keeps in its window', async () => {

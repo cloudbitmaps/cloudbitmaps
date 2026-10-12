@@ -62,6 +62,14 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
       'the fingerprint is required in the same unreleased minor, so the comment no longer describes a pin without one; ' +
       'the Breaking entry states the change',
   },
+  {
+    title:
+      "A refused load deletes its own object once another write has changed the segment's row.",
+    reason:
+      "the refused load's reclaim is back to the last release's in the same unreleased minor: under a row another " +
+      'write changed it keeps its object, since a footer names bytes and a load of the same ids writes the same ones, ' +
+      'so the entry would describe no change',
+  },
 ];
 
 const FETCH = `fetch the history and the base branch (\`git fetch --unshallow origin main\`, or check out with \`fetch-depth: 0\`)`;
