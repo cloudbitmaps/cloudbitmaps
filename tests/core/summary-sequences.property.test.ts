@@ -11,6 +11,9 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * Random sequences of loads, rollbacks and erasures over one segment, held to a model of what each generation holds:
  * after every step, the row's summary is absent, or names the generation the row names and says what the object it

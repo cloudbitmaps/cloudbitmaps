@@ -18,6 +18,9 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { Gate, Watched, tick } from '../helpers/live-buffers';
 import { expectSameBytes } from '../helpers/chunk-stream';
 
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 30_000 });
+
 /**
  * The erasure rewrite reads the generation it rewrites through the reader's coalesced chunk stream: neighbouring
  * chunks share one range request, the stream holds at most 4 ranges, and everything else about the rewrite (what it

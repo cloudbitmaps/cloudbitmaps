@@ -11,6 +11,11 @@ const gc = runInNewContext('gc') as () => void;
 
 export const tick = (ms = 5): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Let `n` turns of the event loop pass: enough for work that is already queued to run, whatever the machine's load. */
+export async function turns(n = 50): Promise<void> {
+  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+}
+
 /**
  * Buffers registered as they are allocated, counted while still reachable. By default the buffer under the array is
  * watched, which is right where each allocation has a buffer of its own; `views` watches the array object instead, for

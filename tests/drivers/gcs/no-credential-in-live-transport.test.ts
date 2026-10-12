@@ -62,10 +62,15 @@ describe('GCS: the error holds no live request, whatever else is in flight', LIM
   let server: Server;
   let storage: Storage;
   const pending: Array<Promise<unknown>> = [];
+  /** Settles once the server has received an upload request, which then stays in flight. */
+  let uploadArrived: Promise<void>;
 
   const start = async (mode: Mode): Promise<void> => {
+    let arrived: () => void = () => {};
+    uploadArrived = new Promise<void>((resolve) => (arrived = resolve));
     server = createServer((req: IncomingMessage, res: ServerResponse) => {
       if (req.url?.startsWith('/upload/') === true) {
+        arrived();
         if (mode === 'refuse-uploads') {
           // Answered before the body is read: the request is still being sent.
           res.writeHead(403, { 'content-type': 'application/json' });
@@ -108,7 +113,7 @@ describe('GCS: the error holds no live request, whatever else is in flight', LIM
     const driver = new GcsStorageDriver({ storage, bucket: 'b' });
     const registry = new GcsRegistryDriver({ storage, bucket: 'b' });
     pending.push(upload(driver).catch(() => undefined));
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await uploadArrived; // the upload is in flight, with its socket open
     expectClean(await outcome(() => driver.delete(GEN)));
     expectClean(await outcome(() => drain(driver.list({ segment: 's' }))));
     expectClean(await outcome(() => registry.delete({ segment: 's' })));
@@ -119,7 +124,7 @@ describe('GCS: the error holds no live request, whatever else is in flight', LIM
     await start('hang-uploads');
     const driver = new GcsStorageDriver({ storage, bucket: 'b' });
     pending.push(upload(driver).catch(() => undefined));
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await uploadArrived; // the upload is in flight, with its socket open
     expectClean(await outcome(() => driver.delete(GEN)));
     expectClean(await outcome(() => drain(driver.list({ segment: 's' }))));
   });
