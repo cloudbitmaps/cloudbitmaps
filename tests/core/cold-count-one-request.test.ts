@@ -234,7 +234,7 @@ describe('a row with no summary it can use', () => {
     await w.writer.load(SEG, spread(20));
     w.tamper.row = (row) => ({
       ...row,
-      summary: { generation: 7, cardinality: 999, fingerprint: '4096:1' },
+      summary: { generation: 7, cardinality: 999, fingerprint: '4096:1', tailBytes: 300 },
     });
     const store = w.reader();
     w.reset();

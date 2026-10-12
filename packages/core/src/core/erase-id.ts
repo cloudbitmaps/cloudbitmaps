@@ -112,6 +112,7 @@ import {
 import { publishGeneration } from './publish';
 import { writeCrbmGenerationStream } from './crbm-write';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
+import { footerCrcOf } from './crbm/fingerprint';
 import type { CrbmReader } from './crbm/reader';
 import { mapWithConcurrency } from './concurrency';
 import { aadFor } from './crypto';
@@ -149,7 +150,7 @@ import type {
 import { generationsOf } from './generation-list';
 import { ascending } from './order';
 import { type ReadRetry, jitteredWait, retryRead } from './retry';
-import { metadataToCarry, summaryOf, usableSummary } from './summary';
+import { metadataToCarry, ownSummary, usableSummary } from './summary';
 import { validateUserRef } from './validate';
 
 /** Generations whose index and chunk are read at once while looking for a holder of the id; the keep window is small. */
@@ -1105,10 +1106,15 @@ async function eraseOnce(
       );
       // The row's summary is built from what was written, never copied from the row it replaces: whatever that one
       // held, a cached count or metadata that disagreed with the object it described goes with it.
-      const summary = summaryOf(
+      const summary = ownSummary(
         ref,
         generation,
-        { cardinality: tally.cardinality, metadata, fingerprint: tally.fingerprint },
+        {
+          cardinality: tally.cardinality,
+          metadata,
+          fingerprint: tally.fingerprint,
+          tailBytes: tally.tailBytes,
+        },
         aead,
       );
       return { generation, key, fingerprint: tally.fingerprint, summary };
@@ -1253,7 +1259,9 @@ async function eraseOnce(
     // A lease written while the rewrite streams moves the token and nothing it derived from: it does not refuse it.
     expectRow: record,
     summary,
-    // The row then records that no generation below the new pointer is kept, as the collection below leaves it.
+    // The row then records that no generation below the new pointer is kept, as the collection below leaves it: its
+    // ledger is the rewrite alone, whose footer checksum is the one its summary describes.
+    footerCrc: footerCrcOf(fingerprint),
     keep: 0,
     // Every generation below the new pointer is deleted whatever a lease says, so the row drops its leases.
     clearLeases: true,

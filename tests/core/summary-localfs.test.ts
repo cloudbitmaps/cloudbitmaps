@@ -90,6 +90,7 @@ describe.each([
     expect(first.described).toEqual({
       cardinality: 4,
       fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 0 }),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
 
@@ -98,6 +99,7 @@ describe.each([
     expect(second.described).toEqual({
       cardinality: 7,
       fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 1 }),
+      tailBytes: expect.any(Number),
       metadata: { def: 'v4' },
     });
   });
@@ -136,6 +138,7 @@ describe.each([
     expect(seen.described).toEqual({
       cardinality: 3,
       fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: 0 }),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
 
@@ -146,6 +149,7 @@ describe.each([
     expect(seen.described).toEqual({
       cardinality: 2,
       fingerprint: await objectFingerprint(w.disk, { ...SEG, generation: result.generation! }),
+      tailBytes: expect.any(Number),
       metadata: META,
     });
   });

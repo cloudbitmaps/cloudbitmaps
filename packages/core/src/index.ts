@@ -132,6 +132,7 @@ export type {
   RegistrySummary,
   RegistryWriteOptions,
   LeaseEntry,
+  KnownGeneration,
   ClearRegistrySummary,
   SealedRegistrySummary,
   GenerationMetadata,

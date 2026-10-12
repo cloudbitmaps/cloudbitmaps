@@ -20,13 +20,19 @@ const INC = '0123456789abcdef0123456789abcdef';
 const token = (counter: number): string =>
   `${INC}.${counter}.${counter.toString(16).padStart(16, '0')}`;
 const REF = { namespace: 'n', segment: 's' };
-const SUMMARY = { generation: 3, cardinality: 5, fingerprint: '200:7' };
+const SUMMARY = { generation: 3, cardinality: 5, fingerprint: '200:7', tailBytes: 120 };
+/** The ledger of the row below: the current generation's checksum is the summary's. */
+const LEDGER = [
+  { generation: 1, footerCrc: 11 },
+  { generation: 2, footerCrc: 12 },
+  { generation: 3, footerCrc: 7 },
+];
 
 /** A row at generation 3, with a summary, a kept window and a lease, created by the write `token(0)`. */
 function row(): RegistryRecord {
   const created = recordFromNew(
     REF,
-    { currentGen: 3, summary: SUMMARY, keptGens: [1, 2] },
+    { currentGen: 3, summary: SUMMARY, knownGens: LEDGER },
     1,
     token(0),
   );
@@ -54,7 +60,7 @@ describe('the resolved fields', () => {
       { leases: undefined },
       { retention: { note: 'x' } },
       { residency: {} },
-      { keptGens: [] },
+      { knownGens: [{ generation: 3, footerCrc: 7 }] },
     ] as RegistryPatch[]) {
       expect(renewsPointer(patch), JSON.stringify(patch)).toBe(false);
     }
@@ -101,7 +107,7 @@ describe('the shared record builders set it', () => {
       { leases: undefined },
       { retention: { expiresAt: 5 } },
       { residency: { region: 'eu' } },
-      { keptGens: [] },
+      { knownGens: [{ generation: 3, footerCrc: 7 }] },
       {},
     ];
     for (const patch of keeping) {
@@ -111,14 +117,14 @@ describe('the shared record builders set it', () => {
     }
   });
 
-  it('a patch naming the pointer at the value it has keeps the summary, the kept window and the leases', () => {
+  it('a patch naming the pointer at the value it has keeps the summary, the ledger and the leases', () => {
     const before = row();
     const after = applyRegistryPatch(before, renewPointer(before), 3, token(2));
     expect(after.pointerId).toBe(token(2));
     expect(after.token).toBe(token(2));
     expect(after.currentGen).toBe(3);
     expect(after.summary).toEqual(before.summary);
-    expect(after.keptGens).toEqual(before.keptGens);
+    expect(after.knownGens).toEqual(before.knownGens);
     expect(after.leases).toEqual(before.leases);
   });
 });

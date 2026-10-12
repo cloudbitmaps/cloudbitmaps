@@ -1,3 +1,4 @@
+import { windowOf } from '@/core/known-generations';
 import { destroySegment, dropSegment } from '@cloudbitmaps/core';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import {
@@ -510,7 +511,7 @@ describe('a load collects around a lease', () => {
     await loadMany(w, 1, { keep: 1 });
     const row = (await w.registry.get(SEG))!;
     expect(await generations(w.memory)).toEqual([0, 2, 3]);
-    expect(row.keptGens).toEqual([2]);
+    expect(windowOf(row)).toEqual([2]);
   });
 
   it('a load with no clock cannot tell a live lease from an ended one, and reads none', async () => {

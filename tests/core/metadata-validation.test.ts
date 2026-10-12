@@ -196,6 +196,7 @@ describe('metadata that changes while a load runs', () => {
       generation: 0,
       cardinality: 2,
       fingerprint: await objectFingerprint(w.backend.storage, { ...SEG, generation: 0 }),
+      tailBytes: expect.any(Number),
       metadata: { run: 'one' },
     });
   });

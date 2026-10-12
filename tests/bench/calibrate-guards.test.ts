@@ -491,11 +491,12 @@ describe('calibrate guards — what a real run is held to', () => {
     // Nothing racing and the number free: two reads, the check, the object and the one conditional write, and no
     // listing, since a new segment has nothing outside its window to collect.
     expect(await load(0, false)).toEqual({ reads: 2, checks: 1, writes: 1, objects: 1, lists: 0 });
-    // The number taken: five more reads and two listings, one to number past the objects and one to collect, which
-    // re-reads the pointer before its listing, after it, before its delete and after it. The segment's row records no
-    // list of kept generations (the listing numbered the load), so the collection records the window it kept with one
-    // more conditional write, which reads the row for its version first.
-    expect(await load(0, true)).toEqual({ reads: 7, checks: 1, writes: 2, objects: 1, lists: 2 });
+    // The number taken: four more reads and two listings, one to number past the objects and one to collect, which
+    // re-reads the pointer before its listing, after it, before its delete and after it. The segment's row has no
+    // ledger (the listing numbered the load), so the publish seeds one: it reads the footer of each object its window
+    // keeps (a second tail read) and writes the ledger in the same conditional write as the pointer, so no separate
+    // write records the window.
+    expect(await load(0, true)).toEqual({ reads: 6, checks: 2, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -528,7 +529,8 @@ describe('calibrate guards — what a real run is held to', () => {
     // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the last makes as
     // many GET-class requests as the bound allows.
     expect(p.get).toBe(16);
-    expect(p.get).toBe((await load(guards.RETRY_BOUND - 1, true)).reads + 1);
+    const nearest = await load(guards.RETRY_BOUND - 1, true);
+    expect(p.get).toBe(nearest.reads + nearest.checks);
   });
 
   it('flags a run that exceeded its projection, and only then', () => {

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { CrbmReader } from '@/core/crbm/reader';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { eraseIdFromSegment } from '@/core/erase-id';

@@ -1,8 +1,13 @@
 import fc from 'fast-check';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { MAX_KEPT_GENERATIONS, usableKeptGens } from '@/core/kept-generations';
+import { MAX_KEPT_GENERATIONS, usableKnownGens, windowOf } from '@/core/known-generations';
+const win = (r: unknown): number[] | undefined => {
+  const w = windowOf(r as never);
+  return w === undefined ? undefined : [...w].sort((a, b) => a - b);
+};
 import { loadSegment } from '@/core/load';
-import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
+import { TransientError } from '@/core/errors';
+import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { setSegmentRetention } from '@/core/retention';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
@@ -32,6 +37,13 @@ import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
  *     publish superseded, when that was in the bucket, and the newest `keep - 1` of the rest by number, and records
  *     them when `keep` fits the list.
  *
+ * A row's "list" is its ledger's window (`windowOf`: the ledger's numbers other than the pointer, when usable). The
+ * oracles are a release before ledgers' own, with three differences: the window is read through `win()` instead of the
+ * row's list field; the erasure oracle expects a window of `[]` always, where that release expected `[]` over a row that
+ * recorded a list and none over one that did not; and the oracles that hold only for a publish that took the row at its
+ * word (oracles 2, 4, 5 and 6) also hold for a publish settled by reading the row (`|| options.settled`), which a ledger
+ * makes the same as any other. The steps and floors for rows with no usable ledger are new.
+ *
  * Rollbacks pick their target four ways: any generation below the pointer, one the row's list names, the one the
  * current generation superseded, and the oldest.
  */
@@ -49,7 +61,12 @@ type Step =
   | { kind: 'retention' }
   | { kind: 'purge'; objects: boolean }
   | { kind: 'failed-delete'; who: 0 | 1; extra: number }
-  | { kind: 'race'; who: 0 | 1; extra: number };
+  | { kind: 'race'; who: 0 | 1; extra: number }
+  | { kind: 'drop-ledger' }
+  | { kind: 'hand-move'; pick: number }
+  | { kind: 'snapshot' }
+  | { kind: 'restore' }
+  | { kind: 'settled'; who: 0 | 1; extra: number };
 
 const who = fc.constantFrom<0 | 1>(0, 1);
 type Target = 'any' | 'kept' | 'superseded' | 'oldest';
@@ -58,6 +75,20 @@ const ROLLBACK: fc.Arbitrary<Step> = fc.record({
   pick: fc.nat(20),
   target: fc.constantFrom<Target>('any', 'kept', 'superseded', 'oldest'),
 });
+/** Rows with no usable ledger and how they come about: a hand repair, a restore, a write that landed with no answer. */
+const REPAIRS: fc.Arbitrary<Step> = fc.oneof(
+  { weight: 2, arbitrary: fc.constant({ kind: 'drop-ledger' as const }) },
+  {
+    weight: 2,
+    arbitrary: fc.record({ kind: fc.constant('hand-move' as const), pick: fc.nat(20) }),
+  },
+  { weight: 2, arbitrary: fc.constant({ kind: 'snapshot' as const }) },
+  { weight: 2, arbitrary: fc.constant({ kind: 'restore' as const }) },
+  {
+    weight: 3,
+    arbitrary: fc.record({ kind: fc.constant('settled' as const), who, extra: fc.nat(3) }),
+  },
+);
 const STEP: fc.Arbitrary<Step> = fc.oneof(
   {
     weight: 10,
@@ -87,6 +118,7 @@ const STEP: fc.Arbitrary<Step> = fc.oneof(
     weight: 3,
     arbitrary: fc.record({ kind: fc.constant('race' as const), who, extra: fc.nat(3) }),
   },
+  { weight: 5, arbitrary: REPAIRS },
 );
 
 /** Keeps for the two loaders: small, wide, the cap, one above it, and 0. */
@@ -211,6 +243,12 @@ interface Floors {
   readonly listed?: number;
   /** Of those, the ones whose superseded generation a window by number alone would have dropped. */
   readonly restored?: number;
+  /** Loads that published over a pointed row with no usable ledger, so seeded its first window. */
+  readonly seeded?: number;
+  /** Rows restored to an earlier state, pointers moved down by hand, and publishes settled by reading the row. */
+  readonly restores?: number;
+  readonly handMoves?: number;
+  readonly settles?: number;
   /** Rollbacks onto each kind of target. */
   readonly onto?: Readonly<Record<Target, number>>;
 }
@@ -256,6 +294,41 @@ describe.each([
       onto: { any: 150, kept: 100, superseded: 130, oldest: 140 },
     }),
   },
+  {
+    // Rows with no usable ledger: a hand repair that drops it, a pointer moved down by hand, a registry restored to an
+    // earlier row, a publish settled by reading the row; and the first load over each, at every keep.
+    name: 'loads over rows with no usable ledger: repairs, restores and settled writes',
+    keepsArb: KEEPS,
+    stepArb: fc.oneof(
+      {
+        weight: 10,
+        arbitrary: fc.record({ kind: fc.constant('load' as const), who, extra: fc.nat(3) }),
+      },
+      { weight: 9, arbitrary: REPAIRS },
+      { weight: 3, arbitrary: ROLLBACK },
+      {
+        weight: 2,
+        arbitrary: fc.record({ kind: fc.constant('stray' as const), pick: fc.nat(40) }),
+      },
+      {
+        weight: 2,
+        arbitrary: fc.record({
+          kind: fc.constant('crash' as const),
+          above: fc.integer({ min: 1, max: 3 }),
+        }),
+      },
+    ),
+    lengths: { minLength: 20, maxLength: 80 },
+    runs: 300,
+    floor: floors({
+      published: 3000,
+      listed: 800,
+      seeded: 500,
+      restores: 100,
+      handMoves: 100,
+      settles: 200,
+    }),
+  },
 ])('the kept generations, $name (property)', ({ keepsArb, stepArb, lengths, runs, floor }) => {
   it('never deletes the current or a named generation, leaves no orphan past a periodic pass, and no landed load throws', async () => {
     let published = 0;
@@ -263,6 +336,10 @@ describe.each([
     let byName = 0;
     let listed = 0;
     let restored = 0;
+    let seeded = 0;
+    let restores = 0;
+    let handMoves = 0;
+    let settles = 0;
     const onto: Record<Target, number> = { any: 0, kept: 0, superseded: 0, oldest: 0 };
     await fc.assert(
       fc.asyncProperty(
@@ -276,6 +353,7 @@ describe.each([
           const deps = { storage, registry, codec: roaringCodec };
           // The generation each published one superseded, for a rollback onto it.
           const supersededBy = new Map<number, number>();
+          let snapshot: RegistryRecord | null = null;
           const idsFor = async (extra: number): Promise<number[]> => {
             const have = (await registry.get(SEG))?.currentGen ?? -1;
             return Array.from({ length: Math.max(have, 0) + 2 + extra }, (_, i) => i);
@@ -285,7 +363,11 @@ describe.each([
           const load = async (
             who: 0 | 1,
             extra: number,
-            options: { storage?: IStorageDriver; registry?: IRegistryDriver } = {},
+            options: {
+              storage?: IStorageDriver;
+              registry?: IRegistryDriver;
+              settled?: boolean;
+            } = {},
           ): Promise<boolean> => {
             const keep = keeps[who]!;
             const before = await registry.get(SEG);
@@ -302,30 +384,37 @@ describe.each([
             }
             if (!result.published) return true;
             published += 1;
+            if (
+              before !== null &&
+              before.currentGen !== null &&
+              usableKnownGens(before) === undefined
+            ) {
+              seeded += 1;
+            }
             const row = (await registry.get(SEG))!;
             const present = await generations(storage);
             const previous = before?.currentGen ?? undefined;
             if (previous !== undefined) supersededBy.set(result.generation, previous);
             // 5: the list a publish wrote, from the list it found.
-            const found = usableKeptGens(before);
+            const found = win(before);
             if (
               found !== undefined &&
               keep <= MAX_KEPT_GENERATIONS &&
               before!.currentGen !== null &&
               row.currentGen === result.generation &&
-              options.registry === undefined
+              (options.registry === undefined || options.settled === true)
             ) {
               const all = [...found, before!.currentGen];
               const expected = all.slice(Math.max(0, all.length - keep));
               // The load's own list is the row's unless another writer's list replaced it.
-              if (row.keptGens !== undefined) expect(row.keptGens).toEqual(expected);
+              if (win(row) !== undefined) expect(win(row)).toEqual(expected);
               byName += 1;
             }
             // 6: a publish that recorded no window collects by listing, and keeps the generation it superseded first.
             if (
               (found === undefined || keep > MAX_KEPT_GENERATIONS) &&
               row.currentGen === result.generation &&
-              options.registry === undefined &&
+              (options.registry === undefined || options.settled === true) &&
               options.storage === undefined
             ) {
               const below = presentBefore.filter((g) => g < result.generation);
@@ -335,7 +424,7 @@ describe.each([
                 `generation ${result.generation} over ${String(previous)} at keep ${keep}`,
               ).toEqual(window);
               if (keep <= MAX_KEPT_GENERATIONS && keep < result.generation) {
-                expect(row.keptGens, 'the window it recorded').toEqual(window);
+                expect(win(row), 'the window it recorded').toEqual(window);
               }
               listed += 1;
               // Where a window by number alone would have dropped the superseded generation.
@@ -349,8 +438,11 @@ describe.each([
               }
             }
             // 2: the newest `keep` of the generations the row names, that were there, are still there.
-            if (row.currentGen === result.generation && options.registry === undefined) {
-              const named = (row.keptGens ?? []).filter((g) => presentBefore.includes(g));
+            if (
+              row.currentGen === result.generation &&
+              (options.registry === undefined || options.settled === true)
+            ) {
+              const named = (win(row) ?? []).filter((g) => presentBefore.includes(g));
               for (const g of named.slice(Math.max(0, named.length - keep))) {
                 expect(present, `kept generation ${g} at keep ${keep}`).toContain(g);
               }
@@ -360,14 +452,12 @@ describe.each([
               result.generation % LIST_COLLECTION_CADENCE === 0 &&
               keep < result.generation &&
               row.currentGen === result.generation &&
-              options.registry === undefined &&
+              (options.registry === undefined || options.settled === true) &&
               options.storage === undefined &&
-              row.keptGens !== undefined
+              win(row) !== undefined
             ) {
               periodic += 1;
-              const unnamed = present.filter(
-                (g) => g < row.currentGen! && !row.keptGens!.includes(g),
-              );
+              const unnamed = present.filter((g) => g < row.currentGen! && !win(row)!.includes(g));
               expect(unnamed, `generation ${result.generation} keep ${keep}`).toEqual([]);
             }
             return true;
@@ -380,7 +470,7 @@ describe.each([
             // 1
             expect(present, 'the current generation').toContain(row.currentGen);
             // 3
-            const list = row.keptGens;
+            const list = win(row);
             if (list !== undefined) {
               expect(list.length).toBeLessThanOrEqual(MAX_KEPT_GENERATIONS);
               expect(
@@ -393,7 +483,15 @@ describe.each([
             const row = await registry.get(SEG);
             const current = row?.currentGen ?? -1;
             const present = await generations(storage);
-            const deletesNothing = ['retention', 'crash', 'stray', 'rollback'].includes(step.kind);
+            const deletesNothing = [
+              'retention',
+              'crash',
+              'stray',
+              'rollback',
+              'drop-ledger',
+              'hand-move',
+              'snapshot',
+            ].includes(step.kind);
             switch (step.kind) {
               case 'load':
                 await load(step.who, step.extra);
@@ -419,7 +517,7 @@ describe.each([
               }
               case 'rollback': {
                 const below = present.filter((g) => g < current);
-                const named = (row?.keptGens ?? []).filter((g) => below.includes(g));
+                const named = (win(row) ?? []).filter((g) => below.includes(g));
                 const superseded = supersededBy.get(current);
                 const target =
                   step.target === 'kept' && named.length > 0
@@ -446,16 +544,72 @@ describe.each([
                     // A rewrite took every generation below its pointer, and the row says none is kept.
                     const after = (await registry.get(SEG))!;
                     expect(after.currentGen).toBe(erased.generation);
-                    // [] when the row it rewrote recorded a list to extend; none when it recorded none.
-                    expect(after.keptGens).toEqual(
-                      usableKeptGens(row) === undefined ? undefined : [],
-                    );
+                    // The rewrite always leaves the ledger with the rewritten generation alone: a window of [], whatever the row it
+                    // rewrote recorded. (A release before ledgers left [] over a row that recorded a list, none over one that did not.)
+                    expect(win(after)).toEqual([]);
                     expect(
                       (await generations(storage)).filter((g) => g < erased.generation!),
                     ).toEqual([]);
                   }
                 }
                 break;
+              case 'drop-ledger':
+                // A hand repair or a registry of your own that drops the field.
+                if (row !== null)
+                  await registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
+                break;
+              case 'hand-move': {
+                // The pointer moved to a lower generation in the bucket by hand: the row loses its summary and ledger.
+                const lower = present.filter((g) => g < current);
+                const at = lower[step.pick % Math.max(lower.length, 1)];
+                if (row !== null && at !== undefined) {
+                  await registry.compareAndSwap(SEG, row.token, { currentGen: at });
+                  handMoves += 1;
+                }
+                break;
+              }
+              case 'snapshot':
+                snapshot = row;
+                break;
+              case 'restore':
+                // A registry restored to an earlier row, whose object is still in the bucket. The row it replaces goes.
+                if (
+                  snapshot !== null &&
+                  snapshot.currentGen !== null &&
+                  present.includes(snapshot.currentGen)
+                ) {
+                  if (row !== null) await registry.delete(SEG);
+                  await registry.create(SEG, {
+                    currentGen: snapshot.currentGen,
+                    ...(snapshot.knownGens === undefined ? {} : { knownGens: snapshot.knownGens }),
+                  });
+                  restores += 1;
+                }
+                break;
+              case 'settled': {
+                // A publish whose write landed and then got no answer: settled by reading the row.
+                let armed = true;
+                const flaky = new Proxy(registry, {
+                  get(t, p, rx) {
+                    const value: unknown = Reflect.get(t, p, rx);
+                    if (typeof value !== 'function') return value;
+                    const fn = value as (...a: unknown[]) => unknown;
+                    if (p !== 'compareAndSwap' && p !== 'create')
+                      return (...a: unknown[]) => fn.apply(t, a);
+                    return async (...a: unknown[]) => {
+                      const out = await fn.apply(t, a);
+                      if (armed) {
+                        armed = false;
+                        throw new TransientError('no answer');
+                      }
+                      return out;
+                    };
+                  },
+                }) as IRegistryDriver;
+                await load(step.who, step.extra, { registry: flaky, settled: true });
+                settles += 1;
+                break;
+              }
               case 'retention':
                 await setSegmentRetention(SEG, { registry }, { expiresAt: FAR });
                 break;
@@ -485,7 +639,7 @@ describe.each([
           }
         },
       ),
-      { numRuns: runs },
+      { numRuns: runs * Number(process.env.PROP_RUNS_FACTOR ?? 1) },
     );
     // Not vacuous: publishes were checked against the list, periodic passes were reached, loads that list were checked
     // against the window, among them loads after a rollback, and each kind of rollback ran.
@@ -494,6 +648,10 @@ describe.each([
     expect(periodic).toBeGreaterThan(floor.periodic ?? -1);
     expect(listed).toBeGreaterThan(floor.listed ?? -1);
     expect(restored).toBeGreaterThan(floor.restored ?? -1);
+    expect(seeded).toBeGreaterThan(floor.seeded ?? -1);
+    expect(restores).toBeGreaterThan(floor.restores ?? -1);
+    expect(handMoves).toBeGreaterThan(floor.handMoves ?? -1);
+    expect(settles).toBeGreaterThan(floor.settles ?? -1);
     for (const t of Object.keys(onto) as Target[]) {
       expect(onto[t], `rollbacks onto ${t}`).toBeGreaterThan(floor.onto?.[t] ?? -1);
     }

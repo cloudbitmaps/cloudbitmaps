@@ -14,20 +14,15 @@
  * randomness of its own.
  */
 import { requireInteger } from './check';
-import {
-  IntegrityError,
-  NotFoundError,
-  WriteConflictError,
-  isNotFoundError,
-  isWriteConflictError,
-} from './errors';
+import { IntegrityError, NotFoundError, WriteConflictError, isNotFoundError } from './errors';
 import { generationsOf } from './generation-list';
-import { MAX_KEPT_GENERATIONS, keptWindow, usableKeptGens } from './kept-generations';
+import { keptWindow, windowOf } from './known-generations';
 import { heldGenerations } from './leases';
 import type {
   GenKey,
   IStorageDriver,
   IRegistryDriver,
+  KnownGeneration,
   RegistryRecord,
   SegmentRef,
   Token,
@@ -212,9 +207,11 @@ async function aboveEverything(
   ref: SegmentRef,
   deps: GenerationDeps,
   record: RegistryRecord | null,
+  seen?: number[],
 ): Promise<number> {
   let highest = record?.currentGen ?? -1;
   for await (const key of deps.storage.list(ref)) {
+    seen?.push(key.generation);
     if (key.generation > highest) highest = key.generation;
   }
   return numberAbove(highest);
@@ -237,6 +234,8 @@ interface LoadNumber {
    * the listing would have kept is a name the pass takes. `false` when the listing numbered the load.
    */
   readonly checked: boolean;
+  /** The generations that listing found, when the load listed: a seed of the ledger reads them instead of listing again. */
+  readonly listed?: readonly number[];
 }
 
 /**
@@ -270,7 +269,8 @@ export async function nextLoadGeneration(
   } catch (err) {
     if (isNotFoundError(err)) return { generation, checked: true };
   }
-  return { generation: await aboveEverything(ref, deps, row), checked: false };
+  const listed: number[] = [];
+  return { generation: await aboveEverything(ref, deps, row, listed), checked: false, listed };
 }
 
 /**
@@ -367,13 +367,9 @@ interface Superseded {
   readonly by: number;
 }
 
-/** What a listing pass did: the generations it deleted, and the ones below the pointer it left. */
+/** What a listing pass did: the generations it deleted, and whether it stopped on a rollback onto one of them. */
 interface ListingResult {
   readonly deleted: number[];
-  /** The generations below the pointer the pass kept, ascending. Empty on a tombstone or with no pointer. */
-  readonly kept: number[];
-  /** Whether the pass ran to its end. A `quiet` pass that met a writer that moved the row stops early, and is not. */
-  readonly complete: boolean;
   /**
    * A generation the pass deleted that the row named when the pass read it afterwards ({@link watchDeletes}),
    * quiet or not. The pass stops there, and its caller raises it.
@@ -414,7 +410,7 @@ async function listingPass(
   // negative count that clamps to 0 collects it too, for a caller who wrote a typo.
   requireInteger(keep, { min: 0, what: 'keep' });
   const record = await deps.registry.get(ref);
-  if (record === null) return { deleted: [], kept: [], complete: true }; // no authoritative pointer → don't delete anything
+  if (record === null) return { deleted: [] }; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
   // Each number once: a duplicate would silently consume a slot of the `keep` window and evict a live generation.
   const gens = await generationsOf(deps.storage, ref);
@@ -427,7 +423,7 @@ async function listingPass(
   // pointer.
   const after = await deps.registry.get(ref);
   if (after === null) {
-    if (quiet) return { deleted: [], kept: [], complete: false };
+    if (quiet) return { deleted: [] };
     throw new WriteConflictError(`registry row for segment ${ref.segment} was purged mid-pass`);
   }
 
@@ -436,7 +432,7 @@ async function listingPass(
   // every object it enumerated, `currentGen` included, so a re-created segment would lose the generation its
   // new pointer names.
   if (record.status === 'destroyed' && after.token !== record.token) {
-    if (quiet) return { deleted: [], kept: [], complete: false };
+    if (quiet) return { deleted: [] };
     throw new WriteConflictError(
       `segment ${ref.segment} changed incarnation while its generations were being listed`,
     );
@@ -456,7 +452,7 @@ async function listingPass(
   // What a protecting pass spares: what the publish named, and what the row names now, which a publish that landed since
   // has added to. With no usable list on the row now (a rollback dropped it, or a writer that records none moved the
   // pointer) there is nothing to protect by, and the pass keeps a window of `keep` below the pointer instead.
-  const named = record.status === 'destroyed' ? undefined : usableKeptGens(after);
+  const named = record.status === 'destroyed' ? undefined : windowOf(after);
   const protect =
     options.protect === undefined || named === undefined
       ? undefined
@@ -496,7 +492,7 @@ async function listingPass(
         : cutoff === null || (still.currentGen !== null && still.currentGen >= cutoff);
     // A protecting pass deletes what the row does not name, so the row must still name something it can be held to:
     // a rollback drops the list, and a publish since may have added a name this pass did not know.
-    const now = protect === undefined ? undefined : usableKeptGens(still);
+    const now = protect === undefined ? undefined : windowOf(still);
     const unnamed =
       protect === undefined ||
       record.status === 'destroyed' ||
@@ -560,9 +556,9 @@ async function listingPass(
   for (const generation of toDelete) {
     const verdict = await stillCollectable(generation);
     if (typeof verdict === 'object') {
-      return { deleted: done, kept: [], complete: false, missing: verdict.missing };
+      return { deleted: done, missing: verdict.missing };
     }
-    if (verdict === 'stop') return { deleted: done, kept: [], complete: false };
+    if (verdict === 'stop') return { deleted: done };
     if (verdict === 'skip') {
       leasedSpared.add(generation);
       continue;
@@ -575,19 +571,17 @@ async function listingPass(
   // tombstone, whose pointer no rollback moves.
   if (record.status !== 'destroyed') {
     const missing = await watch.settle(after);
-    if (missing !== undefined) return { deleted: done, kept: [], complete: false, missing };
+    if (missing !== undefined) return { deleted: done, missing };
   }
-  return {
-    deleted: done,
-    kept: below.filter((g) => !watch.gone.has(g) && !leasedSpared.has(g)).reverse(),
-    complete: true,
-  };
+  return { deleted: done };
 }
 
 /** What a load's publish recorded in the row, as `publishGeneration` reports it. */
 export interface PublishedKept {
-  /** The list the publish wrote, or `undefined` when it wrote none (the row then does not know which are kept). */
+  /** The window the publish recorded, as numbers, or `undefined` when it recorded none (the row then does not know which are kept). */
   readonly list: readonly number[] | undefined;
+  /** The ledger the publish wrote, in the order the generations were made current, when it wrote one. */
+  readonly known?: readonly KnownGeneration[];
   /** The names the publish pushed out of the window, ascending. */
   readonly evict: readonly number[];
   /** The token of the row the publish wrote, when it is known: a write settled by reading the row has none. */
@@ -595,16 +589,16 @@ export interface PublishedKept {
 }
 
 /**
- * Collect after a load's publish. The row records the generations the load keeps, so the pass deletes by name what the
- * publish pushed out of that window ({@link deleteEvicted}) and lists the segment ({@link gcOrphanGenerations}'s
+ * Collect after a load's publish. The row's ledger records the generations the load keeps, so the pass deletes by name
+ * what the publish pushed out of that window ({@link deleteEvicted}) and lists the segment ({@link gcOrphanGenerations}'s
  * pass) only when it cannot rely on the row or must catch what a name does not:
  *
- *  - the row recorded no list (a `keep` above {@link MAX_KEPT_GENERATIONS}, one a
- *    rollback or an erasure moved, or a publish whose write was settled by reading the row): the pass keeps `keep` of
- *    the generations present below the pointer, `previous` first and then the newest by number ({@link keptWindow}),
- *    and records them with one compare-and-swap, fenced on the publish's own token, so the next load collects by name.
- *    After a rollback, `previous` is the generation the rollback restored, which the newer ones it moved away from
- *    would otherwise push out of the window;
+ *  - the publish recorded no window (a `keep` above {@link MAX_KEPT_GENERATIONS}, a row whose ledger names a generation
+ *    above its pointer because a rollback left one, a row with no usable ledger, or a publish whose write was settled
+ *    by reading the row): the pass keeps `keep` of the generations present below the pointer, `previous` first and then
+ *    the newest by number ({@link keptWindow}), and writes nothing: the publish already wrote the ledger, which is what
+ *    the next load derives its window from. After a rollback, `previous` is the generation the rollback restored, which
+ *    the newer ones it moved away from would otherwise push out of the window;
  *  - the guard found the current generation's object gone, or, for a `keep` of 1 or more when the guard took the size
  *    from the row's summary and opened nothing, one zero-byte read of it does not find it (`proveCurrent`): the
  *    window then counts a generation that is not there, so the same pass keeps what is;
@@ -616,10 +610,7 @@ export interface PublishedKept {
  * below it. A load onto a `destroyed` row is refused at its publish and never reaches here; a drop that lands after
  * the publish leaves this pass collecting the tombstone's generations, and the drop's own sweep takes the rest.
  *
- * The seed's compare-and-swap moves the row's token, so a derived writer in flight on the row (an erasure rewrite)
- * meets a lost fence and re-derives: it happens once per row that recorded no list. A `WriteConflictError` from it is
- * a lost race, and the load took effect, so it is not raised; the next load records the list. Any other fault is
- * raised, as every fault of a collection after a landed publish is.
+ * Any fault of the collection is raised, as every fault of a collection after a landed publish is.
  *
  * So is a rollback onto a generation the pass deleted, which the pass finds by holding every read of the row it makes
  * after a delete to what it deleted, and by reading the row once more after its last delete
@@ -658,7 +649,7 @@ export async function collectAfterLoad(
   const superseded = previous === undefined ? undefined : { generation: previous, by: generation };
   const list = kept?.list;
   if (list === undefined || currentGone === true)
-    return reconcile(ref, deps, { generation, keep, kept, leases, superseded });
+    return reconcile(ref, deps, { generation, keep, leases, superseded });
   const periodic = generation % LIST_COLLECTION_CADENCE === 0;
   if (byName && !periodic) {
     // A `keep` of 0 deletes the generation it supersedes, which is the one in question: whether it is there or not, it
@@ -668,7 +659,7 @@ export async function collectAfterLoad(
       proveCurrent !== undefined &&
       !(await objectIsThere(deps.storage, proveCurrent))
     ) {
-      return reconcile(ref, deps, { generation, keep, kept, leases, superseded });
+      return reconcile(ref, deps, { generation, keep, leases, superseded });
     }
     return deleteEvicted(ref, deps, { generation, evict: kept!.evict, leases });
   }
@@ -684,8 +675,8 @@ export async function collectAfterLoad(
 }
 
 /**
- * The listing pass that keeps a window of `keep` generations present, the one the load superseded first, then records
- * what it kept in the row, once, when the row recorded none and `keep` fits the list.
+ * The listing pass that keeps a window of `keep` generations present, the one the load superseded first. It writes
+ * nothing: the load's publish wrote the row's ledger.
  */
 async function reconcile(
   ref: SegmentRef,
@@ -693,37 +684,19 @@ async function reconcile(
   options: {
     generation: number;
     keep: number;
-    kept: PublishedKept | undefined;
     leases?: LeaseGuard;
     superseded?: Superseded;
   },
 ): Promise<number[]> {
-  const { generation, keep, kept, leases, superseded } = options;
-  const {
-    deleted,
-    kept: present,
-    complete,
-    missing,
-  } = await listingPass(ref, deps, { keep, quiet: true, leases, superseded });
+  const { generation, keep, leases, superseded } = options;
+  const { deleted, missing } = await listingPass(ref, deps, {
+    keep,
+    quiet: true,
+    leases,
+    superseded,
+  });
   if (missing !== undefined) throw tookEffectOverMissing(ref, generation, missing);
-  const token = kept?.token;
-  if (
-    complete &&
-    token !== undefined &&
-    keep <= MAX_KEPT_GENERATIONS &&
-    !sameList(kept?.list, present)
-  ) {
-    try {
-      await deps.registry.compareAndSwap(ref, token, { keptGens: present });
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-    }
-  }
   return deleted;
-}
-
-function sameList(a: readonly number[] | undefined, b: readonly number[]): boolean {
-  return a !== undefined && a.length === b.length && a.every((g, i) => g === b[i]);
 }
 
 /**
@@ -773,7 +746,7 @@ export async function deleteEvicted(
     const lost = held === undefined ? undefined : await watch.check(held, still);
     if (lost !== undefined) throw tookEffectOverMissing(ref, options.generation, lost);
     if (still === null || still.currentGen === null || still.currentGen < options.generation) break;
-    const named = usableKeptGens(still);
+    const named = windowOf(still);
     if (named === undefined || generation >= still.currentGen || named.includes(generation)) break;
     // A name a live lease holds is spared, and the pass goes on: the rest of the window's evictions still go.
     if (

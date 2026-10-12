@@ -1,3 +1,4 @@
+import { windowOf } from '@/core/known-generations';
 import fc from 'fast-check';
 import { dropSegment } from '@cloudbitmaps/core';
 import { eraseIdFromSegment } from '@/core/erase-id';
@@ -229,12 +230,13 @@ describe('leases among loads, erasures, rollbacks and drops (property)', () => {
             // 2: after a periodic pass nothing unnamed and unleased is left below the pointer.
             if (
               periodicLoad !== undefined &&
-              now?.keptGens !== undefined &&
+              now !== null &&
+              windowOf(now) !== undefined &&
               now.currentGen === periodicLoad.generation
             ) {
               const leased = new Set(live().map((e) => e.generation));
               const stray = after.filter(
-                (g) => g < now.currentGen! && !now.keptGens!.includes(g) && !leased.has(g),
+                (g) => g < now.currentGen! && !windowOf(now)!.includes(g) && !leased.has(g),
               );
               expect(stray, `generation ${periodicLoad.generation} at keep ${keep}`).toEqual([]);
               resumed += 1;

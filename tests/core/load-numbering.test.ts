@@ -222,15 +222,20 @@ describe('re-running the load after a registry restore, as the recovery guide sa
     expect((await restoreAndRerun(5)).taken).toEqual([2, 3, 6]);
   });
 
-  it('keeps the restored generation with a keep of the highest stray minus the restored pointer, plus one', async () => {
-    expect((await restoreAndRerun(5 - 1 + 1)).left).toEqual([1, 2, 3, 4, 5, 6]);
-  });
-
-  it('collects it with a keep of the number of strays plus one', async () => {
-    const { left } = await restoreAndRerun(2 + 1);
-    expect(left).not.toContain(1);
-    expect(left).toEqual([3, 4, 5, 6]);
-  });
+  // The registry was repaired by hand, so its row has no window. The first re-run seeds the ledger with the window a
+  // count by `keep` keeps, so the restored generation stays from keep 3 on, and the strays go at the load that passes
+  // them, as they do from a row that records a window. (Before a ledger, keep 3 left 3, 4, 5, 6 and keep 5 left
+  // 1 to 6: the strays were kept by the count the first re-runs skipped.)
+  it.each([
+    { keep: 1, left: [3, 6] },
+    { keep: 3, left: [1, 2, 3, 6] },
+    { keep: 5, left: [1, 2, 3, 6] },
+  ])(
+    'keeps the restored generation from keep 3, and collects the strays: keep $keep leaves $left',
+    async ({ keep, left }) => {
+      expect((await restoreAndRerun(keep)).left).toEqual(left);
+    },
+  );
 });
 
 describe('two loads that check the same number', () => {

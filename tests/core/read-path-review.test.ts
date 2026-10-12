@@ -178,6 +178,7 @@ describe('distrust', () => {
       generation: row.currentGen as number,
       cardinality: 99,
       fingerprint: (row.summary as { fingerprint: string }).fingerprint,
+      tailBytes: (row.summary as { tailBytes: number }).tailBytes,
     },
   });
 
@@ -300,9 +301,9 @@ describe('checkConsistency with summaries', () => {
     // A good summary, and a keystore that cannot open the segment's key.
     const again = (await w.registry.get(SEG))!;
     const aead = await w.real.openDek(again.wrappedDeks!);
-    const { fingerprint } = openSummary(aead, SEG, good);
+    const { fingerprint, tailBytes } = openSummary(aead, SEG, good);
     await w.registry.compareAndSwap(SEG, again.token, {
-      summary: sealSummary(aead, SEG, 1, 4, fingerprint),
+      summary: sealSummary(aead, SEG, 1, 4, fingerprint, tailBytes),
     });
     const cannotOpen = {
       openDek: async () => {

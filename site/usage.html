@@ -693,7 +693,7 @@ bill.redisCrossover.readsPerSec;  <span class="c">// against a Redis sized to th
                 A load collects what it supersedes, keeping the newest superseded generation by default as a
                 grace window, so a read still fetching from it saves a round trip. An
                 <span class="m">*Into</span> write collects nothing unless given
-                <span class="m">keep</span>, and the next load of its destination lists once, collects everything below its pointer
+                <span class="m">keep</span>, and the next load of its destination lists twice when its number was free (once to seed the ledger, once to collect, with no separate write), collects everything below its pointer
                 beyond its <span class="m">keep</span>, and records the window it kept. Storage is the only cost
                 of that window. It is not a snapshot facility: no setting here holds a long job on one
                 generation — <span class="m">seg.pin()</span> does.

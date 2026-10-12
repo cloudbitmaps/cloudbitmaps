@@ -4,7 +4,7 @@ import { RETAINED_BYTES_PER_INDEX_ENTRY } from '@/core/crbm/reader';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { OPEN_READER_BYTES } from '@/core/crbm-storage-source';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { writeCrbm } from '../helpers/crbm-extension';
 
 /**

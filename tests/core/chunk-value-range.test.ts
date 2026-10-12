@@ -1,4 +1,4 @@
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { writeCrbmGeneration } from '@/core/crbm-write';
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { RoaringBitmap32, SerializationFormat } from 'roaring';

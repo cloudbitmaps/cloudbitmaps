@@ -12,14 +12,15 @@ import { canonicalMetadataJson, MAX_METADATA_BYTES } from '@/core/metadata';
 import { fingerprintParts } from '@/core/crbm/fingerprint';
 import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import { renewsPointer } from '@/core/pointer-id';
-import { MAX_SUMMARY_CARDINALITY } from '@/core/summary';
+import { MAX_SUMMARY_CARDINALITY, tailBytesFit } from '@/core/summary';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
 import {
-  MAX_KEPT_GENERATIONS,
-  MAX_STORED_KEPT_GENERATIONS,
-  usableKeptGens,
-} from '@/core/kept-generations';
+  MAX_KNOWN_GENERATIONS,
+  MAX_STORED_KNOWN_GENERATIONS,
+  usableKnownGens,
+} from '@/core/known-generations';
 import type {
+  KnownGeneration,
   LeaseEntry,
   NewRegistryRecord,
   RegistryPatch,
@@ -49,7 +50,7 @@ export const RECORD_FIELDS = [
   'createdAt',
   'updatedAt',
   'token',
-  'keptGens',
+  'knownGens',
   'leases',
   'pointerId',
 ] as const;
@@ -64,9 +65,9 @@ const MAX_WRAPPED_DEKS = 8;
 const MAX_WRAPPED_DEK_BYTES = 4 * 1024;
 /**
  * A sealed summary's fixed part: a 12-byte nonce, the u64 count, the object's fingerprint (a u64 size and a u32 footer
- * checksum), and a 16-byte tag.
+ * checksum), the u32 `tailBytes`, and a 16-byte tag.
  */
-const SEALED_SUMMARY_MIN_BYTES = 12 + 8 + 8 + 4 + 16;
+const SEALED_SUMMARY_MIN_BYTES = 12 + 8 + 8 + 4 + 4 + 16;
 /** The fixed part plus metadata at its cap. */
 const SEALED_SUMMARY_MAX_BYTES = SEALED_SUMMARY_MIN_BYTES + MAX_METADATA_BYTES;
 /** Padded standard base64; canonical once its pad bits are checked too (see {@link base64PadBitsAreZero}). */
@@ -142,8 +143,8 @@ function validateGovernance(meta: unknown, field: string): void {
 
 /**
  * Whose value a validator is looking at: one a `caller` is writing (a bad one is a ValidationError, a list or summary
- * it returns is a frozen copy, and `keptGens` is held to {@link MAX_KEPT_GENERATIONS}), or a row read back from
- * `stored` bytes (a bad one is an IntegrityError, `keptGens` is held to {@link MAX_STORED_KEPT_GENERATIONS}, and the
+ * it returns is a frozen copy, and `knownGens` is held to {@link MAX_KNOWN_GENERATIONS}), or a row read back from
+ * `stored` bytes (a bad one is an IntegrityError, `knownGens` is held to {@link MAX_STORED_KNOWN_GENERATIONS}, and the
  * parsed value is kept).
  */
 type RecordOrigin = 'caller' | 'stored';
@@ -194,7 +195,8 @@ function base64PadBitsAreZero(text: string): boolean {
  * Validate a {@link RegistrySummary}'s shape at the write or read boundary, and return a frozen copy built from the
  * checked fields only: exactly one of the two shapes, a non-negative safe-integer generation, a cardinality from 0 to
  * 2^32, the fingerprint of an object (`<size>:<footer checksum>`, a size no smaller than a `.crbm` preamble and footer
- * and a 32-bit checksum), metadata by the metadata rules (never the empty object, which is never stored) with its keys
+ * and a 32-bit checksum), `tailBytes` (an integer from a footer's size to the object's size less its preamble, and at
+ * most the cap a reader fetches for one open), metadata by the metadata rules (never the empty object, which is never stored) with its keys
  * in canonical order, or a sealed blob in canonical base64 whose length fits a sealed count and fingerprint plus
  * metadata at its cap. A writer
  * stores the copy, so a caller that changes its object after the call, while the driver awaits the row, changes
@@ -224,7 +226,7 @@ function validateSummary(
   const isSealed = keys.includes('sealed');
   const allowed = isSealed
     ? ['generation', 'sealed']
-    : ['generation', 'cardinality', 'fingerprint', 'metadata'];
+    : ['generation', 'cardinality', 'fingerprint', 'tailBytes', 'metadata'];
   const extra = keys.filter((k) => !allowed.includes(k));
   if (extra.length > 0) {
     fail(
@@ -245,7 +247,7 @@ function validateSummary(
     if (bytes < SEALED_SUMMARY_MIN_BYTES || bytes > SEALED_SUMMARY_MAX_BYTES) {
       fail(
         `sealed is ${bytes}B, outside ${SEALED_SUMMARY_MIN_BYTES}..${SEALED_SUMMARY_MAX_BYTES}B ` +
-          '(a nonce, a fixed-width count and fingerprint, a tag, and metadata up to its cap)',
+          '(a nonce, a fixed-width count, fingerprint and tail size, a tag, and metadata up to its cap)',
       );
     }
     return Object.freeze({ generation: generation as number, sealed: text });
@@ -255,9 +257,17 @@ function validateSummary(
     fail(`cardinality must be an integer from 0 to 2^32 (got ${String(n)})`);
   }
   const fingerprint = s.fingerprint;
-  if (fingerprintParts(fingerprint) === undefined) {
+  const parts = fingerprintParts(fingerprint);
+  if (parts === undefined) {
     fail(
       `fingerprint must be an object's, <size>:<footer checksum> in decimal (got ${shown(JSON.stringify(fingerprint))})`,
+    );
+  }
+  const tailBytes = s.tailBytes;
+  if (!tailBytesFit(tailBytes, parts!.size)) {
+    fail(
+      `tailBytes must be an integer from the footer's size to the object's size less its preamble, and at most ` +
+        `the cap of one open's tail read (got ${shown(JSON.stringify(tailBytes))} for an object of ${parts!.size} bytes)`,
     );
   }
   if (s.metadata === undefined) {
@@ -265,6 +275,7 @@ function validateSummary(
       generation: generation as number,
       cardinality: n as number,
       fingerprint: fingerprint as string,
+      tailBytes: tailBytes as number,
     });
   }
   const canonical = canonicalMetadataJson(s.metadata, fail);
@@ -278,6 +289,7 @@ function validateSummary(
     generation: generation as number,
     cardinality: n as number,
     fingerprint: fingerprint as string,
+    tailBytes: tailBytes as number,
     metadata,
   });
 }
@@ -320,38 +332,64 @@ function validateSummaryKeys(
   }
 }
 
+const KNOWN_ENTRY_KEYS: readonly string[] = ['generation', 'footerCrc'];
+
 /**
- * Validate a {@link RegistryRecord.keptGens} list's shape at the write or read boundary: an array of at most `max`
- * entries, each a non-negative safe integer, strictly ascending (which refuses a duplicate). A write returns a frozen
- * copy, so a caller that changes its array afterwards changes nothing that is written. `origin` picks the error class
- * (write = ValidationError; read = IntegrityError, invariant 5). Whether the entries are below the pointer is not
- * checked here on a read: a list that disagrees with the pointer is one its reader does not use, not a row to refuse.
+ * Validate a {@link RegistryRecord.knownGens} list's shape at the write or read boundary: an array of at most `max`
+ * entries (192 written, 384 read), each exactly `{ generation, footerCrc }`, the generation a non-negative safe integer
+ * and unique, the checksum an integer from 0 to 2^32 - 1. The order is the order the generations were made current and
+ * is kept as given: it cannot be checked, since it is not derivable from the numbers. A write returns a frozen copy, so
+ * a caller that changes its array afterwards changes nothing that is written. `origin` picks the error class (write =
+ * ValidationError; read = IntegrityError, invariant 5). Whether the last entry is the pointer, and whether its checksum
+ * is the summary's, is not checked here on a read: a ledger that disagrees with its row is one its reader does not use,
+ * not a row to refuse.
  */
-function validateKeptGens(
+function validateKnownGens(
   value: unknown,
   origin: RecordOrigin,
   ctx?: string,
-): readonly number[] | undefined {
+): readonly KnownGeneration[] | undefined {
   if (value === undefined) return undefined;
   const fail = (msg: string): never => {
     const where = ctx === undefined ? '' : `: ${ctx}`;
     throw origin === 'stored'
-      ? new IntegrityError(`registry record keptGens: ${msg}${where}`)
-      : new ValidationError(`keptGens: ${msg}`);
+      ? new IntegrityError(`registry record knownGens: ${msg}${where}`)
+      : new ValidationError(`knownGens: ${msg}`);
   };
   if (!Array.isArray(value)) fail('must be an array');
   const list = value as unknown[];
-  const max = origin === 'stored' ? MAX_STORED_KEPT_GENERATIONS : MAX_KEPT_GENERATIONS;
+  const max = origin === 'stored' ? MAX_STORED_KNOWN_GENERATIONS : MAX_KNOWN_GENERATIONS;
   if (list.length > max) fail(`has ${list.length} entries, cap ${max}`);
-  let last = -1;
-  for (const g of list) {
-    if (!Number.isSafeInteger(g) || (g as number) < 0) {
-      fail(`entries must be non-negative safe integers (got ${String(g)})`);
+  const seen = new Set<number>();
+  const out: KnownGeneration[] = [];
+  for (const e of list) {
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) fail('an entry must be an object');
+    const entry = e as Record<string, unknown>;
+    const extra = Object.keys(entry).filter((k) => !KNOWN_ENTRY_KEYS.includes(k));
+    if (extra.length > 0) fail(`an entry carries an undeclared field (${shown(extra.join(', '))})`);
+    const { generation, footerCrc } = entry;
+    if (!Number.isSafeInteger(generation) || (generation as number) < 0) {
+      fail(`a generation must be a non-negative safe integer (got ${shown(generation)})`);
     }
-    if ((g as number) <= last) fail('entries must be strictly ascending');
-    last = g as number;
+    if (
+      !Number.isInteger(footerCrc) ||
+      (footerCrc as number) < 0 ||
+      (footerCrc as number) > 0xffff_ffff
+    ) {
+      fail(`a footerCrc must be an integer from 0 to 2^32 - 1 (got ${shown(footerCrc)})`);
+    }
+    if (seen.has(generation as number)) fail(`generation ${String(generation)} is repeated`);
+    seen.add(generation as number);
+    out.push(
+      origin === 'stored'
+        ? (entry as unknown as KnownGeneration)
+        : Object.freeze({
+            generation: generation as number,
+            footerCrc: footerCrc as number,
+          }),
+    );
   }
-  return origin === 'stored' ? (list as number[]) : Object.freeze([...(list as number[])]);
+  return origin === 'stored' ? out : Object.freeze(out);
 }
 
 const HOLDER = /^[0-9a-f]{16}$/;
@@ -427,21 +465,37 @@ function validateLeasesPointer(
   }
 }
 
-/** A list given at a write must name only generations below the pointer the row will have, and none on no pointer. */
-function validateKeptGensBelow(
-  keptGens: readonly number[] | undefined,
+/**
+ * A ledger given at a write must fit the row it makes: none on a row with no pointer, its last entry the row's resulting
+ * `currentGen`, and, where the row's resulting summary is in the clear and describes that generation, its checksum the
+ * one the summary's fingerprint carries. A registry cannot check a sealed summary's: the library's writers take both
+ * values from one object.
+ */
+function validateKnownGensFit(
+  knownGens: readonly KnownGeneration[] | undefined,
   currentGen: number | null,
+  summary: RegistrySummary | undefined,
 ): void {
-  if (keptGens === undefined) return;
+  if (knownGens === undefined) return;
   if (currentGen === null) {
+    throw new ValidationError('knownGens: a row with no pointer has no generation to know');
+  }
+  const last = knownGens[knownGens.length - 1];
+  if (last === undefined || last.generation !== currentGen) {
     throw new ValidationError(
-      'keptGens: a row with no pointer has no generations below it to keep',
+      `knownGens must end with the row's pointer ${currentGen}, in the order the generations were made current ` +
+        `(its last entry is ${last === undefined ? 'missing' : last.generation})`,
     );
   }
-  const top = keptGens[keptGens.length - 1];
-  if (top !== undefined && top >= currentGen) {
+  if (
+    summary !== undefined &&
+    summary.generation === currentGen &&
+    'fingerprint' in summary &&
+    fingerprintParts(summary.fingerprint)?.footerCrc !== last.footerCrc
+  ) {
     throw new ValidationError(
-      `keptGens names generation ${top}, which is not below the row's pointer ${currentGen}`,
+      `knownGens records footerCrc ${last.footerCrc} for generation ${currentGen}, but the summary's ` +
+        `fingerprint ${summary.fingerprint} carries another: both describe the one current object`,
     );
   }
 }
@@ -482,14 +536,14 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): NewRegistryRe
   validateWrappedDeks(rec.wrappedDeks, 'caller');
   validateGovernance(rec.retention, 'retention');
   validateGovernance(rec.residency, 'residency');
-  const keptGens = validateKeptGens(rec.keptGens, 'caller');
-  validateKeptGensBelow(keptGens, rec.currentGen);
-  const withKept = keptGens === undefined ? rec : { ...rec, keptGens };
-  if (!('summary' in rec)) return withKept;
-  const summary = validateSummary(rec.summary, 'caller');
+  const knownGens = validateKnownGens(rec.knownGens, 'caller');
+  const withKnown = knownGens === undefined ? rec : { ...rec, knownGens };
+  const summary = 'summary' in rec ? validateSummary(rec.summary, 'caller') : undefined;
+  validateKnownGensFit(knownGens, rec.currentGen, summary);
+  if (!('summary' in rec)) return withKnown;
   validateSummaryNames(summary, rec.currentGen);
   validateSummaryKeys(summary, rec.wrappedDeks);
-  return { ...withKept, summary };
+  return { ...withKnown, summary };
 }
 
 /**
@@ -505,14 +559,14 @@ export function validateRegistryPatch(patch: RegistryPatch): RegistryPatch {
   if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, 'caller');
   if ('retention' in patch) validateGovernance(patch.retention, 'retention');
   if ('residency' in patch) validateGovernance(patch.residency, 'residency');
-  const withKept =
-    patch.keptGens === undefined
+  const withKnown =
+    patch.knownGens === undefined
       ? patch
-      : { ...patch, keptGens: validateKeptGens(patch.keptGens, 'caller') };
+      : { ...patch, knownGens: validateKnownGens(patch.knownGens, 'caller') };
   const withLeases =
-    'leases' in withKept
-      ? { ...withKept, leases: validateLeases(withKept.leases, 'caller') }
-      : withKept;
+    'leases' in withKnown
+      ? { ...withKnown, leases: validateLeases(withKnown.leases, 'caller') }
+      : withKnown;
   if (!('summary' in patch)) return withLeases;
   return { ...withLeases, summary: validateSummary(patch.summary, 'caller') };
 }
@@ -541,20 +595,19 @@ export interface RegistryEnvelope {
  * on a backward-incompatible change. Policy: any stamp but this one → `UnsupportedError` (fail-closed); an
  * **absent** or malformed stamp → `IntegrityError`, since every row this build writes has one.
  *
- * Schema 4 is the record with `pointerId`, the incarnation-form token and a summary that names its object. This build
- * reads schema 4 and nothing else: a row stamped 1 to 3 carries no `pointerId`, so nothing could say which write set
- * what it resolves to.
+ * Schema 5 is the record with `knownGens`, the ledger of the generations a row made current (each with its object's footer
+ * checksum, in the order they were made current), and a summary that records `tailBytes`. This build reads schema 5 and
+ * nothing else: a row stamped lower carries no ledger and, below 4, no `pointerId` either, so nothing could say which
+ * generations the row published or which write set what it resolves to.
  */
-export const REGISTRY_SCHEMA_VERSION = 4;
-
-// The public page that says how to move a store written by an earlier registry schema.
-const UPGRADE_STEPS_URL =
-  'https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md#0200--2026-10-09';
+export const REGISTRY_SCHEMA_VERSION = 5;
 
 /**
  * Validate a persisted registry row's `schemaVersion` (untrusted bytes, invariant 5) and return it: an absent or
  * malformed value → `IntegrityError`; any version but {@link REGISTRY_SCHEMA_VERSION} → `UnsupportedError`
- * (fail-closed rather than misread a format this build does not read), naming what to do for an earlier one.
+ * (fail-closed rather than misread a format this build does not read), naming what to do for an earlier one. The steps
+ * are in the changelog's entry for the release that introduced the schema; the message names that entry and no anchor,
+ * which cannot go stale.
  */
 export function assertRegistrySchemaVersion(raw: unknown, ctx: string): number {
   if (raw === undefined) {
@@ -567,7 +620,8 @@ export function assertRegistrySchemaVersion(raw: unknown, ctx: string): number {
     throw new UnsupportedError(
       `registry row schemaVersion ${raw} is one this build does not read: it reads schema ` +
         `${REGISTRY_SCHEMA_VERSION} only. Export the segments with the release that wrote the row and load them ` +
-        `with this one into a new prefix (steps: ${UPGRADE_STEPS_URL}): ${ctx}`,
+        `with this one into a new prefix (steps: ` +
+        `https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md, the Breaking entry on registry schema 5): ${ctx}`,
     );
   }
   if (raw > REGISTRY_SCHEMA_VERSION) {
@@ -645,7 +699,7 @@ function checkPointerId(pointerId: unknown, token: TokenParts, ctx: string): voi
   }
 }
 
-export { usableKeptGens };
+export { usableKnownGens };
 
 // `incarnationOf` is defined in `core/token`, where the publish reads it too, and is the same function here.
 export { incarnationOf };
@@ -775,7 +829,7 @@ export function recordFromNew(
     retention: rec.retention,
     residency: rec.residency,
     summary: rec.summary,
-    keptGens: rec.keptGens,
+    knownGens: rec.knownGens,
     // A new row has no holder: a lease is written only against a row that already exists.
     leases: undefined,
     createdAt: now,
@@ -840,7 +894,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   // stored row that disagrees is a summary its reader must not use, not a row to refuse, and refusing it would let
   // one row stop every listing that reaches it.
   validateSummary(r.summary, 'stored', ctx);
-  validateKeptGens(r.keptGens, 'stored', ctx);
+  validateKnownGens(r.knownGens, 'stored', ctx);
   validateLeases(r.leases, 'stored', ctx);
 }
 
@@ -877,14 +931,14 @@ export function applyRegistryPatch(
     const kept = currentGen === prev.currentGen ? prev.summary : undefined;
     summary = kept !== undefined && summaryAgreesWithKeys(kept, wrappedDeks) ? kept : undefined;
   }
-  // The list names generations below the pointer, so it follows the pointer as the summary does: kept while the
-  // pointer stays, dropped when it moves without the patch naming the list, and checked against the pointer it gets.
-  let keptGens: readonly number[] | undefined;
-  if ('keptGens' in patch) {
-    validateKeptGensBelow(patch.keptGens, currentGen);
-    keptGens = patch.keptGens;
+  // The ledger ends with the pointer, so it follows the pointer as the summary does: kept while the pointer stays,
+  // dropped when it moves without the patch naming the ledger, and checked against the pointer and summary it gets.
+  let knownGens: readonly KnownGeneration[] | undefined;
+  if ('knownGens' in patch) {
+    validateKnownGensFit(patch.knownGens, currentGen, summary);
+    knownGens = patch.knownGens;
   } else {
-    keptGens = currentGen === prev.currentGen ? prev.keptGens : undefined;
+    knownGens = currentGen === prev.currentGen ? prev.knownGens : undefined;
   }
   // Leases name generations a holder pinned, and the pointer moving does not end them: kept unless the patch names the list.
   let leases: readonly LeaseEntry[] | undefined;
@@ -910,7 +964,7 @@ export function applyRegistryPatch(
     retention: 'retention' in patch ? patch.retention : prev.retention,
     residency: 'residency' in patch ? patch.residency : prev.residency,
     summary,
-    keptGens,
+    knownGens,
     leases,
     createdAt: prev.createdAt,
     updatedAt: now,

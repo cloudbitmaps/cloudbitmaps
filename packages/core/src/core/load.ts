@@ -29,6 +29,8 @@ import { incarnationField } from './token';
 import { type CodecBitmap, type CodecInterface, requireCodec } from './codec';
 import { bulkLoadAhead, cleartextUnderRequiredEncryption } from './bulk-load';
 import { provenObject, openGenerationReader, provesOwnObject } from './crbm-open';
+import { readSeed, wantsSeed } from './ledger-seed';
+import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept, type PublishResult } from './publish';
 import type { Clock, Rng } from './determinism';
 import { onlyLeasesDiffer } from './leases';
@@ -654,7 +656,7 @@ async function runLoad(
   }
 
   // The write joined the number, so it has settled.
-  const { generation, checked } = await numbering;
+  const { generation, checked, listed } = await numbering;
   const key = { namespace: ref.namespace, segment: ref.segment, generation };
 
   /**
@@ -781,14 +783,33 @@ async function runLoad(
   // without that, anything published between the "before" read and this publish voids the guard's premise while the
   // guard still reports success. An unguarded load needs no fence on the pointer: its ids come from upstream, so a
   // newer generation costs nothing it knew about.
+  // A publish over a row with no usable window starts the ledger with the window a count keeps, read from the bucket.
+  const currentObjectGone = needsBefore && before === null;
+  let seed: Awaited<ReturnType<typeof readSeed>> | undefined;
+  if (wantsSeed(row, generation, keep, currentObjectGone)) {
+    try {
+      seed = await readSeed(deps.storage, ref, row, generation, keep, listed, deps.readRetry);
+    } catch (err) {
+      // Nothing this load wrote was published, so its own object is reclaimed as a refused load's is (the reclaim re-reads the row).
+      const missing = await tidy();
+      if (missing !== undefined)
+        throw refusedOverMissing(
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          missing,
+        );
+      throw err;
+    }
+  }
   let published: PublishResult;
   try {
     published = await publishGenerationKept(deps.registry, key, {
+      ...(seed === undefined ? {} : { seed }),
       keep,
       leasesNow,
       row,
       wrappedDeks: written.wrappedDeks,
       summary: written.summary,
+      footerCrc: footerCrcOf(written.fingerprint),
       cleartext: !written.encrypted,
       ...(fromToken === undefined ? {} : { expectToken: fromToken, expectRow: row }),
       ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
@@ -848,7 +869,6 @@ async function runLoad(
   // `previous` is the generation this publish superseded: the publish is fenced on the row this load read (its token,
   // or a row changed only in its leases since), so the pointer it moved was the one that row named. A window kept by
   // listing holds it first, which after a rollback is the generation the rollback restored.
-  const currentObjectGone = needsBefore && before === null;
   const collected = await collectAfterLoad(ref, deps, {
     generation,
     keep,

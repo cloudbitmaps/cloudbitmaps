@@ -1,5 +1,5 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { randomBytes } from 'node:crypto';
 import { CloudRoaring, CrbmStorageChunkSource } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';

@@ -224,8 +224,9 @@ describe('an unguarded write that found no row fences on that absence too', () =
     expect(row.currentGen).toBeNull();
     expect(row.retention).toBeDefined();
     expect(await store.exists({ segment: 'dest' })).toBe(false);
-    // Its object is left in the bucket. The next load numbers past it; that row recorded no kept generations, so the
-    // load's listing keeps the newest one below its pointer, this object, and the load after it pushes it out.
+    // Its object is left in the bucket. The next load numbers past it; that row has no ledger, so the load's listing
+    // keeps the newest one below its pointer, this object, and seeds a ledger that names it, so the load after it pushes
+    // it out by name.
     expect(await objects(backend, 'dest')).toEqual([0]);
     expect(await store.load({ segment: 'dest' }, [4])).toMatchObject({
       generation: 1,

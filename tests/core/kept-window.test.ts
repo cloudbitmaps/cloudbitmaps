@@ -1,10 +1,10 @@
 import fc from 'fast-check';
-import { keptWindow, nextKept } from '@/core/kept-generations';
+import { keptWindow, nextKnown } from '@/core/known-generations';
 import type { RegistryRecord } from '@/core/ports';
 
 /**
  * The one rule for which generations below a new pointer a load keeps: the generation its publish superseded first,
- * when it is among them, then the newest of the rest by number, `keep` in all. The by-name window (`nextKept`) and the
+ * when it is among them, then the newest of the rest by number, `keep` in all. The by-name window (`nextKnown`) and the
  * listing pass both take it from here.
  */
 
@@ -64,9 +64,18 @@ describe('keptWindow', () => {
   });
 });
 
-describe('nextKept takes its window from the same rule', () => {
-  const row = (currentGen: number, keptGens: number[]): RegistryRecord =>
-    ({ currentGen, keptGens, token: 't', status: 'active' }) as unknown as RegistryRecord;
+describe('nextKnown takes its window from the same rule', () => {
+  /** A row at `currentGen` whose ledger holds `known` (numbers, oldest first) and then the current generation. */
+  const row = (currentGen: number, known: number[]): RegistryRecord =>
+    ({
+      currentGen,
+      knownGens: [...known, currentGen].map((generation) => ({
+        generation,
+        footerCrc: generation,
+      })),
+      token: 't',
+      status: 'active',
+    }) as unknown as RegistryRecord;
 
   it.each([
     { keep: 1, list: [4], evict: [1, 3] },
@@ -74,6 +83,9 @@ describe('nextKept takes its window from the same rule', () => {
     { keep: 3, list: [1, 3, 4], evict: [] },
     { keep: 0, list: [], evict: [1, 3, 4] },
   ])('over a row at 4 that keeps [1, 3], keep $keep writes $list', ({ keep, list, evict }) => {
-    expect(nextKept(row(4, [1, 3]), 5, keep)).toEqual({ list, evict });
+    const after = nextKnown(row(4, [1, 3]), 5, 5, keep);
+    expect({ list: after.list, evict: after.evict }).toEqual({ list, evict });
+    // The ledger is the window's entries, in the order they were made current, and the new generation last.
+    expect(after.known.map((e) => e.generation)).toEqual([...list, 5]);
   });
 });

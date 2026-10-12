@@ -10,12 +10,13 @@ import {
   recordFromNew,
   REGISTRY_SCHEMA_VERSION,
   serializeRegistryEnvelope,
-  usableKeptGens,
   validateNewRegistryRecord,
   validateRegistryPatch,
   type RegistryEnvelope,
 } from '@/drivers/_shared/registry';
-import type { RegistryRecord, RegistrySummary } from '@/core/ports';
+import { MAX_TAIL_BYTES } from '@/core/summary';
+import { usableKnownGens } from '@/core/known-generations';
+import type { KnownGeneration, RegistryRecord, RegistrySummary } from '@/core/ports';
 
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import type { SameKeys } from '../../helpers/types';
@@ -92,7 +93,7 @@ describe('assertStoredRecordShape — a stored record carries exactly its declar
 
 /**
  * Registry-row schema-version stamps (a format-freeze prerequisite). The persisted envelope carries a
- * `schemaVersion` so a reader can fail-closed on a layout it does not read. Policy: this build reads schema 4 and
+ * `schemaVersion` so a reader can fail-closed on a layout it does not read. Policy: this build reads schema 5 and
  * nothing else; an earlier or a later stamp is `UnsupportedError`, and an absent or malformed one `IntegrityError`, since
  * every row this build writes carries one. This pins the envelope path every registry driver shares.
  */
@@ -149,7 +150,7 @@ describe('registry envelope schema version (format freeze)', () => {
   });
 
   it('rejects a malformed schemaVersion (IntegrityError, invariant 5)', () => {
-    for (const bad of ['1', '4', 0, -1, 1.5, 4.5, null, undefined]) {
+    for (const bad of ['1', '5', 0, -1, 1.5, 4.5, null, undefined]) {
       expect(() => assertRegistrySchemaVersion(bad, 'bad')).toThrow(IntegrityError);
     }
   });
@@ -173,6 +174,8 @@ const W = 'fedcba9876543210';
 const TK = `${INC}.1.${W}`;
 /** The fingerprint of the object a summary describes, `<size>:<footer checksum>`. */
 const FP = '4096:7';
+/** The bytes of that object's end one open reads. */
+const TAIL = 300;
 const WRAPPED = [{ keyId: 'k', wrapped: 'd3JhcHBlZA==' }];
 const baseRecord = {
   segment: 's',
@@ -181,7 +184,7 @@ const baseRecord = {
   createdAt: 1,
   updatedAt: 1,
 };
-/** A whole schema-4 record carrying `token`, and `pointerId` the same unless given. */
+/** A whole schema-5 record carrying `token`, and `pointerId` the same unless given. */
 const stored = (token: string, pointerId: string = token): Record<string, unknown> => ({
   ...baseRecord,
   token,
@@ -189,32 +192,37 @@ const stored = (token: string, pointerId: string = token): Record<string, unknow
 });
 
 /**
- * This build reads schema 4 alone. A row stamped 1, 2 or 3 carries no `pointerId`, so nothing could say what it
- * resolves to: it is refused as a row this build does not read, with a message that says what to do, and never read as
- * empty or written over.
+ * This build reads schema 5 alone. A row stamped 1 to 4 carries no ledger of the generations it published (and, below
+ * 4, no `pointerId`), so nothing could say what it resolves to or vouches for: it is refused as a row this build does
+ * not read, with a message that says what to do, and never read as empty or written over.
  */
-describe('registry row schemas: only schema 4 is read', () => {
-  it('stamps 4, reads 4, and refuses 1, 2 and 3 as well as 5 (UnsupportedError)', () => {
-    expect(REGISTRY_SCHEMA_VERSION).toBe(4);
-    expect(assertRegistrySchemaVersion(4, 'v4')).toBe(4);
-    for (const v of [1, 2, 3, 5]) {
+describe('registry row schemas: only schema 5 is read', () => {
+  it('stamps 5, reads 5, and refuses 1 to 4 as well as 6 (UnsupportedError)', () => {
+    expect(REGISTRY_SCHEMA_VERSION).toBe(5);
+    expect(assertRegistrySchemaVersion(5, 'v5')).toBe(5);
+    for (const v of [1, 2, 3, 4, 6]) {
       expect(() => assertRegistrySchemaVersion(v, `v${v}`), `v${v}`).toThrow(UnsupportedError);
     }
   });
 
   it('refuses an earlier stamp naming the row, and saying what to do', () => {
-    for (const v of [1, 2, 3]) {
+    for (const v of [1, 2, 3, 4]) {
       const text = rowText(v, { ...baseRecord, token: v === 1 ? '7' : TK });
       expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(UnsupportedError);
       expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(/registry\/k\.reg$/);
       expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(
-        new RegExp(`schemaVersion ${v}.*reads schema 4 only.*new prefix`),
+        new RegExp(`schemaVersion ${v}.*reads schema 5 only.*new prefix`),
       );
-      // The steps are named by a public URL: the CHANGELOG is not in an installed package.
+      // The steps are named by the changelog's entry, with no anchor: the release date is not known where this is written.
       expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(
-        /https:\/\/github\.com\/cloudbitmaps\/cloudbitmaps\/blob\/main\/CHANGELOG\.md#0200--2026-10-09/,
+        /steps: https:\/\/github\.com\/cloudbitmaps\/cloudbitmaps\/blob\/main\/CHANGELOG\.md, the Breaking entry on registry schema 5\)/,
       );
     }
+  });
+
+  it('refuses a stamp 4 row that carries keptGens before it reads a field of it', () => {
+    const text = rowText(4, { ...stored(TK), keptGens: [1, 2] });
+    expect(() => parseRegistryEnvelope(text, 'registry/k.reg')).toThrow(UnsupportedError);
   });
 
   it('refuses a token in any form but the incarnation form, naming the row (IntegrityError)', () => {
@@ -242,10 +250,10 @@ describe('registry row schemas: only schema 4 is read', () => {
     ];
     for (const token of bad) {
       expect(
-        () => parseRegistryEnvelope(rowText(4, stored(token)), 'registry/k.reg'),
+        () => parseRegistryEnvelope(rowText(5, stored(token)), 'registry/k.reg'),
         JSON.stringify(token),
       ).toThrow(/: registry\/k\.reg$/);
-      expect(() => parseRegistryEnvelope(rowText(4, stored(token)), 'registry/k.reg')).toThrow(
+      expect(() => parseRegistryEnvelope(rowText(5, stored(token)), 'registry/k.reg')).toThrow(
         IntegrityError,
       );
     }
@@ -261,22 +269,22 @@ describe('a stored pointerId', () => {
   const at = (counter: number, inc = INC): string => `${inc}.${counter}.${W}`;
 
   it('reads one equal to the token, and one an earlier write of the incarnation set', () => {
-    expect(parseRegistryEnvelope(rowText(4, stored(at(5))), 'k').record.pointerId).toBe(at(5));
-    expect(parseRegistryEnvelope(rowText(4, stored(at(5), at(2))), 'k').record.pointerId).toBe(
+    expect(parseRegistryEnvelope(rowText(5, stored(at(5))), 'k').record.pointerId).toBe(at(5));
+    expect(parseRegistryEnvelope(rowText(5, stored(at(5), at(2))), 'k').record.pointerId).toBe(
       at(2),
     );
     expect(
-      parseRegistryEnvelope(rowText(4, stored(at(5), at(5).replace(W, '0'.repeat(16)))), 'k'),
+      parseRegistryEnvelope(rowText(5, stored(at(5), at(5).replace(W, '0'.repeat(16)))), 'k'),
     ).toBeDefined();
   });
 
   it('refuses a row with none (IntegrityError)', () => {
     const without = stored(at(5));
     delete without.pointerId;
-    expect(() => parseRegistryEnvelope(rowText(4, without), 'registry/k.reg')).toThrow(
+    expect(() => parseRegistryEnvelope(rowText(5, without), 'registry/k.reg')).toThrow(
       IntegrityError,
     );
-    expect(() => parseRegistryEnvelope(rowText(4, without), 'registry/k.reg')).toThrow(
+    expect(() => parseRegistryEnvelope(rowText(5, without), 'registry/k.reg')).toThrow(
       /registry\/k\.reg$/,
     );
   });
@@ -295,7 +303,7 @@ describe('a stored pointerId', () => {
     ]) {
       expect(
         () =>
-          parseRegistryEnvelope(rowText(4, stored(at(5), pointerId as string)), 'registry/k.reg'),
+          parseRegistryEnvelope(rowText(5, stored(at(5), pointerId as string)), 'registry/k.reg'),
         JSON.stringify(pointerId),
       ).toThrow(IntegrityError);
     }
@@ -390,67 +398,162 @@ describe('the summary field: every malformed shape is refused at both boundaries
     ['an array', [3, 5]],
     ['a string', 'summary'],
     ['a number', 5],
-    ['no generation', { cardinality: 5, fingerprint: FP }],
-    ['a negative generation', { generation: -1, cardinality: 5, fingerprint: FP }],
-    ['a fractional generation', { generation: 1.5, cardinality: 5, fingerprint: FP }],
-    ['a string generation', { generation: '3', cardinality: 5, fingerprint: FP }],
-    ['a generation past 2^53', { generation: 2 ** 53, cardinality: 5, fingerprint: FP }],
+    ['no generation', { cardinality: 5, fingerprint: FP, tailBytes: TAIL }],
+    ['a negative generation', { generation: -1, cardinality: 5, fingerprint: FP, tailBytes: TAIL }],
+    [
+      'a fractional generation',
+      { generation: 1.5, cardinality: 5, fingerprint: FP, tailBytes: TAIL },
+    ],
+    ['a string generation', { generation: '3', cardinality: 5, fingerprint: FP, tailBytes: TAIL }],
+    [
+      'a generation past 2^53',
+      { generation: 2 ** 53, cardinality: 5, fingerprint: FP, tailBytes: TAIL },
+    ],
     ['no cardinality', { generation: 3 }],
-    ['a negative cardinality', { generation: 3, cardinality: -1, fingerprint: FP }],
-    ['a fractional cardinality', { generation: 3, cardinality: 0.5, fingerprint: FP }],
-    ['a cardinality past 2^32', { generation: 3, cardinality: 2 ** 32 + 1, fingerprint: FP }],
-    ['a string cardinality', { generation: 3, cardinality: '5', fingerprint: FP }],
-    ['an undeclared field', { generation: 3, cardinality: 5, fingerprint: FP, note: 'x' }],
+    [
+      'a negative cardinality',
+      { generation: 3, cardinality: -1, fingerprint: FP, tailBytes: TAIL },
+    ],
+    [
+      'a fractional cardinality',
+      { generation: 3, cardinality: 0.5, fingerprint: FP, tailBytes: TAIL },
+    ],
+    [
+      'a cardinality past 2^32',
+      { generation: 3, cardinality: 2 ** 32 + 1, fingerprint: FP, tailBytes: TAIL },
+    ],
+    ['a string cardinality', { generation: 3, cardinality: '5', fingerprint: FP, tailBytes: TAIL }],
+    [
+      'an undeclared field',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, note: 'x' },
+    ],
     ['no fingerprint', { generation: 3, cardinality: 5 }],
-    ['a fingerprint that is a number', { generation: 3, cardinality: 5, fingerprint: 4096 }],
-    ['a fingerprint with no checksum', { generation: 3, cardinality: 5, fingerprint: '4096' }],
+    [
+      'a fingerprint that is a number',
+      { generation: 3, cardinality: 5, fingerprint: 4096, tailBytes: TAIL },
+    ],
+    [
+      'a fingerprint with no checksum',
+      { generation: 3, cardinality: 5, fingerprint: '4096', tailBytes: TAIL },
+    ],
     [
       'a fingerprint of no object (too small)',
-      { generation: 3, cardinality: 5, fingerprint: '111:7' },
+      { generation: 3, cardinality: 5, fingerprint: '111:7', tailBytes: TAIL },
     ],
-    ['a fingerprint past 2^53', { generation: 3, cardinality: 5, fingerprint: `${2 ** 53}:7` }],
-    ['a checksum past 32 bits', { generation: 3, cardinality: 5, fingerprint: '4096:4294967296' }],
-    ['a fingerprint not canonical', { generation: 3, cardinality: 5, fingerprint: '04096:7' }],
-    ['a fingerprint in base 36', { generation: 3, cardinality: 5, fingerprint: '35s.7' }],
-    ['a fingerprint beside sealed', { generation: 3, sealed: sealedOf(48), fingerprint: FP }],
+    [
+      'a fingerprint past 2^53',
+      { generation: 3, cardinality: 5, fingerprint: `${2 ** 53}:7`, tailBytes: TAIL },
+    ],
+    [
+      'a checksum past 32 bits',
+      { generation: 3, cardinality: 5, fingerprint: '4096:4294967296', tailBytes: TAIL },
+    ],
+    [
+      'a fingerprint not canonical',
+      { generation: 3, cardinality: 5, fingerprint: '04096:7', tailBytes: TAIL },
+    ],
+    [
+      'a fingerprint in base 36',
+      { generation: 3, cardinality: 5, fingerprint: '35s.7', tailBytes: TAIL },
+    ],
+    [
+      'a fingerprint beside sealed',
+      { generation: 3, sealed: sealedOf(52), fingerprint: FP, tailBytes: TAIL },
+    ],
     [
       'a clear field beside sealed',
-      { generation: 3, sealed: sealedOf(48), cardinality: 5, fingerprint: FP },
+      { generation: 3, sealed: sealedOf(52), cardinality: 5, fingerprint: FP, tailBytes: TAIL },
     ],
-    ['metadata beside sealed', { generation: 3, sealed: sealedOf(48), metadata: { a: 'b' } }],
+    ['metadata beside sealed', { generation: 3, sealed: sealedOf(52), metadata: { a: 'b' } }],
     ['sealed not a string', { generation: 3, sealed: 36 }],
-    ['sealed not base64', { generation: 3, sealed: `${sealedOf(48).slice(0, -4)}!!!!` }],
-    ['sealed unpadded', { generation: 3, sealed: sealedOf(49).replace(/=+$/, '') }],
-    ['sealed shorter than its fixed part', { generation: 3, sealed: sealedOf(47) }],
-    ['sealed longer than metadata at its cap', { generation: 3, sealed: sealedOf(48 + 1024 + 1) }],
-    ['metadata null', { generation: 3, cardinality: 5, fingerprint: FP, metadata: null }],
-    ['metadata an array', { generation: 3, cardinality: 5, fingerprint: FP, metadata: ['a'] }],
-    ['metadata empty', { generation: 3, cardinality: 5, fingerprint: FP, metadata: {} }],
+    ['sealed not base64', { generation: 3, sealed: `${sealedOf(52).slice(0, -4)}!!!!` }],
+    ['sealed unpadded', { generation: 3, sealed: sealedOf(52).replace(/=+$/, '') }],
+    ['sealed shorter than its fixed part', { generation: 3, sealed: sealedOf(51) }],
+    ['sealed longer than metadata at its cap', { generation: 3, sealed: sealedOf(52 + 1024 + 1) }],
+    [
+      'metadata null',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, metadata: null },
+    ],
+    [
+      'metadata an array',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, metadata: ['a'] },
+    ],
+    [
+      'metadata empty',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, metadata: {} },
+    ],
     [
       'metadata nested',
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { a: { b: 1 } } },
+      {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        tailBytes: TAIL,
+        metadata: { a: { b: 1 } },
+      },
     ],
-    ['metadata boolean', { generation: 3, cardinality: 5, fingerprint: FP, metadata: { a: true } }],
+    [
+      'metadata boolean',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, metadata: { a: true } },
+    ],
     [
       'metadata null value',
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { a: null } },
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, metadata: { a: null } },
     ],
     [
       'metadata empty key',
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { '': 'v' } },
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: TAIL, metadata: { '': 'v' } },
     ],
     [
       'metadata key over 128 bytes',
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { ['k'.repeat(129)]: 'v' } },
+      {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        tailBytes: TAIL,
+        metadata: { ['k'.repeat(129)]: 'v' },
+      },
     ],
     [
       'metadata over 1 KiB',
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: metadataOf(1025) },
+      {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        tailBytes: TAIL,
+        metadata: metadataOf(1025),
+      },
     ],
+    ['no tailBytes', { generation: 3, cardinality: 5, fingerprint: FP }],
+    [
+      'a tailBytes below a footer',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 103 },
+    ],
+    ['a tailBytes of zero', { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 0 }],
+    ['a negative tailBytes', { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: -104 }],
+    [
+      'a tailBytes past the size less the preamble',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 4089 },
+    ],
+    [
+      'a tailBytes the size of the object',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 4096 },
+    ],
+    [
+      'a fractional tailBytes',
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 300.5 },
+    ],
+    ['a string tailBytes', { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: '300' }],
+    ['a null tailBytes', { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: null }],
+    [
+      'a tailBytes past the cap of one open',
+      { generation: 3, cardinality: 5, fingerprint: '20000000:7', tailBytes: MAX_TAIL_BYTES + 1 },
+    ],
+    ['a tailBytes beside sealed', { generation: 3, sealed: sealedOf(52), tailBytes: TAIL }],
   ];
 
   it.each(malformed)('refuses %s on read (IntegrityError)', (_, summary) => {
-    const text = rowText(4, { ...stored(TK), summary });
+    const text = rowText(5, { ...stored(TK), summary });
     expect(() => parseRegistryEnvelope(text, 'row')).toThrow(IntegrityError);
   });
 
@@ -464,8 +567,8 @@ describe('the summary field: every malformed shape is refused at both boundaries
 
   it('refuses what only stored bytes can carry: a __proto__ key and a lone surrogate', () => {
     const at = (metadataJson: string): string =>
-      `{"schemaVersion":4,"deleted":false,"record":{"segment":"s","currentGen":3,"status":"active",` +
-      `"createdAt":1,"updatedAt":1,"token":"${TK}","pointerId":"${TK}","summary":{"generation":3,"cardinality":5,"fingerprint":"${FP}",` +
+      `{"schemaVersion":5,"deleted":false,"record":{"segment":"s","currentGen":3,"status":"active",` +
+      `"createdAt":1,"updatedAt":1,"token":"${TK}","pointerId":"${TK}","summary":{"generation":3,"cardinality":5,"fingerprint":"${FP}","tailBytes":${TAIL},` +
       `"metadata":${metadataJson}}}}`;
     expect(() => parseRegistryEnvelope(at('{"a":1}'), 'ok')).not.toThrow();
     for (const bad of ['{"__proto__":"x"}', '{"\\ud800":"x"}', '{"a":"\\udc00"}']) {
@@ -487,6 +590,7 @@ describe('the summary field: every malformed shape is refused at both boundaries
         generation: 3,
         cardinality: 5,
         fingerprint: FP,
+        tailBytes: TAIL,
         metadata,
       } as unknown as RegistrySummary;
       expect(() => validateNewRegistryRecord({ currentGen: 3, summary })).toThrow(ValidationError);
@@ -495,24 +599,41 @@ describe('the summary field: every malformed shape is refused at both boundaries
 
   it('accepts each bound exactly at its edge', () => {
     const ok: unknown[] = [
-      { generation: 0, cardinality: 0, fingerprint: FP },
-      { generation: 3, cardinality: 2 ** 32, fingerprint: FP },
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: metadataOf(1024) },
+      { generation: 0, cardinality: 0, fingerprint: FP, tailBytes: TAIL },
+      { generation: 3, cardinality: 2 ** 32, fingerprint: FP, tailBytes: TAIL },
+      // A footer's worth, the size less the preamble, and the cap of one open's tail read.
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 104 },
+      { generation: 3, cardinality: 5, fingerprint: FP, tailBytes: 4088 },
+      { generation: 3, cardinality: 5, fingerprint: '20000000:7', tailBytes: MAX_TAIL_BYTES },
       {
         generation: 3,
         cardinality: 5,
         fingerprint: FP,
+        tailBytes: TAIL,
+        metadata: metadataOf(1024),
+      },
+      {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        tailBytes: TAIL,
         metadata: { ['k'.repeat(128)]: 'v', n: -1.5 },
       },
-      { generation: 3, cardinality: 5, fingerprint: FP, metadata: { '\u65e5': '\u{1F600}' } },
-      { generation: 3, sealed: sealedOf(48) },
-      { generation: 3, sealed: sealedOf(48 + 1024) },
-      { generation: 3, sealed: sealedOf(49) },
-      { generation: 3, sealed: sealedOf(50) },
+      {
+        generation: 3,
+        cardinality: 5,
+        fingerprint: FP,
+        tailBytes: TAIL,
+        metadata: { '\u65e5': '\u{1F600}' },
+      },
+      { generation: 3, sealed: sealedOf(52) },
+      { generation: 3, sealed: sealedOf(52 + 1024) },
+      { generation: 3, sealed: sealedOf(53) },
+      { generation: 3, sealed: sealedOf(54) },
     ];
     for (const summary of ok) {
       const generation = (summary as { generation: number }).generation;
-      const text = rowText(4, { ...stored(TK), currentGen: generation, summary });
+      const text = rowText(5, { ...stored(TK), currentGen: generation, summary });
       expect(() => parseRegistryEnvelope(text, 'ok'), JSON.stringify(summary)).not.toThrow();
       const keys = 'sealed' in (summary as object) ? { wrappedDeks: WRAPPED } : {};
       expect(() =>
@@ -531,7 +652,12 @@ describe('the summary field: every malformed shape is refused at both boundaries
  * says nothing of the summary leaves a row with none, never one describing another generation.
  */
 describe('the summary follows the pointer', () => {
-  const summary: RegistrySummary = { generation: 3, cardinality: 5, fingerprint: FP };
+  const summary: RegistrySummary = {
+    generation: 3,
+    cardinality: 5,
+    fingerprint: FP,
+    tailBytes: TAIL,
+  };
   const prev: RegistryRecord = {
     ...baseRecord,
     status: 'active',
@@ -553,7 +679,12 @@ describe('the summary follows the pointer', () => {
   });
 
   it("a patch can replace it with the new generation's, or clear it", () => {
-    const next: RegistrySummary = { generation: 4, cardinality: 6, fingerprint: FP };
+    const next: RegistrySummary = {
+      generation: 4,
+      cardinality: 6,
+      fingerprint: FP,
+      tailBytes: TAIL,
+    };
     expect(applyRegistryPatch(prev, { currentGen: 4, summary: next }, 2, '2').summary).toEqual(
       next,
     );
@@ -564,7 +695,7 @@ describe('the summary follows the pointer', () => {
     expect(() =>
       applyRegistryPatch(
         prev,
-        { summary: { generation: 4, cardinality: 6, fingerprint: FP } },
+        { summary: { generation: 4, cardinality: 6, fingerprint: FP, tailBytes: TAIL } },
         2,
         '2',
       ),
@@ -580,16 +711,22 @@ describe('the summary follows the pointer', () => {
 /** A malformed summary on a stored row is refused naming the row, like every other field. */
 describe('a malformed summary names its row', () => {
   it('puts the row key in the IntegrityError', () => {
-    const text = rowText(4, {
+    const text = rowText(5, {
       ...stored(TK),
-      summary: { generation: 3, cardinality: -1, fingerprint: FP },
+      summary: { generation: 3, cardinality: -1, fingerprint: FP, tailBytes: TAIL },
     });
     expect(() => parseRegistryEnvelope(text, 'registry/ns/seg.reg')).toThrow(
       /summary: cardinality .*: registry\/ns\/seg\.reg$/,
     );
-    const meta = rowText(4, {
+    const meta = rowText(5, {
       ...stored(TK),
-      summary: { generation: 3, cardinality: 1, fingerprint: FP, metadata: { a: true } },
+      summary: {
+        generation: 3,
+        cardinality: 1,
+        fingerprint: FP,
+        tailBytes: TAIL,
+        metadata: { a: true },
+      },
     });
     expect(() => parseRegistryEnvelope(meta, 'registry/ns/seg.reg')).toThrow(
       /registry\/ns\/seg\.reg$/,
@@ -603,11 +740,11 @@ describe('a malformed summary names its row', () => {
  */
 describe('a sealed summary is canonical base64', () => {
   const sealedRow = (sealed: string): string =>
-    rowText(4, { ...stored(TK), summary: { generation: 3, sealed } });
+    rowText(5, { ...stored(TK), summary: { generation: 3, sealed } });
 
   it('refuses non-zero pad bits and the URL-safe alphabet', () => {
-    const twoPad = sealedOf(49); // 37 bytes: ends "AA==", 4 pad bits
-    const onePad = sealedOf(50); // 38 bytes: ends "AAA=", 2 pad bits
+    const twoPad = sealedOf(52); // 52 bytes: ends "AA==", 4 pad bits
+    const onePad = sealedOf(53); // 53 bytes: ends "AAA=", 2 pad bits
     expect(twoPad.endsWith('A==')).toBe(true);
     expect(onePad.endsWith('A=')).toBe(true);
     expect(() => parseRegistryEnvelope(sealedRow(twoPad), 'ok')).not.toThrow();
@@ -639,8 +776,13 @@ describe('a sealed summary is canonical base64', () => {
  * is one a reader must not use.
  */
 describe("the summary agrees with the row's encryption", () => {
-  const clear: RegistrySummary = { generation: 3, cardinality: 5, fingerprint: FP };
-  const sealed: RegistrySummary = { generation: 3, sealed: sealedOf(48) };
+  const clear: RegistrySummary = {
+    generation: 3,
+    cardinality: 5,
+    fingerprint: FP,
+    tailBytes: TAIL,
+  };
+  const sealed: RegistrySummary = { generation: 3, sealed: sealedOf(52) };
 
   it('refuses a create whose summary disagrees with its keys (ValidationError)', () => {
     expect(() =>
@@ -691,9 +833,9 @@ describe("the summary agrees with the row's encryption", () => {
   });
 
   it('reads a stored row that disagrees, rather than refuse it', () => {
-    const text = rowText(4, { ...stored(TK), wrappedDeks: WRAPPED, summary: clear });
+    const text = rowText(5, { ...stored(TK), wrappedDeks: WRAPPED, summary: clear });
     expect(parseRegistryEnvelope(text, 'row').record.summary).toEqual(clear);
-    const sealedPlain = rowText(4, { ...stored(TK), summary: sealed });
+    const sealedPlain = rowText(5, { ...stored(TK), summary: sealed });
     expect(parseRegistryEnvelope(sealedPlain, 'row').record.summary).toEqual(sealed);
   });
 });
@@ -705,6 +847,7 @@ describe('a written summary is a frozen, canonical copy', () => {
       generation: 3,
       cardinality: 5,
       fingerprint: FP,
+      tailBytes: TAIL,
       metadata: { b: 1, a: 'x', '10': 2, '2': 3 },
     };
     const checked = validateNewRegistryRecord({ currentGen: 3, summary }).summary as {
@@ -723,131 +866,272 @@ describe('a written summary is a frozen, canonical copy', () => {
 });
 
 /**
- * `keptGens` is the generations below the pointer a load keeps as its grace window, recorded in the row so a load
- * collects by name. Absent means unknown (the load lists); `[]` means known empty.
+ * `knownGens` is the ledger of the generations a row made current and has not decided to delete, each with its object's
+ * footer checksum, in the order they were made current, the current one last. Absent means the row does not know (the
+ * load lists).
  */
-describe('the kept generations: schema, shape and the pointer', () => {
-  const MAX_WRITTEN = 64;
-  const MAX_READ = 256;
+describe('the known generations: schema, shape and the pointer', () => {
+  const MAX_WRITTEN = 192;
+  const MAX_READ = 384;
+  const ledger = (...gens: number[]): KnownGeneration[] =>
+    gens.map((generation) => ({ generation, footerCrc: generation * 10 }));
+  const range = (n: number): KnownGeneration[] => ledger(...Array.from({ length: n }, (_, i) => i));
   const prev: RegistryRecord = {
     ...baseRecord,
     status: 'active',
     token: TK,
     pointerId: TK,
-    keptGens: [1, 2],
+    knownGens: ledger(1, 2, 3),
   };
-  const row = (keptGens: unknown) => rowText(4, { ...stored(TK), keptGens });
-  const range = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+  const row = (knownGens: unknown) => rowText(5, { ...stored(TK), knownGens });
 
-  it('a row round-trips the list, and one without it reads as absent', () => {
+  it('a row round-trips the ledger in the order given, and one without it reads as absent', () => {
     const text = serializeRegistryEnvelope({ deleted: false, record: prev });
-    expect(JSON.parse(text).record.keptGens).toEqual([1, 2]);
-    expect(parseRegistryEnvelope(text, 'k').record.keptGens).toEqual([1, 2]);
+    expect(JSON.parse(text).record.knownGens).toEqual(ledger(1, 2, 3));
+    expect(parseRegistryEnvelope(text, 'k').record.knownGens).toEqual(ledger(1, 2, 3));
+    // Not sorted: a ledger written after a rollback has the generations it left numbered above the pointer.
+    const rolledBack = ledger(2, 5, 4, 3);
+    expect(parseRegistryEnvelope(row(rolledBack), 'k').record.knownGens).toEqual(rolledBack);
     const none = parseRegistryEnvelope(
-      serializeRegistryEnvelope({ deleted: false, record: { ...prev, keptGens: undefined } }),
+      serializeRegistryEnvelope({ deleted: false, record: { ...prev, knownGens: undefined } }),
       'k',
     );
-    expect(none.record.keptGens).toBeUndefined();
-    expect(parseRegistryEnvelope(row([]), 'k').record.keptGens).toEqual([]);
+    expect(none.record.knownGens).toBeUndefined();
   });
 
   it.each([
     ['a string', '5'],
     ['an object', {}],
     ['null', null],
-    ['a fraction', [1.5]],
-    ['a negative', [-1]],
-    ['a string entry', ['3']],
-    ['a null entry', [null]],
-    ['past 2^53', [2 ** 53]],
-    ['a boolean', [true]],
-    ['descending', [3, 2]],
-    ['a duplicate', [2, 2]],
+    ['an entry that is a number', [3]],
+    ['an entry that is null', [null]],
+    ['an entry that is an array', [[3, 4]]],
+    ['an entry with an extra key', [{ generation: 3, footerCrc: 1, size: 9 }]],
+    ['an entry with no footerCrc', [{ generation: 3 }]],
+    ['an entry with no generation', [{ footerCrc: 1 }]],
+    ['a fractional generation', [{ generation: 1.5, footerCrc: 1 }]],
+    ['a negative generation', [{ generation: -1, footerCrc: 1 }]],
+    ['a string generation', [{ generation: '3', footerCrc: 1 }]],
+    ['a generation past 2^53', [{ generation: 2 ** 53, footerCrc: 1 }]],
+    ['a footerCrc of -1', [{ generation: 3, footerCrc: -1 }]],
+    ['a fractional footerCrc', [{ generation: 3, footerCrc: 1.5 }]],
+    ['a footerCrc of 2^32', [{ generation: 3, footerCrc: 2 ** 32 }]],
+    ['a string footerCrc', [{ generation: 3, footerCrc: '7' }]],
+    ['a repeated generation', [...ledger(2, 3), ...ledger(2)]],
     ['too long', range(MAX_READ + 1)],
   ])('refuses %s on a stored row, naming the row (IntegrityError)', (_name, value) => {
     expect(() => parseRegistryEnvelope(row(value), 'registry/k.reg')).toThrow(IntegrityError);
     expect(() => parseRegistryEnvelope(row(value), 'registry/k.reg')).toThrow(
-      /keptGens.*: registry\/k\.reg$/,
+      /knownGens.*: registry\/k\.reg$/,
     );
   });
 
-  it('reads up to 256 entries and writes at most 64', () => {
+  it('refuses a stored row that still carries keptGens, as a field the record does not declare', () => {
+    expect(() =>
+      parseRegistryEnvelope(rowText(5, { ...stored(TK), keptGens: [1, 2] }), 'registry/k.reg'),
+    ).toThrow(/keptGens.*registry\/k\.reg$/);
+    expect(RECORD_FIELDS).not.toContain('keptGens');
+    expect(RECORD_FIELDS).toContain('knownGens');
+  });
+
+  it('reads up to 384 entries and writes at most 192', () => {
     expect(() => parseRegistryEnvelope(row(range(MAX_READ)), 'k')).not.toThrow();
     expect(() =>
-      validateRegistryPatch({ currentGen: 100, keptGens: range(MAX_WRITTEN) }),
+      validateRegistryPatch({ currentGen: MAX_WRITTEN - 1, knownGens: range(MAX_WRITTEN) }),
     ).not.toThrow();
     expect(() =>
-      validateRegistryPatch({ currentGen: 100, keptGens: range(MAX_WRITTEN + 1) }),
+      validateRegistryPatch({ currentGen: MAX_WRITTEN, knownGens: range(MAX_WRITTEN + 1) }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: MAX_WRITTEN, knownGens: range(MAX_WRITTEN + 1) }),
     ).toThrow(ValidationError);
   });
 
-  it('a well-formed list that disagrees with the pointer is read, and is not usable', () => {
-    const stale = parseRegistryEnvelope(row([1, 5]), 'k').record; // currentGen is 3
-    expect(stale.keptGens).toEqual([1, 5]);
-    expect(usableKeptGens(stale)).toBeUndefined();
-    expect(usableKeptGens({ ...stale, keptGens: [1, 2] })).toEqual([1, 2]);
-    expect(usableKeptGens({ ...stale, keptGens: [] })).toEqual([]);
-    expect(usableKeptGens({ ...stale, keptGens: undefined })).toBeUndefined();
-    expect(usableKeptGens({ ...stale, currentGen: null, keptGens: [] })).toBeUndefined();
+  it('a well-formed ledger that disagrees with its row is read, and is not usable', () => {
+    const stale = parseRegistryEnvelope(row(ledger(1, 5)), 'k').record; // currentGen is 3
+    expect(stale.knownGens).toEqual(ledger(1, 5));
+    expect(usableKnownGens(stale)).toBeUndefined();
+    expect(usableKnownGens({ ...stale, knownGens: ledger(1, 2, 3) })).toEqual(ledger(1, 2, 3));
+    // Entries above the pointer are legal, anywhere before the last.
+    expect(usableKnownGens({ ...stale, knownGens: ledger(5, 1, 3) })).toEqual(ledger(5, 1, 3));
+    expect(usableKnownGens({ ...stale, knownGens: [] })).toBeUndefined();
+    expect(usableKnownGens({ ...stale, knownGens: undefined })).toBeUndefined();
+    expect(usableKnownGens({ ...stale, currentGen: null, knownGens: ledger(3) })).toBeUndefined();
+    expect(
+      usableKnownGens({ ...stale, status: 'destroyed', knownGens: ledger(3) }),
+    ).toBeUndefined();
+    expect(usableKnownGens(null)).toBeUndefined();
   });
 
-  it('refuses at the write boundary a list that is out of order, too long, or not below the pointer', () => {
-    expect(() => validateNewRegistryRecord({ currentGen: 5, keptGens: [3, 2] })).toThrow(
-      ValidationError,
-    );
-    expect(() => validateNewRegistryRecord({ currentGen: 5, keptGens: [1, 5] })).toThrow(
-      ValidationError,
-    );
-    expect(() => validateNewRegistryRecord({ currentGen: null, keptGens: [] })).toThrow(
-      ValidationError,
-    );
-    expect(() => validateNewRegistryRecord({ currentGen: 5, keptGens: [1, 4] })).not.toThrow();
-    expect(() => applyRegistryPatch(prev, { currentGen: 2, keptGens: [1, 2] }, 2, '2')).toThrow(
-      ValidationError,
-    );
-    expect(() => applyRegistryPatch(prev, { keptGens: [1, 3] }, 2, '2')).toThrow(ValidationError);
-    expect(() => applyRegistryPatch(prev, { currentGen: null, keptGens: [] }, 2, '2')).toThrow(
-      ValidationError,
-    );
+  it("a ledger whose current entry's checksum is not a clear summary's is read, and is not usable", () => {
+    const summary = { generation: 3, cardinality: 5, fingerprint: '4096:30', tailBytes: TAIL };
+    const agreeing = { ...prev, summary };
+    expect(usableKnownGens(agreeing)).toEqual(ledger(1, 2, 3)); // generation 3's checksum is 30
+    expect(
+      usableKnownGens({ ...agreeing, summary: { ...summary, fingerprint: '4096:31' } }),
+    ).toBeUndefined();
+    // A summary of another generation, or a sealed one, is no reason to distrust the ledger.
+    expect(
+      usableKnownGens({
+        ...agreeing,
+        summary: { ...summary, generation: 2, fingerprint: '4096:31' },
+      }),
+    ).toEqual(ledger(1, 2, 3));
+    expect(
+      usableKnownGens({ ...agreeing, summary: { generation: 3, sealed: sealedOf(52) } }),
+    ).toEqual(ledger(1, 2, 3));
+    const text = rowText(5, {
+      ...stored(TK),
+      summary: { ...summary, fingerprint: '4096:31' },
+      knownGens: ledger(1, 2, 3),
+    });
+    expect(parseRegistryEnvelope(text, 'k').record.knownGens).toEqual(ledger(1, 2, 3));
   });
 
-  it('a patch that moves the pointer without the list drops it; one that leaves the pointer keeps it', () => {
-    expect(applyRegistryPatch(prev, { currentGen: 4 }, 2, '2').keptGens).toBeUndefined();
-    expect(applyRegistryPatch(prev, { currentGen: null }, 2, '2').keptGens).toBeUndefined();
-    expect(applyRegistryPatch(prev, { retention: { expiresAt: 9 } }, 2, '2').keptGens).toEqual([
-      1, 2,
-    ]);
-    expect(applyRegistryPatch(prev, { currentGen: 3 }, 2, '2').keptGens).toEqual([1, 2]);
+  it('refuses at the write boundary a ledger that is malformed, too long, empty, on no pointer, or not ending with the pointer', () => {
+    expect(() => validateNewRegistryRecord({ currentGen: 5, knownGens: ledger(1, 5, 2) })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateNewRegistryRecord({ currentGen: 5, knownGens: ledger(1, 4) })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateNewRegistryRecord({ currentGen: 5, knownGens: [] })).toThrow(
+      ValidationError,
+    );
+    expect(() => validateNewRegistryRecord({ currentGen: null, knownGens: ledger(1) })).toThrow(
+      ValidationError,
+    );
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: 5, knownGens: [...ledger(5), ...ledger(5)] }),
+    ).toThrow(/repeated/);
+    expect(() =>
+      validateNewRegistryRecord({
+        currentGen: 5,
+        knownGens: [{ generation: 5, footerCrc: 2 ** 32 }],
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      validateNewRegistryRecord({
+        currentGen: 5,
+        knownGens: [{ generation: 5, footerCrc: 1, note: 1 } as unknown as KnownGeneration],
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: 5, knownGens: ledger(1, 4, 5) }),
+    ).not.toThrow();
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: 1, knownGens: ledger(0, 2, 3, 1) }),
+    ).not.toThrow();
+    // A patch is held to the pointer the row will have.
+    expect(() =>
+      applyRegistryPatch(prev, { currentGen: 4, knownGens: ledger(2, 3) }, 2, '2'),
+    ).toThrow(ValidationError);
+    expect(() => applyRegistryPatch(prev, { knownGens: ledger(1, 3, 2) }, 2, '2')).toThrow(
+      ValidationError,
+    );
+    expect(() =>
+      applyRegistryPatch(prev, { currentGen: null, knownGens: ledger(3) }, 2, '2'),
+    ).toThrow(ValidationError);
+    expect(
+      applyRegistryPatch(prev, { currentGen: 4, knownGens: ledger(3, 4) }, 2, '2').knownGens,
+    ).toEqual(ledger(3, 4));
   });
 
-  it('a patch can name the list with the move, replace it, or clear it', () => {
-    expect(applyRegistryPatch(prev, { currentGen: 4, keptGens: [2, 3] }, 2, '2').keptGens).toEqual([
-      2, 3,
-    ]);
-    expect(applyRegistryPatch(prev, { keptGens: [2] }, 2, '2').keptGens).toEqual([2]);
-    expect(applyRegistryPatch(prev, { keptGens: undefined }, 2, '2').keptGens).toBeUndefined();
+  it("refuses a current entry whose checksum disagrees with a clear summary's, given or kept from the row", () => {
+    const summary = { generation: 5, cardinality: 5, fingerprint: '4096:50', tailBytes: TAIL };
+    // Given in the same write: generation 5's checksum is 50 in `ledger(5)`.
+    expect(() =>
+      validateNewRegistryRecord({ currentGen: 5, summary, knownGens: ledger(5) }),
+    ).not.toThrow();
+    expect(() =>
+      validateNewRegistryRecord({
+        currentGen: 5,
+        summary,
+        knownGens: [{ generation: 5, footerCrc: 51 }],
+      }),
+    ).toThrow(/footerCrc 51.*another/);
+    // Kept from the row: a patch that names only the ledger is held to the summary the row carries.
+    const withSummary: RegistryRecord = { ...prev, currentGen: 5, summary, knownGens: ledger(5) };
+    expect(() =>
+      applyRegistryPatch(withSummary, { knownGens: [{ generation: 5, footerCrc: 51 }] }, 2, '2'),
+    ).toThrow(ValidationError);
+    expect(applyRegistryPatch(withSummary, { knownGens: ledger(4, 5) }, 2, '2').knownGens).toEqual(
+      ledger(4, 5),
+    );
+    // A sealed summary cannot be compared by a registry, so any checksum is accepted beside one.
+    expect(() =>
+      validateNewRegistryRecord({
+        currentGen: 3,
+        wrappedDeks: WRAPPED,
+        summary: { generation: 3, sealed: sealedOf(52) },
+        knownGens: [{ generation: 3, footerCrc: 99 }],
+      }),
+    ).not.toThrow();
+    // A patch that names the summary but not the ledger is not held to it: the ledger is then read and not used.
+    const changed = applyRegistryPatch(
+      { ...withSummary, summary: undefined },
+      { summary: { ...summary, fingerprint: '4096:51' } },
+      2,
+      '2',
+    );
+    expect(usableKnownGens(changed)).toBeUndefined();
   });
 
-  it('writes a frozen copy: changing the caller array afterwards changes nothing written', () => {
-    const mine = [1, 2];
-    const checked = validateRegistryPatch({ keptGens: mine });
-    mine.push(9);
-    expect(checked.keptGens).toEqual([1, 2]);
-    const created = validateNewRegistryRecord({ currentGen: 10, keptGens: mine });
+  it('a patch that moves the pointer without the ledger drops it; one that leaves the pointer keeps it', () => {
+    expect(applyRegistryPatch(prev, { currentGen: 4 }, 2, '2').knownGens).toBeUndefined();
+    expect(applyRegistryPatch(prev, { currentGen: null }, 2, '2').knownGens).toBeUndefined();
+    expect(applyRegistryPatch(prev, { retention: { expiresAt: 9 } }, 2, '2').knownGens).toEqual(
+      ledger(1, 2, 3),
+    );
+    expect(applyRegistryPatch(prev, { currentGen: 3 }, 2, '2').knownGens).toEqual(ledger(1, 2, 3));
+    // A crypto-shred leaves the pointer, so the patch that clears the ledger must say so.
+    expect(applyRegistryPatch(prev, { status: 'destroyed' }, 2, '2').knownGens).toEqual(
+      ledger(1, 2, 3),
+    );
+    expect(
+      applyRegistryPatch(prev, { status: 'destroyed', knownGens: undefined }, 2, '2').knownGens,
+    ).toBeUndefined();
+  });
+
+  it('a patch can name the ledger with the move, replace it, or clear it', () => {
+    expect(
+      applyRegistryPatch(prev, { currentGen: 4, knownGens: ledger(2, 3, 4) }, 2, '2').knownGens,
+    ).toEqual(ledger(2, 3, 4));
+    expect(applyRegistryPatch(prev, { knownGens: ledger(2, 3) }, 2, '2').knownGens).toEqual(
+      ledger(2, 3),
+    );
+    expect(applyRegistryPatch(prev, { knownGens: undefined }, 2, '2').knownGens).toBeUndefined();
+  });
+
+  it('naming the ledger alone does not renew the pointerId, and naming it beside the pointer does', () => {
+    expect(applyRegistryPatch(prev, { knownGens: ledger(2, 3) }, 2, '2').pointerId).toBe(TK);
+    expect(
+      applyRegistryPatch(prev, { currentGen: 4, knownGens: ledger(3, 4) }, 2, '2').pointerId,
+    ).toBe('2');
+  });
+
+  it('writes a frozen copy: changing the caller array or an entry afterwards changes nothing written', () => {
+    const mine = ledger(1, 2);
+    const checked = validateRegistryPatch({ knownGens: mine });
+    mine.push({ generation: 9, footerCrc: 1 });
+    expect(checked.knownGens).toEqual(ledger(1, 2));
+    const created = validateNewRegistryRecord({ currentGen: 9, knownGens: mine });
+    (mine[0] as { footerCrc: number }).footerCrc = 7;
     mine.length = 0;
-    expect(created.keptGens).toEqual([1, 2, 9]);
-    expect(Object.isFrozen(created.keptGens)).toBe(true);
+    expect(created.knownGens).toEqual([...ledger(1, 2), { generation: 9, footerCrc: 1 }]);
+    expect(Object.isFrozen(created.knownGens)).toBe(true);
+    expect(Object.isFrozen(created.knownGens?.[0])).toBe(true);
   });
 
-  it('recordFromNew carries the list', () => {
-    const made = recordFromNew({ segment: 's' }, { currentGen: 5, keptGens: [4] }, 1, TK);
-    expect(made.keptGens).toEqual([4]);
+  it('recordFromNew carries the ledger', () => {
+    const made = recordFromNew({ segment: 's' }, { currentGen: 5, knownGens: ledger(4, 5) }, 1, TK);
+    expect(made.knownGens).toEqual(ledger(4, 5));
   });
 });
 
 /**
  * `leases` is the holds on a segment's generations, recorded in the row so a load's collection spares them. It joins
- * schema 3 beside `keptGens`, so a build that does not declare it refuses the row, and unlike `keptGens` it does not
+ * schema 3 beside `knownGens`, so a build that does not declare it refuses the row, and unlike `knownGens` it does not
  * follow the pointer.
  */
 describe('the leases: schema, shape and the pointer', () => {
@@ -865,7 +1149,7 @@ describe('the leases: schema, shape and the pointer', () => {
     pointerId: TK,
     leases: [entry(H1, 1, 1000)],
   };
-  const row = (leases: unknown) => rowText(4, { ...stored(TK), leases });
+  const row = (leases: unknown) => rowText(5, { ...stored(TK), leases });
 
   it('a row round-trips the list, and one without it reads as absent', () => {
     const text = serializeRegistryEnvelope({ deleted: false, record: prev });
@@ -951,9 +1235,14 @@ describe('the leases: schema, shape and the pointer', () => {
   it('does not follow the pointer: a move keeps the list, and only a patch that names it changes it', () => {
     const moved = applyRegistryPatch(prev, { currentGen: 4 }, 2, '2');
     expect(moved.leases).toEqual([entry(H1, 1, 1000)]);
-    expect(applyRegistryPatch(prev, { currentGen: 4, keptGens: [2] }, 2, '2').leases).toEqual([
-      entry(H1, 1, 1000),
-    ]);
+    expect(
+      applyRegistryPatch(
+        prev,
+        { currentGen: 4, knownGens: [{ generation: 4, footerCrc: 4 }] },
+        2,
+        '2',
+      ).leases,
+    ).toEqual([entry(H1, 1, 1000)]);
     expect(applyRegistryPatch(prev, { retention: { expiresAt: 9 } }, 2, '2').leases).toEqual([
       entry(H1, 1, 1000),
     ]);

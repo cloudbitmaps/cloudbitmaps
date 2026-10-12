@@ -5,7 +5,7 @@ import { loadSegment } from '@/core/load';
 import { aadFor } from '@/core/crypto';
 import { summaryAgrees, usableSummary } from '@/core/summary';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -707,6 +707,7 @@ describe('a summary never describes another generation than the one the row name
       expect(a.described).toEqual({
         cardinality: 4,
         fingerprint: expect.stringMatching(FINGERPRINT),
+        tailBytes: expect.any(Number),
         metadata: META_B,
       });
       expect(a.agrees).toBe(true);
@@ -746,6 +747,7 @@ describe('a summary never describes another generation than the one the row name
     expect(a.described).toEqual({
       cardinality: 2,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META_A,
     });
     expect(a.agrees).toBe(true);
@@ -784,6 +786,7 @@ describe('a summary never describes another generation than the one the row name
     expect(a.described).toEqual({
       cardinality: 3,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META_A,
     });
     expect(a.agrees).toBe(true);
@@ -819,6 +822,7 @@ describe('a summary never describes another generation than the one the row name
     expect(a.described).toEqual({
       cardinality: 5,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: { run: 'c' },
     });
     expect(a.agrees).toBe(true);
@@ -857,6 +861,7 @@ describe('a summary never describes another generation than the one the row name
     expect(a.described).toEqual({
       cardinality: 1,
       fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
       metadata: META_B,
     });
     expect(a.agrees).toBe(true);

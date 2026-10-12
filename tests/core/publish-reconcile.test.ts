@@ -1,7 +1,8 @@
+import { windowOf } from '@/core/known-generations';
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
 import { openGenerationReader } from '@/core/crbm-open';
-import { publishGeneration } from '@/core/publish';
+import { publishGeneration } from '../helpers/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';
@@ -1063,6 +1064,7 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(await described(k)).toEqual({
           cardinality: 3,
           fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
           metadata: META,
         });
       });
@@ -1084,6 +1086,7 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(await described(k)).toEqual({
           cardinality: 5,
           fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
           metadata: { run: 'r2' },
         });
       });
@@ -1107,6 +1110,7 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(await described(k)).toEqual({
           cardinality: 3,
           fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
           metadata: META,
         });
       });
@@ -1125,6 +1129,7 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(await described(k)).toEqual({
           cardinality: 4,
           fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
           metadata: META,
         });
       });
@@ -1146,6 +1151,7 @@ describe('a publish that is settled by reading the row carries the generation su
         generation: 0,
         cardinality: 2,
         fingerprint: expect.stringMatching(FINGERPRINT),
+        tailBytes: expect.any(Number),
         metadata: META,
       });
     }
@@ -1157,6 +1163,10 @@ describe('a publish that is settled by reading the row carries the generation su
  * answer and then lands records, and deletes, exactly what the same write would have after a clean answer.
  */
 describe('a publish whose write got no answer records the same window as one that did', () => {
+  /** The generations a write's patch names in its ledger. */
+  const ledgerNumbers = (patch: { knownGens?: unknown }): number[] | undefined =>
+    (patch.knownGens as { generation: number }[] | undefined)?.map((e) => e.generation);
+
   /** `threeLoads` kept 0 and 1; a load with keep 2 now publishes 3, names 1 and 2, and pushes 0 out. */
   const next = (w: ReturnType<typeof world>) => loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 2 });
 
@@ -1166,9 +1176,9 @@ describe('a publish whose write got no answer records the same window as one tha
     w.arm({ kind: 'land-then-transient' });
     const r = await next(w);
     expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
-    expect((await w.base.get(SEG))!.keptGens).toEqual([1, 2]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
     expect(await generations(w.storage)).toEqual([1, 2, 3]);
-    expect(w.sent.at(-1)!.patch.keptGens).toEqual([1, 2]);
+    expect(ledgerNumbers(w.sent.at(-1)!.patch)).toEqual([1, 2, 3]);
   });
 
   it('a write that landed and then reported a conflict', async () => {
@@ -1177,7 +1187,7 @@ describe('a publish whose write got no answer records the same window as one tha
     w.arm({ kind: 'land-then-conflict' });
     const r = await next(w);
     expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
-    expect((await w.base.get(SEG))!.keptGens).toEqual([1, 2]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
     expect(await generations(w.storage)).toEqual([1, 2, 3]);
   });
 
@@ -1187,28 +1197,29 @@ describe('a publish whose write got no answer records the same window as one tha
     w.arm({ kind: 'transient-unapplied' });
     const r = await next(w);
     expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
-    expect(w.sent.map((s) => s.patch.keptGens)).toEqual([
-      [1, 2],
-      [1, 2],
+    expect(w.sent.map((s) => ledgerNumbers(s.patch))).toEqual([
+      [1, 2, 3],
+      [1, 2, 3],
     ]);
-    expect((await w.base.get(SEG))!.keptGens).toEqual([1, 2]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
     expect(await generations(w.storage)).toEqual([1, 2, 3]);
   });
 
-  it('a write that landed on a row that records no list: the load lists, keeps the newest two, and seeds nothing it cannot fence', async () => {
+  it('a write that landed on a row with no ledger: the load lists, keeps the newest two, and the ledger it seeded names them', async () => {
     const w = world();
     await threeLoads(w);
     const row = (await w.base.get(SEG))!;
-    await w.base.compareAndSwap(SEG, row.token, { keptGens: undefined });
+    await w.base.compareAndSwap(SEG, row.token, { knownGens: undefined });
     w.arm({ kind: 'land-then-transient' });
     const r = await next(w);
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(await generations(w.storage)).toEqual([1, 2, 3]); // the window, found by listing
-    // The write settled by reading the row has no token to fence a seed on, so the row records none yet.
-    expect((await w.base.get(SEG))!.keptGens).toBeUndefined();
+    // The write seeded the ledger with the window the listing kept (the write that landed carried the seed, and the one
+    // settled by reading recomputes the same).
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
     const again = await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });
     expect(again).toMatchObject({ generation: 4, published: true });
-    expect((await w.base.get(SEG))!.keptGens).toEqual([2, 3]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([2, 3]);
     expect(await generations(w.storage)).toEqual([2, 3, 4]);
   });
 
@@ -1225,20 +1236,20 @@ describe('a publish whose write got no answer records the same window as one tha
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     // The other load numbered past the object this one had written, and published 4; the row names what it kept. The
     // refused object stays below the pointer, named by no list: a listing takes it.
-    expect((await w.base.get(SEG))!.keptGens).toEqual([0, 1, 2]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([0, 1, 2]);
     expect(await generations(w.storage)).toEqual([0, 1, 2, 3, 4]);
   });
 
-  it('a publish with no keep, as a bulk load makes, leaves the row recording no list', async () => {
+  it('a publish with no keep, as a bulk load makes, records no window and carries the ledger it found', async () => {
     const w = world();
     await threeLoads(w);
-    expect((await w.base.get(SEG))!.keptGens).toEqual([0, 1]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([0, 1]);
     const published = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [9], {
       registry: w.base,
     });
     expect(published).toBeDefined();
     const row = (await w.base.get(SEG))!;
     expect(row.currentGen).toBe(3);
-    expect(row.keptGens).toBeUndefined();
+    expect(windowOf(row)).toEqual([0, 1, 2]);
   });
 });
