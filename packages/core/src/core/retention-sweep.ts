@@ -609,7 +609,7 @@ export class SweepTally {
   purgeRun = 0;
   purging = true;
 
-  /** Record a step's ledger entry; a step that has nothing to report returns `null`. */
+  /** Record a step's ledger entry; `null` adds nothing (a step with nothing to report, or one that recorded its own). */
   add(entry: RetireEntry | null): void {
     if (entry !== null) this.entries.push(entry);
   }
