@@ -478,9 +478,10 @@ reads and one delete for collection at any `keep` up to 64, not a listing: on S3
 2 PUT-class requests, 5 GET-class and a delete, 8 requests, with the delete free ([what each term
 counts](cost.md#what-each-term-counts)). The window is drawn from the order in the ledger, so the generation the
 publish superseded, which was current, comes first, then the ones made current before it. A publish over a row that has
-no usable ledger (a registry repaired by hand, a row restored without its ledger, one a retention write made, or one
+no usable ledger (a registry repaired by hand, a row restored without its ledger, or one
 whose ledger names more than 64 generations below the pointer that no lease holds, as a `keep` above 64 leaves)
-starts a ledger from the bucket instead: the generations a count by `keep` keeps, with the live-leased ones beside them,
+starts a ledger from the bucket instead (the first publish of an incarnation, over no row or a row with no pointer, writes
+the new generation alone): the generations a count by `keep` keeps, with the live-leased ones beside them,
 which can include a number a refused or crashed load took, and the publishes after it carry that number until the
 window pushes it out ([below](#how-it-stays-correct)).
 A load lists the segment's objects instead in these cases:
@@ -672,9 +673,8 @@ publishes 4, and the loads after it publish 5 and 6:
 
 At `keep: 2` the restored 1 outlives 3, which the rollback moved away from, and goes after two more loads. Each load
 writes the order into the ledger, so every one after the first collects by name. Where the superseded generation's
-object has gone from the bucket (a lifecycle rule took it), a load that lists to take a number keeps what the ledger
-names, so its window holds fewer than `keep` real generations until the name ages out; a load over a row with no usable
-ledger keeps the newest `keep` that are there.
+object has gone from the bucket (a lifecycle rule took it), the load keeps the newest `keep` that are there: a pass
+that listed to take a number counts instead of keeping only what the ledger names.
 
 ## Write a result into another segment: the `*Into` verbs
 
@@ -1361,7 +1361,8 @@ others by number, `keep` in all; the generation the load superseded is the ledge
 comes first, and one whose object has gone does not count, so the window still holds `keep`. A name the ledger holds
 only for a lease is older than that span, takes no place in it, and is spared beside it. Before each delete the pass
 reads the row again and spares every name the row knows then, which a publish or a rollback that landed since can have
-added. Where the row has no usable ledger, it keeps the one the load superseded first and then the newest by number, the
+added. A pass that protects what the row names (a number the listing chose, or every sixteenth generation) counts as well
+when the generation the load superseded is not in its listing. Where the row has no usable ledger, it keeps the one the load superseded first and then the newest by number, the
 window its publish wrote. It puts the superseded generation first only while the lower of its two reads of the pointer,
 the one before its listing and the one after, is the load's own generation. Otherwise another writer moved the pointer
 before the pass first read it, or a rollback lowered it by the second read, and the generation that pointer superseded is

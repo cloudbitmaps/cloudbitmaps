@@ -82,13 +82,15 @@ of the window by name and lists the bucket only when it cannot rely on the row.
   collected, and taking no place in `keep`), then the new generation. The generation the publish superseded is the
   ledger's last entry, so it comes first, and after a rollback the restored generation ranks ahead of the ones the
   rollback moved away from, from every load on. Over a row with no usable ledger (a hand repair, a restore, a pointer
-  moved down by hand, one a run of publishes with a `keep` above 64 carried past 64 names that no lease holds, a first
-  publish above generation 0) the load lists the bucket and writes the window a count by `keep` keeps there: the
+  moved down by hand, one a run of publishes with a `keep` above 64 carried past 64 names that no lease holds) the load
+  lists the bucket and writes the window a count by `keep` keeps there: the
   generation the row named as current first, then the newest by number, each with a footer read (read eight at a time
   under the store's read retry, the superseded generation's too; a clear summary that describes it with another
   checksum leaves it out), and beside them the listed generations a live lease holds, oldest first by number with the
   leased ones before the window and the superseded one last, then the new generation. A generation gone from the
   bucket, or whose footer fails its checks, is left out. The publish then collects by that count.
+- **An incarnation's first publish writes the new generation alone** (no row, or a row with no pointer): nothing below
+  it was made current by it, so a seed could only name objects no load of it published.
 - **A collection reads it.** A load with a `keep` of at most 64 deletes by name the entries its publish left out. A pass
   that keeps by a count (a `keep` above 64, or the first load over a row with no usable ledger) keeps the ledger's own
   most recently current names first, then the newest others by number, `keep` in all, and spares every name the row

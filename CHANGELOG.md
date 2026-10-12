@@ -257,6 +257,12 @@ so, and so do the module headers in the code.
   whether to extend it or to seed a new one from the bucket. A load that keeps by a count (a `keep` above 64, or the
   first load over a row with no usable ledger) keeps the ledger's own most recently current names first, then the newest
   others by number, `keep` in all, and spares every name the row knows when it reads the row again before a delete.
+- **An incarnation's first publish writes the new generation alone, and a protect pass counts when the superseded
+  generation is gone.** A publish over no row, or a row with no pointer (one a retention write made), no longer seeds its
+  ledger from the bucket: nothing below it was made current by it, and an object there is no load's. An object a crashed
+  load left below it stays until a load that lists. A load that lists to take a number, or every sixteenth generation,
+  and finds the generation it superseded gone from its listing keeps the newest `keep` that are there, as it did before
+  ledgers, instead of only what the ledger names.
 
 - **A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer
   taken for a missing key.** A `rollback` with `allowForward` on an encrypted segment, from a store with no keystore or
