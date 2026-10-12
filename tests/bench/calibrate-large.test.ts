@@ -730,7 +730,10 @@ describe('the range cap', () => {
   });
 
   type Verb = 'intersect' | 'union' | 'andNot';
-  type Layout2 = { a: number[]; b: number[]; why: string };
+  type Layout2 = { a: number[]; b: number[]; why: string; per?: number; share?: number };
+  /** Random layouts the property draws, and the 1-based ones of them that run when the run is reduced. */
+  const GENERATED_LAYOUTS = 40;
+  const COVERING_LAYOUTS = [1, 2, 3, 4, 7, 12, 13, 16, 17, 25];
   const seeded = (seed: number) => {
     let s = seed;
     return () => (s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32;
@@ -791,6 +794,8 @@ describe('the range cap', () => {
       a: ordered.flatMap((k) => chunkIds(k, per, 1)),
       b: picked.flatMap((k) => chunkIds(k, 3, 1)),
       why: `${chunks} chunks of ${per} ids, ${picked.length} wanted`,
+      per,
+      share,
     };
   }
 
@@ -810,9 +815,20 @@ describe('the range cap', () => {
 
   it('is never exceeded by the engine over random selective layouts and ones built to approach it, for any verb and either operand', async () => {
     const rnd = seeded(7);
-    const layouts: Layout2[] = Array.from({ length: heavy('calibrateLargeRandomLayouts') }, () =>
-      randomLayout(rnd),
-    );
+    const drawn: Layout2[] = Array.from({ length: GENERATED_LAYOUTS }, () => randomLayout(rnd));
+    // Drawing all of them costs nothing; running them is the cost. By default a subset runs: the layouts that between
+    // them hold every chunk weight and every wanted share the draw has, and the ones whose reads fall in three ranges
+    // (a quarter of the gap test's cap, say, is exceeded only by those). Later layouts are not simply more of the same.
+    const layouts: Layout2[] =
+      heavy('calibrateLargeRandomLayouts') === GENERATED_LAYOUTS
+        ? [...drawn]
+        : COVERING_LAYOUTS.map((n) => drawn[n - 1]!);
+    expect(layouts).toHaveLength(heavy('calibrateLargeRandomLayouts'));
+    for (const key of ['per', 'share'] as const) {
+      expect(new Set(layouts.map((l) => l[key])), `the layouts run hold every ${key}`).toEqual(
+        new Set(drawn.map((l) => l[key])),
+      );
+    }
     // Random layouts use at most half the cap; these come near it: every wanted chunk a read of its own.
     for (const gap of [32, 33, 36, 40, 48]) layouts.push(nearCap(gap, 400));
     let worst = 0;

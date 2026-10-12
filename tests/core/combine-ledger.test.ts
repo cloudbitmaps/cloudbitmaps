@@ -88,8 +88,12 @@ describe('resident bytes of a native bitmap', () => {
   it.each([1, 20, 200, 1_000, 3_000, 20_000])(
     'is bounded by the model at %i ids a chunk',
     (c) => {
-      const { residentPer, serializedPer } = measure(c, heavy('combineLedgerSamples'));
-      // A 5% allowance for the allocator's rounding at this sample size; the model carries far more than that.
+      const { residentPer, serializedPer } = measure(
+        c,
+        c < 3_000 ? 8_000 : heavy('combineLedgerSamples'),
+      );
+      // A 5% allowance for the allocator's rounding at 4,000 samples or more (the small cardinalities keep 8,000: their
+      // headroom is the thinnest, and they cost the least); the model carries far more than that.
       expect(residentBytes(serializedPer)).toBeGreaterThanOrEqual(residentPer * 0.95);
       expect(residentBound(c)).toBeGreaterThanOrEqual(residentBytes(serializedPer) * 0.9);
       expect(RESIDENT_BITMAP_OVERHEAD).toBeGreaterThanOrEqual(400);

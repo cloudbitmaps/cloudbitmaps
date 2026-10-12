@@ -6,7 +6,7 @@ import fc from 'fast-check';
 import { heavy } from '../helpers/strength';
 import { describe, expect, it } from 'vitest';
 import type { CombineExpr } from '@/core/combine-many';
-import { nativeOutput, runBatch, toNative } from '../helpers/combine-many';
+import { nativeOutput, runBatch, toNative, widestOutputs } from '../helpers/combine-many';
 import type { OutputSpec, Published } from '../helpers/combine-many';
 
 const range = (lo: number, hi: number, step = 1): number[] => {
@@ -101,7 +101,12 @@ describe('batch combine against native Roaring', () => {
         const { run } = await runBatch(POOL, specs);
         expectMatches(specs, run);
       }),
-      { numRuns: heavy('combineManyOneGroupRuns') },
+      {
+        numRuns: heavy('combineManyOneGroupRuns'),
+        // The widest, deepest batch the arbitrary can draw, on every run: a bug only such a shape shows is not left to the
+        // draw, which reaches it in about half the calls at the reduced count.
+        examples: [[widestOutputs(8)]],
+      },
     );
   }, 120_000);
 
@@ -122,7 +127,10 @@ describe('batch combine against native Roaring', () => {
           expect(grouped.run.outputs).toEqual(whole.run.outputs);
         },
       ),
-      { numRuns: heavy('combineManyRangeRuns') },
+      {
+        numRuns: heavy('combineManyRangeRuns'),
+        examples: [[widestOutputs(12), 3 * 65_536 + 100, 9 * 65_536 + 70_000]],
+      },
     );
   }, 120_000);
 });
