@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MIN_EXPIRES_AT_MS } from '@/index';
 import { ValidationError, WriteConflictError } from '@/core/errors';
+import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import {
   DEFAULT_LOOKBACK_BUCKETS,
   DEFAULT_RETIRE_LIMIT,
@@ -19,7 +20,7 @@ describe('resolveRetireOptions', () => {
       limit: DEFAULT_RETIRE_LIMIT,
       purgeTombstones: true,
       grace: 86_400_000,
-      maxScanSegments: expect.any(Number),
+      maxScanSegments: DEFAULT_MAX_SCAN_SEGMENTS,
       dryRun: false,
       scan: 'fleet',
       lookbackBuckets: DEFAULT_LOOKBACK_BUCKETS,

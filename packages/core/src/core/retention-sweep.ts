@@ -520,7 +520,7 @@ interface ResolvedRetireOptions {
 
 /**
  * Check a sweep's options and fill in the defaults. Pure: it reads nothing but `options`, and throws
- * `ValidationError` for the first bad one, in the order the checks have always run.
+ * `ValidationError` for the first bad one, in the order the checks below run.
  */
 export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRetireOptions {
   checkedAuditSink(options.audit, 'retireExpired');
@@ -581,9 +581,10 @@ export function resolveRetireOptions(options: RetireExpiredOptions): ResolvedRet
  * writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
  * already retired. Counting only successes would let a partial storage outage march through the entire fleet
  * with the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing")
- * while every segment in the namespace is tombstoned. So a step raises `attempted` before it calls out, and only
- * gives the charge back (`refusedPurge`, or a retirement that turned out to be someone else's) where nothing was
- * done.
+ * while every segment in the namespace is tombstoned. So a step charges `attempted` before the call that can delete
+ * (the drop, or the purge's collection), after any re-read that finds nothing due, and gives the charge back in two
+ * places only: a purge the registry or storage refused (`refusedPurge`), and a drop that wrote and deleted nothing
+ * because the row was no longer the sweep's to retire (`dropSegmentFor` returned `null`).
  */
 export class SweepTally {
   readonly entries: RetireEntry[] = [];
@@ -750,8 +751,10 @@ async function purgeTombstone(rec: RegistryRecord, ctx: SweepContext): Promise<R
 }
 
 /**
- * Work one live row: retire it when its policy has expired, after reading the row again. Returns the ledger entry, or
- * `null` when the row is not the sweep's business. Setting `tally.limited` ends the sweep.
+ * Work one live row: retire it when its policy has expired, after reading the row again. A retirement goes into the
+ * ledger here, before its cleanup, so a fault that escapes the cleanup cannot take it out. Any other outcome is returned
+ * as the ledger entry, or `null` when there is none: no policy, one not yet due, or the limit reached. Setting
+ * `tally.limited` ends the sweep.
  */
 async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<RetireEntry | null> {
   const { deps, opts, removesRows, tally } = ctx;
@@ -833,12 +836,8 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
       return { ...base, action: 'skipped', reason: `failed: drop reported ${result.reason}` };
     }
     tally.retired += 1;
-    const entry: RetireEntry = {
-      ...base,
-      action: 'retired',
-      expiresAt: livePolicy.expiresAt,
-      result,
-    };
+    // Recorded before the cleanup below, so a fault that escapes it cannot take the retirement out of the ledger.
+    tally.add({ ...base, action: 'retired', expiresAt: livePolicy.expiresAt, result });
     // The pointer has done its job. Dropping it keeps a bucket from accumulating rows that every subsequent
     // lookback re-reads forever — the index would otherwise grow monotonically and slowly undo its own
     // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
@@ -889,13 +888,13 @@ async function retireLive(rec: RegistryRecord, ctx: SweepContext): Promise<Retir
             return false;
           },
         );
-        if (deleted) return entry;
+        if (deleted) return null;
       }
     }
     // The tombstone carries this sweep's mark from the write that made it, so a later sweep may purge the row (see
     // the attribution note in `purgeTombstone`). File the pointer an index scan finds it by on the day its grace ends.
     if (removesRows) await filePurgePointer(deps.registry, ref, now + grace);
-    return entry;
+    return null;
   } catch (err) {
     // A fault AFTER the tombstone landed is a segment that IS retired, and reporting it as skipped told the
     // caller the opposite of the truth ("a skipped entry is a segment that still holds data"). One cheap read
