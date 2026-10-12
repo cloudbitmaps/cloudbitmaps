@@ -13,6 +13,12 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A pin's `fingerprint` is required.** `PinnedAt.fingerprint` is `string | null` (`null` only when `generation` is
+  `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A pin of a generation built without a
+  string `version` and `fingerprint` is refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and
+  by a pinned read of `CrbmStorageChunkSource`, and `CrbmStorageChunkSource.pinGenerationAt` refuses one without a
+  fingerprint before it reads the row or takes a lease.
+
 - **A bucket or container that does not exist is a `ValidationError` on every cloud driver.** It names the bucket or
   container and says what to check, with the service's error as its `cause`. It is not a `NotFoundError`, which a read
   answers by looking again. Branch on `isValidationError`, not on the SDK's `NoSuchBucket` or `ContainerNotFound`. The
@@ -96,8 +102,6 @@ so, and so do the module headers in the code.
 
 - **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
   no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
-- **The `PinnedAt.fingerprint` doc comment** (`@cloudbitmaps/core`) says what a pin built without one does: it reads an
-  object nothing checks. Wording only; no behaviour changed.
 - **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
   the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
   number. Where the segment's row records which generations are kept, the superseded generation is always the newest

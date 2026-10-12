@@ -374,5 +374,21 @@
   {
     "entry": "@cloudbitmaps/core/driver-kit concatBytes",
     "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core PinnedAt.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core PinnedObject.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedAt.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedObject.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
   }
 ]
