@@ -473,8 +473,15 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('a GET whose headers never come is a TransientError at the timeout, sent once', async () => {
-    // One fast read first, so the SDK is warm and the only thing that can end the next one is the stall.
-    expect(await settle(backend.storage.getRange(GEN, 0, 8))).toHaveProperty('value');
+    // One fast read first, so the SDK is warm and the only thing that can end the next one is the stall. It goes
+    // through the store's own client with no timeout: a warm-up under the store's 200 ms deadline would end the test
+    // on a stall of the machine, which is not the stall under test.
+    const warm = await settle(
+      backend.client
+        .send(new GetObjectCommand({ Bucket: BUCKET, Key: OBJECT_KEY, Range: 'bytes=0-7' }))
+        .then((res) => res.Body?.transformToByteArray()),
+    );
+    expect(warm).toHaveProperty('value');
     const before = stub.count('GetObject');
     stub.arm('GetObject', { kind: 'no-headers' });
 
