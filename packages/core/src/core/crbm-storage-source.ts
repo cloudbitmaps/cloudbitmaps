@@ -6,7 +6,7 @@
  * per-chunk payloads. The write path lives beside it, in `crbm-write.ts`, `publish.ts` and `bulk-load.ts`, and the
  * opening of a stored generation in `crbm-open.ts`.
  */
-import { requireFiniteNumber } from './check';
+import { requireFiniteNumber, requirePositiveInteger } from './check';
 import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -62,7 +62,7 @@ import { InvalidationRecord } from './invalidation-scope';
 import { ItemPull } from './item-pull';
 import { sizeOfFingerprint, summaryAgrees, usableSummary } from './summary';
 import type { GenerationDescription, SummaryDescription } from './summary';
-import { storageBlobReader, openChecked, startTailRead } from './crbm-open';
+import { storageBlobReader, openChecked, sizedTailBytes, startTailRead } from './crbm-open';
 
 export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
@@ -370,7 +370,7 @@ async function readsObjectOf(snap: Snapshot, reader: CrbmReader): Promise<boolea
 
 /** What a generation's object says of itself, which is what a summary is held against: its count and metadata. */
 function describe(reader: CrbmReader): GenerationDescription {
-  return { cardinality: reader.count(), metadata: reader.metadata };
+  return { cardinality: reader.count(), metadata: reader.metadata, tailBytes: reader.tailBytes };
 }
 
 /** Runs one storage request, and may run it again if it fails. */
@@ -649,6 +649,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         what: 'cache.genTtlMs',
         note: 'milliseconds; 0 turns the timed refresh off',
       });
+    }
+    // The cap on an index an open accepts, and the bound a sized tail read is held to: a whole number of bytes, so a
+    // `NaN` from an unset variable is refused here rather than silently turning the cap off.
+    if (readerOptions.maxIndexBytes !== undefined) {
+      requirePositiveInteger(readerOptions.maxIndexBytes, 'maxIndexBytes');
     }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.
@@ -1549,11 +1554,17 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     crypto: CrbmCrypto | undefined,
     named?: string,
     early?: Promise<TailRead>,
+    hint?: SummaryDescription,
   ): Promise<CrbmReader> {
     return openChecked(
       this.driver,
       genKeyOf(ref, target),
-      { ...this.readerOptions, crypto, lineage: target.lineage },
+      {
+        ...this.readerOptions,
+        crypto,
+        lineage: target.lineage,
+        ...(hint === undefined ? {} : { tailBytes: sizedTailBytes(hint, this.readerOptions) }),
+      },
       this.keepChunkBytesUpTo,
       named,
       undefined,
@@ -1576,11 +1587,20 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * tail is read before then. The key is awaited first, so a keystore fault reaches the caller before a storage fault,
    * and the request already sent is not cancelled: it is billed, and its answer or failure is dropped when the key
    * fails.
+   *
+   * A cleartext generation's tail read is sized from the `tailBytes` of that summary ({@link sizedTailBytes}), so a
+   * generation whose index is longer than the default tail comes in the one read, with no range read for the index
+   * after it. Only a summary this process still believes sizes a read ({@link trustedSummary}): one found to disagree
+   * with its object is not used again, so a wrong number costs one extra read for the process, not for each open. An
+   * encrypted generation is not sized: its summary is sealed under the key, so sizing from it would send the tail read
+   * after the key, which the early read above avoids where no earlier step has already waited for the key (a cold
+   * `has()` has).
    */
   private async openLive(ref: SegmentRef, live: Live): Promise<CrbmReader> {
     const wrapped = live.target.wrappedDeks;
+    const keyed = wrapped !== undefined && wrapped.length > 0;
     const early =
-      this.keystore !== undefined && wrapped !== undefined && wrapped.length > 0
+      this.keystore !== undefined && keyed
         ? startTailRead(this.driver, genKeyOf(ref, live.target), {
             ...this.readerOptions,
             lineage: live.target.lineage,
@@ -1588,7 +1608,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         : undefined;
     const crypto = await live.crypto();
     const summary = await live.summary();
-    const reader = await this.openGeneration(ref, live.target, crypto, summary?.fingerprint, early);
+    const hint = keyed ? undefined : await this.trustedSummary(ref, live);
+    const reader = await this.openGeneration(
+      ref,
+      live.target,
+      crypto,
+      summary?.fingerprint,
+      early,
+      hint,
+    );
     this.rowChecked.add(reader);
     if (summary !== undefined && !summaryAgrees(summary, describe(reader))) {
       this.distrusted.set(this.distrustKey(ref, live.target.generation, live.target.lineage), true);

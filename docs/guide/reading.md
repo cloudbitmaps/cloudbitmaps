@@ -81,7 +81,7 @@ the segment's key with its generation as associated data. Anything else is no su
 **not confirmed on the cold path**: someone who can write the registry row can edit it, and a count then answers what
 the row says, as it answers a crafted but consistent index, and as that person could already repoint the generation.
 Whenever a read opens the generation's object anyway (a `has`, an `iterate`, a combine, a `pin()`), the store holds the
-row's id count and metadata against the object, at no extra request; a disagreement, including a row that has metadata
+row's id count, metadata and `tailBytes` against the object, at no extra request; a disagreement, including a row that has metadata
 over an object that has none, stops that store from using that row's summary for that generation, so its counts then
 read the object, and fails no read. `checkConsistency({ summaries: true })` finds the disagreement across a fleet. A
 segment whose pointer names an object that is gone (a torn restore) still counts the row's number, which is true of
@@ -121,7 +121,7 @@ object: every read that opens the object refuses it, with `NotFoundError`, and
 [`checkConsistency`](disaster-recovery.md) is what finds such a row.
 
 The count is the index's sum, checked for internal consistency when the object is opened, and the opened object is
-held against the row's summary: a disagreement makes the store stop using that summary, so `count()` and `stat()` then
+held against the row's summary, its count, metadata and `tailBytes`: a disagreement makes the store stop using that summary, so `count()` and `stat()` then
 answer from the object. `sizeBytes` is what [`groundedReport()`](cost.md) prices a segment's storage from.
 
 `store.generations(ref)` carries `cardinality` and `metadata` on its current entry from the row it already reads, with
@@ -166,7 +166,14 @@ This is the one place the bound is stated; other pages link here.
   tail early sends it whether or not the key opens, so a keystore that fails bills a tail GET for each such attempt
   (with the default read retry, up to four for a keystore that keeps throwing `TransientError`), and its answer is
   dropped. While a cold open
-  waits for the key it holds up to `tailBytes` (256 KiB by default) of the object's tail.
+  waits for the key it holds up to `tailBytes` (256 KiB by default) of the object's tail. A cleartext generation's tail
+  read is sized from the row's summary, which records how many bytes of the object's end an open needs: a segment whose
+  index is longer than 256 KiB (tens of thousands of chunks) comes in that one read, so its first `has()` is three requests
+  (the row, the tail and the chunk), not four. The size is never below the store's `tailBytes` option, and, beyond that option, never
+  more than the object holds or the store's `maxIndexBytes` (8 MiB by default) plus 4,212 bytes; a summary this store has found
+  to disagree with its object is not used again. A row with no summary the store can use opens with the default tail read.
+  An encrypted generation's open is not sized, because its summary is sealed under the key and sizing from it would send the
+  tail read after the key: it keeps its default tail read (beside the key for an open that starts from the object; a cold `has()` waits for the key first, as before), and a wide one reads its index with one range read more.
 - **What it means for another store's erasure or crypto-shred.** After an eviction a store can serve a cached chunk of a
   generation another store erased from, up to the same `cache.genTtlMs`. It also reads with the wrapped keys it kept:
   a store whose reader was evicted unwraps the key from them again through the keystore, so a crypto-shred by another

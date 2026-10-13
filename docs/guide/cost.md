@@ -163,8 +163,10 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   requests fall and the bytes read rise. Inside the bucket's region S3 Standard bills no bytes read; across regions it
   bills them, and that can cost more than the requests saved. There is no setting for it: run readers in the bucket's
   region, and size `chunksPerIntersect` from the requests you expect, which the
-  [sizing guide's overlap tables](sizing.md#how-much-the-overlap-matters) show for both layouts. An operand whose index outgrows the reader's 256 KiB tail read makes one more GET, to read
-  it whole, and an intersect slow enough to outlive `cache.genTtlMs` reads its pointers again; add either to
+  [sizing guide's overlap tables](sizing.md#how-much-the-overlap-matters) show for both layouts. An operand whose index outgrows the reader's 256 KiB tail read (tens of thousands of chunks) makes one more GET, to read
+  it whole, when its segment is encrypted or its row has no summary the store can use; a cleartext segment's row records
+  how many bytes its open needs, so its tail read is sized to take the whole index and costs no more than a narrow
+  segment's. An intersect slow enough to outlive `cache.genTtlMs` reads its pointers again; add either to
   `chunksPerIntersect`. `cacheHitRate` does not apply to intersections, so a long-lived reader that answers
   repeats from its cache pays less than the report says, and pays the pointer refresh instead.
 - **A cold `count()` is one pointer read.** The row records the current generation's id count, so a count reads no
@@ -254,8 +256,8 @@ delete too.
 That is paid once per affected segment, since the next run finds nothing to delete. A renewal that gets no answer
 waits up to 3.5 s in all before it gives up, within one segment, and `eraseSubject` erases 8 segments at once by
 default. A renewal on a segment with a generation moves its `pointerId`, so each store reading it opens its current
-generation again once, at its next refresh: one tail read where the generation's index fits in it, and a range
-read for the index as well where it does not. See [what an erasure
+generation again once, at its next refresh: one tail read where the generation is cleartext and its row has a summary (which sizes the read to take the index), and a
+range read for the index as well where it is encrypted, or the row has no summary, and the index does not fit in the tail read. See [what an erasure
 costs](erasure.md#find-an-id-and-erase-it).
 
 **The default `checkConsistency` makes one object-store request per healthy segment, and lists only a segment it cannot
@@ -271,7 +273,8 @@ segment that looks torn or unreadable costs that listing as well.
 The model does not price it, since a consistency check is a run of your own, not a rate. At the default prices a
 million healthy segments cost $0.40 on S3 and GCS for the default check, and for the open of `summaries: true` where
 the summaries are clear (`requestsPerSizedRead` of 1). On Azure Blob the default check costs $0.40 (one request) and
-the open $0.80 (two). An index longer than the tail read adds a range read: $0.40 more per million. Each listing of a
+the open $0.80 (two). The open's tail read is sized from the summary, so a wide segment's index comes with it and adds no
+range read. Each listing of a
 segment that does not confirm costs a list request on top: $5.00 per million on S3. The registry reads are separate: the scan reads every row, and each segment's row once more.
 
 One result differs from a check that listed every segment: a store that answers reads but refuses listings (an identity

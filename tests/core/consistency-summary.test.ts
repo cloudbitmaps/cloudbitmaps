@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { runConsistencyCheck } from '@/core/consistency';
-import { openSummary, sealSummary } from '@/core/summary';
+import { openSummary, sealSummary, tailBytesFit } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { counting } from '../helpers/counting';
@@ -145,5 +145,32 @@ describe('checkConsistency with summaries', () => {
     });
     expect(keyless.inconsistent).toEqual([]);
     expect(keyless.summariesUnchecked).toBe(1);
+  });
+
+  it('a sealed summary whose tailBytes the object does not bear out is a summary-mismatch', async () => {
+    const w = world(true);
+    await w.store.load(SEG, [1, 70_000, 140_000, 210_000, 280_000]);
+    const row = (await w.registry.get(SEG))!;
+    const aead = await w.keystore.openDek(row.wrappedDeks!);
+    const opened = openSummary(aead, SEG, row.summary as { generation: number; sealed: string });
+    const wrong = opened.tailBytes + 8;
+    // Still a number a sealed summary of this object can carry, so the summary is used and held to the object.
+    expect(tailBytesFit(wrong, Number(opened.fingerprint.split(':')[0]))).toBe(true);
+    await w.registry.compareAndSwap(SEG, row.token, {
+      summary: sealSummary(
+        aead,
+        SEG,
+        0,
+        opened.cardinality,
+        opened.fingerprint,
+        wrong,
+        opened.metadata,
+      ),
+    });
+    const report = await w.store.checkConsistency({ summaries: true });
+    expect(report.inconsistent).toEqual([
+      { segment: 's', namespace: 'ns', currentGen: 0, issue: 'summary-mismatch' },
+    ]);
+    expect(report.summariesUnchecked).toBe(0);
   });
 });

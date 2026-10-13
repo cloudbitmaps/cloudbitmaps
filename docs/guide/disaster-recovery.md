@@ -540,9 +540,9 @@ if (report.errored.length > 0) {
     [what a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back).
 - **`summaries: true` also checks what a count answers from.** The default check reads no object: it asks whether
   each one is there with a zero-length tail read, one request, and lists the segment's objects only when that read
-  does not find it. With the option it opens each segment's current object (one tail read each, a second for an index
-  longer than that) and holds the row's summary against it: the object its fingerprint names, the same id count and
-  the same metadata. A segment whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is
+  does not find it. With the option it opens each segment's current object (one tail read each, sized from the summary so that it takes the
+  index however wide it is) and holds the row's summary against it: the object its fingerprint names, the same id count, the
+  same metadata and the same `tailBytes`. A segment whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is
   a clear summary whose fingerprint names no object, which no read uses. A sealed summary needs the store's keystore;
   a segment whose summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row
   with no summary has nothing to check.
