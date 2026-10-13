@@ -120,3 +120,29 @@ export async function runBatch(
   );
   return { run, setup };
 }
+
+/**
+ * The deepest shapes the property arbitraries can draw, for pinning as fast-check examples so every run has them: each
+ * operator at the twelfth level, over two real operands, wrapped in eleven levels that pass a value through unchanged (a
+ * one-kid `and` or `or`, an `andNot` of `empty`), so the deepest node's value is what the output holds. They use the
+ * property files' operands `mid`, `runs`, `sparse` and `empty`.
+ */
+const pass = (e: CombineExpr, level: number): CombineExpr =>
+  (level % 3 === 0
+    ? { and: [e] }
+    : level % 3 === 1
+      ? { or: [e] }
+      : { andNot: [e, 'empty'] }) as CombineExpr;
+
+const deepest = (op: 'and' | 'or' | 'andNot', shift: number): CombineExpr => {
+  let e = { [op]: ['mid', 'runs'] } as unknown as CombineExpr;
+  for (let level = 0; level < 11; level++) e = pass(e, level + shift);
+  return e;
+};
+
+/** `n` outputs, each the deepest shape of one operator, every second one with an exclude. */
+export const widestOutputs = (n: number): OutputSpec[] =>
+  Array.from({ length: n }, (_, i) => ({
+    expr: deepest((['and', 'or', 'andNot'] as const)[i % 3]!, i),
+    ...(i % 2 === 1 ? { exclude: ['sparse'] } : {}),
+  }));
