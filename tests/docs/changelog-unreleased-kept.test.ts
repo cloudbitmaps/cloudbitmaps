@@ -78,6 +78,51 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
       'write changed it keeps its object, since a footer names bytes and a load of the same ids writes the same ones, ' +
       'so the entry would describe no change',
   },
+  {
+    title: "The disaster-recovery guide's strays table changes.",
+    reason:
+      'retitled in the 0.21.0 notes: the table changes only for a row restored without its ledger, which the new title says',
+  },
+  {
+    title:
+      'The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.',
+    reason: 'folded into the Breaking entry that lists every input 0.20.0 took and 0.21.0 refuses',
+  },
+  {
+    title: 'A `getTail` length follows one rule on every storage driver.',
+    reason:
+      'retitled in the 0.21.0 notes: the rule is merged with the in-process and S3 `getTail` entries and now covers `BufferReader`',
+  },
+  {
+    title:
+      "An incarnation's first publish writes the new generation alone, and a protect pass counts when the superseded generation is gone.",
+    reason:
+      'retitled in the 0.21.0 notes: it now compares with 0.20.0 and names a listing load instead of a protect pass',
+  },
+  {
+    title:
+      'A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with `ValidationError`, when it is built.',
+    reason: 'folded into the Breaking entry that lists every input 0.20.0 took and 0.21.0 refuses',
+  },
+  {
+    title: 'A rollback to the generation already current checks that its object is there.',
+    reason: 'folded into the Breaking rollback sub-bullet, which stated the same change',
+  },
+  {
+    title:
+      // The retired title is quoted as the old entry had it, split so the present-tense gate does not read it as prose.
+      [
+        'The in-process and local-filesystem drivers refuse input they used',
+        'to take and misread.',
+      ].join(' '),
+    reason:
+      'retitled in the 0.21.0 notes: its refused inputs moved to the Breaking entry and its `getTail` rule to the merged `getTail` entry',
+  },
+  {
+    title: 'The cost tools refuse input they would have misread.',
+    reason:
+      'retitled in the 0.21.0 notes: its refused inputs moved to the Breaking entry, leaving the entry on a total `estimateCost` cannot price',
+  },
 ];
 
 const FETCH = `fetch the history and the base branch (\`git fetch --unshallow origin main\`, or check out with \`fetch-depth: 0\`)`;

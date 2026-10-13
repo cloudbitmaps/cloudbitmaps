@@ -150,7 +150,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   includes', as ranges of their own.
   **A batch trades bytes for requests.** Survivors spread thinly through a dense exclude are read as parts of the same
   ranges, as an include's chunks are (chunks within 256 KiB of each other, up to 1 MiB a request), so they cost fewer
-  requests and more bytes: with a survivor every 31 keys of an exclude of 1,000 chunks of 8 KiB, main made 32 requests for
+  requests and more bytes: with a survivor every 31 keys of an exclude of 1,000 chunks of 8 KiB, reading each key on its own made 32 requests for
   262,656 bytes and a batch makes 8 to 10 for about 5.7 to 6.2 MB, by where its batches fall (at 25 ms a request and 100 MB/s
   that is about 83 ms against 105 ms, about 27% longer). Inside the bucket's region S3 bills no bytes read, and the requests saved are
   the saving; across regions the bytes are billed, and one request costs about what 20 KB of cross-region transfer does,
