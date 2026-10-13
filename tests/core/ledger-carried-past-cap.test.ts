@@ -7,11 +7,12 @@ import { counting } from '../helpers/counting';
 
 /**
  * A ledger carried through many publishes whose `keep` is above what a row records (what `*Into` and `materializeMany`
- * publish with) names up to 128 generations by recency. A load with a small `keep` after it must not read those names as
- * the whole window: it would delete only them, and leave the older generations until a periodic listing. So a ledger
- * naming more than 64 generations below the pointer is not collected from by name: the load keeps the ledger as it is and
- * collects by listing, counting its names first. A release before ledgers recorded no list after a `keep` above 64, so that load collects
- * everything beyond its keep: after 200 such publishes and one `keep: 1` load, two objects remain.
+ * publish with) names up to 128 generations by recency. A load with a small `keep` after it must not read those names
+ * as the whole window: it would delete only them, and leave the older generations until a periodic listing. So a ledger
+ * naming more than 64 generations below the pointer is not collected from by name: the load writes the window it draws
+ * from the ledger's order, the leased entries and the entries a rollback left above its number, and collects by
+ * listing, counting the ledger's names first. A release before ledgers recorded no list after a `keep` above 64, so
+ * that load collects everything beyond its keep: after 200 such publishes and one `keep: 1` load, two objects remain.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };

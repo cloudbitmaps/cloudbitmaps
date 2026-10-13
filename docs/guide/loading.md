@@ -487,7 +487,7 @@ names more than 64 generations below the pointer that no lease holds (a `keep` a
 order, the generations a live lease holds and the ones a rollback left above the new number, and the load that follows
 it with a `keep` of 64 or less collects by listing, counting the ledger's own names first, instead of by name. The
 leases a new ledger holds are read from the row once more just before it is written, one more row read; a lease taken
-after that read, before the write, keeps its generation in the bucket but is not named until the next publish, as one
+after that read, before the write, keeps its generation in the bucket but is not named while its lease lasts, as one
 taken between a publish and its collection is not. With a `keep` of 127 or more, or when the generations the window and
 the leases hold already reach 128 entries, the entries a rollback left above a load's number are capped out of the
 ledger, and a later load that numbers past them collects them.

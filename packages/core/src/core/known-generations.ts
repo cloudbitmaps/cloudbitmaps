@@ -248,8 +248,9 @@ export function nextKnown(
     new Set([...vouch, generation]),
     leased,
   );
-  // A ledger too wide for a small `keep` to extend by name (a carried run of larger keeps) keeps its order and its entries
-  // as read; the load lists to collect, counting the ledger's names first and sparing every name the row knows.
+  // Over a ledger too wide for a small `keep` to extend by name (a carried run of larger keeps), the publish still
+  // writes the window it draws from the ledger's order, the leased entries and those above; the load lists to collect,
+  // counting the ledger's names first and sparing every name the row knows.
   const wide = !clears && found !== undefined && !carriesWindow(prev, leased);
   if (!byName || wide) return { known, list: undefined, evict: [] };
   const named = new Set(known.map((e) => e.generation));

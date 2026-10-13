@@ -276,9 +276,9 @@ so, and so do the module headers in the code.
   a load takes a number past it, unless the ledger would pass 128 entries. A pin taken on the restored generation reads it
   until a load collects it, unless the pin is leased. The window is chosen without looking at leases, so a live lease on
   the generation a load supersedes after a rollback holds a place in the window instead of being spared beside it. The
-  window is the newest `keep` by number alone only for a pass that has no usable ledger, or where the lower of the
-  collection's two reads of the pointer, before and after its listing, is not the load's own generation; where the
-  superseded generation's object has gone from the bucket, the pass counts the newest `keep` that are there. A load makes
+  window is the newest `keep` by number only for a pass that has no usable ledger. With one, a pass that lists keeps the
+  ledger's most recently current names below the pointer first, whatever the two reads of the pointer showed, and counts
+  the newest others by number only to fill `keep`; a name whose object has gone does not count. A load makes
   the same requests as before
   ([what a load keeps after a rollback](docs/guide/loading.md#what-a-load-keeps-after-a-rollback)).
 - **A generation a live lease holds stays in the ledger, and a pass that keeps by a count goes by the ledger.** A
@@ -291,7 +291,7 @@ so, and so do the module headers in the code.
   collects by listing instead of by name. With a usable ledger, a pass that lists keeps the ledger's most recently current
   names first and counts the newest others by number only to fill `keep`; by number alone only where there is no usable
   ledger. The leases a new ledger holds are read from the row once more just before it is written; a lease taken after
-  that read is spared in the bucket but not named until the next publish. A rollback holds every generation its row's
+  that read is spared in the bucket but not named while its lease lasts. A rollback holds every generation its row's
   lease entries name. With a `keep` of 127 or more, or when the generations the window and the leases hold reach 128
   entries, the entries a rollback left above a load's number are capped out of the ledger, and a later load that numbers
   past them collects them.

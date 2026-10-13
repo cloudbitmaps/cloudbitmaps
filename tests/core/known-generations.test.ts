@@ -331,7 +331,7 @@ describe('a ledger too wide for a small keep to extend by name', () => {
     ledger(...Array.from({ length: 99 }, (_, g) => g).filter((g) => g !== 50), 50, 100),
   );
 
-  it('keeps its recency order, what a rollback left above the new generation and the leased names, and collects by listing', () => {
+  it('keeps its recency order and the leased names, and collects by listing', () => {
     // 0 to 97, then 50 made current again (a rollback), then 100: 99 names below the pointer, and 101 is the new number.
     const after = nextKnown(wide, 101, 1010, 2, { leased: new Set([3]) });
     expect(numbers(after.known)).toEqual([3, 50, 100, 101]);
