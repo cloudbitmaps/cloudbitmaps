@@ -325,7 +325,7 @@ function scanText(html, { comments = false } = {}) {
   return tokens(html)
     .map((t) => {
       const inner = html.slice(t.start, t.end);
-      if (t.type === 'comment') return comments ? ` ${inner.replace(/^<!--|-->$/g, '')} ` : ' ';
+      if (t.type === 'comment') return comments ? ` ${inner.replace(/^<!--|--!?>$/g, '')} ` : ' ';
       if (t.type !== 'raw') return shown(html, t, ' ');
       if (t.name === 'script' || t.name === 'style') return ' ';
       if (t.name === 'title' || t.name === 'textarea') return ` ${decode(inner)} `;
@@ -592,6 +592,29 @@ function cssStrings(value) {
 }
 
 /** A width in a media query, however it is written: `min-width: 48em`, `max-width: 1000px`, `width >= 768px`. */
+/** Removes every match of `re`, again until nothing is left to match, so a removal cannot join its neighbours into a new one. */
+function replaceUntilStable(text, re) {
+  let out = text;
+  for (let before = ''; before !== out;) {
+    before = out;
+    out = out.replace(re, '');
+  }
+  return out;
+}
+
+/**
+ * Whether an inline style holds only custom-property declarations (`--name: value;`). The value runs to the next `;`,
+ * so splitting there needs no pattern that can match a run of declarations more than one way.
+ */
+function isCustomPropertyList(style) {
+  const parts = style.split(';');
+  const last = parts.pop();
+  return (
+    parts.every((p) => /^\s*--[\w-]+\s*:[^;]+$/.test(p)) &&
+    (/^\s*$/.test(last) || /^\s*--[\w-]+\s*:[^;]+$/.test(last))
+  );
+}
+
 const WIDTH_FEATURE =
   /\(\s*(?:(?:min|max)-width\s*:\s*[\d.]+(?:px|em)|(?:[\d.]+(?:px|em)\s*[<>]=?\s*)?width(?:\s*[<>]=?\s*[\d.]+(?:px|em))?)\s*\)/gi;
 
@@ -839,7 +862,7 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
         `${page} sets a text direction (<${t.name} dir="${t.attrs.dir}">), which can draw digits in another order`,
       );
     }
-    if (t.attrs.style !== undefined && !/^\s*(--[\w-]+\s*:\s*[^;]+;?\s*)*$/.test(t.attrs.style)) {
+    if (t.attrs.style !== undefined && !isCustomPropertyList(t.attrs.style)) {
       fail(`${page} sets an inline style other than a custom property (style="${t.attrs.style}")`);
     }
     for (const [name, value] of Object.entries(t.attrs)) {
@@ -849,8 +872,9 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
       if (!URL_ATTRS.has(name)) continue;
       // A srcset lists several; the browser skips the spaces and control characters before each.
       for (const url of value.split(',').map((u) => u.replace(/[\s\p{Cc}]/gu, '').toLowerCase())) {
-        if (url.startsWith('javascript:'))
+        if (url.startsWith('javascript:') || url.startsWith('vbscript:')) {
           fail(`${page} runs code from a link (<${t.name} ${name}>)`);
+        }
         if (url.startsWith('data:')) {
           fail(`${page} loads a data: URL (<${t.name} ${name}>), whose content no check reads`);
         }
@@ -979,12 +1003,17 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
         // Each query of a list stands alone. Width and motion are probed in every combination the passes make; the
         // theme is the page's `data-theme` stamp, not a media query; print is probed on its own.
         for (const query of media[1].split(',')) {
-          const rest = query
-            .replace(WIDTH_FEATURE, '')
-            .replace(/\(prefers-reduced-motion(?:\s*:\s*(?:reduce|no-preference))?\)/gi, '')
-            .replace(/\b(?:and|not|only|screen|all)\b/gi, '')
-            .trim();
-          if (rest !== '' && !/^print$/i.test(query.replace(/\b(?:only|all)\b/gi, '').trim())) {
+          const rest = replaceUntilStable(
+            replaceUntilStable(query, WIDTH_FEATURE).replace(
+              /\(prefers-reduced-motion(?:\s*:\s*(?:reduce|no-preference))?\)/gi,
+              '',
+            ),
+            /\b(?:and|not|only|screen|all)\b/gi,
+          ).trim();
+          if (
+            rest !== '' &&
+            !/^print$/i.test(replaceUntilStable(query, /\b(?:only|all)\b/gi).trim())
+          ) {
             fail(`${where} shows some readers a rule no pass probes (${d.value})`);
             break;
           }

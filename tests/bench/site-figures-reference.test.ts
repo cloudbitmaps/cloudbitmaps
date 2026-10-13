@@ -367,6 +367,28 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ['a right-to-left letter', '<p>12 &#x5d0; 34</p>', 'shows U+05D0'],
     ['a handler', '<span onmouseover="go()">x</span>', 'runs a handler'],
     ['a script link', '<a href=" javascript:go()">x</a>', 'runs code from a link'],
+    ['a VBScript link', '<a href=" VBScript:go()">x</a>', 'runs code from a link'],
+    ['a data link', '<a href="da&#x74;a:text/html,x">x</a>', 'loads a data: URL'],
+    [
+      'a style that is not a run of custom properties',
+      `<span style="--x: 1; visibility: hidden">·</span>`,
+      'sets an inline style other than a custom property',
+    ],
+    [
+      'a style with an empty declaration',
+      `<span style="--x: 1;; --y: 2">·</span>`,
+      'sets an inline style other than a custom property',
+    ],
+    [
+      'a style with no value',
+      `<span style="--x:;">·</span>`,
+      'sets an inline style other than a custom property',
+    ],
+    [
+      'a style a backtracking pattern would take forever over',
+      `<span style="---:${':---:'.repeat(20000)}x;color:red">·</span>`,
+      'sets an inline style other than a custom property',
+    ],
     ['a module script', '<script type="module" src="theme.js"></script>', 'of type "module"'],
     [
       'a script from elsewhere',
@@ -1079,6 +1101,9 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ['a zero-width space inside a name', `<p>estimate&zwsp;Cost()</p>`],
     ['an empty style', `<span style="">·</span>`],
     ['a left-to-right direction', `<p dir="ltr">x</p>`],
+    ['custom properties set inline', `<span style=" --x: 1; --y-2 :a:b ;">·</span>`],
+    ['a custom property with no closing semicolon', `<span style="--x: 1">·</span>`],
+    ['a link to a page', `<a href="/demo.html">x</a><a href="tel:0000">y</a>`],
   ])('passes a legitimate edit: %s', (_name, planted) => {
     const r = withPage(HEAD, `${HEAD}${planted}`);
     expect(r.code, r.out).toBe(0);
@@ -1225,6 +1250,16 @@ describe('home-figures, piece by piece', () => {
     widthsToProbe: (sheet: string, standard: number[]) => number[];
     rendered: (html: string) => string;
   };
+
+  it.each([
+    ['--!>', '<!-- a --!>', '  a  '],
+    ['-->', '<!-- a -->', '  a  '],
+    ['<!--->', '<!--->', ' -> '],
+  ])('strips the comment delimiters of a comment ended by %s', (_end, html, text) => {
+    const read = (home as unknown as { scanText: (h: string, o: object) => string }).scanText;
+    expect(read(html, { comments: true })).toBe(text);
+    expect(read(html, {})).toBe(' ');
+  });
 
   it('keeps apart a span a check read inside an attribute', () => {
     const page = '<p class="Ids are 32 bit">x</p>';

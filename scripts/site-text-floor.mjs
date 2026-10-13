@@ -86,6 +86,9 @@ if (chrome === undefined) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** The browser events a pass waits for; every other event is ignored. */
+const WAITED_EVENTS = new Set(['Page.loadEventFired']);
+
 /** Minimal CDP client: send(method, params) -> Promise<result>, with a deadline on every call. */
 function connect(wsUrl) {
   const ws = new WebSocket(wsUrl);
@@ -99,10 +102,11 @@ function connect(wsUrl) {
   ws.addEventListener('message', (ev) => {
     const msg = JSON.parse(String(ev.data));
     if (msg.id === undefined) {
-      const cb = listeners.get(msg.method);
-      if (cb) {
+      // Only an event this script waits for is dispatched; the browser's other events are dropped by name.
+      const waiter = WAITED_EVENTS.has(msg.method) ? listeners.get(msg.method) : undefined;
+      if (waiter !== undefined) {
         listeners.delete(msg.method);
-        cb(msg.params);
+        waiter.resolve(msg.params);
       }
       return;
     }
@@ -118,9 +122,16 @@ function connect(wsUrl) {
     once: (method, ms = 20_000) =>
       new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), ms);
-        listeners.set(method, (p) => {
+        if (!WAITED_EVENTS.has(method)) {
           clearTimeout(timer);
-          resolve(p);
+          reject(new Error(`not an event this script waits for: ${method}`));
+          return;
+        }
+        listeners.set(method, {
+          resolve: (p) => {
+            clearTimeout(timer);
+            resolve(p);
+          },
         });
       }),
     send: (method, params = {}, ms = 20_000) =>
