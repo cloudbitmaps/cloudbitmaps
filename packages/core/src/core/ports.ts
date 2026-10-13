@@ -660,10 +660,11 @@ export interface RegistryWriteOptions {
    * Otherwise a loser's write would pass for the winner's.
    *
    * It tells a writer which row writes are its own, whatever became of its request: a write that failed, or got no
-   * answer, may still have landed, and the row's `pointerId` is then one of the tokens the writer was told. Only a
-   * registry that reports {@link IRegistryDriver.reportsWriteTokens} calls it; one that does not ignores it, and a
-   * writer then settles such a write by reading the object it published. A registry that wraps another and reports
-   * the flag passes this option through to the write it forwards.
+   * answer, may still have landed, and the row's `pointerId` names its writer when no later write has renewed it: it is
+   * then one of the tokens the writer was told. Only a registry that reports {@link IRegistryDriver.reportsWriteTokens}
+   * calls it; one that does not ignores it, and a writer then settles such a write by reading the object it published.
+   * A registry that wraps or extends another and overrides `create` or `compareAndSwap` passes this option through to
+   * the write it forwards, or sets the flag to `false`.
    */
   readonly onToken?: (token: Token) => void;
 }
@@ -887,9 +888,10 @@ export interface IRegistryDriver {
    * is a token it was told, which names the writer and not only the bytes. Absent or `false`: the registry reports
    * none, and such a write is settled by reading the object the publish wrote. A shipped registry says which it is.
    *
-   * A registry that overrides `create` or `compareAndSwap` declares `reportsWriteTokens` beside them, and only if it
-   * passes `options` through to the write it forwards; a publish honours the flag only where the object that owns
-   * each of those two methods declares it, and otherwise settles its writes by the object.
+   * The flag may be a getter or a field. A registry that wraps or extends another and overrides `create` or
+   * `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
+   * `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
+   * own (`superseded`), and deletes nothing.
    */
   readonly reportsWriteTokens?: boolean;
   /**

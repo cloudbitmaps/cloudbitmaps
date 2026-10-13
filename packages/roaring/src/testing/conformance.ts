@@ -1866,15 +1866,11 @@ export function registryConcurrency(
       const racers = 6;
       /** `racers` writers, alternating over the two drivers, each with its own token collector. */
       const race = async (
-        write: (
-          d: IRegistryDriver,
-          onToken: (t: string) => void,
-          i: number,
-        ) => Promise<{ token: string }>,
+        write: (d: IRegistryDriver, onToken: (t: string) => void) => Promise<{ token: string }>,
       ): Promise<void> => {
         const reported: string[][] = Array.from({ length: racers }, () => []);
         const results = await Promise.allSettled(
-          reported.map((tokens, i) => write(drivers[i % 2]!, (t) => void tokens.push(t), i)),
+          reported.map((tokens, i) => write(drivers[i % 2]!, (t) => void tokens.push(t))),
         );
         const winners = results.flatMap((r, i) => (r.status === 'fulfilled' ? [i] : []));
         expect(winners).toHaveLength(1);
@@ -1888,11 +1884,11 @@ export function registryConcurrency(
           if (i !== winner) expect(tokens, `writer ${i}`).not.toContain(row.pointerId);
         });
       };
-      await race((d, onToken, i) => d.create(SEG, { currentGen: i }, { onToken }));
+      // Every racer sends the same body, as two loads of the same ids racing one number do, so a token derived from the
+      // content sent would be the same for the winner and the losers.
+      await race((d, onToken) => d.create(SEG, { currentGen: 0 }, { onToken }));
       const { token } = await drivers[0].get(SEG).then((r) => ({ token: r!.token }));
-      await race((d, onToken, i) =>
-        d.compareAndSwap(SEG, token, { currentGen: 10 + i }, { onToken }),
-      );
+      await race((d, onToken) => d.compareAndSwap(SEG, token, { currentGen: 10 }, { onToken }));
     });
 
     it('a delete racing a swap leaves exactly one outcome, never both', async () => {

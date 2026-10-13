@@ -75,12 +75,8 @@ export class MemoryRegistryDriver implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
-  /**
-   * Every write reports its token to `onToken` before it is applied. A getter on the prototype, not a field on each
-   * instance, so that it sits beside `create` and `compareAndSwap` in the object that owns them: a publish honours the
-   * flag only where the object owning each write method declares it, so a subclass that overrides a write method
-   * without declaring the flag itself is settled by the object instead.
-   */ get reportsWriteTokens(): true {
+  /** Every write reports its token to `onToken` before it is applied. */
+  get reportsWriteTokens(): true {
     return true;
   }
 

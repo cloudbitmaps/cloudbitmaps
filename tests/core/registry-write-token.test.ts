@@ -131,9 +131,9 @@ type Mode = 'send' | 'transient' | 'landThenConflict';
 /**
  * `registry`, whose first create or compare-and-swap naming `currentGen: gen` waits at `g` before it is sent. Then:
  * `send` sends it; `transient` throws `TransientError` and never sends it; `landThenConflict` sends it, runs `between`,
- * and throws `WriteConflictError`, as a replay that met its own landed write does. The wrapper overrides both write
- * methods and forwards `options`, so it declares the flag as `registry` does. It wraps with `Object.create`, so it
- * suits registries whose methods read no `#private` field.
+ * and throws `WriteConflictError`, as a replay that met its own landed write does. It forwards `options`, and inherits
+ * the flag from `registry`. It wraps with `Object.create`, so it suits registries whose methods read no `#private`
+ * field.
  */
 function holdWrite(
   registry: IRegistryDriver,
@@ -157,10 +157,6 @@ function holdWrite(
     }
     return out;
   };
-  // The wrapper overrides both write methods and forwards `options` to them, so it reports as `registry` does.
-  Object.defineProperty(held, 'reportsWriteTokens', {
-    value: registry.reportsWriteTokens === true,
-  });
   held.create = (ref, rec, options) =>
     wrap(rec.currentGen, () => registry.create(ref, rec, options));
   held.compareAndSwap = (ref, token, patch, options) =>
@@ -395,7 +391,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
     });
   });
 
-  describe('an own write that landed, then a write that renews the pointerId without moving the pointer, is read as not its own', () => {
+  describe("an own write that landed, then a write that renews the row's pointerId over it, is read as not its own", () => {
     // The trade this check makes: once a write has renewed the row's `pointerId` over the call's own landed write, the
     // call cannot tell its write from another load's of that number. It reports none published, though its generation
     // may be current, and deletes nothing; a re-run publishes a new generation.
@@ -456,7 +452,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       });
     });
 
-    it('a load, then a rollback onto its generation: superseded, nothing deleted, a re-run publishes', async () => {
+    it('a load, then a rollback that moved the pointer off its generation and back: superseded, nothing deleted, a re-run publishes', async () => {
       await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
       const lGate = gate();
       const lAudit = new RecordingAuditSink();
@@ -487,7 +483,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       });
     });
 
-    it('an erasure rewrite, then a rollback onto its generation: erased false, no rewrite audited, nothing deleted, a re-run erases', async () => {
+    it('an erasure rewrite, then a rollback that moved the pointer off its generation and back: erased false, no rewrite audited, nothing deleted, a re-run erases', async () => {
       await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
       const g = gate();
       const audit = new RecordingAuditSink();
@@ -516,6 +512,8 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       expect(await gens(storage)).toEqual(expect.arrayContaining([0, 1]));
       await expectIntact([5]);
       expect(await eraseIdFromSegment(REF, 9, deps)).toMatchObject({ erased: true });
+      // The re-run deletes the generation that held the id.
+      expect(await gens(storage)).not.toContain(0);
     });
   });
 });
@@ -701,10 +699,10 @@ describe('a publish whose attempts run out on conflicts', () => {
   const key = { ...REF, generation: 1 };
 
   /**
-   * A registry whose compare-and-swap loses on every attempt, as a wrapper that overrides it and declares the flag
-   * beside it, forwarding `options` where it means to report. On the last attempt another writer's write puts the
-   * pointer at this number, and `onLast` says what the wrapper does then: lands the call's own write (through
-   * `options`), or another writer's (without them). An earlier attempt may end without an answer first.
+   * A registry whose compare-and-swap loses on every attempt, as a wrapper over `base` that overrides it and inherits
+   * its flag (`reports`: from `base`, else off). On the last attempt a write puts the pointer at this number, and
+   * `onLast` says whose: the call's own (through `options`), or another writer's (without them). An earlier attempt
+   * may end without an answer first.
    */
   function exhausting(
     base: IRegistryDriver,
@@ -712,8 +710,7 @@ describe('a publish whose attempts run out on conflicts', () => {
     onLast: 'own' | 'another',
     unansweredFirst = false,
   ): { registry: IRegistryDriver; attempts: () => number } {
-    const registry = Object.create(base) as IRegistryDriver;
-    Object.defineProperty(registry, 'reportsWriteTokens', { value: reports });
+    const registry = Object.create(reports ? base : withoutTokenReports(base)) as IRegistryDriver;
     let attempts = 0;
     registry.compareAndSwap = async (ref, token, patch, options) => {
       attempts += 1;
@@ -775,12 +772,14 @@ describe('a publish whose attempts run out on conflicts', () => {
   );
 });
 
-describe('a registry that overrides a write method declares the flag beside it, or is settled by the object', () => {
+describe('a registry that overrides a write method: forwarding options settles by token, dropping them reads its own write as not its own', () => {
   /**
-   * Registries that land a write and then answer it as a conflict, the shape of a replay that met its own write:
-   * a subclass and an `Object.create` wrapper of the in-memory registry, each overriding a write method
-   * (`compareAndSwap`, or `create` for a publish onto no row), each either declaring `reportsWriteTokens` beside it and
-   * forwarding `options`, or neither. A landed write is the call's own (`options` forwarded) or another writer's (not).
+   * Registries that land a write and then answer it as a conflict, the shape of a replay that met its own write: a
+   * subclass and an `Object.create` wrapper of the in-memory registry, each overriding a write method
+   * (`compareAndSwap`, or `create` for a publish onto no row). Each forwards `options` to the write it lands (the
+   * call's own write, so the row's `pointerId` is a token the call was told) or drops them (a write the call was not
+   * told of), and keeps the inherited flag or sets it `false`. A landed write is the call's own when `options` were
+   * forwarded and another writer's when not.
    */
   class Dropping extends MemoryRegistryDriver {
     override async compareAndSwap(
@@ -794,9 +793,6 @@ describe('a registry that overrides a write method declares the flag beside it, 
   }
   class Forwarding extends MemoryRegistryDriver {
     landing: 'own' | 'another' = 'own';
-    override get reportsWriteTokens(): true {
-      return true;
-    }
     override async compareAndSwap(
       ref: SegmentRef,
       expected: string,
@@ -824,9 +820,6 @@ describe('a registry that overrides a write method declares the flag beside it, 
   }
   class ForwardingCreate extends MemoryRegistryDriver {
     landing: 'own' | 'another' = 'own';
-    override get reportsWriteTokens(): true {
-      return true;
-    }
     override async create(
       ref: SegmentRef,
       record: Parameters<MemoryRegistryDriver['create']>[1],
@@ -836,16 +829,61 @@ describe('a registry that overrides a write method declares the flag beside it, 
       throw new WriteConflictError('the answer was a conflict');
     }
   }
+  /**
+   * A registry of one's own, by composition, that declares the flag as a class field (`readonly reportsWriteTokens =
+   * true`, an instance field rather than a getter on the prototype) and forwards `options`.
+   */
+  class FieldFlag implements IRegistryDriver {
+    readonly reportsWriteTokens = true;
+    landing: 'own' | 'another' = 'own';
+    private readonly inner = new MemoryRegistryDriver();
+    capabilities() {
+      return this.inner.capabilities();
+    }
+    get(ref: SegmentRef) {
+      return this.inner.get(ref);
+    }
+    async create(
+      ref: SegmentRef,
+      record: Parameters<MemoryRegistryDriver['create']>[1],
+      options?: Parameters<MemoryRegistryDriver['create']>[2],
+    ): Promise<{ token: string }> {
+      await this.inner.create(ref, record, this.landing === 'own' ? options : undefined);
+      throw new WriteConflictError('the answer was a conflict');
+    }
+    async compareAndSwap(
+      ref: SegmentRef,
+      expected: string,
+      patch: Parameters<MemoryRegistryDriver['compareAndSwap']>[2],
+      options?: Parameters<MemoryRegistryDriver['compareAndSwap']>[3],
+    ): Promise<{ token: string }> {
+      await this.inner.compareAndSwap(
+        ref,
+        expected,
+        patch,
+        this.landing === 'own' ? options : undefined,
+      );
+      throw new WriteConflictError('the answer was a conflict');
+    }
+    list(namespace?: string) {
+      return this.inner.list(namespace);
+    }
+    delete(ref: SegmentRef, expected?: string) {
+      return this.inner.delete(ref, expected);
+    }
+  }
+  /** An `Object.create` wrapper over a memory registry: it forwards `options` (or not), and inherits the flag (or sets it off). */
   function wrapper(
-    declares: boolean,
+    forwards: boolean,
+    flag: boolean,
     landing: 'own' | 'another',
     method: 'compareAndSwap' | 'create' = 'compareAndSwap',
   ): IRegistryDriver {
     const base = new MemoryRegistryDriver();
     const out = Object.create(base) as IRegistryDriver;
-    if (declares) Object.defineProperty(out, 'reportsWriteTokens', { value: true });
+    if (!flag) Object.defineProperty(out, 'reportsWriteTokens', { value: false });
     const pass = <T>(options: T | undefined): T | undefined =>
-      declares && landing === 'own' ? options : undefined;
+      forwards && landing === 'own' ? options : undefined;
     if (method === 'create') {
       out.create = async (ref, record, options) => {
         await base.create(ref, record, pass(options));
@@ -859,67 +897,114 @@ describe('a registry that overrides a write method declares the flag beside it, 
     }
     return out;
   }
+  /** A registry with the flag set `false` on the instance. */
+  const flagOff = <T extends IRegistryDriver>(registry: T): T => {
+    Object.defineProperty(registry, 'reportsWriteTokens', { value: false });
+    return registry;
+  };
   const forwarding = (landing: 'own' | 'another'): IRegistryDriver => {
     const r = new Forwarding();
     r.landing = landing;
     return r;
   };
-
   const forwardingCreate = (landing: 'own' | 'another'): IRegistryDriver => {
     const r = new ForwardingCreate();
     r.landing = landing;
     return r;
   };
+  const fieldFlag = (landing: 'own' | 'another'): IRegistryDriver => {
+    const r = new FieldFlag();
+    r.landing = landing;
+    return r;
+  };
 
-  /** The variant, how it is made, whether the publish settles by tokens, and whether the publish is onto no row. */
+  /**
+   * How the publish settles a write that landed and was answered as a conflict: `token` (the flag is on and `options`
+   * are forwarded, so the row's `pointerId` is a token the call was told), `dropped` (the flag is on and `options` are
+   * dropped, so the call was told none and reads its own landed write as not its own), or `footer` (the flag is off,
+   * so the object under the number decides).
+   */
+  type Settles = 'token' | 'dropped' | 'footer';
+  /** The variant, how it is made, how its writes are settled, and whether the publish is onto no row. */
   type Variant = readonly [
     string,
     (landing: 'own' | 'another') => IRegistryDriver,
-    boolean,
+    Settles,
     boolean,
   ];
   const VARIANTS: readonly Variant[] = [
-    ['a subclass that declares the flag and forwards options', forwarding, true, false],
+    ['a subclass that forwards options and keeps the flag', forwarding, 'token', false],
     [
-      'an Object.create wrapper that declares the flag and forwards options',
-      (l) => wrapper(true, l),
-      true,
+      'an Object.create wrapper that forwards options and keeps the flag',
+      (l) => wrapper(true, true, l),
+      'token',
       false,
     ],
     [
-      'a subclass that overrides without declaring it, and drops options',
-      () => new Dropping(),
+      'a registry of its own with the flag as a class field, forwarding options',
+      fieldFlag,
+      'token',
       false,
+    ],
+    ['a subclass that drops options and keeps the flag', () => new Dropping(), 'dropped', false],
+    [
+      'an Object.create wrapper that drops options and keeps the flag',
+      (l) => wrapper(false, true, l),
+      'dropped',
       false,
     ],
     [
-      'an Object.create wrapper that overrides without declaring it',
-      (l) => wrapper(false, l),
-      false,
+      'a subclass that drops options and sets the flag false',
+      () => flagOff(new Dropping()),
+      'footer',
       false,
     ],
     [
-      'create: a subclass that declares the flag and forwards options',
+      'an Object.create wrapper that drops options and sets the flag false',
+      (l) => wrapper(false, false, l),
+      'footer',
+      false,
+    ],
+    [
+      'create: a subclass that forwards options and keeps the flag',
       forwardingCreate,
-      true,
-      true,
-    ],
-    [
-      'create: an Object.create wrapper that declares the flag and forwards options',
-      (l) => wrapper(true, l, 'create'),
-      true,
+      'token',
       true,
     ],
     [
-      'create: a subclass that overrides without declaring it, and drops options',
+      'create: an Object.create wrapper that forwards options and keeps the flag',
+      (l) => wrapper(true, true, l, 'create'),
+      'token',
+      true,
+    ],
+    [
+      'create: a registry of its own with the flag as a class field, forwarding options',
+      fieldFlag,
+      'token',
+      true,
+    ],
+    [
+      'create: a subclass that drops options and keeps the flag',
       () => new DroppingCreate(),
-      false,
+      'dropped',
       true,
     ],
     [
-      'create: an Object.create wrapper that overrides without declaring it',
-      (l) => wrapper(false, l, 'create'),
-      false,
+      'create: an Object.create wrapper that drops options and keeps the flag',
+      (l) => wrapper(false, true, l, 'create'),
+      'dropped',
+      true,
+    ],
+    [
+      'create: a subclass that drops options and sets the flag false',
+      () => flagOff(new DroppingCreate()),
+      'footer',
+      true,
+    ],
+    [
+      'create: an Object.create wrapper that drops options and sets the flag false',
+      (l) => wrapper(false, false, l, 'create'),
+      'footer',
       true,
     ],
   ];
@@ -930,7 +1015,7 @@ describe('a registry that overrides a write method declares the flag beside it, 
     ownObject: boolean,
     noRow: boolean,
   ): Promise<boolean> => {
-    if (!noRow) await registry.create(REF, { currentGen: 0 });
+    if (!noRow) await registry.create(REF, { currentGen: 0 }).catch(() => undefined);
     return publishGeneration(
       registry,
       { ...REF, generation: noRow ? 0 : 1 },
@@ -938,17 +1023,22 @@ describe('a registry that overrides a write method declares the flag beside it, 
     );
   };
 
-  describe.each(VARIANTS)('%s', (_name, make, reports, noRow) => {
-    it('a write of its own that landed, then answered as a conflict, is published', async () => {
-      expect(await publishOver(make('own'), true, noRow)).toBe(true);
-    });
+  describe.each(VARIANTS)('%s', (_name, make, settles, noRow) => {
+    it(
+      settles === 'dropped'
+        ? 'a write of its own that landed, then answered as a conflict, is read as not its own: not published'
+        : 'a write of its own that landed, then answered as a conflict, is published',
+      async () => {
+        expect(await publishOver(make('own'), true, noRow)).toBe(settles !== 'dropped');
+      },
+    );
 
     it(
-      reports
-        ? "another writer's write that landed is not the call's own, whatever the object's footer says"
-        : "it is settled by the object's footer, which can pass another writer's identical object",
+      settles === 'footer'
+        ? "it is settled by the object's footer, which can pass another writer's identical object"
+        : "another writer's write that landed is not the call's own, whatever the object's footer says",
       async () => {
-        expect(await publishOver(make('another'), true, noRow)).toBe(!reports);
+        expect(await publishOver(make('another'), true, noRow)).toBe(settles === 'footer');
       },
     );
 
@@ -957,18 +1047,42 @@ describe('a registry that overrides a write method declares the flag beside it, 
     });
   });
 
-  it('a load over a subclass that drops options publishes its own landed write, by the footer', async () => {
-    const registry = new Dropping();
+  /** A load of ids onto a row at generation 0 through `registry`, and what the bucket and the row hold after it. */
+  async function loadOver(registry: IRegistryDriver) {
     const storage = new MemoryStorageDriver();
     const deps = { storage, registry, codec: roaringCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const audit = new RecordingAuditSink();
-    expect(
-      await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1, audit }),
-    ).toMatchObject({
-      generation: 1,
-      published: true,
-    });
+    const result = await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1, audit });
+    return { result, audit, storage };
+  }
+
+  it('a load over a subclass that forwards options publishes its own landed write, by token', async () => {
+    const { result, audit } = await loadOver(new Forwarding());
+    expect(result).toMatchObject({ generation: 1, published: true });
     expect(kinds(audit)).toEqual(['segment.publish']);
+  });
+
+  it('a load over a subclass that drops options and sets the flag false publishes its own landed write, by the footer', async () => {
+    const { result, audit } = await loadOver(flagOff(new Dropping()));
+    expect(result).toMatchObject({ generation: 1, published: true });
+    expect(kinds(audit)).toEqual(['segment.publish']);
+  });
+
+  it('a load over a subclass that drops options and keeps the flag reads its own landed write as superseded, and deletes nothing', async () => {
+    const registry = new Dropping();
+    const { result, audit, storage } = await loadOver(registry);
+    expect(outcome(result)).toEqual({ published: false, reason: 'superseded' });
+    expect(kinds(audit)).toEqual(['segment.load-refused']);
+    // The generation it wrote is current, still in the bucket, and reads; the one it superseded was not evicted.
+    expect((await registry.get(REF))!.currentGen).toBe(1);
+    expect(await gens(storage)).toEqual([0, 1]);
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: 0 },
+      seams: { clock },
+    });
+    expect(await store.segment(REF.segment).has(4)).toBe(true);
+    expect(await store.segment(REF.segment).has(8)).toBe(true);
   });
 });

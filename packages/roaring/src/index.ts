@@ -1174,10 +1174,12 @@ export class CloudRoaring {
     // without an assertion. `'superseded'` only ever accompanies `published: false` anyway.
     const reason = result.reason;
     if (reason === 'superseded') {
-      // The object is durable, but a concurrent writer published a higher generation of `dest` between our
-      // numbering and our publish, so ours is an orphan no reader will resolve. Returning it here would name
-      // `generation` as "the destination's new current generation" — which is what `MaterializeResult`
-      // documents it to be, and it would be false. The destination holds someone else's content.
+      // The object is durable, but this call's write may not be the one that made it current: a concurrent writer
+      // published a higher generation of `dest` between our numbering and our publish, or a write that renewed the
+      // row over ours left us unable to tell it from another writer's. Ours may then be an orphan no reader will
+      // resolve. Returning it here would name `generation` as "the destination's new current generation" — which is
+      // what `MaterializeResult` documents it to be, and it could be false. The destination may hold someone else's
+      // content.
       //
       // A throw rather than a flag: every other write path in the library reports a lost race loudly, and a
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
@@ -1198,7 +1200,7 @@ export class CloudRoaring {
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
-          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
+          `result may not be the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
           `(a retention policy does either), dropped or purged. Re-read the destination and re-run.`,
       );
     }
