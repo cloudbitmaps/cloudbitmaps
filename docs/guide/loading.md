@@ -1453,6 +1453,12 @@ the rollback puts the pointer back and throws `NotFoundError`. A delete that lan
 reports success over an object that is gone. Below the pointer that is an ordinary rollback onto a generation a
 collection is taking; above it, a rollback with `allowForward` onto an erasure's holder or a refused load's own object.
 
+**An erasure takes what it will delete out of the row's ledger first.** Before its first delete, in one write after its
+search, it removes from the row's ledger of known generations each holder it will delete by name and every name below the
+pointer that its collection will delete ([what the write is, and its races](erasure.md#how-it-stays-correct)). Its
+collections then spare every generation the row names when they read the row before a delete, so they never delete what
+a load or a rollback has since made known, so a generation the call deletes is one the row no longer names.
+
 **Nothing can restore a deleted object, so the deleting call detects it.** Every read of the row it makes after a
 delete, and one more read after its last delete when nothing read the row since, is held to what it deleted. A row of
 the same incarnation whose pointer names one of those generations, with no object under that number, is the state: one

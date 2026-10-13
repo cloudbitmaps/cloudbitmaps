@@ -101,7 +101,10 @@ of the window by name and lists the bucket only when it cannot rely on the row.
 - **A rollback carries it**, moving its target to the end with the checksum of the footer it read, keeping every
   generation the row's leases name when it trims a full ledger, and writes none over a row that had none: a rollback
   never starts a ledger.
-- **An erasure's rewrite leaves itself alone in it**, since it deletes every older generation; a shred removes it.
+- **An erasure's rewrite leaves itself alone in it**, since it deletes every older generation; a shred removes it. An
+  erasure that does not rewrite takes each generation it will delete out of the ledger first, in one write made after
+  its search and before its first delete, only when the ledger names one (`erase-id.ts`'s fence); its collections then
+  spare every generation the row names when they read the row before a delete.
 - **Caps**: a writer writes at most 192 entries and keeps an entry nothing protects only while the ledger holds fewer
   than 128; the registry accepts 192 written and 384 read, so no publish or rollback is refused for the ledger's size.
 - **Errors**: a malformed ledger is `ValidationError` on a write and `IntegrityError` on a read; a ledger that disagrees

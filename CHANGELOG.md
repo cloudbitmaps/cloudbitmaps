@@ -118,6 +118,27 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **An erasure takes every generation it will delete out of the row's ledger of known generations before it deletes
+  anything.** A rewrite already published a ledger of itself alone. An erasure that finds the id only in an older
+  generation, or above the pointer, now writes the row once, after its search and before its first delete, to remove
+  from `knownGens` each holder it will delete by name and every name below the pointer its collection will delete (the
+  current generation stays). Its `keep: 0` collections then spare every generation the row names when they read the row
+  before a delete, so a generation a load or a rollback has made known since is not deleted. Documented behaviour that
+  changes:
+  - An erasure of an id held only by an older generation, on a row whose ledger names it, writes the row once where it
+    wrote nothing, and reads it once more. At an object-store registry on the in-memory backend: 7 reads and 1 write
+    where it was 5 and none (6 and none when the ledger names nothing to delete). The write moves the row's token, so a
+    load running on that segment at that moment is refused (`superseded`: load again), and it leaves a timing signal in
+    the registry (see `PRIVACY.md`). An erasure that rewrites the current generation costs what it did.
+  - A load that publishes while an erasure is searching and holds only older generations, below its pointer, no longer
+    has the generation it superseded deleted: the erasure keeps it, since the load's window names it, and still reports
+    `erased: true` with every holder gone.
+  - An erasure whose write to the row loses five times in a row to other writers reports `superseded` with nothing
+    deleted, where it used to delete and report `erased: true`: a re-run settles it. It is an outcome to expect only on a
+    segment that is written many times a second.
+  - Two erasures of different ids on one segment, and an erasure that meets a load, answer as before; a row that is gone
+    mid-call never gets `absent` while a holder is in the bucket, the call throws as before.
+
 - **A cold open of a cleartext generation reads its whole tail in one request, however wide its index.** The row's
   summary records how many bytes of the object's end an open needs (`tailBytes`: its extension block, its index and its
   footer), and a cold open now sizes its tail read from it. A segment whose index is longer than the 256 KiB default
