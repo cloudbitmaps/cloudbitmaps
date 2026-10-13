@@ -41,6 +41,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/erase-discard-retaken-number.test.ts',
   'tests/core/erase-discard-identical-bytes.test.ts',
   'tests/core/erase-discard-fault.test.ts',
+  'tests/core/erase-fence-licence.test.ts',
   'tests/core/erase-own-key-metadata-corrupt.test.ts',
   'tests/core/erase-sealed-does-not-stop-scan.test.ts',
   'tests/core/erase-sealed-only-order.test.ts',

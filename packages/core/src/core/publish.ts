@@ -134,6 +134,13 @@ interface PublishOptions {
    */
   expectRow?: RegistryRecord | null;
   /**
+   * Fields of `expectRow` that a row may also differ in, beside its leases, without the fence refusing: a write that
+   * changed only those did not touch what the caller derived its content from. An erasure's rewrite passes `knownGens`,
+   * since another erasure's removal of generations from the ledger leaves the generation it streamed alone. A write that
+   * also renewed the row's `pointerId` still refuses.
+   */
+  expectRowIgnores?: readonly (keyof RegistryRecord)[];
+  /**
    * Publish only while the segment still has **no registry row**.
    *
    * The fence for a caller whose decision rests on the row being ABSENT: every load that found no row sets it,
@@ -365,7 +372,7 @@ export async function publishGenerationKept(
           record !== null &&
           held != null &&
           record === waited &&
-          onlyLeasesDiffer(held, record)
+          onlyLeasesDiffer(held, record, options.expectRowIgnores)
         ) {
           // Only leases changed since the caller read the row, and the wait is done: the fence holds, on this fresh row.
           throughChurn = true;
@@ -374,7 +381,7 @@ export async function publishGenerationKept(
           const settled =
             record === waited
               ? undefined
-              : await churn.settle(held, record, () => registry.get(key));
+              : await churn.settle(held, record, () => registry.get(key), options.expectRowIgnores);
           if (settled !== undefined) {
             waited = settled.row;
             fresh = settled.row;
