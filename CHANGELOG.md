@@ -11,14 +11,16 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-10-13
+
 ### Breaking
 
 - **Registry rows are schema 5, and a store moves to 0.21 by loading its segments into a new prefix.** Every row 0.21
   writes is stamped `schemaVersion: 5`. It carries `knownGens`, below, in place of `keptGens`, and its summary records
   `tailBytes`. 0.21 reads rows stamped 5 only. A row stamped 1 to 4 is refused with `UnsupportedError`, naming its key
   and these steps, by every read and write of it and by every `list()` that reaches it, so one such row stops each
-  fleet-wide call that lists its namespace. A 0.20 process refuses a schema-5 row the same way. There is no upgrade in
-  place and no downgrade. Move each store:
+  fleet-wide call that lists its namespace. A 0.20 process refuses a schema-5 row with `UnsupportedError` too, as newer
+  than it reads. There is no upgrade in place and no downgrade. Move each store:
   1. With the release that wrote the rows (0.20 for schema 4), export every segment (`store.exportSegments`,
      [the export guide](docs/guide/export.md)). Save beside each file the row's whole `retention` and `residency`
      objects, read from `backend.registry` (`get`, or `list` for a namespace), keys of your own included. If you load
@@ -40,26 +42,29 @@ so, and so do the module headers in the code.
 - **A registry of your own stores `knownGens`, and a summary records `tailBytes`.** `RegistryRecord.keptGens` is gone.
   `knownGens` lists `{ generation, footerCrc }` for the generations the row's loads and rollbacks made current and no
   collection or erasure has since removed: the current one, the `keep` most recently current generations below it, the
-  generations a live lease holds, and the generations a rollback left above the pointer. When a publish over a row with no usable ledger seeds one, it also lists the
-  generations a count by `keep` keeps in the bucket, which can include an object no load published (an orphan or a
-  stray): an entry says the library knows the generation and its footer checksum, not that a load published it. Its rules:
+  generations a live lease holds, and the generations a rollback left above the pointer. When a publish over a row with
+  no usable ledger seeds one, it also lists the generations a count by `keep` keeps in the bucket, which can include an
+  object no load published (an orphan or a stray): an entry says the library knows the generation and its footer
+  checksum, not that a load published it. Its rules:
   - In the order the generations were made current, oldest first and the current one last; a rollback onto a generation
     moves it to the end. Stored in the order given: a registry that sorts it loses that order with no error.
-  - At most 192 entries written and 384 read, in the clear on every row, an encrypted one included. The entries above the
-    pointer show anyone who reads the registry that a rollback happened, and from which generation.
+  - At most 192 entries written and 384 read, in the clear on every row, an encrypted one included. The entries above
+    the pointer show anyone who reads the registry that a rollback happened, and from which generation.
   - A patch that changes `currentGen` without naming it drops it, like `summary`.
-  - The shipped registries refuse, with `ValidationError`, a list that repeats a generation, is empty, sits on a row with no
-    pointer, ends with anything but the row's `currentGen`, or whose last entry's checksum disagrees with a clear summary's
-    fingerprint.
+  - The shipped registries refuse, with `ValidationError`, a list that repeats a generation, is empty, sits on a row
+    with no pointer, ends with anything but the row's `currentGen`, or whose last entry's checksum disagrees with a
+    clear summary's fingerprint.
 
   A clear `RegistrySummary` gains `tailBytes`, and a sealed one seals it after the checksum, so a sealed summary is at
   least 52 bytes. A rollback onto an object with bytes between its index and its footer, which only another writer
   makes, writes no summary when its tail is more than a summary records (8,392,820 bytes). The conformance suite holds a
-  driver to each rule. A registry that drops `knownGens` is correct: the next load over each row lists the bucket and writes the ledger again.
+  driver to each rule. A registry that drops `knownGens` is correct: the next load over each row lists the bucket and
+  writes the ledger again.
 - **A pin's `fingerprint` is required.** `PinnedAt.fingerprint` is `string | null` (`null` only when `generation` is
-  `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A pin of a generation built without a
-  string `version` and `fingerprint` is refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and
-  by a pinned read of `CrbmStorageChunkSource`, and `CrbmStorageChunkSource.pinGenerationAt` refuses one without a
+  `null`) and `PinnedObject.fingerprint` is `string`; `seg.pin()` records one. A `PinnedAt` or `PinnedObject` you build
+  or store yourself carries the `fingerprint` that `seg.pin()` returns. A pin of a generation built without a string
+  `version` and `fingerprint` is refused with a `ValidationError` by the `PinnedStorageChunkSource` constructor and by a
+  pinned read of `CrbmStorageChunkSource`, and `CrbmStorageChunkSource.pinGenerationAt` refuses one without a
   fingerprint before it reads the row or takes a lease.
 
 - **A bucket or container that does not exist is a `ValidationError` on every cloud driver.** It names the bucket or
@@ -74,6 +79,8 @@ so, and so do the module headers in the code.
   branch on `published`, and check `store.generations(ref)` before acting, as the entry under Fixed on a rollback that
   lands while a delete runs says.
 
+- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
+  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
 - **A combine refuses an operand that is not a segment of a compatible copy of `@cloudbitmaps/roaring`, a segment from
   an earlier release included.** The refusal is a `ValidationError` before any request: an `*Into` call rejects with
   it, and `intersect`, `union` and `andNot` throw it when their stream is first read, as they do their other errors. A
@@ -81,58 +88,90 @@ so, and so do the module headers in the code.
   taken by `intersect`, `union`, `andNot` and the `*Into` verbs when it carries the same versioned brand as this copy,
   as every copy of the same release does; `materializeMany` takes only a segment of its own copy. Install one version
   of `@cloudbitmaps/roaring`.
-- **`rollback` moves only onto a generation the segment's row knows, and `allowUnknown` replaces `allowForward`.** This is
-  a breaking change to the option, with no alias: a call that passes `allowForward` is refused by the option check, and
-  `CloudRoaring.rollback` and `rollbackSegment` take `allowUnknown` in its place. The row's `knownGens` records the
-  generations its loads and rollbacks made current, each with the footer checksum of its object, and a rollback is held to it:
+- **`rollback` moves only onto a generation the segment's row knows, and `allowUnknown` replaces `allowForward`.** This
+  is a breaking change to the option, with no alias: `CloudRoaring.rollback` refuses `allowForward` with its option
+  check, `rollbackSegment` ignores it, and both take `allowUnknown` in its place. The row's `knownGens` records the
+  generations its loads and rollbacks made current, each with the footer checksum of its object, and a rollback is held
+  to it:
   - A target the row does not know is refused with `ValidationError` before any request to storage. That covers a
     crashed or refused load's object, one sealed under a key no row holds, and a load published after the point a
     registry was restored to. Before, such a target below the pointer moved with no flag, and above it needed
     `allowForward`.
   - A target whose object is not the one the row recorded is refused with `IntegrityError`, with or without a keystore,
     unless `allowUnknown` is passed. Its footer checksum is compared before the object is opened, which needs no key, so
-    another object under a known number reports as that, not as a failed decryption. Only the footer's bytes are compared:
-    damage inside an object whose footer is intact, and a change of a cleartext object's metadata that keeps the footer's
-    bytes, are not seen (a read of the generation reports the first).
+    another object under a known number reports as that, not as a failed decryption. Only the footer's bytes are
+    compared: damage inside an object whose footer is intact, and a change of a cleartext object's metadata that keeps
+    the footer's bytes, are not seen (a read of the generation reports the first).
   - A generation a rollback left above the pointer is a known target and needs no flag, until a load numbers above it; a
     load that takes a free number below it keeps it known, while the list holds fewer than 128 entries. So is one that a
-    lease holds, as "Lease each generation as it lands" in the loading guide describes. A known target needs no key, on an
-    encrypted segment too, forward or back: the checksum vouches for it.
-  - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known (over a usable record; a row with none stays without one). On an
-    encrypted segment, outside the two cases below that the pointer alone decides, it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is audited:
-    `segment.rollback` carries `unknown: true`.
+    lease holds, as "Lease each generation as it lands" in the loading guide describes. A known target needs no key, on
+    an encrypted segment too, forward or back: the checksum vouches for it.
+  - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known (over a
+    usable record; a row with none stays without one). On an encrypted segment, outside the two cases below that the
+    pointer alone decides, it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is
+    audited: `segment.rollback` carries `unknown: true`.
   - **Two cases are decided by the pointer alone**: a target below the pointer needs no flag, no key and no checksum
     check, and the event carries `unknown: true`; above the pointer both need `allowUnknown`.
     - **A row with no usable `knownGens`** (a registry of your own that drops the field, or a pointer you moved with
       `backend.registry.compareAndSwap` as a repair, which drops it) gets none of the checks above.
     - **A target below a full list's bound.** An `*Into` or `materializeMany` destination keeps every generation in the
-      bucket, but its row knows only the 128 most recently current, and any a lease holds; the same holds for a load with a
-      `keep` above 127. A list of 128 entries or more (leased ones included) is full, and its bound is its least recently
-      current entry that no lease names. A rollback below the pointer onto a number below the bound needs no flag and no
-      checksum check, as in 0.20, and records `unknown: true`. After a rollback onto an old generation that no lease names,
-      that generation is the least recently current entry and so the bound: until the next publish drops it, the
-      generations numbered between it and the rest of the list need `allowUnknown`, and the key on an encrypted segment. At
-      a `keep` of 128 or more that collects by listing, an object a crashed load left in a freed number below the bound can
-      be rolled onto with no check, as in 0.20.
+      bucket, but its row knows only the 128 most recently current, and any a lease holds; the same holds for a load
+      with a `keep` above 127. A list of 128 entries or more (leased ones included) is full, and its bound is its least
+      recently current entry that no lease names. A rollback below the pointer onto a number below the bound needs no
+      flag and no checksum check, as in 0.20, and records `unknown: true`. After a rollback onto an old generation that
+      no lease names, that generation is the least recently current entry and so the bound: until the next publish drops
+      it, the generations numbered between it and the rest of the list need `allowUnknown`, and the key on an encrypted
+      segment. At a `keep` of 128 or more that collects by listing, an object a crashed load left in a freed number
+      below the bound can be rolled onto with no check, as in 0.20.
   - **A residue:** a generation that a publish with a smaller `keep` no longer names but that stays in the bucket (a
-    lease spared it, or its delete failed), while the list is not full, needs `allowUnknown`, and the key on an encrypted
-    segment, until a later listing collects it.
-  - Rolling to the generation already current reads its footer once, in place of a zero-byte read: an object missing is
-    `NotFoundError` as it was, another footer than the row recorded under the number is `IntegrityError`, where it was
-    reported as a no-op, and so is a current footer that fails its own checks (`.crbm` footer CRC mismatch), which a no-op
-    did not look at. After the swap a rollback reads the target's footer once, in place of listing the bucket, and puts
-    the pointer back if the object is gone or is another: a known target costs 4 requests (the row, the target's tail, the
-    swap, its footer) where it cost 5, or 6 above the pointer, and an unknown one is refused after 1.
+    lease spared it, or its delete failed), while the list is not full, needs `allowUnknown`, and the key on an
+    encrypted segment, until a later listing collects it.
+  - Rolling to the generation already current reads its footer once, where 0.20.0 read nothing and answered a no-op: an
+    object missing is `NotFoundError` naming the generations in the bucket, another footer than the row recorded under
+    the number is `IntegrityError`, and so is a current footer that fails its own checks (`.crbm` footer CRC mismatch);
+    a fault of that read is thrown. Re-running a rollback over a pointer that names a missing object no longer answers
+    success while every read fails. After the swap a rollback reads the target's footer once, in place of listing the
+    bucket, and puts the pointer back if the object is gone or is another: a known target costs 4 requests (the row, the
+    target's tail, the swap, its footer) where it cost 5, or 6 above the pointer, and an unknown one is refused after 1.
   - `store.generations(ref)` marks each generation `known`, so an operator sees which targets need no flag.
   - A storage driver must answer a read of a deleted object with `NotFoundError` from the moment its delete returns: the
     footer read after the swap takes a read that succeeds as proof that the object is there. The conformance suite holds
     a driver to it.
   - An erasure takes every generation it will delete out of the row's `knownGens` before it deletes (a rewrite leaves
     only itself in it), so a rollback without `allowUnknown` cannot bring an erased generation back, even when a delete
-    fails and the erasure ends with an `error:` note or `'superseded'`, until the erasure is re-run. The exception is where
-    the pointer alone decides: a row with no usable `knownGens`, or a number below a full list's bound (both above).
+    fails and the erasure ends with an `error:` note or `'superseded'`, until the erasure is re-run. The exception is
+    where the pointer alone decides: a row with no usable `knownGens`, or a number below a full list's bound (both
+    above).
   Move `allowForward` to `allowUnknown` only where the target is one the row does not know: a rollback that undoes an
   earlier rollback needs no flag at all.
+
+- **Some options and inputs that 0.20.0 took are refused with `ValidationError`.** Each is refused when the call is
+  made, or when the store, driver or source is built, and the error names the option:
+  - `maxScanSegments` (`retireExpired`, `runConsistencyCheck`, `eraseNamespace`) must be a whole number, where 0.20.0
+    took any finite number of at least 1. Pass `Math.floor(n)`.
+  - A whole-number option of 2^53 or more, such as a `retireExpired` `limit` of `Number.MAX_VALUE` or a `concurrency` of
+    `2 ** 53`, is refused. For no practical limit pass `Number.MAX_SAFE_INTEGER`.
+  - `retry.maxAttempts` must be a whole number (0.20.0 read `2.5` as 2), and `retry.maxDelayMs` must be at least
+    `retry.baseDelayMs`, which is 50 ms when you leave it out, so `retry: { maxDelayMs: 10 }` alone is refused. Leave
+    `maxDelayMs` out, or give it at least `baseDelayMs`. Left out, it is 2000 ms, or `baseDelayMs` when that is larger,
+    where 0.20.0 capped every delay at 2000 ms.
+  - `CrbmStorageChunkSource`'s `maxIndexBytes` must be a whole number above 0. `null`, which 0.20.0 read as the default,
+    `Infinity` and `NaN`, which turned the cap on an index off, and a fraction, are refused. So are zero and a negative
+    number, with which 0.20.0 built the source and then failed every read of a generation that holds ids with
+    `IntegrityError`. Leave it out for the default, 8 MiB.
+  - `MemoryStorage` and `LocalFsStorage` refuse an option they do not take (each takes `now`), which 0.20.0 ignored, and
+    `new LocalFsStorage('')`, which 0.20.0 rooted at the working directory. Name the root directory.
+  - `estimateCost` refuses a key it does not take at any level, and `groundedReport` one inside `workload` or `pricing`;
+    0.20.0 ignored them, so a segment `{ size: 1e9 }` was priced as 0 bytes and `workload: { readsPerSecond }` was
+    dropped. `estimateCost` also refuses a fractional segment `count`, which 0.20.0 rounded down. Remove the key, and
+    pass a whole `count`.
+
+- **A registry of your own that overrides `create` or `compareAndSwap` passes `options` through or sets
+  `reportsWriteTokens` to `false`.** A registry that subclasses a shipped one and does neither inherits
+  `reportsWriteTokens`, so it reads every write of its own that landed after an error or a lost answer as not its own
+  (`superseded`), and a publish deletes nothing (see `RegistryWriteOptions.onToken` under Added).
+- **`GenerationEntry.known` is required, and `IdStream` extends `IdIterator`.** A `GenerationEntry` you build yourself,
+  a test double say, sets `known`, and a stand-in for an `IdStream` needs `next`, `return` and `throw`.
 
 ### Added
 
@@ -151,18 +190,19 @@ so, and so do the module headers in the code.
   report. The registry conformance suite holds a registry that sets the flag to it, including that writers racing one
   write, all with the same body, each report a token the row carries only for the winner.
 
-- **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as `runConsistencyCheck`
-  and `store.checkConsistency`): holds every generation a row's ledger of known generations (`knownGens`) names, the
-  current one included, and the bucket has, to the footer checksum the ledger records. A generation whose object is not
-  the one recorded is reported as the new issue `known-generation-mismatch`, with the new `ConsistencyIssue.generation`
-  set; it means the object under that number is not the one the row recorded. It holds each object's footer to the
-  recorded checksum, so it finds another object, or bytes that are not a `.crbm`, under a known number; it does not find
-  damage inside an object whose footer is intact (a read of that generation reports it as `IntegrityError`), nor a
-  metadata change that keeps the footer's bytes. A segment adds at most 1 plus its ledger's length issues. A known
-  generation missing from the bucket is not reported, and a row with a pointer whose ledger is absent or fails
-  validation is counted in the new `ConsistencyReport.generationsUnchecked` and none of its objects is read. Each
-  generation the ledger names costs one 104-byte footer read, with no key and not retried (a failed one lands the
-  segment in `errored`): 2 per segment at `keep: 1`, and one request on S3 and GCS, two on Azure Blob. Off by default, and the default check makes the requests it made.
+- **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as
+  `runConsistencyCheck` and `store.checkConsistency`): holds every generation a row's ledger of known generations
+  (`knownGens`) names, the current one included, and the bucket has, to the footer checksum the ledger records. A
+  generation whose object is not the one recorded is reported as the new issue `known-generation-mismatch`, with the new
+  `ConsistencyIssue.generation` set; it means the object under that number is not the one the row recorded. It holds
+  each object's footer to the recorded checksum, so it finds another object, or bytes that are not a `.crbm`, under a
+  known number; it does not find damage inside an object whose footer is intact (a read of that generation reports it as
+  `IntegrityError`), nor a metadata change that keeps the footer's bytes. A segment adds at most 1 plus its ledger's
+  length issues. A known generation missing from the bucket is not reported, and a row with a pointer whose ledger is
+  absent or fails validation is counted in the new `ConsistencyReport.generationsUnchecked` and none of its objects is
+  read. Each generation the ledger names costs one 104-byte footer read, with no key and not retried (a failed one lands
+  the segment in `errored`): 2 per segment at `keep: 1`, and one request on S3 and GCS, two on Azure Blob. Off by
+  default; without it the check reads no footer.
 - **`CrbmReader.tailBytes`** (`@cloudbitmaps/core`, re-exported by `@cloudbitmaps/roaring`): the bytes of the object
   after its chunk payloads, that is its extension block when it has metadata, its index and its footer. A tail read of
   that many bytes reaches all of them. It is the object's size less where its payloads end, known at open with no
@@ -171,10 +211,10 @@ so, and so do the module headers in the code.
   `parseGenerationFromKey` build and read back the storage object layout every object-store driver shares
   (`<prefix><ns>/segments/<segment>.<gen>.crbm`); `refuseUnknownOptions`, `requirePositiveInt` and `requireBool` check a
   constructor's options and refuse a bad one with `ValidationError`; `isTransportFault` says whether an error is a
-  connection Node reports as failed or cut off, and `toTransient` hands a transient fault on as `TransientError` with the
-  fault as its cause; `concatBytes` joins byte chunks into one buffer that owns its bytes. The S3, GCS and Azure Blob
-  drivers are built on them, so their key layout, option checks and shared connection-fault codes are defined once, and a
-  third-party driver can use them the same way.
+  connection Node reports as failed or cut off, and `toTransient` hands a transient fault on as `TransientError` with
+  the fault as its cause; `concatBytes` joins byte chunks into one buffer that owns its bytes. The S3, GCS and Azure
+  Blob drivers are built on them, so their key layout, option checks and shared connection-fault codes are defined once,
+  and a third-party driver can use them the same way.
 - **`EngineDeps.sharesInvalidationsWith`** (`@cloudbitmaps/core`): another engine over the same chunk cache, whose
   invalidations the new engine shares, so an `invalidate` through either reaches a read already running on the other,
   and so do the requests in flight, which a cache miss on either joins. It is optional and opt-in: engines built over
@@ -193,31 +233,32 @@ so, and so do the module headers in the code.
   destination's current generation".
 
 - **An erasure takes every generation it will delete out of the row's ledger of known generations before it deletes
-  anything.** A rewrite already published a ledger of itself alone. An erasure that finds the id only in an older
-  generation, or above the pointer, now writes the row once, after its search and before its first delete, to remove
-  from `knownGens` each holder it will delete by name and every name below the pointer its collection will delete (the
-  current generation stays). Its `keep: 0` collections then spare every generation the row names when they read the row
-  before a delete, so they spare a generation a load or a rollback has made known since; the call takes such a name out
-  of the ledger again, below the generation it found current, before it deletes it. Documented behaviour that
-  changes:
-  - An erasure of an id held only by an older generation, on a row whose ledger names it, writes the row once where it
-    wrote nothing, and reads it once more. At an object-store registry on the in-memory backend: 7 reads and 1 write
-    where it was 5 and none; 6 and none when a usable ledger names nothing to delete; 7 and none on a row with no usable
-    ledger (5 and none in each case on main). The write moves the row's token, so a
-    load running on that segment at that moment is refused (`superseded`: load again), and it leaves a timing signal in
-    the registry (see `PRIVACY.md`). An erasure that rewrites the current generation costs what it did.
+  anything.** A rewrite publishes a ledger of itself alone. An erasure that finds the id only in an older generation now
+  writes the row once, after its search and before its first delete, to remove from `knownGens` each holder it will
+  delete by name and every name below the pointer its collection will delete (the current generation stays); one that
+  finds the id above the pointer wrote the row once in 0.20.0, to renew it, and that write now also takes the names out
+  of the ledger. Its `keep: 0` collections then spare every generation the row names when they read the row before a
+  delete, so they spare a generation a load or a rollback has made known since; the call takes such a name out of the
+  ledger again, below the generation it found current, before it deletes it. Documented behaviour that changes:
+  - An erasure of an id held only by an older generation, on a row whose ledger names it, writes the row once, where
+    0.20.0 wrote nothing. Counted at an object-store registry on the in-memory backend, it makes 7 registry reads and 1
+    write; 6 reads and no write when a usable ledger names nothing it deletes; and 7 reads and no write on a row with no
+    usable ledger. 0.20.0 made 4 reads and no write in each of these cases. The write moves the row's token, so a load
+    running on that segment at that moment is refused (`superseded`: load again), and it leaves a timing signal in the
+    registry (see `PRIVACY.md`). An erasure that rewrites the current generation makes 9 reads and 1 write, where 0.20.0
+    made 8 and 1.
   - A load that publishes while an erasure is searching and holds only older generations, below its pointer, no longer
     has the generation it superseded deleted: the erasure keeps it, since the load's window names it, and still reports
     `erased: true` with every holder gone.
   - An erasure of an id held only by older generations whose write to the row loses five times in a row to other
     writers reports `superseded` and deletes nothing, where it used to delete and report `erased: true`: a re-run
     settles it. It is an outcome to expect only on a segment that is written many times a second.
-  - When the collection spares a generation the row names again (a rollback onto a holder, or a load that kept it in its
-    window, after the write), the call writes the row again and collects again, so it still reports `erased: true`.
-  - Two erasures of different ids on one segment, one rewriting the current generation and the other pruning older ones,
-    both report `erased: true`: the rewrite's publish tolerates another erasure's removal of generations from the ledger.
-  - When every holder is below the pointer and the row is gone mid-call, the call throws and never answers `absent`
-    while a holder is in the bucket.
+  - The call writes the row again when the collection spares a generation the row names again (a rollback onto a holder,
+    or a load that kept it in its window, after the write), and collects again; it still reports `erased: true`, as in
+    0.20.0.
+
+  As in 0.20.0, two erasures of different ids on one segment both report `erased: true`, and an erasure whose every
+  holder is below the pointer throws when the row goes mid-call, never answering `absent`.
 
 - **A cold open of a cleartext generation reads its whole tail in one request, however wide its index.** The row's
   summary records how many bytes of the object's end an open needs (`tailBytes`: its extension block, its index and its
@@ -226,17 +267,18 @@ so, and so do the module headers in the code.
   cold `has()` of a segment of 300,000 random ids is the row, the tail and the chunk, 3 requests, where it was 4
   (counted on the in-memory backend), and an `iterate` or an `intersect` makes one range read fewer for each such
   operand. The bytes fall as well, since the index range read no longer repeats the end of the default tail. The number
-  only sizes a read, and the reader checks every byte as before: the read is never smaller than the store's `tailBytes`
-  option (256 KiB by default), and, beyond that option, never larger than the object less its preamble or the store's
-  `maxIndexBytes` (8 MiB by default) plus 4,212 bytes, so a registry of your own that hands over a wrong or hostile number costs the default
-  tail, a longer read or one range read more, never a different answer. The summary is held to its object's `tailBytes`
-  as it is to its count and metadata: a store that finds them different stops using that summary for the process, so a
-  wrong number costs one read once, and `checkConsistency({ summaries: true })` reports it as `summary-mismatch`. That
-  check's own open is sized the same way, for clear and sealed summaries, so a wide segment no longer adds a range read.
-  An encrypted generation's cold open is not sized: its summary is sealed under the key, and sizing from it would send
-  the tail read after the key, so it keeps its default tail read (sent beside the key by an open that starts from the object, an `iterate`, a combine or a pin; a cold `has()` waits for the key first, as before) and its range read for a wide index. A row
-  with no summary the store can use, and the opens of a pin, a rollback, an erasure and a write's check, are as before.
-  No public signature changes.
+  only sizes a read, and the reader checks every byte as before: the read is never smaller than the source's `tailBytes`
+  option (256 KiB by default), and, beyond that option, never larger than the object less its preamble or the source's
+  `maxIndexBytes` (8 MiB by default) plus 4,212 bytes, so a registry of your own that hands over a wrong or hostile
+  number costs the default tail, a longer read or one range read more, never a different answer. The summary is held to
+  its object's `tailBytes` as it is to its count and metadata: a store that finds them different stops using that
+  summary for the process, so a wrong number costs one read once, and `checkConsistency({ summaries: true })` reports it
+  as `summary-mismatch`. That check's own open is sized the same way, for clear and sealed summaries, so a wide segment
+  no longer adds a range read. An encrypted generation's cold open is not sized: its summary is sealed under the key,
+  and sizing from it would send the tail read after the key, so it keeps its default tail read (sent beside the key by
+  an open that starts from the object, an `iterate`, a combine or a pin; a cold `has()` waits for the key first, as
+  before) and its range read for a wide index. A row with no summary the store can use, and the opens of a pin, a
+  rollback, an erasure and a write's check, are as before. No public signature changes.
 
 - **An encrypted generation's cold open sends its tail read beside the key request, not after it.** An open that
   starts from the object (`iterate`, a combine, a pin) waited for the keystore's unwrap before it sent the tail
@@ -247,30 +289,31 @@ so, and so do the module headers in the code.
   difference: when the keystore fails, the tail read was already sent and is billed, once per attempt (up to four with
   the default read retry), and the caller still gets the keystore's error. A cold open waiting for the key holds up to
   `tailBytes` (256 KiB by default) of the tail. A store with no keystore sends no tail read for an encrypted row.
-- **An `exclude` of an `intersect` or `intersectInto` of two or more segments is read in batches, not one request
-  for each surviving key.** A key whose intersection is empty still never reads its exclude chunk. A chunk the cache
-  holds, or another read has in flight, is read as before (the version check, or joining that read); the chunks that must
-  be requested are held and read as one stream of coalesced ranges, half of `concurrency` keys (16 of 32 by default) a
+- **An `exclude` of an `intersect` or `intersectInto` of two or more segments is read in batches, not one request for
+  each surviving key.** A key whose intersection is empty still never reads its exclude chunk. A chunk the cache holds,
+  or another read has in flight, is read as before (the version check, or joining that read); the chunks that must be
+  requested are held and read as one stream of coalesced ranges, half of `concurrency` keys (16 of 32 by default) a
   batch, so a window of survivors costs about the requests its chunks span in the exclude's object. On the in-memory
-  backend, 1,000 surviving keys of 250 ids each cost the exclude itself 1,000 range requests before and 63 now (the whole
-  intersect, with its two include ranges, 1,002 and 65) read a chunk at a time, and 65 to 125 (by how long a request
-  takes) read an id at a time; two excludes of 1,000 and 334 keys cost 1,334 and 85 (1,336 and 87 in all), and 20 spread
-  survivors 20 and 2. A batch sends at
-  most one request for each key it holds, a segment named twice as an exclude is one batch, and a read of an exclude chunk
-  that is in flight, by anything, is joined. A chunk is still read whole from one generation, cached under the version it
-  was read from, counted once in the cache's hits and misses, and checked against the segment's version, and a running read
-  meets an exclude that gains an id as promptly as before, and a key it holds is read at least half a window ahead of
-  a consumer that works between chunks. A batch covers ranges the way an include's stream does, so a
-  survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: 8 to 10 requests and about 5.7 to 6.2 MB, by
-  where its batches fall, where it was 32 and 262,656, and about 27% longer at 25 ms a request and 100 MB/s (free inside
-  the region, billed across regions). A source with no
-  `getChunks`, and an exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to
-  count the requests of this shape. No public signature changes.
-- **The disaster-recovery guide's strays table changes.** A load over a row with no usable ledger (a registry repaired by
-  hand, a pointer moved down by hand, a row restored without its ledger) lists the bucket and writes the window a count by
-  `keep` keeps, then collects as it did over a row that recorded one. After a restore to pointer 1 with generations 0 and
-  1 from before it and strays at 4 and 5, re-runs at `keep` 3 now leave 1, 2, 3 and 6, and at `keep` 5 leave 0, 1, 2, 3
-  and 6, whether or not the restored row names a window; the strays go at the load that passes them.
+  backend, 1,000 surviving keys of 250 ids each cost the exclude itself 1,000 range requests before and 63 now (the
+  whole intersect, with its two include ranges, 1,002 and 65) read a chunk at a time, and 65 to 125 (by how long a
+  request takes) read an id at a time; two excludes of 1,000 and 334 keys cost 1,334 and 85 (1,336 and 87 in all), and
+  20 spread survivors 20 and 2. A batch sends at most one request for each key it holds, a segment named twice as an
+  exclude is one batch, and a read of an exclude chunk that is in flight, by anything, is joined. A chunk is still read
+  whole from one generation, cached under the version it was read from, counted once in the cache's hits and misses, and
+  checked against the segment's version, and a running read meets an exclude that gains an id as promptly as before, and
+  a key it holds is read at least half a window ahead of a consumer that works between chunks. A batch covers ranges the
+  way an include's stream does, so a survivor every 31 keys of a dense exclude is read as part of a 1 MiB range: 8 to 10
+  requests and about 5.7 to 6.2 MB, by where its batches fall, where it was 32 and 262,656, and about 27% longer at 25
+  ms a request and 100 MB/s (free inside the region, billed across regions). A source with no `getChunks`, and an
+  exclude with no generation, still read per key. The cost model and `docs/guide/cost.md` say how to count the requests
+  of this shape. No public signature changes.
+- **The disaster-recovery guide's strays table changes for a row restored without its ledger.** A load over a row with
+  no usable ledger (a registry repaired by hand, a pointer moved down by hand, a row restored without its ledger) lists
+  the bucket and writes the window a count by `keep` keeps, then collects as it did over a row that recorded one. After
+  a restore to pointer 1 with generations 0 and 1 from before it and strays at 4 and 5, re-runs at `keep` 3 now leave 1,
+  2, 3 and 6, and at `keep` 5 leave 0, 1, 2, 3 and 6, whether or not the restored row names a window. Only a row with no
+  window changed: 0.20.0 left 3, 4, 5 and 6 at `keep` 3, and 1 to 6 at `keep` 5. The strays go at the load that passes
+  them.
 
 - **A cold `iterate()` or combine on a wide segment sends its first request sooner.** A stream over a wide segment
   looked up every chunk of the read in the cache, mapped every key to its index entry and planned every range of the
@@ -289,60 +332,58 @@ so, and so do the module headers in the code.
   no longer than it did.
 - **The default `checkConsistency` makes one object-store request per healthy segment, and lists only one it cannot
   confirm.** It asks whether a segment's current object is there with a zero-length tail read (a `HEAD` on S3, a
-  metadata request on GCS, a properties request on Azure Blob) where it listed all of the segment's objects. With `summaries: true` and a clear summary on the
-  row, the open's own tail read is the answer, so the segment costs the open alone (one request on S3 and GCS, two on
-  Azure Blob, and one more for an index longer than the tail read) where it cost a listing as well. A sealed summary, or one that is not used, is asked about first, as before. When the zero-length read fails in
-  any way, or the open fails before its first read answered, the segment's listing decides and its own error is the
-  segment's, so a missing object, a missing bucket and a failing store are reported as they were, and an object that
-  goes mid-open is still an error of the segment. One result differs: a store that answers reads but refuses listings
-  (an identity without list permission, or a listing-only outage) now reports each object that is there as present,
-  where every segment was reported errored. Per million segments on S3 the default check costs $0.40 where it cost
-  $5.00 for the listings. A guarded load and the summary check take the current size from the reader's `count()`, the
-  figure its open already holds, instead of building and adding a map of every chunk's cardinality: 3.7 ms of CPU a
-  call on a segment of 65,536 chunks, measured. The results and the errors are otherwise unchanged.
+  metadata request on GCS, a properties request on Azure Blob) where it listed all of the segment's objects. With
+  `summaries: true` and a clear summary on the row, the open's own tail read is the answer, so the segment costs the
+  open alone (one request on S3 and GCS, two on Azure Blob, and one more for an index longer than the tail read) where
+  it cost a listing as well. A sealed summary, or one that is not used, is asked about first, as before. When the
+  zero-length read fails in any way, or the open fails before its first read answered, the segment's listing decides and
+  its own error is the segment's, so a missing object, a missing bucket and a failing store are reported as they were,
+  and an object that goes mid-open is still an error of the segment. One result differs: a store that answers reads but
+  refuses listings (an identity without list permission, or a listing-only outage) now reports each object that is there
+  as present, where every segment was reported errored. Per million segments on S3 the default check costs $0.40 where
+  it cost $5.00 for the listings. A guarded load and the summary check take the current size from the reader's
+  `count()`, the figure its open already holds, instead of building and adding a map of every chunk's cardinality: 3.7
+  ms of CPU a call on a segment of 65,536 chunks, measured. The results and the errors are otherwise unchanged.
 
 - **Listing a wide segment's chunk keys costs a fraction of what it did.** A read that lists a segment's keys (`iterate`
   and its pages, the operand of a combine, `count`'s fallback) built the list through `Array.from`, ran the range test
-  through `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the list in a
-  loop, and the check range-tests every key and notes whether the list is strictly ascending in one pass, sorting and
-  scanning for a repeat only a list that is not (a custom source's, say). Every key is still range-checked, and an
-  out-of-range, repeated or unsorted list is refused or ordered exactly as before. A chunk read (`getChunks`,
+  through `Number.isInteger`, and sorted a list the `.crbm` index had already put in order. The reader now fills the
+  list in a loop, and the check range-tests every key and notes whether the list is strictly ascending in one pass,
+  sorting and scanning for a repeat only a list that is not (a custom source's, say). Every key is still range-checked,
+  and an out-of-range, repeated or unsorted list is refused or ordered exactly as before. A chunk read (`getChunks`,
   `getChunksAt`) also validates the segment's name twice a read, as given and as a chunk ref copies it, rather than once
-  more for every key. The requests made are unchanged. Measured
-  warm, a page of 1,000 ids of a 65,536-chunk segment takes about half the time it did, a one-id page of a 2,000-chunk
-  segment about a quarter, and a cold first id of a 65,536-chunk segment a little over half.
+  more for every key. The requests made are unchanged. Measured warm, a page of 1,000 ids of a 65,536-chunk segment
+  takes about half the time it did, a one-id page of a 2,000-chunk segment about a quarter, and a cold first id of a
+  65,536-chunk segment a little over half.
 - **A warm `has()` and `count()` do less work.** A cache built without a TTL (the chunk cache by default, and the reader
   cache always) no longer reads the clock on a hit, and with no metrics sink wired `has()` and `count()` return the
-  engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured on
-  the in-memory driver, a warm `has()` takes about 13% less time per call. Values and errors are unchanged, a failure is still a
-  rejected promise, and with a metrics sink the same `op` events are emitted. With no sink a call settles in fewer
-  microtask turns than before.
+  engine's promise directly instead of wrapping it in a timing frame, one promise and one microtask hop fewer. Measured
+  on the in-memory driver, a warm `has()` takes about 13% less time per call. Values and errors are unchanged, a failure
+  is still a rejected promise, and with a metrics sink the same `op` events are emitted. With no sink a call settles in
+  fewer microtask turns than before.
 
 - **The numbers the core and the store's admin calls check are refused by one rule and worded one way.** An integer is a
-  safe integer, so a whole number of 2^53 or more is refused wherever one is taken (a `retireExpired` `limit` of `1e300`
-  is refused, and so is an admin `concurrency` of `2 ** 53`), and the refusal is a `ValidationError` reading `<name> must
-  be an integer of at least 1; got <value>`, `an integer from 1 to 1024` where there is an upper bound, or `a finite
-  number of at least 0` for a fraction. The value shown is the one refused: a number or boolean as itself, a bigint with
-  an `n`, a string quoted, and anything else by its type. The size options of the cloud backends read `partBytes must be
-  an integer of at least 1; got 0`, and `requirePositiveInt` from `@cloudbitmaps/core/driver-kit` words its refusal the
-  same way and takes the same values. These keep their own rule and wording: `guard.maxGrowth`, `cache.ttlMs` and
-  `cache.readerMaxBytes` (each must be above 0), the timestamps `leaseUntil` and `retention.expiresAt`, the id bounds
-  `after` and `through` (whose refusal never shows the value), `pinAt`, `BufferReader.getRange` and the cloud drivers'
-  `getRange`. Newly refused: a fractional `maxScanSegments` (for `retireExpired`, `checkConsistency` and
-  `eraseNamespace`), a `getRange` offset or length of 2^53 or more on the in-process and local-filesystem drivers, and a
-  generation number of 2^53 or more in a storage key.
-- **The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.** `retry: {
-  maxAttempts: 2.5 }` and `retry: { baseDelayMs: 500, maxDelayMs: 100 }` throw `ValidationError` when the store is
-  built, as the other fields of the policy do. A `maxDelayMs` you leave out is 2000 ms, or `baseDelayMs` when that is
-  larger, so `retry: { baseDelayMs: 5000 }` alone is accepted and caps each delay at 5000 ms. A `maxDelayMs` given alone must be at least the `baseDelayMs` default of 50 ms.
+  safe integer, so a whole number of 2^53 or more is refused wherever one is taken (the options this refuses that 0.20.0
+  took are under Breaking), and the refusal is a `ValidationError` reading
+  `<name> must be an integer of at least 1; got <value>`, `an integer from 1 to 1024` where there is an upper bound, or
+  `a finite number of at least 0` for a fraction. The value shown is the one refused: a number or boolean as itself, a
+  bigint with an `n`, a string quoted, and anything else by its type. The size options of the cloud backends read
+  `partBytes must be an integer of at least 1; got 0`, and `requirePositiveInt` from `@cloudbitmaps/core/driver-kit`
+  words its refusal the same way and takes the same values. These keep their own rule and wording: `guard.maxGrowth`,
+  `cache.ttlMs` and `cache.readerMaxBytes` (each must be above 0), the timestamps `leaseUntil` and
+  `retention.expiresAt`, the id bounds `after` and `through` (whose refusal never shows the value), `pinAt`,
+  `BufferReader.getRange` and the cloud drivers' `getRange`. Newly refused, beside those: a `getRange` offset or length
+  of 2^53 or more on the in-process and local-filesystem drivers, and a generation number of 2^53 or more in a storage
+  key.
 - **An Azure Blob generation read whose body connection closes early is a `TransientError`,** as a registry read of a
   row cut off part-way is.
-- **A `getTail` length follows one rule on every storage driver.** It is a safe integer: zero or less answers an empty
-  tail with the object's size, and a length past the size the whole object. Any other length throws `ValidationError`
-  before anything is read: `NaN`, a fraction, a negative one included, an infinity of either sign, and a whole number
-  past the safe range (2^53 or more, or -2^53 or less). Newly refused are a whole number of 2^53 or more on the
-  in-process and local-filesystem drivers and `BufferReader`, a negative fraction and `-Infinity` on the S3, GCS and Azure Blob
-  drivers, and a whole number of -2^53 or less on every driver and `BufferReader`.
+- **A `getTail` length follows one rule on every storage driver and on `BufferReader`.** It is a safe integer: zero or
+  less answers an empty tail with the object's size, and a length past the size the whole object. Any other length
+  throws `ValidationError` before anything is read: `NaN`, a fraction, an infinity of either sign, and a whole number of
+  2^53 or more or of -2^53 or less. In 0.20.0 the in-process and local-filesystem drivers and `BufferReader` read `NaN`
+  as the whole object or failed with a raw `RangeError`, and read `Infinity` and lengths past the safe range as the
+  whole object; S3 sent a fraction or `NaN` in its range header and surfaced the service's error; and every driver and
+  `BufferReader` answered a negative fraction, `-Infinity` and a whole number of -2^53 or less with an empty tail.
 - **A malformed size or switch given to a cloud backend is a `ValidationError` in every case.** A `Symbol` given as
   `partBytes`, `maxObjectBytes`, `simpleUploadThresholdBytes` or `blockBytes` threw a `TypeError` while the refusal's
   message was built, and `AzureBlobStorage` read `blockBytes: null` as the default where it refused
@@ -359,66 +400,65 @@ so, and so do the module headers in the code.
   counts each once, and an erasure deletes each generation it finds once. Of the shipped drivers, only `MemoryStorage`
   can list a key twice, when an object is deleted and stored again while it is listed.
 
-- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
-  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
-- **The first load after a rollback keeps the generation the rollback restored.** So does every load after it, for as many as `keep` says. A load keeps `keep`
-  generations below the one it publishes, and the row's ledger now records the order generations were made current and
-  survives a rollback, so the window is the `keep` most recently current generations numbered below the new one, the
-  generation the load superseded first. A load that lists the segment over a row that recorded no window kept the newest
-  `keep` by number: after a rollback, which drops the record, those are the generations the rollback moved away from, so
-  the load deleted the generation the operator had just restored and kept the one rolled away from. With generations 0
-  to 3, a rollback to 1 and a load with `keep: 1`, the bucket now holds 1 and 4, where it held 3 and 4; with `keep: 2`,
-  it holds 1, 3 and 4, where it held 2, 3 and 4. So with a `keep` of 1 or more the restored generation is still there to
-  roll back to if the first load after the rollback is bad too. The window is the same from the load after that, and
-  not only from the first: at `keep: 2` the next load leaves 1, 4 and 5, and the one after leaves 4, 5 and 6, so the
-  restored generation stays for as many loads as `keep` says, ahead of the generations the rollback moved away from (a
-  window of the newest `keep` by number deleted it at the second load, leaving 3, 4 and 5). A generation the rollback left above the pointer stays in the
-  ledger and is never collected while the pointer is below it, and takes no place in `keep`; it leaves the ledger when
-  a load takes a number past it, unless the ledger would pass 128 entries. A pin taken on the restored generation reads it
-  until a load collects it, unless the pin is leased. The window is chosen without looking at leases, so a live lease on
-  the generation a load supersedes after a rollback holds a place in the window instead of being spared beside it. The
-  window is the newest `keep` by number only for a pass that has no usable ledger. With one, a pass that lists keeps the
-  ledger's most recently current names below the pointer first, whatever the two reads of the pointer showed, and counts
-  the newest others by number only to fill `keep`; a name whose object has gone does not count. A load makes
-  the same requests as before
+- **The first load after a rollback keeps the generation the rollback restored.** So does every load after it, for as
+  many as `keep` says. A load keeps `keep` generations below the one it publishes, and the row's ledger now records the
+  order generations were made current and survives a rollback, so the window is the `keep` most recently current
+  generations numbered below the new one, the generation the load superseded first. A load that lists the segment over a
+  row that recorded no window kept the newest `keep` by number: after a rollback, which drops the record, those are the
+  generations the rollback moved away from, so the load deleted the generation the operator had just restored and kept
+  the one rolled away from. With generations 0 to 3, a rollback to 1 and a load with `keep: 1`, the bucket now holds 1
+  and 4, where it held 3 and 4; with `keep: 2`, it holds 1, 3 and 4, where it held 2, 3 and 4. So with a `keep` of 1 or
+  more the restored generation is still there to roll back to if the first load after the rollback is bad too. At
+  `keep: 2` the next load leaves 1, 4 and 5, and the one after leaves 4, 5 and 6, where 0.20.0 left 3, 4 and 5, then 4,
+  5 and 6: the restored generation stays for as many loads as `keep` says, ahead of the generations the rollback moved
+  away from. A generation the rollback left above the pointer stays in the ledger and is never collected while the
+  pointer is below it, and takes no place in `keep`; it leaves the ledger when a load takes a number past it, unless the
+  ledger would pass 128 entries. A pin taken on the restored generation reads it until a load collects it, unless the
+  pin is leased. The window is chosen without looking at leases, so a live lease on the generation a load supersedes
+  after a rollback holds a place in the window instead of being spared beside it. Choosing the window adds no request
   ([what a load keeps after a rollback](docs/guide/loading.md#what-a-load-keeps-after-a-rollback)).
 - **A generation a live lease holds stays in the ledger, and a pass that keeps by a count goes by the ledger.** A
   publish keeps in `knownGens`, beside its window, every generation a live lease holds, so the "lease each generation as
   it lands" recipe leaves each leased generation a rollback target while its lease lives, whatever `keep` is, and the
-  first publish after the lease ends drops it from the ledger and deletes it by name. A ledger is started from the bucket
-  only over a row with a pointer and no ledger at all; a usable one is never started again, however wide. One that names
-  more than 64 generations below the pointer that no lease holds (a `keep` above 64 carries up to 127) keeps its order, its
-  leased entries and the entries a rollback left above the new number, and a load with a `keep` of 64 or less over it
-  collects by listing instead of by name. With a usable ledger, a pass that lists keeps the ledger's most recently current
-  names first and counts the newest others by number only to fill `keep`; by number alone only where there is no usable
-  ledger. The leases a new ledger holds are read from the row once more just before it is written; a lease taken after
-  that read is spared in the bucket but not named while its lease lasts. A rollback holds every generation its row's
-  lease entries name. With a `keep` of 127 or more, or when the generations the window and the leases hold reach 128
-  entries, the entries a rollback left above a load's number are capped out of the ledger, and a later load that numbers
-  past them collects them.
-- **An incarnation's first publish writes the new generation alone, and a protect pass counts when the superseded
-  generation is gone.** A publish over no row, or a row with no pointer (one a retention write made), no longer seeds its
-  ledger from the bucket: nothing below it was made current by it, and an object there is no load's. An object a crashed
-  load left below it stays until a load that lists. A load that lists to take a number, or every sixteenth generation,
-  and finds the generation it superseded gone from its listing keeps the newest `keep` that are there, as it did before
-  ledgers, instead of only what the ledger names.
+  first publish after the lease ends drops it from the ledger and deletes it by name. A ledger is started from the
+  bucket only over a row with a pointer and no usable ledger; a usable one is never started again, however wide. One
+  that names more than 64 generations below the pointer that no lease holds (a `keep` above 64 carries up to 127) keeps
+  its order, its leased entries and the entries a rollback left above the new number, and a load with a `keep` of 64 or
+  less over it collects by listing instead of by name. With a usable ledger, a pass that lists keeps the ledger's most
+  recently current names below the pointer first, whatever its two reads of the pointer showed, and counts the newest
+  others by number only to fill `keep`, a name whose object has gone not counting; it goes by number alone only where
+  there is no usable ledger. The leases a new ledger holds are read from the row once more just before it is written; a
+  lease taken after that read is spared in the bucket but not named while its lease lasts. A rollback holds every
+  generation its row's lease entries name. With a `keep` of 127 or more, or when the generations the window and the
+  leases hold reach 128 entries, the entries a rollback left above a load's number are capped out of the ledger, and a
+  later load that numbers past them collects them.
+- **A segment's first publish records only the generation it publishes, and a listing load counts when the generation it
+  superseded is gone.** A publish over no row, or over a row with no pointer (one a retention write made), writes a
+  `knownGens` naming the new generation alone. In 0.20.0, when such a publish took a number above 0, past a crashed
+  load's object, the first collection over it listed the bucket and recorded the newest `keep` objects below the pointer
+  in `keptGens`, a crashed load's among them, and later loads evicted them by name. Now such an object is not in the
+  ledger, so a rollback onto it needs `allowUnknown`, and it stays in the bucket until a load that lists (one whose
+  number a listing chose, or every sixteenth generation) collects it: with crashed loads' objects at 0 and 1 and
+  `keep: 1`, three loads leave 1, 3 and 4, where 0.20.0 left 3 and 4. A load that lists and finds the generation it
+  superseded gone keeps `keep` generations that are there, where 0.20.0 kept only the ones `keptGens` named: at
+  `keep: 2`, with generation 15's object gone, the sixteenth load leaves 13, 14 and 16, where 0.20.0 left 14 and 16.
 
 - **A rollback of an encrypted segment needs the segment's key only for an object its row does not vouch for, and a
-  keystore fault is no longer taken for a missing key.** A `rollback` with `allowUnknown` on an encrypted segment, from a
-  store with no keystore or one that could not open the segment's key, used to check only that the target was in the
+  keystore fault is no longer taken for a missing key.** A `rollback` with `allowUnknown` on an encrypted segment, from
+  a store with no keystore or one that could not open the segment's key, used to check only that the target was in the
   bucket and encrypted (with `allowForward`, which it replaced), so it could move the pointer onto an object sealed
   under a key no row holds, such as the one the loser of two concurrent first loads leaves, and every read of the
   segment then failed with `IntegrityError`. It now throws `KeyUnavailableError` before it reads the target when the
-  store has no keystore, or its keystore holds none of the key's KEKs or holds one that does not unwrap the key,
-  saying which, and moves nothing. A key service that throws `TransientError` or times out as `AbortSignal.timeout()`
-  and the AWS SDK report a timeout reaches the caller as `TransientError`, the timeout as its `cause`, to retry. With
-  the key it opens the target as before, and refuses one that does not open. A rollback onto a generation the row knows
-  goes ahead without the key, backward or forward, opening nothing and leaving the row with no summary of the target:
-  the footer checksum the row recorded vouches for the object, and it is read with no key. A rollback below the
-  pointer on a row with no usable `knownGens`, and one below a full list's bound, also go ahead without the key: the pointer alone decides there.
-  Any other failure of `openDek`, such as a `TypeError` from a keystore of your own, is thrown and moves nothing, where
-  it was swallowed and the rollback went ahead without the key: make such a keystore throw `TransientError` for a
-  fault worth riding out, as `IKeystore.openDek` now says.
+  store has no keystore, or its keystore holds none of the key's KEKs or holds one that does not unwrap the key, saying
+  which, and moves nothing. A key service that throws `TransientError`, or times out (an `AbortSignal.timeout()` abort,
+  or an AWS SDK timeout), reaches the caller as `TransientError` with the timeout as its `cause`, to retry. With the key
+  it opens the target as before, and refuses one that does not open. A rollback onto a generation the row knows goes
+  ahead without the key, backward or forward, opening nothing and leaving the row with no summary of the target: the
+  footer checksum the row recorded vouches for the object, and it is read with no key. A rollback below the pointer on a
+  row with no usable `knownGens`, and one below a full list's bound, also go ahead without the key: the pointer alone
+  decides there. Any other failure of `openDek`, such as a `TypeError` from a keystore of your own, is thrown and moves
+  nothing, where it was swallowed and the rollback went ahead without the key: make such a keystore throw
+  `TransientError` for a fault worth riding out, as `IKeystore.openDek` now says.
 
 ### Fixed
 
@@ -437,36 +477,31 @@ so, and so do the module headers in the code.
   a re-run publishes, or erases. A
   registry of your own that does not report tokens keeps the footer check.
 
-- **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
-  `ValidationError`, when it is built.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on
-  an index off without a word, and a fraction made the cap compare oddly. Refused now: `NaN`, a fraction, `Infinity`
-  (which also switched the cap off: the cap is what bounds an open's memory), zero, a negative number and `null`. Leave
-  the option out for the default, 8 MiB. The sized tail read a cold open makes is held to the same bound, and a bound
-  that cannot give a whole number of bytes leaves the read at the source's own tail size.
 - **A refused erasure rewrite refuses a load that took its number with the same bytes, rather than deleting the load's
   generation.** When another writer's publish refused an erasure's rewrite and left the pointer below it, the erasure
   deleted its own object above that pointer once one read of its footer matched the rewrite's fingerprint. A footer
   names an object by its bytes, and a load of the ids the rewrite held, in the clear, writes those very bytes under the
   same number: once another erasure had deleted the rewrite's object as a holder, a load could take the number again,
   and the refused erasure's delete removed that load's generation, before or after it published, so the row named an
-  object that is not in the bucket, every read of the segment failed, and nothing reported it. The erasure now reads
-  the row, then the footer, and renews the row it read before it deletes, with a compare-and-swap that names the
-  pointer at its value, as it does before deleting a holder, so a load that wrote those bytes and had not published is
-  refused at its publish and reports `superseded`. A renewal that loses to another write makes it read the row and
-  decide again; one lost to a write of leases alone, or to another erasure's renewal, as the losers of one race of
-  erasures lose to each other, is waited out and costs nothing, and after 8 renewals lost to other writes (a load, a
-  rollback, a retention write) it keeps the object, which can then hold another erasure's id until a later erasure
-  takes it. The renewal is one registry write more on a refused rewrite that discards its object, and one that gets no
-  answer is settled by reading the row, or throws its `TransientError` with nothing deleted. A generation a load
-  published with the same bytes, and a rollback then moved the pointer below, is still deleted as if it were the
-  rewrite: a pinned handle of it then fails with `NotFoundError` for any chunk it has yet to read, its lease names a missing generation, and a rollback to it finds it gone. One
-  round trip remains between the renewal and the delete: a rollback onto the object inside it, on a storage driver
-  whose versions come from the bytes (S3's ETag, without SSE-KMS or SSE-C) a load that takes the number inside it with
-  the same bytes, and on one that ignores the delete's condition (`LocalFsStorage`, and by default `GcsStorage` and an
-  S3 client sending to a host other than AWS S3) a load that takes the number inside it with any bytes, still leave the
-  pointer on a missing object ([a number taken again during an erasure](docs/guide/erasure.md#how-it-stays-correct)).
-- **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and the
-  `*Into` verbs read at most 16 operands at a time: the listing of their chunk keys on every plan, the plan a move
+  object that is not in the bucket, every read of the segment failed, and nothing reported it. The erasure now reads the
+  row, then the footer, and renews the row it read before it deletes, with a compare-and-swap that names the pointer at
+  its value, as it does before deleting a holder, so a load that wrote those bytes and had not published is refused at
+  its publish and reports `superseded`. A renewal that loses to another write makes it read the row and decide again;
+  one lost to a write of leases alone, or to another erasure's renewal, as the losers of one race of erasures lose to
+  each other, is waited out and costs nothing, and after 8 renewals lost to other writes (a load, a rollback, a
+  retention write) it keeps the object, which can then hold another erasure's id until a later erasure takes it. The
+  renewal is one registry write more on a refused rewrite that discards its object, and one that gets no answer is
+  settled by reading the row, or throws its `TransientError` with nothing deleted. A generation a load published with
+  the same bytes, and a rollback then moved the pointer below, is still deleted as if it were the rewrite: a pinned
+  handle of it then fails with `NotFoundError` for any chunk it has yet to read, its lease names a missing generation,
+  and a rollback to it finds it gone. One round trip remains between the renewal and the delete: a rollback onto the
+  object inside it, on a storage driver whose versions come from the bytes (S3's ETag, without SSE-KMS or SSE-C) a load
+  that takes the number inside it with the same bytes, and on one that ignores the delete's condition (`LocalFsStorage`,
+  and by default `GcsStorage` and an S3 client sending to a host other than AWS S3) a load that takes the number inside
+  it with any bytes, still leave the pointer on a missing object ([a number taken again during an
+  erasure](docs/guide/erasure.md#how-it-stays-correct)).
+- **A combine reads at most 16 of its operands at once, outside its chunk reads.** `intersect`, `union`, `andNot` and
+  the `*Into` verbs read at most 16 operands at a time: the listing of their chunk keys on every plan, the plan a move
   makes included; the check, on the first plan, of whether each operand that holds no chunk exists; and the lookup of
   their versions at every look while they run. The first of those reads to fail fails the combine at once, and no more
   of them are sent. `materializeMany` asks whether its operands exist the same way.
@@ -493,65 +528,60 @@ so, and so do the module headers in the code.
   `materializeMany` with `pin: false` keep the keys they listed. Looking makes no request, with one exception: a combine
   with an `exclude` or a union that runs past `cache.genTtlMs` makes the pointer read of a refresh, once per
   `cache.genTtlMs`, for an operand it no longer reads. A look waits for its lookups, so a combine's streams can group
-  its chunks into ranges a little differently: counted on the in-memory batch benchmark at that change, where nothing moves, the
-  `*Into` route makes 19,761 range reads where it made 19,785 in one shape, and 137,089 where it made 137,037 in the
-  refresh-shaped one. A read that lists its keys again is charged to the per-op budget again, with what it has already
-  taken, and throws `BudgetExceededError` when a segment grew past it; the ranges a move requests again are not charged
-  to it. A running `iterate` or combine of the store that erases an id now meets the erasure before its next key, and
-  yields the id only from the chunk or key it is handing out, well inside the written bound, which is unchanged ([who
-  stops seeing the id](docs/guide/erasure.md#who-stops-seeing-the-id-and-when)).
-- **A rollback to the generation already current checks that its object is there.** It reported a no-op without reading
-  anything, so over a pointer that named a missing object (a collection that raced an earlier rollback, or a swap that
-  landed, lost its answer and had its target collected since) re-running a rollback to that generation answered success
-  while every read failed. It now makes one zero-byte read of the object, and when the object is gone throws
-  `NotFoundError` naming the generations in the bucket, as a rollback to any missing generation does. A fault of that
-  read is thrown rather than taken for either answer.
+  its chunks into ranges a little differently, even when nothing moves. A read that lists its keys again is charged to
+  the per-op budget again, with what it has already taken, and throws `BudgetExceededError` when a segment grew past it;
+  the ranges a move requests again are not charged to it. A running `iterate` or combine of the store that erases an id
+  now meets the erasure before its next key, and yields the id only from the chunk or key it is handing out, well inside
+  the written bound, which is unchanged ([who stops seeing the
+  id](docs/guide/erasure.md#who-stops-seeing-the-id-and-when)).
 - **A rollback whose swap of the pointer gets no answer is settled by reading the row.** The swap's `TransientError`
   reached the caller with nothing checked, so a swap that had landed was never verified: its target could be collected
   meanwhile and the pointer left on a missing object, and a move that took effect was not audited. The rollback now
   reads the row back. When it is the row the swap leaves (the row it read, with the target as its pointer, the summary
-  the swap wrote and no kept list, and nothing else changed but its leases and its pointerId), it checks the target as
+  and the ledger the swap wrote, and nothing else changed but its leases and its pointerId), it checks the target as
   after any swap: it puts the pointer back if the target went, and reports and audits the move if the target is there.
   Otherwise it throws the `TransientError`: the write may still land, and a re-run finds the pointer where it is, and a
-  load or another writer that moved the row meanwhile is left standing. Some writes leave that very row and are
-  reported and audited as the rollback's own. On a cleartext segment: another rollback onto the same target, whatever
-  row it read, and a load that wrote the very object the rollback read under its number and recorded no kept window
-  (onto a row that records none, as after a rollback, or with a `keep` above 64). On an encrypted segment the swap's
-  sealed summary tells every other write apart, except when the rollback had no key at hand and wrote no summary, and
-  another such rollback onto the same target made the same move. A row read back that is not one the library wrote
-  throws its `IntegrityError` instead.
-- **A leased handle's `iterate()`, combines and `everyNth()` return a stream that can be driven by hand.** The stream of a
-  handle holding a lease was an object with `for await` and `batches()` only, so `stream.next()`, `stream.return()` and
-  `stream.throw()` were `undefined` on it though the `IdStream` doc promises them, and a leased and an unleased handle
-  could not stand in for one another. It now answers all three, as the engine's generator of an unleased handle does:
-  `return()` and `throw()` end the engine's read, iterating it gives it back, a check that throws ends it for good, and
-  `batches()` is the same. The types declare it: `IdStream` extends the new `IdIterator` (an `AsyncIterableIterator<number>`
-  with `return` and `throw` typed), and `everyNth` returns `IdIterator`. A read refused when it is called (a lease that has ended, a bad option) is a stream of the same
-  shape that rejects at its first pull. A leased per-id `iterate()` over 2 million ids in memory showed no slowdown beyond run-to-run noise against the build before (measured: medians 476 ms before, 469 ms after; a difference under about 5% cannot be excluded).
+  load or another writer that moved the row meanwhile is left standing. Some writes leave that very row and are reported
+  and audited as the rollback's own. On a cleartext segment: another rollback onto the same target, whatever row it
+  read, and a load that wrote the very object the rollback read under its number and carried the same ledger. On an
+  encrypted segment the swap's sealed summary tells every other write apart, except when the rollback had no key at hand
+  and wrote no summary, and another such rollback onto the same target made the same move. A row read back that is not
+  one the library wrote throws its `IntegrityError` instead.
+- **A leased handle's `iterate()`, combines and `everyNth()` return a stream that can be driven by hand.** The stream of
+  a handle holding a lease was an object with `for await` and `batches()` only, so `stream.next()`, `stream.return()`
+  and `stream.throw()` were `undefined` on it though the `IdStream` doc promises them, and a leased and an unleased
+  handle could not stand in for one another. It now answers all three, as the engine's generator of an unleased handle
+  does: `return()` and `throw()` end the engine's read, iterating it gives it back, a check that throws ends it for
+  good, and `batches()` is the same. The types declare it: `IdStream` extends the new `IdIterator` (an
+  `AsyncIterableIterator<number>` with `return` and `throw` typed), and `everyNth` returns `IdIterator`. A read refused
+  when it is called (a lease that has ended, a bad option) is a stream of the same shape that rejects at its first pull.
+  A leased per-id `iterate()` over 2 million ids in memory showed no slowdown beyond run-to-run noise against the build
+  before (measured: medians 476 ms before, 469 ms after; a difference under about 5% cannot be excluded).
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
   Each of these reads the segment's row just before each delete, and a rollback onto the very generation being deleted
-  (one onto a generation above the pointer) could land between that read and the delete, pass its own
-  check and leave the pointer on an object that is gone, with no call saying so: the load answered as it would have, the
-  erasure reported `erased: true`, and a collection either succeeded or threw `WriteConflictError`. Each call now holds
-  every read of the row after a delete to what it deleted, and reads the row once more after its last delete. When the
-  row names one of them with no object under it, the call reads the row again at once and, on the store's clock, after
-  waits of 250, 500 and 1,000 ms, since a rollback whose own check finds the object gone puts the pointer back itself;
-  only when every read still names the missing object does it throw `NotFoundError` naming the generation. A load
-  whose publish landed says it took effect at its generation; a refused load, which answered with its refusal before,
-  now throws and names its refusal, after its `segment.load-refused` event when it answers the refusal rather than its
+  (one onto a generation above the pointer) could land between that read and the delete, pass its own check and leave
+  the pointer on an object that is gone, with no call saying so: the load answered as it would have, the erasure
+  reported `erased: true`, and a collection either succeeded or threw `WriteConflictError`. Each call now holds every
+  read of the row after a delete to what it deleted, and reads the row once more after its last delete. When the row
+  names one of them with no object under it, the call reads the row again at once and, on the store's clock, after waits
+  of 250, 500 and 1,000 ms, since a rollback whose own check finds the object gone puts the pointer back itself; only
+  when every read still names the missing object does it throw `NotFoundError` naming the generation. A load whose
+  publish landed says it took effect at its generation; a refused load, which answered with its refusal before, now
+  throws and names its refusal, after its `segment.load-refused` event when it answers the refusal rather than its
   publish raising it; an erasure never answers `erased: true` over it, and sends its `segment.collect` event first when
-  nothing left in the bucket holds the id. This detects; it cannot restore the object. Check `store.generations(ref)`
-  or `checkConsistency()` first, and roll back to a generation still in the bucket only while the pointer names a
-  missing one ([a rollback that races a collection](docs/guide/loading.md#a-rollback-that-races-a-collection)). On a
-  storage driver that ignores a delete's condition, an erasure's delete of a load's object published under a number
-  taken again is reported the same way. The read costs one registry request after a delete loop: a steady load on S3 makes
-  2 PUT-class requests, 5 GET-class and a delete, and averages $12.34 per million single-part loads at the default
-  prices, where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the
-  row `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
+  nothing left in the bucket holds the id. This detects; it cannot restore the object. Check `store.generations(ref)` or
+  `checkConsistency()` first, and roll back to a generation still in the bucket only while the pointer names a missing
+  one ([a rollback that races a collection](docs/guide/loading.md#a-rollback-that-races-a-collection)). On a storage
+  driver that ignores a delete's condition, an erasure's delete of a load's object published under a number taken again
+  is reported the same way. The read costs one registry request after a delete loop: a steady load on S3 makes 2
+  PUT-class requests, 5 GET-class and a delete, and averages $12.34 per million single-part loads at the default prices,
+  where it was $11.94; `estimateCost` prices it, and an erasure on a segment with no generation yet reads the row
+  `4 + n` times for `n` objects. A refused output's reclaim reads the row once more too: the refresh-shaped batch
   `bench/materialize-many-counts.json` counts in memory now makes 3,732 GET-class requests (589 range reads) as one
-  `materializeMany` call, and 134,414 (127,458 range reads) as 1,000 `*Into` calls, whose excludes are read in batches. A publish that collects finishes a
-  request later, which moves where a batch closes its groups: the target-sized batch takes 78 groups and 18,870 range
-  reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2 GiB.
+  `materializeMany` call, and 134,414 (127,458 range reads) as 1,000 `*Into` calls, whose excludes are read in batches.
+  A publish that collects finishes a request later, which moves where a batch closes its groups: the target-sized batch
+  takes 78 groups and 18,870 range reads at the default budget, where it was 81 and 19,005, and 6 groups and 3,570 at 2
+  GiB.
 - **An invalidation reaches a pinned read already running.** A pin, and a combine with a pinned operand, read through
   engines of their own over the store's chunk cache, and only the store's own engine was told of an invalidation. A
   pinned `has`, `iterate` or combine whose request was in flight when `eraseSubject`, `load`, `rollback`, an `*Into`,
@@ -583,14 +613,60 @@ so, and so do the module headers in the code.
   segment not in the record, one never invalidated included, counts as invalidated at the newest invalidation the
   record has let go, so once more than 1,024 segments are invalidated while a stream is open it caches no more of any
   segment it reads; what it returns is unchanged.
-- **The reader cache's byte ceiling counts the heap a tiny reader holds, and an encrypted reader no longer pins a pool slab for its key.** `cache.readerMaxBytes` weighed an open reader as its parsed index, metadata and kept chunk bytes only: about 20 bytes for a one-chunk segment that retained about 3.7 KiB (about 190 times more), so a store that raised `cache.readerMax` for many small segments held far more bytes than the ceiling named. Each open reader now also counts a fixed 3.75 KiB, measured. A store of small segments at the defaults sees no change (64 MiB holds about 17,000 tiny readers, past the 1,024 count). A reader near its byte share counts 3.75 KiB more, so slightly fewer fit: readers that each keep a whole 64 KiB share fit about 965 of 1,024 at the defaults. A store that lowered `readerMaxBytes` for a small heap keeps fewer tiny segments open and reopens the rest as it reads them, and a ceiling below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Separately, an encrypted segment's key was a view on a slab of Node's shared buffer pool (8 KiB on Node 22, 64 KiB on recent Node 24), so each open encrypted reader could pin a whole slab that nothing counted (measured on Node 24.18: about 69 KB retained against 4 KB); the drivers' crypto now copies a key into memory of its own.
-- **`LocalFsStorage` keeps what it stores private to its user.** Generations, registry rows and the directories holding them were created with the process umask's defaults (`0644` and `0755` under the usual `022`), so any other user of a shared machine could read a cleartext segment and list the store. Files are now created `0600` and directories `0700`, whatever the umask. Directories above the root that did not exist are created with the default mode. A file or directory that already exists keeps its mode, except a registry row, which every write replaces with a new `0600` file: run `chmod -R go-rwx` on an existing root to match. Windows ignores modes, and behaves as before.
-- **The in-process and local-filesystem drivers refuse input they used to take and misread.** `new LocalFsStorage('')` (an unset `DATA_DIR ?? ''`) wrote generations and rows under the working directory; it, and any root that is not a non-empty string, now throws `ValidationError`. `MemoryStorage` and `LocalFsStorage` also throw `ValidationError` for an option key they do not take and for a `now` that is not a function. `getTail` on `MemoryStorage` and `LocalFsStorage` throws `ValidationError` for a `NaN`, fractional or infinite length (a length of zero or less is an empty tail with the size, as the port says), as `BufferReader.getTail` does too; `NaN` was read as a whole-object read by some and failed with a raw `RangeError` in others. A registry write (`create` or `compareAndSwap`) whose `keyId` is not a non-empty string is refused with `ValidationError` by every registry driver; one such write made its row unreadable and stopped every `list()` that reached it.
-- **A `LocalFsStorage` read is never zero-padded, and a write sweeps its stale temp files.** A `getRange` or `getTail` whose file returns fewer bytes than asked throws `IntegrityError`. A write of an object or a registry row removes the temp files LocalFs names (`<name>.<uuid>.tmp`) beside it that were last written over 24 hours ago, scanning each directory at most once an hour per process; other `.tmp` files and symlinks are left alone. A save whose temp file was removed mid-write fails with `TransientError` and publishes nothing, so the save can be run again. A `BufferSink` fed a Node `Buffer` that its writer then refilled no longer changes the bytes already written, which corrupted an object stored by `MemoryStorage`.
-- **An export no longer records a segment destroyed mid-run as an empty file, the eject command no longer fails on a namespace named `manifest.json`, and the retention sweep removes the due pointer of a tombstone it did not write.** A segment destroyed or dropped after the export listed it and before it was read used to be committed as a successful file of no ids; it is now recorded in `manifest.skipped` with `reason: 'destroyed'`, and no file is written. A namespace named `manifest.json`, in any letter case where the filesystem ignores it, made the eject command's directory take the manifest's path, so the run ended with `EISDIR` after the whole dump and every re-run failed too; that namespace's segments are now recorded in `failed` with a `ValidationError` message and the manifest is written. A `manifest.json` directory that an earlier run left in the output directory must still be removed by hand: the command now refuses it with a `ValidationError` that says so, before it exports anything. A segment the export skips no longer leaves an empty namespace directory behind. Where the registry removes rows, `retireExpired` now removes the due-index pointer of a segment that was crypto-shredded or dropped by hand after it was given a retention policy; before, the pointer stayed in the registry for ever, and every unscoped fleet scan read it. The tombstone is left as it was.
-- **Azure and S3 tail reads fail closed.** An Azure tail read took a blob's size from one request and its bytes from another, so a blob replaced between them could return one blob's size with another's bytes and version; the download is now conditional on the properties' ETag, the pair is read again once on a replacement, and a second replacement is a `TransientError`. S3's `getTail` with a length that is not a whole number (`NaN`, `1.5`) sent `bytes=-NaN` and surfaced a raw service error; it now throws `ValidationError` before sending, as GCS and Azure do. The S3 driver now treats `EHOSTUNREACH` and `ENETUNREACH` as transient, so the read retry covers them as it does for GCS and Azure. An Azure properties response with no ETag is refused with `ValidationError`, since the download could not then be conditional.
-- **The cost tools refuse input they would have misread.** `estimateCost` and `groundedReport` now refuse a key they do not take, at the top level and inside `workload`, each segment, and `pricing`, with a `ValidationError` naming the key and where it sits: a segment `{ size: 1e9 }` used to be priced as 0 bytes, and `workload: { readsPerSecond }` was dropped. `estimateCost` refuses a segment `count` that is not a whole number, and a workload or rate card whose cost is not a finite number of dollars, instead of returning `$Infinity/mo`.
-- **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
+- **The reader cache's byte ceiling counts the heap a tiny reader holds, and an encrypted reader no longer pins a pool
+  slab for its key.** `cache.readerMaxBytes` weighed an open reader as its parsed index, metadata and kept chunk bytes
+  only: about 20 bytes for a one-chunk segment that retained about 3.7 KiB (about 190 times more), so a store that
+  raised `cache.readerMax` for many small segments held far more bytes than the ceiling named. Each open reader now also
+  counts a fixed 3.75 KiB, measured. A store of small segments at the defaults sees no change (64 MiB holds about 17,000
+  tiny readers, past the 1,024 count). A reader near its byte share counts 3.75 KiB more, so slightly fewer fit: readers
+  that each keep a whole 64 KiB share fit about 965 of 1,024 at the defaults. A store that lowered `readerMaxBytes` for
+  a small heap keeps fewer tiny segments open and reopens the rest as it reads them, and a ceiling below two readers'
+  weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Separately, an encrypted segment's key was a view
+  on a slab of Node's shared buffer pool (8 KiB on Node 22, 64 KiB on recent Node 24), so each open encrypted reader
+  could pin a whole slab that nothing counted (measured on Node 24.18: about 69 KB retained against 4 KB); the drivers'
+  crypto now copies a key into memory of its own.
+- **`LocalFsStorage` keeps what it stores private to its user.** Generations, registry rows and the directories holding
+  them were created with the process umask's defaults (`0644` and `0755` under the usual `022`), so any other user of a
+  shared machine could read a cleartext segment and list the store. Files are now created `0600` and directories `0700`,
+  whatever the umask. Directories above the root that did not exist are created with the default mode. A file or
+  directory that already exists keeps its mode, except a registry row, which every write replaces with a new `0600`
+  file: run `chmod -R go-rwx` on an existing root to match. Windows ignores modes, and behaves as before.
+- **The in-process and local-filesystem drivers refuse input they used to take and misread.** `MemoryStorage` and
+  `LocalFsStorage` throw `ValidationError` for a `now` that is not a function. A registry write (`create` or
+  `compareAndSwap`) whose `keyId` is not a non-empty string is refused with `ValidationError` by every registry driver;
+  one such write made its row unreadable and stopped every `list()` that reached it.
+- **A `LocalFsStorage` read is never zero-padded, and a write sweeps its stale temp files.** A `getRange` or `getTail`
+  whose file returns fewer bytes than asked throws `IntegrityError`. A write of an object or a registry row removes the
+  temp files LocalFs names (`<name>.<uuid>.tmp`) beside it that were last written over 24 hours ago, scanning each
+  directory at most once an hour per process; other `.tmp` files and symlinks are left alone. A save whose temp file was
+  removed mid-write fails with `TransientError` and publishes nothing, so the save can be run again. A `BufferSink` fed
+  a Node `Buffer` that its writer then refilled no longer changes the bytes already written, which corrupted an object
+  stored by `MemoryStorage`.
+- **An export no longer records a segment destroyed mid-run as an empty file, the eject command no longer fails on a
+  namespace named `manifest.json`, and the retention sweep removes the due pointer of a tombstone it did not write.** A
+  segment destroyed or dropped after the export listed it and before it was read used to be committed as a successful
+  file of no ids; it is now recorded in `manifest.skipped` with `reason: 'destroyed'`, and no file is written. A
+  namespace named `manifest.json`, in any letter case where the filesystem ignores it, made the eject command's
+  directory take the manifest's path, so the run ended with `EISDIR` after the whole dump and every re-run failed too;
+  that namespace's segments are now recorded in `failed` with a `ValidationError` message and the manifest is written. A
+  `manifest.json` directory that an earlier run left in the output directory must still be removed by hand: the command
+  now refuses it with a `ValidationError` that says so, before it exports anything. A segment the export skips no longer
+  leaves an empty namespace directory behind. Where the registry removes rows, `retireExpired` now removes the due-index
+  pointer of a segment that was crypto-shredded or dropped by hand after it was given a retention policy; before, the
+  pointer stayed in the registry for ever, and every unscoped fleet scan read it. The tombstone is left as it was.
+- **Azure and S3 tail reads fail closed.** An Azure tail read took a blob's size from one request and its bytes from
+  another, so a blob replaced between them could return one blob's size with another's bytes and version; the download
+  is now conditional on the properties' ETag, the pair is read again once on a replacement, and a second replacement is
+  a `TransientError`. The S3 driver now treats `EHOSTUNREACH` and `ENETUNREACH` as transient, so the read retry covers
+  them as it does for GCS and Azure. An Azure properties response with no ETag is refused with `ValidationError`, since
+  the download could not then be conditional.
+- **`estimateCost` refuses a total it cannot price.** A workload or rate card whose cost is not a finite number of
+  dollars is a `ValidationError`, instead of a report of `$Infinity/mo`. `groundedReport` refuses such a total the same
+  way.
+- **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told
+  you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The
+  `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does
+  not contain; it now names the page that gives the steps. The `@cloudbitmaps/tools` doc comments say `sizeBytes` too.
 
 ## [0.20.0] — 2026-10-09
 

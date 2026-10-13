@@ -47,7 +47,7 @@ describe('the figures of an exclude read in batches', () => {
     expect(log).toContain(`1,000 range requests before and ${exclude} now`);
     expect(log).toContain(`1,002 and ${whole}`);
     expect(flat('packages/tools/src/cost.ts')).toContain(
-      `63 requests, where it was 1,000`.replace('63', String(exclude)),
+      `63 requests, where reading each key on its own makes 1,000`.replace('63', String(exclude)),
     );
   });
 
@@ -60,7 +60,7 @@ describe('the figures of an exclude read in batches', () => {
       expect(text).toContain('5.7 to 6.2 MB');
       expect(text).toContain('262,656');
     }
-    expect(cost).toContain('main made 32 requests');
+    expect(cost).toContain('reading each key on its own makes 32 requests');
     expect(cost).toContain('about 83 ms against 105 ms, about 27% longer');
     expect(log).toContain('about 27% longer');
     const engineTest = readFileSync(join(ROOT, 'tests/core/exclude-batching.test.ts'), 'utf8');
