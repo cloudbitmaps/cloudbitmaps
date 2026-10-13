@@ -701,7 +701,7 @@ nothing can compare one. Branding them is you taking that on.
 
 | Symbol | What it does |
 |---|---|
-| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry. |
+| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`, `RegistryPatch` and `RegistryWriteOptions` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry. A registry may set `reportsWriteTokens` and call the `onToken` of `RegistryWriteOptions` before each write it sends, so a publish can tell its own write from another writer's (above). |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes. A backend may also carry an optional `attachMetrics(sink)`: a store given a `metrics` sink calls it once, as it is built, so the backend can send that sink an `advisory` event about its own setup (the S3 backend's socket pool does). A backend without it is never told. It must not throw: an exception propagates from the store's constructor |
 | `TailRead` · `StorageDeleteOptions` | what `getTail` answers (`{ bytes, size, version? }`, `version` being the object's as the backend names it: an ETag, a GCS object generation) and what `delete` takes (`{ ifVersion? }`); see `StorageCaps.conditionalDelete` below |
 | `IMetricsSink` · `MetricEvent` | the sink `attachMetrics` receives and the event union it emits to, re-exported so a driver does not import core's main entry for them |
@@ -969,6 +969,23 @@ therefore:
   keeps pointing at the old generation — use an own-property check (`'currentGen' in patch`);
 - keep `status: 'active'` meaningful for such a row: a null pointer is a **live** segment, not a tombstone;
 - yield `destroyed` tombstones from `list()` — the sweep can only purge a row it can see.
+
+**A registry can tell a writer which row writes are its own.** A load, an erasure's rewrite and every other publish
+that meets a conflict, or a write that got no answer, has to decide whether its own write landed, and the row's
+`pointerId` (the token of the write that last set the pointer) answers it exactly, if the writer knows the tokens of the
+writes it sent. A registry that reports them says so with `reportsWriteTokens: true` on the driver, and calls the
+`onToken` function of the `RegistryWriteOptions` it is handed, once for each `create` and `compareAndSwap` it sends, with
+the token that write carries, **before it sends the request**: a write that gets no answer may still land, and its token
+has to be known by then. A write the registry sends again reports the token it sends. The token reported is the one the
+write records, so a write that lands leaves the row's `token` equal to it, and its `pointerId` too when the write names a
+resolved field; a write that does not land leaves no row carrying it. The writer then counts a write as its own if and
+only if the row's `pointerId` is one of the tokens it was told, which is equality only, so it needs no read of the
+object and cannot mistake another writer's write of the same bytes for its own. `ObjectStoreRegistry` (so the S3, GCS and
+Azure Blob registries), the in-memory registry and the local-filesystem registry report; the registry conformance suite
+holds a registry that sets the flag to the cases above. A registry that leaves it off, or a wrapper that does not pass
+`options` through to the write it forwards (which must then leave the flag off), is settled by the object instead: the
+publish reads the footer of the object under the pointer, which names bytes and not the writer, so another load's
+identical object under the number can pass for the publish's own.
 
 **How the store treats your driver's errors.** Throw `TransientError` for your backend's retryable faults: the
 store's read retry rides them out, and a write's caller can tell them from a deterministic failure. A registry's `get`

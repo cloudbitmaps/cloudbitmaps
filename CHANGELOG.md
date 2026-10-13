@@ -136,6 +136,16 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A registry can report the token of each write before it sends it: `RegistryWriteOptions.onToken` and
+  `IRegistryDriver.reportsWriteTokens`.** A `create` or `compareAndSwap` of a registry that sets `reportsWriteTokens`
+  calls `onToken` with the token its write carries before the request is sent, once for each write it sends and again
+  for one it sends again. The row's `pointerId` is the token of the write that last set the pointer, so a publish that
+  has been told the tokens of its own writes knows exactly whether a write that conflicted or got no answer landed. Both
+  members are optional: a registry of your own that does not report tokens is unchanged, and its writes are settled by
+  the footer of the object the pointer names, as before. The in-memory, local-filesystem and shared object-store
+  registries (so the S3, GCS and Azure Blob ones) report. The registry conformance suite holds a registry that sets the
+  flag to it.
+
 - **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as `runConsistencyCheck`
   and `store.checkConsistency`): holds every generation a row's ledger of known generations (`knownGens`) names, the
   current one included, and the bucket has, to the footer checksum the ledger records. A generation whose object is not
@@ -399,6 +409,17 @@ so, and so do the module headers in the code.
   fault worth riding out, as `IKeystore.openDek` now says.
 
 ### Fixed
+
+- **A load or an erasure rewrite no longer reports another load's publish as its own.** After a registry write that
+  conflicted or got no answer, the call asked whether the object under the row's pointer was its own by reading the
+  object's footer, which names bytes and not the writer. A load of the same ids writes the same bytes, so a load whose
+  write lost to it, or an erasure rewrite overtaken by one, could report `published: true` or `erased: true`, audit a
+  `segment.publish` or `segment.rewrite` it did not make and, in the erasure's case, delete a generation the other
+  publish's list keeps. On a registry that reports write tokens (all the shipped ones) the call now counts the write as
+  its own only when the row's `pointerId` is the token of a write it sent: it reports `superseded`, audits a refusal and
+  deletes nothing the row names. A write of its own that landed and was then reported as a conflict, including one a
+  policy write was swapped over, is still published. A registry of your own that does not report tokens keeps the footer
+  check.
 
 - **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
   `ValidationError`, when it is built.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on
