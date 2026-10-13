@@ -10,8 +10,7 @@ name: Full-strength tests (nightly)
 # It does not gate a pull request and is not among the required checks. A red run fails THIS workflow run: it shows
 # red on the Actions tab for `main`. GitHub notifies one user for a scheduled run, whoever last changed the cron line
 # (the workflow's creator before that), as that user's notification settings allow; for a manual dispatch, the person
-# who started it. A
-# property suite's failure is a counterexample, not a flake: replay it with the seed in the log
+# who started it. A property suite's failure is a counterexample, not a flake: replay it with the seed in the log
 # (`FC_SEED=<seed> CB_TEST_STRENGTH=full pnpm vitest run <file>`); the next night draws new cases and may well be green.
 #
 # Same Node versions as the `build & test` matrix in ci.yml; `tests/ci/runtime-version-policy.test.ts` holds both.

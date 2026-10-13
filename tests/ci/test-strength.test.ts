@@ -75,10 +75,11 @@ describe('the test-strength switch', () => {
   it('is asked for by the test it sizes: each name, through heavy(), in its own file', () => {
     for (const name of names) {
       const file = HEAVY_SIZES[name].file;
+      // Whitespace allowed inside the call: the formatter splits a long one across lines.
       expect(
         readFileSync(join(TESTS, file), 'utf8'),
         `${file} no longer asks heavy('${name}'), so its size is no longer the switch's`,
-      ).toContain(`heavy('${name}')`);
+      ).toMatch(new RegExp(String.raw`\bheavy\(\s*'${name}'\s*,?\s*\)`));
     }
   });
 

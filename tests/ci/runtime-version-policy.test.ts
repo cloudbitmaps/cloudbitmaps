@@ -89,8 +89,14 @@ describe('runtime version policy is consistent across every declaration', () => 
     });
     // If the matrices vanish or get renamed, this test must fail rather than quietly assert nothing.
     expect(matrices.length).toBeGreaterThan(0);
-    expect(matrices.some(([where]) => where.includes('ci.yml'))).toBe(true);
-    expect(matrices.some(([where]) => where.includes('full-nightly.yml'))).toBe(true);
+    expect(
+      matrices.some(([where]) => where.includes('ci.yml')),
+      'no Node matrix found in ci.yml',
+    ).toBe(true);
+    expect(
+      matrices.some(([where]) => where.includes('full-nightly.yml')),
+      'no Node matrix found in full-nightly.yml',
+    ).toBe(true);
     for (const [name, node] of matrices) {
       expect(node, `job "${name}" matrix`).toEqual(EXPECTED_MATRIX);
     }
