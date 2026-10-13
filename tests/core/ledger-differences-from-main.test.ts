@@ -179,12 +179,13 @@ describe('the current object found gone only after the publish', () => {
 describe('generations an erasure deleted above the pointer', () => {
   // Generations 0 to 7 are loaded at keep 12, 2, 5, 6 and 7 holding one id, a crashed object is left at 10, the row is
   // rolled back to 1, a load publishes 11, the row is rolled back to 0, and a subject erasure of the id deletes 2, 5, 6
-  // and 7 above the pointer. Loads then publish 11 and 12 again, a stray is left at 5, and three more loads publish, the last at 16 (a number the stray at 5 and the others made it skip to). A release before ledgers had dropped its list at the rollback, so each load counted over what was there and the
-  // bucket after 16 was 0, 1, 3, 4, 10 and 11 to 16. Here the ledger still names the deleted 2, 5, 6 and 7 until a load
-  // drops them, and the names take places in the window; the rollbacks carried the ledger, which names 0 and 1 as well. 10,
-  // which the ledger does not name, goes at the load that lists (generation 16), leaving 0, 1, 3, 4, 5 and 11 to 16 (main:
-  // 1, 3, 4, 5 and 11 to 16, with 0 gone).
-  it('take places in the window, so the load that lists collects what a count would have kept', async () => {
+  // and 7 above the pointer, taking them out of the row's ledger before it deletes them. Loads then publish 12 and 13, a
+  // stray is left at 5, the number the erased generation had, and three more loads publish 14, 15 and 16. The ledger
+  // names none of the erased generations, so the window of the load at 16, which lists, names 0, 1, 3, 4 and 11 to 15,
+  // every generation a load published that is still in the bucket. The two objects no load published go there: 10,
+  // which a release before ledgers kept by its count of 12 (it left 0, 1, 3, 4, 10 and 11 to 16), and the stray at 5,
+  // which that release also took.
+  it('leave the ledger, so the load that lists collects only what no load published', async () => {
     const w = world();
     for (let g = 0; g <= 7; g++) {
       const held = [2, 5, 6, 7].includes(g) ? [7777] : [];
@@ -201,6 +202,6 @@ describe('generations an erasure deleted above the pointer', () => {
     await load(w, 12);
     await load(w, 12);
     await load(w, 12);
-    expect(await gens(w.storage)).toEqual([0, 1, 3, 4, 5, 11, 12, 13, 14, 15, 16]);
+    expect(await gens(w.storage)).toEqual([0, 1, 3, 4, 11, 12, 13, 14, 15, 16]);
   });
 });

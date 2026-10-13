@@ -287,6 +287,24 @@ export function rollbackKnown(
 }
 
 /**
+ * The row's ledger with the entries numbered in `doomed` removed, which a write that is about to delete those
+ * generations makes first: the entries left keep their order, and the current generation is never removed (the ledger
+ * must end with it). Another build's ledger past the writer's cap is held to it, with the current generation protected
+ * and the generations the row's leases name kept. `undefined` for a row with no usable ledger, which names nothing to
+ * remove.
+ */
+export function pruneKnown(
+  record: RegistryRecord,
+  doomed: ReadonlySet<number>,
+): readonly KnownGeneration[] | undefined {
+  const found = usableKnownGens(record);
+  if (found === undefined) return undefined;
+  const rest = found.filter((e) => e.generation === record.currentGen || !doomed.has(e.generation));
+  if (rest.length <= MAX_KNOWN_GENERATIONS) return rest;
+  return capKnown(rest, new Set([record.currentGen!]), leasedByRow(record));
+}
+
+/**
  * The ledger that puts a row back as it was, for the undo of a rollback: the row's own when it is usable (the
  * generation it left is its last entry), held to the writer's cap when another build wrote one past it, with the
  * generation the undo leaves and the one it moves from protected; `undefined` for a row that had none to put back.

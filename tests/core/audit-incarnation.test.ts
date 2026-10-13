@@ -508,7 +508,9 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     await loadSegment(SEG, [1, 2, 3], w.deps); // gen 0 holds the id
     await loadSegment(SEG, [1, 3], w.deps); // gen 1 dropped it; `keep: 1` retains gen 0
     let reads = 0;
-    // The erasure's own first read sees the row; the collection's read then finds none, so it declines to delete.
+    // The erasure's own first read sees the row; its second, the fence's, finds none, so there is nothing to take out of
+    // the ledger and no reason to report, and the collection that follows reads the row itself and, since the row still
+    // names generation 0, spares it. The holder is left, so the call throws.
     const flaky = new Proxy(w.registry, {
       get(t, p, rx) {
         if (p !== 'get') return Reflect.get(t, p, rx) as unknown;

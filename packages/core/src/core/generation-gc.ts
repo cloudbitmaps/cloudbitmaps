@@ -337,15 +337,21 @@ export async function gcOrphanGenerations(
 
 /**
  * {@link gcOrphanGenerations}, reporting a rollback onto a generation it deleted in `missing` instead of throwing it: the
- * pass stopped there. For a caller that records what it deleted before it raises, as an erasure does.
+ * pass stopped there. For a caller that records what it deleted before it raises, as an erasure does. With `skipKnown` the
+ * pass also spares every generation the row names when it reads the row before a delete (an erasure's passes on an active
+ * row, which remove from the row what they mean to delete first).
  */
 export async function collectBelowPointer(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep?: number } = {},
+  options: { keep?: number; skipKnown?: boolean } = {},
 ): Promise<{ readonly deleted: number[]; readonly missing?: number }> {
-  // Only the window is passed on, whatever the caller's object carries: this pass never reads a lease.
-  const { deleted, missing } = await listingPass(ref, deps, { keep: options.keep });
+  // Only the window and the known-name rule are passed on, whatever the caller's object carries: this pass never reads
+  // a lease.
+  const { deleted, missing } = await listingPass(ref, deps, {
+    keep: options.keep,
+    skipKnown: options.skipKnown,
+  });
   return missing === undefined ? { deleted } : { deleted, missing };
 }
 
