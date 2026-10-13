@@ -372,7 +372,9 @@ export function sizedTailBytes(
   options: { readonly tailBytes?: number; readonly maxIndexBytes?: number },
 ): number {
   const base = openTailBytes(options);
-  if (summary === undefined) return base;
+  // A store whose own tail size is not a whole number of bytes keeps it, so its reads fail on every segment, as they do
+  // unsized, and not only on the segments a summary does not cover.
+  if (summary === undefined || !Number.isSafeInteger(base)) return base;
   const { tailBytes } = summary;
   const parts = fingerprintParts(summary.fingerprint);
   if (parts === undefined || !Number.isSafeInteger(tailBytes) || tailBytes <= 0) return base;
@@ -382,7 +384,7 @@ export function sizedTailBytes(
     EXT_TRAILER_BYTES +
     FOOTER_BYTES;
   const sized = Math.max(base, Math.min(tailBytes, parts.size - PREAMBLE_BYTES, reach));
-  // A source option that is not a whole number (a `maxIndexBytes` of NaN) must never make an invalid read.
+  // A `maxIndexBytes` that is not a whole number (NaN) must never make an invalid read.
   return Number.isSafeInteger(sized) && sized > 0 ? sized : base;
 }
 

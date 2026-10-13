@@ -511,12 +511,21 @@ describe('a cold open sizes its tail read from the row summary', () => {
     async (maxIndexBytes) => {
       const w = await wideWorld(spread(10, 3));
       expect(() => w.source({ maxIndexBytes })).toThrow(ValidationError);
+      expect(() => w.source({ maxIndexBytes })).toThrow(/maxIndexBytes must be an integer/);
       // Handed straight to the sizing, a bad bound is the source's own tail, never an invalid read.
       expect(
         sizedTailBytes({ fingerprint: '3000000:12345', tailBytes: 500_000 }, { maxIndexBytes }),
       ).toBe(maxIndexBytes === Infinity ? 500_000 : DEFAULT_TAIL);
     },
   );
+
+  it('a store tail size that is not a whole number is left as it is, so its read fails on every segment, as unsized', () => {
+    for (const tailBytes of [1000.5, Number.NaN]) {
+      expect(
+        sizedTailBytes({ fingerprint: '3000000:12345', tailBytes: 500_000 }, { tailBytes }),
+      ).toBe(tailBytes);
+    }
+  });
 
   it('summaryAgrees holds tailBytes to the object when both say one', () => {
     const base = { cardinality: 3 };

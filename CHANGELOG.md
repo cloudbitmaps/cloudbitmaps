@@ -114,8 +114,8 @@ so, and so do the module headers in the code.
   (counted on the in-memory backend), and an `iterate` or an `intersect` makes one range read fewer for each such
   operand. The bytes fall as well, since the index range read no longer repeats the end of the default tail. The number
   only sizes a read, and the reader checks every byte as before: the read is never smaller than the store's `tailBytes`
-  option (256 KiB by default), and never larger than the object less its preamble or the store's `maxIndexBytes` (8 MiB by
-  default) plus 4,212 bytes, so a registry of your own that hands over a wrong or hostile number costs the default
+  option (256 KiB by default), and, beyond that option, never larger than the object less its preamble or the store's
+  `maxIndexBytes` (8 MiB by default) plus 4,212 bytes, so a registry of your own that hands over a wrong or hostile number costs the default
   tail, a longer read or one range read more, never a different answer. The summary is held to its object's `tailBytes`
   as it is to its count and metadata: a store that finds them different stops using that summary for the process, so a
   wrong number costs one read once, and `checkConsistency({ summaries: true })` reports it as `summary-mismatch`. That
@@ -289,10 +289,11 @@ so, and so do the module headers in the code.
 ### Fixed
 
 - **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
-  `ValidationError`.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on an index off
-  without a word, and a fractional one made the cap compare oddly; now either is refused when the source is built, the
-  way a bad `cache.genTtlMs` is. The sized tail read a cold open makes is held to the same bound, and a bound that
-  cannot give a whole number of bytes leaves the read at the source's own tail size.
+  `ValidationError`, when it is built.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on
+  an index off without a word, and a fraction made the cap compare oddly. Refused now: `NaN`, a fraction, `Infinity`
+  (which also switched the cap off: the cap is what bounds an open's memory), zero, a negative number and `null`. Leave
+  the option out for the default, 8 MiB. The sized tail read a cold open makes is held to the same bound, and a bound
+  that cannot give a whole number of bytes leaves the read at the source's own tail size.
 - **A refused erasure rewrite refuses a load that took its number with the same bytes, rather than deleting the load's
   generation.** When another writer's publish refused an erasure's rewrite and left the pointer below it, the erasure
   deleted its own object above that pointer once one read of its footer matched the rewrite's fingerprint. A footer

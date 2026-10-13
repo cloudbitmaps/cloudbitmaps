@@ -169,8 +169,8 @@ This is the one place the bound is stated; other pages link here.
   waits for the key it holds up to `tailBytes` (256 KiB by default) of the object's tail. A cleartext generation's tail
   read is sized from the row's summary, which records how many bytes of the object's end an open needs: a segment whose
   index is longer than 256 KiB (tens of thousands of chunks) comes in that one read, so its first `has()` is three requests
-  (the row, the tail and the chunk), not four. The size is never below the store's `tailBytes` option, and never more
-  than the object holds or the store's `maxIndexBytes` (8 MiB by default) plus 4,212 bytes; a summary this store has found
+  (the row, the tail and the chunk), not four. The size is never below the store's `tailBytes` option, and, beyond that option, never
+  more than the object holds or the store's `maxIndexBytes` (8 MiB by default) plus 4,212 bytes; a summary this store has found
   to disagree with its object is not used again. A row with no summary the store can use opens with the default tail read.
   An encrypted generation's open is not sized, because its summary is sealed under the key and sizing from it would send the
   tail read after the key: it keeps its default tail read (beside the key for an open that starts from the object; a cold `has()` waits for the key first, as before), and a wide one reads its index with one range read more.
