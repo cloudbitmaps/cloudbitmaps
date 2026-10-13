@@ -973,29 +973,28 @@ therefore:
 **A registry can tell a writer which row writes are its own.** A load, an erasure's rewrite and every other publish
 that meets a conflict, or a write that got no answer, has to decide whether its own write landed, and the row's
 `pointerId` (the token of the write that last set the pointer) answers it, if the writer knows the tokens of the writes
-it sent. A registry that reports them says so with `reportsWriteTokens: true` on the driver, and calls the `onToken`
-function of the `RegistryWriteOptions` it is handed, once for each `create` and `compareAndSwap` it sends, with the
-token that write carries, **before it sends the request**: a write that gets no answer may still land, and its token
-has to be known by then. A write sent again with a new token reports it; one that repeats the same body repeats the
-token already reported. The token reported is the one the write records, so a write that lands leaves the row's `token`
-equal to it, and its `pointerId` too when the write names a resolved field; a write that does not land leaves no row
-carrying it. **The token is unique to that write attempt, also against another writer racing the same version**: a
-version counter alone is not enough, since a loser's write would then pass for the winner's. The writer counts a write
-as its own if and only if the row's `pointerId` is one of the tokens it was told, which is equality only, so it needs
-no read of the object and cannot mistake another writer's write of the same bytes for its own. A `pointerId`
-that is not one is another writer's write, or the writer's own
-write that landed and was then followed, before the writer read the row again, by a write that renews the `pointerId`
-without moving the pointer (an erasure's renewal, a rollback onto the generation): the writer cannot tell the two
-apart, reports none published though its generation may be current, and deletes nothing, and a re-run publishes a new
-generation. `ObjectStoreRegistry` (so the S3, GCS and Azure Blob registries), the in-memory registry and the
-local-filesystem registry report; the registry conformance suite holds a registry that sets the flag to the cases
-above, among them N writers racing one write, which must report tokens no loser shares with the row. **A registry that
-overrides `create` or `compareAndSwap` declares `reportsWriteTokens` beside them, and only if it passes `options`
-through; otherwise the publish settles its writes by the object.** A publish honours the flag only where the object
-that owns each of those two methods declares it, so a subclass or an `Object.create` wrapper that overrides one without
-declaring the flag is settled by the object, as is a registry that leaves it off: the publish reads the footer of the
-object under the pointer, which names bytes and not the writer, so another load's identical object under the number can
-pass for the publish's own.
+it sent. A registry that reports them says so with `reportsWriteTokens: true` on the driver (a getter or a field), and
+calls the `onToken` function of the `RegistryWriteOptions` it is handed, once for each `create` and `compareAndSwap` it
+sends, with the token that write carries, **before it sends the request**: a write that gets no answer may still land,
+and its token has to be known by then. A write sent again with a new token reports it; one that repeats the same body
+repeats the token already reported. The token reported is the one the write records, so a write that lands leaves the
+row's `token` equal to it, and its `pointerId` too when the write names a resolved field; a write that does not land
+leaves no row carrying it. **The token is unique to that write attempt, also against another writer racing the same
+version**: a version counter alone is not enough, since a loser's write would then pass for the winner's. The writer
+counts a write as its own if and only if the row's `pointerId` is one of the tokens it was told, which is equality only,
+so it needs no read of the object and cannot mistake another writer's write of the same bytes for its own. A `pointerId`
+that is not one is another writer's write, or the writer's own write that landed and was then followed, before the
+writer read the row again, by a write that renews the row's `pointerId` over it: an erasure's renewal, or a rollback
+that moved the pointer off the generation and back. The writer cannot tell the two apart, reports none published though
+its generation may be current, and deletes nothing, and a re-run publishes a new generation. `ObjectStoreRegistry` (so
+the S3, GCS and Azure Blob registries), the in-memory registry and the local-filesystem registry report; the registry
+conformance suite holds a registry that sets the flag to the cases above, among them N writers racing one write with
+one body, which must report tokens no loser shares with the row. **A registry that wraps or extends another and
+overrides `create` or `compareAndSwap` either passes `options` through to the write it forwards, or sets
+`reportsWriteTokens` to `false`.** One that does neither reads every write of its own that landed after an error or a
+lost answer as not its own (`superseded`), and deletes nothing. A registry that sets the flag to `false`, or leaves it
+off, is settled by the object: the publish reads the footer of the object under the pointer, which names bytes and not
+the writer, so another load's identical object under the number can pass for the publish's own.
 
 **How the store treats your driver's errors.** Throw `TransientError` for your backend's retryable faults: the
 store's read retry rides them out, and a write's caller can tell them from a deterministic failure. A registry's `get`
