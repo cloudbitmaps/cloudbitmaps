@@ -656,7 +656,7 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 - **After the swap, the rollback reads the target's footer once more**, whatever the target. If the object is gone (a
   collection that is not fenced on the row took it, or an erasure deleted one above the pointer) or is another object
   (a load took its number meanwhile), the pointer, the old summary and the old record are put back, the target
-  leaves the record, and the rollback throws `NotFoundError`. That read replaces the listing a rollback used to make.
+  leaves the record, and the rollback throws `NotFoundError`. That read takes the place of a listing of the bucket.
 - A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row is the one
   the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and the record it wrote (none, over a row with no usable record: a rollback starts no record, a
   load seeds one, so a load's write differs there), and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
