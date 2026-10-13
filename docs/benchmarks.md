@@ -122,7 +122,7 @@ chunks lie in the object, not how many there are.
 | A segment's first single-part `store.load()` in the calibration run, a 1.05 MB segment, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** | derived |
 | A segment's first multipart `store.load()` in the calibration run, a 12.6 MB segment | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** | derived |
 
-A steady load, by kind of load, at `keep: 12` on the same run, of the release it installed: the requests are measured, and
+A steady load, by kind of load, at `keep: 12` on the same run, on `0.21.0`: the requests are measured, and
 the price is the list price.
 
 | Kind of load | Loads | Requests | One | Per million | Median time |
@@ -179,7 +179,7 @@ pointer refresh, for the segments a long-lived reader keeps reading. The
 | `iterate` over a 1,999-chunk segment | 3 GETs: a pointer and a tail read, and one range | $0.0000012 | $1.20 | expected |
 
 The run did not time `iterate`. Its count follows the same rule as the combines the run measured. A segment's first
-and reload loads are measured by the run above, and its steady loads, on the release that run installed. For the sizing
+and reload loads are measured by the run above, and so are its steady loads. For the sizing
 guide's medium and large deployments, whose chunks are larger, the requests are [counted for each overlap and
 layout](guide/sizing.md#how-much-the-overlap-matters). The layouts are the calibration's, of about 500-byte chunks;
 real ids are often denser, and the guide counts larger chunks.
