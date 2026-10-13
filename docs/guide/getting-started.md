@@ -26,7 +26,7 @@ throws at `import`. Put this in your `package.json`:
 ```
 
 npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the
-engine underneath; it arrives on its own and you never install or import it.
+engine underneath; it arrives on its own and you never install or import it. Install one copy of `@cloudbitmaps/roaring` in a process: a combine refuses a segment from another copy that is not the same release.
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
 Node versions: [CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) has the details.

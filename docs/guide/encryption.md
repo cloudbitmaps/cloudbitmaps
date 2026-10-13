@@ -33,7 +33,8 @@ Read these first. They are the traps.
 ## Turn it on
 
 Each segment gets its own random **DEK**, wrapped under your KEK and stored in the registry. The chunks and the index
-are AES-256-GCM-encrypted with the DEK, under data bound to `(segment, generation)`.
+are AES-256-GCM-encrypted with the DEK, under associated data that binds each blob to its namespace, segment,
+generation and purpose (a chunk and its key, the index, the metadata or the summary).
 
 ```ts
 import { CloudRoaring, InProcessKeystore, LocalFsStorage } from '@cloudbitmaps/roaring';
@@ -144,8 +145,8 @@ again after a failed one overlaps like the others.
 ## What is sealed where
 
 Each piece of a segment is stored in one place, in the clear or sealed under the segment's key (AES-256-GCM, with the
-segment's name, the generation and what the blob is for bound into the authenticated data, so a blob cannot be moved
-to another segment, another generation or another purpose):
+segment's namespace and name, the generation, what the blob is for and, for a chunk, its key bound into the
+authenticated data, so a blob cannot be moved to another segment, another generation or another purpose):
 
 | What | Where | Encrypted segment |
 |---|---|---|

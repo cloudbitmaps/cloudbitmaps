@@ -47,8 +47,14 @@ const manifest = await store.exportSegments(sink, {
 //             skipped:  [{ segment, namespace?, reason: 'destroyed' }] } // tombstones: nothing to export
 ```
 
-Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives bytes, `close` commits a
-segment, and `abort` (optional) discards a partial one.
+`encodeURIComponent` leaves `.`, `..` and Windows device names such as `con` as they are, and a name may be any
+non-empty string, so a namespace named `..` would write outside `dump`. A sink for names you do not control should
+refuse those, or use `encodeNameForPath` from `@cloudbitmaps/core/driver-kit` (add `@cloudbitmaps/core` to your own
+`package.json` to import it), which is what the `export-segments` command uses.
+
+Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives a `Uint8Array` (not a Node
+`Buffer`; decode text with `new TextDecoder().decode(bytes)`), `close` commits a segment, and `abort` (optional)
+discards a partial one.
 
 ## Export from the command line (local filesystem only)
 
@@ -128,6 +134,11 @@ And a store loads one straight back, with no per-id work:
   and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it.
   A file also holds what the segment held when it was read, so run again every erasure processed since the export
   began.
+- **Moving a store to a release that reads a newer registry schema.** A store refuses a row stamped with an older schema
+  with `UnsupportedError`, naming its key; there is no upgrade in place. Export every segment with the release that
+  wrote the rows, load the files into a new prefix with the new release, restore each row's `retention` and `residency`
+  as above, re-run every erasure processed since the export began, move every reader and writer to the new prefix, and
+  then delete the old prefix. The release's changelog entry on the registry schema has the full steps.
 - **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
   disappeared.** Export to a fresh directory for a clean dump.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds

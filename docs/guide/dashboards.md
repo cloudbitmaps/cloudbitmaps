@@ -189,13 +189,13 @@ name are told apart). `segment.publish` (a loaded generation became current),
 `segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward onto a generation
 an earlier rollback left, or onto a segment that had no current generation, when `fromGeneration` is `null`; the event
 carries `unknown: true` when the segment's row did not vouch for the target, because `allowUnknown` was passed, the
-row has no usable record of the generations it published, or the target is older than that record reaches, which
+row has no usable record of the generations it knows, or the target is older than that record reaches, which
 a dashboard of overrides filters on; the one event whose effect cannot be reconstructed from the
 objects in the bucket, which is why the [disaster-recovery guide](disaster-recovery.md) treats it as the receipt
 that matters, and emitted only on the sink passed to that `rollback` call),
 `segment.load-refused` (a load that did not publish, with its `reason` and the refused generation's
 `cardinality`: its guard refused the generation it wrote, the segment's row changed while it was writing, or
-another load took its generation number first, in which case it wrote nothing and `cardinality` is 0 — without it
+another load took its generation number first, in which case it wrote nothing and `cardinality` is 0, or `unanswered: true` marks a refusal that follows a registry write that got no answer, which may have landed first — without it
 the absence of a `segment.publish` is not otherwise distinguishable from a job that never ran), `segment.rewrite` (a
 generation derived from the segment itself replaced it — `fromGeneration` → `generation`; today the one
 emitter is a subject erasure, and it fires at the publish, *before* the superseded generation is collected, so
