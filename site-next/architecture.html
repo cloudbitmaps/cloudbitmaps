@@ -188,8 +188,9 @@
               chunks are fetched from it. Every chunk is one whole, checksum-verified chunk of one generation, never
               a merge of two sources, so a read cannot be torn. What a call can meet, a long one most often, is a
               second instant: a <span class="m">cache.genTtlMs</span> refresh after a publish, the reader cache
-              evicting the segment, a sweep of the generation it was reading or an invalidation moves the rest of
-              its chunks to whichever generation is current then. To hold one generation for as long as a job runs,
+              evicting the segment on a store with no timed refresh, the resolution cache letting the segment's
+              resolution go on a store with one, a sweep of the generation it was reading, met by this read or
+              another, or an invalidation moves the rest of its chunks to whichever generation is current then. To hold one generation for as long as a job runs,
               take a pin, <span class="m">seg.pin()</span>: a hold, not a lease. A pinned read fails rather than
               read another generation once its own is collected, so keep enough generations for the job.
             </span>
@@ -218,7 +219,7 @@
             <span class="rl-fig">3,000 bytes</span>
             <span class="rl-note">
               The payload in flight is bounded by
-              <span class="m">concurrency × operands × chunk</span> — the window, not the segment size. The store
+              <span class="m">concurrency × operands × the 1 MiB a range may be</span> — the window, not the segment size. The store
               holds two more things under caps you set: up to <span class="m">cache.maxChunks</span> decoded chunks
               in its cache (1,024 by default), and the open segments' indices, up to
               <span class="m">cache.readerMaxBytes</span> (64 MiB by default). The call itself holds each operand's
@@ -298,8 +299,8 @@
               into one immutable object, then the publish moves the pointer to it by compare-and-swap.
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. On S3 a segment's first
-              <span class="m">store.load()</span> costs <strong>$11.60 per million loads</strong>, pointer
-              included — measured request counts at list prices — so batch the refresh.
+              <span class="m">store.load()</span> costs <strong>$11.20 per million loads</strong>, pointer
+              included — measured requests on S3, priced at list — so batch the refresh.
             </p>
           </div>
           <div class="limit">
@@ -360,7 +361,10 @@
               verifies the result and publishes it <b>fenced</b> on the generation it streamed &mdash; if a load
               or another erasure moves the pointer meanwhile, the fence refuses the rewrite and the ledger says
               <span class="m">superseded</span>, so you re-run. Then it collects the generation that held the
-              bit. There is no tombstone to honour on the read path, and nothing to compact later: for every
+              bit. An id found only outside the current generation (a retained older generation, one above the
+              pointer, a first load's object on a segment with no generation yet) is deleted with those
+              generations, and the ledger reports <span class="m">erased: true</span> all the same. There is no
+              tombstone to honour on the read path, and nothing to compact later: for every
               segment the ledger reports <span class="m">erased: true</span>, the bit is <b>physically gone</b>
               from the bucket when the call returns. A noncurrent version, a soft-deleted copy, a replica or a
               backup keeps the old object until its own lifecycle removes it.
@@ -392,8 +396,8 @@
             </div>
             <p class="dgm-formula">
               The new generation is written <b>beside</b> the old one, and the pointer flips
-              <b>last</b>, by compare-and-swap, and only <b>forward</b>. A load's swap is also fenced on the row it
-              read, when there is one: if another write lands in between, the load reports
+              <b>last</b>, by compare-and-swap, and only <b>forward</b>. A load's swap is also fenced on what it
+              read, the row or its absence: if another write lands in between, the load reports
               <span class="m">superseded</span> rather than overwrite it. Until the flip, every reader still sees
               generation 6 &mdash; so a half-written publish cannot be observed, a crash between the two steps
               leaves 6 authoritative, and the superseded object stays readable for a grace window before the next
@@ -473,7 +477,7 @@
                what the panel is a selection OF instead, so a reader knows five is not the whole set. -->
           <div class="tpanel-head">
             <span class="label">What you will catch</span>
-            <span class="label">5 of 11 exported types</span>
+            <span class="label">5 of 12 error classes</span>
           </div>
           <div class="tscroll" tabindex="0" role="region" aria-label="What you will catch">
             <table>
@@ -515,7 +519,7 @@
                 <tr>
                   <th scope="row"><span class="m">IntegrityError</span></th>
                   <td class="from">
-                    Bytes came back that do not match their checksum. Something is corrupt; the same request
+                    Bytes came back that do not match their checksum, or a stored registry row is malformed. Something is corrupt; the same request
                     will return the same corruption.
                   </td>
                   <td><span class="status is-never">Never</span></td>
@@ -614,13 +618,16 @@
               simple-upload threshold, the client's own retry can replay it and the driver settles that by reading
               the write id back. A registry row is sent once and reconciled by its effect: a publish that gets no
               answer, or loses its compare-and-swap, re-reads the row and advances only if its fences still hold,
-              and otherwise says so to its caller. Seven kinds of change are audit events beside it, on the sink
+              and otherwise says so to its caller. Eight kinds of change are audit events beside it, on the sink
               the call was given: <span class="m">segment.publish</span>, <span class="m">segment.rollback</span>,
               <span class="m">segment.load-refused</span>, <span class="m">segment.rewrite</span>,
-              <span class="m">segment.erase</span>, <span class="m">segment.dispose</span>,
-              <span class="m">namespace.erase</span>. A retention policy's write
-              (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a collection pass and
-              the retention sweep's purge of its own tombstones emit none.
+              <span class="m">segment.collect</span>, <span class="m">segment.erase</span>,
+              <span class="m">segment.dispose</span>, <span class="m">namespace.erase</span>. A retention
+              policy's write (<span class="m">setRetention</span>, <span class="m">clearRetention</span>), a
+              collection pass and the retention sweep's purge of its own tombstones emit none. Each
+              <span class="m">segment.*</span> event carries <span class="m">incarnation</span>, the id of the registry
+              row it found or wrote (absent on a refused first load that found no row), so a purged-and-recreated
+              segment's generation numbers are told apart.
             </span>
           </li>
           <li>
@@ -661,8 +668,8 @@
               costs one ranged GET against your bucket — nothing between the reader and the bucket answers it more cheaply. The
               first read of a segment also reads its pointer and its index, and while its reader stays cached the
               pointer is read again at most once per <span class="m">cache.genTtlMs</span>, 2 s by default.
-              Object-store latency, in other words: a first read on an open segment took 25.94 ms at the median in
-              the in-region run of 2026-10-04, and what is not yet measured is
+              Object-store latency, in other words: a first read on an open segment took 26.10 ms at the median in
+              the in-region run of 2026-10-06, and what is not yet measured is
               <a href="benchmarks.html#owed">listed as owed</a>.
             </span>
           </li>
@@ -705,7 +712,7 @@
               <a class="btn" href="usage.html">The API</a>
               <a class="btn" href="benchmarks.html">Benchmarks</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.14.0 · zero-dependency core · 4 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.21.0 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
@@ -722,7 +729,7 @@
 
     <footer class="foot">
       <div class="foot-inner">
-        <span>CloudBitmaps · v0.14.0 · Apache-2.0</span>
+        <span>CloudBitmaps · v0.21.0 · Apache-2.0</span>
         <a href="demo.html">Demo</a>
         <a href="flavors.html">Flavors</a>
         <a href="usage.html">Usage</a>

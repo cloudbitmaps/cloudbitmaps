@@ -105,7 +105,7 @@
           <div class="hero-copy">
             <p class="eyebrow">
               <a href="../flavors.html">Flavors</a> · roaring · shipped ·
-              <span class="u">v0.14.0</span>
+              <span class="u">v0.21.0</span>
             </p>
             <h1>Containers that pick themselves.</h1>
             <p class="hero-lede">
@@ -378,10 +378,9 @@
                   <td class="from">
                     Per <em>segment</em>, not per id: the writer records an absolute
                     <span class="m">expiresAt</span> and the sweep is a call you schedule — nothing
-                    here starts a timer. For the lazy half of Redis's expiry, a handle opened with
-                    <span class="m">store.segment(name, { expiresAt })</span> reads empty past it,
-                    with no I/O. Never point an object-lifecycle rule at the bucket on its own; it
-                    deletes bytes the pointer still names.
+                    here starts a timer. For the lazy half of Redis's expiry, check the deadline
+                    where you read. Never point an object-lifecycle rule at the bucket on its own;
+                    it deletes bytes the pointer still names.
                   </td>
                 </tr>
               </tbody>
@@ -421,7 +420,8 @@
             difference from a node you keep standing. Rates are region-specific and the vendor's to
             change; every figure we publish uses the default
             <span class="m">aws-us-east-1-ondemand</span> rates, and
-            <span class="call">CloudRoaring.estimateCost</span> accepts your own.
+            <span class="call">estimateCost</span>, in <span class="m">@cloudbitmaps/tools</span>,
+            accepts your own.
           </p>
           <p class="tpanel-foot">
             <span class="label">One way in, and nothing to run</span> A segment exists once you have
@@ -642,7 +642,7 @@
               <a class="btn" href="../demo.html">Step through an intersection</a>
               <a class="btn" href="../flavors.html">Compare flavors</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.14.0 · zero-dependency core · 4 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.21.0 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label">
@@ -665,7 +665,7 @@
 
     <footer class="foot">
       <div class="foot-inner">
-        <span>CloudBitmaps · v0.14.0 · Apache-2.0</span>
+        <span>CloudBitmaps · v0.21.0 · Apache-2.0</span>
         <a href="../flavors.html">Flavors</a>
         <a href="../demo.html">Demo</a>
         <a href="../architecture.html">Architecture</a>

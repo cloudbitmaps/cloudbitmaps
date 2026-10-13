@@ -155,7 +155,7 @@
                     <a href="flavors/roaring.html" class="m">@cloudbitmaps/roaring</a>
                     <span class="row-sub">Adaptive containers — array, bitset, run</span>
                   </th>
-                  <td><span class="status">Shipped · <span class="u">v0.14.0</span></span></td>
+                  <td><span class="status">Shipped · <span class="u">v0.21.0</span></span></td>
                   <td class="from">
                     Ids are sparse or clustered and adaptive containers do real compression work. The default:
                     if you are moving off Redis sets, start here.
@@ -219,9 +219,9 @@
           <div class="limit">
             <p class="label">Cost</p>
             <p>
-              <strong>$81.60</strong> per million cold intersects of two segments sharing 100 of 1,999 chunks,
-              from requests measured on S3, and <strong>$11.60</strong> per million
-              <span class="m">store.load()</span> calls, pointer included, against
+              <strong>$2.40</strong> per million cold intersects of two segments sharing 100 of 1,999 chunks (6 GETs,
+              measured on S3), and <strong>$11.20</strong> per million first
+              <span class="m">store.load()</span> calls (2 PUT + 3 GET, measured on S3), pointer included, against
               <strong>$346/mo</strong> standing for a three-node Redis-HA cluster. Billed by the request either way — a codec
               changes bytes, not the pricing model.
             </p>
@@ -279,7 +279,7 @@
               <a class="btn btn-primary" href="flavors/roaring.html">How Roaring works →</a>
               <a class="btn" href="architecture.html">The engine underneath</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.14.0 · zero-dependency core · 4 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.21.0 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
@@ -296,7 +296,7 @@
 
     <footer class="foot">
       <div class="foot-inner">
-        <span>CloudBitmaps · v0.14.0 · Apache-2.0</span>
+        <span>CloudBitmaps · v0.21.0 · Apache-2.0</span>
         <a href="demo.html">Demo</a>
         <a href="architecture.html">Architecture</a>
         <a href="usage.html">Usage</a>
