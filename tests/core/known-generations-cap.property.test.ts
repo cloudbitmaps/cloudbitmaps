@@ -5,6 +5,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { generationsOf } from '@/core/generation-list';
 import {
   KNOWN_FILL,
+  MAX_KEPT_GENERATIONS,
   MAX_KNOWN_GENERATIONS,
   MAX_STORED_KNOWN_GENERATIONS,
   usableKnownGens,
@@ -215,6 +216,8 @@ describe('the most a real writer leaves in a ledger', () => {
 describe('what each boundary accepts of a ledger', () => {
   it('writes 192 and reads 384', () => {
     expect(KNOWN_FILL).toBe(128);
+    // A load that collects by name records at most 64 generations as its window.
+    expect(MAX_KEPT_GENERATIONS).toBe(64);
     expect(MAX_KNOWN_GENERATIONS).toBe(192);
     expect(MAX_STORED_KNOWN_GENERATIONS).toBe(384);
     // A writer's cap is the protected set at its largest: 127 vouched below the new generation, the new one, and the 64
