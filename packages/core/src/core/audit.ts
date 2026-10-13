@@ -62,8 +62,8 @@ export type AuditEvent =
       /**
        * Present, and `true`, when the row did not vouch for the target: the call passed `allowUnknown` for a generation the
        * row does not know or whose object is not the one it recorded, or the row has no usable record of its generations
-       * (a registry that drops the field, or a pointer moved by hand) or the target is older than a full record reaches,
-       * where a rollback below the pointer is judged as it was before the row kept the record. Absent when the move was
+       * (a registry that drops the field, or a pointer moved by hand) or the target is below a full record's bound, where the
+       * pointer alone decides for a target below it. Absent when the move was
        * checked against the row's record.
        */
       readonly unknown?: true;

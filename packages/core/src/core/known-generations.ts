@@ -344,6 +344,17 @@ export function isFullLedger(known: readonly KnownGeneration[]): boolean {
 }
 
 /**
+ * The number a target below the pointer is judged against on a full ledger: the least recently current entry that no
+ * lease entry of the row names (live or ended: a rollback has no clock). A leased entry stays in the ledger for its lease,
+ * however far the window has moved on since, so it does not mark where the ledger stopped remembering; the first entry no
+ * lease holds does. A ledger whose every entry is leased is judged against its first entry.
+ */
+export function fallbackBound(record: RegistryRecord, known: readonly KnownGeneration[]): number {
+  const leased = leasedByRow(record);
+  return (known.find((e) => !leased.has(e.generation)) ?? known[0]!).generation;
+}
+
+/**
  * Every generation the row's lease entries name, live or ended: a rollback has no clock to tell them apart, and this build
  * writes at most 64 entries, so holding them all fits the writer's cap. An ended one leaves the ledger at the next publish.
  */

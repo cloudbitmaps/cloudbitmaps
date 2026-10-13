@@ -20,7 +20,13 @@ import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from './crbm-open';
-import { describingKnown, isFullLedger, rollbackKnown, usableKnownGens } from './known-generations';
+import {
+  describingKnown,
+  fallbackBound,
+  isFullLedger,
+  rollbackKnown,
+  usableKnownGens,
+} from './known-generations';
 import { aadFor } from './crypto';
 import { generationsOf } from './generation-list';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -71,8 +77,9 @@ export interface GenerationEntry {
   readonly current: boolean;
   /**
    * Whether the row's record of the generations it published, `knownGens`, names this generation. A rollback onto a known
-   * generation needs no `allowUnknown`; an unknown one needs it, except in the two cases judged as before the row kept a
-   * record (a row with no usable `knownGens`, and a target below the oldest entry of a full one), where it needs none. The row's word, read with the listing's one registry read: the object is not opened, so
+   * generation needs no `allowUnknown`; an unknown one needs it, except below the pointer in the two cases the pointer
+   * alone decides (a row with no usable `knownGens`, and a target below a full one's bound), where it needs none. The
+   * row's word, read with the listing's one registry read: the object is not opened, so
    * its checksum is not compared. `false` for every generation of a row whose record is missing or unusable, and for a
    * segment with no row. The current generation of a row with a usable record is always known.
    */
@@ -177,7 +184,8 @@ export interface RollbackResult {
  * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
  *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
  *   One tail read of the target decides it, as does a footer that fails its own checks;
- * - `allowUnknown` on an **encrypted** segment, outside the two cases judged as before the row kept a record (below), needs the key, and is refused with `KeyUnavailableError` when the store has
+ * - `allowUnknown` on an **encrypted** segment, outside the two cases the pointer alone decides (below), needs the key,
+ *   and is refused with `KeyUnavailableError` when the store has
  *   no keystore, or its keystore holds none of the key's KEKs or one that does not unwrap the key: an object the row
  *   does not vouch for and that nothing opens may be one sealed under a key no row holds. A key service that did not
  *   answer in time is thrown as `TransientError`, to retry;
@@ -188,11 +196,12 @@ export interface RollbackResult {
  *
  * Which generations are known: the current one, the ones a load's `keep` keeps below it, those a live lease holds, and
  * the ones a rollback left above the pointer, until a load numbers above them. A known target needs no flag and, for
- * the same reason, no key: moving onto an object the row published, forward or back. Two cases are judged as they were
- * before the row kept the record, and are audited with `unknown: true`: a row with no usable `knownGens` (a registry that
- * drops the field, or a row whose pointer was moved by hand), for a target below the pointer; and a target below the
- * least recently current entry of a full record, which holds at most the 128 most recently current generations. Neither
- * gets the checks above.
+ * the same reason, no key: moving onto an object the row published, forward or back. Two cases are decided by the
+ * pointer alone, so a target below it needs no flag and no key, and are audited with `unknown: true`: a row with no
+ * usable `knownGens` (a registry that drops the field, or a row whose pointer was moved by hand); and a target below the
+ * bound of a full record (128 entries or more, leased ones included), which is its least recently current entry that no
+ * lease entry names. Neither gets the checks above. A generation a publish with a smaller `keep` no longer names but that
+ * stays in the bucket (a lease spared it, or its delete failed) needs `allowUnknown` until a later listing collects it.
  *
  * The same tail read opens the target when the segment's key is at hand, and the rollback writes the target's own id
  * count and metadata into the row, in the compare-and-swap that moves the pointer: a reader that sees the target as
@@ -271,7 +280,8 @@ export async function rollbackSegment(
   // Whether the row vouches for the target, and if not, on what footing the call goes on.
   const below = record.currentGen !== null && toGeneration < record.currentGen;
   const judgedAsBefore =
-    below && (known === undefined || (isFullLedger(known) && toGeneration < known[0]!.generation));
+    below &&
+    (known === undefined || (isFullLedger(known) && toGeneration < fallbackBound(record, known)));
   const mode: 'checked' | 'fallback' | 'override' =
     entry !== undefined
       ? 'checked'

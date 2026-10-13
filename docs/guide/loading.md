@@ -622,28 +622,34 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   moves onto it, and the row then records its checksum.
 - **A generation that is not in the bucket** throws `NotFoundError` naming the ones that are, once the row knows it or
   `allowUnknown` is passed; an unknown one is refused first.
-- **`allowUnknown` on an encrypted segment needs the segment's key**, outside the two cases below that are judged as before the row kept a record, where it only widens the call and the call lands key-less as it does without the flag: with no keystore, or one that holds none of the key's
-  KEKs or one that does not unwrap the key, it throws `KeyUnavailableError` before it reads the target, since nothing
-  vouches for the object and only opening it with the segment's key shows that it is not one sealed under another
-  key. A key service that throws `TransientError` or times out reaches you as `TransientError` (a timeout as its
-  `cause`), and nothing moves: run the rollback again once it answers. A known target needs no key.
-  `allowUnknown` never overrides the checks that follow: a target of the wrong kind, a footer that names another
-  generation, or an index or metadata that does not open is still refused, so no read of the result can fail.
-- **Two cases are judged as they were before the row kept a record**, with no flag and no checksum check, key-less
-  included, and audited with `unknown: true`:
-  - **A row with no usable `knownGens`**, for a target below the pointer: a registry of your own that drops the field,
-    a row whose pointer you moved with `backend.registry.compareAndSwap` as a repair (a patch that moves the pointer without naming the
-    record drops it), or a record that disagrees with its row. A rollback onto such a row writes no record, so it stays in
-    this case until the next load writes one. A target above the pointer on such a row needs `allowUnknown`.
-  - **A target older than a full record reaches.** The record names at most the 128 most recently current generations (and
-    those a live lease holds), and a destination that keeps every generation (an `*Into`, `materializeMany`) or a load with a
-    `keep` of 127 or more keeps more than that in the bucket. A target below the pointer and numbered below the
-    record's least recently current entry is judged as before: it needs no flag and no key, and it is audited
-    `unknown: true`. Everything the record names is still checked. "Older" is judged against the record's first entry, the
-    least recently current, so right after a rollback onto an old generation (which becomes the first entry) the generations
-    numbered between it and the rest need `allowUnknown` until the next publish drops it, or for as long as a lease keeps
-    it. At a `keep` of 128 or more that collects by listing, an object a crashed load left in a freed number below the
-    first entry can be rolled onto with no check, as before.
+- **`allowUnknown` on an encrypted segment needs the segment's key**, outside the two cases below where the pointer alone
+  decides, and there it only widens the call: the call lands key-less with the flag as it does without it. Otherwise, with no
+  keystore, or one that holds none of the key's KEKs or one that does not unwrap the key, it throws `KeyUnavailableError`
+  before it reads the target, since nothing vouches for the object and only opening it with the segment's key shows that it
+  is not one sealed under another key. A key service that throws `TransientError` or times out reaches you as
+  `TransientError` (a timeout as its `cause`), and nothing moves: run the rollback again once it answers. A known target
+  needs no key. `allowUnknown` never overrides the checks that follow: a target of the wrong kind, a footer that names
+  another generation, or an index or metadata that does not open is still refused, so no read of the result can fail.
+- **Two cases are decided by the pointer alone**: a target below the pointer needs no flag and no checksum check, key-less
+  included, and the event carries `unknown: true`. A target above the pointer needs `allowUnknown` in both.
+  - **A row with no usable `knownGens`**: a registry of your own that drops the field, a row whose pointer you moved with
+    `backend.registry.compareAndSwap` as a repair (a patch that moves the pointer without naming the record drops it), or a
+    record that disagrees with its row. A rollback onto such a row writes no record, so it stays in this case until the next
+    load writes one.
+  - **A target below a full record's bound.** A record is full at 128 entries, leased ones included: a writer that lets an
+    older generation go always leaves at least that many. It names the 128 most recently current generations, and those a
+    live lease holds, while a destination that keeps every generation (an `*Into`, `materializeMany`) or a load with a `keep`
+    of 127 or more keeps more than that in the bucket. The bound is the record's least recently current entry that no lease
+    names (every lease entry counts, live or ended, since a rollback has no clock; a record whose every entry is leased is
+    judged against its first entry). A leased entry stays for its lease however far the window has moved, so it does not
+    mark where the record stopped remembering. Everything the record names is still checked. A rollback onto an old
+    generation that no lease names makes it the least recently current entry, so it becomes the bound until the next publish
+    drops it: the generations numbered between it and the rest need `allowUnknown` (and the key on an encrypted segment)
+    until then. At a `keep` of 128 or more that collects by listing, an object a crashed load left in a freed number below the
+    bound can be rolled onto with no check.
+  - **A residue.** A generation that a publish with a smaller `keep` no longer names but that stays in the bucket (a lease
+    spared it, or its delete failed), while the record is not full, needs `allowUnknown` (and the key on an encrypted
+    segment) until a later listing collects it.
 - A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
   segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
@@ -1363,8 +1369,8 @@ listing, at most 16 generations on, unless a window holds it. Until it goes, [`r
 refuses it as a target unless the caller passes `allowUnknown`: the row never recorded it, so a rollback throws
 `ValidationError` before any request to storage, and with the override it publishes what no load published, an empty
 generation a guard refused among them. Two cases do not refuse it: the orphan is below the pointer and the row has no
-usable ledger or the orphan is numbered below a full ledger's oldest entry, where a rollback is judged as it was before
-the row kept a record, and the orphan is one a ledger seeded over a row with none recorded, which the row then knows.
+usable ledger or the orphan is numbered below a full ledger's bound, where the pointer alone decides, and the orphan is
+one a ledger seeded over a row with none recorded, which the row then knows.
 Nothing yet
 tells an orphan from a published generation under the same number: a number is taken again once its object is deleted
 (after a rollback below it, or an erasure's delete above the pointer), so a `segment.publish` audit event naming the

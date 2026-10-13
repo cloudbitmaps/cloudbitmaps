@@ -338,8 +338,8 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
 - Before the publish, the entry says `'superseded'`.
 - After the publish, while the call collects, the rewrite has left the row's list of known generations (`knownGens`)
   holding itself alone, so a rollback onto a generation it replaced or any older one is refused as unknown unless the
-  caller passes `allowUnknown`, or the row has no usable `knownGens`, or the target is older than a full one (the two
-  cases a rollback judges as before the row kept a list). When one of those lowers the pointer, the generation the rewrite
+  caller passes `allowUnknown`, or the row has no usable `knownGens` and the target is below the pointer (the pointer
+  alone decides there). When one of those lowers the pointer, the generation the rewrite
   replaced can be left above it, or be the one the pointer now names. A generation that still holds the id stays in the
   bucket, and the call reports an `error: ...` note instead of `erased: true`.
 - When the id was not in the current generation and nothing was published, a rollback while the call deletes

@@ -2084,15 +2084,16 @@ export class CloudRoaring {
    *
    * `{ allowUnknown: true }` moves onto a present object the row does not vouch for, or one whose checksum differs from
    * the recorded one, as long as it is the segment's kind of object, opens, and names the generation, and records it as
-   * known. On an encrypted segment, outside the two cases judged as before the row kept a record (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
+   * known. On an encrypted segment, outside the two cases the pointer alone decides (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
    * one that does not unwrap it, it is refused with `KeyUnavailableError` before the target is read, since an object
    * sealed under a key no row holds passes every check that needs no key, and a key service that did not answer in
    * time is thrown as `TransientError`, to retry. Every move the row did not vouch for is audited with `unknown: true`.
-   * Two cases are judged as they were before the row kept the record, with no flag and no checksum check, and are
-   * audited the same way: a row with no usable `knownGens` (a registry that drops the field, or a pointer moved by hand),
-   * for a target below the pointer, and a target below the least recently current entry of a full record, which names at
-   * most the 128 most recently current generations (an `*Into` destination keeps every generation in the bucket and
-   * names only the newest 128).
+   * Two cases are decided by the pointer alone: a target below it needs no flag, no key and no checksum check, and the
+   * move is audited the same way. They are a row with no usable `knownGens` (a registry that drops the field, or a pointer
+   * moved by hand), and a target numbered below the bound of a full record (128 entries or more, leased ones included),
+   * which is its least recently current entry that no lease names (an `*Into` destination keeps every generation in the
+   * bucket and names only the newest 128). A generation a publish with a smaller `keep` no longer names but that stays in
+   * the bucket (a lease spared it, or its delete failed) needs `allowUnknown` until a later listing collects it.
    *
    * Needs a backend.
    */

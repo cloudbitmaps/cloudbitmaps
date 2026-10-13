@@ -99,22 +99,26 @@ so, and so do the module headers in the code.
     lease holds, as "Lease each generation as it lands" in the loading guide describes. A known target needs no key, on an
     encrypted segment too, forward or back: the checksum vouches for it.
   - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known. On an
-    encrypted segment, outside the two cases below that are judged as before, it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is audited:
+    encrypted segment, outside the two cases below that the pointer alone decides, it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is audited:
     `segment.rollback` carries `unknown: true`.
-  - **A row with no usable `knownGens`** (a registry of your own that drops the field, or a pointer you moved with
-    `backend.registry.compareAndSwap` as a repair, which drops it) takes a rollback below its pointer as 0.20 did, with no
-    flag and, on an encrypted segment, no key, and gets none of the checks above. The event carries `unknown: true`.
-    Above the pointer such a row needs `allowUnknown`.
-  - **An `*Into` or `materializeMany` destination keeps every generation in the bucket, as before, but its row knows only
-    the 128 most recently current, and any a lease holds.** The same holds for a load with a `keep` above 127. A rollback
-    onto an older one, below the pointer, works as in 0.20, with no checksum check, and records `unknown: true`. "Older"
-    means numbered below the least recently current generation the row knows. After a rollback onto an old generation,
-    that generation can become the least recently current; until the next publish drops it, or while a lease keeps it, the
-    generations numbered between it and the rest of the list need `allowUnknown`. At a `keep` of 128 or more that
-    collects by listing, an object a crashed load left in a freed number below it can be rolled onto with no check, as in
-    0.20.
+  - **Two cases are decided by the pointer alone**: a target below the pointer needs no flag, no key and no checksum
+    check, and the event carries `unknown: true`; above the pointer both need `allowUnknown`.
+    - **A row with no usable `knownGens`** (a registry of your own that drops the field, or a pointer you moved with
+      `backend.registry.compareAndSwap` as a repair, which drops it) gets none of the checks above.
+    - **A target below a full list's bound.** An `*Into` or `materializeMany` destination keeps every generation in the
+      bucket, but its row knows only the 128 most recently current, and any a lease holds; the same holds for a load with a
+      `keep` above 127. A list of 128 entries or more (leased ones included) is full, and its bound is its least recently
+      current entry that no lease names. A rollback below the pointer onto a number below the bound needs no flag and no
+      checksum check, as in 0.20, and records `unknown: true`. After a rollback onto an old generation that no lease names,
+      that generation is the least recently current entry and so the bound: until the next publish drops it, the
+      generations numbered between it and the rest of the list need `allowUnknown`, and the key on an encrypted segment. At
+      a `keep` of 128 or more that collects by listing, an object a crashed load left in a freed number below the bound can
+      be rolled onto with no check, as in 0.20.
+  - **A residue:** a generation that a publish with a smaller `keep` no longer names but that stays in the bucket (a
+    lease spared it, or its delete failed), while the list is not full, needs `allowUnknown`, and the key on an encrypted
+    segment, until a later listing collects it.
   - Rolling to the generation already current reads its footer once, in place of a zero-byte read: an object missing is
-    `NotFoundError` as before, another footer than the row recorded under the number is `IntegrityError`, where it was
+    `NotFoundError` as it was, another footer than the row recorded under the number is `IntegrityError`, where it was
     reported as a no-op, and so is a current footer that fails its own checks (`.crbm` footer CRC mismatch), which a no-op
     did not look at. After the swap a rollback reads the target's footer once, in place of listing the bucket, and puts
     the pointer back if the object is gone or is another: a known target costs 4 requests (the row, the target's tail, the
@@ -124,8 +128,8 @@ so, and so do the module headers in the code.
     footer read after the swap takes a read that succeeds as proof that the object is there. The conformance suite holds
     a driver to it.
   - An erasure that rewrites a segment leaves only the rewrite in `knownGens` before it collects, so a rollback without
-    `allowUnknown` cannot bring an older generation back, except through the 0.20 rule on a row with no `knownGens` or
-    below a full list (both above).
+    `allowUnknown` cannot bring an older generation back, except where the pointer alone decides: a row with no `knownGens`,
+    or a number below a full list's bound (both above).
   Move `allowForward` to `allowUnknown` only where the target is one the row does not know: a rollback that undoes an
   earlier rollback needs no flag at all.
 
@@ -361,7 +365,7 @@ so, and so do the module headers in the code.
   the key it opens the target as before, and refuses one that does not open. A rollback onto a generation the row knows
   goes ahead without the key, backward or forward, opening nothing and leaving the row with no summary of the target:
   the footer checksum the row recorded vouches for the object, and it is read with no key. A rollback below the
-  pointer on a row with no usable `knownGens`, and one below a full list, also go ahead without the key, as they did.
+  pointer on a row with no usable `knownGens`, and one below a full list's bound, also go ahead without the key: the pointer alone decides there.
   Any other failure of `openDek`, such as a `TypeError` from a keystore of your own, is thrown and moves nothing, where
   it was swallowed and the rollback went ahead without the key: make such a keystore throw `TransientError` for a
   fault worth riding out, as `IKeystore.openDek` now says.
@@ -461,7 +465,7 @@ so, and so do the module headers in the code.
   shape that rejects at its first pull. A leased per-id `iterate()` over 2 million ids in memory showed no slowdown beyond run-to-run noise against the build before (measured: medians 476 ms before, 469 ms after; a difference under about 5% cannot be excluded).
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
   Each of these reads the segment's row just before each delete, and a rollback onto the very generation being deleted
-  (one onto a generation above the pointer, which took `allowForward` then) could land between that read and the delete, pass its own
+  (one onto a generation above the pointer) could land between that read and the delete, pass its own
   check and leave the pointer on an object that is gone, with no call saying so: the load answered as it would have, the
   erasure reported `erased: true`, and a collection either succeeded or threw `WriteConflictError`. Each call now holds
   every read of the row after a delete to what it deleted, and reads the row once more after its last delete. When the

@@ -621,7 +621,7 @@ is the version you copied back, and its `knownGens` lists the generations that r
 no flag, with or without a key, since the footer checksum the row recorded vouches for the object. A generation
 published after that version needs `{ allowUnknown: true }`, and the key on an encrypted segment. `store.generations(ref)`
 lists such a generation with `known: false`. A row whose pointer you moved by hand with `backend.registry.compareAndSwap`
-has no `knownGens`: a rollback below its pointer works as before, with no flag and no key, and its audit event says
+has no `knownGens`: a rollback below its pointer needs no flag and no key (the pointer alone decides), and its audit event says
 `unknown: true`. Until the next load writes a new list, such a row has none of the checks a list gives (a rollback writes none).
 
 ```ts
