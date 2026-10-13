@@ -133,7 +133,7 @@ open waiting for the key holds up to `tailBytes` (256 KiB by default) of the obj
 sends no tail read for an encrypted row.
 
 The tail read of an encrypted row is not sized from the row's summary, as a cleartext row's is: the summary is sealed
-under the key, so sizing from it would send the tail read after the key, which is the wait the overlap removes. A
+under the key, so sizing from it would send the tail read after the key, which is the wait the overlap removes for an open that starts from the object (a cold `has()` waits for the key first either way). A
 segment whose index is longer than the 256 KiB tail read (tens of thousands of chunks) therefore costs one range read
 for the index after the tail read, where the same cleartext segment costs none.
 

@@ -121,7 +121,7 @@ so, and so do the module headers in the code.
   wrong number costs one read once, and `checkConsistency({ summaries: true })` reports it as `summary-mismatch`. That
   check's own open is sized the same way, for clear and sealed summaries, so a wide segment no longer adds a range read.
   An encrypted generation's cold open is not sized: its summary is sealed under the key, and sizing from it would send
-  the tail read after the key, so it keeps the default tail beside the key and its range read for a wide index. A row
+  the tail read after the key, so it keeps its default tail read (sent beside the key by an open that starts from the object, an `iterate`, a combine or a pin; a cold `has()` waits for the key first, as before) and its range read for a wide index. A row
   with no summary the store can use, and the opens of a pin, a rollback, an erasure and a write's check, are as before.
   No public signature changes.
 
@@ -288,6 +288,11 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of at least 1 bytes, with
+  `ValidationError`.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on an index off
+  without a word, and a fractional one made the cap compare oddly; now either is refused when the source is built, the
+  way a bad `cache.genTtlMs` is. The sized tail read a cold open makes is held to the same bound, and a bound that
+  cannot give a whole number of bytes leaves the read at the source's own tail size.
 - **A refused erasure rewrite refuses a load that took its number with the same bytes, rather than deleting the load's
   generation.** When another writer's publish refused an erasure's rewrite and left the pointer below it, the erasure
   deleted its own object above that pointer once one read of its footer matched the rewrite's fingerprint. A footer

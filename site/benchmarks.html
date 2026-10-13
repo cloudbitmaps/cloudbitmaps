@@ -687,7 +687,7 @@
               reading, on S3's request shape, in as many reader processes as you pass it. And it still quotes low
               where it cannot see: more hot segments than a reader
               keeps open, the index every reader opens again after each load, an intersect that outlives the
-              pointer TTL, an index larger than the tail read, a load that loses a publish race.
+              pointer TTL, an index larger than the tail read on an encrypted segment or a row with no usable summary, a load that loses a publish race.
             </p>
           </div>
         </div>

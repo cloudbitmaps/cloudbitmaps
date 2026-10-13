@@ -170,10 +170,10 @@ This is the one place the bound is stated; other pages link here.
   read is sized from the row's summary, which records how many bytes of the object's end an open needs: a segment whose
   index is longer than 256 KiB (tens of thousands of chunks) comes in that one read, so its first `has()` is three requests
   (the row, the tail and the chunk), not four. The size is never below the store's `tailBytes` option, and never more
-  than the object holds or the store's `maxIndexBytes` (8 MiB by default) and 4,212 bytes; a summary this store has found
+  than the object holds or the store's `maxIndexBytes` (8 MiB by default) plus 4,212 bytes; a summary this store has found
   to disagree with its object is not used again. A row with no summary the store can use opens with the default tail read.
   An encrypted generation's open is not sized, because its summary is sealed under the key and sizing from it would send the
-  tail read after the key: it keeps the default tail beside the key, and a wide one reads its index with one range read more.
+  tail read after the key: it keeps its default tail read (beside the key for an open that starts from the object; a cold `has()` waits for the key first, as before), and a wide one reads its index with one range read more.
 - **What it means for another store's erasure or crypto-shred.** After an eviction a store can serve a cached chunk of a
   generation another store erased from, up to the same `cache.genTtlMs`. It also reads with the wrapped keys it kept:
   a store whose reader was evicted unwraps the key from them again through the keystore, so a crypto-shred by another
