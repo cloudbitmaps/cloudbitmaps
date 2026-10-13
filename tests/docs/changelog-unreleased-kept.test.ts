@@ -86,12 +86,12 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
   {
     title:
       'The retry policy refuses a fractional `maxAttempts` and a `maxDelayMs` below `baseDelayMs`.',
-    reason: 'folded into the Breaking entry that lists every input 0.20.0 took and 0.21.0 refuses',
+    reason: 'folded into the Breaking entry on options and inputs 0.20.0 took that 0.21.0 refuses',
   },
   {
     title: 'A `getTail` length follows one rule on every storage driver.',
     reason:
-      'retitled in the 0.21.0 notes: the rule is merged with the in-process and S3 `getTail` entries and now covers `BufferReader`',
+      'retitled in the 0.21.0 notes: the rule is merged with the in-process and S3 `getTail` entries, and its title now names `BufferReader`',
   },
   {
     title:
@@ -102,7 +102,7 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
   {
     title:
       'A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with `ValidationError`, when it is built.',
-    reason: 'folded into the Breaking entry that lists every input 0.20.0 took and 0.21.0 refuses',
+    reason: 'folded into the Breaking entry on options and inputs 0.20.0 took that 0.21.0 refuses',
   },
   {
     title: 'A rollback to the generation already current checks that its object is there.',

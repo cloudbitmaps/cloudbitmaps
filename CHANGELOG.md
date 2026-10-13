@@ -156,8 +156,9 @@ so, and so do the module headers in the code.
     `maxDelayMs` out, or give it at least `baseDelayMs`. Left out, it is 2000 ms, or `baseDelayMs` when that is larger,
     where 0.20.0 capped every delay at 2000 ms.
   - `CrbmStorageChunkSource`'s `maxIndexBytes` must be a whole number above 0. `null`, which 0.20.0 read as the default,
-    and `Infinity` and `NaN`, which turned the cap on an index off, are refused, as are a fraction, zero and a negative
-    number. Leave it out for the default, 8 MiB.
+    `Infinity` and `NaN`, which turned the cap on an index off, and a fraction, are refused. So are zero and a negative
+    number, with which 0.20.0 built the source and then failed every read of a generation that holds ids with
+    `IntegrityError`. Leave it out for the default, 8 MiB.
   - `MemoryStorage` and `LocalFsStorage` refuse an option they do not take (each takes `now`), which 0.20.0 ignored, and
     `new LocalFsStorage('')`, which 0.20.0 rooted at the working directory. Name the root directory.
   - `estimateCost` refuses a key it does not take at any level, and `groundedReport` one inside `workload` or `pricing`;
@@ -381,8 +382,8 @@ so, and so do the module headers in the code.
   throws `ValidationError` before anything is read: `NaN`, a fraction, an infinity of either sign, and a whole number of
   2^53 or more or of -2^53 or less. In 0.20.0 the in-process and local-filesystem drivers and `BufferReader` read `NaN`
   as the whole object or failed with a raw `RangeError`, and read `Infinity` and lengths past the safe range as the
-  whole object; S3 sent a fraction or `NaN` in its range header and surfaced the service's error; and S3, GCS and Azure
-  Blob answered a negative fraction and `-Infinity` with an empty tail.
+  whole object; S3 sent a fraction or `NaN` in its range header and surfaced the service's error; and every driver and
+  `BufferReader` answered a negative fraction, `-Infinity` and a whole number of -2^53 or less with an empty tail.
 - **A malformed size or switch given to a cloud backend is a `ValidationError` in every case.** A `Symbol` given as
   `partBytes`, `maxObjectBytes`, `simpleUploadThresholdBytes` or `blockBytes` threw a `TypeError` while the refusal's
   message was built, and `AzureBlobStorage` read `blockBytes: null` as the default where it refused
@@ -660,7 +661,8 @@ so, and so do the module headers in the code.
   them as it does for GCS and Azure. An Azure properties response with no ETag is refused with `ValidationError`, since
   the download could not then be conditional.
 - **`estimateCost` refuses a total it cannot price.** A workload or rate card whose cost is not a finite number of
-  dollars is a `ValidationError`, instead of a report of `$Infinity/mo`.
+  dollars is a `ValidationError`, instead of a report of `$Infinity/mo`. `groundedReport` refuses such a total the same
+  way.
 - **Two error messages name something you can reach.** `groundedReport`'s `ValidationError` for an unknown option told
   you to pass a `stat()`'s `size` as `storageBytes`, a field that does not exist; it now says `sizeBytes`. The
   `UnsupportedError` for a registry row stamped 1, 2 or 3 pointed to "the CHANGELOG", which an installed package does
