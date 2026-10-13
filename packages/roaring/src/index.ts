@@ -1185,9 +1185,10 @@ export class CloudRoaring {
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan (collected by the first load that collects once a generation
-      // above it is current, or deleted by the refusal itself when the destination was dropped meanwhile) or was
-      // never written at all, because the write-once PUT itself collided. Telling someone to look for an
+      // apart: the object either exists (an orphan, collected by the first load that collects once a generation
+      // above it is current or deleted by the refusal itself when the destination was dropped meanwhile; or current
+      // but not provably this call's, when a write renewed the row's `pointerId` over it) or was never written at all,
+      // because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
       // is wrong for two of them: a `setRetention` on the

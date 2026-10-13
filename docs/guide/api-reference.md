@@ -985,8 +985,9 @@ counts a write as its own if and only if the row's `pointerId` is one of the tok
 so it needs no read of the object and cannot mistake another writer's write of the same bytes for its own. A `pointerId`
 that is not one is another writer's write, or the writer's own write that landed and was then followed, before the
 writer read the row again, by a write that renews the row's `pointerId` over it: an erasure's renewal, or a rollback
-that moved the pointer off the generation and back. The writer cannot tell the two apart, reports none published though
-its generation may be current, and deletes nothing, and a re-run publishes a new generation. `ObjectStoreRegistry` (so
+back onto the generation after a publish or another rollback moved the pointer off it. The writer cannot tell the two
+apart, reports none published though its generation may be current, and deletes nothing, and a re-run publishes, or
+erases. `ObjectStoreRegistry` (so
 the S3, GCS and Azure Blob registries), the in-memory registry and the local-filesystem registry report; the registry
 conformance suite holds a registry that sets the flag to the cases above, among them N writers racing one write with
 one body, which must report tokens no loser shares with the row. **A registry that wraps or extends another and

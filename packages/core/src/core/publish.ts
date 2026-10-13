@@ -657,8 +657,9 @@ async function landedHere(
   // A registry that reports its writes' tokens settles it by the token: the pointer is over this call's write when the
   // row's `pointerId` is the token of one it sent. Another writer's identical object under the number, which the footer
   // cannot tell from the caller's, is not it. A write that renews the row's `pointerId` over this call's own landed
-  // write (an erasure's renewal, or a rollback that moved the pointer off the generation and back) reads as not its own
-  // too: the two cannot be told apart, so the call reports none published and deletes nothing.
+  // write (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the
+  // pointer off it) reads as not its own too: the two cannot be told apart, so the call reports none published and
+  // deletes nothing.
   if (sent !== undefined) return sent.has(now.pointerId);
   if (holdsOwnObject === undefined) {
     throw new TransientError(

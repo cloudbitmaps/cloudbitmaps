@@ -432,8 +432,9 @@ so, and so do the module headers in the code.
   deletes nothing the row names. A write of its own that landed and was then reported as a conflict, including one a
   policy write was swapped over, is still published. The one trade: a write of its own that landed and was then
   followed, before the call read the row again, by a write that renews the row's `pointerId` over it (an erasure's
-  renewal, or a rollback that moved the pointer off the generation and back) now reads as not its own, so the call
-  reports none published though its generation may be current, and deletes nothing; a re-run publishes, or erases. A
+  renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it) now
+  reads as not its own, so the call reports none published though its generation may be current, and deletes nothing;
+  a re-run publishes, or erases. A
   registry of your own that does not report tokens keeps the footer check.
 
 - **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with

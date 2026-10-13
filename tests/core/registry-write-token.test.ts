@@ -452,7 +452,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       });
     });
 
-    it('a load, then a rollback that moved the pointer off its generation and back: superseded, nothing deleted, a re-run publishes', async () => {
+    it('a load, then another load moving the pointer off its generation and a rollback back onto it: superseded, nothing deleted, a re-run publishes', async () => {
       await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
       const lGate = gate();
       const lAudit = new RecordingAuditSink();
@@ -483,7 +483,7 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       });
     });
 
-    it('an erasure rewrite, then a rollback that moved the pointer off its generation and back: erased false, no rewrite audited, nothing deleted, a re-run erases', async () => {
+    it('an erasure rewrite, then a load moving the pointer off its generation and a rollback back onto it: erased false, no rewrite audited, nothing deleted, a re-run erases', async () => {
       await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
       const g = gate();
       const audit = new RecordingAuditSink();
@@ -1042,7 +1042,7 @@ describe('a registry that overrides a write method: forwarding options settles b
       },
     );
 
-    it('with a footer that is not its own, the write is refused whoever landed it', async () => {
+    it("with a footer that is not its own, another writer's landed write is refused", async () => {
       expect(await publishOver(make('another'), false, noRow)).toBe(false);
     });
   });
@@ -1057,7 +1057,7 @@ describe('a registry that overrides a write method: forwarding options settles b
     return { result, audit, storage };
   }
 
-  it('a load over a subclass that forwards options publishes its own landed write, by token', async () => {
+  it('a load over a subclass that forwards options publishes its own landed write', async () => {
     const { result, audit } = await loadOver(new Forwarding());
     expect(result).toMatchObject({ generation: 1, published: true });
     expect(kinds(audit)).toEqual(['segment.publish']);
