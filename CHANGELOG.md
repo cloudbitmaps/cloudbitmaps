@@ -84,6 +84,18 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as `runConsistencyCheck`
+  and `store.checkConsistency`): holds every generation a row's ledger of known generations (`knownGens`) names, the
+  current one included, and the bucket has, to the footer checksum the ledger records. A generation whose object is not
+  the one recorded is reported as the new issue `known-generation-mismatch`, with the new `ConsistencyIssue.generation`
+  set; it means the object under that number is not the one the row recorded. It holds each object's footer to the
+  recorded checksum, so it finds another object, or bytes that are not a `.crbm`, under a known number; it does not find
+  damage inside an object whose footer is intact (a read of that generation reports it as `IntegrityError`), nor a
+  metadata change that keeps the footer's bytes. A segment adds at most 1 plus its ledger's length issues. A known
+  generation missing from the bucket is not reported, and a row with a pointer whose ledger is absent or fails
+  validation is counted in the new `ConsistencyReport.generationsUnchecked` and none of its objects is read. Each
+  generation the ledger names costs one 104-byte footer read, with no key and not retried (a failed one lands the
+  segment in `errored`): 2 per segment at `keep: 1`, and one request on S3 and GCS, two on Azure Blob. Off by default, and the default check makes the requests it made.
 - **`CrbmReader.tailBytes`** (`@cloudbitmaps/core`, re-exported by `@cloudbitmaps/roaring`): the bytes of the object
   after its chunk payloads, that is its extension block when it has metadata, its index and its footer. A tail read of
   that many bytes reaches all of them. It is the object's size less where its payloads end, known at open with no
@@ -105,6 +117,25 @@ so, and so do the module headers in the code.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
 ### Changed
+
+- **A cold open of a cleartext generation reads its whole tail in one request, however wide its index.** The row's
+  summary records how many bytes of the object's end an open needs (`tailBytes`: its extension block, its index and its
+  footer), and a cold open now sizes its tail read from it. A segment whose index is longer than the 256 KiB default
+  tail (tens of thousands of chunks) used to cost a second read for the index, and now comes in the one tail read: a
+  cold `has()` of a segment of 300,000 random ids is the row, the tail and the chunk, 3 requests, where it was 4
+  (counted on the in-memory backend), and an `iterate` or an `intersect` makes one range read fewer for each such
+  operand. The bytes fall as well, since the index range read no longer repeats the end of the default tail. The number
+  only sizes a read, and the reader checks every byte as before: the read is never smaller than the store's `tailBytes`
+  option (256 KiB by default), and, beyond that option, never larger than the object less its preamble or the store's
+  `maxIndexBytes` (8 MiB by default) plus 4,212 bytes, so a registry of your own that hands over a wrong or hostile number costs the default
+  tail, a longer read or one range read more, never a different answer. The summary is held to its object's `tailBytes`
+  as it is to its count and metadata: a store that finds them different stops using that summary for the process, so a
+  wrong number costs one read once, and `checkConsistency({ summaries: true })` reports it as `summary-mismatch`. That
+  check's own open is sized the same way, for clear and sealed summaries, so a wide segment no longer adds a range read.
+  An encrypted generation's cold open is not sized: its summary is sealed under the key, and sizing from it would send
+  the tail read after the key, so it keeps its default tail read (sent beside the key by an open that starts from the object, an `iterate`, a combine or a pin; a cold `has()` waits for the key first, as before) and its range read for a wide index. A row
+  with no summary the store can use, and the opens of a pin, a rollback, an erasure and a write's check, are as before.
+  No public signature changes.
 
 - **An encrypted generation's cold open sends its tail read beside the key request, not after it.** An open that
   starts from the object (`iterate`, a combine, a pin) waited for the keystore's unwrap before it sent the tail
@@ -289,6 +320,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
+  `ValidationError`, when it is built.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on
+  an index off without a word, and a fraction made the cap compare oddly. Refused now: `NaN`, a fraction, `Infinity`
+  (which also switched the cap off: the cap is what bounds an open's memory), zero, a negative number and `null`. Leave
+  the option out for the default, 8 MiB. The sized tail read a cold open makes is held to the same bound, and a bound
+  that cannot give a whole number of bytes leaves the read at the source's own tail size.
 - **A refused erasure rewrite refuses a load that took its number with the same bytes, rather than deleting the load's
   generation.** When another writer's publish refused an erasure's rewrite and left the pointer below it, the erasure
   deleted its own object above that pointer once one read of its footer matched the rewrite's fingerprint. A footer

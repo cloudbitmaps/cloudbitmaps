@@ -223,7 +223,7 @@ the size its `stat()` reports.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
   again when it outlives `cache.genTtlMs` (a pointer, and an index once the row's `pointerId` has moved: a load's
   publish moves it, a lease or a policy write does not) or the reader cache evicts its reader part-way through (an
-  index, and a pointer too where the store keeps no resolution of the segment), and a second index read for an index
+  index, and a pointer too where the store keeps no resolution of the segment), and, for an encrypted segment or a row with no summary the store can use, a second index read for an index
   larger than the reader's tail read.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer

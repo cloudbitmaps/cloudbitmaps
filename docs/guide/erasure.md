@@ -56,8 +56,9 @@ pays one renewal and the deletes for each such segment, and the next pays nothin
 answer waits before each fresh write, under 500 ms, then 1 s, then 2 s, so up to 3.5 s in all, one wait after another
 within a segment; `eraseSubject` erases `concurrency` segments at once (8 by default), so up to 8 segments can wait
 side by side. A renewal on a segment with a generation moves its row's `pointerId`, so every store reading that
-segment opens its current generation again once, at its next refresh: one more tail read each where the generation's
-index fits in that read, and a range read for the index as well where it does not.
+segment opens its current generation again once, at its next refresh: one more tail read each where the generation is cleartext
+and its row has a summary (which sizes the read to take the index), and a range read for the index as well where it is
+encrypted, or the row has no summary, and the index does not fit in that read.
 
 ## Reading the ledger
 
@@ -167,7 +168,8 @@ from, as the first rule says, and re-run the loads an erasure refused.
 
 **After a registry restore, look before you erase.** Run `checkConsistency({ summaries: true })`: it reports a row
 whose pointer names a missing object, or another object than the row's summary names ([disaster
-recovery](disaster-recovery.md#restore-procedure)). It does not look in the bucket of a row with no generation, so
+recovery](disaster-recovery.md#restore-procedure)); `generations: true` also holds the older generations the row
+knows to the footer checksum it recorded for each. It does not look in the bucket of a row with no generation, so
 also list `store.generations(ref)` for each row whose `currentGen` is `null`. Objects there are a first load's in
 flight, or what is left of a state of the row the restore went back past: an erasure treats them all as a first
 load's, and deletes each that holds the id, and every one it cannot open (on a row with no key, every encrypted one),

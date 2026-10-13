@@ -27,6 +27,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/read-path-sequences.property.test.ts',
   'tests/core/collect-by-name.test.ts',
   'tests/core/consistency-summary.test.ts',
+  'tests/core/consistency-generations.test.ts',
   'tests/core/admin-path-counts.test.ts',
   'tests/tools/cost.test.ts',
   'tests/core/exclude-batching.test.ts',
