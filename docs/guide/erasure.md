@@ -60,16 +60,16 @@ segment opens its current generation again once, at its next refresh: one more t
 and its row has a summary (which sizes the read to take the index), and a range read for the index as well where it is
 encrypted, or the row has no summary, and the index does not fit in that read.
 
-An erasure that finds the id only in generations below the pointer, with nothing to delete by name, reads the row once
-more than it did before, ahead of its collection, and writes it once when the row's ledger of known generations names a
-generation the collection will delete: the write takes those names out of the ledger before anything is deleted
-([how it stays correct](#how-it-stays-correct)). On a row with no usable ledger it reads the row once more again after the
+An erasure that finds the id only in generations below the pointer, with nothing to delete by name, reads the row ahead
+of its collection and writes it once when the row's ledger of known generations names a generation the collection will
+delete: the write takes those names out of the ledger before anything is deleted
+([how it stays correct](#how-it-stays-correct)). On a row with no usable ledger it also reads the row once more after the
 collection, in case a load started a ledger meanwhile. Counted at an object-store registry on the in-memory backend,
 for a segment with one older generation that holds the id: 7 requests that read and 1 that writes when the ledger names
-it (5 and none before), and 6 and none when it does not. An erasure that rewrites the current generation costs what it
-did, 9 reads and 1 write. The write moves the row's token, so a load running on that segment at that moment is refused,
-as any load is by a write that landed while it ran (`superseded`: load again). It also leaves a timing signal in the
-registry, which [the privacy note](../../PRIVACY.md) describes.
+it, 6 and none when a usable ledger does not, and 7 and none on a row with no usable ledger. An erasure that rewrites the
+current generation costs 9 reads and 1 write. The write moves the row's token, so a load running on that segment at that
+moment is refused, as any load is by a write that landed while it ran (`superseded`: load again). It also leaves a timing
+signal in the registry, which [the privacy note](../../PRIVACY.md) describes.
 
 ## Reading the ledger
 
@@ -332,10 +332,10 @@ by a count spares. A rewrite publishes a ledger of itself alone, so every older 
 collection. A call that deletes without rewriting (the id is only in an older generation) writes the row once instead,
 after its search and before its first delete, to take out of the ledger each holder it will delete by name and every name
 below the pointer that its collection will delete. The current generation is never taken out, and the order of the rest
-is kept. Only then does it delete. So a rollback that read the row before the write loses its swap, a rollback that reads
-it after finds the generation unknown, and the collection, which spares every generation the row names when it reads the
-row before each delete, never deletes what a load or a rollback has since made known. The same write renews the row's
-`pointerId` when the call deletes by name, as before. What the write does in a race:
+is kept. Only then does it delete. So a rollback that read the row before the write loses its swap, and the collection,
+which spares every generation the row names when it reads the row before each delete, does not delete what a load or a
+rollback has made known since. The same write renews the row's `pointerId` when the call deletes by name. What the write
+does in a race:
 
 - **No write when none is owed.** A ledger that names nothing to delete, and no renewal to make, costs no write. Neither
   does a call whose renewal another erasure's write already made after this call listed the bucket and whose names that
@@ -345,16 +345,21 @@ row before each delete, never deletes what a load or a rollback has since made k
   generation it found clean, which the load's window names and the collection then spares as the load's grace
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has
   left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but one
-  that still sits above it, or a rollback onto one, is `'superseded'` and deletes nothing, as before.
-- **A write that loses** to another writer is made again against the row read after it, up to five losses in all, then
-  the call reports `'superseded'` with nothing deleted and makes no claim: on a segment that loads many times a second
-  that is an outcome to expect now and then, and a re-run settles it. A write of the row's leases alone costs no attempt.
-- **A row with no usable ledger** has no names to take out when the call reads it, but a load that publishes before the
-  collection reads the row starts a ledger from the bucket, which names the holders the collection would then spare.
-  The call reads the row again after the collection and, when the ledger now names what it deletes, takes the names out
-  and collects again, within the same five losses.
+  that still sits above it is `'superseded'` and deleted nothing by name. A rollback onto a holder leaves that holder
+  current, and the call reports `'superseded'` after it has taken the holders below the pointer.
+- **A write that loses** to another writer is made again against the row read after it. The fifth lost write across the
+  call's fences ends the call with `'superseded'` and no claim; when it is the first write, nothing was deleted. On a
+  segment that loads many times a second that is an outcome to expect now and then, and a re-run settles it. A write of
+  the row's leases alone costs no attempt.
+- **A collection that spared a name the row knows** is followed by a second pass. A rollback onto a holder, a load that
+  kept a holder in its window, or a load that started a ledger on a row that had none, made the row name what the
+  collection meant to delete since the write took it out. The call writes the row again to take those names out and
+  collects again, until a collection spares nothing the row names, within the same five lost writes. The rewrite's
+  collection does the same for the generations below the rewrite.
 - **A row that is gone** or a tombstone has no ledger: the deletes by name stop with the row's reason, and the
-  collection reads the row itself. An erasure never answers `'absent'` while a holder is still in the bucket; it throws.
+  collection reads the row itself. When every holder is below the pointer, so nothing is deleted by name, the call never
+  answers `'absent'` while a holder is still in the bucket: it throws. A call that deletes by name and finds its row gone
+  answers `'absent'`.
 
 **Racing writers.** Another writer that moves the pointer off the generation the rewrite derived from can be a load,
 another erasure, or an operator's `rollback`. Another erasure collects with `keep: 0`, so it can delete the generation

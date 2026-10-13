@@ -88,10 +88,13 @@ An erasure that finds the id in no generation but an older one also writes the s
 deletes anything, when the row's ledger of known generations names a generation the call is about to delete: it takes
 those names out of the ledger first (see [how it stays correct](docs/guide/erasure.md#how-it-stays-correct)). That write
 is a timing signal. Someone who can read the registry and knows when an erasure ran can tell that this segment's row
-changed then, and so that the segment held the subject in a generation older than its current one. Before, the row
-changed at erasure time only for a segment whose current generation held the id, or that held one above the pointer, on
-no pointer, or in an object no read could open. The ledger itself names no id and no size; it is written in the clear
-on every row, an encrypted one included, and carries a generation's number and its object's footer checksum.
+changed then, and so that the segment held the subject in a generation older than its current one. The row also
+changes at erasure time when the segment's current generation held the id, or one above the pointer, a first load's
+object on no pointer, or an object no read could open. The entries the write removes from the ledger show which
+generations went, and for a holder above the pointer that is exactly the holders; the ledger names no id and no size,
+and is written in the clear on every row, an encrypted one included, carrying a generation's number and its object's
+footer checksum. When a load starts a ledger while the call runs, or a rollback or a load makes the row name a holder
+again, the row changes a second time.
 
 Two of the rules while you erase. **Do not load a segment while erasing from it**: a load that lands after the rewrite carries whatever
 its source held, and the library cannot know that source was meant to exclude the id — fix the source first, or
