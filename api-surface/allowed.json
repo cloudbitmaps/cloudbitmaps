@@ -425,18 +425,18 @@
   },
   {
     "entry": "@cloudbitmaps/core ConsistencyIssue.issue",
-    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the issue union gains 'known-generation-mismatch'"
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the issue union gains 'known-generation-mismatch'; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/roaring ConsistencyIssue.issue",
-    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the issue union gains 'known-generation-mismatch'"
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the issue union gains 'known-generation-mismatch'; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/roaring CloudRoaring.checkConsistency",
-    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the options gain generations"
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the options gain generations; agreed with the maintainer"
   },
   {
     "entry": "@cloudbitmaps/core runConsistencyCheck",
-    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the options gain generations"
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the options gain generations; agreed with the maintainer"
   }
 ]
