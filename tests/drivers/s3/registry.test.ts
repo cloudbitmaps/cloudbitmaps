@@ -118,6 +118,13 @@ registryConformance('S3RegistryDriver (fake S3)', () => {
   const client = new FakeS3() as unknown as S3Client;
   return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudbitmaps', now: ticking() });
 });
+
+it('S3RegistryDriver declares that it reports write tokens', () => {
+  const client = new FakeS3() as unknown as S3Client;
+  expect(new S3RegistryDriver({ client, bucket: 'b', now: ticking() }).reportsWriteTokens).toBe(
+    true,
+  );
+});
 // The same contract over a fake that pages its listing three keys at a time, so the listing must follow its token.
 registryConformance(
   'S3RegistryDriver (fake S3, three keys a page)',

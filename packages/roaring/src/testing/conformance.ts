@@ -1384,6 +1384,116 @@ export function registryConformance(
       expect((await d.get(SEG))!.leases).toBeUndefined();
     });
 
+    // ── a write's token, reported before it is sent ────────────────────────────────────────────────────────────────
+    // A registry that sets `reportsWriteTokens` tells a writer the token of each write before sending it, so that the
+    // writer can say, whatever became of the request, whether the row's `pointerId` is its own write's. A registry that
+    // does not set it is not held to these cases.
+    describe('write tokens', () => {
+      /** The writes a test makes, each with the tokens it reported, in the order reported. */
+      const collect = (): { tokens: string[]; options: { onToken: (t: string) => void } } => {
+        const tokens: string[] = [];
+        return { tokens, options: { onToken: (t) => void tokens.push(t) } };
+      };
+
+      it('a create reports the token it returns, and the row it makes has it as its token and its pointerId', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const { tokens, options } = collect();
+        const { token } = await d.create(SEG, { currentGen: 0 }, options);
+        expect(tokens).toEqual([token]);
+        expect(await d.get(SEG)).toMatchObject({ token, pointerId: token });
+      });
+
+      it('a create handed `held: null` reports its token too', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const { tokens, options } = collect();
+        const { token } = await d.create(SEG, { currentGen: 0 }, { ...options, held: null });
+        expect(tokens).toEqual([token]);
+        expect((await d.get(SEG))!.pointerId).toBe(token);
+      });
+
+      it('a compare-and-swap naming a resolved field reports its token, which becomes the row pointerId, held row or not', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const created = await d.create(SEG, { currentGen: 0 });
+        const first = collect();
+        const t1 = (await d.compareAndSwap(SEG, created.token, { currentGen: 1 }, first.options))
+          .token;
+        expect(first.tokens).toEqual([t1]);
+        expect((await d.get(SEG))!.pointerId).toBe(t1);
+        const held = (await d.get(SEG))!;
+        const second = collect();
+        const t2 = (await d.compareAndSwap(SEG, t1, { currentGen: 2 }, { ...second.options, held }))
+          .token;
+        expect(second.tokens).toEqual([t2]);
+        expect((await d.get(SEG))!.pointerId).toBe(t2);
+      });
+
+      it('a compare-and-swap that names no resolved field reports its token, which becomes the row token and not its pointerId', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const { token: created } = await d.create(SEG, { currentGen: 0 });
+        const { tokens, options } = collect();
+        const { token } = await d.compareAndSwap(SEG, created, { retention: { days: 5 } }, options);
+        expect(tokens).toEqual([token]);
+        expect(await d.get(SEG)).toMatchObject({ token, pointerId: created });
+      });
+
+      it('a token is reported before the write is applied: a report that throws stops it, and the row is untouched', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const refused = new Error('stop before sending');
+        const stop = {
+          onToken: (): void => {
+            throw refused;
+          },
+        };
+        await expect(d.create(SEG, { currentGen: 0 }, stop)).rejects.toBe(refused);
+        expect(await d.get(SEG)).toBeNull();
+        const { token } = await d.create(SEG, { currentGen: 0 });
+        await expect(d.compareAndSwap(SEG, token, { currentGen: 1 }, stop)).rejects.toBe(refused);
+        expect(await d.get(SEG)).toMatchObject({ token, pointerId: token, currentGen: 0 });
+      });
+
+      it('a write that conflicts leaves no row carrying a token it reported', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+        const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 1 });
+        const { tokens, options } = collect();
+        await expect(d.create(SEG, { currentGen: 5 }, options)).rejects.toBeInstanceOf(
+          WriteConflictError,
+        );
+        await expect(d.compareAndSwap(SEG, t0, { currentGen: 9 }, options)).rejects.toBeInstanceOf(
+          WriteConflictError,
+        );
+        const row = (await d.get(SEG))!;
+        expect(row).toMatchObject({ token: t1, pointerId: t1, currentGen: 1 });
+        expect(tokens).not.toContain(row.token);
+        expect(tokens).not.toContain(row.pointerId);
+      });
+
+      it('each write reports its own token, and a conflicted one leaves none behind', async (ctx) => {
+        const d = makeDriver();
+        if (d.reportsWriteTokens !== true) return ctx.skip();
+        const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+        await d.compareAndSwap(SEG, t0, { currentGen: 1 }); // t0 is stale now
+        const { tokens, options } = collect();
+        await expect(d.compareAndSwap(SEG, t0, { currentGen: 2 }, options)).rejects.toBeInstanceOf(
+          WriteConflictError,
+        );
+        const fresh = (await d.get(SEG))!;
+        const landed = (await d.compareAndSwap(SEG, fresh.token, { currentGen: 2 }, options)).token;
+        const again = (await d.compareAndSwap(SEG, landed, { currentGen: 3 }, options)).token;
+        expect(tokens.filter((t) => t === landed)).toHaveLength(1);
+        expect(tokens.filter((t) => t === again)).toHaveLength(1);
+        expect(new Set(tokens).size).toBe(tokens.length);
+        expect(tokens).toContain((await d.get(SEG))!.pointerId);
+        expect((await d.get(SEG))!.pointerId).toBe(again);
+      });
+    });
+
     // ── `pointerId`: the token of the last write that named a field a read resolves through ──────────────────────────
     // A reader keys its caches on a generation with this. A driver that kept it across a write that changed what the
     // row resolves to would let a reader serve one resolution's chunks for another; one that renewed it on a lease or
@@ -1745,6 +1855,40 @@ export function registryConcurrency(
       await expect(a.compareAndSwap(SEG, token, { currentGen: 9 })).rejects.toBeInstanceOf(
         WriteConflictError,
       );
+    });
+
+    // A registry that reports its writes' tokens makes a token unique to its write attempt, also against another writer
+    // racing the same version: a loser's token is never the one the row ends up carrying, so a publish that was told
+    // only its own tokens cannot take another writer's landed write for its own. A version counter alone is not enough.
+    it("writers racing one create, or one swap from the same token, each report their own token: the row carries only the winner's", async (ctx) => {
+      const drivers = makeDrivers();
+      if (drivers[0].reportsWriteTokens !== true) return ctx.skip();
+      const racers = 6;
+      /** `racers` writers, alternating over the two drivers, each with its own token collector. */
+      const race = async (
+        write: (d: IRegistryDriver, onToken: (t: string) => void) => Promise<{ token: string }>,
+      ): Promise<void> => {
+        const reported: string[][] = Array.from({ length: racers }, () => []);
+        const results = await Promise.allSettled(
+          reported.map((tokens, i) => write(drivers[i % 2]!, (t) => void tokens.push(t))),
+        );
+        const winners = results.flatMap((r, i) => (r.status === 'fulfilled' ? [i] : []));
+        expect(winners).toHaveLength(1);
+        for (const r of results) {
+          if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(WriteConflictError);
+        }
+        const winner = winners[0]!;
+        const row = (await drivers[0].get(SEG))!;
+        expect(reported[winner]).toContain(row.pointerId);
+        reported.forEach((tokens, i) => {
+          if (i !== winner) expect(tokens, `writer ${i}`).not.toContain(row.pointerId);
+        });
+      };
+      // Every racer sends the same body, as two loads of the same ids racing one number do, so a token derived from the
+      // content sent would be the same for the winner and the losers.
+      await race((d, onToken) => d.create(SEG, { currentGen: 0 }, { onToken }));
+      const { token } = await drivers[0].get(SEG).then((r) => ({ token: r!.token }));
+      await race((d, onToken) => d.compareAndSwap(SEG, token, { currentGen: 10 }, { onToken }));
     });
 
     it('a delete racing a swap leaves exactly one outcome, never both', async () => {

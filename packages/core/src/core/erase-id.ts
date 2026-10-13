@@ -1477,9 +1477,10 @@ async function eraseOnce(
     keep: 0,
     // Every generation below the new pointer is deleted whatever a lease says, so the row drops its leases.
     clearLeases: true,
-    // A write that ends without an answer is settled by reading the row, and a pointer at this number is this
-    // rewrite's only over an object whose footer matches what it wrote: one of other bytes cannot pass for it, and one of
-    // the same bytes holds the rewrite's content.
+    // A write that ends without an answer is settled by reading the row: a registry that reports its writes' tokens
+    // settles it by the row's `pointerId`; any other takes a pointer at this number for this rewrite's only over an
+    // object whose footer matches what it wrote, so one of other bytes cannot pass for it, and one of the same bytes
+    // holds the rewrite's content.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
     clock: deps.clock,
     rng: deps.rng ?? deps.readRetry?.rng,

@@ -1174,18 +1174,21 @@ export class CloudRoaring {
     // without an assertion. `'superseded'` only ever accompanies `published: false` anyway.
     const reason = result.reason;
     if (reason === 'superseded') {
-      // The object is durable, but a concurrent writer published a higher generation of `dest` between our
-      // numbering and our publish, so ours is an orphan no reader will resolve. Returning it here would name
-      // `generation` as "the destination's new current generation" — which is what `MaterializeResult`
-      // documents it to be, and it would be false. The destination holds someone else's content.
+      // The object is durable, but this call's write may not be the one that made it current: a concurrent writer
+      // published a higher generation of `dest` between our numbering and our publish, or a write that renewed the
+      // row over ours left us unable to tell it from another writer's. Ours may then be an orphan no reader will
+      // resolve. Returning it here would name `generation` as "the destination's new current generation" — which is
+      // what `MaterializeResult` documents it to be, and it could be false. The destination may hold someone else's
+      // content.
       //
       // A throw rather than a flag: every other write path in the library reports a lost race loudly, and a
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan (collected by the first load that collects once a generation
-      // above it is current, or deleted by the refusal itself when the destination was dropped meanwhile) or was
-      // never written at all, because the write-once PUT itself collided. Telling someone to look for an
+      // apart: the object either exists (an orphan, collected by the first load that collects once a generation
+      // above it is current or deleted by the refusal itself when the destination was dropped meanwhile; or current
+      // but not provably this call's, when a write renewed the row's `pointerId` over it) or was never written at all,
+      // because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
       // is wrong for two of them: a `setRetention` on the
@@ -1194,11 +1197,11 @@ export class CloudRoaring {
       // investigation. `size > 0` is the one thing this path can state as fact.
       const wrote =
         result.size > 0
-          ? `generation ${result.generation} was written and is not current`
+          ? `generation ${result.generation} was written and may not be current`
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
-          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
+          `result may not be the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
           `(a retention policy does either), dropped or purged. Re-read the destination and re-run.`,
       );
     }

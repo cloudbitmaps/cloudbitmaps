@@ -113,17 +113,19 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
-  the row and reports its own landed write as published (proved by the object's footer); and when the row is as it was,
-  the load sends a fresh compare-and-swap from the version it read, at most three times with backoff on the injected
-  clock, under the registry's fence, so at most one copy lands. Throttling that never clears throws the registry's
-  `TransientError` with the object kept: nothing is deleted after an ambiguous outcome, because a write may still land.
+  the row and reports its own landed write as published (proved by the tokens the registry reported for the writes it
+  sent, or, on a registry of your own that does not report tokens, by the object's footer); and when the row is as it
+  was, the load sends a fresh compare-and-swap from the version it read, at most three times with backoff on the
+  injected clock, under the registry's fence, so at most one copy lands. Throttling that never clears throws the
+  registry's `TransientError` with the object kept: nothing is deleted after an ambiguous outcome, because a write may
+  still land.
   A throttle only adds requests, so the cost model is unchanged. **Proven against** stubbed services under each real
   SDK (the throttle answers, a request applied and then refused, one applied after the load gave up, a request delayed
   past the fresh one) and, for the objects, against MinIO and fake-gcs-server with the throttle injected at the client.
   **Not yet captured** from the real services: whether S3, GCS and Azure apply a request they answered as throttled is
-  not documented, so correctness rests on the write id, the footer and the registry's fence, never on that, and the
-  in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an S3-compatible
-  service is not retried and not classified transient on S3.
+  not documented, so correctness rests on the write id, the write's token and the registry's fence, never on that, and
+  the in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an
+  S3-compatible service is not retried and not classified transient on S3.
 - **Metadata on a generation, and a row that describes its current generation**. `load` and the `*Into` verbs take a
   small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
   JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also

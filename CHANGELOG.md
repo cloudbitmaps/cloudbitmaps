@@ -136,6 +136,21 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **A registry can report the token of each write before it sends it: `RegistryWriteOptions.onToken` and
+  `IRegistryDriver.reportsWriteTokens`.** A `create` or `compareAndSwap` of a registry that sets `reportsWriteTokens`
+  calls `onToken` with the token its write carries before the request is sent: a write sent again with a new token
+  reports it, and one that repeats the same body repeats the token already reported. The token is unique to that write
+  attempt, also against another writer racing the same version; a version counter alone is not enough. The row's
+  `pointerId` is the token of the write that last set the pointer, so a publish that has been told the tokens of its own
+  writes knows whether a write that conflicted or got no answer landed. A registry that overrides `create` or
+  `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to `false`
+  (the flag may be a getter or a field); one that does neither reads every write of its own that landed after an error
+  or a lost answer as not its own (`superseded`), and deletes nothing. Both members are optional: a registry of your own
+  that does not report tokens is unchanged, and its writes are settled by the footer of the object the pointer names, as
+  before. The in-memory, local-filesystem and shared object-store registries (so the S3, GCS and Azure Blob ones)
+  report. The registry conformance suite holds a registry that sets the flag to it, including that writers racing one
+  write, all with the same body, each report a token the row carries only for the winner.
+
 - **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as `runConsistencyCheck`
   and `store.checkConsistency`): holds every generation a row's ledger of known generations (`knownGens`) names, the
   current one included, and the bucket has, to the footer checksum the ledger records. A generation whose object is not
@@ -169,6 +184,13 @@ so, and so do the module headers in the code.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
 ### Changed
+
+- **A materialisation whose write did not become current says its generation "was written and may not be current".**
+  The `WriteConflictError` that `intersectInto`, `unionInto` and `andNotInto` throw when the destination changed while
+  they ran said "was written and is not current", and that the result "is not the destination's current generation". A
+  write of the call's own that landed and was then renewed over reads as not its own, though its generation can be the
+  destination's current one, so the message now says "was written and may not be current" and "may not be the
+  destination's current generation".
 
 - **An erasure takes every generation it will delete out of the row's ledger of known generations before it deletes
   anything.** A rewrite already published a ledger of itself alone. An erasure that finds the id only in an older
@@ -399,6 +421,21 @@ so, and so do the module headers in the code.
   fault worth riding out, as `IKeystore.openDek` now says.
 
 ### Fixed
+
+- **A load or an erasure rewrite no longer reports another load's publish as its own.** After a registry write that
+  conflicted or got no answer, the call asked whether the object under the row's pointer was its own by reading the
+  object's footer, which names bytes and not the writer. A load of the same ids writes the same bytes, so a load whose
+  write lost to it, or an erasure rewrite overtaken by one, could report `published: true` or `erased: true`, audit a
+  `segment.publish` or `segment.rewrite` it did not make and, in the erasure's case, delete a generation the other
+  publish's list keeps. On a registry that reports write tokens (all the shipped ones) the call now counts the write as
+  its own only when the row's `pointerId` is the token of a write it sent: it reports `superseded`, audits a refusal and
+  deletes nothing the row names. A write of its own that landed and was then reported as a conflict, including one a
+  policy write was swapped over, is still published. The one trade: a write of its own that landed and was then
+  followed, before the call read the row again, by a write that renews the row's `pointerId` over it (an erasure's
+  renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it) now
+  reads as not its own, so the call reports none published though its generation may be current, and deletes nothing;
+  a re-run publishes, or erases. A
+  registry of your own that does not report tokens keeps the footer check.
 
 - **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
   `ValidationError`, when it is built.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on

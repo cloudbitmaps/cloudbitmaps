@@ -23,6 +23,7 @@ import type {
   RegCaps,
   RegistryPatch,
   RegistryRecord,
+  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from '../core/ports';
@@ -74,13 +75,22 @@ export class MemoryRegistryDriver implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
+  /** Every write reports its token to `onToken` before it is applied. */
+  get reportsWriteTokens(): true {
+    return true;
+  }
+
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
     validateSegmentRef(ref);
     const row = this.rows.get(segmentKey(ref));
     return row ? structuredClone(row) : null; // clone out: callers can't mutate stored (nested) state
   }
 
-  async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
+  async create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
     const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
@@ -88,6 +98,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
     const token = this.nextToken(drawIncarnation(this.entropy));
+    options?.onToken?.(token);
     // clone in: the caller's (nested) retention/residency can't alias stored state (value semantics, parity
     // with the serialize-based persistent drivers).
     this.rows.set(key, structuredClone(recordFromNew(ref, checked, this.now(), token)));
@@ -102,6 +113,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     ref: SegmentRef,
     expected: Token,
     patch: RegistryPatch,
+    options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
     const checked = validateRegistryPatch(patch);
@@ -112,6 +124,7 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     }
     // Every row here was created by this driver, so its token carries an incarnation, which every write keeps.
     const token = this.nextToken(incarnationOf(existing.token)!);
+    options?.onToken?.(token);
     this.rows.set(key, structuredClone(applyRegistryPatch(existing, checked, this.now(), token)));
     return { token };
   }

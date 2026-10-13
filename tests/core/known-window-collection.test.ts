@@ -242,16 +242,15 @@ describe('a ledger seeded at its birth names the leases the row holds when it is
   });
 });
 
-describe('a same-bytes publish misattributed to another load', () => {
+describe("a same-bytes publish by another load is not this load's", () => {
   // Load B writes generation 1, and its publish is held. An erasure of an id B's object holds deletes it and renews the
   // row, so the number is free: load A writes the same ids, so the same bytes, under 1 and publishes it. B's publish then
-  // meets a changed row, asks whether the generation the row names is its own, and the same footer says yes. This is
-  // a known defect (a footer names bytes, not the writer): the load reports `published: true` and audits a publish it
-  // did not make. What the ledger adds is the collection's side of it: B's `keep: 0` collection, decided from the row it
-  // wrote against, would delete generation 0, which the row's ledger now names.
+  // meets a changed row. The registry reports the token of each write it is sent, and the row's pointer is over A's
+  // write, not B's, so B is superseded: it reports no publish, audits none, and its `keep: 0` collection deletes
+  // nothing the row's ledger names.
   const IDS = [4, 8];
 
-  it('keep 0: the false report stands, and the collection spares the generation the ledger names', async () => {
+  it('keep 0: the load is superseded, and its collection spares the generation the ledger names', async () => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
     const deps = { storage, registry, codec: roaringCodec, clock };
@@ -291,12 +290,12 @@ describe('a same-bytes publish misattributed to another load', () => {
 
     bAtPublish.open();
     const result = await b;
-    // The report is false and stays so: B did not publish 1, A did.
-    expect(result).toMatchObject({ generation: 1, published: true });
+    // B did not publish 1, A did.
+    expect(result).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect(bAudit.snapshot()).toEqual([
-      expect.objectContaining({ kind: 'segment.publish', generation: 1 }),
+      expect.objectContaining({ kind: 'segment.load-refused', generation: 1 }),
     ]);
-    // B's keep 0 would delete 0, but the row's ledger names it, and B's pass spares what the row knows.
+    // A keep 0 collection would delete 0, but B published nothing, so none runs; the row's ledger still names it.
     expect(await generations(storage)).toEqual([0, 1]);
     expect((await registry.get(REF))!.knownGens!.map((e) => e.generation)).toEqual([0, 1]);
   });
