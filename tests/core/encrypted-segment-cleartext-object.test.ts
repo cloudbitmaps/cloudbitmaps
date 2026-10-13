@@ -7,7 +7,7 @@ import { nextGeneration } from '@/core/generation-gc';
 import { provenObject } from '@/core/crbm-open';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { IntegrityError, NotFoundError } from '@/core/errors';
+import { IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
 import { publishGeneration } from '../helpers/publish';
 import { roaringCodec } from '@/roaring-codec';
@@ -162,8 +162,8 @@ describe('a cleartext object under an encrypted segment', () => {
     const encrypted = await load([7, 8]);
     expect(encrypted).toBe(1);
     // The row does not know 0: refused for that, and `allowUnknown` (which needs the key) reaches the kind check.
-    await expect(rollbackSegment(SEG, 0, { storage, registry, keystore })).rejects.toThrow(
-      /not one its row knows it published/,
+    await expect(rollbackSegment(SEG, 0, { storage, registry, keystore })).rejects.toBeInstanceOf(
+      ValidationError,
     );
     await expect(
       rollbackSegment(SEG, 0, { storage, registry, keystore }, { allowUnknown: true }),

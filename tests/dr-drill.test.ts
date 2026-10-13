@@ -129,7 +129,7 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
         fromGeneration: 1,
         generation: 0,
         // The raw write that moved the pointer dropped the row's record of the generations it published, so the rollback
-        // is judged as it was before the row kept one, and the audit says the row did not vouch for it.
+        // is judged as a row with no record of its generations is judged: no flag, and the audit says the row did not vouch for it.
         unknown: true,
       },
     ]);

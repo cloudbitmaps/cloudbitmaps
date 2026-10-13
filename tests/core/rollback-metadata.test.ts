@@ -87,7 +87,7 @@ describe('a rollback of a cleartext segment', () => {
       ),
     ).toBe(true);
 
-    await rollbackSegment(SEG, 1, w.deps, { allowUnknown: true });
+    await rollbackSegment(SEG, 1, w.deps);
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 1,
       cardinality: 1,
@@ -575,6 +575,44 @@ describe('a rollback onto a known object above the pointer that was replaced aft
     expect(row.currentGen).toBe(1);
     expect(row.summary).toEqual(before.summary);
   });
+
+  it.each([
+    ['cleartext', (): World => world()],
+    ['encrypted', (): World => world(key())],
+  ])(
+    'an override onto an unknown stray above the pointer, replaced after it was read, puts the pointer back, on a %s segment',
+    async (_name, make) => {
+      const w = make();
+      await rolledBackBelowTwo(w);
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [7, 8], {
+        registry: w.registry,
+        keystore: w.load.keystore,
+        publish: false,
+      });
+      const before = (await w.registry.get(SEG))!;
+      const replace = async (): Promise<void> => {
+        await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [100, 200, 300], {
+          registry: w.registry,
+          keystore: w.load.keystore,
+          publish: false,
+        });
+      };
+      await expect(
+        rollbackSegment(
+          SEG,
+          5,
+          { ...w.deps, storage: replacedAfterFirstRead(w, 5, replace) },
+          { allowUnknown: true },
+        ),
+      ).rejects.toThrow(
+        /generation 5 of "s" was replaced while the pointer was moving — the pointer was put back/,
+      );
+      const row = (await w.registry.get(SEG))!;
+      expect(row.currentGen).toBe(1);
+      expect(row.summary).toEqual(before.summary);
+      expect(row.knownGens!.map((e) => e.generation)).not.toContain(5);
+    },
+  );
 
   it('is a NotFoundError, as a collected target is', async () => {
     const w = world();

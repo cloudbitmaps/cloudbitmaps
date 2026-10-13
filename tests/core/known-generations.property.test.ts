@@ -5,7 +5,7 @@ import fc from 'fast-check';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 import { MAX_KNOWN_GENERATIONS, usableKnownGens, windowOf } from '@/core/known-generations';
-import { IntegrityError, LeaseLimitError, TransientError } from '@/core/errors';
+import { IntegrityError, LeaseLimitError, TransientError, ValidationError } from '@/core/errors';
 import { footerCrcUnder } from '@/core/crbm-open';
 import { LEASE_SKEW_MS, MAX_LEASE_MS, releaseLease, takeLease } from '@/core/leases';
 import { loadSegment } from '@/core/load';
@@ -770,6 +770,16 @@ describe.each(registries)('the known-generations ledger against its model, over 
                     }
                     const flag =
                       swapped || (ledger === undefined ? forward : !ledger.includes(target));
+                    // Outside the two cases judged without a record (no ledger, below the pointer; below a full ledger's
+                    // oldest entry, below the pointer), a target the ledger lacks is refused before the override is tried.
+                    const judgedWithoutRecord =
+                      !forward &&
+                      (ledger === undefined || (ledger.length >= 128 && target < ledger[0]!));
+                    if (!swapped && flag && !judgedWithoutRecord) {
+                      await expect(
+                        rollbackSegment(SEG, target, { storage, registry }),
+                      ).rejects.toBeInstanceOf(ValidationError);
+                    }
                     await rollbackSegment(
                       SEG,
                       target,

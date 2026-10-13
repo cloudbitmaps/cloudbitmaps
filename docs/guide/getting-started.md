@@ -266,7 +266,9 @@ keys of encrypted segments all live there. There is no second service to run.
 - **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, and which resource each one goes on.
 - **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
-  generation can be overwritten without an error. Check yours.
+  generation can be overwritten without an error. It must also answer a read of an object as missing as soon as its
+  delete returns (read-after-delete): a rollback reads the target's footer once after moving the pointer and takes a
+  read that succeeds as proof the object is there. Check yours.
 - **If you pass your own `client`, use `@aws-sdk/client-s3` 3.700.0 or later.** Older versions drop a conditional
   header they do not model, without an error: they overwrite an existing object, which loses a published generation,
   or send the registry's compare-and-swap unconditionally. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.

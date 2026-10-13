@@ -20,13 +20,7 @@ import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
 import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from './crbm-open';
-import {
-  describingKnown,
-  isFullLedger,
-  leasedByRow,
-  rollbackKnown,
-  usableKnownGens,
-} from './known-generations';
+import { describingKnown, isFullLedger, rollbackKnown, usableKnownGens } from './known-generations';
 import { aadFor } from './crypto';
 import { generationsOf } from './generation-list';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -76,8 +70,9 @@ export interface GenerationEntry {
   /** Whether the registry pointer currently names this generation. */
   readonly current: boolean;
   /**
-   * Whether the row's record of the generations it published, `knownGens`, names this generation: a rollback onto it
-   * needs no `allowUnknown`. The row's word, read with the listing's one registry read: the object is not opened, so
+   * Whether the row's record of the generations it published, `knownGens`, names this generation. A rollback onto a known
+   * generation needs no `allowUnknown`; an unknown one needs it, except in the two cases judged as before the row kept a
+   * record (a row with no usable `knownGens`, and a target below the oldest entry of a full one), where it needs none. The row's word, read with the listing's one registry read: the object is not opened, so
    * its checksum is not compared. `false` for every generation of a row whose record is missing or unusable, and for a
    * segment with no row. The current generation of a row with a usable record is always known.
    */
@@ -182,7 +177,7 @@ export interface RollbackResult {
  * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
  *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
  *   One tail read of the target decides it, as does a footer that fails its own checks;
- * - `allowUnknown` on an **encrypted** segment needs the key, and is refused with `KeyUnavailableError` when the store has
+ * - `allowUnknown` on an **encrypted** segment, outside the two cases judged as before the row kept a record (below), needs the key, and is refused with `KeyUnavailableError` when the store has
  *   no keystore, or its keystore holds none of the key's KEKs or one that does not unwrap the key: an object the row
  *   does not vouch for and that nothing opens may be one sealed under a key no row holds. A key service that did not
  *   answer in time is thrown as `TransientError`, to retry;
@@ -276,9 +271,7 @@ export async function rollbackSegment(
   // Whether the row vouches for the target, and if not, on what footing the call goes on.
   const below = record.currentGen !== null && toGeneration < record.currentGen;
   const judgedAsBefore =
-    below &&
-    (known === undefined ||
-      (isFullLedger(known, leasedByRow(record)) && toGeneration < known[0]!.generation));
+    below && (known === undefined || (isFullLedger(known) && toGeneration < known[0]!.generation));
   const mode: 'checked' | 'fallback' | 'override' =
     entry !== undefined
       ? 'checked'
@@ -417,6 +410,17 @@ export async function rollbackSegment(
   // went or is another. One footer read, whatever the target. Re-pointing can itself be raced, which is why it is fenced
   // on the token the swap returned (or that of the row that showed a swap with no answer landed) and why failing to undo is
   // reported rather than swallowed.
+  const emitMove = (): void => {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.rollback',
+      segment: ref.segment,
+      namespace: ref.namespace,
+      ...incarnationField(record.token),
+      fromGeneration: record.currentGen,
+      generation: toGeneration,
+      ...(vouched === 'checked' ? {} : { unknown: true as const }),
+    });
+  };
   let stillThere = true;
   let replaced = false;
   try {
@@ -425,7 +429,12 @@ export async function rollbackSegment(
     if (isNotFoundError(err)) stillThere = false;
     else if (isIntegrityError(err))
       replaced = true; // a footer that no longer checks is not the object that was read
-    else throw err;
+    else {
+      // The swap landed and nothing says the target went: the pointer is on it. The move is on the record before the fault
+      // is thrown, so a re-run, which finds the pointer where it is and reports a no-op, does not leave it unrecorded.
+      emitMove();
+      throw err;
+    }
   }
   if (!stillThere || replaced) {
     let undone = false;
@@ -486,15 +495,7 @@ export async function rollbackSegment(
     );
   }
 
-  safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
-    kind: 'segment.rollback',
-    segment: ref.segment,
-    namespace: ref.namespace,
-    ...incarnationField(record.token),
-    fromGeneration: record.currentGen,
-    generation: toGeneration,
-    ...(vouched === 'checked' ? {} : { unknown: true as const }),
-  });
+  emitMove();
 
   return { fromGeneration: record.currentGen, generation: toGeneration };
 }

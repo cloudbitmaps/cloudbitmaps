@@ -799,7 +799,7 @@ export interface MaterializeResult {
   /**
    * The generation written. Present even when refused: the refusal deleted that object, unless the destination's
    * row changed while it was writing, which leaves it in the bucket, an orphan a later load's collection takes; until
-   * then a rollback can name it.
+   * then a rollback onto it needs `allowUnknown`.
    */
   readonly generation: number;
   /**
@@ -1957,8 +1957,8 @@ export class CloudRoaring {
    * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
    * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
-   * Each entry says whether the row knows the generation (`known`), which is whether a rollback onto it needs
-   * `allowUnknown`.
+   * Each entry says whether the row knows the generation (`known`): a known generation needs no `allowUnknown`; an unknown
+   * one does, except below a row's pointer when the row has no usable record or the target is older than a full one reaches.
    *
    * Needs a backend.
    */
@@ -2084,7 +2084,7 @@ export class CloudRoaring {
    *
    * `{ allowUnknown: true }` moves onto a present object the row does not vouch for, or one whose checksum differs from
    * the recorded one, as long as it is the segment's kind of object, opens, and names the generation, and records it as
-   * known. On an encrypted segment it also needs the key: with no keystore, or one that holds none of the key's KEKs or
+   * known. On an encrypted segment, outside the two cases judged as before the row kept a record (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
    * one that does not unwrap it, it is refused with `KeyUnavailableError` before the target is read, since an object
    * sealed under a key no row holds passes every check that needs no key, and a key service that did not answer in
    * time is thrown as `TransientError`, to retry. Every move the row did not vouch for is audited with `unknown: true`.
@@ -2170,8 +2170,8 @@ export class CloudRoaring {
    * deleting live data. A publish never adds the orphan to the row's list, and a load's listing deletes it once a
    * generation above it is current, unless the row's list names it; where the row records none (after a rollback, or
    * with a `keep` above 64), that listing's window can keep it and, at a `keep` up to 64, record it, and the publishes
-   * after carry it until the window pushes it out. Until it goes, a rollback can name it, and publishes what no load
-   * published.
+   * after carry it until the window pushes it out. Until it goes, a rollback onto it is refused unless `allowUnknown` is passed, since the list never names it (a list seeded
+   * over a row with none can); with the override it publishes what no load published.
    *
    * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
    * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists

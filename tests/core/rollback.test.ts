@@ -91,8 +91,8 @@ describe('rollbackSegment', () => {
     // Everything is still there — including the generations now ABOVE the pointer, which is what lets an
     // operator who rolled back too far roll forward again.
     expect((await listGenerations(SEG, w.deps)).map((g) => g.generation)).toEqual([0, 1, 2]);
-    // Undoing the rollback needs the opt-in: above the pointer is also where never-published objects live.
-    await rollbackSegment(SEG, 2, w.deps, { allowUnknown: true });
+    // Undoing the rollback needs no flag: the row still knows generation 2, which the rollback left above the pointer.
+    await rollbackSegment(SEG, 2, w.deps);
     expect((await w.registry.get(SEG))!.currentGen).toBe(2);
   });
 
@@ -327,9 +327,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(res.collected).toContain(1); // the above-pointer holder was taken
 
     // And the rollback that would have resurrected it now cannot: the object is gone.
-    await expect(rollbackSegment(SEG, 1, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
-      NotFoundError,
-    );
+    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toBeInstanceOf(NotFoundError);
 
     const store = new CloudRoaring({
       storage: w.backend,
@@ -358,9 +356,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(await holdersOf(w.storage, 999)).toEqual([]);
     expect(await generationsOf(w.deps)).toEqual([0]);
     for (const g of [1, 2]) {
-      await expect(rollbackSegment(SEG, g, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
-        NotFoundError,
-      );
+      await expect(rollbackSegment(SEG, g, w.deps)).rejects.toBeInstanceOf(NotFoundError);
     }
     expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
   });
@@ -398,7 +394,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     const storage = onFirstOpenOf(
       w.storage,
       (g) => g > 0,
-      () => rollbackSegment(SEG, 1, w.deps, { allowUnknown: true }),
+      () => rollbackSegment(SEG, 1, w.deps),
     );
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: storage.driver });
     expect(storage.fired()).toBe(true);

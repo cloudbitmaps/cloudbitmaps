@@ -332,7 +332,7 @@ describe('a rollback whose swap gets no answer', () => {
       SEG,
       2,
       { ...w.deps, registry: noAnswer(w.registry) },
-      { allowUnknown: true, audit },
+      { audit },
     );
     expect(r).toEqual({ fromGeneration: 0, generation: 2 });
     expect((await rowOf(w)).currentGen).toBe(2);
@@ -903,7 +903,7 @@ describe('a rollback above the pointer of an encrypted segment', () => {
     const w = world();
     await loads(w, 2);
     await rollbackSegment(SEG, 0, w.deps);
-    await rollbackSegment(SEG, 1, { ...w.deps, keystore: key() }, { allowUnknown: true });
+    await rollbackSegment(SEG, 1, { ...w.deps, keystore: key() });
     expect((await rowOf(w)).currentGen).toBe(1);
   });
 });

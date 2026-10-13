@@ -6,6 +6,7 @@ import {
   KeyUnavailableError,
   NotFoundError,
   ValidationError,
+  TransientError,
   WriteConflictError,
 } from '@/core/errors';
 import type { IKeystore } from '@/core/crypto';
@@ -94,11 +95,17 @@ const countOf = async (w: World): Promise<number | undefined> => {
  * An object written under a number the row does not publish: written the way the segment's own objects are (the row's key
  * on an encrypted segment, so it opens), never published.
  */
-async function writeStray(w: World, generation: number, content: number[]): Promise<void> {
+async function writeStray(
+  w: World,
+  generation: number,
+  content: number[],
+  metadata?: Record<string, string>,
+): Promise<void> {
   await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation }, content, {
     registry: w.registry,
     keystore: w.keystore,
     publish: false,
+    ...(metadata === undefined ? {} : { metadata }),
   });
 }
 
@@ -585,7 +592,7 @@ describe('a refused load’s object, and the ledger', () => {
     expect((await rowOf(w)).currentGen).toBe(0);
   });
 
-  it('a row with no ledger is the control: it accepts it, as before', async () => {
+  it('a row with no ledger accepts it: with no record to check against, a target below the pointer moves', async () => {
     const w = world(false);
     await loads(w, 3, 1);
     await writeStray(w, 0, [9, 9, 9]);
@@ -594,7 +601,7 @@ describe('a refused load’s object, and the ledger', () => {
     expect((await rowOf(w)).currentGen).toBe(0);
   });
 
-  it('an orphan under a number the ledger knows, with the same bytes, is accepted; with other bytes it is an IntegrityError', async () => {
+  it('an orphan under a number the ledger knows, with the same footer, is accepted; with another footer it is an IntegrityError', async () => {
     const w = world(false);
     await loads(w, 3);
     // The same object written again under its number: the bytes, so the footer checksum, are the same.
@@ -634,7 +641,7 @@ describe('a destination that keeps every generation (a ledger of 128)', () => {
     expect(rolled(events(audit)[0]!)).toMatchObject({ unknown: true });
   });
 
-  it('judges a target older than the ledger as before: no flag, key-less allowed, audited unknown; one publish moves the limit', async () => {
+  it('judges a target below a full ledger’s oldest entry as it does on a row with no record: no flag, key-less allowed, audited unknown; one publish moves the limit', async () => {
     const w = world(false);
     await publish(w, 140);
     expect((await names(w))![0]).toBe(12);
@@ -674,27 +681,81 @@ describe('a destination that keeps every generation (a ledger of 128)', () => {
     expect((await rowOf(w)).currentGen).toBe(100);
   });
 
-  it('a ledger that is full only by counting a leased entry is not full: the leased entry takes no place in the count', async () => {
+  it.each([
+    ['the current generation', 139],
+    ['the oldest entry', 12],
+    ['a middle entry', 80],
+  ])(
+    'a lease on %s leaves the ledger full: a rollback past it takes the fallback, with no flag, audited unknown',
+    async (_label, leased) => {
+      const w = world(false);
+      await publish(w, 140);
+      expect(await names(w)).toHaveLength(128);
+      const row = await rowOf(w);
+      const taken = await takeLease(SEG, w.deps, {
+        holder: '0000000000000004',
+        generation: leased,
+        until: T0 + 3_600_000,
+        row,
+        current: leased === row.currentGen,
+      });
+      expect(taken).not.toBe('moved');
+      expect((await names(w))![0]).toBe(12);
+      const audit = new RecordingAuditSink();
+      await rollbackSegment(SEG, 5, w.rollbackDeps(false), { audit });
+      expect((await rowOf(w)).currentGen).toBe(5);
+      expect(rolled(events(audit)[0]!)).toMatchObject({ generation: 5, unknown: true });
+    },
+  );
+
+  it('a ledger of fewer than 128 entries is not full, a lease or not: an unknown number below its oldest entry needs the flag', async () => {
     const w = world(false);
-    await publish(w, 140);
-    await rollbackSegment(SEG, 5, w.rollbackDeps(false)); // 128 entries: [13 … 139, 5]
-    expect(await names(w)).toHaveLength(128);
+    for (let i = 0; i < 130; i++) await loadSegment(SEG, [i % 50], w.deps, { keep: 100 });
     const row = await rowOf(w);
-    const taken = await takeLease(SEG, w.deps, {
-      holder: '0000000000000003',
-      generation: 5,
+    await takeLease(SEG, w.deps, {
+      holder: '0000000000000005',
+      generation: 129,
       until: T0 + 3_600_000,
       row,
       current: true,
     });
-    expect(taken).not.toBe('moved');
-    // 127 entries no lease holds: not a full ledger. 3 is below the pointer's 5 and below the ledger's oldest entry, 13, so
-    // it is unknown and, the ledger not being full, refused. Without the lease the same row takes it as before (the test above).
-    await expect(rollbackSegment(SEG, 3, w.rollbackDeps(false))).rejects.toBeInstanceOf(
+    expect(await names(w)).toHaveLength(101);
+    await writeStray(w, 5, [1]); // a freed number below the ledger's oldest entry
+    await expect(rollbackSegment(SEG, 5, w.rollbackDeps(false))).rejects.toBeInstanceOf(
       ValidationError,
     );
-    await rollbackSegment(SEG, 3, w.rollbackDeps(false), { allowUnknown: true });
-    expect((await rowOf(w)).currentGen).toBe(3);
+  });
+
+  it('an inserting rollback into a ledger the leases extended drops one entry for one inserted, and every other known generation still lands with no flag', async () => {
+    const w = world(false);
+    await publish(w, 120);
+    // Twenty generations inside the vouched span, leased: the ledger grows past 128 as later publishes vouch for 127 more.
+    for (let g = 100; g < 120; g++) {
+      const row = await rowOf(w);
+      const taken = await takeLease(SEG, w.deps, {
+        holder: g.toString(16).padStart(16, '0'),
+        generation: g,
+        until: T0 + 3_600_000,
+        row,
+        current: g === row.currentGen,
+      });
+      expect(taken).not.toBe('moved');
+    }
+    await publish(w, 180);
+    const before = (await names(w))!;
+    expect(before).toHaveLength(148); // 128 vouched and 20 leased extras
+    await writeStray(w, 400, [1]);
+    await rollbackSegment(SEG, 400, w.rollbackDeps(), { allowUnknown: true });
+    const after = (await names(w))!;
+    // One unleased entry left for the one inserted: the oldest of the vouched span, never a leased one.
+    expect(before.filter((g) => !after.includes(g))).toEqual([172]);
+    for (let g = 100; g < 120; g++) expect(after).toContain(g);
+    // Back to 299, then onto 180, which the row knew before the insert: it lands with no flag.
+    await rollbackSegment(SEG, 299, w.rollbackDeps());
+    const audit = new RecordingAuditSink();
+    await rollbackSegment(SEG, 180, w.rollbackDeps(), { audit });
+    expect((await rowOf(w)).currentGen).toBe(180);
+    expect(events(audit)[0]).not.toHaveProperty('unknown');
   });
 
   it('a lease on the oldest entry holds that limit for as long as it lives', async () => {
@@ -802,5 +863,188 @@ describe('the ledger a checked rollback writes', () => {
     expect(after.map((e) => e.generation)).toEqual([0, 2, 3, 1]);
     for (const e of after)
       expect(e.footerCrc).toBe(before.find((b) => b.generation === e.generation)!.footerCrc);
+  });
+});
+
+describe('the move is on the record once the swap has landed', () => {
+  it.each([
+    ['a known target', false],
+    ['an override', true],
+  ])(
+    '%s: a fault of the footer read after the swap is thrown after the event is emitted',
+    async (_label, override) => {
+      const w = world(false);
+      await loads(w, 3);
+      if (override) await writeStray(w, 7, [4, 5]);
+      const target = override ? 7 : 0;
+      let tails = 0;
+      const storage = Object.create(w.memory) as IStorageDriver;
+      storage.getTail = (key, maxBytes) => {
+        if (key.generation === target && ++tails > 1) {
+          return Promise.reject(new TransientError('the read after the swap was throttled'));
+        }
+        return w.memory.getTail(key, maxBytes);
+      };
+      const audit = new RecordingAuditSink();
+      await expect(
+        rollbackSegment(
+          SEG,
+          target,
+          { ...w.rollbackDeps(), storage },
+          { audit, allowUnknown: override },
+        ),
+      ).rejects.toBeInstanceOf(TransientError);
+      // The swap landed, so the pointer is on the target and the move is recorded.
+      expect((await rowOf(w)).currentGen).toBe(target);
+      expect(events(audit)).toHaveLength(1);
+      expect(rolled(events(audit)[0]!)).toMatchObject({ generation: target });
+      expect(Object.hasOwn(events(audit)[0]!, 'unknown')).toBe(override);
+    },
+  );
+
+  it('a refusal emits no event', async () => {
+    const w = world(false);
+    await loads(w, 3, 0);
+    await writeStray(w, 7, [4]);
+    const audit = new RecordingAuditSink();
+    await expect(rollbackSegment(SEG, 7, w.rollbackDeps(), { audit })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await swap(w, 2);
+    await expect(rollbackSegment(SEG, 2, w.rollbackDeps(), { audit })).rejects.toBeInstanceOf(
+      IntegrityError,
+    );
+    expect(events(audit)).toEqual([]);
+  });
+});
+
+describe('what the checksum covers', () => {
+  it('a current footer that fails its own checks is an IntegrityError for the no-op, on a row with a ledger and on one without', async () => {
+    for (const dropLedger of [false, true]) {
+      const w = world(false);
+      await loads(w, 2);
+      const bytes = (await w.memory.getTail({ ...SEG, generation: 1 }, 1 << 20)).bytes.slice();
+      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+      await w.memory.delete({ ...SEG, generation: 1 });
+      await w.memory.putImmutable({ ...SEG, generation: 1 }, (sink) => sink.write(bytes));
+      if (dropLedger) {
+        await w.registry.compareAndSwap(SEG, (await rowOf(w)).token, { knownGens: undefined });
+      }
+      await expect(rollbackSegment(SEG, 1, w.rollbackDeps())).rejects.toBeInstanceOf(
+        IntegrityError,
+      );
+    }
+  });
+
+  it('a cleartext object put back with the same ids and other metadata of the same length has the same checksum: it is not seen', async () => {
+    const w = world(false);
+    for (const n of [3, 4, 5]) {
+      await loadSegment(SEG, ids(n), w.deps, { keep: 9, metadata: { run: 'a' } });
+    }
+    await w.memory.delete({ ...SEG, generation: 0 });
+    await writeStray(w, 0, ids(3), { run: 'b' });
+    const audit = new RecordingAuditSink();
+    await rollbackSegment(SEG, 0, w.rollbackDeps(), { audit });
+    expect((await rowOf(w)).currentGen).toBe(0);
+    expect((await rowOf(w)).summary).toMatchObject({ metadata: { run: 'b' } });
+    expect(events(audit)[0]).not.toHaveProperty('unknown');
+  });
+});
+
+describe('the fallbacks move onto an object sealed under a key no row holds, key-less', () => {
+  it('on a row with no usable ledger, below the pointer', async () => {
+    const w = world(true);
+    await loads(w, 3, 0);
+    await writeForeign(w, 1, [8]);
+    await w.registry.compareAndSwap(SEG, (await rowOf(w)).token, { knownGens: undefined });
+    const audit = new RecordingAuditSink();
+    await rollbackSegment(SEG, 1, w.rollbackDeps(false), { audit });
+    expect((await rowOf(w)).currentGen).toBe(1);
+    expect(rolled(events(audit)[0]!)).toMatchObject({ generation: 1, unknown: true });
+  });
+
+  it('below a full ledger', async () => {
+    const w = world(true);
+    for (let i = 0; i < 140; i++) {
+      await loadSegment(SEG, [i % 50], w.deps, { keep: Number.MAX_SAFE_INTEGER });
+    }
+    expect((await names(w))![0]).toBe(12);
+    await w.memory.delete({ ...SEG, generation: 5 });
+    await writeForeign(w, 5, [8]);
+    const audit = new RecordingAuditSink();
+    await rollbackSegment(SEG, 5, w.rollbackDeps(false), { audit });
+    expect((await rowOf(w)).currentGen).toBe(5);
+    expect(rolled(events(audit)[0]!)).toMatchObject({ generation: 5, unknown: true });
+  });
+});
+
+describe('generations() reads the validated ledger', () => {
+  it('a ledger that disagrees with its row names nothing: no generation is known', async () => {
+    const w = world(false);
+    await loads(w, 3);
+    const row = await rowOf(w);
+    const registry = Object.create(w.registry) as MemoryRegistryDriver;
+    registry.get = async (ref) => {
+      const got = await w.registry.get(ref);
+      return got === null ? null : { ...got, knownGens: row.knownGens!.slice(0, -1) };
+    };
+    const listed = await listGenerations(SEG, { ...w.rollbackDeps(), registry });
+    expect(listed.map((e) => e.known)).toEqual([false, false, false]);
+  });
+});
+
+describe('request counts, an encrypted target and one above the pointer', () => {
+  /** Requests a rollback makes to storage, the registry and the keystore, counted together. */
+  async function requests(w: World, target: number): Promise<number> {
+    let n = 0;
+    const storage = Object.create(w.memory) as IStorageDriver;
+    storage.getTail = (key, max) => {
+      n += 1;
+      return w.memory.getTail(key, max);
+    };
+    storage.getRange = (key, offset, length) => {
+      n += 1;
+      return w.memory.getRange(key, offset, length);
+    };
+    storage.list = (ref) => {
+      n += 1;
+      return w.memory.list(ref);
+    };
+    const registry = Object.create(w.registry) as MemoryRegistryDriver;
+    registry.get = (ref) => {
+      n += 1;
+      return w.registry.get(ref);
+    };
+    registry.compareAndSwap = (ref, token, patch) => {
+      n += 1;
+      return w.registry.compareAndSwap(ref, token, patch);
+    };
+    const opened = w.keystore?.opened() ?? 0;
+    await rollbackSegment(SEG, target, { ...w.rollbackDeps(), storage, registry });
+    return n + ((w.keystore?.opened() ?? 0) - opened);
+  }
+
+  it('a known encrypted target below the pointer is 5 (the keystore call included), and one above the pointer is 4 with no key', async () => {
+    const w = world(true);
+    await loads(w, 3);
+    expect(await requests(w, 0)).toBe(5); // row, keystore, tail, swap, footer
+    const keyless = world(true);
+    await loads(keyless, 3);
+    await rollbackSegment(SEG, 0, keyless.rollbackDeps(false));
+    let n = 0;
+    const storage = Object.create(keyless.memory) as IStorageDriver;
+    storage.getTail = (key, max) => {
+      n += 1;
+      return keyless.memory.getTail(key, max);
+    };
+    await rollbackSegment(SEG, 2, { ...keyless.rollbackDeps(false), storage });
+    expect(n).toBe(2); // the tail and the footer: above the pointer, key-less, the same two reads
+  });
+
+  it('a known cleartext target above the pointer is 4', async () => {
+    const w = world(false);
+    await loads(w, 3);
+    await rollbackSegment(SEG, 0, w.rollbackDeps());
+    expect(await requests(w, 2)).toBe(4);
   });
 });

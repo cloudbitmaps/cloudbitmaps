@@ -10,7 +10,7 @@ import {
   MAX_STORED_KNOWN_GENERATIONS,
   usableKnownGens,
 } from '@/core/known-generations';
-import { LeaseLimitError } from '@/core/errors';
+import { LeaseLimitError, ValidationError } from '@/core/errors';
 import { takeLease } from '@/core/leases';
 import { loadSegment } from '@/core/load';
 import type { IRegistryDriver, RegistryRecord, SegmentRef } from '@/core/ports';
@@ -130,6 +130,15 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
           const target = pool[next(pool.length)]!;
           // A generation the row knows needs no flag; one it forgot (the ledger's cap) needs the override.
           const known = new Set(numbers(row));
+          // Unknown and outside the fallback below a full ledger: refused before the override is tried.
+          const ledger = row.knownGens ?? [];
+          const fallback =
+            !forward && ledger.length >= KNOWN_FILL && target < ledger[0]!.generation;
+          if (!known.has(target) && !fallback) {
+            await expect(rollbackSegment(SEG, target, deps)).rejects.toBeInstanceOf(
+              ValidationError,
+            );
+          }
           await rollbackSegment(SEG, target, deps, { allowUnknown: !known.has(target) });
           rollbacks += 1;
         }

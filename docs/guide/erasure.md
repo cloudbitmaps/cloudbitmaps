@@ -371,7 +371,7 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   own object above the winner's pointer, where the call reads the row, then the object's footer, renews the row, then
   deletes. A rollback that read the row before that renewal is refused with `WriteConflictError` (or `TransientError`,
   when its swap got no answer); one onto that object between the renewal and the delete (the object is one no row
-  published, so with `allowUnknown`, or without it on a row with no usable `knownGens`) leaves the pointer on a missing object with nothing
+  published, so with `allowUnknown`, or without it once a load has raised the pointer past the object, on a row with no usable `knownGens`) leaves the pointer on a missing object with nothing
   reported, and only `checkConsistency()` finds it. A load that numbers above the object in that round trip, onto a row
   with no usable ledger, can name the object in the ledger it seeds; after the delete that entry names a
   missing generation, which takes a place in the window until a later load's collection drops it, and fails no read.

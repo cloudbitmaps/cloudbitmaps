@@ -193,7 +193,7 @@ describe('generations an erasure deleted above the pointer', () => {
     await plant(w, 10);
     await rollbackSegment(SEG, 1, w.deps, {});
     await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 12 });
-    await rollbackSegment(SEG, 0, w.deps, { allowUnknown: true });
+    await rollbackSegment(SEG, 0, w.deps);
     await eraseIdFromSegment(SEG, 7777, w.deps);
     await load(w, 12);
     await load(w, 12);

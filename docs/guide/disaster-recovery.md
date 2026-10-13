@@ -622,7 +622,7 @@ no flag, with or without a key, since the footer checksum the row recorded vouch
 published after that version needs `{ allowUnknown: true }`, and the key on an encrypted segment. `store.generations(ref)`
 lists such a generation with `known: false`. A row whose pointer you moved by hand with `backend.registry.compareAndSwap`
 has no `knownGens`: a rollback below its pointer works as before, with no flag and no key, and its audit event says
-`unknown: true`. Until the next load or rollback writes a new list, such a row has none of the checks a list gives.
+`unknown: true`. Until the next load writes a new list, such a row has none of the checks a list gives (a rollback writes none).
 
 ```ts
 await store.generations(ref);
@@ -646,8 +646,9 @@ generation already current changes nothing and records nothing, once one footer 
 row recorded; when the object is gone it throws `NotFoundError` naming what is in the bucket.
 
 **A rollback can fail half-way.** It moves the pointer and then reads the target's footer once more, because a
-collection the row does not hold off (a rollback with `allowUnknown`, or onto a row with no list) can take a generation
-below the pointer between its read of the target and the move. If the target has gone, or another object holds its
+collection can take a generation below the pointer between its read of the target and the move when the row does not
+hold it off: for a rollback with `allowUnknown`, one onto a row with no list, and one onto a known generation against an
+erasure that rewrote nothing (its deletes do not remove the names from the list first). If the target has gone, or another object holds its
 number, it moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
 (the row changed again, or the registry write failed), it throws `NotFoundError` saying
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its

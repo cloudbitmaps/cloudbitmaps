@@ -81,6 +81,53 @@ so, and so do the module headers in the code.
   taken by `intersect`, `union`, `andNot` and the `*Into` verbs when it carries the same versioned brand as this copy,
   as every copy of the same release does; `materializeMany` takes only a segment of its own copy. Install one version
   of `@cloudbitmaps/roaring`.
+- **`rollback` moves only onto a generation the segment's row knows, and `allowUnknown` replaces `allowForward`.** This is
+  a breaking change to the option, with no alias: a call that passes `allowForward` is refused by the option check, and
+  `CloudRoaring.rollback` and `rollbackSegment` take `allowUnknown` in its place. The row's `knownGens` records the
+  generations its loads and rollbacks made current, each with the footer checksum of its object, and a rollback is held to it:
+  - A target the row does not know is refused with `ValidationError` before any request to storage. That covers a
+    crashed or refused load's object, one sealed under a key no row holds, and a load published after the point a
+    registry was restored to. Before, such a target below the pointer moved with no flag, and above it needed
+    `allowForward`.
+  - A target whose object is not the one the row recorded is refused with `IntegrityError`, with or without a keystore,
+    unless `allowUnknown` is passed. Its footer checksum is compared before the object is opened, which needs no key, so
+    another object under a known number reports as that, not as a failed decryption. Only the footer's bytes are compared:
+    damage inside an object whose footer is intact, and a change of a cleartext object's metadata that keeps the footer's
+    bytes, are not seen (a read of the generation reports the first).
+  - A generation a rollback left above the pointer is a known target and needs no flag, until a load numbers above it; a
+    load that takes a free number below it keeps it known, while the list holds fewer than 128 entries. So is one that a
+    lease holds, as "Lease each generation as it lands" in the loading guide describes. A known target needs no key, on an
+    encrypted segment too, forward or back: the checksum vouches for it.
+  - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known. On an
+    encrypted segment, outside the two cases below that are judged as before, it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is audited:
+    `segment.rollback` carries `unknown: true`.
+  - **A row with no usable `knownGens`** (a registry of your own that drops the field, or a pointer you moved with
+    `backend.registry.compareAndSwap` as a repair, which drops it) takes a rollback below its pointer as 0.20 did, with no
+    flag and, on an encrypted segment, no key, and gets none of the checks above. The event carries `unknown: true`.
+    Above the pointer such a row needs `allowUnknown`.
+  - **An `*Into` or `materializeMany` destination keeps every generation in the bucket, as before, but its row knows only
+    the 128 most recently current, and any a lease holds.** The same holds for a load with a `keep` above 127. A rollback
+    onto an older one, below the pointer, works as in 0.20, with no checksum check, and records `unknown: true`. "Older"
+    means numbered below the least recently current generation the row knows. After a rollback onto an old generation,
+    that generation can become the least recently current; until the next publish drops it, or while a lease keeps it, the
+    generations numbered between it and the rest of the list need `allowUnknown`. At a `keep` of 128 or more that
+    collects by listing, an object a crashed load left in a freed number below it can be rolled onto with no check, as in
+    0.20.
+  - Rolling to the generation already current reads its footer once, in place of a zero-byte read: an object missing is
+    `NotFoundError` as before, another footer than the row recorded under the number is `IntegrityError`, where it was
+    reported as a no-op, and so is a current footer that fails its own checks (`.crbm` footer CRC mismatch), which a no-op
+    did not look at. After the swap a rollback reads the target's footer once, in place of listing the bucket, and puts
+    the pointer back if the object is gone or is another: a known target costs 4 requests (the row, the target's tail, the
+    swap, its footer) where it cost 5, or 6 above the pointer, and an unknown one is refused after 1.
+  - `store.generations(ref)` marks each generation `known`, so an operator sees which targets need no flag.
+  - A storage driver must answer a read of a deleted object with `NotFoundError` from the moment its delete returns: the
+    footer read after the swap takes a read that succeeds as proof that the object is there. The conformance suite holds
+    a driver to it.
+  - An erasure that rewrites a segment leaves only the rewrite in `knownGens` before it collects, so a rollback without
+    `allowUnknown` cannot bring an older generation back, except through the 0.20 rule on a row with no `knownGens` or
+    below a full list (both above).
+  Move `allowForward` to `allowUnknown` only where the target is one the row does not know: a rollback that undoes an
+  earlier rollback needs no flag at all.
 
 ### Added
 
@@ -117,51 +164,6 @@ so, and so do the module headers in the code.
   `CloudRoaring` builds the engines of its pins, and of its combines with a pinned operand, with it.
 
 ### Changed
-
-- **`rollback` moves only onto a generation the segment's row knows, and `allowUnknown` replaces `allowForward`.** This is
-  a breaking change to the option, with no alias: a call that passes `allowForward` is refused by the option check, and
-  `CloudRoaring.rollback` and `rollbackSegment` take `allowUnknown` in its place. The row's `knownGens` records the
-  generations its loads and rollbacks made current, each with the footer checksum of its object, and a rollback is held to it:
-  - A target the row does not know is refused with `ValidationError` before any request to storage. That covers a
-    crashed or refused load's object, one sealed under a key no row holds, and a load published after the point a
-    registry was restored to. Before, such a target below the pointer moved with no flag, and above it needed
-    `allowForward`.
-  - A target whose object is not the one the row recorded is refused with `IntegrityError`, with or without a keystore,
-    unless `allowUnknown` is passed. Its footer checksum is compared before the object is opened, which needs no key, so
-    another object under a known number reports as that, not as a failed decryption.
-  - A generation a rollback left above the pointer is a known target and needs no flag, until a load numbers above it; a
-    load that takes a free number below it keeps it known, while the list holds fewer than 128 entries. So is one that a
-    lease holds, as "Lease each generation as it lands" in the loading guide describes. A known target needs no key, on an
-    encrypted segment too, forward or back: the checksum vouches for it.
-  - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known. On an
-    encrypted segment it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is audited:
-    `segment.rollback` carries `unknown: true`.
-  - **A row with no usable `knownGens`** (a registry of your own that drops the field, or a pointer you moved with
-    `backend.registry.compareAndSwap` as a repair, which drops it) takes a rollback below its pointer as 0.20 did, with no
-    flag and, on an encrypted segment, no key, and gets none of the checks above. The event carries `unknown: true`.
-    Above the pointer such a row needs `allowUnknown`.
-  - **An `*Into` or `materializeMany` destination keeps every generation in the bucket, as before, but its row knows only
-    the 128 most recently current, and any a lease holds.** The same holds for a load with a `keep` above 127. A rollback
-    onto an older one, below the pointer, works as in 0.20, with no checksum check, and records `unknown: true`. "Older"
-    means numbered below the least recently current generation the row knows. After a rollback onto an old generation,
-    that generation can become the least recently current; until the next publish drops it, or while a lease keeps it, the
-    generations numbered between it and the rest of the list need `allowUnknown`. At a `keep` of 128 or more that
-    collects by listing, an object a crashed load left in a freed number below it can be rolled onto with no check, as in
-    0.20.
-  - Rolling to the generation already current reads its footer once, in place of a zero-byte read: an object missing is
-    `NotFoundError` as before, and another object than the row recorded under the number is `IntegrityError`, where it was
-    reported as a no-op. After the swap a rollback reads the target's footer once, in place of listing the bucket, and puts
-    the pointer back if the object is gone or is another: a known target costs 4 requests (the row, the target's tail, the
-    swap, its footer) where it cost 5, or 6 above the pointer, and an unknown one is refused after 1.
-  - `store.generations(ref)` marks each generation `known`, so an operator sees which targets need no flag.
-  - A storage driver must answer a read of a deleted object with `NotFoundError` from the moment its delete returns: the
-    footer read after the swap takes a read that succeeds as proof that the object is there. The conformance suite holds
-    a driver to it.
-  - An erasure that rewrites a segment leaves only the rewrite in `knownGens` before it collects, so a rollback without
-    `allowUnknown` cannot bring an older generation back, except through the 0.20 rule on a row with no `knownGens` or
-    below a full list (both above).
-  Move `allowForward` to `allowUnknown` only where the target is one the row does not know: a rollback that undoes an
-  earlier rollback needs no flag at all.
 
 - **A cold open of a cleartext generation reads its whole tail in one request, however wide its index.** The row's
   summary records how many bytes of the object's end an open needs (`tailBytes`: its extension block, its index and its
@@ -459,7 +461,7 @@ so, and so do the module headers in the code.
   shape that rejects at its first pull. A leased per-id `iterate()` over 2 million ids in memory showed no slowdown beyond run-to-run noise against the build before (measured: medians 476 ms before, 469 ms after; a difference under about 5% cannot be excluded).
 - **A rollback that lands while a load, an erasure or a collection deletes the generation it moves onto is reported.**
   Each of these reads the segment's row just before each delete, and a rollback onto the very generation being deleted
-  (one with `allowForward` for a generation above the pointer) could land between that read and the delete, pass its own
+  (one onto a generation above the pointer, which took `allowForward` then) could land between that read and the delete, pass its own
   check and leave the pointer on an object that is gone, with no call saying so: the load answered as it would have, the
   erasure reported `erased: true`, and a collection either succeeded or threw `WriteConflictError`. Each call now holds
   every read of the row after a delete to what it deleted, and reads the row once more after its last delete. When the
