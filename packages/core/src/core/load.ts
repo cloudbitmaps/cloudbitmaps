@@ -33,7 +33,7 @@ import { readSeed, wantsSeed } from './ledger-seed';
 import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept, type PublishResult } from './publish';
 import type { Clock, Rng } from './determinism';
-import { onlyLeasesDiffer } from './leases';
+import { heldGenerations, onlyLeasesDiffer } from './leases';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import {
@@ -201,17 +201,15 @@ export interface LoadOptions {
    * longest pinned job runs, on every writer that loads the segment — see "Generations and `keep`" in the loading
    * guide.
    *
-   * The window holds the generation the load superseded first, then the newest of the rest by number. After a rollback
-   * the superseded generation is the one the rollback restored, so with a `keep` of 1 or more the first load after it
-   * keeps that one; the rest of its window is the newest by number, which can be generations the rollback moved away
-   * from. From the next load the window is the newest `keep` by number again, so with a `keep` of 2 or more the restored
-   * generation goes before the newest of those.
+   * The window is the `keep` most recently current generations below the one the load publishes, so the generation the
+   * load superseded comes first. After a rollback that is the one the rollback restored, and it stays in the window of
+   * every load after it, ahead of the generations the rollback moved away from, for as many loads as `keep` says.
    *
-   * The segment's row records the generations a load keeps, up to 64, so a load that found nothing above the pointer
-   * collects without listing: it deletes the generations its publish pushed out of the window, and lists the segment's
-   * objects on every sixteenth generation to take whatever that pass leaves, such as an object a crashed load left
-   * below the pointer. A `keep` above 64 records no list and lists on every load, and so does the first load of a
-   * row that records none, which then records it; so does a load whose check found the current generation's object
+   * The segment's row records the generations a load keeps, up to 64, so a load whose number one existence check found
+   * free collects without listing: it deletes the generations its publish pushed out of the window, and lists the
+   * segment's objects on every sixteenth generation to take whatever that pass leaves, such as an object a crashed load
+   * left below the pointer. A `keep` above 64 collects by listing on every load, and so does the first load of a row with
+   * no usable ledger, which starts one from the bucket; so does a load whose check found the current generation's object
    * gone: the guard's read of it, or, when the guard took the size from the row's summary, one zero-byte read made
    * before a `keep` of 1 or more takes a name. A `keep` at least the generation published collects nothing and asks
    * for nothing.
@@ -783,12 +781,28 @@ async function runLoad(
   // without that, anything published between the "before" read and this publish voids the guard's premise while the
   // guard still reports success. An unguarded load needs no fence on the pointer: its ids come from upstream, so a
   // newer generation costs nothing it knew about.
-  // A publish over a row with no usable window starts the ledger with the window a count keeps, read from the bucket.
+  // A publish over a row with no usable ledger starts one with the window a count keeps, read from the bucket.
   const currentObjectGone = needsBefore && before === null;
   let seed: Awaited<ReturnType<typeof readSeed>> | undefined;
-  if (wantsSeed(row, generation, keep, currentObjectGone)) {
+  if (wantsSeed(row)) {
     try {
-      seed = await readSeed(deps.storage, ref, row, generation, keep, listed, deps.readRetry);
+      // The leases the seed holds come from the row as it is now, one read at a birth: a lease taken while the object was
+      // written is on it, and the first read, before the write, would miss it. A lease taken after this read, before the
+      // publish's write, is not named, and stays in the bucket for its lease.
+      const leased: ReadonlySet<number> =
+        leasesNow === undefined
+          ? new Set()
+          : heldGenerations(await deps.registry.get(ref), leasesNow());
+      seed = await readSeed(
+        deps.storage,
+        ref,
+        row,
+        generation,
+        keep,
+        listed,
+        leased,
+        deps.readRetry,
+      );
     } catch (err) {
       // Nothing this load wrote was published, so its own object is reclaimed as a refused load's is (the reclaim re-reads the row).
       const missing = await tidy();

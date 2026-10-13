@@ -452,6 +452,7 @@ describe('calibrate guards — what a real run is held to', () => {
     const load = async (
       lostRaces: number,
       meetsAnObject: boolean,
+      keep?: number,
     ): Promise<{
       reads: number;
       checks: number;
@@ -476,7 +477,7 @@ describe('calibrate guards — what a real run is held to', () => {
         }
       }
       try {
-        await store.load({ segment: 's' }, [1, 2, 3]);
+        await store.load({ segment: 's' }, [1, 2, 3], keep === undefined ? {} : { keep });
       } catch (err) {
         if (!(err instanceof WriteConflictError)) throw err;
       }
@@ -492,11 +493,9 @@ describe('calibrate guards — what a real run is held to', () => {
     // listing, since a new segment has nothing outside its window to collect.
     expect(await load(0, false)).toEqual({ reads: 2, checks: 1, writes: 1, objects: 1, lists: 0 });
     // The number taken: four more reads and two listings, one to number past the objects and one to collect, which
-    // re-reads the pointer before its listing, after it, before its delete and after it. The segment's row has no
-    // ledger (the listing numbered the load), so the publish seeds one: it reads the footer of each object its window
-    // keeps (a second tail read) and writes the ledger in the same conditional write as the pointer, so no separate
-    // write records the window.
-    expect(await load(0, true)).toEqual({ reads: 6, checks: 2, writes: 1, objects: 1, lists: 2 });
+    // re-reads the pointer before its listing, after it, before its delete and after it. A new segment's first publish
+    // is not seeded, so it reads no stray's footer: main made a second tail read here (checks: 2).
+    expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
       reads: 0,
@@ -526,11 +525,15 @@ describe('calibrate guards — what a real run is held to', () => {
         );
       }
     }
-    // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the last makes as
-    // many GET-class requests as the bound allows.
+    // The bound is 16. A new segment's load at the default `keep` over two strays makes 15: 14 pointer reads and the check
+    // (main made 16 here, a footer read of a stray more, because that first publish was seeded; it no longer is). A load at
+    // `keep: 0` over the same strays still makes 16, so the bound is reached, and it stays 16 until the next calibration run
+    // on S3 lowers it with fresh evidence.
     expect(p.get).toBe(16);
     const nearest = await load(guards.RETRY_BOUND - 1, true);
-    expect(p.get).toBe(nearest.reads + nearest.checks);
+    expect(nearest.reads + nearest.checks).toBe(15);
+    const keepNone = await load(guards.RETRY_BOUND - 1, true, 0);
+    expect(p.get).toBe(keepNone.reads + keepNone.checks);
   });
 
   it('flags a run that exceeded its projection, and only then', () => {

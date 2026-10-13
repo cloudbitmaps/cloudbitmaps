@@ -105,8 +105,8 @@ describe('strays above a restored pointer', () => {
   // rollback goes to 0, and the row is restored to the snapshot with its ledger. A release before ledgers had recorded
   // no list for the loads over the orphans' row, so the load after the restore counted: it left 2, 3, 4, 5, 6 and 7,
   // keeping 5 and 6 inside its keep by number until later loads slid the window past them, and 0 went. Here neither 5
-  // nor 6 is in the restored ledger, so the load that numbers past them collects them, and the ledger's 0 is kept: 0, 2,
-  // 3, 4 and 7.
+  // nor 6 is in the restored ledger, so the load that numbers past them collects them. The crashed loads' objects at 0
+  // and 2 are named by no ledger either, so they go too: 3, 4 and 7.
   it('collects them at the load that numbers past them', async () => {
     const w = world();
     for (const g of [0, 2]) await plant(w, g);
@@ -116,7 +116,9 @@ describe('strays above a restored pointer', () => {
     await rollbackSegment(SEG, 0, w.deps, {});
     await restore(w, snapshot);
     expect(await load(w, 5)).toBe(7);
-    expect(await gens(w.storage)).toEqual([0, 2, 3, 4, 7]);
+    // Main seeded the first publish over the crashed loads' objects at 0 and 2, so it left [0, 2, 3, 4, 7]; those objects
+    // are no load's, the ledger no longer names them, and they go at the load that lists.
+    expect(await gens(w.storage)).toEqual([3, 4, 7]);
   });
 });
 
@@ -179,8 +181,9 @@ describe('generations an erasure deleted above the pointer', () => {
   // rolled back to 1, a load publishes 11, the row is rolled back to 0, and a subject erasure of the id deletes 2, 5, 6
   // and 7 above the pointer. Loads then publish 11 and 12 again, a stray is left at 5, and three more loads publish, the last at 16 (a number the stray at 5 and the others made it skip to). A release before ledgers had dropped its list at the rollback, so each load counted over what was there and the
   // bucket after 16 was 0, 1, 3, 4, 10 and 11 to 16. Here the ledger still names the deleted 2, 5, 6 and 7 until a load
-  // drops them, and the names take places in the window: 0 and 10, outside the window the ledger names, go at the load
-  // that lists (generation 16), leaving 1, 3, 4, 5 and 11 to 16.
+  // drops them, and the names take places in the window; the rollbacks carried the ledger, which names 0 and 1 as well. 10,
+  // which the ledger does not name, goes at the load that lists (generation 16), leaving 0, 1, 3, 4, 5 and 11 to 16 (main:
+  // 1, 3, 4, 5 and 11 to 16, with 0 gone).
   it('take places in the window, so the load that lists collects what a count would have kept', async () => {
     const w = world();
     for (let g = 0; g <= 7; g++) {
@@ -198,6 +201,6 @@ describe('generations an erasure deleted above the pointer', () => {
     await load(w, 12);
     await load(w, 12);
     await load(w, 12);
-    expect(await gens(w.storage)).toEqual([1, 3, 4, 5, 11, 12, 13, 14, 15, 16]);
+    expect(await gens(w.storage)).toEqual([0, 1, 3, 4, 5, 11, 12, 13, 14, 15, 16]);
   });
 });

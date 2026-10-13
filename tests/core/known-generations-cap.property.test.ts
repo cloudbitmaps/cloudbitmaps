@@ -5,6 +5,7 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { generationsOf } from '@/core/generation-list';
 import {
   KNOWN_FILL,
+  MAX_KEPT_GENERATIONS,
   MAX_KNOWN_GENERATIONS,
   MAX_STORED_KNOWN_GENERATIONS,
   usableKnownGens,
@@ -173,12 +174,10 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
 });
 
 describe('the most a real writer leaves in a ledger', () => {
-  // The writer cap, 192 (MAX_KNOWN_GENERATIONS), cannot be reached by a real writer in this release. A publish keeps in
-  // the ledger what its window names (at most 65 entries for a `keep` of 64) or, carrying it, the 128 most recent, and
-  // does not yet hold the generations a live lease names: only `capKnown`, which the unit test drives with 150 leased
-  // entries, takes a leased set. So live leases on 64 generations change nothing about the size, which this holds at the
-  // window's.
-  it('64 live leases do not take a keep-64 ledger past its window', async () => {
+  // A publish keeps in the ledger what its window names (at most 65 entries for a `keep` of 64) and the generations a
+  // live lease names, beside the window: 64 leases take a keep-64 ledger to 64 + 64 + 1 entries, and no further. Main held
+  // no leased generation in the ledger and stopped at 65 entries (the bound was KNOWN_FILL, 128).
+  it('64 live leases take a keep-64 ledger to its window and the leased generations, and no further', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const clock = { now: () => FAR, sleep: () => Promise.resolve() };
@@ -199,15 +198,26 @@ describe('the most a real writer leaves in a ledger', () => {
       const r = await loadSegment(SEG, [n], deps, { keep: 64 });
       expect(r.published, `load ${n}`).toBe(true);
       const row = (await registry.get(SEG))!;
-      expect(row.knownGens!.length, `after ${n}`).toBeLessThanOrEqual(KNOWN_FILL);
+      expect(row.knownGens!.length, `after ${n}`).toBeLessThanOrEqual(64 + 64 + 1);
     }
-    expect((await registry.get(SEG))!.knownGens!.at(-1)!.generation).toBe(199);
+    const last = (await registry.get(SEG))!;
+    expect(last.knownGens!.at(-1)!.generation).toBe(199);
+    expect(last.knownGens).toHaveLength(64 + 64 + 1);
+    // Every leased generation is still named, and in the bucket.
+    const named = new Set(numbers(last));
+    const present = new Set(await generationsOf(storage, SEG));
+    for (let g = 0; g < 64; g++) {
+      expect(named.has(g), `leased ${g} named`).toBe(true);
+      expect(present.has(g), `leased ${g} present`).toBe(true);
+    }
   }, 120_000);
 });
 
 describe('what each boundary accepts of a ledger', () => {
   it('writes 192 and reads 384', () => {
     expect(KNOWN_FILL).toBe(128);
+    // A load that collects by name records at most 64 generations as its window.
+    expect(MAX_KEPT_GENERATIONS).toBe(64);
     expect(MAX_KNOWN_GENERATIONS).toBe(192);
     expect(MAX_STORED_KNOWN_GENERATIONS).toBe(384);
     // A writer's cap is the protected set at its largest: 127 vouched below the new generation, the new one, and the 64

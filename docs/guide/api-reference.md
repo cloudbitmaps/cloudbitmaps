@@ -205,10 +205,11 @@ a variable, and `new Segment(…)` throws `ValidationError`.
 
 The whole write path in one call: take the next generation number, stream `input` into one immutable `.crbm`
 object, check it is plausible, move the pointer, and collect what the move superseded, keeping `keep` generations
-below the new pointer, the one it superseded first and then the newest by number (default `1`; a non-negative integer,
+below the new pointer, the most recently current of them, so the one it superseded comes first (default `1`; a non-negative integer,
 and anything else — negative, fractional, `NaN`, infinite — throws `ValidationError` before anything is written). After
-a rollback the one it superseded is the generation the rollback restored
-([what the first load after a rollback keeps](loading.md#what-the-first-load-after-a-rollback-keeps)). The `*Into` verbs take
+a rollback the one it superseded is the generation the rollback restored, and it stays in the window of every load after
+that, ahead of the generations the rollback moved away from
+([what a load keeps after a rollback](loading.md#what-a-load-keeps-after-a-rollback)). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
 collected }`. The segment's row records the generations a load keeps (up to 64), so at any `keep` up to 64 a load that
@@ -889,14 +890,19 @@ load published it. Each is `{ generation,
 footerCrc }`: a non-negative safe integer and the CRC32C its object's footer stores (an integer from 0 to 2^32 - 1), in the order the
 generations were made current, oldest first and the current one last. A generation appears once, at its most recent
 time current: a rollback onto it moves it to the end. The entries before the last are the window a load keeps below the
-pointer, and what a rollback left; those numbered above `currentGen` are what a rollback left. A load collects by name
-from the entries below the pointer when none sits above it, which is the window the last load kept (up to 64); a row
-whose ledger is absent, has an entry above the pointer or names more than 64 below it (a run of publishes with a `keep`
-above 64 carries up to 128), makes the next load list the bucket, keep what a count by
-`keep` keeps (the generation it superseded first, then the newest by number), and write that window as the ledger's
-entries before the new generation. A rollback carries the ledger it found and moves its target to the end, and writes
+pointer, the generations a live lease holds, and what a rollback left; those numbered above `currentGen` are what a
+rollback left. A load draws its window from the entries numbered below its new generation: the `keep` most recently
+current of them (up to 127; it collects the ones that fall out of it by name when `keep` is at most 64), the entries a live
+lease holds, whatever `keep` says, and, carried and never collected, the entries numbered above the new generation. A row
+whose ledger is absent makes the next load list the bucket, keep what a count by `keep` keeps (the generation it
+superseded first, then the newest by number), and write that window, with the leased generations it lists, as the ledger's
+entries before the new generation. A usable ledger is never written again from the bucket: over one that names more than 64
+below the pointer that no live lease holds (a run of publishes with a `keep` above 64 carries up to 127), a load with a
+`keep` of 64 or less writes the window it draws from the ledger's order, the leased entries and the entries a rollback
+left above its number, and collects by listing, the ledger's names first. A rollback carries the ledger it found and moves its target to the end, and writes
 none over a row that had none. A load writes at most 192 entries and a row is read with up to 384; a writer keeps an
-entry that nothing protects only while the ledger holds fewer than 128, and never drops the new generation or its window.
+entry that nothing protects only while the ledger holds fewer than 128, and never drops the new generation, its window
+or a generation a live lease holds.
 It is in the clear on every row, an encrypted one included: a footer checksum of an encrypted object covers a random nonce
 and says nothing of its count or size. The entries above the pointer show anyone who reads the registry that a rollback
 happened, and from which generation.

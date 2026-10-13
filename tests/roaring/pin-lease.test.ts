@@ -741,7 +741,7 @@ describe('a leased generation survives later loads, collection resumes, and a re
     expect(await snap.count()).toBe(200);
   });
 
-  it('collection resumes at the first listing after the lease and its margin: within 16 later loads', async () => {
+  it('collection resumes at the first load after the lease and its margin', async () => {
     const h = await seeded();
     const snap = await lease(h, HOUR);
     await churn(h, 12);
@@ -749,9 +749,9 @@ describe('a leased generation survives later loads, collection resumes, and a re
     await churn(h, 4); // generation 16: a listing, one millisecond short of the end
     expect(await generationsOf(h)).toContain(0);
     h.advance(1);
-    await churn(h, 15); // generations 17..31: no listing, so the ended lease still leaves it
-    expect(await generationsOf(h)).toContain(0);
-    await churn(h, 1); // generation 32: the listing takes it
+    // Main left it until the listing at 32. The ledger holds a leased generation, so the first publish after the lease and
+    // its margin drops it from the ledger and deletes it by name.
+    await churn(h, 1); // generation 17
     expect(await generationsOf(h)).not.toContain(0);
     await expect(snap.count()).rejects.toBeInstanceOf(LeaseExpiredError);
   });

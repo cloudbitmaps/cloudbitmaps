@@ -63,8 +63,8 @@ CRC32C its object's footer stores, the current one last. They are the ones it ma
 publish over a row with no usable ledger seeds one, the ones a count by `keep` keeps in the bucket, which can include an
 object no load published (an orphan or a stray): an entry says the library knows the generation and its checksum, not
 that a load published it. Its entries below the
-pointer are the window a load keeps, so a load deletes what its publish pushed out of the window by name and lists
-the bucket only when it cannot rely on the row.
+pointer are the window a load keeps and the generations a live lease holds, so a load deletes what its publish pushed out
+of the window by name and lists the bucket only when it cannot rely on the row.
 
 ```
   row (schema 5)                              bucket
@@ -75,18 +75,32 @@ the bucket only when it cannot rely on the row.
                                                    load pushed it out
 ```
 
-- **A publish writes it** in the compare-and-swap that moves the pointer. Over a row whose ledger is usable and names no
-  generation above the pointer and no more than 64 below it, it is the newest `keep` of the old window, the generation that was current and the new
-  one. Over a row with no usable ledger (a hand repair, a restore, a pointer moved down by hand, a ledger a rollback
-  left with an entry above the pointer, one a run of publishes with a `keep` above 64 carried past 64 names, a first publish
-  above generation 0) the load lists the bucket and writes the window a count by `keep`
-  keeps there: the generation the row named as current first, then the newest by number, each with a footer read
-  (read eight at a time under the store's read retry, the superseded generation's too; a clear summary that describes it
-  with another checksum leaves it out), oldest first by
-  number, the superseded one last, then the new generation. A generation gone from the bucket, or whose footer fails its
-  checks, is left out. The publish then collects by that count.
-- **A rollback carries it**, moving its target to the end with the checksum of the footer it read, and writes none over
-  a row that had none: a rollback never starts a ledger.
+- **A publish writes it** in the compare-and-swap that moves the pointer. Over a row whose ledger is usable, the window
+  is drawn from the order the generations were made current: the `keep` most recently current of the entries numbered
+  below the new generation (at most 127), beside them every entry a live lease holds, whatever `keep` says, then the
+  entries a rollback left numbered above the new generation (carried while the ledger holds fewer than 128, never
+  collected, and taking no place in `keep`), then the new generation. The generation the publish superseded is the
+  ledger's last entry, so it comes first, and after a rollback the restored generation ranks ahead of the ones the
+  rollback moved away from, from every load on. Over a row with no usable ledger (a hand repair, a restore, a pointer
+  moved down by hand) the load lists the bucket and writes the window a count by `keep` keeps there: the generation the
+  row named as current first, then the newest by number, each with a footer read (read eight at a time under the store's
+  read retry, the superseded generation's too; a clear summary that describes it with another checksum leaves it out),
+  and beside them the listed generations a live lease holds wherever they are numbered (the leases read from the row
+  once more just before the write, one more row read), oldest first by number with the leased ones before the window and
+  the superseded one last, then the new generation. A generation gone from the bucket, or whose footer fails its checks,
+  is left out. The publish then collects by that count.
+- **An incarnation's first publish writes the new generation alone** (no row, or a row with no pointer): nothing below
+  it was made current by it, so a seed could only name objects no load of it published.
+- **A usable ledger is never started again**: over one a run of publishes with a larger `keep` carried past 64 names
+  that no lease holds, the next load with a `keep` of 64 or less writes the window it draws from the ledger's order, the
+  leased entries and those above its number, and collects by listing.
+- **A collection reads it.** A load with a `keep` of at most 64 deletes by name the entries its publish left out. A pass
+  that keeps by a count (a `keep` above 64, a ledger naming more than 64 below the pointer that no lease holds, or the
+  first load over a row with no usable ledger) keeps the ledger's own most recently current names first, then the newest
+  others by number, `keep` in all, and spares every name the row knows when it reads the row again before a delete.
+- **A rollback carries it**, moving its target to the end with the checksum of the footer it read, keeping every
+  generation the row's leases name when it trims a full ledger, and writes none over a row that had none: a rollback
+  never starts a ledger.
 - **An erasure's rewrite leaves itself alone in it**, since it deletes every older generation; a shred removes it.
 - **Caps**: a writer writes at most 192 entries and keeps an entry nothing protects only while the ledger holds fewer
   than 128; the registry accepts 192 written and 384 read, so no publish or rollback is refused for the ledger's size.

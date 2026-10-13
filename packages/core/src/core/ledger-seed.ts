@@ -7,45 +7,45 @@
  * with the footer checksum its object stores, and the new generation last. The publish then collects by that count,
  * which keeps exactly the seed.
  *
- * It seeds wherever a row that recorded a window by a compare-and-swap after its listing would have recorded one:
- * the first publish over a pointed row with no usable ledger, whatever `keep` (a written ledger cannot be "not
- * known"); a publish with `keep` at most {@link MAX_KEPT_GENERATIONS} and below the generation numbered, over a ledger
- * with an entry at or above its pointer (a rollback left one, so the window is not known); one whose guard found the
- * current object gone; and the first publish of an incarnation above generation 0.
+ * It seeds at a ledger's birth only: the first publish over a pointed row with no usable ledger, whatever `keep` (a
+ * written ledger cannot be "not known"); and a publish with a
+ * small `keep` over a ledger that names more than {@link MAX_KEPT_GENERATIONS} generations below the pointer that no live
+ * lease holds (carried through publishes with a larger `keep`, so not a window a small `keep` extends). Every other
+ * publish takes its window from the ledger ({@link nextKnown}). A generation a live lease holds, that is listed below the
+ * new one, is seeded beside the window, so it stays a rollback target as it does when the ledger carries it.
  */
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
+import { ascending } from './order';
 import { footerCrcUnder } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import { isIntegrityError, isNotFoundError } from './errors';
-import { MAX_KEPT_GENERATIONS, keptWindow, usableKnownGens, windowOf } from './known-generations';
+import { KNOWN_SPAN, keptWindow, usableKnownGens } from './known-generations';
 import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, KnownGeneration, RegistryRecord, SegmentRef } from './ports';
 
-/** The most generations below the new one a seed names: what the writer cap leaves beside the new one and 64 leases. */
-const SEED_SPAN = 127;
+/** The most leased generations a seed names beside its window: the most live leases this build writes. */
+const SEED_LEASED = 64;
 
-/** Whether a publish of `generation` over `row` seeds its ledger. */
-export function wantsSeed(
-  row: RegistryRecord | null,
-  generation: number,
-  keep: number,
-  currentGone: boolean,
-): boolean {
-  const small = keep <= MAX_KEPT_GENERATIONS;
+/**
+ * Whether a publish over `row` seeds its ledger: only at a birth, over an active row that has a pointer and no usable
+ * ledger. A usable ledger is never seeded again, however wide it is.
+ */
+export function wantsSeed(row: RegistryRecord | null): boolean {
   // An incarnation's first publish: no row, or a row with no pointer.
-  if (row === null || row.currentGen === null) return small && generation > 0;
+  // Nothing below an incarnation's first publish was made current by it, so a seed could only name objects no load of it
+  // published, which a rollback would take for published ones: its ledger is the new generation alone.
+  if (row === null || row.currentGen === null) return false;
   if (row.status !== 'active') return false;
-  if (usableKnownGens(row) === undefined) return true;
-  if (small && currentGone) return true;
-  return small && keep < generation && windowOf(row) === undefined;
+  return usableKnownGens(row) === undefined;
 }
 
 /** How many footer reads a seed has in flight at once. */
 const SEED_READS = 8;
 
 /**
- * The entries a seed names, oldest first by number and the generation the row named as current last. `listed` is the
+ * The entries a seed names: the listed generations below the new one that a live lease holds and the window does not
+ * keep, then the window oldest first by number with the generation the row named as current last. `listed` is the
  * listing the load's numbering made, when it made one; otherwise the bucket is listed once. Every entry's checksum is
  * read from its object's footer (a 104-byte read, under the store's read retry, {@link SEED_READS} at a time), the
  * superseded generation's too: when a clear summary describes it with another checksum, the row and the bucket
@@ -59,13 +59,24 @@ export async function readSeed(
   generation: number,
   keep: number,
   listed: readonly number[] | undefined,
+  leased: ReadonlySet<number>,
   readRetry?: ReadRetry,
 ): Promise<KnownGeneration[]> {
   const present = listed ?? (await retryRead(() => generationsOf(storage, ref), readRetry));
   const superseded = row?.currentGen ?? undefined;
   const below = present.filter((g) => g < generation);
-  const { kept } = keptWindow(below, superseded, Math.min(keep, SEED_SPAN));
-  const order = [...kept.filter((g) => g !== superseded), ...kept.filter((g) => g === superseded)];
+  const { kept } = keptWindow(below, superseded, Math.min(keep, KNOWN_SPAN));
+  const inWindow = new Set(kept);
+  // A generation a live lease holds is named wherever it is numbered, above the new generation too.
+  const leasedOnly = present
+    .filter((g) => g !== generation && leased.has(g) && !inWindow.has(g))
+    .sort(ascending)
+    .slice(-SEED_LEASED);
+  const order = [
+    ...leasedOnly,
+    ...kept.filter((g) => g !== superseded),
+    ...kept.filter((g) => g === superseded),
+  ];
   const summary = row?.summary;
   const described =
     summary !== undefined && 'fingerprint' in summary

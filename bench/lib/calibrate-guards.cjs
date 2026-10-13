@@ -146,11 +146,10 @@ function projectOps({
   // free checks it once and reads the pointer twice with nothing racing it (its row, then again after its ids, the
   // create being sent without reading the row), three GET-class requests, and one that finds it taken reads the pointer
   // four times more around its collection: before and after its listing, and before and after its delete, since the
-  // objects it met leave one outside its window, six pointer reads; the row it publishes has no usable
-  // ledger (the listing numbered it), so the publish seeds one: a 104-byte footer read for each generation it keeps, run
-  // eight at a time, and the window written in the same conditional write as the pointer, so no further write; with the
-  // check and the one footer read of the objects it met, eight GET-class requests; each attempt a load loses adds two pointer reads (the publish's read of the row, and the
-  // create's read after it lost), so it makes sixteen at most, fourteen pointer reads, the check and the footer read, and one that
+  // objects it met leave one outside its window, six pointer reads; a new segment's first publish is not seeded, so it
+  // reads no footer of the objects it met (a release that seeded it made one more tail read), and with the check that is
+  // seven GET-class requests; each attempt a load loses adds two pointer reads (the publish's read of the row, and the
+  // create's read after it lost), so it makes sixteen at most. At the default `keep` over two strays a new segment's load makes fifteen: fourteen pointer reads and the check (its first publish is not seeded, so it reads no stray's footer, which a release that seeded it did). At `keep: 0` over the same strays it deletes both, one more re-read of the row before its second delete, and makes sixteen, which is the bound; the bound waits for the next calibration run to change; one that
   // loses every attempt throws after as many. The harness is the only
   // writer to a bucket of its own, so its loads never race and never meet an object; the bound still has to hold if
   // one did, for up to two (each further stray below the window adds a re-read).
@@ -176,8 +175,8 @@ function projectOps({
  * A claim on each segment's FIRST load, refusing a second.
  *
  * The projection bounds a segment's first load: its number checked once and its pointer read twice with nothing
- * racing it, four more reads and a footer read when the check finds the number taken and the load collects what it met and seeds its window,
- * and sixteen GET-class requests at most when every publish attempt but the last is lost. A reload whose number is
+ * racing it, four more reads when the check finds the number taken and the load collects what it met,
+ * and sixteen GET-class requests at most when every publish attempt but the last is lost (fifteen at the default `keep`). A reload whose number is
  * taken makes eleven when it loses four races, and twelve when its row was written before rows carried a summary of the
  * current generation and it also reads that generation's index (`tests/bench/calibrate-stages.test.ts` counts both). A stage that loaded a name
  * twice would overspend a projection that said it was safe, so the harness loads each name once and a repeat is

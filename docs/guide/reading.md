@@ -423,11 +423,13 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   called settles done on a leased stream, and with its item on an unleased one. `has`, `count` and `stat` check once, before they
   read, so one that starts before the lease ends may return after it.
 - **Collection resumes after the lease.** The `keep` window is chosen without looking at leases. A leased generation the
-  window leaves out takes none of it, and a load that spares it does not name it again; one the window holds anyway,
-  such as the generation a load superseded, takes its place there as any other would, so at `keep: 1` the first load
-  after a rollback onto a leased generation keeps that one alone. After the lease and a 60-second margin have ended, the
-  next listing pass takes it: that is every sixteenth generation of the segment, or any load that has to list, so within
-  16 later loads of the segment. A segment
+  window leaves out takes none of it, and the row's ledger holds it beside the window while the lease lives, so it stays a
+  rollback target; one the window holds anyway, such as the generation a load superseded, takes its place there as any
+  other would, so at `keep: 1` the first load after a rollback onto a leased generation keeps that one alone. After the
+  lease and a 60-second margin have ended, the first load after that publishes it out of the ledger and deletes it by
+  name, unless the window holds it. A generation the ledger did not name when the lease ended (one a lease reached after
+  a publish had left it out) waits for the next listing pass instead: every sixteenth generation of the segment, or any
+  load that has to list, so within 16 later loads of the segment. A segment
   that is never loaded again keeps it until something else collects it. A number retaken after a rollback and an
   erasure can be spared by an entry that named the object before it: a different object is then kept for at most the
   lease's own length, and the pin's own fingerprint stops it being read as the leased one.

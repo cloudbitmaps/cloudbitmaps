@@ -39,8 +39,8 @@ so, and so do the module headers in the code.
   reopened after it). Generation numbers start again at 0.
 - **A registry of your own stores `knownGens`, and a summary records `tailBytes`.** `RegistryRecord.keptGens` is gone.
   `knownGens` lists `{ generation, footerCrc }` for the generations the row's loads and rollbacks made current and no
-  collection or erasure has since removed: the current one, the generations `keep` keeps below it, and the generations a
-  rollback left above the pointer. When a publish over a row with no usable ledger seeds one, it also lists the
+  collection or erasure has since removed: the current one, the `keep` most recently current generations below it, the
+  generations a live lease holds, and the generations a rollback left above the pointer. When a publish over a row with no usable ledger seeds one, it also lists the
   generations a count by `keep` keeps in the bucket, which can include an object no load published (an orphan or a
   stray): an entry says the library knows the generation and its footer checksum, not that a load published it. Its rules:
   - In the order the generations were made current, oldest first and the current one last; a rollback onto a generation
@@ -260,27 +260,47 @@ so, and so do the module headers in the code.
 
 - **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
   no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
-- **The first load after a rollback keeps the generation the rollback restored.** A load keeps `keep` generations below
-  the one it publishes, and now chooses them as the generation it superseded first, then the newest of the rest by
-  number. Where the segment's row records which generations are kept, the superseded generation is always the newest
-  of them, so that window is unchanged. Where the row records none, the load lists the segment, and it kept the newest
-  `keep` by number: after a rollback, which drops the record, those are the generations the rollback moved away from,
-  so the load deleted the generation the operator had just restored and kept the one rolled away from. With
-  generations 0 to 3, a rollback to 1 and a load with `keep: 1`, the bucket now holds 1 and 4, where it held 3 and 4;
-  with `keep: 2`, it holds 1, 3 and 4, where it held 2, 3 and 4. So with a `keep` of 1 or more the restored generation
-  is still there to roll back to if the first load after the rollback is bad too. From the load after that, the window
-  is the newest `keep` by number again, so with a `keep` of 2 or more the restored generation goes before the newest
-  generations the rollback moved away from: at `keep: 2` the next load leaves 3, 4 and 5. A pin taken on the restored
-  generation reads it until a load collects it, unless the pin is leased. The same holds for any load over a row that
-  records no window, such as one whose loads use a `keep` above 64: an object a crashed load left above the pointer no
-  longer takes a place in the window before the generation the load superseded. The window is the newest `keep` by
-  number, as before, where the superseded generation's object has gone from the bucket, and where the lower of the
-  collection's two reads of the pointer, before and after its listing, is not the load's own generation: another
-  writer moved the pointer before the first read, or a rollback lowered it by the second. The window is chosen without
-  looking at leases, so a live lease on the generation a load supersedes after a rollback now holds a place in the
-  window instead of being spared beside it: that load can delete one more generation than before, and the next load
-  one fewer. Otherwise a load deletes as many generations, and makes the same requests, as before
-  ([what the first load after a rollback keeps](docs/guide/loading.md#what-the-first-load-after-a-rollback-keeps)).
+- **The first load after a rollback keeps the generation the rollback restored.** So does every load after it, for as many as `keep` says. A load keeps `keep`
+  generations below the one it publishes, and the row's ledger now records the order generations were made current and
+  survives a rollback, so the window is the `keep` most recently current generations numbered below the new one, the
+  generation the load superseded first. A load that lists the segment over a row that recorded no window kept the newest
+  `keep` by number: after a rollback, which drops the record, those are the generations the rollback moved away from, so
+  the load deleted the generation the operator had just restored and kept the one rolled away from. With generations 0
+  to 3, a rollback to 1 and a load with `keep: 1`, the bucket now holds 1 and 4, where it held 3 and 4; with `keep: 2`,
+  it holds 1, 3 and 4, where it held 2, 3 and 4. So with a `keep` of 1 or more the restored generation is still there to
+  roll back to if the first load after the rollback is bad too. The window is the same from the load after that, and
+  not only from the first: at `keep: 2` the next load leaves 1, 4 and 5, and the one after leaves 4, 5 and 6, so the
+  restored generation stays for as many loads as `keep` says, ahead of the generations the rollback moved away from (a
+  window of the newest `keep` by number deleted it at the second load, leaving 3, 4 and 5). A generation the rollback left above the pointer stays in the
+  ledger and is never collected while the pointer is below it, and takes no place in `keep`; it leaves the ledger when
+  a load takes a number past it, unless the ledger would pass 128 entries. A pin taken on the restored generation reads it
+  until a load collects it, unless the pin is leased. The window is chosen without looking at leases, so a live lease on
+  the generation a load supersedes after a rollback holds a place in the window instead of being spared beside it. The
+  window is the newest `keep` by number only for a pass that has no usable ledger. With one, a pass that lists keeps the
+  ledger's most recently current names below the pointer first, whatever the two reads of the pointer showed, and counts
+  the newest others by number only to fill `keep`; a name whose object has gone does not count. A load makes
+  the same requests as before
+  ([what a load keeps after a rollback](docs/guide/loading.md#what-a-load-keeps-after-a-rollback)).
+- **A generation a live lease holds stays in the ledger, and a pass that keeps by a count goes by the ledger.** A
+  publish keeps in `knownGens`, beside its window, every generation a live lease holds, so the "lease each generation as
+  it lands" recipe leaves each leased generation a rollback target while its lease lives, whatever `keep` is, and the
+  first publish after the lease ends drops it from the ledger and deletes it by name. A ledger is started from the bucket
+  only over a row with a pointer and no ledger at all; a usable one is never started again, however wide. One that names
+  more than 64 generations below the pointer that no lease holds (a `keep` above 64 carries up to 127) keeps its order, its
+  leased entries and the entries a rollback left above the new number, and a load with a `keep` of 64 or less over it
+  collects by listing instead of by name. With a usable ledger, a pass that lists keeps the ledger's most recently current
+  names first and counts the newest others by number only to fill `keep`; by number alone only where there is no usable
+  ledger. The leases a new ledger holds are read from the row once more just before it is written; a lease taken after
+  that read is spared in the bucket but not named while its lease lasts. A rollback holds every generation its row's
+  lease entries name. With a `keep` of 127 or more, or when the generations the window and the leases hold reach 128
+  entries, the entries a rollback left above a load's number are capped out of the ledger, and a later load that numbers
+  past them collects them.
+- **An incarnation's first publish writes the new generation alone, and a protect pass counts when the superseded
+  generation is gone.** A publish over no row, or a row with no pointer (one a retention write made), no longer seeds its
+  ledger from the bucket: nothing below it was made current by it, and an object there is no load's. An object a crashed
+  load left below it stays until a load that lists. A load that lists to take a number, or every sixteenth generation,
+  and finds the generation it superseded gone from its listing keeps the newest `keep` that are there, as it did before
+  ledgers, instead of only what the ledger names.
 
 - **A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer
   taken for a missing key.** A `rollback` with `allowForward` on an encrypted segment, from a store with no keystore or
