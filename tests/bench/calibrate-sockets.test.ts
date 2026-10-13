@@ -3,7 +3,7 @@ import { createServer as createTcpServer, type AddressInfo, type Socket } from '
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 // The workload client's socket limit in the calibration harness: 128 unless `CR_CALIBRATE_MAX_SOCKETS` says another, set
@@ -34,23 +34,30 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
 };
 
 const CREDENTIALS = { accessKeyId: 'a', secretAccessKey: 's' };
-let server: Server | undefined;
 let sockets = new Set<Socket>();
+// Every server a test parked, each with the sockets it accepted. A server stays bound until the whole file is done: an
+// aborted burst can leave its client opening one more connection to that port a moment after the test ends, and a
+// port freed in the meantime could be handed to the next test's server, which would then count the stray as its own.
+// Held, the port cannot be reused, and the stray lands in the old server's own set.
+const retained: { server: Server; sockets: Set<Socket> }[] = [];
 
-afterEach(async () => {
-  const s = server;
-  server = undefined;
-  if (s) {
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((done) => s.close(() => done()));
-  }
+afterEach(() => {
+  for (const socket of sockets) socket.destroy();
+});
+
+afterAll(async () => {
+  const all = retained.splice(0);
+  for (const { sockets: accepted } of all) for (const socket of accepted) socket.destroy();
+  await Promise.all(
+    all.map(({ server }) => new Promise<void>((done) => server.close(() => done()))),
+  );
 });
 
 async function park(): Promise<string> {
   sockets = new Set();
   const mine = sockets;
   const parked = createServer(() => undefined);
-  server = parked;
+  retained.push({ server: parked, sockets: mine });
   parked.on('connection', (socket) => mine.add(socket));
   await new Promise<void>((done) =>
     parked.listen({ port: 0, host: '127.0.0.1', backlog: 1024 }, done),
@@ -135,7 +142,7 @@ describe('the workload client socket limit', () => {
     sockets = new Set();
     const mine = sockets;
     const tls = createTcpServer((socket) => mine.add(socket));
-    server = tls as unknown as Server;
+    retained.push({ server: tls as unknown as Server, sockets: mine });
     await new Promise<void>((done) =>
       tls.listen({ port: 0, host: '127.0.0.1', backlog: 1024 }, done),
     );
