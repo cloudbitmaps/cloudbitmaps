@@ -1,6 +1,0 @@
----
-'@cloudbitmaps/core': minor
-'@cloudbitmaps/roaring': minor
----
-
-`rollback` moves only onto a generation the segment's row knows it published (its `knownGens`), and only when the object's footer checksum is the one recorded; `allowUnknown` replaces `allowForward` and is the one override, audited with `unknown: true` on `segment.rollback`. A target the row does not know is refused with `ValidationError` before any request to storage, and another object under a known number with `IntegrityError`, with or without a key; a generation a rollback left above the pointer, or one a live lease holds, is known and needs no flag, and no key on an encrypted segment. Two cases are decided by the pointer alone, so a target below it needs no flag and no key, and the move is audited `unknown: true`: a row with no usable `knownGens`, and a target below a full list's bound (its least recently current entry that no lease names). A generation a publish with a smaller `keep` no longer names but that stays in the bucket needs `allowUnknown`. After the swap a rollback reads the target's footer once in place of listing the bucket: 4 requests for a known target, 1 for a refused one. `store.generations` marks each generation `known`. A storage driver must answer a read of a deleted object with `NotFoundError` as soon as its delete returns; the conformance suite checks it.

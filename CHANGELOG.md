@@ -11,6 +11,8 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-10-13
+
 ### Breaking
 
 - **Registry rows are schema 5, and a store moves to 0.21 by loading its segments into a new prefix.** Every row 0.21
@@ -74,6 +76,8 @@ so, and so do the module headers in the code.
   branch on `published`, and check `store.generations(ref)` before acting, as the entry under Fixed on a rollback that
   lands while a delete runs says.
 
+- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
+  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
 - **A combine refuses an operand that is not a segment of a compatible copy of `@cloudbitmaps/roaring`, a segment from
   an earlier release included.** The refusal is a `ValidationError` before any request: an `*Into` call rejects with
   it, and `intersect`, `union` and `andNot` throw it when their stream is first read, as they do their other errors. A
@@ -117,8 +121,8 @@ so, and so do the module headers in the code.
   - **A residue:** a generation that a publish with a smaller `keep` no longer names but that stays in the bucket (a
     lease spared it, or its delete failed), while the list is not full, needs `allowUnknown`, and the key on an encrypted
     segment, until a later listing collects it.
-  - Rolling to the generation already current reads its footer once, in place of a zero-byte read: an object missing is
-    `NotFoundError` as it was, another footer than the row recorded under the number is `IntegrityError`, where it was
+  - Rolling to the generation already current reads its footer once, where it read nothing: an object missing is
+    `NotFoundError`, another footer than the row recorded under the number is `IntegrityError`, where it was
     reported as a no-op, and so is a current footer that fails its own checks (`.crbm` footer CRC mismatch), which a no-op
     did not look at. After the swap a rollback reads the target's footer once, in place of listing the bucket, and puts
     the pointer back if the object is gone or is another: a known target costs 4 requests (the row, the target's tail, the
@@ -359,8 +363,6 @@ so, and so do the module headers in the code.
   counts each once, and an erasure deletes each generation it finds once. Of the shipped drivers, only `MemoryStorage`
   can list a key twice, when an object is deleted and stored again while it is listed.
 
-- **`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`**, not a Node `Buffer`: `bytes.toString()`
-  no longer gives the text. A writer that wants text decodes it with `new TextDecoder().decode(bytes)`.
 - **The first load after a rollback keeps the generation the rollback restored.** So does every load after it, for as many as `keep` says. A load keeps `keep`
   generations below the one it publishes, and the row's ledger now records the order generations were made current and
   survives a rollback, so the window is the `keep` most recently current generations numbered below the new one, the
@@ -503,20 +505,20 @@ so, and so do the module headers in the code.
 - **A rollback to the generation already current checks that its object is there.** It reported a no-op without reading
   anything, so over a pointer that named a missing object (a collection that raced an earlier rollback, or a swap that
   landed, lost its answer and had its target collected since) re-running a rollback to that generation answered success
-  while every read failed. It now makes one zero-byte read of the object, and when the object is gone throws
+  while every read failed. It now reads the object's footer once, and when the object is gone throws
   `NotFoundError` naming the generations in the bucket, as a rollback to any missing generation does. A fault of that
   read is thrown rather than taken for either answer.
 - **A rollback whose swap of the pointer gets no answer is settled by reading the row.** The swap's `TransientError`
   reached the caller with nothing checked, so a swap that had landed was never verified: its target could be collected
   meanwhile and the pointer left on a missing object, and a move that took effect was not audited. The rollback now
   reads the row back. When it is the row the swap leaves (the row it read, with the target as its pointer, the summary
-  the swap wrote and no kept list, and nothing else changed but its leases and its pointerId), it checks the target as
+  and the ledger the swap wrote, and nothing else changed but its leases and its pointerId), it checks the target as
   after any swap: it puts the pointer back if the target went, and reports and audits the move if the target is there.
   Otherwise it throws the `TransientError`: the write may still land, and a re-run finds the pointer where it is, and a
   load or another writer that moved the row meanwhile is left standing. Some writes leave that very row and are
   reported and audited as the rollback's own. On a cleartext segment: another rollback onto the same target, whatever
-  row it read, and a load that wrote the very object the rollback read under its number and recorded no kept window
-  (onto a row that records none, as after a rollback, or with a `keep` above 64). On an encrypted segment the swap's
+  row it read, and a load that wrote the very object the rollback read under its number and carried the same ledger.
+  On an encrypted segment the swap's
   sealed summary tells every other write apart, except when the rollback had no key at hand and wrote no summary, and
   another such rollback onto the same target made the same move. A row read back that is not one the library wrote
   throws its `IntegrityError` instead.
