@@ -109,16 +109,6 @@ export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
     reason: 'folded into the Breaking rollback sub-bullet, which stated the same change',
   },
   {
-    title:
-      // The retired title is quoted as the old entry had it, split so the present-tense gate does not read it as prose.
-      [
-        'The in-process and local-filesystem drivers refuse input they used',
-        'to take and misread.',
-      ].join(' '),
-    reason:
-      'retitled in the 0.21.0 notes: its refused inputs moved to the Breaking entry and its `getTail` rule to the merged `getTail` entry',
-  },
-  {
     title: 'The cost tools refuse input they would have misread.',
     reason:
       'retitled in the 0.21.0 notes: its refused inputs moved to the Breaking entry, leaving the entry on a total `estimateCost` cannot price',

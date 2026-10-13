@@ -630,7 +630,7 @@ so, and so do the module headers in the code.
   whatever the umask. Directories above the root that did not exist are created with the default mode. A file or
   directory that already exists keeps its mode, except a registry row, which every write replaces with a new `0600`
   file: run `chmod -R go-rwx` on an existing root to match. Windows ignores modes, and behaves as before.
-- **The in-process and local-filesystem drivers refuse input they used to misread.** `MemoryStorage` and
+- **The in-process and local-filesystem drivers refuse input they used to take and misread.** `MemoryStorage` and
   `LocalFsStorage` throw `ValidationError` for a `now` that is not a function. A registry write (`create` or
   `compareAndSwap`) whose `keyId` is not a non-empty string is refused with `ValidationError` by every registry driver;
   one such write made its row unreadable and stopped every `list()` that reached it.
