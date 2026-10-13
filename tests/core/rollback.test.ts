@@ -326,8 +326,12 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(res.erased).toBe(true);
     expect(res.collected).toContain(1); // the above-pointer holder was taken
 
-    // And the rollback that would have resurrected it now cannot: the object is gone.
-    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+    // And the rollback that would have resurrected it now cannot: the erasure took it out of the row's ledger, so it is
+    // refused as unknown, and with the override the object is gone.
+    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(rollbackSegment(SEG, 1, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
 
     const store = new CloudRoaring({
       storage: w.backend,
@@ -356,7 +360,9 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(await holdersOf(w.storage, 999)).toEqual([]);
     expect(await generationsOf(w.deps)).toEqual([0]);
     for (const g of [1, 2]) {
-      await expect(rollbackSegment(SEG, g, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(rollbackSegment(SEG, g, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
     }
     expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
   });

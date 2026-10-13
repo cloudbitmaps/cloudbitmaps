@@ -109,7 +109,9 @@ of the window by name and lists the bucket only when it cannot rely on the row.
   than 128; the registry accepts 192 written and 384 read, so no publish or rollback is refused for the ledger's size.
 - **Errors**: a malformed ledger is `ValidationError` on a write and `IntegrityError` on a read; a ledger that disagrees
   with its row is read and not used; a row stamped 4 or lower is `UnsupportedError`.
-- Nothing yet reads the ledger to refuse a rollback: that check comes after this one.
+- **A rollback reads it**: it moves only onto a generation the ledger names, whose object's footer checksum is the one
+  recorded, unless the caller passes `allowUnknown`; where the pointer alone decides (a row with no usable ledger, a
+  number below a full ledger's bound) a target below the pointer needs no flag. `rollback.ts` holds the rule.
 
 ## Documentation
 

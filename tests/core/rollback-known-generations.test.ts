@@ -1169,3 +1169,53 @@ describe('request counts, an encrypted target and one above the pointer', () => 
     expect(await requests(w, 2)).toBe(4);
   });
 });
+
+describe.each([
+  { name: 'cleartext', encrypted: false },
+  { name: 'encrypted', encrypted: true },
+])(
+  'an erasure whose delete of a holder fails leaves it out of the ledger: $name',
+  ({ encrypted }) => {
+    it('above the pointer: a rollback onto the holder, with or without a key, is refused without the flag, and lands with it', async () => {
+      const w = world(encrypted);
+      await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 9 }); // 0
+      await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }); // 1, holds the id
+      await rollbackSegment(SEG, 0, w.rollbackDeps()); // 1 is above the pointer, and known
+      const storage = Object.create(w.memory) as IStorageDriver;
+      storage.delete = (key, options) =>
+        key.generation === 1
+          ? Promise.reject(new Error('AccessDenied'))
+          : w.memory.delete(key, options);
+      await eraseIdFromSegment(SEG, 4, { ...w.deps, storage }).catch(() => undefined);
+      // The delete failed, so the holder is in the bucket; the erasure took it out of the ledger before it tried.
+      expect(await generationsOf(w.memory, SEG)).toContain(1);
+      expect(await names(w)).not.toContain(1);
+      for (const withKey of [true, false]) {
+        await expect(rollbackSegment(SEG, 1, w.rollbackDeps(withKey))).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+      }
+      expect((await rowOf(w)).currentGen).toBe(0);
+      const audit = new RecordingAuditSink();
+      await rollbackSegment(SEG, 1, w.rollbackDeps(), { audit, allowUnknown: true });
+      expect(rolled(events(audit)[0]!)).toMatchObject({ generation: 1, unknown: true });
+    });
+
+    it('below the pointer: the same, refused without the flag', async () => {
+      const w = world(encrypted);
+      await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 9 }); // 0
+      await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 }); // 1, holds the id
+      await loadSegment(SEG, [1, 2, 3, 5], w.deps, { keep: 9 }); // 2, current
+      const storage = Object.create(w.memory) as IStorageDriver;
+      storage.delete = (key, options) =>
+        key.generation === 1
+          ? Promise.reject(new Error('AccessDenied'))
+          : w.memory.delete(key, options);
+      await eraseIdFromSegment(SEG, 4, { ...w.deps, storage }).catch(() => undefined);
+      expect(await generationsOf(w.memory, SEG)).toContain(1);
+      await expect(rollbackSegment(SEG, 1, w.rollbackDeps(false))).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    });
+  },
+);

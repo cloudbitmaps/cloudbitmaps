@@ -127,9 +127,10 @@ so, and so do the module headers in the code.
   - A storage driver must answer a read of a deleted object with `NotFoundError` from the moment its delete returns: the
     footer read after the swap takes a read that succeeds as proof that the object is there. The conformance suite holds
     a driver to it.
-  - An erasure that rewrites a segment leaves only the rewrite in `knownGens` before it collects, so a rollback without
-    `allowUnknown` cannot bring an older generation back, except where the pointer alone decides: a row with no `knownGens`,
-    or a number below a full list's bound (both above).
+  - An erasure takes every generation it will delete out of the row's `knownGens` before it deletes (a rewrite leaves
+    only itself in it), so a rollback without `allowUnknown` cannot bring an erased generation back, even when a delete
+    fails and the erasure ends with an `error:` note or `'superseded'`, until the erasure is re-run. The exception is where
+    the pointer alone decides: a row with no usable `knownGens`, or a number below a full list's bound (both above).
   Move `allowForward` to `allowUnknown` only where the target is one the row does not know: a rollback that undoes an
   earlier rollback needs no flag at all.
 

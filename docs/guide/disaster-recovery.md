@@ -647,8 +647,9 @@ row recorded; when the object is gone it throws `NotFoundError` naming what is i
 
 **A rollback can fail half-way.** It moves the pointer and then reads the target's footer once more, because a
 collection can take a generation below the pointer between its read of the target and the move when the row does not
-hold it off: for a rollback with `allowUnknown`, one onto a row with no list, and one onto a known generation against an
-erasure that rewrote nothing (its deletes do not remove the names from the list first). If the target has gone, or another object holds its
+hold it off: for a rollback with `allowUnknown`, and for one below the pointer on a row with no list or below a full
+list's bound. An erasure takes what it will delete out of the list first, so a rollback without the flag cannot land on a
+generation an erasure is deleting. If the target has gone, or another object holds its
 number, it moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
 (the row changed again, or the registry write failed), it throws `NotFoundError` saying
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its

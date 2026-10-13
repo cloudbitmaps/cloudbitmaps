@@ -252,7 +252,7 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
       { audit },
     );
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(0, /erasure/));
@@ -415,7 +415,7 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
       { audit },
     );
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 1, w.deps);
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(1, /erasure/));
@@ -438,7 +438,7 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
       { audit },
     );
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 2, w.deps);
+    await rollbackSegment(REF, 2, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(2, /erasure/));

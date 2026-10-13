@@ -599,14 +599,18 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
   `TransientError` (below). A load that evicts the target from the row's record between the rollback's read and its
-  swap is such a write. A load's collection by name and a load's pass that keeps by count do not race a rollback that checks the
-  record: a load removes what it evicts from the record in the publish, before it deletes anything, and its pass that keeps
-  by count skips every generation the row names when it re-reads the row. An erasure's rewrite leaves only the rewrite in
-  the record before it collects. What is left is a rollback that is not checked (`allowUnknown`, or a row with no usable
-  record, below), and a rollback onto a known generation against an erasure that rewrote nothing, which does not remove
-  the names from the record before it deletes them: either can still land on a generation a deleter is taking, and the
-  deleting call detects it, and the load throws `NotFoundError` when the pointer still names the missing object after a wait,
-  which is the time a rollback that found its target gone takes to put the pointer back. Check
+  swap is such a write. Every deleter takes what it will delete out of the record before it deletes, or never deletes what the row names, so
+  none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
+  its pass that keeps by count skips every generation the row names when it re-reads the row, an erasure's rewrite leaves
+  only the rewrite in it, and an erasure that rewrites nothing removes each generation it will delete from it in a write
+  made before its first delete. A rollback that read the row before such a write loses its swap with
+  `WriteConflictError`; one that reads it after is refused as unknown. What is left is a rollback that is not held to the
+  record (`allowUnknown`, or a target below the pointer on a row with no usable record or below a full record's bound),
+  which can still land on a generation a deleter is taking: the deleting call detects it, and the load throws
+  `NotFoundError` when the pointer still names the missing object after a wait, which is the time a rollback that found
+  its target gone takes to put the pointer back. Because an erasure takes a generation out of the record first, a
+  rollback without `allowUnknown` cannot bring an erased generation back even when a delete failed, except through those
+  two cases, until the erasure is re-run. Check
   `store.generations(ref)` before acting: while the pointer names a missing object, roll back to a generation in the
   bucket ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
 - **A generation the row does not know** throws `ValidationError` before any request to storage, naming the ones it
@@ -1499,21 +1503,19 @@ the lower of the two.
 ### A rollback that races a collection
 
 Every loop that deletes generations reads the segment's row just before each delete. A rollback that is held to the
-row's record of its generations (`knownGens`) is kept out of most of them:
+row's record of its generations (`knownGens`) is kept out of all of them:
 
 - a load's collection by name removes the generations it deletes from the record in its publish, before it deletes
   anything, so a rollback onto one is refused as unknown, or, when it read the row before that publish, loses its swap
   with `WriteConflictError`;
 - a load's pass that keeps by count never deletes a generation the row names when it re-reads the row;
 - a refused load's own object is in no record, so it is not a target;
-- an erasure's rewrite leaves only itself in the record, before it collects.
+- an erasure's rewrite leaves only itself in the record, before it collects, and an erasure that rewrites nothing takes
+  each generation it will delete out of the record in a write made before its first delete.
 
-What is left is a rollback that is not held to the record: `allowUnknown`, a row with no usable record (a pointer moved
-by hand, a registry that drops the field), or a target older than a full record. And a rollback onto a known generation
-can still meet an erasure that rewrote nothing, whose deletes of holders above the pointer and of first loads' objects on
-a row with no pointer, and whose collection below the pointer, do not remove the names from the record first. Those can
-meet a rollback onto the very generation being deleted, which can land inside the round trip that remains between the
-read of the row and the delete:
+What is left is a rollback that is not held to the record: `allowUnknown`, or a target below the pointer on a row with no
+usable record or below a full record's bound. It can meet a deleter and land on the very generation being deleted, inside
+the round trip that remains between the read of the row and the delete:
 
 ```
 deleting call        reads the row: g may go ──────── round trip ──────────────────▶ deletes g

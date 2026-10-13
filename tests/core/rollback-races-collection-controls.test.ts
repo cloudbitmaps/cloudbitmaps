@@ -247,7 +247,7 @@ describe('an erasure whose collection below the pointer was raced stops before i
       storage: hookedDelete(w.storage, 0, { at }),
     });
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
     const err = await settled(erasure);
     expect(err).toBeInstanceOf(NotFoundError);
@@ -328,7 +328,7 @@ describe('a segment destroyed between the read that allowed the delete and the d
       storage: hookedDelete(w.storage, 1, { at }),
     });
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 1, w.deps);
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     await destroy(w);
     at.open();
     // No generation in the bucket holds the id, and no reader resolves a tombstone's generations.

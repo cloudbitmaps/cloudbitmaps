@@ -327,7 +327,7 @@ fleet](#three-rules-while-you-erase)). A rewrite is numbered above everything, s
 older generation, above the pointer or below.
 
 **The row's ledger loses what the call will delete, before anything is deleted.** The row's ledger of known generations
-(`knownGens`) names the generations a collection by a count spares, and the ones a rollback that checks the ledger will vouch for. A rewrite publishes a ledger of itself alone, so every older generation is out of it before the
+(`knownGens`) names the generations a collection by a count spares, and the ones a rollback vouches for: a rollback moves only onto a generation the ledger names, unless it passes `allowUnknown`. A rewrite publishes a ledger of itself alone, so every older generation is out of it before the
 collection. A call that deletes without rewriting (the id is only in an older generation) writes the row once instead,
 after its search and before its first delete, to take out of the ledger each holder it will delete by name and every name
 below the pointer that its collection will delete. The current generation is never taken out, and the order of the rest
@@ -335,7 +335,7 @@ is kept. Only then does it delete. So a rollback that read the row before the wr
 which spares every generation the row names when it reads the row before each delete, spares what a load or a rollback
 has made known since; a name that comes back that way, below the generation the call found current, is taken out of the
 ledger again before the call deletes it. The same write renews the row's `pointerId` when the call deletes by name. What the write
-does in a race:
+does in a race. **A rollback without `allowUnknown` cannot bring an erased generation back, even when a delete fails** (an erasure that ends with an `error:` note because it could not remove a generation, or with `'superseded'`, or that crashes after the write): the generation is already out of the ledger, so the rollback is refused as unknown, above the pointer and below it. The two cases the pointer alone decides are the exception: a row with no usable `knownGens`, and a target below a full ledger's bound (its least recently current entry that no lease names), where a rollback below the pointer needs no flag. Re-run the erasure to delete what it could not. What the write does in a race:
 
 - **No write when none is owed.** A ledger that names nothing to delete, and no renewal to make, costs no write. Neither
   does a call whose renewal another erasure's write already made after this call listed the bucket and whose names that
@@ -345,13 +345,14 @@ does in a race:
   generation it found clean, which the load's window names and the collection then spares as the load's grace
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has
   left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but one
-  that still sits above it is `'superseded'` and deletes nothing by name. A rollback onto a holder leaves that holder
-  current, and the call reports `'superseded'` after it has taken the holders below the pointer.
+  that still sits above it is `'superseded'` and deletes nothing by name. A rollback onto a holder (it needs `allowUnknown`, the
+  holder being out of the ledger) leaves that holder current, and the call reports `'superseded'` after it has taken the
+  holders below the pointer.
 - **A write that loses** to another writer is made again against the row read after it. The fifth lost write across the
   call's fences ends the call with `'superseded'` and no claim; when it is the first write, nothing was deleted. On a
   segment that loads many times a second that is an outcome to expect now and then, and a re-run settles it. A write of
   the row's leases alone costs no attempt.
-- **A collection that spared a name the row knows** is followed by a second pass. A rollback onto a holder, a load that
+- **A collection that spared a name the row knows** is followed by a second pass. A rollback onto a holder (with `allowUnknown`), a load that
   kept a holder in its window, or a load that started a ledger on a row that had none, made the row name what the
   collection meant to delete since the write took it out. The call writes the row again to take those names out and
   collects again, until a collection spares nothing the row names, within the same five lost writes. The rewrite's
@@ -389,8 +390,8 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   replaced can be left above it, or be the one the pointer now names. A generation that still holds the id stays in the
   bucket, and the call reports an `error: ...` note instead of `erased: true`.
 - When the id was not in the current generation and nothing was published, a rollback while the call deletes
-  generations above the pointer is reported as `'superseded'` if a holder is left, and one while it collects is an
-  `error: ...` note. On a segment with no generation yet, a rollback (with `allowUnknown`: the row has published
+  generations above the pointer (a rollback needs `allowUnknown` for one: the write took the holders out of the ledger) is
+  reported as `'superseded'` if a holder is left, and one while it collects is an `error: ...` note. On a segment with no generation yet, a rollback (with `allowUnknown`: the row has published
   nothing, so it knows no generation) onto a first load's object while the call deletes those objects is reported as
   `'superseded'` too, and the object stays. On a row with no key,
   which is how `setRetention` makes one, such a rollback accepts only a cleartext object: it refuses an encrypted
@@ -399,8 +400,8 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   object, which `checkConsistency()` reports: a generation above the pointer; on a segment with no generation yet, a
   first load's object that a rollback with `allowUnknown` accepts (on a row with no key, only a cleartext one); or an
   object below the pointer that the segment's key does not open, which only a rollback with no key at hand moves onto,
-  and only on a row with no usable `knownGens` or onto a target older than a full one: any other rollback onto an object
-  the row does not know is refused.
+  and only on a row with no usable `knownGens` or onto a number below a full ledger's bound: any other rollback onto an
+  object the row does not know is refused.
   The call reads the row just before each delete; one round trip remains between that read and the delete, and a
   condition on the object cannot close it, since the pointer then names the very object the call read. The rollback's
   own check ran before the delete, so it returns success. Nothing can put the deleted object back, so the erasure
