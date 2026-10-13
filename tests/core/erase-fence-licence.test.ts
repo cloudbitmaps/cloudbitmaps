@@ -467,6 +467,33 @@ describe('the collection spared a generation the row named again', () => {
     expect(await ledgerOf(w.registry)).not.toContain(0);
   });
 
+  it('a second write that keeps losing ends the call with superseded, and the holder stays', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 0 holds
+    await loadSegment(SEG, [1, 5], w.load, { keep: 9 }); // 1
+    await loadSegment(SEG, [1, 6], w.load, { keep: 9 }); // 2 current
+    let fired = false;
+    let lost = 0;
+    const c = counting(w.registry, {
+      beforeCas: async (n) => {
+        if (n < 2 || lost >= FENCE_ATTEMPTS) return;
+        lost += 1;
+        const row = (await w.registry.get(SEG))!;
+        await w.registry.compareAndSwap(SEG, row.token, renewPointer(row));
+      },
+      afterCas: async (n) => {
+        if (n !== 1 || fired) return;
+        fired = true;
+        await rollbackSegment(SEG, 0, w.load);
+        await loadSegment(SEG, [1, 7], w.load, { keep: 9 });
+      },
+    });
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+    expect(fired).toBe(true);
+    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(await holdersOf(w.storage, 999)).toEqual([0]);
+  });
+
   it('the rewrite path: a rollback onto the generation it replaced and a load, before its collection: erased: true', async () => {
     const w = world();
     await loadSegment(SEG, [1, 5], w.load, { keep: 9 }); // 0
