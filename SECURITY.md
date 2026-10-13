@@ -91,8 +91,8 @@ smuggles in a breaking change.
 | forced | reached us via | note |
 | --- | --- | --- |
 | `undici >=6.28.0 <7` | `roaring` -> `node-gyp` (optional, install-time) | |
-| `brace-expansion@5 >=5.0.12 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
-| `nanoid@3 >=3.3.18 <4` | the vitest toolchain | |
+| `brace-expansion >=5.0.12 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
+| `nanoid >=3.3.18 <4` | the vitest toolchain | |
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
 | `esbuild >=0.28.2 <0.29` | a direct devDependency, and `vitest` -> `vite` | |
 | `source-map-js >=1.2.2 <2` | the vitest toolchain: `vite` -> `postcss` | |
