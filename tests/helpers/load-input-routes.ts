@@ -101,6 +101,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/known-generations.property.test.ts',
   'tests/core/known-window-after-rollback.test.ts',
   'tests/core/known-window-collection.test.ts',
+  'tests/core/registry-write-token.test.ts',
   'tests/core/known-window-leases.test.ts',
   'tests/core/keep-after-rollback.test.ts',
   'tests/core/known-generations-cap.property.test.ts',

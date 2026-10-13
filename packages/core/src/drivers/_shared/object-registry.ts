@@ -225,6 +225,11 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete };
   }
 
+  /** Every write reports its token to `onToken` before the request that carries it is sent. */
+  get reportsWriteTokens(): true {
+    return true;
+  }
+
   /** Whether a delete removes a row: the store has a delete, and vouches for it. */
   private removesRows(): boolean {
     return this.store.conditionalDelete === true && typeof this.store.delete === 'function';
@@ -253,7 +258,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       // The caller found no row: send the create-only write without reading. One that loses to a row, or to a tombstone
       // (which a create-only write cannot go over), is told apart by the read below.
       try {
-        return await this.createOver(key, ref, checked, undefined);
+        return await this.createOver(key, ref, checked, undefined, options);
       } catch (err) {
         if (!isWriteConflictError(err)) throw err;
         lost = err;
@@ -265,7 +270,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     }
     // No row at all now: the create-only write lost to something that has gone since, and it is not sent again.
     if (lost !== undefined && current === null) throw lost;
-    return this.createOver(key, ref, checked, current ?? undefined);
+    return this.createOver(key, ref, checked, current ?? undefined, options);
   }
 
   /** Write a new incarnation of the row: over `tombstone` under its version, or create-only when there is none. */
@@ -274,9 +279,11 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     ref: SegmentRef,
     checked: NewRegistryRecord,
     tombstone: ReadRow | undefined,
+    options: RegistryWriteOptions | undefined,
   ): Promise<{ token: Token }> {
     // A new incarnation, whose counter continues across a tombstone, so with overwhelming probability a recreate never re-issues an old token.
     const token = newIncarnationToken(this.entropy, tombstone?.env.record);
+    options?.onToken?.(token);
     const env: RegistryEnvelope = {
       deleted: false,
       record: recordFromNew(ref, checked, this.now(), token),
@@ -301,6 +308,7 @@ export class ObjectStoreRegistry implements IRegistryDriver {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
     const token = nextRegistryToken(current.env.record, this.entropy);
+    options?.onToken?.(token);
     const env: RegistryEnvelope = {
       deleted: false,
       record: applyRegistryPatch(current.env.record, checked, this.now(), token),

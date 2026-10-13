@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { opaqueTokens } from '../helpers/opaque-tokens';
+import { withoutTokenReports } from '../helpers/no-token-reports';
 import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
@@ -501,7 +502,9 @@ describe('a publish whose registry write ends without a definite answer reads th
   });
 
   it('a proof of its own object that fails transiently throws that TransientError, deletes nothing, and the write stays landed', async () => {
-    const w = world();
+    const w = world(undefined, (clock) =>
+      withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
     await threeLoads(w);
     w.arm({
       kind: 'land-then-transient',
@@ -517,7 +520,9 @@ describe('a publish whose registry write ends without a definite answer reads th
   });
 
   it('a proof of its own object that fails any other way is a TransientError with that cause, never the raw error', async () => {
-    const w = world();
+    const w = world(undefined, (clock) =>
+      withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
     await threeLoads(w);
     const raw = new IntegrityError('the footer is unreadable');
     w.arm({ kind: 'land-then-transient', after: () => w.failNextTail(raw) });
@@ -757,7 +762,9 @@ describe('a publish whose registry write ends without a definite answer reads th
   });
 
   it('a publish given no way to prove its object cannot settle an unanswered write that names its number', async () => {
-    const w = world();
+    const w = world(undefined, (clock) =>
+      withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
     w.arm({ kind: 'land-then-transient' });
     const err = await publishGeneration(w.registry, { ...SEG, generation: 0 }).catch(
       (e: unknown) => e,

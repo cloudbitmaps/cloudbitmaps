@@ -22,6 +22,7 @@ import type {
   RegCaps,
   RegistryPatch,
   RegistryRecord,
+  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from '@/core/ports';
@@ -127,12 +128,21 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
+  /** Every write reports its token to `onToken` before the row's file is written. */
+  get reportsWriteTokens(): true {
+    return true;
+  }
+
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
     const env = await this.readRow(registryRowPath(this.root, ref), ref);
     return env && !env.deleted ? env.record : null;
   }
 
-  async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
+  async create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }> {
     const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
     assertRegistryNamesFit(ref);
@@ -143,6 +153,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       }
       // A new incarnation, whose counter continues across a tombstone (ABA-safe).
       const token = newIncarnationToken(this.entropy, current?.record);
+      options?.onToken?.(token);
       await this.writeRow(path, recordFromNew(ref, checked, this.now(), token));
       return { token };
     });
@@ -156,6 +167,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     ref: SegmentRef,
     expected: Token,
     patch: RegistryPatch,
+    options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
@@ -166,6 +178,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
       const token = nextRegistryToken(current.record, this.entropy);
+      options?.onToken?.(token);
       await this.writeRow(path, applyRegistryPatch(current.record, checked, this.now(), token));
       return { token };
     });

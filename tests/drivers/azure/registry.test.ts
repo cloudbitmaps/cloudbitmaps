@@ -184,6 +184,10 @@ const driverOver = (container: FakeContainer, prefix = 'cloudbitmaps'): AzureBlo
 // The Azure registry must pass the SAME contract as memory / LocalFs / S3 / GCS, in the fast lane.
 registryConformance('AzureBlobRegistryDriver (fake Azure)', () => driverOver(new FakeContainer()));
 
+it('AzureBlobRegistryDriver reports the token of each write it sends', () => {
+  expect(driverOver(new FakeContainer()).reportsWriteTokens).toBe(true);
+});
+
 // …and the cross-process fence, which the sequential suite short-circuits before ever reaching.
 registryConcurrency('AzureBlobRegistryDriver (fake Azure)', () => {
   const container = new FakeContainer();

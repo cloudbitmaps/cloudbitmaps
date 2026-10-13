@@ -269,11 +269,13 @@ interface PublishOptions {
  * `compareAndSwap` that fails with {@link TransientError} (a throttle, a lost response, a timeout) may or may not
  * have landed, and may still be in flight. The publish reads the row once more and decides from what it holds:
  *
- * - the pointer names `key.generation`, on the incarnation the write was made against (the row's `createdAt`), and
- *   `holdsOwnObject` finds the caller's bytes under it: the write is taken to have landed, and the publish returns
- *   `true`. Only the writer of a write-once object publishes its number, and a number is never taken while an object
- *   holds it, but it is taken again once its object is deleted, and a load of the same cleartext ids writes the same
- *   bytes, so another writer's identical object under the number passes for the caller's;
+ * - the pointer names `key.generation`, on the incarnation the write was made against (the row's `createdAt`), and the
+ *   write is the caller's own: the write is taken to have landed, and the publish returns `true`. A registry that
+ *   reports each write's token ({@link IRegistryDriver.reportsWriteTokens}) settles it exactly, by whether the row's
+ *   `pointerId` is the token of a write this call sent. One that does not is settled by `holdsOwnObject` finding the
+ *   caller's bytes under the number: only the writer of a write-once object publishes its number, but a number is
+ *   taken again once its object is deleted, and a load of the same cleartext ids writes the same bytes, so another
+ *   writer's identical object under the number passes for the caller's;
  * - the row is still the one the write was made against (the same token, or still no row): the write may land yet. The
  *   publish then waits, on the injected clock, and sends a **new** write from the row it just read: a request of its
  *   own, not a replay of the driver's, carrying the same version, so under the registry's fence at most one of the two
@@ -288,6 +290,9 @@ interface PublishOptions {
  *
  * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
  * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
+ * With a registry that reports tokens the check is exact, so it also runs before the next attempt's `expectAbsent`,
+ * `expectToken` and `expectFrom` fences, which a write of the caller's own that landed would fail; with one that does
+ * not, a publish over another writer's identical object can pass it, and so skip them.
  *
  * **A `summary` goes in the same write that moves the pointer**, so a reader that sees this generation as current
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
@@ -318,6 +323,10 @@ export async function publishGenerationKept(
   // The row the last attempt acted on, which its write was made against: where the incarnation is read from when the
   // attempts run out.
   let lastRecord: RegistryRecord | null | undefined;
+  // The tokens of every write this call sent, as a registry that reports them says before it sends each one; absent for
+  // a registry that does not, whose writes are settled by the object the pointer names.
+  const sent: Set<Token> | undefined =
+    registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     // The row a write is made against is passed to the registry as `held`, so that it need not read the row again for
@@ -326,7 +335,12 @@ export async function publishGenerationKept(
     const holdsRow = fresh === undefined;
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
-    const write: RegistryWriteOptions | undefined = holdsRow ? { held: record } : undefined;
+    const write: RegistryWriteOptions | undefined =
+      sent === undefined
+        ? holdsRow
+          ? { held: record }
+          : undefined
+        : { ...(holdsRow ? { held: record } : {}), onToken: (token) => void sent.add(token) };
     fresh = undefined;
     unanswered = undefined;
     lastRecord = record;
@@ -336,7 +350,7 @@ export async function publishGenerationKept(
     if (failedOn !== undefined) {
       let landed: boolean;
       try {
-        landed = await landedHere(record, failedOn, key, options.holdsOwnObject);
+        landed = await landedHere(record, failedOn, key, options.holdsOwnObject, sent);
       } catch (proofErr) {
         throw outcomeUnknown(key, proofErr);
       }
@@ -557,11 +571,18 @@ export async function publishGenerationKept(
   // is published, so it falls through to the conflict below rather than being read as "a newer gen won".
   if (final !== null && final.currentGen !== null && final.currentGen >= key.generation) {
     if (final.currentGen !== key.generation) return REFUSED;
-    if (!sawUnanswered) return { published: true, token: final.token };
+    if (!sawUnanswered && sent === undefined) return { published: true, token: final.token };
     // A write that went unanswered may have landed during the last wait, or the number may be another writer's, or
-    // another incarnation's: the incarnation and the object under it decide, as after any unanswered write.
+    // another incarnation's: the write that set the pointer decides when the registry reports its writes, else the
+    // incarnation and the object under it, as after any unanswered write.
     try {
-      const published = await landedHere(final, lastRecord ?? null, key, options.holdsOwnObject);
+      const published = await landedHere(
+        final,
+        lastRecord ?? null,
+        key,
+        options.holdsOwnObject,
+        sent,
+      );
       return published ? { published, token: final.token } : REFUSED;
     } catch (proofErr) {
       throw outcomeUnknown(key, proofErr);
@@ -607,8 +628,9 @@ export async function publishGeneration(
 
 /**
  * Whether `now` shows the effect of a publish's write that was made against `before`: an active row, on the same
- * incarnation (a `create` has none to compare), whose pointer names `key.generation`, over an object the caller's
- * `holdsOwnObject` accepts.
+ * incarnation (a `create` has none to compare), whose pointer names `key.generation`, and either (with `sent`, the
+ * tokens of the writes this call sent to a registry that reports them) whose `pointerId` is one of them, or (without)
+ * over an object the caller's `holdsOwnObject` accepts.
  *
  * The incarnation is the one in the row's token ({@link sameIncarnation}): exact, and no clock. A row with no id in its
  * token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock reading that two
@@ -622,9 +644,14 @@ async function landedHere(
   before: RegistryRecord | null,
   key: GenKey,
   holdsOwnObject: (() => Promise<boolean>) | undefined,
+  sent: ReadonlySet<Token> | undefined,
 ): Promise<boolean> {
   if (now === null || now.status === 'destroyed' || now.currentGen !== key.generation) return false;
   if (before !== null && !sameIncarnation(before, now)) return false;
+  // A registry that reports its writes' tokens settles it exactly: the pointer is over this call's write when the row's
+  // `pointerId` is the token of one it sent. Another writer's identical object under the number, which the footer cannot
+  // tell from the caller's, is not it.
+  if (sent !== undefined) return sent.has(now.pointerId);
   if (holdsOwnObject === undefined) {
     throw new TransientError(
       `publish of "${key.segment}" generation ${key.generation}: whether its registry write landed could not be ` +

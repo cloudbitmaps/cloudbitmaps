@@ -648,6 +648,20 @@ export interface RegistryWriteOptions {
    * settled by reading the row, never by this record. A driver that ignores the option reads the row.
    */
   readonly held?: RegistryRecord | null;
+  /**
+   * Called with the token this write carries, before the write is sent, once for every write the call sends (a write
+   * the registry sends again reports the token it sends). The token is the one the write records: when the write
+   * lands, the row's {@link RegistryRecord.token} is it, and so is its {@link RegistryRecord.pointerId} when the write
+   * names a resolved field. A write that does not land leaves no row carrying it. A call refused before it has a token to
+   * send, on a conflict its own read finds, reports none.
+   *
+   * It tells a writer which row writes are its own, whatever became of its request: a write that failed, or got no
+   * answer, may still have landed, and the row's `pointerId` is then one of the tokens the writer was told. Only a
+   * registry that reports {@link IRegistryDriver.reportsWriteTokens} calls it; one that does not ignores it, and a
+   * writer then settles such a write by reading the object it published. A registry that wraps another and reports
+   * the flag passes this option through to the write it forwards.
+   */
+  readonly onToken?: (token: Token) => void;
 }
 
 /** Capabilities a registry driver advertises; validated fail-fast at wiring time. */
@@ -862,6 +876,17 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  */
 export interface IRegistryDriver {
   capabilities(): RegCaps;
+  /**
+   * `true` when every `create` and `compareAndSwap` of this registry reports the token its write carries to
+   * {@link RegistryWriteOptions.onToken} before sending it, a resend included. A load, an erasure's rewrite and every
+   * other publish then knows whether a write that conflicted or got no answer landed by whether the row's `pointerId`
+   * is a token it was told, which names the writer and not only the bytes. Absent or `false`: the registry reports
+   * none, and such a write is settled by reading the object the publish wrote. A shipped registry says which it is.
+   *
+   * A registry that wraps another declares it only for a wrapper that passes `options` through to the write it
+   * forwards: one that does not leaves the flag off, and its writes are settled by the object.
+   */
+  readonly reportsWriteTokens?: boolean;
   /**
    * The segment's record, or `null` if it doesn't exist (or was deleted). Throw {@link TransientError} for a fault
    * worth riding out (throttling, a 5xx, a dropped connection): a reader whose pointer refresh meets one keeps
