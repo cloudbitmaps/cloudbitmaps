@@ -396,9 +396,9 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
   });
 
   describe('an own write that landed, then a write that renews the pointerId without moving the pointer, is read as not its own', () => {
-    // The trade this check makes: once a write has renewed the row's `pointerId` over the call's own landed write, the call
-    // cannot tell its write from another load's of that number. It reports none published, though its generation may be
-    // current, and deletes nothing; a re-run publishes a new generation.
+    // The trade this check makes: once a write has renewed the row's `pointerId` over the call's own landed write, the
+    // call cannot tell its write from another load's of that number. It reports none published, though its generation
+    // may be current, and deletes nothing; a re-run publishes a new generation.
 
     /** The generations the row names, and the one it points at, are all still in the bucket, and the pointer reads. */
     async function expectIntact(ids: number[]) {
@@ -778,9 +778,9 @@ describe('a publish whose attempts run out on conflicts', () => {
 describe('a registry that overrides a write method declares the flag beside it, or is settled by the object', () => {
   /**
    * Registries that land a write and then answer it as a conflict, the shape of a replay that met its own write:
-   * a subclass and an `Object.create` wrapper of the in-memory registry, each overriding a write method (`compareAndSwap`, or `create` for a publish onto no row), each
-   * either declaring `reportsWriteTokens` beside it and forwarding `options`, or neither. A landed write is the
-   * call's own (`options` forwarded) or another writer's (not).
+   * a subclass and an `Object.create` wrapper of the in-memory registry, each overriding a write method
+   * (`compareAndSwap`, or `create` for a publish onto no row), each either declaring `reportsWriteTokens` beside it and
+   * forwarding `options`, or neither. A landed write is the call's own (`options` forwarded) or another writer's (not).
    */
   class Dropping extends MemoryRegistryDriver {
     override async compareAndSwap(

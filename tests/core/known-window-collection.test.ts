@@ -258,7 +258,7 @@ describe("a same-bytes publish by another load is not this load's", () => {
 
     const bAtPublish = gate();
     const held = Object.create(registry) as IRegistryDriver;
-    // It overrides the write and forwards `options`, so it declares the flag beside it, as a registry that reports does.
+    // It overrides the write and forwards `options`, so it declares the flag beside it, as a reporting registry does.
     Object.defineProperty(held, 'reportsWriteTokens', { value: true });
     let waited = false;
     const hold = async (gen: number | null | undefined): Promise<void> => {

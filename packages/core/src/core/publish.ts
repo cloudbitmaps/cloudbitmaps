@@ -641,7 +641,7 @@ function reportsWriteTokens(registry: IRegistryDriver): boolean {
   return declaresBesideWrite(registry, 'create') && declaresBesideWrite(registry, 'compareAndSwap');
 }
 
-/** Whether the object that owns `method`, searching `registry` and then its prototypes, declares `reportsWriteTokens`. */
+/** Whether the object owning `method`, found from `registry` up its prototypes, declares `reportsWriteTokens`. */
 function declaresBesideWrite(
   registry: IRegistryDriver,
   method: 'create' | 'compareAndSwap',
@@ -663,9 +663,9 @@ function declaresBesideWrite(
  * The incarnation is the one in the row's token ({@link sameIncarnation}): exact, and no clock. A row with no id in its
  * token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock reading
  * that two incarnations can share. With `sent` the token decides, and nothing else is asked. Without it the object is
- * checked, never assumed: the pointer and the incarnation alone cannot say whose write this is, and a load's check reads
- * the footer, which names bytes, so another writer's identical object under the number passes it. With no proof to ask
- * for, the answer cannot be given, and that is an unknown outcome, never a guess.
+ * checked, never assumed: the pointer and the incarnation alone cannot say whose write this is, and a load's check
+ * reads the footer, which names bytes, so another writer's identical object under the number passes it. With no proof
+ * to ask for, the answer cannot be given, and that is an unknown outcome, never a guess.
  */
 async function landedHere(
   now: RegistryRecord | null,
@@ -676,9 +676,10 @@ async function landedHere(
 ): Promise<boolean> {
   if (now === null || now.status === 'destroyed' || now.currentGen !== key.generation) return false;
   if (before !== null && !sameIncarnation(before, now)) return false;
-  // A registry that reports its writes' tokens settles it exactly: the pointer is over this call's write when the row's
-  // `pointerId` is the token of one it sent. Another writer's identical object under the number, which the footer cannot
-  // tell from the caller's, is not it.
+  // A registry that reports its writes' tokens settles it by the token: the pointer is over this call's write when the
+  // row's `pointerId` is the token of one it sent. Another writer's identical object under the number, which the footer
+  // cannot tell from the caller's, is not it. A write that renewed the `pointerId` over this call's own landed write
+  // reads as not its own too: the two cannot be told apart, so the call reports none published and deletes nothing.
   if (sent !== undefined) return sent.has(now.pointerId);
   if (holdsOwnObject === undefined) {
     throw new TransientError(

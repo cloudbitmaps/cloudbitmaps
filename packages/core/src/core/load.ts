@@ -836,9 +836,9 @@ async function runLoad(
       // generation or onto a row `setRetention` made, and, where an erasure had already deleted this load's object
       // above that row's pointer, onto an object that is gone, so that every read of the segment would fail.
       ...(row === null ? { expectAbsent: true } : {}),
-      // A registry write that fails without an answer, or meets a conflict, is reconciled by reading the row: a registry
-      // that reports its writes' tokens settles it by the row's `pointerId`; any other takes the pointer at this number
-      // for this load's publish only over an object whose footer, read once, matches what this load wrote.
+      // A registry write that fails without an answer, or meets a conflict, is reconciled by reading the row: a
+      // registry that reports its writes' tokens settles it by the row's `pointerId`; any other takes the pointer at
+      // this number for this load's publish only over an object whose footer, read once, matches what this load wrote.
       holdsOwnObject: () => provesOwnObject(deps.storage, key, written.fingerprint),
       // And the wait before a fresh write, when the first left the row as it was.
       clock: deps.clock,
