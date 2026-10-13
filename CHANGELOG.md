@@ -138,13 +138,18 @@ so, and so do the module headers in the code.
 
 - **A registry can report the token of each write before it sends it: `RegistryWriteOptions.onToken` and
   `IRegistryDriver.reportsWriteTokens`.** A `create` or `compareAndSwap` of a registry that sets `reportsWriteTokens`
-  calls `onToken` with the token its write carries before the request is sent, once for each write it sends and again
-  for one it sends again. The row's `pointerId` is the token of the write that last set the pointer, so a publish that
-  has been told the tokens of its own writes knows exactly whether a write that conflicted or got no answer landed. Both
-  members are optional: a registry of your own that does not report tokens is unchanged, and its writes are settled by
-  the footer of the object the pointer names, as before. The in-memory, local-filesystem and shared object-store
-  registries (so the S3, GCS and Azure Blob ones) report. The registry conformance suite holds a registry that sets the
-  flag to it.
+  calls `onToken` with the token its write carries before the request is sent: a write sent again with a new token
+  reports it, and one that repeats the same body repeats the token already reported. The token is unique to that write
+  attempt, also against another writer racing the same version; a version counter alone is not enough. The row's
+  `pointerId` is the token of the write that last set the pointer, so a publish that has been told the tokens of its own
+  writes knows whether a write that conflicted or got no answer landed. A registry that overrides `create` or
+  `compareAndSwap` declares `reportsWriteTokens` beside them, and only if it passes `options` through; a publish honours
+  the flag only where the object that owns each of those methods declares it, and otherwise settles its writes by the
+  object. Both members are optional: a registry of your own that does not report tokens is unchanged, and its writes are
+  settled by the footer of the object the pointer names, as before. The in-memory, local-filesystem and shared
+  object-store registries (so the S3, GCS and Azure Blob ones) report. The registry conformance suite holds a registry
+  that sets the flag to it, including that writers racing one write each report a token the row carries only for the
+  winner.
 
 - **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as `runConsistencyCheck`
   and `store.checkConsistency`): holds every generation a row's ledger of known generations (`knownGens`) names, the
@@ -418,8 +423,11 @@ so, and so do the module headers in the code.
   publish's list keeps. On a registry that reports write tokens (all the shipped ones) the call now counts the write as
   its own only when the row's `pointerId` is the token of a write it sent: it reports `superseded`, audits a refusal and
   deletes nothing the row names. A write of its own that landed and was then reported as a conflict, including one a
-  policy write was swapped over, is still published. A registry of your own that does not report tokens keeps the footer
-  check.
+  policy write was swapped over, is still published. The one trade: a write of its own that landed and was then
+  followed, before the call read the row again, by a write that renews the row's `pointerId` without moving the pointer
+  (an erasure's renewal, a rollback onto the generation) now reads as not its own, so the call reports none published
+  though its generation may be current, and deletes nothing; a re-run publishes a new generation. A registry of your own
+  that does not report tokens keeps the footer check.
 
 - **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
   `ValidationError`, when it is built.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on
