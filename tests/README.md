@@ -18,6 +18,47 @@ resolves.
 | `pnpm test:integration` | `integration/` only, against real backends — start them first with `docker compose up -d`, and run `pnpm build` first too |
 | `pnpm vitest run tests/docs` | one directory, while working on it |
 
+## Full strength
+
+A few tests are heavy: property suites that draw many cases, a namespace listing of a quarter-million rows, thousands of
+native bitmaps measured, each cardinality in a fresh process. On a pull request they run a reduced size, so a push stays
+cheap; a scheduled run keeps the coverage by running each at the size it always had.
+
+| | runs | how |
+|---|---|---|
+| default (a pull request, `pnpm test`) | each heavy test at its reduced size | nothing to set |
+| full (the nightly lane) | each heavy test at its full size | `CB_TEST_STRENGTH=full pnpm test` |
+
+Run full strength locally before you change one of these tests or the code under it, and when a nightly run is red.
+Unset means reduced; any other value throws, the empty string and a misspelling such as `Full` included, so a
+variable that expanded to nothing cannot leave a run at the reduced size.
+
+The switch is read in one place, `helpers/strength.ts`, which holds both sizes of every heavy test, and the test file
+that must ask for it, in one table; a test asks `heavy('name')` for its size and never reads the environment. To make
+another test reducible, add a row there with the size it has today as `full` and a smaller `reduced` that still trips
+the failure the test exists to catch (run the failure case at the reduced size and see it fail), and a row in
+`ci/test-strength.test.ts`, which fails until it has one. That test holds each full size to the literal the test carried
+before its reduction, checks that each named file asks for its size, that the helper hands out the full sizes when the
+variable is `full` and throws on any other value, that the nightly workflow sets the variable on every step that runs
+`pnpm test`, and that no other test file names the variable.
+
+What a reduced size keeps: for each, the failure its test exists to catch still fails at it, for the failures tried. For
+the four property run counts that is not a promise about a bug only the deepest or widest shapes show, which a smaller
+sample reaches less often; those shapes are pinned as examples that run at every strength.
+
+| test | what it sizes | full | reduced |
+|---|---|---|---|
+| `bench/calibrate-large.test.ts` | random layouts the range-cap property is tried on (when reduced, a subset that holds every chunk weight and wanted share) | 40 | 10 |
+| `core/combine-many.property.test.ts` | cases, one group; cases, many groups under a range | 30; 20 | 8; 6 |
+| `core/combine-many.feed.property.test.ts` | cases, fed operands; cases, fed operands under a range | 60; 30 | 15; 8 |
+| `core/retention-hard-purge.test.ts` | segments created, retired and purged (`docs/guide/retention.md` quotes the full size) | 10,000 | 1,000 |
+| `core/erase-namespace-bounded.test.ts` | rows in the listing admitted exactly at the ceiling and destroyed one by one (full passes no ceiling, so it is the shared default of 250,000); the refusal one row over the default runs at 250,001 rows on every run | 250,000 | 25,000 |
+| `core/combine-ledger.test.ts` | bitmaps measured per cardinality, at 3,000 and 20,000 ids a chunk only (the smaller cardinalities, which have the least headroom and cost the least, always use 8,000) | 8,000 | 4,000 |
+
+The nightly lane is [`.github/workflows/full-nightly.yml`](../.github/workflows/full-nightly.yml): `pnpm test` at full
+strength on `main`, on each Node version `ci.yml` tests, every night and on demand, and on a pull request that changes
+the workflow, the switch or one of these files. It gates nothing; a red run fails the workflow run on the Actions tab.
+
 ## What each directory covers
 
 | directory | covers |
@@ -25,7 +66,7 @@ resolves.
 | `arch/` | The architecture rules, proven to fire: the import boundaries that keep `packages/core/src/core/` free of cloud SDKs, drivers and `node:*` builtins (hard invariant 7), an acyclic import graph, that no module under any package's `src` exports a name nothing imports and the API snapshot (`api-surface/surface.json`, read by the gate) does not record (by name, with its limits in the file's header), and the detector modules in `scripts/` fired at planted inputs. And the gate that every test file calling a load is on the `serialized` project's list or says why it cannot be, and the one that a storage driver wrapping another, in `tests/` and the packages, hands `delete` its options on, so a conditional delete is not silently made unconditional: it reads syntax, sees the wrapper shapes its header names and not the ones it lists as unseen, and does not check that a wrapper hands on a tail read's `version`. `pnpm lint` running the rules proves nothing about a rule that never matches — these do. |
 | `bench/` | `anchors.test.ts` turns the benchmark page's claims into build-breaking assertions — counting is free, chunk-skipping works, the published crossover is the modelled one. `calibrate-guards.test.ts` plants, against each money-spending guard in `bench/lib/`, the bug it exists for, and signals stand-in harnesses the way a terminal would: through the CloudShell script's own exit path, and on a pseudo-terminal that is then closed. `calibrate-stages.test.ts` holds the harness's stage table, each stage's bound and its expected requests to one another and to the real engine's counts, the steady-load stage's loads included, kind by kind and under lost races; `calibrate-spread.test.ts` holds the spread layout to the overlap it claims; `calibration-figures-store-load.test.ts` derives a rehearsal's evidence, dressed as a run in memory, and refuses it when its loads or stages do not add up. |
 | `bin/` | The `export-segments` CLI. |
-| `ci/` | The workflows and repository configuration themselves: container images pinned, every third-party action pinned to a commit, a Dependabot entry for every lockfile and every composite action, the rate-limit-aware image pull and compose never pulling behind it, the Actions cache every container job keeps its images in, a timeout on every job, the prebuilt-binary checksums, the declared Node floor, and the release workflow's guards. A workflow is code that runs with publish rights; it gets tests like any other. |
+| `ci/` | The workflows and repository configuration themselves: container images pinned, every third-party action pinned to a commit, a Dependabot entry for every lockfile and every composite action, the rate-limit-aware image pull and compose never pulling behind it, the Actions cache every container job keeps its images in, a timeout on every job, the prebuilt-binary checksums, the declared Node floor, the release workflow's guards, and the full-strength switch (full sizes equal the sizes before their reduction, read in one place, set by the nightly workflow). A workflow is code that runs with publish rights; it gets tests like any other. |
 | `conformance/` | Runs the shared contract suites — defined in `packages/roaring/src/testing/conformance.ts`, and not yet published, so only this repository's tests reach them — against the in-memory and local-filesystem drivers and the object-store registry: the storage source, the registry, and the registry under concurrent writers. The cloud drivers run the same suites from `drivers/` and `integration/`. A new driver is correct when it passes these, not when its own tests pass. |
 | `core/` | The engine: routing, the `.crbm` format, loads and publishes, generation collection, erasure, encryption, budgets, consistency, the cache — unit tests, property tests over loaded generations, and the crash and race tests for the write-then-publish path that the hard invariants in `AGENTS.md` call for. |
 | `docs/` | The documentation gates — see [below](#the-documentation-gates). |

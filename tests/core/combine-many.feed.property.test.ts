@@ -4,9 +4,10 @@
  * random boundaries, with and without a range that cuts two chunks.
  */
 import fc from 'fast-check';
+import { heavy } from '../helpers/strength';
 import { describe, expect, it } from 'vitest';
 import type { CombineExpr } from '@/core/combine-many';
-import { nativeOutput, runBatch, toNative } from '../helpers/combine-many';
+import { nativeOutput, runBatch, toNative, widestOutputs } from '../helpers/combine-many';
 import type { OutputSpec, Published } from '../helpers/combine-many';
 import { lcg, runFed } from '../helpers/combine-feed';
 
@@ -115,7 +116,11 @@ describe('a fed call against native Roaring and against the same operands stored
           });
         },
       ),
-      { numRuns: 60 },
+      {
+        numRuns: heavy('combineManyFeedRuns'),
+        // The widest, deepest batch the arbitrary can draw, on every run (see combine-many.property.test.ts).
+        examples: [[widestOutputs(8), ['mid', 'sparse'], 12_345]],
+      },
     );
   }, 180_000);
 
@@ -140,7 +145,12 @@ describe('a fed call against native Roaring and against the same operands stored
           expect(got.run.outputs).toEqual(want.run.outputs);
         },
       ),
-      { numRuns: 30 },
+      {
+        numRuns: heavy('combineManyFeedRangeRuns'),
+        examples: [
+          [widestOutputs(8), ['mid', 'sparse'], 3 * 65_536 + 100, 9 * 65_536 + 70_000, 12_345],
+        ],
+      },
     );
   }, 180_000);
 });
