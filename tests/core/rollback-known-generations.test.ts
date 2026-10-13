@@ -674,6 +674,29 @@ describe('a destination that keeps every generation (a ledger of 128)', () => {
     expect((await rowOf(w)).currentGen).toBe(100);
   });
 
+  it('a ledger that is full only by counting a leased entry is not full: the leased entry takes no place in the count', async () => {
+    const w = world(false);
+    await publish(w, 140);
+    await rollbackSegment(SEG, 5, w.rollbackDeps(false)); // 128 entries: [13 … 139, 5]
+    expect(await names(w)).toHaveLength(128);
+    const row = await rowOf(w);
+    const taken = await takeLease(SEG, w.deps, {
+      holder: '0000000000000003',
+      generation: 5,
+      until: T0 + 3_600_000,
+      row,
+      current: true,
+    });
+    expect(taken).not.toBe('moved');
+    // 127 entries no lease holds: not a full ledger. 3 is below the pointer's 5 and below the ledger's oldest entry, 13, so
+    // it is unknown and, the ledger not being full, refused. Without the lease the same row takes it as before (the test above).
+    await expect(rollbackSegment(SEG, 3, w.rollbackDeps(false))).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await rollbackSegment(SEG, 3, w.rollbackDeps(false), { allowUnknown: true });
+    expect((await rowOf(w)).currentGen).toBe(3);
+  });
+
   it('a lease on the oldest entry holds that limit for as long as it lives', async () => {
     const w = world(false);
     await publish(w, 140);
