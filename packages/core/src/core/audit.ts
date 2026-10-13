@@ -43,7 +43,7 @@ export type AuditEvent =
   | {
       /**
        * A segment's pointer was moved by a rollback to a generation still in the bucket that the caller named:
-       * **backwards**, or forward with `allowForward`, which undoes an earlier rollback.
+       * **backwards**, or forward onto a generation a rollback left above the pointer, which undoes an earlier rollback.
        *
        * The only non-forward-only pointer move in the library, and the only one no automatic path can perform —
        * a human decided the current generation was wrong and named the one they wanted. Every other pointer move
@@ -59,6 +59,14 @@ export type AuditEvent =
       readonly incarnation?: string;
       readonly fromGeneration: number | null;
       readonly generation: number;
+      /**
+       * Present, and `true`, when the row did not vouch for the target: the call passed `allowUnknown` for a generation the
+       * row does not know or whose object is not the one it recorded, or the row has no usable record of its generations
+       * (a registry that drops the field, or a pointer moved by hand) or the target is older than a full record reaches,
+       * where a rollback below the pointer is judged as it was before the row kept the record. Absent when the move was
+       * checked against the row's record.
+       */
+      readonly unknown?: true;
     }
   | {
       /**

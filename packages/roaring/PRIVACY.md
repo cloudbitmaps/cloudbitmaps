@@ -97,7 +97,7 @@ because an operator's `rollback` moved the pointer while the call was deleting g
 erasures of different ids race on one segment, the loser's rewrite was derived from the generation the winner
 replaced, so it still holds the winner's id, and when it sits above the winner's pointer the loser deletes it before
 returning, unless writes other than lease writes and other erasures' renewals beat its renewal of the segment's
-row 8 times: it then keeps that object, one `rollback({ allowForward: true })` from being served, until a later call
+row 8 times: it then keeps that object, one `rollback({ allowUnknown: true })` from being served, until a later call
 removes it: an erasure that rewrites the segment (the loser's re-run, while the loser's id is still in the current
 generation), an erasure of the winner's id, or the collection of loads that number past it ([how it stays correct](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/erasure.md#how-it-stays-correct)). **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
 which is not the same as the id still being present — if the racing writer was another erasure of the same id, it

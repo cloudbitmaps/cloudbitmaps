@@ -349,14 +349,16 @@ describe("an object sealed under the row's own key that does not open is corrupt
   });
 
   it('the current generation is never deleted: one the row has no key for still throws', async () => {
-    // A rollback below the pointer with no key at hand checks only that the target is encrypted, so it can make current
-    // an object sealed under another key. Every read of the segment then fails, and so does the erasure, which deletes
-    // nothing.
+    // A pointer moved by hand onto an object sealed under another key (a rollback no longer does it: it refuses what the
+    // row does not know). Every read of the segment then fails, and so does the erasure, which deletes nothing.
     const w = world();
     await loadSegment(REF, [1, 2], w.deps, KEEP);
     await sealedElsewhere(w, 1, [X]);
     await loadSegment(REF, [1, 2, 3], w.deps, KEEP); // numbers past the stray: 2
-    await rollbackSegment(REF, 1, { storage: w.storage, registry: w.registry });
+    // A rollback refuses the stray (the row never knew it, and with no key it cannot open it), so the pointer is put
+    // there as a repair does, with a raw write.
+    const row = (await w.registry.get(REF))!;
+    await w.registry.compareAndSwap(REF, row.token, { currentGen: 1 });
     expect((await w.registry.get(REF))!.currentGen).toBe(1);
     await expect(eraseIdFromSegment(REF, X, w.deps)).rejects.toBeInstanceOf(IntegrityError);
     expect(await generations(w.storage)).toEqual([0, 1, 2]);

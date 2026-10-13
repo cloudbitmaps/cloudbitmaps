@@ -128,11 +128,42 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
         incarnation: incarnationOf(rec.token),
         fromGeneration: 1,
         generation: 0,
+        // The raw write that moved the pointer dropped the row's record of the generations it published, so the rollback
+        // is judged as it was before the row kept one, and the audit says the row did not vouch for it.
+        unknown: true,
       },
     ]);
 
     const healed = await runConsistencyCheck({ storage, registry });
     expect(healed).toEqual({ checked: 3, inconsistent: [], errored: [] });
+    expect(await members(stores(root).store, 'beta')).toEqual(FLEET.beta);
+  });
+
+  it("Disaster A with the row intact — the current generation's object is gone but the row still names the generation below it: the rollback is checked against the row, needs no flag, and its audit event carries no unknown", async () => {
+    const { storage, registry, store } = stores(root);
+    const ref: SegmentRef = { segment: 'beta' };
+    // A second generation, published by a load that keeps the first.
+    await bulkLoadCrbmGeneration(storage, { ...ref, generation: 1 }, [10, 20, 99], { registry });
+    expect(((await registry.get(ref))!.knownGens ?? []).map((e) => e.generation)).toEqual([0, 1]);
+
+    // The object store lost the current generation's object while the registry kept its row.
+    rmSync(crbmPath(root, 'beta', 1));
+    const torn = await runConsistencyCheck({ storage, registry });
+    expect(torn.inconsistent).toEqual([
+      { segment: 'beta', namespace: undefined, currentGen: 1, issue: 'missing-storage-generation' },
+    ]);
+
+    const events: AuditEvent[] = [];
+    await store.rollback(ref, 0, { audit: { onEvent: (e) => events.push(e) } });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'segment.rollback', fromGeneration: 1, generation: 0 });
+    expect(events[0]).not.toHaveProperty('unknown');
+
+    expect(await runConsistencyCheck({ storage, registry })).toEqual({
+      checked: 3,
+      inconsistent: [],
+      errored: [],
+    });
     expect(await members(stores(root).store, 'beta')).toEqual(FLEET.beta);
   });
 

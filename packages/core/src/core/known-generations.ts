@@ -301,9 +301,21 @@ export function describingKnown(
 }
 
 /**
+ * Whether the ledger is full: it names at least {@link KNOWN_FILL} generations that no lease entry of the row holds. Past
+ * the least recently current entry of a full ledger, a rollback can no longer tell a generation the row forgot from one it
+ * never knew, so it judges a target numbered below that entry as it did before the ledger existed.
+ */
+export function isFullLedger(
+  known: readonly KnownGeneration[],
+  leased: ReadonlySet<number>,
+): boolean {
+  return known.filter((e) => !leased.has(e.generation)).length >= KNOWN_FILL;
+}
+
+/**
  * Every generation the row's lease entries name, live or ended: a rollback has no clock to tell them apart, and this build
  * writes at most 64 entries, so holding them all fits the writer's cap. An ended one leaves the ledger at the next publish.
  */
-function leasedByRow(record: RegistryRecord): ReadonlySet<number> {
+export function leasedByRow(record: RegistryRecord): ReadonlySet<number> {
   return new Set((record.leases ?? []).map((e) => e.generation));
 }

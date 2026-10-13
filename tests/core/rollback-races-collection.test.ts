@@ -210,7 +210,7 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
       { keep: 1 },
     );
     await stalledAt(at, load);
-    await rollbackSegment(REF, 2, w.deps);
+    await rollbackSegment(REF, 2, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(load).rejects.toSatisfy(pointerOnDeleted(2, /took effect at generation 4/));
@@ -231,7 +231,7 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
       { keep: 1 },
     );
     await stalledAt(at, load);
-    await rollbackSegment(REF, 3, w.deps);
+    await rollbackSegment(REF, 3, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(load).rejects.toSatisfy(pointerOnDeleted(3, /took effect at generation 4/));
@@ -276,7 +276,7 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
       { audit },
     );
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(0, /an erasure/));
@@ -297,7 +297,7 @@ describe("a load's collection by name, raced by a rollback onto a generation it 
     // Generation 2 pushes 0 out of the window of one, and deletes it by name.
     const load = loadSegment(REF, [3], { ...w.deps, storage: stallingDelete(w.storage, 0, at) });
     await stalledAt(at, load);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(load).rejects.toSatisfy(pointerOnDeleted(0, /took effect at generation 2/));
@@ -316,7 +316,7 @@ describe("a load's collection by name, raced by a rollback onto a generation it 
       { keep: 0 },
     );
     await stalledAt(at, load);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(load).rejects.toSatisfy(pointerOnDeleted(0, /took effect at generation 3/));
@@ -355,7 +355,7 @@ describe("a refused load's reclaim of its own object, raced by a forward rollbac
       { audit },
     );
     await stalledAt(at, load);
-    await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(load).rejects.toSatisfy(pointerOnDeleted(1, /refused \(empty\)/));
@@ -388,7 +388,7 @@ describe("a refused load's reclaim of its own object, raced by a forward rollbac
       loadSegment(REF, [7, 8, 9], { ...w.deps, storage: racing }),
     ).resolves.toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect(deleted).toEqual([]);
-    await rollbackSegment(REF, 1, w.deps); // below the pointer, 2, so no opt-in is needed
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true }); // below the pointer, 2, but a generation the row does not know
     await namesPresent(w, 1, [0, 1, 2]);
   });
 });
@@ -415,7 +415,7 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
       { audit },
     );
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(1, /erasure/));
@@ -438,7 +438,7 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
       { audit },
     );
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 2, w.deps, { allowForward: true });
+    await rollbackSegment(REF, 2, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(erasure).rejects.toSatisfy(pointerOnDeleted(2, /erasure/));
@@ -449,26 +449,26 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
 });
 
 /**
- * The same race when the rollback's own check runs after the delete: it lists the bucket after its move, finds the
- * object gone and puts the pointer back. The loop's read after its delete can fall between the move and that undo, and
+ * The same race when the rollback's own check runs after the delete: it reads the target's footer after its move, finds
+ * the object gone and puts the pointer back. The loop's read after its delete can fall between the move and that undo, and
  * sees the pointer on a missing generation for a moment. It reads the row again before it raises, at once and, with a
  * clock that can wait, after each of a few waits, so a rollback that undoes itself in that time is no missing object:
  *
  *   deleting call       reads the row ─ round trip ─▶ deletes g │ reads the row: g, missing │ reads it again: put back
- *   rollbackSegment(g)          moves the pointer onto g │ lists ──── g is gone ────▶ moves it back
+ *   rollbackSegment(g)          moves the pointer onto g │ reads g's footer ── gone ──▶ moves it back
  */
 describe('a rollback that finds its target gone and puts the pointer back', () => {
-  /** `storage`, whose second listing, a rollback's check after its move, waits at `at`. */
+  /** `storage`, whose second tail read, a rollback's check after its move, waits at `at`. */
   function holdingCheck(storage: IStorageDriver, at: Gate): IStorageDriver {
-    let lists = 0;
+    let tails = 0;
     const gated = Object.create(storage) as IStorageDriver;
-    gated.list = (ref) => {
-      lists += 1;
-      if (lists !== 2) return storage.list(ref);
-      return (async function* () {
+    gated.getTail = (key, maxBytes) => {
+      tails += 1;
+      if (tails !== 2) return storage.getTail(key, maxBytes);
+      return (async () => {
         at.reach();
         await at.opened;
-        yield* storage.list(ref);
+        return storage.getTail(key, maxBytes);
       })();
     };
     return gated;
@@ -519,7 +519,7 @@ describe('a rollback that finds its target gone and puts the pointer back', () =
     generation: number,
     start: (storage: IStorageDriver, clock: Clock) => Promise<T>,
     when: 'look' | 'wait',
-    allowForward = false,
+    allowUnknown = false,
   ): Promise<{ result: T; rollback: unknown }> {
     const atDelete = gate();
     const atCheck = gate();
@@ -544,7 +544,7 @@ describe('a rollback that finds its target gone and puts the pointer back', () =
       REF,
       generation,
       { ...w.deps, storage: holdingCheck(w.storage, atCheck) },
-      { allowForward },
+      { allowUnknown },
     ).then(
       () => 'rolled back',
       (err: unknown) => err,
@@ -582,6 +582,7 @@ describe('a rollback that finds its target gone and puts the pointer back', () =
       0,
       (storage) => loadSegment(REF, [3], { ...w.deps, storage }),
       'look',
+      true, // the load's publish took 0 out of the ledger before it deletes it, so only the override reaches it
     );
     expect(result).toMatchObject({ generation: 2, published: true, collected: [0] });
     expect(rollback).toSatisfy(putBack);
@@ -629,6 +630,7 @@ describe('a rollback that finds its target gone and puts the pointer back', () =
       0,
       (storage, waiting) => loadSegment(REF, [3], { ...w.deps, storage, clock: waiting }),
       'wait',
+      true,
     );
     expect(result).toMatchObject({ generation: 2, published: true, collected: [0] });
     expect(rollback).toSatisfy(putBack);
@@ -649,7 +651,7 @@ describe('a refused first load on a row with no pointer, raced by a forward roll
       { guard: { minCardinality: 5 } },
     );
     await stalledAt(at, load);
-    await rollbackSegment(REF, 0, w.deps, { allowForward: true });
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
 
     await expect(load).rejects.toSatisfy(pointerOnDeleted(0, /refused \(min-cardinality\)/));

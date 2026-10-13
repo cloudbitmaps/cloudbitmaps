@@ -89,7 +89,7 @@ describe.each([
       sizeBytes: expect.any(Number),
     });
     expect(await store.generations(SEG)).toEqual([
-      { generation: 0, current: true, cardinality: 3, metadata: A },
+      { generation: 0, current: true, known: true, cardinality: 3, metadata: A },
     ]);
     const pinned = await seg.pin();
     expect(await pinned.stat()).toEqual({
@@ -114,8 +114,8 @@ describe.each([
       sizeBytes: expect.any(Number),
     });
     expect(await store.generations(SEG)).toEqual([
-      { generation: 0, current: false },
-      { generation: 1, current: true, cardinality: 4, metadata: B },
+      { generation: 0, current: false, known: true },
+      { generation: 1, current: true, known: true, cardinality: 4, metadata: B },
     ]);
   });
 
@@ -212,8 +212,8 @@ describe.each([
       });
       expect(await seg.count()).toBe(3);
       expect(await store.generations(SEG)).toEqual([
-        { generation: 0, current: true, cardinality: 3, metadata: A },
-        { generation: 1, current: false },
+        { generation: 0, current: true, known: true, cardinality: 3, metadata: A },
+        { generation: 1, current: false, known: true },
       ]);
     });
 

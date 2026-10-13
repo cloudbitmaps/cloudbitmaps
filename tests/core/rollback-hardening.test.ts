@@ -88,7 +88,7 @@ describe('a rollback to the generation already current', () => {
     );
   });
 
-  it('is a no-op for one zero-byte read when its object is there, with no listing', async () => {
+  it('is a no-op for one footer read when its object is there, with no listing', async () => {
     const w = world();
     await loads(w, 2);
     const calls: Record<string, number> = {};
@@ -108,7 +108,7 @@ describe('a rollback to the generation already current', () => {
     const r = await rollbackSegment(SEG, 1, { storage: watched, registry: w.registry });
 
     expect(r).toEqual({ fromGeneration: 1, generation: 1 });
-    expect(tails).toEqual([0]);
+    expect(tails).toEqual([104]);
     expect(calls.list ?? 0).toBe(0);
     expect(calls.getRange ?? 0).toBe(0);
   });
@@ -332,7 +332,7 @@ describe('a rollback whose swap gets no answer', () => {
       SEG,
       2,
       { ...w.deps, registry: noAnswer(w.registry) },
-      { allowForward: true, audit },
+      { allowUnknown: true, audit },
     );
     expect(r).toEqual({ fromGeneration: 0, generation: 2 });
     expect((await rowOf(w)).currentGen).toBe(2);
@@ -454,7 +454,7 @@ describe("a swap with no answer is not taken for another writer's publish of the
     });
     let err: unknown;
     try {
-      await rollbackSegment(SEG, 5, { ...w.deps, registry }, { allowForward: true, audit });
+      await rollbackSegment(SEG, 5, { ...w.deps, registry }, { allowUnknown: true, audit });
     } catch (e) {
       err = e;
     }
@@ -773,12 +773,12 @@ describe('a rollback above the pointer of an encrypted segment', () => {
       SEG,
       2,
       { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
-      { allowForward: true },
+      { allowUnknown: true },
     ).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(KeyUnavailableError);
     expect((err as Error).message).toMatch(
-      /generation 2 of "s" is above the current pointer \(1\).*no key is at hand \(the store has no keystore\)/,
+      /generation 2 of "s" is not one its row knows it published.*no key is at hand \(the store has no keystore\)/,
     );
     expect((await rowOf(w)).token).toBe(before.token);
     expect(calls.getTail ?? 0).toBe(0);
@@ -803,7 +803,7 @@ describe('a rollback above the pointer of an encrypted segment', () => {
         registry: w.registry,
         keystore: failing,
       },
-      { allowForward: true },
+      { allowUnknown: true },
     ).catch((e: unknown) => e);
     expect(calls.getTail ?? 0).toBe(0);
     return { err, moved: (await rowOf(w)).token !== before.token };
@@ -858,19 +858,20 @@ describe('a rollback above the pointer of an encrypted segment', () => {
     });
   }
 
-  it('undoing a rollback needs the key too, and moves with it', async () => {
+  it('undoing a rollback needs no key: the row knows the generation the rollback left, and its checksum vouches', async () => {
     const real = key();
     const w = world(real);
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 });
     await loadSegment(SEG, [4], w.load, { keep: 9 });
     await rollbackSegment(SEG, 0, { storage: w.storage, registry: w.registry }); // key-less, below: allowed
+    await rollbackSegment(SEG, 1, { storage: w.storage, registry: w.registry }); // key-less, above, known: allowed
+    const keyless = await rowOf(w);
+    expect(keyless.currentGen).toBe(1);
+    expect(keyless.summary).toBeUndefined(); // nothing opened the target, so the row describes none
 
-    await expect(
-      rollbackSegment(SEG, 1, { storage: w.storage, registry: w.registry }, { allowForward: true }),
-    ).rejects.toBeInstanceOf(KeyUnavailableError);
-    expect((await rowOf(w)).currentGen).toBe(0);
-
-    await rollbackSegment(SEG, 1, w.deps, { allowForward: true });
+    // With the key the move writes the target's summary.
+    await rollbackSegment(SEG, 0, w.deps);
+    await rollbackSegment(SEG, 1, w.deps);
     const row = await rowOf(w);
     expect(row.currentGen).toBe(1);
     expect(row.summary?.generation).toBe(1);
@@ -884,13 +885,13 @@ describe('a rollback above the pointer of an encrypted segment', () => {
   it('with the key, an object sealed under another key is refused with IntegrityError', async () => {
     const w = world(key());
     await foreignAbove(w);
-    await expect(rollbackSegment(SEG, 2, w.deps, { allowForward: true })).rejects.toBeInstanceOf(
+    await expect(rollbackSegment(SEG, 2, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
       IntegrityError,
     );
     expect((await rowOf(w)).currentGen).toBe(1);
   });
 
-  it('still asks for allowForward first, so a target above the pointer without it is a ValidationError', async () => {
+  it('still asks for allowUnknown first, so a target above the pointer without it is a ValidationError', async () => {
     const w = world(key());
     await foreignAbove(w);
     await expect(
@@ -902,7 +903,7 @@ describe('a rollback above the pointer of an encrypted segment', () => {
     const w = world();
     await loads(w, 2);
     await rollbackSegment(SEG, 0, w.deps);
-    await rollbackSegment(SEG, 1, { ...w.deps, keystore: key() }, { allowForward: true });
+    await rollbackSegment(SEG, 1, { ...w.deps, keystore: key() }, { allowUnknown: true });
     expect((await rowOf(w)).currentGen).toBe(1);
   });
 });

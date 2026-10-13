@@ -178,13 +178,22 @@ describe('a refused load whose row another writer changed', () => {
     await consistent(w);
     expect(await gcOrphanGenerations(REF, w.deps, { keep: 0 })).toEqual([6]);
     expect(await objects(w.storage)).toEqual([7]);
-    await expect(rollbackSegment(REF, 6, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+    // The row never knew 6, so a rollback is refused for that; the override reaches the bucket and finds it gone.
+    await expect(rollbackSegment(REF, 6, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(rollbackSegment(REF, 6, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 
-  it('until a listing takes it, a rollback can name it, and publishes what no load published', async () => {
+  it('until a listing takes it, only allowUnknown lets a rollback name it, and publishes what no load published', async () => {
     const w = world();
     await stalledBelowThePointer(w);
-    await expect(rollbackSegment(REF, 6, w.deps)).resolves.toMatchObject({ generation: 6 });
+    // The refused load's object is in no row's record of what it published: a rollback refuses it unless told not to.
+    await expect(rollbackSegment(REF, 6, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    expect((await w.registry.get(REF))!.currentGen).toBe(7);
+    await expect(rollbackSegment(REF, 6, w.deps, { allowUnknown: true })).resolves.toMatchObject({
+      generation: 6,
+    });
     expect((await w.registry.get(REF))!.currentGen).toBe(6);
     // The generation the rollback restored is the refused load's empty one.
     const reader = await openGenerationReader(w.storage, { ...REF, generation: 6 }, undefined);
@@ -230,7 +239,7 @@ describe('a refused load whose row another writer changed', () => {
       const out = await w.storage.putImmutable(key, write);
       if (!rolled) {
         rolled = true;
-        await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+        await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
       }
       return out;
     };

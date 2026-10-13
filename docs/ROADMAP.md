@@ -63,7 +63,7 @@ with the release it is to ship in, and sits under `[Unreleased]` in the [changel
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
-| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, an above-pointer target without an explicit opt-in, and, on an encrypted segment, an above-pointer target it has no key to open; rolling to the current generation checks its object is there, and a swap that gets no answer is settled by reading the row |
+| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a target the row's `knownGens` does not name and one whose footer checksum is not the recorded one (with or without a key), unless `allowUnknown` is passed, which is audited; a collected target, a crypto-shredded segment; rolling to the current generation checks its object is there and is the recorded one, and a swap that gets no answer is settled by reading the row |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
 | Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained, maxGrowth }` adds the plausibility bounds, judged against what `dest` held |
@@ -378,19 +378,7 @@ between here and there:
      object a load may still publish, settle one by reading the row. A `rollback` reads the row too, and goes on from a
      swap the row shows landed, but does not send again one the row shows did not land: it throws the
      `TransientError`;
-   - the parts stretch, under [Planned](#planned--exploring);
-   - a `rollback` below the pointer of an encrypted segment with no key at hand (no keystore, or one that cannot open
-     the key: a KEK it lacks, one that does not unwrap the key, a `TransientError` or a timeout), which opens nothing:
-     it checks that the object is in the bucket, and from its footer that it is encrypted exactly when the row has
-     keys, so it can still move onto an object a first load wrote and never published, sealed under a key the registry
-     never stored, once later loads have numbered past it, which then fails every read and which `checkConsistency`
-     does not flag. Above the pointer, a rollback of an encrypted segment needs the key and refuses such an object
-     (with a keystore that opens the key, a rollback opens the target's index and metadata before it moves the
-     pointer, and refuses one that does not open);
-   - a check that the object under a target below the pointer is still the one a `rollback` read, after its swap: a
-     number taken again inside that window is caught only by the fingerprint the summary the swap wrote records, and
-     not at all by a rollback that had no key at hand; and a check of which object a `rollback` to the generation
-     already current finds, which checks only that one is there.
+   - the parts stretch, under [Planned](#planned--exploring).
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
 10. **The cost model in a package of its own — ✅ Shipped.** `estimateCost`,
@@ -424,16 +412,13 @@ move it up.
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- **A rollback that refuses a generation no load published.** A rollback checks only that its target is stored, sealed
-  to match the row, and opens, so an orphan below the pointer (the object of a load refused after another write
-  changed the row, or of a load that crashed before its publish) is a target until a later load's collection takes it,
-  and a rollback onto it publishes what no load published. A refusal cannot simply delete such an object: an object's
-  footer names its bytes, not the load that wrote it, and a load of the same ids writes the same bytes, so the refusal
-  cannot tell its own object from a generation another load published or still will
-  ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Once the registry records which generations
-  were published, by an identity each write carries or a ledger of publishes, a rollback could refuse any other target.
-  The ledger now exists but cannot yet tell a published generation from a seeded one: a publish over a row with no usable
-  ledger seeds it from the bucket, an orphan or stray included.
+- **A ledger that tells a generation a load published from one a seed recorded.** A rollback refuses a generation the
+  row's `knownGens` does not name, but a publish over a row with no usable ledger seeds one from the bucket, an orphan or
+  stray included, so a rollback accepts a seeded orphan as it accepts any known generation. An object's footer names its
+  bytes, not the load that wrote it, and a load of the same ids writes the same bytes, so the ledger's footer checksum
+  cannot tell a generation a load published from a same-bytes object another write stored under its number
+  ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Telling them apart takes an identity each
+  write carries.
 - **Segment handles across installed versions.** A segment handle carries a versioned brand, raised when what a
   combine reads from another copy's handle changes, and a combine refuses a handle whose brand differs from its own.
   Which versions' handles a combine accepts is part of the `1.0` compatibility promise.

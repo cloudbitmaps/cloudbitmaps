@@ -128,7 +128,9 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
         const pool = forward ? above : below;
         if (pool.length > 0) {
           const target = pool[next(pool.length)]!;
-          await rollbackSegment(SEG, target, deps, { allowForward: forward });
+          // A generation the row knows needs no flag; one it forgot (the ledger's cap) needs the override.
+          const known = new Set(numbers(row));
+          await rollbackSegment(SEG, target, deps, { allowUnknown: !known.has(target) });
           rollbacks += 1;
         }
       } else if (roll === 1 && row?.currentGen !== undefined && row.currentGen !== null) {

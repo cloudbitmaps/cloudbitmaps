@@ -381,7 +381,14 @@ describe('numbering over gaps above the pointer (property)', () => {
           } else if (o.kind === 'rollback') {
             const target = present.filter((g) => g < current).at(-o.back);
             if (target !== undefined)
-              await rollbackSegment(SEG, target, { storage: w.memory, registry: w.registry });
+              // The target is any generation present below the pointer, one the row may not know: the numbering is
+              // what is under test, so the rollback is made with the override.
+              await rollbackSegment(
+                SEG,
+                target,
+                { storage: w.memory, registry: w.registry },
+                { allowUnknown: true },
+              );
           } else {
             for (const g of present) await w.memory.delete({ ...SEG, generation: g });
             if (row !== null) await w.registry.delete(SEG);

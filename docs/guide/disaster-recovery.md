@@ -84,7 +84,7 @@ restore: the row names a generation whose object is gone, and the summary still 
 smaller than `guard.minRetained` allows, or larger than `guard.maxGrowth` allows, is refused. Repair without either (`allowEmpty: true` lifts neither), and the
 load publishes a new generation and a new summary. The load also keeps the older
 generation a listing keeps, which is the one you can still roll back to: before it takes a generation by name it looks
-for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does not unwrap the key, or a keystore that throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK report a timeout) rolls back to a generation below the pointer all the same, opening nothing, and leaves the row with none; above the pointer it refuses with `KeyUnavailableError`, or throws `TransientError` when the key service did not answer in time (a timeout as its `cause`); and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
+for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does not unwrap the key, or a keystore that throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK report a timeout) rolls back onto a generation the row knows all the same, opening nothing, and leaves the row with none (a generation the row does not know needs `allowUnknown`, and then the key, so it throws `KeyUnavailableError`, or `TransientError` when the key service did not answer in time, a timeout as its `cause`); and a rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
 could not open the key, is read from the object, and its object is checked against nothing. A summary that names another
 generation, a sealed one that does not open, and a clear one whose fingerprint names no object are not used.
 
@@ -616,21 +616,39 @@ await store.rollback(ref, 4, { audit });   // put the pointer on one that exists
 await store.checkConsistency();            // confirm
 ```
 
-`rollback` refuses rather than guessing: a generation not in the bucket throws `NotFoundError` and **names what is
-available**, a `destroyed` row (a crypto-shred's or a drop's tombstone) throws `ValidationError`, a row that
-changed after `rollback` read it throws `WriteConflictError` and moves nothing, and a target *above* the pointer
-needs an explicit `allowForward: true` — above the pointer is where objects live that may never have been current,
-such as a load that wrote its object and died before the publish. Make a forward move with
-`await store.rollback(ref, n, { allowForward: true, audit })`, on an encrypted segment from a store whose keystore
-opens the segment's key, since without the key it throws `KeyUnavailableError`; `store.rollback` invalidates its own
-store. It deletes nothing, so the rollback is itself reversible. It records the move as `segment.rollback` on the
-`audit` sink passed to the call, and that event is the only record the library makes of it: with no sink, it records
-nothing. A rollback to the generation already current changes nothing and records nothing, once one zero-byte read
-finds its object; when the object is gone it throws `NotFoundError` naming what is in the bucket.
+`rollback` refuses rather than guessing, and the row says what it can vouch for. After a restore of the registry, the row
+is the version you copied back, and its `knownGens` lists the generations that row knew: roll back to one of them with
+no flag, with or without a key, since the footer checksum the row recorded vouches for the object. A generation
+published after that version needs `{ allowUnknown: true }`, and the key on an encrypted segment. `store.generations(ref)`
+lists such a generation with `known: false`. A row whose pointer you moved by hand with `backend.registry.compareAndSwap`
+has no `knownGens`: a rollback below its pointer works as before, with no flag and no key, and its audit event says
+`unknown: true`. Until the next load or rollback writes a new list, such a row has none of the checks a list gives.
 
-**A rollback can fail half-way.** It moves the pointer and then checks the target is still in the bucket, because
-collection can take a generation below the pointer between the listing and the move. If the target has gone, it
-moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
+```ts
+await store.generations(ref);
+// [{ generation: 4, current: false, known: true },
+//  { generation: 5, current: true,  known: true },    // the restored row's pointer
+//  { generation: 6, current: false, known: false }]   // a stray above it, published after the restore point
+await store.rollback(ref, 4, { audit });                      // either: the row knows 4, so no flag
+await store.rollback(ref, 6, { audit, allowUnknown: true });  // or: move onto the stray, which the row cannot vouch for
+```
+
+The current generation is always known on a row whose list is usable, so `generations()` never marks it `known: false`.
+Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
+generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
+throws `NotFoundError` and **names what is available**; a `destroyed` row (a crypto-shred's or a drop's tombstone)
+throws `ValidationError`; and a row that changed after `rollback` read it throws `WriteConflictError` and moves nothing.
+A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`
+invalidates its own store. It deletes nothing, so the rollback is itself reversible. It records the move as
+`segment.rollback` on the `audit` sink passed to the call, with `unknown: true` when the row did not vouch for the
+target, and that event is the only record the library makes of it: with no sink, it records nothing. A rollback to the
+generation already current changes nothing and records nothing, once one footer read finds its object, and the one the
+row recorded; when the object is gone it throws `NotFoundError` naming what is in the bucket.
+
+**A rollback can fail half-way.** It moves the pointer and then reads the target's footer once more, because a
+collection the row does not hold off (a rollback with `allowUnknown`, or onto a row with no list) can take a generation
+below the pointer between its read of the target and the move. If the target has gone, or another object holds its
+number, it moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
 (the row changed again, or the registry write failed), it throws `NotFoundError` saying
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
 response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
@@ -716,7 +734,10 @@ resolution:
 - **Torn restore** (registry recovered ahead of storage) and a **lost `.crbm`** are detected as
   `missing-storage-generation`, then cleared by rolling `currentGen` back with `store.rollback`, which records a
   `segment.rollback` (remedy (b) above), or by restoring the object from backup (remedy (a)). A read of the torn
-  segment's object fails with `NotFoundError` until then, while its count answers the row's number.
+  segment's object fails with `NotFoundError` until then, while its count answers the row's number. The drill moves the
+  pointer with a raw registry write, which leaves the row with no `knownGens`, so its rollback needs no flag and its
+  audit event says `unknown: true`; a second case keeps the row, deletes the current generation's object, and shows the
+  rollback onto the generation below it checked against the row, with no flag and no `unknown` on its event.
 - **Byte corruption inside a present `.crbm`** is the one case `checkConsistency()` **cannot** see — it verifies
   the generation is *present*, not its bytes. The drill confirms the sweep stays clean **and** that a read fails
   closed with `IntegrityError` (the per-chunk CRC), so the corruption surfaces at the trust boundary, not as a
@@ -841,8 +862,9 @@ current versions.
   between writing and publishing, a load refused or superseded after the row changed, or a load whose publish threw. A
   `TransientError` from a load whose registry writes were never answered leaves its object for that reason: a write can
   still land after the load returned, and then points the row at it, so a load never deletes it. A rollback with
-  `allowForward: true` will point at it if asked: on an encrypted segment, only from a store whose keystore opens the
-  segment's key, and only when the object opens under it.
+  `allowUnknown: true` will point at it if asked: a restored row does not know a stray above its pointer, so a rollback
+  without the flag throws `ValidationError`, and with it, on an encrypted segment, only from a store whose keystore opens
+  the segment's key, and only when the object opens under it.
 
 ## Not shipped: rebuilding the registry from storage
 

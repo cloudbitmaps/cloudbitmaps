@@ -167,7 +167,7 @@ describe('a publish derived from one generation lands only on that generation', 
   it('the loser deletes the rewrite it wrote — which still holds the winner’s id', async () => {
     // The loser numbered its rewrite AFTER the winner's object was in the bucket, so it sits ABOVE the winner's
     // pointer, where no collection ever looks. And it was derived from generation 0, so it still holds the id
-    // the winner has just attested gone. Left behind, it is one `rollback({ allowForward: true })` from being
+    // the winner has just attested gone. Left behind, it is one `rollback({ allowUnknown: true })` from being
     // served, and a later load's grace window keeps it as the newest superseded generation.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
@@ -215,7 +215,7 @@ describe('a publish derived from one generation lands only on that generation', 
         return async (...a: Parameters<IRegistryDriver['get']>) => {
           // The first read after the write is the pre-verify check; the second is the cleanup's.
           if (written && ++readsAfterWrite === 2) {
-            await rollbackSegment(SEG, 2, w.deps, { allowForward: true });
+            await rollbackSegment(SEG, 2, w.deps, { allowUnknown: true });
           }
           return t.get(...a);
         };

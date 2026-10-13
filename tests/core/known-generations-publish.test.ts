@@ -141,7 +141,7 @@ describe.each([
     expect((await rowOf(w)).currentGen).toBe(1);
     await expectSummaryTail(w);
     // Forward onto a generation it left: the ledger knew it, and it is moved to the end in its turn.
-    await rollbackSegment(SEG, 3, w.deps, { allowForward: true });
+    await rollbackSegment(SEG, 3, w.deps);
     await expectLedger(w, [0, 2, 1, 3]);
     await expectSummaryTail(w);
   });
@@ -156,7 +156,7 @@ describe.each([
       keystore: w.keystore,
       publish: false,
     });
-    await rollbackSegment(SEG, 0, w.deps);
+    await rollbackSegment(SEG, 0, w.deps, { allowUnknown: true });
     await expectLedger(w, [1, 2, 0]);
   });
 
@@ -177,20 +177,19 @@ describe.each([
     const w = world(encrypted);
     for (let g = 0; g < 4; g++) await loadSegment(SEG, idsOf(5 + g), w.deps, { keep: 9 });
     const before = await rowOf(w);
-    // The first listing is the rollback's look at what is there; every one after it is the check that follows the swap,
+    // The first tail read is the rollback's look at the target; every one after it is the check that follows the swap,
     // which finds the target collected.
-    let listings = 0;
+    let tails = 0;
     const storage = new Proxy(w.memory as IStorageDriver, {
       get(t, p, rx) {
         const value: unknown = Reflect.get(t, p, rx);
         if (typeof value !== 'function') return value;
-        if (p !== 'list') return value.bind(t);
-        return (ref: SegmentRef) => {
-          const all = (value as IStorageDriver['list']).call(t, ref);
-          if (++listings === 1) return all;
-          return (async function* () {
-            for await (const k of all) if (k.generation !== 1) yield k;
-          })();
+        if (p !== 'getTail') return value.bind(t);
+        return (key: GenKey, maxBytes: number) => {
+          if (key.generation === 1 && ++tails > 1) {
+            return Promise.reject(new NotFoundError('generation 1 was collected'));
+          }
+          return (value as IStorageDriver['getTail']).call(t, key, maxBytes);
         };
       },
     });

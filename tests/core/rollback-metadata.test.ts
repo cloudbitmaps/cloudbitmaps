@@ -4,7 +4,13 @@ import type { IKeystore } from '@/core/crypto';
 import { openGenerationReader } from '@/core/crbm-open';
 import { IntegrityError, KeyUnavailableError, NotFoundError, TransientError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
-import type { GenerationMetadata, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
+import type {
+  GenKey,
+  GenerationMetadata,
+  IRegistryDriver,
+  IStorageDriver,
+  SegmentRef,
+} from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { openSummary, summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -81,7 +87,7 @@ describe('a rollback of a cleartext segment', () => {
       ),
     ).toBe(true);
 
-    await rollbackSegment(SEG, 1, w.deps, { allowForward: true });
+    await rollbackSegment(SEG, 1, w.deps, { allowUnknown: true });
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 1,
       cardinality: 1,
@@ -121,15 +127,15 @@ describe('a rollback of a cleartext segment', () => {
     });
   });
 
-  it('is one tail read of a target whose index fits in it, the one that checks it is what the row says the segment is', async () => {
+  it('is one tail read of a target whose index fits in it, the one that checks it is what the row says the segment is, and a footer read after the swap', async () => {
     const w = world();
     await twoGenerations(w);
     const calls: Record<string, number> = {};
     const storage = counting<IStorageDriver>(w.storage, calls);
     await rollbackSegment(SEG, 0, { storage, registry: w.registry });
-    expect(calls.getTail).toBe(1);
+    expect(calls.getTail).toBe(2); // the target's tail, and its footer once more after the swap
     expect(calls.getRange).toBeUndefined();
-    expect(calls.list).toBe(2); // before the swap, and the check after it, as ever
+    expect(calls.list).toBeUndefined(); // no listing: the footer read replaces it
   });
 
   it('refuses a target whose footer, index or generation is not a readable object, and moves nothing', async () => {
@@ -174,7 +180,7 @@ describe('a rollback of an encrypted segment', () => {
     expect(reader.metadata).toEqual(A);
   });
 
-  it('is one tail read of a target whose index fits in it, with the key too', async () => {
+  it('is one tail read of a target whose index fits in it, with the key too, and a footer read after the swap', async () => {
     const keystore = key();
     const w = world(keystore);
     await twoGenerations(w);
@@ -184,11 +190,11 @@ describe('a rollback of an encrypted segment', () => {
       registry: w.registry,
       keystore,
     });
-    expect(calls.getTail).toBe(1);
+    expect(calls.getTail).toBe(2);
     expect(calls.getRange).toBeUndefined();
   });
 
-  it('on a store with no keystore rolls back, leaves the row with no summary, and reads one tail', async () => {
+  it('on a store with no keystore rolls back, leaves the row with no summary, and reads one tail and one footer', async () => {
     const keystore = key();
     const w = world(keystore);
     await twoGenerations(w);
@@ -201,7 +207,7 @@ describe('a rollback of an encrypted segment', () => {
     const row = (await w.registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
     expect(row.summary).toBeUndefined();
-    expect(calls.getTail).toBe(1);
+    expect(calls.getTail).toBe(2);
   });
 
   it('on a store whose keystore cannot open the segment key does the same', async () => {
@@ -246,10 +252,11 @@ describe('a rollback of an encrypted segment', () => {
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1], {
       registry: new MemoryRegistryDriver(),
     });
+    // Another object under a number the row knows is refused for that first; the override reaches the kind check.
     await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(
-      /is cleartext, but the segment is encrypted/,
+      /another object was stored under the number/,
     );
-    await expect(rollbackSegment(SEG, 0, { ...w.deps, keystore: undefined })).rejects.toThrow(
+    await expect(rollbackSegment(SEG, 0, w.deps, { allowUnknown: true })).rejects.toThrow(
       /is cleartext, but the segment is encrypted/,
     );
 
@@ -261,28 +268,29 @@ describe('a rollback of an encrypted segment', () => {
       keystore: key(),
     });
     await expect(rollbackSegment(SEG, 0, plain.deps)).rejects.toThrow(
+      /another object was stored under the number/,
+    );
+    await expect(rollbackSegment(SEG, 0, plain.deps, { allowUnknown: true })).rejects.toThrow(
       /is encrypted, but the segment is cleartext/,
     );
   });
 });
 
 /**
- * `deps.storage`, with the listing the rollback makes after its swap hiding `hidden`: the object was collected while the
- * pointer moved.
+ * `deps.storage`, with the footer read the rollback makes after its swap finding `hidden` gone: the object was collected
+ * while the pointer moved. The read before the swap is answered as it is.
  */
 function collectingAfterSwap(w: World, hidden: number): IStorageDriver {
-  let lists = 0;
+  let tails = 0;
   return new Proxy(w.storage, {
     get(t, p, rx) {
       const value: unknown = Reflect.get(t, p, rx);
-      if (p !== 'list') return value;
-      return (ref: SegmentRef) => {
-        lists += 1;
-        const inner = (value as IStorageDriver['list']).call(t, ref);
-        if (lists === 1) return inner;
-        return (async function* () {
-          for await (const k of inner) if (k.generation !== hidden) yield k;
-        })();
+      if (p !== 'getTail') return value;
+      return (key: GenKey, maxBytes: number) => {
+        if (key.generation === hidden && ++tails > 1) {
+          return Promise.reject(new NotFoundError(`generation ${hidden} was collected`));
+        }
+        return (value as IStorageDriver['getTail']).call(t, key, maxBytes);
       };
     },
   });
@@ -430,7 +438,7 @@ describe('a target whose index is longer than the tail read', () => {
       storage: counting<IStorageDriver>(w.storage, calls),
       registry: w.registry,
     });
-    expect(calls.getTail).toBe(1);
+    expect(calls.getTail).toBe(2);
     expect(calls.getRange).toBe(1);
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 0,
@@ -495,7 +503,7 @@ describe('a rollback on a store that holds a keystore', () => {
       const row = (await w.registry.get(SEG))!;
       expect(row.currentGen).toBe(0);
       expect(row.summary).toBeUndefined();
-      expect(calls.getTail).toBe(1);
+      expect(calls.getTail).toBe(2);
     }
   });
 });
@@ -527,7 +535,7 @@ function replacedAfterFirstRead(
   });
 }
 
-describe('an allowForward rollback onto an object above the pointer that was replaced after it was read', () => {
+describe('a rollback onto a known object above the pointer that was replaced after it was read', () => {
   /** Generation 2 holds nine ids and metadata B; the pointer is rolled back to 1, so 2 is above it. */
   async function rolledBackBelowTwo(w: World): Promise<void> {
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9, metadata: A });
@@ -559,12 +567,7 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     await rolledBackBelowTwo(w);
     const before = (await w.registry.get(SEG))!;
     await expect(
-      rollbackSegment(
-        SEG,
-        2,
-        { ...w.deps, storage: replacedAfterFirstRead(w, 2, other(w)) },
-        { allowForward: true },
-      ),
+      rollbackSegment(SEG, 2, { ...w.deps, storage: replacedAfterFirstRead(w, 2, other(w)) }),
     ).rejects.toThrow(
       /generation 2 of "s" was replaced while the pointer was moving — the pointer was put back/,
     );
@@ -577,12 +580,7 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     const w = world();
     await rolledBackBelowTwo(w);
     await expect(
-      rollbackSegment(
-        SEG,
-        2,
-        { ...w.deps, storage: replacedAfterFirstRead(w, 2, other(w)) },
-        { allowForward: true },
-      ),
+      rollbackSegment(SEG, 2, { ...w.deps, storage: replacedAfterFirstRead(w, 2, other(w)) }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
@@ -596,12 +594,7 @@ describe('an allowForward rollback onto an object above the pointer that was rep
       await w.storage.putImmutable({ ...SEG, generation: 2 }, (sink) => sink.write(corrupt));
     };
     await expect(
-      rollbackSegment(
-        SEG,
-        2,
-        { ...w.deps, storage: replacedAfterFirstRead(w, 2, garbage) },
-        { allowForward: true },
-      ),
+      rollbackSegment(SEG, 2, { ...w.deps, storage: replacedAfterFirstRead(w, 2, garbage) }),
     ).rejects.toThrow(/was replaced while the pointer was moving/);
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
   });
@@ -610,12 +603,10 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     const w = world();
     await rolledBackBelowTwo(w);
     const calls: Record<string, number> = {};
-    await rollbackSegment(
-      SEG,
-      2,
-      { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
-      { allowForward: true },
-    );
+    await rollbackSegment(SEG, 2, {
+      storage: counting<IStorageDriver>(w.storage, calls),
+      registry: w.registry,
+    });
     expect(calls.getTail).toBe(2);
     expect((await w.registry.get(SEG))!.summary).toEqual({
       generation: 2,
@@ -626,33 +617,28 @@ describe('an allowForward rollback onto an object above the pointer that was rep
     });
   });
 
-  it('refuses an encrypted target it has no key to open, before reading it, and leaves the row', async () => {
+  it('rolls forward onto a known encrypted target with no key at hand: its checksum vouches, and the row keeps no summary of it', async () => {
     const w = world(key());
     await rolledBackBelowTwo(w);
-    const before = (await w.registry.get(SEG))!;
     const calls: Record<string, number> = {};
-    await expect(
-      rollbackSegment(
-        SEG,
-        2,
-        { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
-        { allowForward: true },
-      ),
-    ).rejects.toBeInstanceOf(KeyUnavailableError);
-    expect(calls.getTail ?? 0).toBe(0);
-    expect((await w.registry.get(SEG))!.token).toBe(before.token);
+    await rollbackSegment(SEG, 2, {
+      storage: counting<IStorageDriver>(w.storage, calls),
+      registry: w.registry,
+    });
+    const row = (await w.registry.get(SEG))!;
+    expect(row.currentGen).toBe(2);
+    expect(row.summary).toBeUndefined();
+    expect(calls.getTail).toBe(2);
   });
 
-  it('reads nothing more for a target below the pointer', async () => {
+  it('reads the target footer once more after the swap for a target below the pointer too', async () => {
     const w = world();
     await twoGenerations(w);
     const calls: Record<string, number> = {};
-    await rollbackSegment(
-      SEG,
-      0,
-      { storage: counting<IStorageDriver>(w.storage, calls), registry: w.registry },
-      { allowForward: true },
-    );
-    expect(calls.getTail).toBe(1);
+    await rollbackSegment(SEG, 0, {
+      storage: counting<IStorageDriver>(w.storage, calls),
+      registry: w.registry,
+    });
+    expect(calls.getTail).toBe(2);
   });
 });

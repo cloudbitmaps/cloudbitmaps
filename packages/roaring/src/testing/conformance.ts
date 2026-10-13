@@ -262,8 +262,8 @@ async function generationsOf(d: IStorageDriver, ref: SegmentRef): Promise<number
 /**
  * Contract tests for an {@link IStorageDriver} — the contract its doc comment lists: write-once with
  * `WriteConflictError` on a collision, `NotFoundError` for a missing object, `ValidationError` for an out-of-range
- * read, `getTail`'s true total size, idempotent `delete` (of an absent key too, with neighbours present), a `list`
- * that is read-after-delete, and a `delete` given `ifVersion` that does what `conditionalDelete` says. `makeDriver`
+ * read, `getTail`'s true total size, idempotent `delete` (of an absent key too, with neighbours present) after which a
+ * read of the key is `NotFoundError` at once, a `list` that is read-after-delete, and a `delete` given `ifVersion` that does what `conditionalDelete` says. `makeDriver`
  * MUST return a driver over an empty, isolated keyspace on each call.
  *
  * `skip` names the cases a backend cannot exercise (a local emulator that does not model a contract), so each
@@ -426,7 +426,11 @@ export function storageDriverConformance(
       const d = makeDriver();
       await d.delete(key(0)); // absent: a no-op
       await putBytes(d, key(0), patterned(10));
+      expect((await d.getTail(key(0), 10)).size).toBe(10); // there, and read, before the delete
       await d.delete(key(0));
+      // Missing to the very next read, by either call: a rollback reads one footer after its swap to know the object is there.
+      await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(d.getRange(key(0), 0, 4)).rejects.toBeInstanceOf(NotFoundError);
       await d.delete(key(0)); // already gone: a no-op
       await expect(d.getTail(key(0), 10)).rejects.toBeInstanceOf(NotFoundError);
     });

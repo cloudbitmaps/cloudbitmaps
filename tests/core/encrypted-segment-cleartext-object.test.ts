@@ -39,7 +39,7 @@ function world() {
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry, keystore });
     return generation;
   };
-  return { storage, registry, store, load };
+  return { storage, registry, keystore, store, load };
 }
 
 /** A cleartext object, written with no key, whose index claims 65,536 ids and whose metadata names an owner. */
@@ -155,15 +155,19 @@ describe('a cleartext object under an encrypted segment', () => {
   });
 
   it('a rollback onto a cleartext write from before the key was made is refused, and reads go on', async () => {
-    const { storage, registry, store, load } = world();
+    const { storage, registry, keystore, store, load } = world();
     // A cleartext write that never published (a crash between the write and the publish), then the first
     // encrypted load, which numbers above it and makes the segment's key.
     await putCleartext(storage, { ...SEG, generation: 0 });
     const encrypted = await load([7, 8]);
     expect(encrypted).toBe(1);
-    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(
-      /generation 0 of "s" is cleartext, but the segment is encrypted/,
+    // The row does not know 0: refused for that, and `allowUnknown` (which needs the key) reaches the kind check.
+    await expect(rollbackSegment(SEG, 0, { storage, registry, keystore })).rejects.toThrow(
+      /not one its row knows it published/,
     );
+    await expect(
+      rollbackSegment(SEG, 0, { storage, registry, keystore }, { allowUnknown: true }),
+    ).rejects.toThrow(/generation 0 of "s" is cleartext, but the segment is encrypted/);
     expect(await store().segment('s').count()).toBe(2);
   });
 });

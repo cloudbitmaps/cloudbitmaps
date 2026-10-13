@@ -87,6 +87,7 @@ export const ROUTED: readonly string[] = [
   'tests/core/rollback-races-collection.test.ts',
   'tests/core/rollback-races-collection-controls.test.ts',
   'tests/core/rollback.test.ts',
+  'tests/core/rollback-known-generations.test.ts',
   'tests/core/rollback-requests.test.ts',
   'tests/core/segment-discovery.test.ts',
   'tests/core/storage-source-heal-open.test.ts',

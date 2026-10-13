@@ -323,7 +323,7 @@ it before returning, once its footer matches the loser's rewrite and the loser h
 publish fenced on a row read before it ([a number taken again](#how-it-stays-correct)). A renewal lost to another
 erasure's renewal, as the losers of one race lose to each other, is waited out, up to the limit on lease waits, and
 costs nothing. After 8 renewals lost to other writes (a load, a rollback or a retention write), the loser keeps an
-object that can hold the winner's id, above the pointer and one `rollback({ allowForward: true })` from being served,
+object that can hold the winner's id, above the pointer and one `rollback({ allowUnknown: true })` from being served,
 and reports `'superseded'`, until a later call takes it: the loser's re-run collects every generation below its own
 when it rewrites, an erasure of the winner's id deletes it as a holder, and once loads have numbered past it their
 collection takes it as it takes any orphan below the pointer, once no window the row's ledger names holds it
@@ -336,19 +336,25 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
 **A rollback during an erasure.** What the call reports depends on where the rollback lands:
 
 - Before the publish, the entry says `'superseded'`.
-- After the publish, while the call collects, the generation it replaced can be left above the lowered pointer, or be
-  the one the pointer now names. A generation that still holds the id stays in the bucket, and the call reports an
-  `error: ...` note instead of `erased: true`.
+- After the publish, while the call collects, the rewrite has left the row's list of known generations (`knownGens`)
+  holding itself alone, so a rollback onto a generation it replaced or any older one is refused as unknown unless the
+  caller passes `allowUnknown`, or the row has no usable `knownGens`, or the target is older than a full one (the two
+  cases a rollback judges as before the row kept a list). When one of those lowers the pointer, the generation the rewrite
+  replaced can be left above it, or be the one the pointer now names. A generation that still holds the id stays in the
+  bucket, and the call reports an `error: ...` note instead of `erased: true`.
 - When the id was not in the current generation and nothing was published, a rollback while the call deletes
   generations above the pointer is reported as `'superseded'` if a holder is left, and one while it collects is an
-  `error: ...` note. On a segment with no generation yet, a rollback (with `allowForward`) onto a first load's object
-  while the call deletes those objects is reported as `'superseded'` too, and the object stays. On a row with no key,
+  `error: ...` note. On a segment with no generation yet, a rollback (with `allowUnknown`: the row has published
+  nothing, so it knows no generation) onto a first load's object while the call deletes those objects is reported as
+  `'superseded'` too, and the object stays. On a row with no key,
   which is how `setRetention` makes one, such a rollback accepts only a cleartext object: it refuses an encrypted
   target there.
 - In the last instant before a delete, a rollback onto the generation being deleted leaves the pointer on a missing
   object, which `checkConsistency()` reports: a generation above the pointer; on a segment with no generation yet, a
-  first load's object that a rollback with `allowForward` accepts (on a row with no key, only a cleartext one); or an
-  object below the pointer that the segment's key does not open, which only a rollback with no key at hand moves onto.
+  first load's object that a rollback with `allowUnknown` accepts (on a row with no key, only a cleartext one); or an
+  object below the pointer that the segment's key does not open, which only a rollback with no key at hand moves onto,
+  and only on a row with no usable `knownGens` or onto a target older than a full one: any other rollback onto an object
+  the row does not know is refused.
   The call reads the row just before each delete; one round trip remains between that read and the delete, and a
   condition on the object cannot close it, since the pointer then names the very object the call read. The rollback's
   own check ran before the delete, so it returns success. Nothing can put the deleted object back, so the erasure
@@ -364,8 +370,8 @@ not forward-only, for the reason given in [which fence a publish carries](loadin
   a rollback moves it to a generation in the bucket. One delete is not held to this: a refused rewrite's delete of its
   own object above the winner's pointer, where the call reads the row, then the object's footer, renews the row, then
   deletes. A rollback that read the row before that renewal is refused with `WriteConflictError` (or `TransientError`,
-  when its swap got no answer); one onto that object between the renewal and the delete (with `allowForward`, or
-  without it once a load has raised the pointer past the object) leaves the pointer on a missing object with nothing
+  when its swap got no answer); one onto that object between the renewal and the delete (the object is one no row
+  published, so with `allowUnknown`, or without it on a row with no usable `knownGens`) leaves the pointer on a missing object with nothing
   reported, and only `checkConsistency()` finds it. A load that numbers above the object in that round trip, onto a row
   with no usable ledger, can name the object in the ledger it seeds; after the delete that entry names a
   missing generation, which takes a place in the window until a later load's collection drops it, and fails no read.

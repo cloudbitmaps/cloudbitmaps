@@ -438,5 +438,29 @@
   {
     "entry": "@cloudbitmaps/core runConsistencyCheck",
     "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the options gain generations; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "the segment.rollback event gains an optional unknown: true, present when the segment's row did not vouch for the target (allowUnknown was passed, the row has no usable knownGens, or the target is older than a full one reaches); an exhaustive switch on kind is unaffected; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core GenerationEntry.known",
+    "reason": "every entry store.generations returns says whether the row's knownGens names the generation, which is whether a rollback onto it needs allowUnknown; it is a required member, so code that builds its own GenerationEntry (a test double) adds known; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "the segment.rollback event gains an optional unknown: true, present when the segment's row did not vouch for the target (allowUnknown was passed, the row has no usable knownGens, or the target is older than a full one reaches); an exhaustive switch on kind is unaffected; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring GenerationEntry.known",
+    "reason": "every entry store.generations returns says whether the row's knownGens names the generation, which is whether a rollback onto it needs allowUnknown; it is a required member, so code that builds its own GenerationEntry (a test double) adds known; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core rollbackSegment",
+    "reason": "the allowForward option is replaced by allowUnknown, with no alias: a rollback moves only onto a generation the row's knownGens names, with the footer checksum it records, and allowUnknown is the one audited override; a call that passed allowForward now passes allowUnknown only for a target the row does not know, and none for a generation an earlier rollback left; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.rollback",
+    "reason": "the allowForward option is replaced by allowUnknown, with no alias: a rollback moves only onto a generation the row's knownGens names, with the footer checksum it records, and allowUnknown is the one audited override; a call that passed allowForward now passes allowUnknown only for a target the row does not know, and none for a generation an earlier rollback left; agreed with the maintainer"
   }
 ]

@@ -19,8 +19,14 @@
 import { requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
 import { incarnationField } from './token';
-import { openRollbackTargetFrom, provesOwnObject, readRollbackTargetFooter } from './crbm-open';
-import { describingKnown, rollbackKnown } from './known-generations';
+import { footerCrcUnder, openRollbackTargetFrom, readRollbackTargetFooter } from './crbm-open';
+import {
+  describingKnown,
+  isFullLedger,
+  leasedByRow,
+  rollbackKnown,
+  usableKnownGens,
+} from './known-generations';
 import { aadFor } from './crypto';
 import { generationsOf } from './generation-list';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -56,10 +62,10 @@ export interface GenerationListDeps extends ChurnDeps {
   readonly registry: IRegistryDriver;
   /**
    * The key of an encrypted segment, so a rollback can read its target's count and metadata and seal them into the
-   * row. Without it, a rollback of an encrypted segment to a generation below the pointer still works and leaves the
-   * row with no summary of the generation it moves to, which a reader then takes from the object; one above the
-   * pointer needs it, and is refused with `KeyUnavailableError`, or throws `TransientError` when the key service did not
-   * answer in time (the keystore's own, or one whose `cause` is the timeout it threw).
+   * row. Without it, a rollback of an encrypted segment onto a generation the row knows still works and leaves the
+   * row with no summary of the generation it moves to, which a reader then takes from the object; `allowUnknown` needs
+   * it, and is refused with `KeyUnavailableError`, or throws `TransientError` when the key service did not answer in
+   * time (the keystore's own, or one whose `cause` is the timeout it threw).
    */
   readonly keystore?: IKeystore;
 }
@@ -69,6 +75,13 @@ export interface GenerationEntry {
   readonly generation: number;
   /** Whether the registry pointer currently names this generation. */
   readonly current: boolean;
+  /**
+   * Whether the row's record of the generations it published, `knownGens`, names this generation: a rollback onto it
+   * needs no `allowUnknown`. The row's word, read with the listing's one registry read: the object is not opened, so
+   * its checksum is not compared. `false` for every generation of a row whose record is missing or unusable, and for a
+   * segment with no row. The current generation of a row with a usable record is always known.
+   */
+  readonly known: boolean;
   /**
    * The current generation's id count, from its registry row, with no read of the object. Present only on the current
    * entry, and only when the row's summary can be used: for an encrypted segment that takes a keystore that opens the
@@ -100,10 +113,11 @@ export async function listGenerations(
   const current = record?.currentGen ?? null;
   const seen = await generationsOf(deps.storage, ref);
   const described = record === null ? undefined : await currentDescription(ref, record, deps);
+  const known = new Set((usableKnownGens(record) ?? []).map((e) => e.generation));
   return seen.map((generation) =>
     generation === current
-      ? { generation, current: true, ...described }
-      : { generation, current: false },
+      ? { generation, current: true, known: known.has(generation), ...described }
+      : { generation, current: false, known: known.has(generation) },
   );
 }
 
@@ -146,11 +160,20 @@ export interface RollbackResult {
 }
 
 /**
- * Move a segment's pointer **back** to a generation that is still in the bucket.
+ * Move a segment's pointer to a generation that is still in the bucket and that the segment's row knows it published.
  *
  * The only non-forward-only publish in the library, and the only one an operator has to ask for by name. It
  * refuses rather than guesses:
  *
+ * - a generation the **row does not know** is refused with `ValidationError`, before any request to storage. The row
+ *   records, in `knownGens`, the generations its loads and rollbacks made current, with the footer checksum of each
+ *   object; a target outside that record is where objects live that no row ever published: a load that wrote its object
+ *   and died before the publish, a refused load's object, an object sealed under a key no row holds, a load published
+ *   after the point a registry was restored to. {@link rollbackSegment}'s `allowUnknown` is the one explicit override;
+ * - a known generation whose object is **not the one the row recorded** (its footer checksum differs: another object was
+ *   stored under the number) is refused with `IntegrityError`, with or without a key, since the footer is in the clear.
+ *   The check runs before the target is opened, so an object sealed under another key reports as another object, not as a
+ *   failed decryption. `allowUnknown` moves onto it anyway;
  * - a generation whose object is **not in the bucket** — collected, or never written — is refused with
  *   `NotFoundError` rather than pointed at, because a pointer naming a missing object is the one state the whole
  *   design exists to avoid;
@@ -159,32 +182,38 @@ export interface RollbackResult {
  * - a target that is **not what the row says the segment is** is refused with `IntegrityError`: a cleartext object
  *   under a row with keys, or an encrypted one under a row with none, either of which every read would then refuse.
  *   One tail read of the target decides it, as does a footer that fails its own checks;
- * - a target **above the pointer of an encrypted segment** is refused with `KeyUnavailableError` when the store has no
- *   keystore, or its keystore holds none of the key's KEKs or one that does not unwrap the key: it is where objects live
- *   that no load published, one sealed under a key no row holds among them, and only opening it with the segment's key
- *   shows that it is one of the segment's. A key service that did not answer in time is thrown as `TransientError`, to
- *   retry;
- * - rolling to the generation **already current** is a no-op that reports itself, not an error, once one zero-byte
- *   read finds its object in the bucket. A pointer that names a missing object is refused with `NotFoundError`, as any
- *   missing target is.
+ * - `allowUnknown` on an **encrypted** segment needs the key, and is refused with `KeyUnavailableError` when the store has
+ *   no keystore, or its keystore holds none of the key's KEKs or one that does not unwrap the key: an object the row
+ *   does not vouch for and that nothing opens may be one sealed under a key no row holds. A key service that did not
+ *   answer in time is thrown as `TransientError`, to retry;
+ * - rolling to the generation **already current** is a no-op that reports itself, not an error, once one footer read finds
+ *   its object in the bucket and, when the row knows it, with the checksum recorded. A pointer that names a missing
+ *   object is refused with `NotFoundError`, as any missing target is, and one that names another object than the row
+ *   recorded with `IntegrityError`.
+ *
+ * Which generations are known: the current one, the ones a load's `keep` keeps below it, those a live lease holds, and
+ * the ones a rollback left above the pointer, until a load numbers above them. A known target needs no flag and, for
+ * the same reason, no key: moving onto an object the row published, forward or back. Two cases are judged as they were
+ * before the row kept the record, and are audited with `unknown: true`: a row with no usable `knownGens` (a registry that
+ * drops the field, or a row whose pointer was moved by hand), for a target below the pointer; and a target below the
+ * least recently current entry of a full record, which holds at most the 128 most recently current generations. Neither
+ * gets the checks above.
  *
  * The same tail read opens the target when the segment's key is at hand, and the rollback writes the target's own id
  * count and metadata into the row, in the compare-and-swap that moves the pointer: a reader that sees the target as
  * current sees what describes it. (One tail read, and a range read as well when the target's index is longer than the
  * tail read: a target of very many chunks.) A store with no keystore, or whose keystore cannot open the segment's key
  * (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out as
- * `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls an encrypted segment back to a generation below
- * the pointer and leaves the row with no summary of the target; such a rollback opens nothing, so it can move onto an
- * object sealed under a key no row holds. Any other failure of the keystore is thrown. The undo of a rollback whose
- * target was collected meanwhile puts back the summary the row had, and so does the undo of an `allowForward` rollback
- * whose target was replaced meanwhile: an object above the pointer can be deleted by an erasure and its number taken by
- * a load, between the read and the swap, so after the swap such a target is read once more, and the pointer put back
- * unless it is the object whose summary was written.
- * A swap that gets no answer is settled by reading the row: one the row shows landed, the row being the one the swap
- * leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may still
- * land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves the
- * very row this swap would. On a cleartext segment two writes can: another rollback onto the same target, whatever row
- * it read, and a load that wrote under that number the very object the rollback read and carried the ledger the
+ * `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls an encrypted segment onto a known generation, or
+ * below the pointer in the two judged-as-before cases, and leaves the row with no summary of the target. Any other
+ * failure of the keystore is thrown. After the swap the target's footer is read once more, and the pointer put back,
+ * restoring the summary and the record the row had, unless it is still the object that was read: collection can delete a
+ * target below the old pointer between the read and the swap, and an erasure can delete one above it and a load take its
+ * number. A swap that gets no answer is settled by reading the row: one the row shows landed, the row being the one the
+ * swap leaves, is checked as any swap is, and otherwise its `TransientError` is thrown, since it may have landed or may
+ * still land, and a re-run finds the pointer where it is. A write by another writer is not taken for it, unless it leaves
+ * the very row this swap would. On a cleartext segment two writes can: another rollback onto the same target, whatever
+ * row it read, and a load that wrote under that number the very object the rollback read and carried the ledger the
  * rollback would (a load that carries a usable ledger, as one with a `keep` above 64 does; over a row with no usable
  * ledger the rollback writes none and a load seeds one, so those rows differ). On an encrypted segment a rollback with no
  * key at hand writes no summary, so another such rollback onto the same target can too. That call then reports and
@@ -205,7 +234,7 @@ export async function rollbackSegment(
   ref: SegmentRef,
   toGeneration: number,
   deps: GenerationListDeps,
-  options: { audit?: IAuditSink; allowForward?: boolean } = {},
+  options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
 ): Promise<RollbackResult> {
   validateUserRef(ref);
   checkedAuditSink(options.audit, 'rollback');
@@ -220,32 +249,44 @@ export async function rollbackSegment(
       `rollback: segment "${ref.segment}" is destroyed (crypto-shredded) — every generation of it is unreadable`,
     );
   }
+  const known = usableKnownGens(record);
+  const entry = known?.find((e) => e.generation === toGeneration);
+  const targetKey = { ...ref, generation: toGeneration };
   if (record.currentGen === toGeneration) {
-    // A no-op only over an object that is there. A pointer that names a missing one (a collection that raced an earlier
-    // move, or a swap that got no answer and landed, its target collected since) is what this call exists to repair, and
-    // an operator who re-runs a rollback to the generation they want must not be told the segment is fine.
-    await requirePresent(ref, toGeneration, deps.storage);
+    // A no-op only over the object the row recorded. A pointer that names a missing one (a collection that raced an
+    // earlier move, or a swap that got no answer and landed, its target collected since) is what this call exists to
+    // repair, and an operator who re-runs a rollback to the generation they want must not be told the segment is fine.
+    // Nothing moves, so `allowUnknown` has nothing to override.
+    let crc: number;
+    try {
+      crc = await footerCrcUnder(deps.storage, targetKey);
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      throw notInBucket(ref, toGeneration, await generationsOf(deps.storage, ref), true);
+    }
+    if (entry !== undefined && crc !== entry.footerCrc) {
+      throw new IntegrityError(
+        `rollback: the object under generation ${toGeneration} of "${ref.segment}", which is current, is not the one ` +
+          'its row published: another object was stored under the number. Load the segment again.',
+      );
+    }
     return { fromGeneration: record.currentGen, generation: toGeneration };
   }
 
-  // A first look, for the affordance rather than the safety: an operator who named a collected generation needs
-  // to be told what IS available, and that is much nicer to produce before anything has moved.
-  const present = await generationsOf(deps.storage, ref);
-  if (!present.includes(toGeneration)) throw notInBucket(ref, toGeneration, present, false);
-  // A row with no pointer has every generation above it: none was ever published.
-  const forward = record.currentGen === null || toGeneration > record.currentGen;
-  if (forward && options.allowForward !== true) {
-    // Above the pointer is not "a later version of this segment". It is where objects live that were never
-    // authoritative: a load that wrote its object and died before publishing, and a guard-refused load whose
-    // cleanup was skipped because the row had changed. Rolling onto one of those makes current the very
-    // generation a guard refused — an empty one, typically. The legitimate above-pointer case is undoing a
-    // rollback, which is what the opt-in is for.
-    throw new ValidationError(
-      `rollback: generation ${toGeneration} of "${ref.segment}" is above the current pointer ` +
-        `(${record.currentGen ?? 'none'}) — it may never have been published. Pass { allowForward: true } if you are ` +
-        `undoing an earlier rollback.`,
-    );
-  }
+  // Whether the row vouches for the target, and if not, on what footing the call goes on.
+  const below = record.currentGen !== null && toGeneration < record.currentGen;
+  const judgedAsBefore =
+    below &&
+    (known === undefined ||
+      (isFullLedger(known, leasedByRow(record)) && toGeneration < known[0]!.generation));
+  const mode: 'checked' | 'fallback' | 'override' =
+    entry !== undefined
+      ? 'checked'
+      : judgedAsBefore
+        ? 'fallback'
+        : options.allowUnknown === true
+          ? 'override'
+          : refuseUnknown(ref, toGeneration, record, known);
 
   // The target must be what the row says the segment is, encrypted under its key or cleartext, or every read of the
   // segment would refuse it once the pointer names it. One tail read of it says which it is, with no key needed for that:
@@ -254,26 +295,41 @@ export async function rollbackSegment(
   // the key is at hand, which gives the count and metadata the row's summary of it says, so nothing is read twice. A
   // target whose footer, index or metadata does not open is refused: the pointer is not moved onto what no read opens.
   const keyed = isKeyed(record);
-  // The row vouches for no target above its pointer, so one there has to be opened with the segment's key.
-  const aead = await rollbackKey(
-    ref,
-    record,
-    deps.keystore,
-    forward
-      ? {
-          why:
-            `generation ${toGeneration} of "${ref.segment}" is above the current pointer ` +
-            `(${record.currentGen ?? 'none'})`,
-        }
-      : undefined,
-  );
-  const crypto: CrbmCrypto | undefined =
-    aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, toGeneration, scope) };
+  const vouchless = {
+    why: `generation ${toGeneration} of "${ref.segment}" is not one its row knows it published`,
+  };
+  // A target the row does not vouch for is opened with the segment's key before anything is read of it; one it vouches
+  // for is read first, so a swapped object is refused by its footer with no call to the keystore.
+  let aead =
+    mode === 'override' ? await rollbackKey(ref, record, deps.keystore, vouchless) : undefined;
   // One tail read of the target, whose footer says whether it is encrypted and carries the checksum the ledger records,
   // and which the open below is answered from: the summary's size and tail and the ledger's checksum are of this one
   // object, never of two reads.
-  const targetKey = { ...ref, generation: toGeneration };
-  const footer = await readRollbackTargetFooter(deps.storage, targetKey);
+  const footer = await readRollbackTargetFooter(deps.storage, targetKey).catch(async (err) => {
+    if (!isNotFoundError(err)) throw err;
+    throw notInBucket(ref, toGeneration, await generationsOf(deps.storage, ref), false);
+  });
+  let vouched = mode;
+  if (entry !== undefined && footer.footerCrc !== entry.footerCrc) {
+    if (options.allowUnknown !== true) {
+      throw new IntegrityError(
+        `rollback: the object under generation ${toGeneration} of "${ref.segment}" is not the one this segment published ` +
+          'as that generation: another object was stored under the number. Roll back to another generation, or pass ' +
+          '{ allowUnknown: true } if this object is the one you want.',
+      );
+    }
+    vouched = 'override';
+  }
+  if (aead === undefined && keyed) {
+    aead = await rollbackKey(
+      ref,
+      record,
+      deps.keystore,
+      vouched === 'override' ? vouchless : undefined,
+    );
+  }
+  const crypto: CrbmCrypto | undefined =
+    aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, toGeneration, scope) };
   const reader = await openRollbackTargetFrom(footer, targetKey, crypto);
   if (footer.encrypted !== keyed) {
     throw new IntegrityError(
@@ -302,7 +358,10 @@ export async function rollbackSegment(
           aead,
         );
   // The ledger moves the target to the end, as the most recently current, with the checksum of the object just read.
-  const known = rollbackKnown(record, { generation: toGeneration, footerCrc: footer.footerCrc });
+  const knownAfter = rollbackKnown(record, {
+    generation: toGeneration,
+    footerCrc: footer.footerCrc,
+  });
 
   // Fenced on the row this decision was made against. A rollback is the most derived write there is — an
   // operator looked at a particular state and chose — so publishing it into a row that has moved since would
@@ -319,7 +378,7 @@ export async function rollbackSegment(
       const { token } = await deps.registry.compareAndSwap(ref, against, {
         currentGen: toGeneration,
         summary,
-        ...(known === undefined ? {} : { knownGens: known }),
+        ...(knownAfter === undefined ? {} : { knownGens: knownAfter }),
       });
       swapped = { pointerId: token, token };
       break;
@@ -330,7 +389,7 @@ export async function rollbackSegment(
         const landed = await swapLanded(
           ref,
           record,
-          { toGeneration, summary, known },
+          { toGeneration, summary, known: knownAfter },
           deps.registry,
           err,
         );
@@ -347,42 +406,26 @@ export async function rollbackSegment(
     }
   }
 
-  // THE check, and it has to be here rather than above. Every target but an `allowForward` one is below the old
-  // pointer, which is precisely generation collection's range — and a collector never writes the row, so the
-  // token fence above cannot see it coming. A listing taken before the swap therefore proves nothing: the object
-  // can be collected between that listing and this swap, leaving the pointer naming a missing object.
+  // THE check, and it has to be here rather than above. A target below the old pointer is precisely generation
+  // collection's range, and a collector that is not fenced on the row (one a ledger does not hold off: an override, or a
+  // row with no usable ledger) never writes it, so the token fence above cannot see it coming. A target above the pointer
+  // can be deleted by an erasure and its number taken by a load, between the read of the target and the swap. Either way
+  // the number is now another object, or none, than the one the summary just written describes.
   //
-  // Once the swap lands, the target is safe — collection only ever takes what is strictly below `currentGen`,
-  // and the target now IS `currentGen`. So the ordering is: move first, then verify, and put the pointer back if
-  // the object went. Re-pointing can itself be raced, which is why it is fenced on the token the swap returned (or
-  // that of the row that showed a swap with no answer landed) and why failing to undo is reported rather than swallowed.
-  let stillThere = false;
-  for await (const key of deps.storage.list(ref)) {
-    if (key.generation === toGeneration) {
-      stillThere = true;
-      break;
-    }
-  }
-  // An object above the old pointer is where collection never looks, but an erasure can delete one and a load can then
-  // take its number, between the read of the target and the swap: the number is there, and it is another object than the
-  // one the summary just written describes. So a target above the pointer is read once more, by its footer, and is the
-  // one that was read or is put back like a vanished one. A number below the pointer can be taken again too, by a load
-  // that stalled before writing its object while collection freed the number, and is then refused its publish. A
-  // target below the pointer is not read again for that: the load has to stall across a collection and land inside this
-  // call's window, between its read of the target and its swap, and where the swap wrote a summary, every read that
-  // opens the generation is held to the fingerprint of the object read here, and refuses another.
+  // Once the swap lands, the target is safe from collection: it only ever takes what is strictly below `currentGen`, and
+  // the target now IS `currentGen`. So the ordering is: move first, then verify, and put the pointer back if the object
+  // went or is another. One footer read, whatever the target. Re-pointing can itself be raced, which is why it is fenced
+  // on the token the swap returned (or that of the row that showed a swap with no answer landed) and why failing to undo is
+  // reported rather than swallowed.
+  let stillThere = true;
   let replaced = false;
-  if (stillThere && reader !== undefined && forward) {
-    try {
-      replaced = !(await provesOwnObject(
-        deps.storage,
-        { ...ref, generation: toGeneration },
-        reader.fingerprint,
-      ));
-    } catch (err) {
-      if (!isIntegrityError(err)) throw err;
+  try {
+    replaced = (await footerCrcUnder(deps.storage, targetKey)) !== footer.footerCrc;
+  } catch (err) {
+    if (isNotFoundError(err)) stillThere = false;
+    else if (isIntegrityError(err))
       replaced = true; // a footer that no longer checks is not the object that was read
-    }
+    else throw err;
   }
   if (!stillThere || replaced) {
     let undone = false;
@@ -450,9 +493,38 @@ export async function rollbackSegment(
     ...incarnationField(record.token),
     fromGeneration: record.currentGen,
     generation: toGeneration,
+    ...(vouched === 'checked' ? {} : { unknown: true as const }),
   });
 
   return { fromGeneration: record.currentGen, generation: toGeneration };
+}
+
+/**
+ * The refusal of a target the row does not know it published, before any request to storage. It says what the row does
+ * know, so an operator who named the wrong number sees the right ones.
+ */
+function refuseUnknown(
+  ref: SegmentRef,
+  generation: number,
+  record: RegistryRecord,
+  known: readonly KnownGeneration[] | undefined,
+): never {
+  const above = record.currentGen === null || generation > record.currentGen;
+  throw new ValidationError(
+    `rollback: generation ${generation} of "${ref.segment}" is not one its row knows it published ` +
+      (known === undefined
+        ? `(the row has no record of the generations it published to check it against${
+            above
+              ? `, and the target is above the current pointer (${record.currentGen ?? 'none'})`
+              : ''
+          })`
+        : `(it knows: ${known
+            .map((e) => e.generation)
+            .sort((a, b) => a - b)
+            .join(', ')})`) +
+      ': it may never have been published, such as a load that wrote its object and died before the publish, or a ' +
+      "refused load's. Pass { allowUnknown: true } to move onto it anyway.",
+  );
 }
 
 /**
@@ -486,24 +558,6 @@ function notInBucket(
       (current ? 'is current, but its object is not in the bucket' : 'is not in the bucket') +
       (present.length === 0 ? ' (no generations remain)' : ` — present: ${present.join(', ')}`),
   );
-}
-
-/**
- * Throws {@link NotFoundError}, naming what the bucket holds, when the current generation's object is not there. One
- * zero-byte read, a metadata request on every shipped driver, and a listing only for the refusal. Any other fault of the
- * read is thrown as it is: a rollback that could not look reports nothing as done.
- */
-async function requirePresent(
-  ref: SegmentRef,
-  generation: number,
-  storage: IStorageDriver,
-): Promise<void> {
-  try {
-    await storage.getTail({ ...ref, generation }, 0);
-  } catch (err) {
-    if (!isNotFoundError(err)) throw err;
-    throw notInBucket(ref, generation, await generationsOf(storage, ref), true);
-  }
 }
 
 /**

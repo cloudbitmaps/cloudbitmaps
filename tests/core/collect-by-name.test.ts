@@ -501,7 +501,12 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
     const w = await atFour(); // present 3 and 4, kept [3]; the next load publishes 5 and evicts 3
     const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
       // An operator rolls back to 3; the next loads number above everything and keep a wide window, which names 3.
-      await rollbackSegment(SEG, 3, { storage: w.memory, registry: w.registry });
+      await rollbackSegment(
+        SEG,
+        3,
+        { storage: w.memory, registry: w.registry },
+        { allowUnknown: true },
+      );
       await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { keep: 3 });
       expect(windowOf(await w.registry.get(SEG))).toContain(3);
     });

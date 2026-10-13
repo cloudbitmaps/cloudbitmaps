@@ -38,6 +38,14 @@ interface Dropped {
  */
 export const DROPPED_ON_PURPOSE: readonly Dropped[] = [
   {
+    title:
+      "A rollback above the pointer of an encrypted segment needs the segment's key, and a keystore fault is no longer taken for a missing key.",
+    reason:
+      'rewritten in the same unreleased minor as the rollback that moves only onto a generation its row knows: the key is ' +
+      'now needed for a target the row does not vouch for, not for every target above the pointer, so the entry ' +
+      "is retitled and keeps what stays true of it (a keystore's fault is not a missing key)",
+  },
+  {
     title: 'The cost model, and `store.reapRegistryTombstones`, each marked `@deprecated` for 1.0.',
     reason:
       'the reaper is removed in the same unreleased minor, under Removed, and the cost model has an entry of its own ' +

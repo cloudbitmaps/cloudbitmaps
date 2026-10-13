@@ -221,7 +221,7 @@ describe('every entry point that takes a namespace refuses the reserved one', ()
     const { store, registry, storage, deps } = world();
     const writes: (() => unknown)[] = [
       () => store.load(BAD, [1]),
-      () => store.rollback(BAD, 0, { allowForward: true }),
+      () => store.rollback(BAD, 0, { allowUnknown: true }),
       () => store.dropSegment(BAD, { confirmSegment: 's' }),
       () => store.setRetention(BAD, { expiresAt: FUTURE }),
       () => store.clearRetention(BAD),

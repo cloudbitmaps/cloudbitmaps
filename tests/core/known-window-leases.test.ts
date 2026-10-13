@@ -83,7 +83,7 @@ describe('the lease recipe: hourly loads at keep 1, each generation leased for 7
     expect(await generations(w.storage)).toEqual(all);
     await rollbackSegment(SEG, 10, w.deps);
     expect((await w.registry.get(SEG))!.currentGen).toBe(10);
-    await rollbackSegment(SEG, 29, w.deps, { allowForward: true });
+    await rollbackSegment(SEG, 29, w.deps);
     // The rollbacks moved 10 and then 29 to the end of the ledger, which is in the order they were made current.
     expect(names(await w.registry.get(SEG))).toEqual([
       ...all.filter((g) => g !== 10 && g !== 29),

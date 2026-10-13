@@ -5,7 +5,8 @@ import fc from 'fast-check';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 import { MAX_KNOWN_GENERATIONS, usableKnownGens, windowOf } from '@/core/known-generations';
-import { LeaseLimitError, TransientError } from '@/core/errors';
+import { IntegrityError, LeaseLimitError, TransientError } from '@/core/errors';
+import { footerCrcUnder } from '@/core/crbm-open';
 import { LEASE_SKEW_MS, MAX_LEASE_MS, releaseLease, takeLease } from '@/core/leases';
 import { loadSegment } from '@/core/load';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
@@ -753,11 +754,27 @@ describe.each(registries)('the known-generations ledger against its model, over 
                     }
                     if (target === undefined || target === current) break;
                     const forward = target > current;
+                    // A generation the ledger names needs no flag; one it does not needs the override, except below the
+                    // pointer on a row with no ledger, where the rule is the one from before the row kept a record.
+                    // A number the ledger names whose object is another one (a stray written into a freed number the
+                    // ledger still names) is refused by its checksum, and needs the override too.
+                    const recorded = usableKnownGens(row)?.find((e) => e.generation === target);
+                    const swapped =
+                      recorded !== undefined &&
+                      recorded.footerCrc !==
+                        (await footerCrcUnder(storage, { ...SEG, generation: target }));
+                    if (swapped) {
+                      await expect(
+                        rollbackSegment(SEG, target, { storage, registry }),
+                      ).rejects.toBeInstanceOf(IntegrityError);
+                    }
+                    const flag =
+                      swapped || (ledger === undefined ? forward : !ledger.includes(target));
                     await rollbackSegment(
                       SEG,
                       target,
                       { storage, registry },
-                      forward ? { allowForward: true } : {},
+                      flag ? { allowUnknown: true } : {},
                     );
                     counts.rollbacks += 1;
                     if (ledger !== undefined) {
