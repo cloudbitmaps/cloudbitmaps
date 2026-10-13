@@ -293,9 +293,26 @@ describe('the library is described as it is', () => {
       'the build shipped with a bug',
       'the change turned CI red',
       'a rename broke CI',
+      "['refuse input they used', 'to take and misread.'].join(' ')",
+      '["refuse input they used",\n    "to take and misread."].join(" ")',
+      "[\n  'a defect that shipped',\n  'broken once',\n].join(' ')",
+      "['they used', 'to', 'say'].join(' ')",
+      "[\"don't ever say they used\", `to`].join(' ')",
     ]) {
       expect(pastTense(text), text).toHaveLength(1);
     }
+  });
+
+  it('reads a long run of spaces inside an unclosed array in linear time', () => {
+    const text = "['a'" + ' '.repeat(100_000) + 'x';
+    const start = performance.now();
+    expect(pastTense(text)).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it('reports a phrase split across an array join at the line it starts on', () => {
+    const text = "const a = 1;\n\nconst m = [\n  'they used',\n  'to say',\n].join(' ');\n";
+    expect(pastTense(text).map((h) => [h.line, h.found])).toEqual([[4, 'used to']]);
   });
 
   it('passes what happens at run time, and "used to" as a purpose', () => {
@@ -344,6 +361,17 @@ describe('the library is described as it is', () => {
       'so no tarball is shipped broken',
       'A tarball shipped broken fails the smoke test',
       'the check before it',
+      "const words = ['they used', 'to take'];",
+      "['they used', 'to take'].join(sep)",
+      "['they used', 'to take'].join(SEP + 'x')",
+      "const words = ['used', 'to'];\nwords.push('say');",
+      "['used', 'to'].map((w) => w.toUpperCase())",
+      "[x, 'used', 'to'].join(' ')",
+      "['a list of', 'used', 'to', 'say'].length",
+      "['a used', 'b to'].join('')",
+      "row['they used'].join('') to take",
+      "x['used'].join(' to ')",
+      "['they used', `${x} to take`].join(' ')",
     ]) {
       expect(pastTense(text), text).toEqual([]);
     }
