@@ -11,6 +11,7 @@
  * deletes for real, so a request count here is the count a cloud store would bill.
  */
 import { describe, expect, it } from 'vitest';
+import { heavy } from '../helpers/strength';
 import { RETENTION_SWEEP_REQUESTS } from '@/tools/cost';
 import { retireExpired, DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep';
 import { setSegmentRetention } from '@/core/retention';
@@ -86,9 +87,11 @@ async function bucketRows(w: World, bucket: number): Promise<RegistryRecord[]> {
   return rows;
 }
 
+const PURGED = heavy('retentionPurgeSegments');
+
 describe('the done-when: a full sweep costs what is live and in its grace, not what was ever retired', () => {
-  it('after 10,000 segments are created, retired and purged, a full sweep reads only the live row', async () => {
-    const N = 10_000;
+  it(`after ${PURGED.toLocaleString('en-US')} segments are created, retired and purged, a full sweep reads only the live row`, async () => {
+    const N = PURGED;
     const w = world();
     const ns = 'sends';
     for (let i = 0; i < N; i++)
