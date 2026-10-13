@@ -649,11 +649,15 @@ export interface RegistryWriteOptions {
    */
   readonly held?: RegistryRecord | null;
   /**
-   * Called with the token this write carries, before the write is sent, once for every write the call sends (a write
-   * the registry sends again reports the token it sends). The token is the one the write records: when the write
-   * lands, the row's {@link RegistryRecord.token} is it, and so is its {@link RegistryRecord.pointerId} when the write
-   * names a resolved field. A write that does not land leaves no row carrying it. A call refused before it has a token to
-   * send, on a conflict its own read finds, reports none.
+   * Called with the token this write carries, before the write is sent. A write sent again with a new token reports
+   * it; one that repeats the same body repeats the token already reported. The token is the one the write records:
+   * when the write lands, the row's {@link RegistryRecord.token} is it, and so is its {@link RegistryRecord.pointerId}
+   * when the write names a resolved field. A write that does not land leaves no row carrying it. A call refused before
+   * it has a token to send, on a conflict its own read finds, reports none.
+   *
+   * The token is unique to that write attempt, also against another writer racing the same version: two writers that
+   * send a write against the same row version never carry the same token, so a version counter alone is not enough.
+   * Otherwise a loser's write would pass for the winner's.
    *
    * It tells a writer which row writes are its own, whatever became of its request: a write that failed, or got no
    * answer, may still have landed, and the row's `pointerId` is then one of the tokens the writer was told. Only a
@@ -883,8 +887,9 @@ export interface IRegistryDriver {
    * is a token it was told, which names the writer and not only the bytes. Absent or `false`: the registry reports
    * none, and such a write is settled by reading the object the publish wrote. A shipped registry says which it is.
    *
-   * A registry that wraps another declares it only for a wrapper that passes `options` through to the write it
-   * forwards: one that does not leaves the flag off, and its writes are settled by the object.
+   * A registry that overrides `create` or `compareAndSwap` declares `reportsWriteTokens` beside them, and only if it
+   * passes `options` through to the write it forwards; a publish honours the flag only where the object that owns
+   * each of those two methods declares it, and otherwise settles its writes by the object.
    */
   readonly reportsWriteTokens?: boolean;
   /**

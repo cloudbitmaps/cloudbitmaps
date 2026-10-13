@@ -34,9 +34,12 @@
  *    token of its create or of the last compare-and-swap that named a resolved field (`renewsPointer`); `delete` is
  *    idempotent, and `delete(ref, expected)` lands only while the
  *    row still carries `expected`, else it throws `WriteConflictError`; `list` yields tombstones and every field.
- *    A registry may also report each write's token to `RegistryWriteOptions.onToken`, before it sends the write and
- *    for every resend, and say so with `reportsWriteTokens: true`: a publish then knows its own write landed exactly
- *    when the row's `pointerId` is a token it was told. One that does not is settled by the object the pointer names.
+ *    A registry may also report each write's token to `RegistryWriteOptions.onToken`, before it sends the write (a
+ *    write sent again with a new token reports it; one that repeats the same body repeats the token already reported),
+ *    unique to that write attempt, and say so with `reportsWriteTokens: true`: a publish then knows its own write
+ *    landed exactly when the row's `pointerId` is a token it was told. A registry that overrides `create` or
+ *    `compareAndSwap` declares `reportsWriteTokens` beside them, and only if it passes `options` through; otherwise the
+ *    publish settles its writes by the object the pointer names.
  *  - Either: never replay a conditional write without telling the replay apart (send it once, or recognise your
  *    own write on the read-back), and raise a transient fault as `TransientError`.
  *

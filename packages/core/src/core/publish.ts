@@ -179,10 +179,11 @@ interface PublishOptions {
   cleartext?: boolean;
   /**
    * Whether the object under `key` is the one the caller wrote, and throws when it cannot tell. Asked only when a
-   * registry write failed and the row then names `key.generation`, to tell this publish's write from another
-   * writer's at the same number. Every caller that writes the object passes it. Without it, a write that ended
-   * without an answer over a row that names `key.generation` cannot be settled: the publish throws
-   * {@link TransientError} and the caller keeps its object.
+   * registry write failed and the row then names `key.generation`, on a registry that does not report its writes'
+   * tokens ({@link IRegistryDriver.reportsWriteTokens}; one that does settles it by the row's `pointerId` and never
+   * asks), to tell this publish's write from another writer's at the same number. Every caller that writes the object
+   * passes it. Without it, such a write that ended without an answer over a row that names `key.generation` cannot be
+   * settled: the publish throws {@link TransientError} and the caller keeps its object.
    */
   holdsOwnObject?: () => Promise<boolean>;
   /**
@@ -290,9 +291,9 @@ interface PublishOptions {
  *
  * A failed read throws `TransientError` too. The same check of the pointer runs after a {@link WriteConflictError},
  * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
- * With a registry that reports tokens the check is exact, so it also runs before the next attempt's `expectAbsent`,
- * `expectToken` and `expectFrom` fences, which a write of the caller's own that landed would fail; with one that does
- * not, a publish over another writer's identical object can pass it, and so skip them.
+ * The check runs before the next attempt's `expectAbsent`,
+ * `expectToken` and `expectFrom` fences, which a write of the caller's own that landed would fail. With a registry that
+ * reports tokens it is exact; with one that does not, another writer's identical object under the number can pass it.
  *
  * **A `summary` goes in the same write that moves the pointer**, so a reader that sees this generation as current
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
@@ -325,8 +326,9 @@ export async function publishGenerationKept(
   let lastRecord: RegistryRecord | null | undefined;
   // The tokens of every write this call sent, as a registry that reports them says before it sends each one; absent for
   // a registry that does not, whose writes are settled by the object the pointer names.
-  const sent: Set<Token> | undefined =
-    registry.reportsWriteTokens === true ? new Set<Token>() : undefined;
+  const sent: Set<Token> | undefined = reportsWriteTokens(registry) ? new Set<Token>() : undefined;
+  const report: ((token: Token) => void) | undefined =
+    sent === undefined ? undefined : (token) => void sent.add(token);
   for (let attempt = 0; attempt < 5; attempt++) {
     const reused = attempt === 0 && options.row !== undefined;
     // The row a write is made against is passed to the registry as `held`, so that it need not read the row again for
@@ -336,11 +338,12 @@ export async function publishGenerationKept(
     const record =
       fresh !== undefined ? fresh : reused ? (options.row ?? null) : await registry.get(key);
     const write: RegistryWriteOptions | undefined =
-      sent === undefined
-        ? holdsRow
-          ? { held: record }
-          : undefined
-        : { ...(holdsRow ? { held: record } : {}), onToken: (token) => void sent.add(token) };
+      holdsRow || report !== undefined
+        ? {
+            ...(holdsRow ? { held: record } : {}),
+            ...(report !== undefined ? { onToken: report } : {}),
+          }
+        : undefined;
     fresh = undefined;
     unanswered = undefined;
     lastRecord = record;
@@ -627,17 +630,42 @@ export async function publishGeneration(
 }
 
 /**
+ * Whether a registry's writes report their tokens, so that a publish can settle them by the row's `pointerId`. The
+ * registry declares it with `reportsWriteTokens`, and the declaration counts only where the write methods are defined:
+ * the object in the prototype chain that owns `create` and the one that owns `compareAndSwap` must each declare the
+ * flag themselves. A subclass or a wrapper that overrides either without declaring it, which may not pass `options`
+ * through to the write it forwards, falls back to the proof by the object.
+ */
+function reportsWriteTokens(registry: IRegistryDriver): boolean {
+  if (registry.reportsWriteTokens !== true) return false;
+  return declaresBesideWrite(registry, 'create') && declaresBesideWrite(registry, 'compareAndSwap');
+}
+
+/** Whether the object that owns `method`, searching `registry` and then its prototypes, declares `reportsWriteTokens`. */
+function declaresBesideWrite(
+  registry: IRegistryDriver,
+  method: 'create' | 'compareAndSwap',
+): boolean {
+  for (let o: object | null = registry; o !== null; o = Object.getPrototypeOf(o) as object | null) {
+    if (Object.prototype.hasOwnProperty.call(o, method)) {
+      return Object.prototype.hasOwnProperty.call(o, 'reportsWriteTokens');
+    }
+  }
+  return false;
+}
+
+/**
  * Whether `now` shows the effect of a publish's write that was made against `before`: an active row, on the same
  * incarnation (a `create` has none to compare), whose pointer names `key.generation`, and either (with `sent`, the
  * tokens of the writes this call sent to a registry that reports them) whose `pointerId` is one of them, or (without)
  * over an object the caller's `holdsOwnObject` accepts.
  *
  * The incarnation is the one in the row's token ({@link sameIncarnation}): exact, and no clock. A row with no id in its
- * token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock reading that two
- * incarnations can share. So the object is always checked too, never assumed: the pointer and the incarnation alone
- * cannot say whose write this is. A load's check reads the footer, which names bytes, so another writer's identical
- * object under the number passes it. With no proof to ask for, the answer cannot be given, and that is an unknown outcome,
- * never a guess.
+ * token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock reading
+ * that two incarnations can share. With `sent` the token decides, and nothing else is asked. Without it the object is
+ * checked, never assumed: the pointer and the incarnation alone cannot say whose write this is, and a load's check reads
+ * the footer, which names bytes, so another writer's identical object under the number passes it. With no proof to ask
+ * for, the answer cannot be given, and that is an unknown outcome, never a guess.
  */
 async function landedHere(
   now: RegistryRecord | null,
@@ -663,9 +691,9 @@ async function landedHere(
 }
 
 /**
- * Whether two reads of a row saw it unwritten in between: the same token, or no row both times. The settling never
- * compares `pointerId`: an unchanged token already proves that no write landed, and a write that did land is judged by
- * the object it names, through the caller's `holdsOwnObject` ({@link landedHere}).
+ * Whether two reads of a row saw it unwritten in between: the same token, or no row both times. This never compares
+ * `pointerId`: an unchanged token already proves that no write landed, and a write that did land is judged by
+ * {@link landedHere}, by the row's `pointerId` or the object it names.
  */
 function sameRow(a: RegistryRecord | null, b: RegistryRecord | null): boolean {
   return a === null ? b === null : b !== null && a.token === b.token;

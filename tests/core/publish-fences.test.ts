@@ -491,8 +491,8 @@ describe('a materialisation reports whether it actually landed', () => {
       .intersectInto(store.segment('dest'), [store.segment('b')])
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WriteConflictError);
-    // What it says is true whether or not the write ever was current: the generation is not current now.
-    expect((err as Error).message).toMatch(/generation 1 was written and is not current/);
+    // What it says is true whether or not the write ever was current: it may not be current now.
+    expect((err as Error).message).toMatch(/generation 1 was written and may not be current/);
     expect((err as Error).message).not.toMatch(/never became current/);
 
     // The winner's content is what `dest` holds, and our object is the orphan.

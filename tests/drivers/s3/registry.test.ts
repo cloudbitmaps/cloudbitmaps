@@ -119,7 +119,7 @@ registryConformance('S3RegistryDriver (fake S3)', () => {
   return new S3RegistryDriver({ client, bucket: 'b', prefix: 'cloudbitmaps', now: ticking() });
 });
 
-it('S3RegistryDriver reports the token of each write it sends', () => {
+it('S3RegistryDriver declares that it reports write tokens', () => {
   const client = new FakeS3() as unknown as S3Client;
   expect(new S3RegistryDriver({ client, bucket: 'b', now: ticking() }).reportsWriteTokens).toBe(
     true,

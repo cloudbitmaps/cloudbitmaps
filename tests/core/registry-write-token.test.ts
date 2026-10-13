@@ -131,7 +131,9 @@ type Mode = 'send' | 'transient' | 'landThenConflict';
 /**
  * `registry`, whose first create or compare-and-swap naming `currentGen: gen` waits at `g` before it is sent. Then:
  * `send` sends it; `transient` throws `TransientError` and never sends it; `landThenConflict` sends it, runs `between`,
- * and throws `WriteConflictError`, as a replay that met its own landed write does.
+ * and throws `WriteConflictError`, as a replay that met its own landed write does. The wrapper overrides both write
+ * methods and forwards `options`, so it declares the flag as `registry` does. It wraps with `Object.create`, so it
+ * suits registries whose methods read no `#private` field.
  */
 function holdWrite(
   registry: IRegistryDriver,
@@ -155,6 +157,10 @@ function holdWrite(
     }
     return out;
   };
+  // The wrapper overrides both write methods and forwards `options` to them, so it reports as `registry` does.
+  Object.defineProperty(held, 'reportsWriteTokens', {
+    value: registry.reportsWriteTokens === true,
+  });
   held.create = (ref, rec, options) =>
     wrap(rec.currentGen, () => registry.create(ref, rec, options));
   held.compareAndSwap = (ref, token, patch, options) =>
@@ -388,6 +394,130 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
       expect(outcome(await b)).toEqual({ published: false, reason: 'superseded' });
     });
   });
+
+  describe('an own write that landed, then a write that renews the pointerId without moving the pointer, is read as not its own', () => {
+    // The trade this check makes: once a write has renewed the row's `pointerId` over the call's own landed write, the call
+    // cannot tell its write from another load's of that number. It reports none published, though its generation may be
+    // current, and deletes nothing; a re-run publishes a new generation.
+
+    /** The generations the row names, and the one it points at, are all still in the bucket, and the pointer reads. */
+    async function expectIntact(ids: number[]) {
+      const row = (await registry.get(REF))!;
+      const bucket = await gens(storage);
+      for (const g of (row.knownGens ?? []).map((e) => e.generation)) {
+        expect(bucket, `generation ${g}`).toContain(g);
+      }
+      expect(bucket).toContain(row.currentGen);
+      const store = new CloudRoaring({
+        storage: brandAsBackend({ storage, registry }),
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      });
+      for (const id of ids) expect(await store.segment(REF.segment).has(id), `id ${id}`).toBe(true);
+    }
+
+    it("a load, then an erasure's refused rewrite renews the row over it: superseded, nothing deleted, a re-run publishes", async () => {
+      await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
+      const lGate = gate();
+      const eGate = gate();
+      const lAudit = new RecordingAuditSink();
+      const erasure: { done?: Promise<unknown> } = {};
+      let landed = '';
+      const l = loadSegment(
+        REF,
+        [4, 8],
+        {
+          ...deps,
+          registry: holdWrite(registry, 1, lGate, 'landThenConflict', async () => {
+            landed = (await registry.get(REF))!.pointerId;
+            eGate.open();
+            await erasure.done;
+          }),
+        },
+        { allowEmpty: true, keep: 1, audit: lAudit },
+      );
+      await lGate.reached;
+      erasure.done = eraseIdFromSegment(REF, 9, {
+        ...deps,
+        registry: holdWrite(registry, 2, eGate),
+      });
+      await eGate.reached;
+      lGate.open();
+      expect(outcome(await l)).toEqual({ published: false, reason: 'superseded' });
+      expect(kinds(lAudit)).toEqual(['segment.load-refused']);
+      // The erasure's discard renewed the row over the load's write, and the pointer is still the load's generation.
+      const row = (await registry.get(REF))!;
+      expect(row.currentGen).toBe(1);
+      expect(row.pointerId).not.toBe(landed);
+      await expectIntact([4, 8]);
+      expect(await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1 })).toMatchObject({
+        published: true,
+        generation: 2,
+      });
+    });
+
+    it('a load, then a rollback onto its generation: superseded, nothing deleted, a re-run publishes', async () => {
+      await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
+      const lGate = gate();
+      const lAudit = new RecordingAuditSink();
+      let landed = '';
+      const l = loadSegment(
+        REF,
+        [4, 8],
+        {
+          ...deps,
+          registry: holdWrite(registry, 1, lGate, 'landThenConflict', async () => {
+            landed = (await registry.get(REF))!.pointerId;
+            await loadSegment(REF, [4, 8, 10], deps, { allowEmpty: true, keep: 1 });
+            await rollbackSegment(REF, 1, deps);
+          }),
+        },
+        { allowEmpty: true, keep: 1, audit: lAudit },
+      );
+      await lGate.reached;
+      lGate.open();
+      expect(outcome(await l)).toEqual({ published: false, reason: 'superseded' });
+      expect(kinds(lAudit)).toEqual(['segment.load-refused']);
+      const row = (await registry.get(REF))!;
+      expect(row.currentGen).toBe(1);
+      expect(row.pointerId).not.toBe(landed);
+      await expectIntact([4, 8]);
+      expect(await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1 })).toMatchObject({
+        published: true,
+      });
+    });
+
+    it('an erasure rewrite, then a rollback onto its generation: erased false, no rewrite audited, nothing deleted, a re-run erases', async () => {
+      await loadSegment(REF, [5, 9], deps, { allowEmpty: true });
+      const g = gate();
+      const audit = new RecordingAuditSink();
+      let landed = '';
+      const e = eraseIdFromSegment(
+        REF,
+        9,
+        {
+          ...deps,
+          registry: holdWrite(registry, 1, g, 'landThenConflict', async () => {
+            landed = (await registry.get(REF))!.pointerId;
+            await loadSegment(REF, [5, 6], deps, { allowEmpty: true, keep: 1 });
+            await rollbackSegment(REF, 1, deps);
+          }),
+        },
+        { audit },
+      );
+      await g.reached;
+      g.open();
+      expect(await e).toMatchObject({ erased: false, reason: 'superseded' });
+      expect(kinds(audit)).not.toContain('segment.rewrite');
+      const row = (await registry.get(REF))!;
+      expect(row.currentGen).toBe(1);
+      expect(row.pointerId).not.toBe(landed);
+      // Nothing was deleted: the generation that holds the id is still in the bucket, as the rewrite is.
+      expect(await gens(storage)).toEqual(expect.arrayContaining([0, 1]));
+      await expectIntact([5]);
+      expect(await eraseIdFromSegment(REF, 9, deps)).toMatchObject({ erased: true });
+    });
+  });
 });
 
 describe('a registry that reports write tokens, with an Azure-like store', () => {
@@ -469,6 +599,7 @@ describe('every writer that reaches the publish is settled by the write token', 
    */
   async function overtaken(
     run: (store: CloudRoaring, audit: RecordingAuditSink) => Promise<unknown>,
+    operands: { a: readonly number[]; b: readonly number[] } = { a: [4, 8, 50], b: [4, 8, 60] },
   ) {
     const mem = new MemoryStorage();
     const g = gate();
@@ -479,8 +610,8 @@ describe('every writer that reaches the publish is settled by the write token', 
       seams: { clock },
     });
     const plain = { storage: mem.storage, registry: mem.registry, codec: roaringCodec, clock };
-    await store.load({ segment: 'a' }, [4, 8, 50]);
-    await store.load({ segment: 'b' }, [4, 8, 60]);
+    await store.load({ segment: 'a' }, operands.a);
+    await store.load({ segment: 'b' }, operands.b);
     await loadSegment(DEST, [9], plain, { allowEmpty: true });
     const audit = new RecordingAuditSink();
     const writer = run(store, audit).then(
@@ -510,19 +641,26 @@ describe('every writer that reaches the publish is settled by the write token', 
     expect((await mem.registry.get(DEST))!.currentGen).toBe(1);
   });
 
-  it('unionInto and andNotInto: superseded', async () => {
-    for (const verb of ['unionInto', 'andNotInto'] as const) {
-      const { result, audit } = await overtaken((store, a) =>
-        store.segment('a')[verb](store.segment('d'), [store.segment('b')], {
-          allowEmpty: true,
-          audit: a,
-        }),
+  // Each operand pair gives {4, 8}, the ids the other load wrote, so the footer of the object under the number cannot
+  // tell the two writers apart: only the token can.
+  it.each([
+    ['unionInto', { a: [4, 8], b: [4] }],
+    ['andNotInto', { a: [4, 8, 50], b: [50] }],
+  ] as const)(
+    "%s: superseded, though its result is the other load's bytes",
+    async (verb, operands) => {
+      const { result, audit } = await overtaken(
+        (store, a) =>
+          store.segment('a')[verb](store.segment('d'), [store.segment('b')], {
+            allowEmpty: true,
+            audit: a,
+          }),
+        operands,
       );
-      // a union holds more than 4 and 8, so its bytes differ from the other load's: refused either way
-      expect((result as { error: unknown }).error, verb).toBeInstanceOf(WriteConflictError);
-      expect(kinds(audit), verb).not.toContain('segment.publish');
-    }
-  });
+      expect((result as { error: unknown }).error).toBeInstanceOf(WriteConflictError);
+      expect(kinds(audit)).not.toContain('segment.publish');
+    },
+  );
 
   it('materializeMany: its output is superseded, and published nothing', async () => {
     const { result, audit, mem } = await overtaken((store, a) =>
@@ -560,28 +698,277 @@ describe('every writer that reaches the publish is settled by the write token', 
 });
 
 describe('a publish whose attempts run out on conflicts', () => {
+  const key = { ...REF, generation: 1 };
+
+  /**
+   * A registry whose compare-and-swap loses on every attempt, as a wrapper that overrides it and declares the flag
+   * beside it, forwarding `options` where it means to report. On the last attempt another writer's write puts the
+   * pointer at this number, and `onLast` says what the wrapper does then: lands the call's own write (through
+   * `options`), or another writer's (without them). An earlier attempt may end without an answer first.
+   */
+  function exhausting(
+    base: IRegistryDriver,
+    reports: boolean,
+    onLast: 'own' | 'another',
+    unansweredFirst = false,
+  ): { registry: IRegistryDriver; attempts: () => number } {
+    const registry = Object.create(base) as IRegistryDriver;
+    Object.defineProperty(registry, 'reportsWriteTokens', { value: reports });
+    let attempts = 0;
+    registry.compareAndSwap = async (ref, token, patch, options) => {
+      attempts += 1;
+      if (unansweredFirst && attempts === 1) throw new TransientError('no answer, and never sent');
+      if (attempts === 5) {
+        await base.compareAndSwap(
+          ref,
+          token,
+          { currentGen: 1 },
+          onLast === 'own' ? options : undefined,
+        );
+      }
+      throw new WriteConflictError('lost');
+    };
+    return { registry, attempts: () => attempts };
+  }
+
   it.each([true, false])(
     "finds the pointer at its number over another writer's write: published only when the registry cannot say whose it is (reports tokens: %s)",
     async (reports) => {
       const base = new MemoryRegistryDriver();
-      const registry = reports ? base : withoutTokenReports(base);
-      const key = { ...REF, generation: 1 };
-      await registry.create(REF, { currentGen: 0 });
-      const flaky = Object.create(registry) as IRegistryDriver;
-      let conflicts = 0;
-      flaky.compareAndSwap = async (ref, token) => {
-        conflicts += 1;
-        // The fifth attempt loses to another writer, whose own write puts the pointer at this number.
-        if (conflicts === 5) await registry.compareAndSwap(ref, token, { currentGen: 1 });
-        throw new WriteConflictError('lost');
-      };
-      const published = await publishGeneration(flaky, key, {
+      await base.create(REF, { currentGen: 0 });
+      const { registry, attempts } = exhausting(base, reports, 'another');
+      const published = await publishGeneration(registry, key, {
         holdsOwnObject: async () => true,
       });
-      expect(conflicts).toBe(5);
+      expect(attempts()).toBe(5);
       // With tokens, the pointer is over a write this call never sent. Without, the footer proof stands in for the
       // writer, and an exhausted publish that saw no unanswered write takes the pointer at its number as its own.
       expect(published).toBe(!reports);
     },
   );
+
+  it('with tokens, finds the pointer over a write of its own that landed: published, and the footer is not asked', async () => {
+    const base = new MemoryRegistryDriver();
+    await base.create(REF, { currentGen: 0 });
+    const { registry } = exhausting(base, true, 'own');
+    const asked = vi.fn(async () => false);
+    expect(await publishGeneration(registry, key, { holdsOwnObject: asked })).toBe(true);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['its own write that landed', 'own', true],
+    ["another writer's", 'another', false],
+  ] as const)(
+    'with tokens, after a write that got no answer, finds the pointer over %s: published is %s',
+    async (_what, onLast, expected) => {
+      const base = new MemoryRegistryDriver();
+      await base.create(REF, { currentGen: 0 });
+      const { registry, attempts } = exhausting(base, true, onLast, true);
+      const published = await publishGeneration(registry, key, {
+        holdsOwnObject: async () => true,
+        clock,
+      });
+      expect(attempts()).toBe(5);
+      expect(published).toBe(expected);
+    },
+  );
+});
+
+describe('a registry that overrides a write method declares the flag beside it, or is settled by the object', () => {
+  /**
+   * Registries that land a write and then answer it as a conflict, the shape of a replay that met its own write:
+   * a subclass and an `Object.create` wrapper of the in-memory registry, each overriding a write method (`compareAndSwap`, or `create` for a publish onto no row), each
+   * either declaring `reportsWriteTokens` beside it and forwarding `options`, or neither. A landed write is the
+   * call's own (`options` forwarded) or another writer's (not).
+   */
+  class Dropping extends MemoryRegistryDriver {
+    override async compareAndSwap(
+      ref: SegmentRef,
+      expected: string,
+      patch: Parameters<MemoryRegistryDriver['compareAndSwap']>[2],
+    ): Promise<{ token: string }> {
+      await super.compareAndSwap(ref, expected, patch);
+      throw new WriteConflictError('the answer was a conflict');
+    }
+  }
+  class Forwarding extends MemoryRegistryDriver {
+    landing: 'own' | 'another' = 'own';
+    override get reportsWriteTokens(): true {
+      return true;
+    }
+    override async compareAndSwap(
+      ref: SegmentRef,
+      expected: string,
+      patch: Parameters<MemoryRegistryDriver['compareAndSwap']>[2],
+      options?: Parameters<MemoryRegistryDriver['compareAndSwap']>[3],
+    ): Promise<{ token: string }> {
+      await super.compareAndSwap(
+        ref,
+        expected,
+        patch,
+        this.landing === 'own' ? options : undefined,
+      );
+      throw new WriteConflictError('the answer was a conflict');
+    }
+  }
+  /** The same for `create`, the write a publish onto a segment with no row sends. */
+  class DroppingCreate extends MemoryRegistryDriver {
+    override async create(
+      ref: SegmentRef,
+      record: Parameters<MemoryRegistryDriver['create']>[1],
+    ): Promise<{ token: string }> {
+      await super.create(ref, record);
+      throw new WriteConflictError('the answer was a conflict');
+    }
+  }
+  class ForwardingCreate extends MemoryRegistryDriver {
+    landing: 'own' | 'another' = 'own';
+    override get reportsWriteTokens(): true {
+      return true;
+    }
+    override async create(
+      ref: SegmentRef,
+      record: Parameters<MemoryRegistryDriver['create']>[1],
+      options?: Parameters<MemoryRegistryDriver['create']>[2],
+    ): Promise<{ token: string }> {
+      await super.create(ref, record, this.landing === 'own' ? options : undefined);
+      throw new WriteConflictError('the answer was a conflict');
+    }
+  }
+  function wrapper(
+    declares: boolean,
+    landing: 'own' | 'another',
+    method: 'compareAndSwap' | 'create' = 'compareAndSwap',
+  ): IRegistryDriver {
+    const base = new MemoryRegistryDriver();
+    const out = Object.create(base) as IRegistryDriver;
+    if (declares) Object.defineProperty(out, 'reportsWriteTokens', { value: true });
+    const pass = <T>(options: T | undefined): T | undefined =>
+      declares && landing === 'own' ? options : undefined;
+    if (method === 'create') {
+      out.create = async (ref, record, options) => {
+        await base.create(ref, record, pass(options));
+        throw new WriteConflictError('the answer was a conflict');
+      };
+    } else {
+      out.compareAndSwap = async (ref, expected, patch, options) => {
+        await base.compareAndSwap(ref, expected, patch, pass(options));
+        throw new WriteConflictError('the answer was a conflict');
+      };
+    }
+    return out;
+  }
+  const forwarding = (landing: 'own' | 'another'): IRegistryDriver => {
+    const r = new Forwarding();
+    r.landing = landing;
+    return r;
+  };
+
+  const forwardingCreate = (landing: 'own' | 'another'): IRegistryDriver => {
+    const r = new ForwardingCreate();
+    r.landing = landing;
+    return r;
+  };
+
+  /** The variant, how it is made, whether the publish settles by tokens, and whether the publish is onto no row. */
+  type Variant = readonly [
+    string,
+    (landing: 'own' | 'another') => IRegistryDriver,
+    boolean,
+    boolean,
+  ];
+  const VARIANTS: readonly Variant[] = [
+    ['a subclass that declares the flag and forwards options', forwarding, true, false],
+    [
+      'an Object.create wrapper that declares the flag and forwards options',
+      (l) => wrapper(true, l),
+      true,
+      false,
+    ],
+    [
+      'a subclass that overrides without declaring it, and drops options',
+      () => new Dropping(),
+      false,
+      false,
+    ],
+    [
+      'an Object.create wrapper that overrides without declaring it',
+      (l) => wrapper(false, l),
+      false,
+      false,
+    ],
+    [
+      'create: a subclass that declares the flag and forwards options',
+      forwardingCreate,
+      true,
+      true,
+    ],
+    [
+      'create: an Object.create wrapper that declares the flag and forwards options',
+      (l) => wrapper(true, l, 'create'),
+      true,
+      true,
+    ],
+    [
+      'create: a subclass that overrides without declaring it, and drops options',
+      () => new DroppingCreate(),
+      false,
+      true,
+    ],
+    [
+      'create: an Object.create wrapper that overrides without declaring it',
+      (l) => wrapper(false, l, 'create'),
+      false,
+      true,
+    ],
+  ];
+
+  /** A publish of generation 1 over a row at 0, or (`noRow`) of generation 0 onto no row. */
+  const publishOver = async (
+    registry: IRegistryDriver,
+    ownObject: boolean,
+    noRow: boolean,
+  ): Promise<boolean> => {
+    if (!noRow) await registry.create(REF, { currentGen: 0 });
+    return publishGeneration(
+      registry,
+      { ...REF, generation: noRow ? 0 : 1 },
+      { holdsOwnObject: async () => ownObject },
+    );
+  };
+
+  describe.each(VARIANTS)('%s', (_name, make, reports, noRow) => {
+    it('a write of its own that landed, then answered as a conflict, is published', async () => {
+      expect(await publishOver(make('own'), true, noRow)).toBe(true);
+    });
+
+    it(
+      reports
+        ? "another writer's write that landed is not the call's own, whatever the object's footer says"
+        : "it is settled by the object's footer, which can pass another writer's identical object",
+      async () => {
+        expect(await publishOver(make('another'), true, noRow)).toBe(!reports);
+      },
+    );
+
+    it('with a footer that is not its own, the write is refused whoever landed it', async () => {
+      expect(await publishOver(make('another'), false, noRow)).toBe(false);
+    });
+  });
+
+  it('a load over a subclass that drops options publishes its own landed write, by the footer', async () => {
+    const registry = new Dropping();
+    const storage = new MemoryStorageDriver();
+    const deps = { storage, registry, codec: roaringCodec, clock };
+    await loadSegment(REF, [9], deps, { allowEmpty: true });
+    const audit = new RecordingAuditSink();
+    expect(
+      await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1, audit }),
+    ).toMatchObject({
+      generation: 1,
+      published: true,
+    });
+    expect(kinds(audit)).toEqual(['segment.publish']);
+  });
 });

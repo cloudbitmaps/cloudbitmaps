@@ -1194,7 +1194,7 @@ export class CloudRoaring {
       // investigation. `size > 0` is the one thing this path can state as fact.
       const wrote =
         result.size > 0
-          ? `generation ${result.generation} was written and is not current`
+          ? `generation ${result.generation} was written and may not be current`
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
