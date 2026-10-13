@@ -99,6 +99,8 @@ interface Model {
   genTtlMs: number;
   intersectConcurrency: number;
   combineWindowStart: number;
+  /** Loads in a steady cycle, one of which lists. Read by a run that has a steady-load stage. */
+  listCadence?: number;
   /** What a `store.load()` bills by kind, which a report states as expected: the engine's table, or an earlier one. */
   storeLoadRequests?: Record<
     'first' | 'reload' | 'collecting' | 'listing',
@@ -168,12 +170,18 @@ const REGISTRY_WRITE_ON_HELD_ROW_MODEL: Model = {
     listing: { put: 3, get: 5 },
   },
 };
+/** The model of the `0.17.0` run: a load that collects made one GET fewer than the engine now does. */
+const COLLECT_WITHOUT_ROW_REREAD_MODEL: Model = {
+  ...REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  listCadence: 16,
+};
 const RECORDED_MODELS: Readonly<Record<string, Model>> = {
   '2026-09-23-94416': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-03-e13c7': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-04-73668': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-04-f3599': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
   '2026-10-05-50b5d': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-06-9d36b': COLLECT_WITHOUT_ROW_REREAD_MODEL,
 };
 const LATEST = EVIDENCE.at(-1);
 /** The model a run is read against: the live one for the latest, the recorded one for every run before it. */

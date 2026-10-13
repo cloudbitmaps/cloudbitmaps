@@ -11,6 +11,17 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Changed
+
+- **A steady `store.load()` at `keep: 12` is measured on `0.21.0`.** A run from AWS CloudShell in `us-east-1` on
+  2026-10-13 (run `2026-10-13-b329d`), against the published `0.21.0`, loaded one segment 18 times. A load that deletes
+  by name made 2 PUT-class + 5 GET-class and a delete, $12.00 per million at the default prices, and the load at
+  generation 16, which lists, 3 PUT-class + 6 GET-class and a delete, $17.40; averaged over a cycle of 16 loads, a
+  million single-part loads cost $12.34, derived from the two measured kinds. A segment's first load, a reload, a cold
+  intersect and an `andNot` made the requests of the run before; the run's requests cost $0.0027568. Latencies of runs
+  from different CloudShell sessions are not comparable, so none is set against another's. Both READMEs, the
+  benchmarks page, the roadmap, the guides and the site quote it.
+
 ## [0.21.0] — 2026-10-13
 
 ### Breaking

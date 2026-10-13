@@ -136,7 +136,7 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   operands included), its pointer and then its index in one read of the object's tail, before the chunk range requests it
   makes (`chunksPerIntersect`). `chunksPerIntersect` counts chunk range requests, not chunks: chunks that lie within 256 KiB of each other are read in
   one request. Two segments whose shared chunks each need r range requests make 4 + 2r GETs: 6 GETs, $2.40 per million
-  at the default GET price, when the 100 shared chunks lie together and take one range each (measured on S3 in region: [the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) made 6).
+  at the default GET price, when the 100 shared chunks lie together and take one range each (measured on S3 in region: [the run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d) made 6).
   An `exclude` of an intersect of two or more segments is read in batches of the surviving keys it holds, half of
   `concurrency` keys (16 of 32 by default) a batch. Where the survivors' chunks sit together in the exclude's object, 1,000
   surviving keys cost the exclude itself 63 range requests, where reading each key on its own makes 1,000, and the whole
@@ -188,8 +188,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   generations, at any `keep` from 1 to 64, and about $12.34 per million single-part loads at the default prices
   (derived from the counted kinds, weighted as every 16 generations make them: 15 loads that delete by name and one
   that lists). The requests are counted by the engine's tests at every `keep` from 1 to 64
-  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) measured each kind of load at `keep: 12` on an
-  earlier release, whose loads that collect made one GET fewer, without the read after the delete); a segment's first two loads collect
+  ([the run](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d) measured each kind of load at `keep: 12` on
+  `0.21.0`, each in the requests counted here); a segment's first two loads collect
   nothing and make fewer requests, and the first load onto a row with no summary of its current generation (one a
   rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) reads that
   generation's index, a tail read, in place of the check that its object is there. A publish
@@ -301,7 +301,7 @@ set `storage.requestsPerSizedRead: 2` and leave `requestsPerPointerRead` at 1; a
 S3 and GCS keep both defaults. Each count above is held to the engine by a test that counts its requests, on S3's
 request shape, and each backend's own tests pin the requests it makes (a pointer read in one everywhere; a tail read in
 one on GCS and two on Azure Blob), so the model moves when the engine does. The
-[benchmarks page](../benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) has the request shapes measured
+[benchmarks page](../benchmarks.md#the-in-region-run--run-2026-10-13-b329d) has the request shapes measured
 on real S3.
 
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment
