@@ -68,8 +68,9 @@ export interface S3StorageOptions {
    * two-operand `intersect`. Only this limit differs from the SDK's own client: its request handler, keep-alive,
    * timeouts and retry are the SDK's. If a future SDK changes its handler, the built client keeps the SDK's own
    * limit rather than failing to build. A positive safe integer. Release a built client's sockets with
-   * `store.client.destroy()`. Refused beside `client`, which carries its own request handler. A deployment
-   * that runs `eraseSubject`'s 256 reads at once needs `256`, or a lower `concurrency`.
+   * `store.client.destroy()`. Refused beside `client`, which carries its own request handler. An `eraseSubject`
+   * at its default `concurrency` of 8 holds up to 64 requests open, which the default of 128 covers; raise
+   * `maxSockets`, or lower `concurrency`, to fit a larger one.
    */
   readonly maxSockets?: number;
   /**
