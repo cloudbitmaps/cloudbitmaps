@@ -452,6 +452,7 @@ describe('calibrate guards — what a real run is held to', () => {
     const load = async (
       lostRaces: number,
       meetsAnObject: boolean,
+      keep?: number,
     ): Promise<{
       reads: number;
       checks: number;
@@ -476,7 +477,7 @@ describe('calibrate guards — what a real run is held to', () => {
         }
       }
       try {
-        await store.load({ segment: 's' }, [1, 2, 3]);
+        await store.load({ segment: 's' }, [1, 2, 3], keep === undefined ? {} : { keep });
       } catch (err) {
         if (!(err instanceof WriteConflictError)) throw err;
       }
@@ -524,13 +525,15 @@ describe('calibrate guards — what a real run is held to', () => {
         );
       }
     }
-    // An upper bound one request above the worst real run. It was tight at 16 while an incarnation's first publish seeded
-    // its ledger (14 pointer reads, the check and a stray's footer read); without that seed the worst load makes 15. The
-    // bound stays 16 until the next calibration run on S3 lowers it with fresh evidence.
+    // The bound is 16. A new segment's load at the default `keep` over two strays makes 15: 14 pointer reads and the check
+    // (main made 16 here, a footer read of a stray more, because that first publish was seeded; it no longer is). A load at
+    // `keep: 0` over the same strays still makes 16, so the bound is reached, and it stays 16 until the next calibration run
+    // on S3 lowers it with fresh evidence.
     expect(p.get).toBe(16);
     const nearest = await load(guards.RETRY_BOUND - 1, true);
-    expect(p.get).toBeGreaterThanOrEqual(nearest.reads + nearest.checks);
-    expect(p.get - (nearest.reads + nearest.checks)).toBeLessThanOrEqual(1);
+    expect(nearest.reads + nearest.checks).toBe(15);
+    const keepNone = await load(guards.RETRY_BOUND - 1, true, 0);
+    expect(p.get).toBe(keepNone.reads + keepNone.checks);
   });
 
   it('flags a run that exceeded its projection, and only then', () => {
