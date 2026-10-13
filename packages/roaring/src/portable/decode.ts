@@ -35,7 +35,7 @@ import { ARRAY, BITMAP, parsePortableLayout, type PortableContainer } from './la
  * Construction checks every container once, in {@link parsePortableLayout}, which is the same check the native
  * path runs; after that a membership test reads one container rather than materializing the set.
  */
-export class PortableRoaringReader {
+class PortableRoaringReader {
   private constructor(
     private readonly view: DataView,
     private readonly containers: readonly PortableContainer[],

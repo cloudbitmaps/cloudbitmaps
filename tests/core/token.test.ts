@@ -3,9 +3,8 @@ import { incarnationOf as incarnationOfFromRegistry } from '@/drivers/_shared/re
 
 /**
  * The incarnation in a registry token, and whether two reads of one name are one incarnation of it. A token a shipped
- * registry issues for a row it creates is `<32 hex incarnation>.<counter>.<16 hex write part>`; a row a 0.11 build wrote
- * has no incarnation for as long as it lives (`"7"`, then `"8.<write>"`), and a registry of someone else's makes tokens
- * in any form.
+ * registry issues for a row it creates is `<32 hex incarnation>.<counter>.<16 hex write part>`; a registry of someone
+ * else's makes tokens in any form, and one whose tokens carry no incarnation id is told apart by the creation stamp.
  */
 
 const INC_A = 'a'.repeat(32);
@@ -43,16 +42,15 @@ describe('sameIncarnation', () => {
   });
 
   it('says a row with an incarnation and one without are different incarnations, whatever their stamps', () => {
-    // A name created again is always given an incarnation, so a legacy row never turns into one with an id.
-    expect(sameIncarnation(at('7', 1_000), at(`${INC_A}.0.${W}`, 1_000))).toBe(false);
-    expect(sameIncarnation(at(`${INC_A}.0.${W}`, 1_000), at(`7.${W}`, 1_000))).toBe(false);
+    // A registry gives its rows one form of token: a row with an id and one without are never one row.
+    expect(sameIncarnation(at('etag-7', 1_000), at(`${INC_A}.0.${W}`, 1_000))).toBe(false);
+    expect(sameIncarnation(at(`${INC_A}.0.${W}`, 1_000), at('etag-7', 1_000))).toBe(false);
   });
 
   it('falls back to the creation stamp when neither row has an incarnation id', () => {
-    // A legacy-born row, before and after one of its own writes: its token gains a write part, and no id.
-    expect(sameIncarnation(at('7', 1_000), at(`8.${W}`, 1_000))).toBe(true);
-    expect(sameIncarnation(at('7', 1_000), at(`8.${W}`, 2_000))).toBe(false);
     // A registry of someone else's: whatever its tokens look like, its stamp is all there is.
+    expect(sameIncarnation(at('7', 1_000), at('8', 1_000))).toBe(true);
+    expect(sameIncarnation(at('7', 1_000), at('8', 2_000))).toBe(false);
     expect(sameIncarnation(at('etag-1', 5), at('etag-2', 5))).toBe(true);
     expect(sameIncarnation(at('etag-1', 5), at('etag-2', 6))).toBe(false);
   });

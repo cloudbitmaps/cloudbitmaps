@@ -157,9 +157,9 @@ const HARD = [
   //   4. `(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])`, IN JS/TS FILES ONLY — reject a value
   //      that reads a property instead of stating a literal. Sibling of (2): that one catches
   //      `crypto.randomUUID()`, this one catches the same thing without the call, which is what
-  //      `...(options.credentials === undefined ? {} : { credentials: options.credentials })` in the S3
-  //      backend is. `credentials` is the AWS SDK's own option name, so the collision cannot be renamed away
-  //      and the rule has to learn the difference. Without it, the S3 backend fails the scan.
+  //      `credentials: options.credentials,` in the S3 backend is (the comma after it is what the exemption
+  //      allows). `credentials` is the AWS SDK's own option name, so the collision cannot be renamed away and the
+  //      rule has to learn the difference. Without it, the S3 backend fails the scan.
   //
   //      THE SCOPING IS THE WHOLE POINT. The exemption's premise is "a bare `ident.ident` value is a
   //      reference, not a literal" — which is only true in a language where that is an expression. Applied

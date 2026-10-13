@@ -70,8 +70,9 @@ record the segment, not on every load. It is idempotent, so re-running is harmle
   floor, `MIN_EXPIRES_AT_MS`.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
   `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
-  sweep can already see the segment, and the first load publishes onto that row. Reads are unaffected: a pointer-less
-  row resolves exactly like a segment with no row.
+  sweep can already see the segment, and the first load publishes onto that row. A load already running when
+  `setRetention` creates the row found none, so it is refused `superseded`, guarded or not: re-run it, and it
+  publishes onto that row. Reads are unaffected: a pointer-less row resolves exactly like a segment with no row.
 
 Reading and cancelling:
 
@@ -86,16 +87,25 @@ hand-edited one. That is deliberately not folded into `null`: a malformed policy
 segment someone believes is expiring is the kind of silence that costs a compliance commitment. Cancelling is its own
 verb, because "never expire" passed into the setter as a magic value is how a typo becomes a deletion.
 
-**A deadline can also sit on a handle.** `store.segment(name, { namespace, expiresAt })` takes the same
-epoch-millisecond instant. Past it, every read through that handle answers empty (`has` is `false`, `count` is `0`,
-`iterate` yields nothing) as one comparison against the store's clock, with no I/O. An expired operand makes an
-`intersect` empty and drops out of a `union`. **An expired exclusion excludes nothing, in every shape**: in an
-`andNot`, and as `exclude` on an `intersect` or a `union`, it is skipped without being read, so an opt-out list that
-has lapsed suppresses nobody. An `*Into` that involves an expired handle, an exclusion included, throws
-`ValidationError`. A handle deadline reclaims nothing and binds no other handle, so `count()` answering `0` while the
-objects are still in the bucket is expected: it is one reader's cut-off, not a policy. Record the policy with
-`setRetention` to make the expiry durable, visible to the sweep and reclaimable. A seconds-shaped value is refused at
-the handle, and `seg.expiresAt` reads it back.
+### A deadline on a set
+
+A handle carries no deadline of its own (`expiresAt` among `store.segment`'s options throws
+`ValidationError`). For a set that must stop being served after a deadline, use one of two shapes:
+
+- **Durable, for every reader:** record it with `setRetention` (above) and run `retireExpired` on a schedule. The sweep
+  drops the segment once the instant passes, so every process stops reading it and its bytes are reclaimed. Reads go on
+  until the sweep has run and each reader has re-resolved the segment (within its `cache.genTtlMs`, or longer for a
+  pinned handle), so the cut-off is as exact as the schedule.
+- **One reader's cut-off:** check the deadline where you read, against the same clock you would hand the store:
+
+  ```ts
+  const deadline = Date.parse('2026-12-31T18:00:00Z');
+  const promo = store.segment('promo');
+  const served = Date.now() < deadline ? await promo.has(id) : false;
+  ```
+
+  Use this where the cut-off must be exact. Keep the check beside an exclusion too: an opt-out list that should stop applying is a decision to make where it
+  is used, not a list that quietly reads as empty.
 
 ## Run the sweep: `store.retireExpired()`
 
@@ -124,7 +134,8 @@ those is worse than none. **You own the heartbeat.** Any of these is a correct a
 
 > ⚠️ **Run the sweep from one process, or shard it.** N replicas each running the full sweep would contend over the
 > same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
-> disjoint slice with `shards` and `totalShards`. The slice is a stable hash of the segment key, so a worker owns the
+> disjoint slice with `shards` and `totalShards`, its shard numbers from `0` to `totalShards - 1` (any other, or `shards`
+> without `totalShards`, is a `ValidationError`). The slice is a stable hash of the segment key, so a worker owns the
 > same slice across restarts.
 
 **Once a day is enough** for daily segments: retention windows are measured in days, so an hourly sweep just re-scans
@@ -171,14 +182,15 @@ if (swept.purgeFaults > 0) console.error(`the registry refused ${swept.purgeFaul
 **Check `purgeFaults`: a delete the registry refuses holds nothing else up, and says so only there.** A purge or a pointer
 removal that fails for a reason other than a lost race (a policy that denies `s3:DeleteObject`, an Azure blob with a
 snapshot, any raw provider error) leaves its row or pointer in place and is counted in `purgeFaults`, with the first
-one's reason in `firstPurgeFault`. A refused purge is `skipped` in the ledger, with the provider's message, and is not
+one's reason in `firstPurgeFault`. So is a tombstone whose objects are still there after a collection that raised
+nothing, such as a store that acknowledges a delete it did not make. A refused purge is `skipped` in the ledger, with the provider's message, and is not
 charged to `limit`, and the sweep goes on to retire what is eligible, so a tombstone that cannot be purged never holds
 the segments behind it past their expiry. **Purging stops for the rest of the call after three refused purges in a
 row**, and a purge that succeeds starts the count again. A blanket refusal (a policy that denies delete) costs three
 attempts a call and no more. A refusal particular to one row (one blob with a snapshot, one object under a legal hold)
 holds nothing behind it: the purges after it still go through, and the row is counted every call until it is cleared.
 The next call tries again. A lost race (`failed: contended`) is not a fault: it is the fence working,
-it is charged to `limit` as before, and the purges go on.
+it is charged to `limit`, and the purges go on.
 
 **Two bounds to set deliberately.**
 
@@ -296,7 +308,9 @@ Two limits to know before you automate it:
 - **"Reads as empty" depends on a timed refresh.** See [how soon a reader sees a change](reading.md#how-soon-a-reader-sees-a-new-load).
   A reader with no timed refresh (no registry, or `cache: { genTtlMs: 0 }`) notices the drop only when a read has to
   fetch from a deleted generation or its reader cache evicts the segment. It can answer `true` from its cache for a
-  dropped segment indefinitely: call `store.invalidate(ref)` on it, or restart it.
+  dropped segment indefinitely: call `store.invalidate(ref)` on it, or restart it. Such a reader keeps no chunk bytes of
+  a small generation, so a sweep is never hidden from it; a store with a timed refresh does serve a small generation's
+  chunks from memory, and notices a drop within `cache.genTtlMs`.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while the
 > registry still points at them. That is exactly the state [`checkConsistency()`](disaster-recovery.md) reports as
@@ -308,6 +322,16 @@ Two limits to know before you automate it:
 >
 > A lifecycle rule is still a fine backstop for orphans left by a failed `dropSegment`. Set its expiry window
 > comfortably longer than your retention window, so it can never get there first.
+
+<a id="remove-the-deleted-rows-a-release-before-012-left"></a>
+
+## Registry rows of another schema
+
+The registry reads rows stamped `schemaVersion` 5 only. A row stamped 1 to 4, a deleted one included, is refused with
+`UnsupportedError` naming its key, by every read and write of its segment and by every listing that reaches it, so the
+library can neither delete, drop nor retire one, and a sweep of a namespace that holds one fails. A deleted row is kept
+as a `{ deleted: true }` envelope, and a segment name that was personal data survives in its record. Remove such rows
+with your storage's own tools, or move the store's segments to a new prefix by the steps in the [changelog](../../CHANGELOG.md)'s Breaking entry for registry schema 5 and then delete the old prefix, its noncurrent versions included.
 
 ## There is no per-id TTL
 
@@ -439,32 +463,34 @@ one request per row. That is the case:
   anyway, and two sweepers and a re-create of the name could delete a live row. Set `conditionalDelete: true` on the
   backend only once you know your store applies it. The host is the one the SDK resolves, however the endpoint was set:
   a constructor `endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or an `endpoint_url` in the shared config file.
-  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, and AWS S3 applies the precondition
-  there;
+  An AWS regional, FIPS, dual-stack or VPC interface endpoint is an AWS S3 host, as is an access point's, a multi-region
+  access point's, an Object Lambda's, an Outpost's and a directory bucket's, and AWS S3 applies the precondition there.
+  Another AWS service's host whose name starts with `s3`, such as a load balancer, an API Gateway or a website
+  endpoint, is not;
 - on a GCS client, by default, the public endpoint included: whether real GCS applies `ifGenerationMatch` to a delete
   has not been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so
   CI cannot show it. Set `conditionalDelete: true` to remove rows for good;
-- with `conditionalDelete: false` on any backend;
-- for a row written by a release before 0.12, always. Its token is a bare counter, and a process still on that
-  release, re-creating the name over nothing, would start the counter at 0 again and issue the deleted row's tokens,
-  so its row could not be told apart from the deleted one. A row created by 0.12 carries a random incarnation id in
-  its token, so a re-create is told apart from it, whatever is left of it, but for a collision of probability 2^-128
-  per pair of incarnations. The legacy protection ends once a 0.12 process re-creates the name over the legacy
-  tombstone: the new row has an incarnation, and when it is purged nothing keeps the legacy counter. It matters only for
-  a 0.11 process that outlived the upgrade's stop-every-0.11-process step, which the upgrade does not support.
+- with `conditionalDelete: false` on any backend.
 
-A tombstone already in the bucket stays: the purge never sees a row that is already deleted, and nothing in the library
-removes one. A cleanup for them, safe once no process on a release before 0.12 is left, is on the
-[roadmap](../ROADMAP.md).
+A `deleted: true` row already in the bucket stays: the purge never sees a row that is already deleted.
 
 **An index scan purges too, where the registry removes rows.** Each retirement files a pointer in the due index under
 the day its tombstone's grace ends, beside the expiry pointers, and `scan: 'index'` reads it with them, so a namespace
 can sweep by index alone and keep the fleet scan as its repair pass. No field of the row records that day: the purge
 works it out from the retirement's stamp and the grace. The purge removes every pointer it read to the row, and the one
 its own grace would have filed. Where the registry only tombstones, no pointer is filed: nothing is removed for good, so
-a pointer would only add a row for every scan to read, and the fleet scan purges, as it always did. A sweep run with a
+a pointer would only add a row for every scan to read, and the fleet scan purges. A sweep run with a
 longer grace than the one that filed a pointer finds it early and leaves it; once its day is older than
 `lookbackBuckets`, the fleet scan purges the row.
+
+**A pointer to a tombstone the sweep did not write is removed.** A segment given a policy and then crypto-shredded or
+dropped by hand keeps a tombstone with no stamp, which the sweep neither retires nor purges, so its pointer would name
+nothing for ever. A sweep that reads such a pointer reads the segment's row again, and if it is still a tombstone
+without the sweep's stamp removes the pointer, fenced on the pointer's token, and leaves the tombstone as it was. It
+works at most `limit` such tombstones per call, apart from the retirements that `limit` also bounds; those past the
+cap wait for the next call, and `limited` reports retirements still eligible, not this cleanup. An index scan reads it in the days it covers and an unscoped `'fleet'` scan reads every one; neither runs
+under `dryRun`, or on a registry that only tombstones its rows (a delete there rewrites the pointer as a tombstone, which every scan would still read). A pointer
+removal the registry refuses is counted in `purgeFaults`.
 
 **A pointer can outlive its row, and what removes it.** The pointer's key spells out the namespace and the segment name,
 so until it goes the name is in the bucket, in a key. It lingers when the purge did not run to its end:
@@ -489,16 +515,18 @@ One race stays, and the fleet scan repairs it. A name created again with a polic
 nothing sits under (a same-day or back-dated expiry) can lose that pointer: `setRetention` takes the pointer already at
 the key as its own, and a sweep that read the segment before its row existed can remove it in the two round trips that
 follow. The purge's own pointer removal has the same window: it can remove a pointer a re-created name has just taken as
-its own, when that name's policy is due on the pointer's day. The row is untouched and still expires; only its expiry pointer is gone, so an index scan never finds it, and
+its own, when that name's policy is due on the pointer's day. So does the removal of a pointer to a tombstone the sweep
+did not write: a tombstone purged by hand and its name re-created inside the scan's window can lose the pointer the
+same way, in the round trips between the row's re-read and each delete. The row is untouched and still expires; only its expiry pointer is gone, so an index scan never finds it, and
 the default `'fleet'` scan, which reads every row, retires it. An index-only deployment is repaired only if it also
 schedules a fleet scan, which is why the index is the fast half of a pair.
 
 **What it costs.** Per segment, counted with a store that counts requests. Where the registry removes rows, a
-retirement is 9 reads, 3 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
+retirement is 7 reads, 2 writes and a delete, and a purge 4 reads and 2 deletes: the pointer is filed with a create,
 which is the one write the removal of the expiry pointer would otherwise have been, and the purge removes the row and
 the pointer where a tombstone would have been written. On S3 a `DeleteObject` is not billed, and a `PutObject` is.
 Where the registry only tombstones (`conditionalDelete: false`, or a backend that does not report it), no purge pointer
-is filed or removed: a retirement is 8 reads and 3 writes, a purge 3 reads and 1 write, and two small objects stay per
+is filed or removed: a retirement is 6 reads and 2 writes, a purge 3 reads and 1 write, and two small objects stay per
 segment, which every full scan reads (100 reads for 50 segments). The registry needs delete permission on its prefix
 (`s3:DeleteObject`, `storage.objects.delete`, or a role that may delete blobs); without it a purge fails, the row stays,
 the ledger entry and `purgeFaults` say why, and the retirements behind it still go on.

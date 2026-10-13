@@ -1,14 +1,18 @@
 import { randomBytes } from 'node:crypto';
+import { expectTypeOf } from 'vitest';
+import type { GuardRefusal, LoadJudgement, LoadRefusal } from '@cloudbitmaps/core';
 import { loadSegment } from '@/core/load';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
+import { FOOTER_BYTES } from '@/core/crbm/format';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { RecordingAuditSink } from '@/index';
-import type { IStorageDriver, SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, SegmentRef, StorageDeleteOptions } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `loadSegment` — replace a segment's contents with one immutable generation.
@@ -206,6 +210,7 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
         kind: 'segment.load-refused',
         namespace: 'ns',
         segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
         generation: 1,
         reason: 'empty',
         cardinality: 0,
@@ -262,6 +267,7 @@ describe('loadSegment — racing writers', () => {
         kind: 'segment.load-refused',
         namespace: 'ns',
         segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
         generation: 1,
         reason: 'superseded',
         cardinality: 0,
@@ -296,6 +302,94 @@ describe('loadSegment — racing writers', () => {
     const r = await loadSegment(SEG, [2], { ...w.deps, storage: racing });
     expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     expect(await generations(w.storage)).toEqual([0]);
+  });
+
+  /**
+   * With no row to prove the number its own, the refusal proves its object by the fingerprint its footer read, and
+   * deletes it only while it is the object that read saw: its delete passes the version the driver reported on it. A
+   * number can be taken again once its object is deleted, so `beforeDelete` runs between that read and the delete.
+   */
+  function reclaimWatched(
+    storage: MemoryStorageDriver,
+    registry: MemoryRegistryDriver,
+    beforeDelete: () => Promise<void>,
+  ): { driver: IStorageDriver; sent: { generation: number; ifVersion: string | undefined }[] } {
+    const sent: { generation: number; ifVersion: string | undefined }[] = [];
+    const racing = around(storage, 'after', () => registry.delete(SEG));
+    const driver = new Proxy(racing, {
+      get(t, p, rx) {
+        if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
+        return async (key: GenKey, options?: StorageDeleteOptions) => {
+          sent.push({ generation: key.generation, ifVersion: options?.ifVersion });
+          await beforeDelete();
+          return storage.delete(key, options);
+        };
+      },
+    }) as IStorageDriver;
+    return { driver, sent };
+  }
+
+  it('a refusal whose row was deleted conditions its delete on the version its footer read reported', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    let seen: string | undefined;
+    const { driver, sent } = reclaimWatched(w.storage, w.registry, async () => {
+      seen = (await w.storage.getTail({ ...SEG, generation: 1 }, 0)).version;
+    });
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(seen).toEqual(expect.any(String));
+    expect(sent).toEqual([{ generation: 1, ifVersion: seen }]);
+    expect(await generations(w.storage)).toEqual([0]);
+  });
+
+  it('a refusal whose number was taken again since its footer read keeps the object now there, and still answers', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const { driver, sent } = reclaimWatched(w.storage, w.registry, async () => {
+      // Its object is deleted, and another writer puts its own under the number.
+      await w.storage.delete({ ...SEG, generation: 1 });
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [77], {
+        codec: roaringCodec,
+      });
+    });
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
+    // The refusal is the answer: the refused delete raises nothing out of the load.
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(sent).toHaveLength(1);
+    expect(await generations(w.storage)).toEqual([0, 1]);
+    expect(await idsOf(w.storage, 1)).toEqual([77]);
+  });
+
+  it('a refusal deletes with the version of the footer read that proved its object, not one read after it', async () => {
+    // The object is replaced right after the read that proves it the load's own, before anything else is asked of it.
+    // The delete must name the object that read saw: a version read again later names the one put since, and that
+    // delete would remove it.
+    const w = world();
+    await loadSegment(SEG, [1, 2, 3], w.deps);
+    const racing = around(w.storage, 'after', () => w.registry.delete(SEG));
+    let replaced = false;
+    const driver = new Proxy(racing, {
+      get(t, p, rx) {
+        if (p !== 'getTail') return Reflect.get(t, p, rx) as unknown;
+        return async (key: GenKey, maxBytes: number) => {
+          const read = await w.storage.getTail(key, maxBytes);
+          if (!replaced && key.generation === 1 && maxBytes === FOOTER_BYTES) {
+            replaced = true; // the proving footer read has landed: another writer takes the number now
+            await w.storage.delete({ ...SEG, generation: 1 });
+            await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [77], {
+              codec: roaringCodec,
+            });
+          }
+          return read;
+        };
+      },
+    }) as IStorageDriver;
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: driver });
+    expect(replaced).toBe(true);
+    expect(r).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
+    expect(await generations(w.storage)).toEqual([0, 1]);
+    expect(await idsOf(w.storage, 1)).toEqual([77]);
   });
 
   it('reports superseded rather than publishing a generation no reader will resolve', async () => {
@@ -412,10 +506,9 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
     expect(await idsOf(w.storage, row.currentGen!)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('an UNGUARDED load stays forward-only, so a concurrent publish does not make it refuse', async () => {
-    // The other half of the contract. Forward-only is right when nothing was derived: the ids come from
-    // upstream, so losing a race costs nothing the winner did not also bring. Fencing every load would make
-    // routine concurrent loading fail for no benefit.
+  it('an UNGUARDED load onto a row publishes: it judged no pointer, so only the row it read fences it', async () => {
+    // The other half of the contract. An unguarded load derived nothing from the current generation, so it carries
+    // no fence on the pointer; it is fenced on the row's token, as every load that found a row is.
     const w = world();
     await loadSegment(SEG, [1], w.deps);
     const r = await loadSegment(SEG, [2, 3], w.deps, { allowEmpty: true });
@@ -465,9 +558,10 @@ describe('loadSegment — validation', () => {
 });
 
 describe('two loads onto a segment with no row, under allowEmpty and no guard', () => {
-  // The guide's load-ordering passage: neither load reads anything to fence on, so each publish is a plain
-  // forward-only advance. Both loads write their object before either publishes (the gate holds each one right after
-  // its put), so they hold different numbers: the first takes 0, the second sees that object and takes 1.
+  // Invariant 1's fence on absence, for loads that judged nothing. Neither load found a row, so each fences its publish
+  // on that absence: the first to publish creates the row, and the other is refused, whichever number it holds. Both
+  // loads write their object before either publishes (the gate holds each one right after its put), so they hold
+  // different numbers: the first takes 0, the second sees that object and takes 1.
   async function raced(firstToPublish: 'lower' | 'higher') {
     const w = world();
     const held: { release: () => void; arrived: Promise<void> }[] = [];
@@ -476,7 +570,7 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
       list: (ref) => w.storage.list(ref),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
         let arrive!: () => void;
@@ -490,10 +584,10 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
       },
     };
     const deps = { ...w.deps, storage };
-    const opts = { allowEmpty: true } as const;
-    const lower = loadSegment(SEG, [1], deps, opts);
+    const audits = { lower: new RecordingAuditSink(), higher: new RecordingAuditSink() };
+    const lower = loadSegment(SEG, [1], deps, { allowEmpty: true, audit: audits.lower });
     await until(() => held.length === 1);
-    const higher = loadSegment(SEG, [2], deps, opts);
+    const higher = loadSegment(SEG, [2], deps, { allowEmpty: true, audit: audits.higher });
     await until(() => held.length === 2);
 
     const [a, b] = firstToPublish === 'lower' ? [0, 1] : [1, 0];
@@ -501,26 +595,59 @@ describe('two loads onto a segment with no row, under allowEmpty and no guard', 
     const first = await (a === 0 ? lower : higher);
     held[b]!.release();
     const second = await (b === 0 ? lower : higher);
-    return { w, lower: a === 0 ? first : second, higher: a === 0 ? second : first };
+    return {
+      w,
+      audits,
+      lower: a === 0 ? first : second,
+      higher: a === 0 ? second : first,
+    };
   }
   const until = async (cond: () => boolean): Promise<void> => {
     for (let i = 0; i < 1000 && !cond(); i++) await new Promise((r) => setImmediate(r));
     expect(cond()).toBe(true);
   };
 
-  it('both land when the lower generation publishes first, and the higher stays current', async () => {
-    const { w, lower, higher } = await raced('lower');
+  it('the higher is refused when the lower publishes first: one lands, the refusal is audited, and the next load collects its object', async () => {
+    const { w, audits, lower, higher } = await raced('lower');
     expect([lower.generation, higher.generation]).toEqual([0, 1]);
     expect(lower.published).toBe(true);
-    expect(higher.published).toBe(true);
-    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    expect(higher).toMatchObject({ published: false, reason: 'superseded' });
+    expect(audits.higher.snapshot()).toEqual([
+      expect.objectContaining({
+        kind: 'segment.load-refused',
+        generation: 1,
+        reason: 'superseded',
+      }),
+    ]);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+    expect(await idsOf(w.storage, 0)).toEqual([1]);
+    // The row it met is another load's, so the refusal cannot prove the number its own: its object stays above the
+    // pointer, and the next load's check meets it, numbers past it by a listing, and that listing deletes it.
+    expect(await generations(w.storage)).toEqual([0, 1]);
+    expect(await loadSegment(SEG, [3], w.deps)).toMatchObject({ generation: 2, published: true });
+    expect(await generations(w.storage)).toEqual([0, 2]);
   });
 
   it('the lower one is superseded when the higher publishes first', async () => {
-    const { w, lower, higher } = await raced('higher');
+    const { w, audits, lower, higher } = await raced('higher');
     expect([lower.generation, higher.generation]).toEqual([0, 1]);
     expect(higher.published).toBe(true);
     expect(lower).toMatchObject({ published: false, reason: 'superseded' });
+    expect(audits.lower.snapshot()).toEqual([
+      expect.objectContaining({
+        kind: 'segment.load-refused',
+        generation: 0,
+        reason: 'superseded',
+      }),
+    ]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    expect(await idsOf(w.storage, 1)).toEqual([2]);
+  });
+});
+
+describe('judgeLoad — the refusal it reports', () => {
+  it('has a type a caller can name: every load refusal but a lost race', () => {
+    expectTypeOf<NonNullable<LoadJudgement['wouldRefuse']>>().toEqualTypeOf<GuardRefusal>();
+    expectTypeOf<GuardRefusal>().toEqualTypeOf<Exclude<LoadRefusal, 'superseded'>>();
   });
 });

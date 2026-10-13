@@ -4,11 +4,9 @@ import { setSegmentRetention } from '@/core/retention';
 import { rollbackSegment } from '@/core/rollback';
 import { TransientError } from '@/core/errors';
 import type { GenKey, IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
-import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
-import { CountingObjectStore } from '../helpers/counting';
 
 /**
  * How a load numbers its generation. It takes `currentGen + 1` from the row it already read when one existence
@@ -160,37 +158,6 @@ describe('a load numbers its generation from the row it read, with one existence
     expect(beforeWrite(w.calls)).toEqual([{ op: 'check', generation: 0 }]);
   });
 
-  it('numbers from a row a 0.11 writer left (registry schema 1) the same way', async () => {
-    // The bytes a 0.11.x writer stored for a segment two loads in: schema 1, a decimal token.
-    const store = new CountingObjectStore(0);
-    const row = {
-      schemaVersion: 1,
-      deleted: false,
-      record: {
-        namespace: 'ns',
-        segment: 's',
-        currentGen: 1,
-        status: 'active',
-        createdAt: 0,
-        updatedAt: 0,
-        token: '1',
-      },
-    };
-    await store.write('registry/ns/s.reg', new TextEncoder().encode(JSON.stringify(row)), 'absent');
-    const w = world(new ObjectStoreRegistry(store, undefined, () => 0));
-    await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 0 }, [1]);
-    await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 1 }, [1, 2]);
-    expect((await w.registry.get(SEG))?.currentGen).toBe(1);
-
-    const r = await loadSegment(SEG, [1, 2, 3], w.deps);
-    expect(r).toMatchObject({ generation: 2, published: true, cardinalityBefore: 2 });
-    expect(beforeWrite(w.calls)).toEqual([
-      { op: 'tail', generation: 1 },
-      { op: 'check', generation: 2 },
-    ]);
-    expect((await w.registry.get(SEG))?.currentGen).toBe(2);
-  });
-
   it('a check that fails other than "not found" proves nothing, and the listing numbers', async () => {
     const w = world();
     for (const ids of [[1], [1, 2]]) await loadSegment(SEG, ids, w.deps);
@@ -255,15 +222,20 @@ describe('re-running the load after a registry restore, as the recovery guide sa
     expect((await restoreAndRerun(5)).taken).toEqual([2, 3, 6]);
   });
 
-  it('keeps the restored generation with a keep of the highest stray minus the restored pointer, plus one', async () => {
-    expect((await restoreAndRerun(5 - 1 + 1)).left).toEqual([1, 2, 3, 4, 5, 6]);
-  });
-
-  it('collects it with a keep of the number of strays plus one', async () => {
-    const { left } = await restoreAndRerun(2 + 1);
-    expect(left).not.toContain(1);
-    expect(left).toEqual([3, 4, 5, 6]);
-  });
+  // The registry was repaired by hand, so its row has no window. The first re-run seeds the ledger with the window a
+  // count by `keep` keeps, so the restored generation stays from keep 3 on, and the strays go at the load that passes
+  // them, as they do from a row that records a window. (Before a ledger, keep 3 left 3, 4, 5, 6 and keep 5 left
+  // 1 to 6: the strays were kept by the count the first re-runs skipped.)
+  it.each([
+    { keep: 1, left: [3, 6] },
+    { keep: 3, left: [1, 2, 3, 6] },
+    { keep: 5, left: [1, 2, 3, 6] },
+  ])(
+    'keeps the restored generation from keep 3, and collects the strays: keep $keep leaves $left',
+    async ({ keep, left }) => {
+      expect((await restoreAndRerun(keep)).left).toEqual(left);
+    },
+  );
 });
 
 describe('two loads that check the same number', () => {
@@ -409,7 +381,14 @@ describe('numbering over gaps above the pointer (property)', () => {
           } else if (o.kind === 'rollback') {
             const target = present.filter((g) => g < current).at(-o.back);
             if (target !== undefined)
-              await rollbackSegment(SEG, target, { storage: w.memory, registry: w.registry });
+              // The target is any generation present below the pointer, one the row may not know: the numbering is
+              // what is under test, so the rollback is made with the override.
+              await rollbackSegment(
+                SEG,
+                target,
+                { storage: w.memory, registry: w.registry },
+                { allowUnknown: true },
+              );
           } else {
             for (const g of present) await w.memory.delete({ ...SEG, generation: g });
             if (row !== null) await w.registry.delete(SEG);

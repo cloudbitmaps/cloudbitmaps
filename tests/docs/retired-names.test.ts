@@ -7,6 +7,7 @@ import * as roaring from '@/index';
 import * as s3 from '@cloudbitmaps/s3';
 import * as gcs from '@cloudbitmaps/gcs';
 import * as azureBlob from '@cloudbitmaps/azure-blob';
+import * as tools from '@cloudbitmaps/tools';
 
 /**
  * Names the library does not export stay out of it: out of both packages' runtime surface, and out of every
@@ -34,6 +35,19 @@ const RETRY_INSTEAD =
 const GENERATION_INSTEAD =
   '`store.load()` (or `loadSegment()` with your own drivers), which numbers, writes, publishes and collects; ' +
   '`keep` on it and on the `*Into` verbs for the collection; `store.dropSegment()` or the retention sweep to retire a segment';
+
+/** What a reader who wanted to hold a set in memory as an operand uses instead. */
+const HELD_INSTEAD =
+  "a feed: `store.materializeMany`'s `feed`, which the loading guide's recipe uses for a set you hold";
+
+/** What a reader who wanted the tombstone reaper uses instead. */
+const REAPER_INSTEAD =
+  'nothing: this release refuses every row a release before 0.20 wrote, deleted ones included, and the upgrade the ' +
+  'changelog gives moves the segments to a new prefix and deletes the old prefix, its rows with it';
+
+/** What a reader who wanted a segment's cost report uses instead. */
+const COST_REPORT_INSTEAD =
+  '`groundedReport` from `@cloudbitmaps/tools`, given the size `seg.stat()` reports: `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`';
 
 /** What a reader who wanted a driver's internal helper uses instead: there is none, the drivers own them. */
 const DRIVER_INTERNAL_INSTEAD = 'nothing: it is internal to the driver packages';
@@ -90,7 +104,12 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'RetryingRegistryDriver', instead: RETRY_INSTEAD, code: true },
   { name: 'TimeoutError', instead: '`TransientError`' },
   { name: 'AuditEventKind', instead: "`AuditEvent['kind']`", code: true },
-  { name: 'DEFAULT_PRICING', instead: '`AWS_US_EAST_1_ONDEMAND`', code: true },
+  {
+    name: 'DEFAULT_PRICING',
+    instead: '`AWS_US_EAST_1_ONDEMAND` from `@cloudbitmaps/tools`',
+    code: true,
+  },
+  { name: 'costReport', instead: COST_REPORT_INSTEAD, code: true },
   { name: 'MemoryStorageChunkSource', instead: '`MemoryStorage`' },
   { name: 'writeCrbmGeneration', instead: GENERATION_INSTEAD },
   { name: 'publishGeneration', instead: GENERATION_INSTEAD },
@@ -106,6 +125,16 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
   { name: 'isSdkRetryable', instead: DRIVER_INTERNAL_INSTEAD },
   { name: 'isNetworkOrTimeout', instead: DRIVER_INTERNAL_INSTEAD },
   { name: 'isServerSide', instead: DRIVER_INTERNAL_INSTEAD },
+  { name: 'MemoryOperand', instead: HELD_INSTEAD, code: true },
+  { name: 'prepareHeld', instead: HELD_INSTEAD, code: true },
+  { name: 'CombineManyHeld', instead: HELD_INSTEAD, code: true },
+  { name: 'HeldChunks', instead: HELD_INSTEAD, code: true },
+  { name: 'reapRegistryTombstones', instead: REAPER_INSTEAD },
+  { name: 'reapLegacyTombstones', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapRegistryTombstonesOptions', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapRegistryTombstonesResult', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapLegacyTombstonesOptions', instead: REAPER_INSTEAD, code: true },
+  { name: 'ReapLegacyTombstonesResult', instead: REAPER_INSTEAD, code: true },
   ...Object.values(HALVES)
     .flat()
     .map((name) => ({ name, instead: HALVES_INSTEAD })),
@@ -113,7 +142,7 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string; code?: true }> = [
 
 /**
  * Names that left a public entry but are still what a page or a sample legitimately names: `VERSION` is a word
- * the release docs use for other things, and these three live on the `driver-kit` subpath now, where the API
+ * the release docs use for other things, and the other three live on the `driver-kit` subpath now, where the API
  * reference lists them. They are held to the runtime surface only: off both main entries.
  */
 const OFF_THE_MAIN_ENTRIES = [
@@ -153,7 +182,6 @@ const OFF_THE_FLAVOR = [
   'checkBudget',
   'withRetry',
   'RetryingStorageChunkSource',
-  'groundedReport',
   'splitId',
   'mapWithConcurrency',
   'segmentKey',
@@ -170,9 +198,20 @@ const OFF_THE_FLAVOR = [
   'runExport',
   'dropSegment',
   'retireExpired',
-  'estimateCost',
   'loadSegment',
   'eraseIdFromSegment',
+];
+
+/**
+ * The cost model's names, which left both core and the flavor for `@cloudbitmaps/tools`. Pages name them, from that
+ * package, so they are held to the runtime surface: off core and the flavor, on tools.
+ */
+const MOVED_TO_TOOLS = [
+  'estimateCost',
+  'groundedReport',
+  'AWS_US_EAST_1_ONDEMAND',
+  'ELASTICACHE_REDIS_US_EAST_1_ONDEMAND',
+  'ONE_REDIS_HA_CLUSTER',
 ];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
@@ -258,6 +297,17 @@ describe('a removed export is named nowhere a reader looks', () => {
       expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
       expect(name in core, `@cloudbitmaps/core no longer exports ${name}`).toBe(true);
     }
+  });
+
+  it('the cost model is on the tools package alone: off core, off the flavor and off its store class', () => {
+    for (const name of MOVED_TO_TOOLS) {
+      expect(name in core, `@cloudbitmaps/core exports ${name}`).toBe(false);
+      expect(name in roaring, `@cloudbitmaps/roaring exports ${name}`).toBe(false);
+      expect(name in tools, `@cloudbitmaps/tools does not export ${name}`).toBe(true);
+    }
+    expect('estimateCost' in roaring.CloudRoaring).toBe(false);
+    const seg = new roaring.CloudRoaring({ storage: new core.MemoryStorage() }).segment('s');
+    expect('costReport' in seg).toBe(false);
   });
 
   it('the driver-kit subpath exports none of the names that left it, and still exports the ones that moved onto it', () => {
@@ -356,5 +406,7 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(retiredNames('SafeBitmap.fromValues(ids) and roaringCodec')).toHaveLength(2);
     // A longer name that contains one, and the SDK error a driver reads by name, are not the removed exports.
     expect(retiredNames('nextGenerationNumber and MyDEFAULT_PRICING_TABLE')).toEqual([]);
+    expect(retiredNames('const r = await seg.costReport({ workload });')).toHaveLength(1);
+    expect(retiredNames('a costReportCard or myCostReport')).toEqual([]);
   });
 });

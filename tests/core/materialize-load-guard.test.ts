@@ -10,9 +10,8 @@ import { collect, loadedStore } from '../helpers/loaded';
  * they need the same guard: without it, `a.intersectInto(dest, [b])` where the intersection comes out empty
  * wipes `dest` and reports a fresh generation number, reachable without passing any option.
  *
- * The narrow case where an operand has EXPIRED is refused on its own (`materialize-expiry-guard.test.ts`).
- * This is the general one: a typo'd operand, an `exclude` that swallowed everything, an operand that has not
- * loaded yet — every shape that produces an empty result on live handles.
+ * Every shape that produces an empty result is held to it: a typo'd operand, an `exclude` that swallowed
+ * everything, an operand that has not loaded yet.
  *
  * The verbs route through `loadSegment`, so what is pinned here is not just "empty is refused" but that the
  * whole guard applies: the plausibility bounds, the reported (not thrown) refusal, and — the part
@@ -186,8 +185,8 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
     // A guard that opens the current generation's object to size it gets a not-found when the object is absent. Were
     // that let through, the segment would be unreadable AND unrepairable — the opposite of what a guard is for — with
     // `allowEmpty: true` as the accidental workaround, i.e. the one option that also disables the protection. A row that
-    // carries a summary of the generation is sized from it without opening the object, so a row left with none (one
-    // written before rows carried it) is what reaches that open.
+    // carries a summary of the generation is sized from it without opening the object, so a row left with none is what
+    // reaches that open.
     const { store, storage, registry } = await loadedStore({ a: [1, 2, 3], b: [2, 3], dest: [9] });
     const current = await storage.list({ segment: 'dest' })[Symbol.asyncIterator]().next();
     await storage.delete(current.value as { segment: string; generation: number });

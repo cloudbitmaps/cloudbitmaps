@@ -1,5 +1,5 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
-import { ValidationError } from '@/core/errors';
+import { IntegrityError, ValidationError } from '@/core/errors';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -144,5 +144,16 @@ describe('gcOrphanGenerations', () => {
     const collected = await gcOrphanGenerations(SEG, w, { keep: 0 });
     const after = await generations(w.storage, SEG);
     expect(sorted(collected)).toEqual(before.filter((g) => !after.includes(g)));
+  });
+});
+
+describe('a segment whose pointer is at the largest safe generation', () => {
+  it('takes no next number: nextGeneration and a load refuse before anything is written', async () => {
+    const w = await loadedStore();
+    await w.registry.create(SEG, { currentGen: Number.MAX_SAFE_INTEGER });
+    await expect(nextGeneration(SEG, w)).rejects.toBeInstanceOf(IntegrityError);
+    await expect(w.store.load(SEG, [1])).rejects.toBeInstanceOf(IntegrityError);
+    expect(await generations(w.storage, SEG)).toEqual([]);
+    expect((await w.registry.get(SEG))?.currentGen).toBe(Number.MAX_SAFE_INTEGER);
   });
 });

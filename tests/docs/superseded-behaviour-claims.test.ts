@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/core';
+import { AWS_US_EAST_1_ONDEMAND, estimateCost } from '@cloudbitmaps/tools';
 import { LIST_COLLECTION_CADENCE } from '@/core/generation-gc';
 
 /**
@@ -329,10 +329,11 @@ const A_LOAD = String.raw`\b(?:(?:an?|the|each|every)(?: later| next)? load|load
 const A_LOAD_CALL = String.raw`(?:${A_LOAD}|\bstore\.load\(\))`;
 /**
  * What a true sentence about a load's collection names: that it is by name, the sixteenth generation it lists on, the
- * `keep` of 2 or more or a check that met an object that make it list, or a writer that always lists. (`*Into` is
+ * `keep` above 64 (more than a row records), a row that records no list, or a check that met an object that make it
+ * list, or a writer that always lists. (`*Into` is
  * not one of the words: a reading of the page drops its asterisk, so it would be a word that can never match.)
  */
-const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed)?|taken|meets?|holds?|held|erasure|rewrite|materiali[sz]ations?|wider|keeps? (?:of )?(?:2|two|more))\b`;
+const COLLECTION_CONDITION = String.raw`\b(?:by name|sixteenth|16th|check(?:s|ed)?|taken|meets?|holds?|held|erasure|rewrite|materiali[sz]ations?|wider|(?:above|over|more than) (?:64|sixty-four)|records? (?:no|none)|no list|absent|not know)\b`;
 /** What a true sentence about a load's numbering names: the check and what it finds, or the writers that list. */
 const NUMBERING_CONDITION = String.raw`\b(?:check(?:s|ed)?|taken|meets?|holds?|held|cannot answer|erasure|rewrite|nextGeneration)\b`;
 
@@ -532,7 +533,15 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
   },
   {
     claim: /chunksPerIntersect: 204\b/,
-    why: "chunksPerIntersect is the chunks an intersect fetches; the model adds each operand's pointer and tail read",
+    why: "chunksPerIntersect is the chunk range requests an intersect makes, not its chunks; the model adds each operand's pointer and tail read",
+  },
+  {
+    claim: new RegExp(g('Fetching neighbouring chunks together would cut'), 'i'),
+    why: 'combines and iterate read neighbouring chunks together as ranges',
+  },
+  {
+    claim: new RegExp(g('Nothing (?:in the engine )?calls (?:it|getChunks) yet'), 'i'),
+    why: 'combines and iterate read each operand through getChunks',
   },
   {
     claim: new RegExp(g('until it counts them itself'), 'i'),
@@ -748,7 +757,27 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       ),
       'i',
     ),
-    why: 'a load that keeps at most one generation and found nothing above its pointer deletes the one generation its publish pushed out of the window by name, and lists the segment only every sixteenth generation',
+    why: 'a load whose row records the generations it keeps (a `keep` up to 64) and that found nothing above its pointer deletes the generations its publish pushed out of the window by name, and lists the segment only every sixteenth generation, for a `keep` above 64, for a row that records no list, and when its check met an object',
+  },
+  // A load's collection at a `keep` of 2 or more is by name too, so a page may not say it lists.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:a|the|each|every) (?:store\.)?load (?:that|which|with|whose|when) (?:[\w'-]+ ){0,4}?\bkeeps? (?:of )?(?:2|two|more|several|many|(?:two|2|three|3) or more)\b[^.]{0,80}?\blists?\b|\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b[^.]{0,60}?\blists?\b|\blists? on every load\b[^.]{0,40}?\b(?:whenever|when) \`?keep\`? (?:is )?(?:2|two) or more\b|\`?\bkeep\`? (?:of )?(?:2|two) or more\b[^.]{0,40}?\blists?\b[^.]{0,20}?\bevery load\b|\bkeep: 12\b[^.]{0,40}?\blists? (?:on )?every`,
+      ),
+      'i',
+    ),
+    why: 'a load collects by name at any `keep` up to 64, from the generations its row records; it lists on every sixteenth generation, for a `keep` above 64, for a row that records no list, and when its check met an object',
+  },
+  // A load's collection stops and returns where another writer moved the row; it throws only for a fault.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:a )?collection pass by listing that could not prove (?:the segment|it) (?:was|is) (?:still )?(?:the same|unchanged)[^.]{0,40}?\bWriteConflictError\b|\bWriteConflictError\b[^.]{0,80}?\b(?:after|once) the publish (?:already )?landed\b[^.]{0,80}?\blisting\b`,
+      ),
+      'i',
+    ),
+    why: 'a load whose publish has landed does not throw a lost race from its collection: where another writer moved the row it stops and returns what it deleted, and it throws only for a fault (a registry read, a listing or a delete, or a failed write that records the window)',
   },
   {
     claim: new RegExp(
@@ -758,6 +787,67 @@ const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: stri
       'i',
     ),
     why: "the next load of a destination deletes the one generation its own publish pushes out of the window by name; an `*Into` with `keep` collects every generation below its own pointer at once, and a load's listing, on every sixteenth generation, takes the rest",
+  },
+  // A load that found no row fences its publish on that absence, guarded or not, so no page may say such a load
+  // publishes forward-only over a row that appeared, fences on nothing, or lands beside another first load. An unguarded
+  // load does carry no fence on the pointer, which is true and said so: "carries no fence on the pointer" passes.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bno row,?(?: [\w'(),.:-]+){0,3}? (?:publishes|publish|is|are|lands?|stays)(?: (?:a|the one|one))?(?: bare| plain)? forward-only\b` +
+          String.raw`|\bforward-only,? (?:[\w'(),-]+ ){0,6}?no row\b` +
+          String.raw`|\bunguarded (?:first )?loads? (?:[\w'(),:-]+ ){0,8}?(?:is|are|stays|publishes|publish|lands?)(?: (?:still|always|a|the one|one))?(?: bare| plain)? forward-only\b` +
+          String.raw`|\b(?:unguarded|first loads?|no row|found none|rowless)\b[^.]{0,80}?\b(?:carr(?:y|ies) no fence|(?:is|are) unfenced|publish(?:es)? (?:with no|without (?:a|any)) fence)\b(?! on the pointer)` +
+          String.raw`|\bfences? on nothing\b|\b(?:reads?|found|finds?|has) (?:anything|nothing) to fence on\b` +
+          String.raw`|\bboth (?:loads? )?(?:land|publish|succeed)\b|\beach (?:one |load )?lands\b`,
+      ),
+      'i',
+    ),
+    why: 'every load that found no row fences its publish on that absence, guarded or not: a row that appeared meanwhile (another first load, a `setRetention`, a drop) refuses it as `superseded`, and of two loads of one segment at once at most one lands',
+  },
+  // An erasure that finds a holder on a row with no pointer renews the row's `pointerId` before it deletes any, so a
+  // first load fenced on the row it read is refused at its publish, and the holder is deleted. No page may say such an
+  // object is refused and kept, or that its load may still publish it.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bload(?: that wrote (?:the|that|its) object)? may still publish it\b` +
+          String.raw`|\brefused with \`?WriteConflictError\`?,? and kept\b` +
+          String.raw`|\bnote,? and not deleted\b` +
+          String.raw`|\brefuses?\b[^.]{0,40}?\binstead of deleting it\b` +
+          String.raw`|\bon a row with no pointer,? the erasure writes nothing\b` +
+          String.raw`|\bthe erasure writes nothing to (?:such a|the) row\b`,
+      ),
+      'i',
+    ),
+    why: "an erasure that finds a holder on a row with no pointer renews the row's `pointerId` and deletes it: the first load that wrote it is refused at its publish. Only an erasure that finds no holder writes nothing",
+  },
+  // The storage driver port has a conditional delete: `delete(key, { ifVersion })`, which a driver that reports
+  // `conditionalDelete` applies. No page may say the port has none; one may say which drivers do not report it.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:the )?storage(?: driver)? port (?:has|offers|provides) no conditional delete\b` +
+          String.raw`|\bno storage(?: driver)? port (?:has|offers|provides) (?:a|any) conditional delete\b` +
+          String.raw`|\bIStorageDriver\b\`?,? (?:has|offers|provides) no conditional delete\b`,
+      ),
+      'i',
+    ),
+    why: "a storage driver's `delete` takes `{ ifVersion }`, and one that reports `conditionalDelete` removes only the object that version names: say which deletes pass it, or which drivers do not report it",
+  },
+  // An erasure that deletes only objects no read of the segment can open emits `segment.collect` with no
+  // `fromGeneration`, and the ledger has no entry for it. No page may define the event as one that always found the id,
+  // or count every one as a per-subject receipt.
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\bsegment\.collect\`? \(a subject erasure that found the id only outside the current generation\b` +
+          String.raw`|\bnothing was rewritten: the id was only in generations no reader resolves\b` +
+          String.raw`|\bsegment\.collect\`? \(with its ledger\) for a per-subject erasure\b`,
+      ),
+      'i',
+    ),
+    why: '`segment.collect` is also emitted, with no `fromGeneration` and no ledger entry, by an erasure that found the id in nothing it could search and deleted only objects no read of the segment can open: define the event so it covers that case, and count only one that names a `fromGeneration` as a per-subject receipt',
   },
 ];
 
@@ -1270,9 +1360,53 @@ describe('no document claims behaviour this library does not have', () => {
     'Each load lists the segment to collect what its publish superseded.',
     'A load lists the bucket after it publishes, then collects the old generation.',
     'the load lists the segment and collects everything below its pointer',
+    'With `keep` of 2 or more, a load lists the segment to collect on every load.',
+    'A load that keeps two or more generations lists on every load.',
+    'With keep of two, a load lists the segment to collect on every load.',
+    'A load lists on every load whenever `keep` is 2 or more.',
+    'At `keep: 12` a load lists every publish.',
+    'A `keep` of 2 or more lists on every load.',
+    'earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names',
+    'and a collection pass\n   * by listing that could not prove the segment was still the same one (`WriteConflictError`).',
     'The next load of the destination collects everything below its own pointer beyond its `keep`.',
     'and the next load of its destination collects its predecessors',
     "the next store.load of that destination collects everything it didn't",
+    // A load that found no row, said to publish unfenced.
+    'only an unguarded load onto a segment with no row publishes bare forward-only.',
+    'Only an unguarded load (`allowEmpty: true`, with neither `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row\n * publishes bare forward-only.',
+    'only an unguarded load (`allowEmpty: true`, with neither\n  `guard.minRetained` nor `guard.maxGrowth`) onto a segment with no row is bare forward-only',
+    '(an unguarded load onto a segment with no row publishes forward-only instead)',
+    '`allowEmpty: true` onto a segment with no row is the one bare forward-only publish.',
+    'An unguarded load of a segment with no row fences on nothing, and publishes over the row that appeared',
+    'neither load read anything to fence on, so each is a forward-only publish',
+    'If the lower generation number lands first, both land and the higher stays current.',
+    'a load that found no row\n * publishes forward-only',
+    // The same claim reworded: the order reversed, the subject named, the fence said to be missing, the loads counted.
+    'An unguarded load publishes forward-only onto a segment with no row.',
+    'it publishes forward-only onto a segment\n * with no row',
+    'An unguarded first load is forward-only.',
+    'an unguarded load (`allowEmpty: true`) is still forward-only',
+    'An unguarded first load carries no fence.',
+    'A load onto a segment with no row is unfenced.',
+    'An unguarded load that found none publishes without a fence.',
+    'Two first loads of a segment with no row both publish.',
+    'Two first loads race, and each one lands.',
+    'Both succeed, and the higher stays current.',
+    // An unpublished holder on a row with no pointer, said to be refused and kept.
+    "On a row with no pointer\n * the erasure writes nothing to the row, so a first load's object there may still be published; an erasure that finds the\n * id in it refuses instead of deleting it.",
+    'One that holds the id is not deleted: this path writes nothing to the row, so the load that wrote the object may still publish it',
+    'It cannot be deleted while that load may still publish it: re-run once the segment is loaded',
+    "| A first load's object that never published holds the id; its load may still publish it, so it is not deleted. |",
+    'An object a first load wrote and never published that holds the id is refused with `WriteConflictError`, and kept: the\n  erasure writes nothing to such a row',
+    'is reported as an `error: …` note and not deleted: the erasure writes nothing to such a row, so the load that wrote the object may still publish it.',
+    'The erasure refuses an unpublished holder instead of deleting it.',
+    'one round trip remains between that read and the delete, and the\n  storage driver port has no conditional delete to close it.',
+    'except one whose check runs before the delete, and no storage port offers a conditional delete to close it.',
+    'trips, and `IStorageDriver` has no conditional delete to make them one.',
+    // The collect event defined as one that always found the id, or counted whole as a receipt.
+    '`segment.collect` (a subject erasure that found the id only outside the\ncurrent generation and deleted the generations holding it, rewriting none)',
+    '| `segment.collect` | No generation in the bucket holds the erased id, and nothing was rewritten: the id was only in generations no reader resolves |',
+    '`segment.rewrite` or `segment.collect` (with its ledger) for a per-subject\nerasure',
   ])('catches the refused form %j', (text) => {
     expect(hitsIn('x.md', text)).not.toEqual([]);
   });
@@ -1416,7 +1550,11 @@ describe('no document claims behaviour this library does not have', () => {
     'A first load reads the pointer three times and checks its generation number once.',
     // A load's collection, true: each names that it is by name, the sixteenth generation, or what makes it list.
     'A load that keeps one generation deletes by name the generation its publish pushed out, and lists the segment to collect only every sixteenth generation.',
-    'With `keep` of 2 or more, a load lists the segment to collect on every load.',
+    'With a `keep` above 64, a load lists the segment to collect on every load.',
+    'A `keep` above 64 records no list and lists on every load.',
+    'A load that finds another writer has moved the row stops and returns what it deleted.',
+    'A load lists the segment to collect when its row records no list.',
+    'A load that keeps twelve generations deletes by name the generation its publish pushed out, and lists the segment only every sixteenth generation.',
     // Each word the exemption names, once: a sentence that would be refused without it.
     'A load lists the segment to collect what it did not take by name.',
     'A load lists the segment to collect on the sixteenth pass.',
@@ -1432,13 +1570,40 @@ describe('no document claims behaviour this library does not have', () => {
     'A load lists the segment to collect after a materialisation.',
     'A load lists the segment to collect after a materialization.',
     'A load lists the segment to collect under a wider window.',
-    'With keep of two, a load lists the segment to collect on every load.',
+    'With a keep over sixty-four, a load lists the segment to collect on every load.',
     'A load whose check meets an object lists the segment to number past it, and lists again to collect.',
     'The retention sweep lists the segment to collect what a drop left.',
     'The erasure rewrite lists the segment and collects every generation below its own.',
     '`store.load()` collects by name and lists every sixteenth generation.',
     'An `*Into` that passes `keep` lists the destination and collects every generation below its own beyond it.',
     'The next load of the destination deletes the generation its own publish pushed out of the window, by name.',
+    // The absence fence, said as it is, and the forward-only rule it sits beside.
+    'Every load that found no row fences its publish on that absence, so a row that appeared meanwhile refuses it.',
+    'A load onto a segment with no row is refused when a row appears before its publish.',
+    'with no row both are omitted, leaving the publish a bare forward-only advance that lands over anything',
+    'A publish is forward-only: it never moves the pointer back.',
+    'Of two loads of one segment at once, at most one lands.',
+    'A segment with no row is created by its first load, whose publish is a create-only write.',
+    'An unguarded load carries no fence on the pointer, which is right for it.',
+    'An unguarded load carries no fence on\n * the pointer, which is right for it.',
+    'Every load is fenced, so of two loads of one segment at most one of them lands.',
+    'Forward-only is right for an unguarded load: its ids come from upstream.',
+    'A guarded load also fences on the pointer it judged; an unguarded one does not.',
+    // The erasure on a row with no pointer, said as it is, and a write that may still land.
+    'An erasure that finds no holder writes nothing, so a first load in flight still publishes.',
+    'The erasure renews the row before it deletes the object, so the load that wrote it can no longer publish it.',
+    'A load that read the row after the renewal publishes its own object.',
+    'A publish that may still land must not find its object gone.',
+    'Its object is kept, since the write may still land; re-run the write, which numbers past it.',
+    'A refused load keeps its object when the row has changed, and the next erasure deletes it.',
+    'It has no conditional delete (`conditionalDelete: false`), and `delete` ignores `ifVersion`.',
+    'the counting store vouches for no conditional delete',
+    'The local-filesystem driver has no conditional delete, so the window stays open there.',
+    'On a driver that does not report `conditionalDelete`, the delete removes whatever is under the number.',
+    // The collect event as it is.
+    '`segment.collect` (a subject erasure that rewrote nothing and deleted objects no reader resolves: the generations holding the id, when it found the id only outside the current generation)',
+    'No generation in the bucket holds the erased id, and nothing was rewritten. With a `fromGeneration`, the id was only in generations no reader resolves.',
+    '`segment.rewrite`, or a `segment.collect` that names a `fromGeneration`, with its ledger entry, for a per-subject erasure',
   ])('leaves %j alone', (text) => {
     expect(hitsIn('x.md', text)).toEqual([]);
   });
@@ -1658,36 +1823,69 @@ describe('no document claims behaviour this library does not have', () => {
     for (const reading of readings(src)) expect(lineCount(reading)).toBe(lineCount(src));
   });
 
-  it('reads a 100 KB line with no full stop well inside 2 s, whatever it is made of', () => {
-    // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one scans
-    // such a line once per unit, so each must scan it once. The last two work the quote pairing and the rules hardest.
-    for (const unit of [
-      '[a ',
-      '*',
-      '{@link a ',
-      "'a ",
-      'no clock never re-resolves on a timer, and ',
-    ]) {
-      const line = unit.repeat(Math.ceil(102_400 / unit.length)).slice(0, 102_400);
-      const started = performance.now();
-      hitsIn('x.md', line);
-      expect(performance.now() - started, JSON.stringify(unit)).toBeLessThan(2000);
-    }
-    // And a long run of blanks where a pattern could split it among its parts, which costs seconds, growing faster
-    // than the run, when a pattern tries each split.
-    for (const [what, line] of [
-      ['a doc-comment link never closed', `{@link a${' '.repeat(100_000)}`],
-      ['blanks before a label', `${'x'.repeat(50_000)}${' '.repeat(50_000)}Pinned: none`],
-      ['split literals, then blanks', `${"'a' +".repeat(20_000)}${' '.repeat(2_000)}x`],
-      ['one split literal, then blanks', `'a' +${' '.repeat(100_000)}x`],
-      ['blanks after a pin word', `pins${' '.repeat(100_000)}`],
-      ['a wide table', `| pins${' '.repeat(100)}| `.repeat(950)],
-    ] as const) {
-      const started = performance.now();
-      hitsIn('x.md', line);
-      expect(performance.now() - started, what).toBeLessThan(2000);
-    }
-  });
+  it(
+    'reads a 40 KB line with no full stop in time that grows with its length, whatever it is made of',
+    { timeout: 120_000 },
+    () => {
+      // A bracket, a run of stars and a doc-comment link that never close: a transform that retries from each one
+      // scans such a line once per unit, so each must scan it once. The last two work the quote pairing and the rules
+      // hardest.
+      //
+      // Judged by how the time grows, not by a wall-clock bound: each shape is read at a quarter of the length and at
+      // the full length, in this process, so a loaded machine slows both alike. Four times the input is about four
+      // times the time for a single scan and sixteen for a scan per unit. The two lengths are read in turn, five times
+      // over, and a reading is the least of its five, so a pause or a spell of load reaches both lengths alike and one
+      // slow run does not decide it. The growth counts against a shape only when it is over 6, where a single scan
+      // measures about 4, and the full-length reading is over 20 ms, a floor that keeps load noise on a reading of a
+      // few milliseconds from failing it. A scan per unit grows by sixteen, though a fixed cost per call hides part of
+      // it at this length, so a shape that scans a part of the line twice shows well under that. What the test catches
+      // is a scan that goes quadratic or worse. Several shapes read in a few milliseconds even at full length, and a
+      // regression that leaves one of them under the floor is not seen.
+      const FULL = 40_960;
+      const expectLinear = (what: string, build: (length: number) => string): void => {
+        const quarter = build(FULL / 4);
+        const full = build(FULL);
+        let small = Infinity;
+        let large = Infinity;
+        for (let run = 0; run < 5; run++) {
+          let started = performance.now();
+          hitsIn('x.md', quarter);
+          small = Math.min(small, performance.now() - started);
+          started = performance.now();
+          hitsIn('x.md', full);
+          large = Math.min(large, performance.now() - started);
+        }
+        const growth = large / Math.max(small, 1);
+        const verdict = `${what}: ${small.toFixed(1)} ms at a quarter, ${large.toFixed(1)} ms at full, ${growth.toFixed(1)}x`;
+        expect(large > 20 && growth > 6, verdict).toBe(false);
+      };
+      for (const unit of [
+        '[a ',
+        '*',
+        '{@link a ',
+        "'a ",
+        'no clock never re-resolves on a timer, and ',
+      ]) {
+        expectLinear(JSON.stringify(unit), (n) =>
+          unit.repeat(Math.ceil(n / unit.length)).slice(0, n),
+        );
+      }
+      // And a long run of blanks where a pattern could split it among its parts, which costs seconds, growing faster
+      // than the run, when a pattern tries each split.
+      expectLinear('a doc-comment link never closed', (n) => `{@link a${' '.repeat(n - 8)}`);
+      expectLinear(
+        'blanks before a label',
+        (n) => `${'x'.repeat(n / 2)}${' '.repeat(n / 2 - 12)}Pinned: none`,
+      );
+      expectLinear(
+        'split literals, then blanks',
+        (n) => `${"'a' +".repeat(Math.floor(n / 5.12))}${' '.repeat(Math.floor(n / 51.2))}x`,
+      );
+      expectLinear('one split literal, then blanks', (n) => `'a' +${' '.repeat(n - 6)}x`);
+      expectLinear('blanks after a pin word', (n) => `pins${' '.repeat(n - 4)}`);
+      expectLinear('a wide table', (n) => `| pins${' '.repeat(100)}| `.repeat(Math.ceil(n / 108)));
+    },
+  );
 
   it("reads a package's changelog as the root one: its released history is not scanned", () => {
     const changelog =
@@ -1752,18 +1950,18 @@ function hitsIn(rel: string, text: string): string[] {
 // names a load and says "per million" gives its dollar amounts, and each must be the one its words call for:
 // a segment's first load, a load that does not list (or deletes by name, or is the third or later), one that lists,
 // or, with no such word, the average a million single-part loads cost. The price of one GET or one PUT-class
-// request is allowed anywhere, and so are the run's write-and-publish price and a price 0.11.2 published, after
+// request is allowed anywhere, and so are the write-and-publish price a run measured and a price 0.11.2 published, after
 // "was". A clause about a multipart write, an intersect, or another backend's or an encrypted segment's load is
 // another figure's, and is left to the gates that hold it (the calibration report and the site's figures).
 // Ratio: a clause that compares `store.load()` with a write and publish says, just after `store.load()`, the
-// multiple the model's average makes of the run's write-and-publish price.
+// multiple the model's average makes of that measured write-and-publish price.
 // Cadence: a sentence about listing or collecting that says how many generations apart the listings are ("every 16th
 // generation", "within 16 generations", "divisible by 16", "a sixteenth of a listing") says the constant.
 //
 // Known limits, stated rather than hidden: it does not read a figure that has no "per million" in its clause
 // (a table cell is its own clause), a ratio more than 40 characters after `store.load()`, or another backend's or
 // an encrypted segment's price, which the model does not derive. Those figures are held where they are derived,
-// `tests/bench/calibrate-guards.test.ts` and `tests/core/cost.test.ts`.
+// `tests/bench/calibrate-guards.test.ts` and `tests/tools/cost.test.ts`.
 // ---------------------------------------------------------------------------------------------------
 type Dollars = {
   first: number;
@@ -1795,35 +1993,37 @@ const LOAD_PRICES: Dollars = (() => {
   return {
     steady: price(steady),
     listing: price({ put: steady.put + 1, get: steady.get + 1 }),
-    // A first load has nothing to collect, so it makes no re-read before a delete either.
-    first: price({ put: steady.put, get: steady.get - 1 }),
+    // A first load has nothing to collect, so it makes neither the read of the row before a delete nor the one after.
+    first: price({ put: steady.put, get: steady.get - 2 }),
     average: price({ put: putAverage, get: getAverage }),
     get: base.storage.getPerMillion,
     put: base.storage.putPerMillion,
   };
 })();
-/** What 0.11.2 published for a steady and a first load. History belongs to the changelog, after "was". */
-const PRICES_BEFORE = [23.6, 22.8];
 /**
- * A million single-part writes and publishes, pointer included: the run's figure, from its committed evidence by the
- * module the site's figures take it from. A page compares `store.load()` with it, so the ratio it states is checked
- * against the two sources the figures come from. A run that timed `store.load()` records a segment's first load, which
- * makes one more GET than a write and publish, for its generation number's check.
+ * What 0.11.2 published for a steady and a first load, and what a cycle of steady loads averaged on the 0.17.0 engine,
+ * which read the pointer once fewer to collect. History belongs to the changelog and to a run's own record, after "was".
+ */
+const PRICES_BEFORE = [23.6, 22.8, 11.94];
+/**
+ * A million single-part writes and publishes, pointer included: the figure of the newest run that timed a write and
+ * publish alone, from its committed evidence by the module the site's figures take it from. A page compares
+ * `store.load()` with it, so the ratio it states is checked against the two sources the figures come from. A run that
+ * timed `store.load()` does not give it: how many requests a load makes beyond a write and publish is the engine's,
+ * and moves with it.
  */
 const WRITE_AND_PUBLISH: number = (() => {
   const calibration = createRequire(import.meta.url)('../../bench/lib/calibration-figures.cjs') as {
     evidenceFiles: (root: string) => string[];
     readSources: (root: string) => unknown;
-    derive: (
-      run: unknown,
-      src: unknown,
-    ) => { loadVia: string | null; usd: { singleLoad: number }; price: { getUSD: number } };
+    derive: (run: unknown, src: unknown) => { loadVia: string | null; usd: { singleLoad: number } };
   };
-  const latest = calibration.evidenceFiles(ROOT).at(-1);
-  if (latest === undefined) throw new Error('bench/calibration/ holds no run evidence');
-  const run: unknown = JSON.parse(readFileSync(join(ROOT, latest), 'utf8'));
-  const f = calibration.derive(run, calibration.readSources(ROOT));
-  return 1e6 * (f.loadVia === null ? f.usd.singleLoad : f.usd.singleLoad - f.price.getUSD);
+  const src = calibration.readSources(ROOT);
+  for (const rel of calibration.evidenceFiles(ROOT).reverse()) {
+    const f = calibration.derive(JSON.parse(readFileSync(join(ROOT, rel), 'utf8')), src);
+    if (f.loadVia === null) return 1e6 * f.usd.singleLoad;
+  }
+  throw new Error('bench/calibration/ holds no run that timed a write and publish alone');
 })();
 
 const SAYS_PER_MILLION = /\bper\s+(?:million|1M)\b|\ba million\b|\/\s*1M\b/i;
@@ -2023,7 +2223,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
       f(LOAD_PRICES.steady),
       f(LOAD_PRICES.listing),
       f(LOAD_PRICES.average),
-    ]).toEqual(['11.60', '12.00', '17.40', '12.34']);
+    ]).toEqual(['11.20', '12.00', '17.40', '12.34']);
     expect(WRITE_AND_PUBLISH.toFixed(2)).toBe('11.20');
     expect(LOAD_OVER_WRITE.toFixed(2)).toBe('1.10');
   });
@@ -2052,17 +2252,20 @@ describe("a page's figures for store.load() are the estimator's", () => {
     'a write and publish, with store.load() half as much again',
     'store.load() is 1.5 times a write and publish',
     'a store.load() that writes and publishes costs $17.80 per million',
+    // Naming a run does not exempt a figure: a stale one beside a run id is refused.
+    "a segment's first store.load() cost $12.20 per million in run 2026-10-04-73668",
+    "a segment's first store.load() was measured at $12.20 per million",
   ])('refuses the stale form %j', (text) => {
     expect(loadFigureHits('x.md', text)).not.toEqual([]);
   });
 
   it.each([
     'about $12.34 per million single-part loads at the default prices',
-    "a segment's first store.load() is expected at $11.60 per million",
+    "a segment's first store.load() is expected at $11.20 per million",
     'a load that does not list costs $12.00 per million',
     'a load that lists costs $17.40 per million',
-    "$12.34 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.40 when it lists (every 16th generation), and $11.60 for a segment's first load",
-    "$12.34 per million single-part loads, where it was $23.60, and $11.60 for a segment's first load, where it was $22.80.",
+    "$12.34 per million steady single-part loads at the default prices: $12.00 when a load does not list, $17.40 when it lists (every 16th generation), and $11.20 for a segment's first load",
+    "$12.34 per million single-part loads, where it was $23.60, and $11.20 for a segment's first load, where it was $22.80.",
     'one more GET ($0.40 per million at the default prices) that a load makes',
     'S3 GETs, $0.40 a million, and a PUT-class request, $5 per million, for each load',
     '$82.40 per million cold intersects of two segments, and $11.20 per million loads written and published',
@@ -2110,7 +2313,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //
 // The prices above are held, and the counts behind them were not: a request count in prose (a guide, the bench README,
 // a doc-comment, the changelog) was restated by hand each time the engine's counts moved, and each time a copy was
-// missed. The counts here come from the cost model, which `tests/core/cost.test.ts` holds to the engine by counting
+// missed. The counts here come from the cost model, which `tests/tools/cost.test.ts` holds to the engine by counting
 // what it sends, and from the pricing the model gives a pointer read and a tail read, so a count that moves with the
 // engine moves the gate with it.
 //
@@ -2119,8 +2322,9 @@ describe("a page's figures for store.load() are the estimator's", () => {
 //   - a load (`store.load()`, `loadSegment`, "a load", "a steady load", "a first load", "a second load", "a reload"):
 //     its PUT-class and GET-class counts, and its total with the delete it makes; steady, first, second or one that
 //     lists, as the words around it say; with no such word, a steady load;
-//   - a cold `count()` or `stat()`: one request, one pointer read, or, where the clause says the row has no summary to
-//     use or that the index is read, the tail read it adds (two, or three on Azure Blob).
+//   - a cold `count()` or a cold `stat()`: one request, one pointer read, or, where the clause says the row has no
+//     summary to use or that the index is read, the tail read it adds (two, or three on Azure Blob). A `stat()` reads
+//     the object's size from the row's summary, which records it, so it costs what a count does.
 // It never reads: a number after "was", "were", "made", "took", "from" or a 0.11 release's name (history is
 // the changelog's, and says so), a range or a bound ("1 to 3", "two or three", "at most 4", "up to 8"), a count
 // of "more", "fewer" or "extra" requests, a clause about another operation nearer than the subject (an intersect, a
@@ -2135,7 +2339,7 @@ describe("a page's figures for store.load() are the estimator's", () => {
 // read or a check counted inside a load, a total for a load that lists, a clause that names two operations without a
 // word between a subject and its count that tells them apart, or a subject worded another way ("one write and publish").
 // The first and second load's counts are derived from the steady load's, as the cost test's counts of the engine hold
-// them (2 PUT-class and 4 GET-class, then 2 and 3).
+// them (a steady load 2 PUT-class and 5 GET-class; a first load 2 and 3, and a second 2 and 2).
 // ---------------------------------------------------------------------------------------------------
 type LoadKind = 'steady' | 'first' | 'second' | 'listing';
 type Requests = { put: number; get: number };
@@ -2163,8 +2367,9 @@ const REQUEST_COUNTS: {
     load: {
       steady: { ...steady, total: steady.put + steady.get + DELETE },
       listing: { put: steady.put + 1, get: steady.get + 1 },
-      first: { ...steady, get: steady.get - 1, total: steady.put + steady.get - 1 },
-      second: { ...steady, get: steady.get - 2, total: steady.put + steady.get - 2 },
+      // Neither collects, so neither reads the row before a delete or after it; a second load reads its row once.
+      first: { ...steady, get: steady.get - 2, total: steady.put + steady.get - 2 },
+      second: { ...steady, get: steady.get - 3, total: steady.put + steady.get - 3 },
     },
     coldCount: {
       pointer,
@@ -2314,7 +2519,12 @@ function requestCountHits(rel: string, text: string): string[] {
           continue;
         if (WARM.test(near) || kind === 'PUT') continue;
         const { pointer, withTail } = REQUEST_COUNTS.coldCount;
-        const allowed = NO_SUMMARY_TO_USE.test(near) ? [pointer, ...withTail] : [pointer];
+        const allowed =
+          kind === 'pointer'
+            ? [pointer]
+            : NO_SUMMARY_TO_USE.test(near)
+              ? [pointer, ...withTail]
+              : [pointer];
         if (allowed.includes(n)) continue;
         hits.push(
           `${where} is not what a cold count() or stat() makes: ${pointer} request(s), a pointer read, ` +
@@ -2331,8 +2541,8 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
     expect(REQUEST_COUNTS.load).toEqual({
       steady: { put: 2, get: 5, total: 8 },
       listing: { put: 3, get: 6 },
-      first: { put: 2, get: 4, total: 6 },
-      second: { put: 2, get: 3, total: 5 },
+      first: { put: 2, get: 3, total: 5 },
+      second: { put: 2, get: 2, total: 4 },
     });
     expect(REQUEST_COUNTS.coldCount).toEqual({ pointer: 1, withTail: [2, 3] });
   });
@@ -2340,20 +2550,27 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
   // Both directions: each stale or wrong form is caught, and the honest phrasings and the look-alikes are not.
   it.each([
     'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 9 requests',
+    'a steady single-part load on S3 is 2 PUT-class requests, 4 GET-class and a delete, 7 requests',
+    "a segment's first load is expected at 2 PUT-class and 4 GET requests",
     'a steady store.load() is 3 PUT-class requests and 5 GET-class',
     "a segment's first load is expected at 2 PUT-class and 5 GET requests",
-    "a segment's second load makes 4 GET-class requests",
-    'a reload of a segment makes 4 GETs',
-    'a load that lists is 3 PUT-class and 7 GET-class',
+    "a segment's second load makes 3 GET-class requests",
+    'a reload of a segment makes 3 GETs',
+    'a load that lists is 3 PUT-class and 5 GET-class',
     'a load makes 14 requests',
     'a cold count() makes 2 requests',
     'a cold count is two requests',
-    'count() is one request when cold, and a cold stat() is three requests',
+    'a cold stat() is 4 requests',
+    // A stat reads the object's size from the row's summary: it costs what a count does.
+    'a cold stat() makes 2 requests, and 3 on Azure Blob',
+    'count() is one request when cold, and a cold stat() is two requests',
     'A cold `stat()` is 2 pointer reads',
     'a cold count on S3 and GCS makes 3 requests, with the row summary',
     'store.load() sends 3 PUTs.',
-    '| A steady store.load() | 9 requests |',
-    '| A first load | 2 PUT-class requests and 5 GETs |',
+    '| A steady store.load() | 7 requests |',
+    '| A first load | 2 PUT-class requests and 4 GETs |',
+    "a segment's first load was measured at 2 PUT-class and 9 GET requests",
+    "a segment's first load made 2 PUT-class and 9 GET requests in run 2026-10-04-73668",
   ])('refuses %j', (text) => {
     expect(requestCountHits('x.md', text)).not.toEqual([]);
   });
@@ -2361,15 +2578,17 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
   it.each([
     'a steady single-part load on S3 is 2 PUT-class requests, 5 GET-class and a delete, 8 requests',
     'a steady store.load() is 2 PUT-class requests and 5 GET-class',
-    "a segment's first load is expected at 2 PUT-class and 4 GET requests",
-    "a segment's second load is 2 PUT-class and 3 GET-class requests, 5 in all",
+    "a segment's first load is expected at 2 PUT-class and 3 GET requests",
+    "a segment's second load is 2 PUT-class and 2 GET-class requests, 4 in all",
     'a load that lists is 3 PUT-class and 6 GET-class',
     'a load that does not list makes 8 requests',
     'a cold count() makes 1 request',
     'a cold count is one request',
     'count() is one request when cold, and a cold stat() is one pointer read',
+    'count() is one request when cold, and a cold stat() is one request',
     // Where the row has no summary to use, the tail read is added: S3 and GCS two, Azure Blob three.
     'a cold count() of a row with no summary makes 2 requests, and 3 on Azure Blob',
+    'a cold stat() of a row with no summary makes 2 requests, and 3 on Azure Blob',
     // History is the changelog's.
     'a steady load makes 8 requests, where 0.11.2 made 14',
     'a cold count makes 1 request where it was 2',
@@ -2419,7 +2638,7 @@ describe("a page's request counts for a load, a cold count and a cold stat are t
       join('docs', 'guide', 'reading.md'),
       join('docs', 'ROADMAP.md'),
       join('site', 'usage.html'),
-      join('packages', 'core', 'src', 'core', 'cost.ts'),
+      join('packages', 'tools', 'src', 'cost.ts'),
     ])
       expect(pages).toContain(f);
     expect(pages.some((f) => f.startsWith('tests'))).toBe(false);

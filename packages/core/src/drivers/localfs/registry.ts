@@ -4,17 +4,17 @@
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
  * OCC: the token is a random incarnation id drawn when the row is created, a counter advanced on every mutation, and a
  * random part drawn for every write, so with overwhelming probability a deleted-then-recreated row, or one restored from a backup, never
- * re-issues an old token (ABA-safe). A `delete` unlinks a row born with an incarnation id, and **tombstones** one a release before
- * 0.12 wrote, whose bare counter a re-create carries on. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
+ * re-issues an old token (ABA-safe). A `delete` unlinks the row's file: a re-create draws a new incarnation, so nothing
+ * of the old row is needed to keep its tokens apart. Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row across the whole process (the lock is keyed by the row's resolved
  * path, so every instance on one root shares it). A root is for one process: two processes on one root are not
  * fenced. Drivers do I/O; only `core/` is bound by determinism.
  */
 import { constants as FS } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
-import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
+import { open, opendir, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import type { Dir } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
+import { IntegrityError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { Entropy } from '@/core/determinism';
 import type {
   IRegistryDriver,
@@ -22,12 +22,12 @@ import type {
   RegCaps,
   RegistryPatch,
   RegistryRecord,
+  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from '@/core/ports';
 import {
   applyRegistryPatch,
-  incarnationOf,
   newIncarnationToken,
   nextRegistryToken,
   parseRegistryEnvelope,
@@ -38,8 +38,26 @@ import {
   type RegistryEnvelope,
 } from '../_shared/registry';
 import { entropyIsAvailable, webCryptoEntropy } from '../_shared/entropy';
-import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
-import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
+import {
+  assertRegistryNamesFit,
+  registryDir,
+  registryRowPath,
+  parseNamespaceDir,
+  parseRegistryRow,
+} from './paths';
+import { ExactCase } from './exact-case';
+import {
+  FILE_MODE,
+  O_NOFOLLOW,
+  fsyncDir,
+  isAbsent,
+  isCode,
+  mapFsError,
+  writeAll,
+  makeDirs,
+  sweepOrphanTemps,
+  tempPathFor,
+} from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
 const DEFAULT_MAX_ROW_BYTES = 1 * 1024 * 1024;
@@ -69,28 +87,33 @@ async function rowLockKey(path: string): Promise<string> {
       return join(await realpath(dir), ...tail);
     } catch (err) {
       const parent = dirname(dir);
-      if (!isCode(err, 'ENOENT') || parent === dir) throw mapFsError(err);
+      if (!isAbsent(err) || parent === dir) throw mapFsError(err);
       tail.unshift(basename(dir));
       dir = parent;
     }
   }
 }
 
-export interface LocalFsRegistryDriverOptions {
+interface LocalFsRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
   readonly entropy?: Entropy;
+  /** The directory this root lives under, from which down directories are created private; defaults to the root. */
+  readonly privateRoot?: string;
 }
 
 export class LocalFsRegistryDriver implements IRegistryDriver {
   private readonly now: () => number;
   private readonly entropy: Entropy;
 
+  private readonly exactCase: ExactCase;
+
   constructor(
     private readonly root: string,
-    options: LocalFsRegistryDriverOptions = {},
+    private readonly options: LocalFsRegistryDriverOptions = {},
   ) {
+    this.exactCase = new ExactCase(root);
     this.now = options.now ?? (() => Date.now());
     this.entropy = options.entropy ?? webCryptoEntropy;
   }
@@ -105,44 +128,58 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
+  /** Every write reports its token to `onToken` before the row's file is written. */
+  get reportsWriteTokens(): true {
+    return true;
+  }
+
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
-    const env = await this.readRow(registryRowPath(this.root, ref));
+    const env = await this.readRow(registryRowPath(this.root, ref), ref);
     return env && !env.deleted ? env.record : null;
   }
 
-  async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
+  async create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }> {
     const checked = validateNewRegistryRecord(record);
     const path = registryRowPath(this.root, ref);
+    assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (current !== null && !current.deleted) {
         throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
       }
       // A new incarnation, whose counter continues across a tombstone (ABA-safe).
       const token = newIncarnationToken(this.entropy, current?.record);
-      await this.writeRow(path, false, recordFromNew(ref, checked, this.now(), token));
+      options?.onToken?.(token);
+      await this.writeRow(path, recordFromNew(ref, checked, this.now(), token));
       return { token };
     });
   }
 
+  /**
+   * A caller's `held` row (see `RegistryWriteOptions`) has no read to spare here: the row's file is read under its lock and its token compared
+   * there, a local read and no request, so a stale one fails exactly as a lost race does.
+   */
   async compareAndSwap(
     ref: SegmentRef,
     expected: Token,
     patch: RegistryPatch,
+    options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     const checked = validateRegistryPatch(patch);
     const path = registryRowPath(this.root, ref);
+    assertRegistryNamesFit(ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (current === null || current.deleted || current.record.token !== expected) {
         throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
       }
       const token = nextRegistryToken(current.record, this.entropy);
-      await this.writeRow(
-        path,
-        false,
-        applyRegistryPatch(current.record, checked, this.now(), token),
-      );
+      options?.onToken?.(token);
+      await this.writeRow(path, applyRegistryPatch(current.record, checked, this.now(), token));
       return { token };
     });
   }
@@ -150,17 +187,21 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
     for (const ns of await this.namespaceDirs(namespace)) {
       const dir = registryDir(this.root, ns);
-      let names: string[];
+      if (await this.exactCase.differs(dir)) continue; // another case's directory is not this one
+      let entries: Dir;
       try {
-        names = await readdir(dir);
+        entries = await opendir(dir);
       } catch (err) {
-        if (isCode(err, 'ENOENT')) continue; // no registry rows in this namespace yet
+        if (isAbsent(err)) continue; // no registry rows in this namespace yet
         throw mapFsError(err);
       }
-      for (const name of names) {
-        const segment = parseRegistryRow(name);
+      // Streamed a batch of names at a time, so a namespace of many rows is never held as one list; the directory is
+      // closed when the loop ends, the consumer's stopping early included.
+      for await (const entry of entries) {
+        const segment = parseRegistryRow(entry.name);
         if (segment === null) continue;
-        const env = await this.readRow(registryRowPath(this.root, { namespace: ns, segment }));
+        const ref = { namespace: ns, segment };
+        const env = await this.readRow(registryRowPath(this.root, ref), ref);
         if (env && !env.deleted) yield env.record;
       }
     }
@@ -169,7 +210,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
   async delete(ref: SegmentRef, expected?: Token): Promise<void> {
     const path = registryRowPath(this.root, ref);
     return this.withRowLock(path, async () => {
-      const current = await this.readRow(path);
+      const current = await this.readRow(path, ref);
       if (expected !== undefined) {
         if (current === null || current.deleted || current.record.token !== expected) {
           throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
@@ -177,15 +218,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       } else if (current === null || current.deleted) {
         return; // idempotent
       }
-      if (incarnationOf(current.record.token) !== undefined) {
-        // Born with an incarnation id: a re-create draws a new one, so the file can go.
-        await this.unlinkRow(path);
-        return;
-      }
-      // A row a release before 0.12 wrote: tombstone it (advance the counter) rather than unlink, so a re-create
-      // carries the counter on, and a process still on that release cannot re-issue its tokens from 0.
-      const token = nextRegistryToken(current.record, this.entropy);
-      await this.writeRow(path, true, { ...current.record, token, updatedAt: this.now() });
+      await this.unlinkRow(path);
     });
   }
 
@@ -221,12 +254,14 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     return namespaces;
   }
 
-  private async readRow(path: string): Promise<RegistryEnvelope | null> {
+  /** Read the row at `path`, which must be the row of `ref`: one that names another segment is refused. */
+  private async readRow(path: string, ref: SegmentRef): Promise<RegistryEnvelope | null> {
     let handle;
     try {
+      if (await this.exactCase.differs(path)) return null; // another case's row is not this one
       handle = await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
-      if (isCode(err, 'ENOENT') || isCode(err, 'ELOOP')) return null;
+      if (isAbsent(err) || isCode(err, 'ELOOP')) return null;
       throw mapFsError(err);
     }
     try {
@@ -235,15 +270,18 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
         throw new IntegrityError(`registry row ${size}B exceeds cap ${DEFAULT_MAX_ROW_BYTES}B`);
       }
       const text = (await handle.readFile()).toString('utf8');
-      return parseRegistryEnvelope(text, path);
+      // Named by its path under the root, which says which file to look at without putting the host's layout in a log.
+      return parseRegistryEnvelope(text, relative(this.root, path), ref);
     } finally {
       await handle.close();
     }
   }
 
-  private async writeRow(path: string, deleted: boolean, record: RegistryRecord): Promise<void> {
-    await mkdir(dirname(path), { recursive: true });
-    const out = Buffer.from(serializeRegistryEnvelope({ deleted, record }), 'utf8');
+  private async writeRow(path: string, record: RegistryRecord): Promise<void> {
+    await this.exactCase.refuseVariant(path);
+    await makeDirs(dirname(path), this.options.privateRoot ?? this.root);
+    void sweepOrphanTemps(dirname(path));
+    const out = Buffer.from(serializeRegistryEnvelope({ deleted: false, record }), 'utf8');
     // Cap on the write path too (the read path caps at the same size): never produce a row that would later
     // be unreadable. The governance fields are already capped by validate*, so this is a belt-and-braces guard.
     if (out.length > DEFAULT_MAX_ROW_BYTES) {
@@ -252,21 +290,30 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       );
     }
 
-    const tmp = `${path}.${randomUUID()}.tmp`;
+    const tmp = tempPathFor(path);
     let handle;
     try {
-      handle = await open(tmp, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW);
+      handle = await open(tmp, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW, FILE_MODE);
     } catch (err) {
       throw mapFsError(err);
     }
     try {
-      await handle.write(out);
+      await writeAll(handle, out);
       await handle.sync();
-    } finally {
-      await handle.close();
+    } catch (err) {
+      // The temp file goes with the failed write, rather than accumulate beside the row.
+      await handle.close().catch(() => {});
+      await unlink(tmp).catch(() => {});
+      throw mapFsError(err);
     }
+    await handle.close();
     await rename(tmp, path).catch(async (err) => {
       await unlink(tmp).catch(() => {});
+      if (isCode(err, 'ENOENT')) {
+        throw new TransientError('the temporary file of a registry row was removed mid-write', {
+          cause: err,
+        });
+      }
       throw mapFsError(err);
     });
     await fsyncDir(dirname(path));
@@ -274,7 +321,9 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
 
   /** Serialize callbacks for a row so read-modify-write is atomic across every instance in the process. */
   private async withRowLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-    const key = await rowLockKey(path);
+    // On a case-insensitive root two spellings of a path are one row, so they take one lock.
+    const resolved = await rowLockKey(path);
+    const key = (await this.exactCase.folds()) ? resolved.toLowerCase() : resolved;
     const prev = rowChains.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn);
     const tail = result.then(

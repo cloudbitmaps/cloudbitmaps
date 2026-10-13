@@ -23,34 +23,37 @@
  */
 import type {
   ChunkRef,
+  ChunkRead,
+  ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
   SegmentRef,
   SegmentSize,
 } from './ports';
 import type { CrbmStorageChunkSource, PinnedObject } from './crbm-storage-source';
+import { ValidationError } from './errors';
+import { ItemPull } from './item-pull';
 import { segmentKey } from './keys';
 
 /**
  * What a pin holds for one segment: the generation, the version identifying those exact bytes, and the pinned
  * object's fingerprint, so a read can tell that the generation it opens is still that object.
  *
- * `fingerprint` is optional so that a pin built by hand, before there was one, still compiles. Nothing checks the
- * object such a pin reads, so it cannot tell a name purged and loaded again from the segment it pinned.
- * `seg.pin()` always records it.
+ * `fingerprint` is required for a pin of a generation (`null` only when `generation` is `null`): without it a read
+ * could not tell a name purged and loaded again from the segment it pinned. `seg.pin()` always records it, and a
+ * pin of a generation without a string `version` and `fingerprint` is refused with a `ValidationError`.
  */
 export interface PinnedAt {
   readonly generation: number | null;
   readonly version: string | null;
-  readonly fingerprint?: string | null;
+  readonly fingerprint: string | null;
 }
 
 /** The part of a pin a pinned read checks the object against; none for a pin of no generation. */
 const heldBy = (pin: PinnedAt): PinnedObject | undefined => {
-  if (pin.version === null) return undefined;
-  return pin.fingerprint == null
-    ? { version: pin.version }
-    : { version: pin.version, fingerprint: pin.fingerprint };
+  return pin.version === null
+    ? undefined
+    : { version: pin.version, fingerprint: pin.fingerprint as string };
 };
 
 export class PinnedStorageChunkSource implements StorageChunkSource {
@@ -63,11 +66,16 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
      * wrong answer this exists to prevent.
      */
     private readonly pins: ReadonlyMap<string, PinnedAt>,
-  ) {}
-
-  /** The unpinned segments refresh as the store's own source does; a pinned one never does. */
-  get pointerRefreshMs(): number {
-    return this.inner.pointerRefreshMs;
+  ) {
+    for (const [key, pin] of pins) {
+      if (
+        pin.generation !== null &&
+        (typeof pin.version !== 'string' || typeof pin.fingerprint !== 'string')
+      )
+        throw new ValidationError(
+          `pin for "${key}" names generation ${pin.generation} without its version and object fingerprint`,
+        );
+    }
   }
 
   /**
@@ -87,6 +95,42 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     return pin.generation === null
       ? Promise.resolve(null)
       : this.inner.getChunkAt(ref, pin.generation, heldBy(pin));
+  }
+
+  /**
+   * A pinned segment's chunks come from the pinned generation alone, under the version a pinned read keys by
+   * ({@link currentVersion}); another segment's go to the live source, which answers with its own.
+   */
+  getChunks(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): AsyncIterable<ChunkRead> {
+    const pin = this.pinFor(ref);
+    if (pin === undefined) return this.inner.getChunks(ref, keys, options);
+    return this.pinnedChunks(ref, pin, keys, options);
+  }
+
+  private async *pinnedChunks(
+    ref: SegmentRef,
+    pin: PinnedAt,
+    keys: readonly number[],
+    options: ReadChunksOptions | undefined,
+  ): AsyncGenerator<ChunkRead> {
+    if (pin.generation === null) {
+      for (const key of keys) yield { key, bytes: null, version: null };
+      return;
+    }
+    const version = await this.currentVersion(ref);
+    // Pulled by hand: a `for await` binding would keep the chunk just yielded while the next is awaited.
+    const pull = new ItemPull(
+      this.inner.getChunksAt(ref, pin.generation, keys, heldBy(pin), options),
+    );
+    try {
+      while (await pull.advance()) yield pull.take((chunk) => ({ ...chunk, version }));
+    } finally {
+      await pull.close();
+    }
   }
 
   listChunkKeys(ref: SegmentRef): Promise<number[]> {
@@ -121,6 +165,14 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
       : this.inner.summaryAt(ref, pin.generation, heldBy(pin));
   }
 
+  stat(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null> {
+    const pin = this.pinFor(ref);
+    if (pin === undefined) return this.inner.stat(ref);
+    return pin.generation === null
+      ? Promise.resolve(null)
+      : this.inner.statAt(ref, pin.generation, heldBy(pin));
+  }
+
   currentGeneration(ref: SegmentRef): Promise<number | null> {
     const pin = this.pinFor(ref);
     return pin === undefined ? this.inner.currentGeneration(ref) : Promise.resolve(pin.generation);
@@ -130,7 +182,8 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
    * A pinned segment reports the version captured when it was pinned, marked as a pin's, so its decoded chunks
    * are cached under keys that no live read writes. A live read keys its fetches by the version it resolved when
    * it began, but is served whatever generation the live source holds when each fetch lands — after a publish
-   * and a lapsed `cache.genTtlMs`, a reader-cache eviction, a sweep that heals the read forward, or an
+   * and a lapsed `cache.genTtlMs`, a reader-cache eviction on a store with no timed refresh, the resolution
+   * cache letting the segment's resolution go on a store with one, a sweep that heals the read forward, or an
    * invalidation, a different one — so an entry under a live version can hold another generation's chunk.
    * Invariant 3 lets that live call see it, and later live reads resolve the current version and never look the
    * entry up; a pin sharing the key would be handed it, and return a read that mixed two generations. A pinned
@@ -148,9 +201,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     // A live version starts with its generation number, so no live version can equal a pin's. The fingerprint keeps
     // two incarnations' pins apart where the version cannot: on a store with no registry it is the bare number.
     if (pin.version === null) return Promise.resolve(null);
-    return Promise.resolve(
-      `pin ${pin.version}${pin.fingerprint == null ? '' : `#${pin.fingerprint}`}`,
-    );
+    return Promise.resolve(`pin ${pin.version}#${pin.fingerprint}`);
   }
 
   exists(ref: SegmentRef): Promise<boolean> {

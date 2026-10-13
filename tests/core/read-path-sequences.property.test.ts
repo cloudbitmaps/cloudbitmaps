@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import fc from 'fast-check';
 import { aadFor } from '@/core/crypto';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import type { GenerationMetadata, SegmentRef } from '@/core/ports';
@@ -9,6 +9,9 @@ import { listGenerations, rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+
+// Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
+vi.setConfig({ testTimeout: 60_000 });
 
 /**
  * Random sequences of loads, materialisations, rollbacks, erasures and retention writes over one segment. After

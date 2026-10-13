@@ -43,6 +43,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { removeAll } = require('../bench/lib/remove-all.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const RESULTS = path.join(ROOT, 'bench', 'results.json');
@@ -91,7 +92,7 @@ if (strayLatency) {
 //
 // It is also a NARROW claim, and the page has to say so. "Never quotes a cheaper bill than the engine incurs" is
 // false as a claim about a bill. The estimator counts the pointer's requests and an intersect's tail reads, held
-// to the engine's request counts by tests/core/cost.test.ts, but an intersect that outlives the pointer TTL
+// to the engine's request counts by tests/tools/cost.test.ts, but an intersect that outlives the pointer TTL
 // re-reads its pointers, which the single-bucket calibration run did from outside the region, and a load that
 // loses a publish race reads the pointer again. What the anchor test proves is chunk reads on an in-memory store,
 // so what is gated is that the page states it as a floor, and scopes it to chunk reads.
@@ -266,21 +267,21 @@ function checkDriverCountEverywhere(want) {
 // unauditable: a reader cannot tell whether the node is sized for this dataset or several times larger than it.
 // So the spec is published, and gated like every other claim.
 //
-// Source is the one-cluster anchor's own trailing comment in core/cost.ts — the same literal the $346 comes from,
+// Source is the one-cluster anchor's own trailing comment in tools/src/cost.ts — the same literal the $346 comes from,
 // so the prose cannot drift from the number it describes. Parsed, not transcribed. The site's $346 is that one
 // cluster, which the crossover is drawn against; the estimator's default verdict sizes Redis to the data instead.
-const COST = path.join(ROOT, 'packages', 'core', 'src', 'core', 'cost.ts');
+const COST = path.join(ROOT, 'packages', 'tools', 'src', 'cost.ts');
 const baseline =
   /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*(?:deepFreeze\()?\{\s*monthlyUSD:\s*(\d+)\s*\}\)?;\s*\/\/\s*ElastiCache HA:\s*([^;]+);\s*~\$(\d+) single-node/.exec(
     fs.readFileSync(COST, 'utf8'),
   );
 if (!baseline) {
   fail(
-    'core/cost.ts no longer states the Redis baseline in the expected "ElastiCache HA: <topology>; ~$N single-node" form',
+    'tools/src/cost.ts no longer states the Redis baseline in the expected "ElastiCache HA: <topology>; ~$N single-node" form',
   );
 } else if (Number(baseline[1]) !== results.redisBaselineUSD) {
   fail(
-    `core/cost.ts says $${baseline[1]}/mo but bench/results.json says $${results.redisBaselineUSD} — re-run \`pnpm bench\``,
+    `tools/src/cost.ts says $${baseline[1]}/mo but bench/results.json says $${results.redisBaselineUSD} — re-run \`pnpm bench\``,
   );
 }
 // e.g. "1 primary + 2 replicas (cache.m7g.large)" -> the node count and the instance class must both be on the page.
@@ -291,6 +292,11 @@ const baselineInstance = baseline ? /\(([\w.]+)\)/.exec(baseline[2])?.[1] : null
 const atRestExact = results.atRest.monthlyUSD; // 0.0276
 const atRestShown = atRestExact.toFixed(2); // "0.03"
 if (Number(atRestShown) === 0) fail(`atRest.monthlyUSD (${atRestExact}) rounds to $0.00 at 2dp`);
+
+// The engine's cold reads are EXPECTED, not measured: its request counts are what the engine makes, counted by
+// running it (bench/range-counts.json), and a dollar figure is a count at the default list prices. The module that
+// derives them also writes the labels, so a page cannot state one without a count behind it.
+const expectedEngine = require('../bench/lib/expected-figures.cjs').expectedFigures(); // the committed JSON: no build needed
 
 const anchors = [
   ['at rest, monthly', `$${atRestShown}`],
@@ -329,12 +335,21 @@ const anchors = [
     'single-bucket · 1M cold intersects, each pointer read once',
     singleBucketFigure('per million cold intersects with each pointer read once'),
   ],
-  ['single-bucket · 1M single-part loads', singleBucketFigure(LOAD_ANCHORS.single)],
-  ['single-bucket · 1M multipart', singleBucketFigure(LOAD_ANCHORS.multipart)],
-  ...(LOAD_ANCHORS.first === null
-    ? []
-    : [['single-bucket · 1M first store.load()s', singleBucketFigure(LOAD_ANCHORS.first)]]),
   ['single-bucket · the whole run', singleBucketFigure('the run')],
+  // The engine's cold reads, expected: owned by /benchmarks, quoted by the pages that say what a cold read costs.
+  ['expected · cold intersect GETs', expectedEngine.coldIntersect.getsText],
+  ['expected · 1M cold intersects', expectedEngine.coldIntersect.perMillion],
+  ['expected · andNot GETs', expectedEngine.andNot.getsText],
+  ['expected · 1M andNot', expectedEngine.andNot.perMillion],
+  [
+    'expected · the Redis line, in cold intersects a second',
+    `${expectedEngine.redisLineIntersectsPerSec} /s`,
+  ],
+  // A load is priced from the model, not from the run: the run measured the engine before a publish was written
+  // against the row the load read, which the model's counts and the engine's tests follow.
+  ['expected · 1M first store.load()', expectedEngine.firstLoad.perMillion],
+  ['expected · iterate GETs', expectedEngine.iterate.getsText],
+  ['expected · 1M iterate', expectedEngine.iterate.perMillion],
 ];
 
 // ── the inverse check covers HOME as well as /benchmarks ───────────────────────────────────────────────────
@@ -365,30 +380,30 @@ const anchors = [
 const HOLDS_EVERY_PAGE = { site: false, 'site-next': true }[SITE_DIR];
 const HELD_ROW_BY_ROW = { site: false, 'site-next': true }[SITE_DIR];
 const MEASURED_1M = 'per million cold intersects, measured';
-const EXPECTED_1M = 'per million cold intersects with each pointer read once';
-const WRITE_1M = LOAD_ANCHORS.single;
+const EXPECTED_1M = 'expected · 1M cold intersects';
+const WRITE_1M = 'expected · 1M first store.load()';
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
   // a per-PUT $5, say — fails even where the replacement is a value some source accounts for.
   { rel: `${SITE_DIR}/benchmarks.html`, requireAll: true },
-  { rel: `${SITE_DIR}/index.html`, requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: `${SITE_DIR}/index.html`, requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   { rel: `${SITE_DIR}/architecture.html`, requireAll: false, mustState: [WRITE_1M] },
   { rel: `${SITE_DIR}/usage.html`, requireAll: false },
-  { rel: `${SITE_DIR}/flavors.html`, requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: `${SITE_DIR}/flavors.html`, requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   { rel: `${SITE_DIR}/flavors/roaring.html`, requireAll: false },
   { rel: `${SITE_DIR}/demo.html`, requireAll: false },
   {
     rel: `${SITE_DIR}/llms.txt`,
     requireAll: false,
-    mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M],
+    mustState: [EXPECTED_1M, WRITE_1M],
   },
-  { rel: 'README.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  { rel: 'README.md', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   {
     rel: 'packages/roaring/README.md',
     requireAll: false,
-    mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M],
+    mustState: [EXPECTED_1M, WRITE_1M],
   },
-  { rel: 'docs/ROADMAP.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  { rel: 'docs/ROADMAP.md', requireAll: false, mustState: [EXPECTED_1M, WRITE_1M] },
   // The benchmarks doc states money too, and a wrong figure in it would otherwise be the one thing nothing reads.
   { rel: 'docs/benchmarks.md', requireAll: false },
 ];
@@ -613,7 +628,9 @@ for (const page of PAGES) {
 
   // 1 · every anchor must be stated — on /benchmarks, which is the page that owns them — and each page's own
   for (const name of page.mustState ?? []) {
-    const want = singleBucketFigure(name);
+    const want = name.startsWith('expected · ')
+      ? (anchors.find(([n]) => n === name)?.[1] ?? null)
+      : singleBucketFigure(name);
     if (want !== null && !calibration.statesFigure(visible, want)) {
       fail(`${page.rel} no longer states ${name} (${want}), which it quotes from the latest run`);
     }
@@ -630,7 +647,17 @@ for (const page of PAGES) {
   // The page legitimately restates figures owned by other gates; each is listed so that adding one is a
   // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
+    expectedEngine.firstLoad.each, // a first load's price a request, in the benchmarks table's expected row
+    // What a steady store.load() costs per million at the list prices, from the engine's counted requests: by name, the
+    // load that lists, and their average. Owned by the load-price claims gate, which holds every page to the estimator.
+    expectedEngine.steadyLoad.byName.perMillion,
+    expectedEngine.steadyLoad.listing.perMillion,
+    expectedEngine.steadyLoad.average.perMillion,
     '$0.03', // at-rest, the rounded form
+    // What one expected cold intersect, andNot and iterate cost, a count at the list price: owned by /benchmarks.
+    expectedEngine.coldIntersect.each,
+    expectedEngine.andNot.each,
+    expectedEngine.iterate.each,
     // Home only. "$0" is the standing charge — the ABSENCE of a charge, which is the whole pitch of layer 03.
     // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
     // one figure that needs no evidence.
@@ -669,7 +696,11 @@ for (const page of PAGES) {
     const values = calibration.mergeValues(
       singleBucket.pageValues,
       calibration.valuesFromFigures([...otherSources, ...alsoAllowed], {
-        perSecond: [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec],
+        perSecond: [
+          results.readCrossoverPerSec,
+          results.referenceRedis.readCrossoverPerSec,
+          Number(expectedEngine.redisLineIntersectsPerSec),
+        ],
       }),
     );
     for (const block of blocksOf(html, isHtml, metas, page.rel)) {
@@ -707,7 +738,7 @@ if (singleBucket !== null) {
     if (body === '') fail(`${SITE_DIR}/benchmarks.html's #single-bucket panel has no table body`);
     const rows = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
       [...m[1].matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/g)].map((c) =>
-        calibration.normalize(c[1].replace(/<[^>]+>/g, '')).trim(),
+        calibration.normalize(removeAll(c[1], /<[^>]+>/g)).trim(),
       ),
     );
     const seen = new Map();

@@ -25,8 +25,8 @@ export { SegmentEngine } from './core/engine';
 export type { EngineDeps, CombineOptions as EngineCombineOptions, IdRange } from './core/engine';
 export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';
-export { groundedReport } from './core/cost';
 export { runExport } from './export';
+export type { SegmentReader } from './export';
 // `splitId` only: the flavor uses it to fail fast on a non-u32 id. `joinId` is the inverse and has no
 // caller outside core, so it stays internal rather than shipping as half-documented public API.
 export { splitId } from './core/bit-route';
@@ -50,7 +50,20 @@ export { LocalFsStorage, MemoryStorage } from './drivers/backends';
 export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 // A storage source over the `.crbm` generations in an `IStorageDriver`.
 export { CrbmStorageChunkSource } from './core/crbm-storage-source';
-export type { CrbmStorageChunkSourceOptions, PinnedObject } from './core/crbm-storage-source';
+export type {
+  CrbmStorageChunkSourceOptions,
+  PinLease,
+  PinnedObject,
+} from './core/crbm-storage-source';
+// Leases: the registry half a flavor's `pin({ leaseUntil })` is built on, and the bounds it documents.
+export {
+  LEASE_SKEW_MS,
+  MAX_LEASE_MS,
+  MAX_LEASES_PER_SEGMENT,
+  releaseLease,
+  takeLease,
+} from './core/leases';
+export type { LeaseDeps, LeaseTake, TakenLease } from './core/leases';
 // A pinned view of one segment at one generation — everything else passes through to the live source.
 export { PinnedStorageChunkSource } from './core/pinned-storage-source';
 export type { PinnedAt } from './core/pinned-storage-source';
@@ -59,9 +72,37 @@ export type { PinnedAt } from './core/pinned-storage-source';
 // The loaded store's primary write path: replace a segment's contents with one immutable generation, guarded.
 // Composes next-generation → write → guard → publish → collect, which is the sequence every load performs and
 // the one whose last step gets left out when it is composed by hand.
-export { loadSegment } from './core/load';
-export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
+export { judgeLoad, loadSegment, loadSegmentChunks } from './core/load';
+// A batch combine: many outputs, each an expression over named stored operands, computed in one chunk-ordered pass.
+// The store's `materializeMany` runs it; the free functions are for a flavor or driver author.
+export { compileCombineMany, rebindCombineMany, runCombineMany } from './core/combine-many';
+export type {
+  CombineExpr,
+  CombineManyDeps,
+  CombineManyFeed,
+  CombineManyFeedRecord,
+  CombineManyOperand,
+  CombineManyOperandStats,
+  CombineManyOutcome,
+  CombineManyOutput,
+  CombineManyOutputStats,
+  CombineManyRequest,
+  CombineManyRun,
+  CombineManyStats,
+  CombineManyWrite,
+  CompiledCombineMany,
+} from './core/combine-many';
+export type {
+  LoadDeps,
+  LoadOptions,
+  LoadGuard,
+  GuardRefusal,
+  LoadJudgement,
+  LoadResult,
+  LoadRefusal,
+} from './core/load';
 export type { LoadInput, PortableBitmap } from './core/load-input';
+export { decodeSerialized } from './core/load-input';
 // See what a segment has been, and put it back. `rollbackSegment` is the one pointer move that goes backwards,
 // and the one no automatic path performs — forward-only is right for a writer and wrong for an operator.
 export { listGenerations, rollbackSegment } from './core/rollback';
@@ -75,7 +116,11 @@ export type {
   StorageChunkSource,
   IStorageDriver,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
   ChunkRef,
+  ChunkRead,
+  ReadChunksOptions,
   SegmentRef,
   GenKey,
   IRegistryDriver,
@@ -85,6 +130,9 @@ export type {
   RegistryPatch,
   RegistryStatus,
   RegistrySummary,
+  RegistryWriteOptions,
+  LeaseEntry,
+  KnownGeneration,
   ClearRegistrySummary,
   SealedRegistrySummary,
   GenerationMetadata,
@@ -104,6 +152,9 @@ export {
   TransientError,
   KeyUnavailableError,
   BudgetExceededError,
+  LeaseExpiredError,
+  LeaseLimitError,
+  StaleOperandError,
   // Copy-safe predicates. On an ordinary install `instanceof` holds everywhere — every package in the family
   // is published with `@cloudbitmaps/core` left external, so one copy of these classes is shared and you can
   // catch them however you normally would. Prefer these where that stops being true and nothing here can
@@ -117,6 +168,13 @@ export {
   isNotFoundError,
   isIntegrityError,
   isValidationError,
+  isLeaseExpiredError,
+  isLeaseLimitError,
+  isStaleOperandError,
+  isUnsupportedError,
+  isCapabilityError,
+  isBudgetExceededError,
+  isKeyUnavailableError,
 } from './core/errors';
 
 // Encryption-at-rest: the injected crypto seams (`core/`, crypto-free) + the default in-process AES-256-GCM
@@ -161,6 +219,7 @@ export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/
 // Storage ordering is load-bearing and lives there). A call, never a daemon — the operator owns the heartbeat that
 // runs it.
 export { retireExpired } from './core/retention-sweep';
+
 // `excludingReservedRows` is the filter a fleet-wide pass must apply — the due index stores its state AS
 // registry rows, so an unscoped `registry.list()` returns bookkeeping rows alongside real segments and a
 // caller that forgets to skip them reports phantom segments. The bounded drain itself (`drainRegistry`) and
@@ -205,6 +264,7 @@ export type {
   ExportedSegment,
   ExportFailure,
   ExportManifest,
+  ExportSkipped,
 } from './export';
 
 // Resilience: the retry primitive, the policy and its defaults, and the read-source wrapper `CloudRoaring` builds
@@ -230,24 +290,6 @@ export type { BlobReader, BlobSink } from './core/blob';
 // (storage/cache/retry/intersect/op) to your stack; see the observability guide.
 export { NOOP_METRICS, CountingMetricsSink } from './core/metrics';
 export type { IMetricsSink, MetricEvent, MetricOpName, MetricsSnapshot } from './core/metrics';
-
-// Cost model & estimator: pure `estimateCost` planning + grounded `segment.costReport()`; the pluggable pricing
-// profile + the honest `CostReport` verdict (never hides the lose-zone).
-export {
-  estimateCost,
-  AWS_US_EAST_1_ONDEMAND,
-  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
-  ONE_REDIS_HA_CLUSTER,
-} from './core/cost';
-export type {
-  PricingProfile,
-  RedisNodeType,
-  RedisSizing,
-  CostReport,
-  Workload,
-  SegmentSizing,
-  EstimateInput,
-} from './core/cost';
 
 // Audit trail: a separate injected seam for security/compliance state changes (publish/rewrite/erase/dispose) —
 // distinct from metrics. Pass `audit` to the load and erasure APIs; see the dashboards guide. Exception-safe; the

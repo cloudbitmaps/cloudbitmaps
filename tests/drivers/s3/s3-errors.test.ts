@@ -1,6 +1,9 @@
+import { isValidationError } from '@/core/errors';
 import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingBucket,
+  isMissingBucket,
   isNotFound,
   isPreconditionFailed,
   isTransient,
@@ -37,6 +40,24 @@ describe('S3 error classification', () => {
     expect(isNotFound(new Error('boom'))).toBe(false);
   });
 
+  it('a missing bucket is not a missing object, nor a transient', () => {
+    const noBucket = { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } };
+    expect(isMissingBucket(noBucket)).toBe(true);
+    expect(isNotFound(noBucket)).toBe(false);
+    expect(isTransient(noBucket)).toBe(false);
+    expect(isMissingBucket({ name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })).toBe(false);
+  });
+
+  it('a missing bucket becomes a ValidationError that names it and keeps the service error as its cause', () => {
+    const noBucket = { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } };
+    const err = asMissingBucket(noBucket, 'my-bucket') as Error;
+    expect(isValidationError(err)).toBe(true);
+    expect(err.message).toMatch(/^the S3 bucket does not exist: my-bucket; check /);
+    expect(err.cause).toBe(noBucket);
+    const other = { name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } };
+    expect(asMissingBucket(other, 'my-bucket')).toBe(other);
+  });
+
   it('detects an invalid range (416)', () => {
     expect(isInvalidRange({ name: 'InvalidRange' })).toBe(true);
     expect(isInvalidRange({ $metadata: { httpStatusCode: 416 } })).toBe(true);
@@ -50,6 +71,8 @@ describe('S3 error classification', () => {
       expect(isTransient({ $metadata: { httpStatusCode: 500 } })).toBe(true);
       expect(isTransient({ name: 'TimeoutError' })).toBe(true);
       expect(isTransient({ code: 'ECONNRESET' })).toBe(true);
+      expect(isTransient({ code: 'EHOSTUNREACH' })).toBe(true);
+      expect(isTransient({ code: 'ENETUNREACH' })).toBe(true);
       expect(isTransient({ $retryable: { throttling: true } })).toBe(true);
     });
     // The SDK marks a signature refused for a skewed clock once it has corrected the clock; only then is it transient.

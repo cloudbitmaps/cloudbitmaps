@@ -67,8 +67,8 @@ export const ARRAY = 0;
 /** A container of 65,536 bits. */
 export const BITMAP = 1;
 /** A container of `(start, length)` runs. */
-export const RUN = 2;
-export type ContainerKind = typeof ARRAY | typeof BITMAP | typeof RUN;
+const RUN = 2;
+type ContainerKind = typeof ARRAY | typeof BITMAP | typeof RUN;
 
 export interface PortableContainer {
   /** High 16 bits of every value in this container. */

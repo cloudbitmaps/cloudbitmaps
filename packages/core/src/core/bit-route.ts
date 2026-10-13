@@ -8,7 +8,7 @@ export const U32_MAX = 0xffff_ffff;
 export const CHUNK_COUNT = 0x1_0000; // 65,536 possible chunk keys
 const LOW_16 = 0xffff;
 
-export interface BitRoute {
+interface BitRoute {
   /** Top 16 bits — the chunk key (0..65535). */
   readonly chunkKey: number;
   /** Bottom 16 bits — the value within the chunk (0..65535). */
@@ -18,22 +18,22 @@ export interface BitRoute {
 /** Split a u32 id into `{ chunkKey, remainder }`. Throws `ValidationError` for non-u32 input. */
 export function splitId(id: number): BitRoute {
   if (!Number.isInteger(id) || id < 0 || id > U32_MAX) {
-    throw new ValidationError(`id must be an integer in 0..${U32_MAX}; got ${id}`);
+    throw new ValidationError(`an id must be an integer from 0 to ${U32_MAX}`);
   }
   return { chunkKey: id >>> 16, remainder: id & LOW_16 };
 }
 
-/**
- * Recombine a chunk key + remainder back into the u32 id. Precondition: `chunkKey` is a validated
- * 16-bit value (tier-derived keys are validated upstream in the engine before reaching here, per
- * invariant 5); `remainder` is masked to 16 bits.
- */
 /**
  * Largest legal value inside a chunk payload. A chunk covers `CHUNK_COUNT` ids, so remainders run
  * `[0, CHUNK_COUNT - 1]`. Exported so the engine can assert it on untrusted tier bytes.
  */
 export const MAX_REMAINDER = CHUNK_COUNT - 1;
 
+/**
+ * Recombine a chunk key + remainder back into the u32 id. Precondition: `chunkKey` is a validated
+ * 16-bit value (tier-derived keys are validated upstream in the engine before reaching here, per
+ * invariant 5); `remainder` is masked to 16 bits.
+ */
 export function joinId(chunkKey: number, remainder: number): number {
   return (((chunkKey & LOW_16) << 16) >>> 0) + (remainder & LOW_16);
 }

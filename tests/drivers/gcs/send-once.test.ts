@@ -27,7 +27,7 @@ import { CREATED_TOKEN, tokenAfter } from '../../helpers/tokens';
 
 const BUCKET = 'b';
 
-type Operation = 'upload' | 'metadata' | 'media' | 'delete';
+type Operation = 'upload' | 'list' | 'metadata' | 'media' | 'delete';
 
 interface StoredObject {
   readonly body: Buffer;
@@ -91,6 +91,8 @@ class StubGcs {
   readonly deleteFences: Array<string | null> = [];
   /** When set, an upload's answer names a checksum the stored bytes do not have. */
   corruptChecksums = false;
+  /** When set, an upload's bytes arrive altered, as corruption in transit that TLS did not catch would leave them. */
+  corruptUploads = false;
   private seq = 1_000;
   /** Connections the stub has accepted and seen close, to show a refused response does not leak its socket. */
   opened = 0;
@@ -161,13 +163,16 @@ class StubGcs {
     const name = upload
       ? (url.searchParams.get('name') ?? '')
       : decodeURIComponent(url.pathname.slice(objectPrefix.length));
+    const list = req.method === 'GET' && url.pathname === objectPrefix.slice(0, -1);
     const op: Operation = upload
       ? 'upload'
-      : req.method === 'DELETE'
-        ? 'delete'
-        : url.searchParams.get('alt') === 'media'
-          ? 'media'
-          : 'metadata';
+      : list
+        ? 'list'
+        : req.method === 'DELETE'
+          ? 'delete'
+          : url.searchParams.get('alt') === 'media'
+            ? 'media'
+            : 'metadata';
     this.sent.push(op);
     const fault = this.fault?.op === op ? this.fault : undefined;
     if (fault !== undefined) this.fault = undefined;
@@ -227,9 +232,23 @@ class StubGcs {
     });
     const current = this.objects.get(name);
     switch (op) {
+      case 'list':
+        return json(200, {
+          kind: 'storage#objects',
+          items: [...this.objects.keys()].map((n) => ({ name: n })),
+        });
       case 'upload': {
-        const { metadata, bytes } = uploadParts(req, body);
+        const parts = uploadParts(req, body);
+        const { metadata } = parts;
+        const bytes = this.corruptUploads
+          ? Buffer.concat([parts.bytes, Buffer.from('!')])
+          : parts.bytes;
         this.uploads.push({ name, query: Object.fromEntries(query), metadata });
+        // As GCS does: a `crc32c` sent with the upload is checked against the bytes received, and nothing is stored
+        // when they differ.
+        if (typeof metadata.crc32c === 'string' && metadata.crc32c !== crc32c(bytes)) {
+          return error(400, 'invalid');
+        }
         const match = query.get('ifGenerationMatch');
         if (match !== null) {
           const expected = Number(match);
@@ -463,6 +482,31 @@ describe('GCS: the single request carries what file.save() would have sent', () 
     }
   });
 
+  it('a registry write sends its checksum for GCS to check, so a corrupted upload stores nothing', async () => {
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    const body = stub.objects.get('registry/_default/s.reg')!.body;
+    expect(stub.uploads[0]?.metadata.crc32c).toBe(crc32c(body));
+
+    stub.corruptUploads = true;
+    await expect(backend.registry.compareAndSwap(REF, token, { currentGen: 1 })).rejects.toThrow();
+    stub.corruptUploads = false;
+    expect(stub.objects.get('registry/_default/s.reg')?.body).toEqual(body);
+    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 0, token });
+  });
+
+  it('a registry write whose answer names another checksum keeps the row: nothing deletes it', async () => {
+    // The SDK's own check runs after the upload and, on a mismatch or an answer with no checksum, deletes the object
+    // by name with no precondition: for a registry row, the live row, another writer's newer one included.
+    const backend = new GcsStorage({ bucket: BUCKET, client: stub.client() });
+    const { token } = await backend.registry.create(REF, { currentGen: 0 });
+    stub.corruptChecksums = true;
+    await backend.registry.compareAndSwap(REF, token, { currentGen: 1 });
+    stub.corruptChecksums = false;
+    expect(stub.count('delete')).toBe(0);
+    expect(await backend.registry.get(REF)).toMatchObject({ currentGen: 1 });
+  });
+
   it('a write-once upload is one octet-stream upload under `ifGenerationMatch: 0`', async () => {
     const driver = new GcsStorageDriver({ storage: stub.client(), bucket: BUCKET });
     await put(driver, new Uint8Array([1, 2, 3]));
@@ -551,9 +595,11 @@ describe('GCS: one-request reads through the real SDK', () => {
       { 'content-type': 'application/json' },
       '{"error":{"code":416}}',
     ];
+    // The version is the object generation the metadata names.
     expect(await (backend.storage as GcsStorageDriver).getTail(GEN, 10)).toEqual({
       bytes: new Uint8Array(0),
       size: 0,
+      version: expect.stringMatching(/^[1-9]\d*$/),
     });
     expect(stub.count('media')).toBe(1);
     expect(stub.count('metadata')).toBe(1);
@@ -567,7 +613,7 @@ describe('GCS: one-request reads through the real SDK', () => {
     const watch = watchProcess();
     try {
       await expect(read()).rejects.toBeInstanceOf(expected);
-      for (let i = 0; i < 100 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
+      for (let i = 0; i < 200 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
       expect(stub.aborted).toBe(true);
       await new Promise((r) => setTimeout(r, 50));
     } finally {
@@ -586,6 +632,36 @@ describe('GCS: one-request reads through the real SDK', () => {
       }),
     };
     await refusedAndReleased(() => backend.registry.get(REF), IntegrityError);
+  });
+
+  it('a download still arriving when it is refused raises no listener-limit warning', async () => {
+    // The SDK and its HTTP layer each run a pipeline over the one response body, and with the body's own listeners
+    // that is one more error and close listener than Node's default limit of ten, for as long as the body is in flight.
+    // None of it leaks (a read that settles takes its listeners with it), but the warning is printed for every such
+    // read, so the limit is raised on that one body and no other emitter.
+    const warnings: Error[] = [];
+    const onWarning = (w: Error): void => void warnings.push(w);
+    process.on('warning', onWarning);
+    try {
+      const { backend } = await registryRow();
+      stub.mediaEndless = {
+        status: 200,
+        headers: (cur) => ({
+          'x-goog-generation': String(cur.generation),
+          'content-length': String(MAX_ROW_BYTES * 1024),
+        }),
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        stub.aborted = false;
+        await expect(backend.registry.get(REF)).rejects.toBeInstanceOf(IntegrityError);
+        for (let i = 0; i < 200 && !stub.aborted; i++) await new Promise((r) => setTimeout(r, 20));
+        expect(stub.aborted).toBe(true);
+      }
+      await new Promise((r) => setTimeout(r, 50)); // a warning is emitted a turn after the listener that earns it
+    } finally {
+      process.off('warning', onWarning);
+    }
+    expect(warnings.map((w) => w.message)).toEqual([]);
   });
 
   it('a pointer body that outruns the cap with no length is refused, and the response is let go', async () => {

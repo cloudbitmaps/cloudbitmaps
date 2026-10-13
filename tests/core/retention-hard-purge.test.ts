@@ -11,14 +11,15 @@
  * deletes for real, so a request count here is the count a cloud store would bill.
  */
 import { describe, expect, it } from 'vitest';
-import { RETENTION_SWEEP_REQUESTS } from '@/core/cost';
+import { heavy } from '../helpers/strength';
+import { RETENTION_SWEEP_REQUESTS } from '@/tools/cost';
 import { retireExpired, DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep';
 import { setSegmentRetention } from '@/core/retention';
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '../helpers/publish';
 import { loadSegment } from '@/core/load';
 import { dueBucket, dueBucketsAt, dueIndexRef, dueNamespace } from '@/core/due-index';
-import { TransientError, UnsupportedError, WriteConflictError } from '@/core/errors';
+import { TransientError, WriteConflictError } from '@/core/errors';
 import type { IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
 import { segmentKey, shardOf } from '@/core/keys';
@@ -28,7 +29,6 @@ import { MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../helpers/counting';
-import { readAs011 } from '../helpers/release-0-11';
 import { tokenParts } from '../helpers/tokens';
 
 const DAY = 86_400_000;
@@ -80,16 +80,18 @@ async function readsOf<T>(w: World, call: () => Promise<T>): Promise<{ reads: nu
 /** The objects the store holds under the registry prefix: rows, tombstones and due pointers alike. */
 const registryObjects = (w: World): number => w.store.size(registryListPrefix(undefined));
 
-/** The pointers a due bucket holds, as a 0.12 listing yields them. */
+/** The pointers a due bucket holds, as a listing yields them. */
 async function bucketRows(w: World, bucket: number): Promise<RegistryRecord[]> {
   const rows: RegistryRecord[] = [];
   for await (const row of w.registry.list(dueNamespace(bucket))) rows.push(row);
   return rows;
 }
 
+const PURGED = heavy('retentionPurgeSegments');
+
 describe('the done-when: a full sweep costs what is live and in its grace, not what was ever retired', () => {
-  it('after 10,000 segments are created, retired and purged, a full sweep reads only the live row', async () => {
-    const N = 10_000;
+  it(`after ${PURGED.toLocaleString('en-US')} segments are created, retired and purged, a full sweep reads only the live row`, async () => {
+    const N = PURGED;
     const w = world();
     const ns = 'sends';
     for (let i = 0; i < N; i++)
@@ -237,9 +239,9 @@ describe('the purge keeps what is inside its grace', () => {
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
       list: (r) => w.storage.list(r),
-      delete: async (k) => {
+      delete: async (k, o) => {
         order.push(`storage ${k.generation}`);
-        await w.storage.delete(k);
+        await w.storage.delete(k, o);
       },
     };
     w.store.beforeDelete = async () => {
@@ -258,58 +260,8 @@ describe('the purge keeps what is inside its grace', () => {
   });
 });
 
-describe('only a row born with an incarnation id is removed', () => {
-  /** A `destroyed` row as 0.11 retired one: schema 1, a decimal token, stamped by its sweep long ago. */
-  const legacyTombstone = (ref: SegmentRef): string =>
-    JSON.stringify({
-      schemaVersion: 1,
-      deleted: false,
-      record: {
-        namespace: ref.namespace,
-        segment: ref.segment,
-        currentGen: 0,
-        status: 'destroyed',
-        retention: { expiresAt: T0 - 30 * DAY, retiredBySweepAt: T0 - 20 * DAY },
-        createdAt: T0 - 40 * DAY,
-        updatedAt: T0 - 20 * DAY,
-        token: '7',
-      },
-    });
-
-  it('a tombstone 0.11 left is purged as a tombstone: the object stays, and a full scan still reads it', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'old' };
-    const key = registryObjectKey(undefined, ref);
-    w.store.plant(key, legacyTombstone(ref));
-
-    const res = await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    expect(res.entries).toEqual([{ ...ref, action: 'purged-tombstone' }]);
-    expect(w.store.deletes).toBe(0);
-    const stored = JSON.parse(w.store.text(key)!) as {
-      deleted: boolean;
-      record: { token: string };
-    };
-    expect(stored.deleted).toBe(true);
-    expect(stored.record.token).toMatch(/^8\.[0-9a-f]{16}$/); // its own form: no incarnation
-    const next = await readsOf(w, () => retireExpired(w.deps, { namespace: 'n', now: w.now() }));
-    expect(next.reads).toBe(1); // the envelope, read and skipped
-  });
-
-  it('a row 0.11 created and 0.12 has since written is tombstoned too', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'old' };
-    const key = registryObjectKey(undefined, ref);
-    w.store.plant(key, legacyTombstone(ref).replace('"status":"destroyed"', '"status":"active"'));
-    const { token } = await w.registry.compareAndSwap(ref, '7', { status: 'destroyed' });
-    expect(token).toMatch(/^8\.[0-9a-f]{16}$/); // still no incarnation
-    await w.registry.delete(ref, token);
-    expect(w.store.deletes).toBe(0);
-    expect(w.store.text(key)).toBeDefined();
-  });
-});
-
 describe('the gate', () => {
-  it('off, the purge tombstones as it did before 0.12, and reports the same ledger entry', async () => {
+  it('off, the purge tombstones the row, and reports the same ledger entry', async () => {
     const w = world({ conditionalDelete: false });
     expect(w.registry.capabilities().conditionalDelete).toBe(false);
     const ref = { namespace: 'n', segment: 'day' };
@@ -325,7 +277,7 @@ describe('the gate', () => {
     };
     expect(stored.deleted).toBe(true);
     expect(w.store.deletes).toBe(0);
-    // A name purged as a tombstone carries its counter on into the next incarnation, as before.
+    // A name purged as a tombstone carries its counter on into the next incarnation.
     const { token } = await w.registry.create(ref, { currentGen: null });
     expect(tokenParts(token).counter).toBeGreaterThan(0);
   });
@@ -451,7 +403,7 @@ describe('races and faults: the purge removes only the row it judged', () => {
         getRange: (k, o, l) => w.storage.getRange(k, o, l),
         getTail: (k, m) => w.storage.getTail(k, m),
         list: (r) => w.storage.list(r),
-        delete: (k) => w.storage.delete(k),
+        delete: (k, o) => w.storage.delete(k, o),
         putImmutable: async (k, f) => {
           if (!straddled) {
             straddled = true;
@@ -489,7 +441,7 @@ describe('races and faults: the purge removes only the row it judged', () => {
       putImmutable: (k, f) => w.storage.putImmutable(k, f),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) =>
         (async function* () {
           // Mid-listing, the tombstone is purged and the name created again with a generation of its own.
@@ -596,7 +548,7 @@ describe('the purge pointer in the due index', () => {
       putImmutable: (k, f) => w.storage.putImmutable(k, f),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) =>
         (async function* () {
           if ((await w.registry.get(reused)) === null) {
@@ -730,43 +682,6 @@ describe('the purge pointer in the due index', () => {
       tombstoneGraceMs: GRACE,
     });
     expect(fleet.tombstonesPurged).toBe(1);
-  });
-
-  it('a 0.11 index scan meets a purge pointer as it meets every row 0.12 writes: it fails closed, typed', async () => {
-    const w = world();
-    const ref = { namespace: 'n', segment: 'day' };
-    await seed(w, ref, T0 + RETENTION);
-    w.advance(RETENTION + 1);
-    await retireExpired(w.deps, { now: w.now(), tombstoneGraceMs: GRACE });
-    const purgeDay = dueBucket(w.now() + GRACE);
-
-    // 0.11's `list(cbm.due.<day>)`: one listing, then each row parsed, the stamp checked first.
-    const scanAs011 = async (bucket: number): Promise<void> => {
-      for await (const key of w.store.listKeys(
-        registryListPrefix(undefined, dueNamespace(bucket)),
-      )) {
-        readAs011(w.store.text(key)!);
-      }
-    };
-    await expect(scanAs011(purgeDay)).rejects.toBeInstanceOf(UnsupportedError);
-    // A control: the same scan reads a bucket holding a pointer 0.11 wrote.
-    const older = purgeDay - 1000;
-    w.store.plant(
-      registryObjectKey(undefined, dueIndexRef(older, ref)),
-      JSON.stringify({
-        schemaVersion: 1,
-        deleted: false,
-        record: {
-          ...dueIndexRef(older, ref),
-          currentGen: null,
-          status: 'active',
-          createdAt: 1,
-          updatedAt: 1,
-          token: '0',
-        },
-      }),
-    );
-    await expect(scanAs011(older)).resolves.toBeUndefined();
   });
 
   it('the lookback reaches a purge pointer the sweep missed for a week, and no further', async () => {
@@ -1048,7 +963,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
     };
   }
 
-  it('gate off: a retirement is 8 reads and 3 writes, a purge 3 and 1, two objects stay, and a sweep reads 100', async () => {
+  it('gate off: a retirement is 6 reads and 2 writes, a purge 3 and 1, two objects stay, and a sweep reads 100', async () => {
     expect(await costs(false)).toEqual({
       ...RETENTION_SWEEP_REQUESTS.tombstoning,
       objectsLeft: 2,
@@ -1056,7 +971,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
     });
   });
 
-  it('gate on: a retirement is 9 reads, 3 writes and a delete, a purge 4 reads and 2 deletes, and nothing stays', async () => {
+  it('gate on: a retirement is 7 reads, 2 writes and a delete, a purge 4 reads and 2 deletes, and nothing stays', async () => {
     expect(await costs(true)).toEqual({
       ...RETENTION_SWEEP_REQUESTS.conditionalDelete,
       objectsLeft: 0,
@@ -1077,7 +992,7 @@ describe('what a retirement and a purge cost, per segment, with the gate on and 
         putImmutable: (k, f) => w.storage.putImmutable(k, f),
         getRange: (k, o, l) => w.storage.getRange(k, o, l),
         getTail: (k, m) => w.storage.getTail(k, m),
-        delete: (k) => w.storage.delete(k),
+        delete: (k, o) => w.storage.delete(k, o),
         list: () => ({
           [Symbol.asyncIterator]: () => ({
             next: () => Promise.reject(new Error('storage list unavailable')),
@@ -1293,7 +1208,7 @@ describe('a purge pointer that outlives its row is removed by the unscoped fleet
         putImmutable: (k, f) => w.storage.putImmutable(k, f),
         getRange: (k, o, l) => w.storage.getRange(k, o, l),
         getTail: (k, m) => w.storage.getTail(k, m),
-        delete: (k) => w.storage.delete(k),
+        delete: (k, o) => w.storage.delete(k, o),
         list: (r) =>
           (async function* () {
             if ((await w.registry.get(reused)) === null) {

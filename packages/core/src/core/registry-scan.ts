@@ -11,7 +11,8 @@
  * the fleet, which is why the ceiling is not optional: at the default of 250,000 rows the snapshot is tens of MB,
  * comfortably more than the 128–256 MB Lambda the guide suggests starting with, so it fails loudly instead.
  */
-import { BudgetExceededError, ValidationError } from './errors';
+import { requirePositiveInteger } from './check';
+import { BudgetExceededError } from './errors';
 import { isDueIndexRow } from './due-index';
 import type { IRegistryDriver, RegistryRecord } from './ports';
 
@@ -22,10 +23,8 @@ import type { IRegistryDriver, RegistryRecord } from './ports';
 export const DEFAULT_MAX_SCAN_SEGMENTS = 250_000;
 
 /** Fail fast on a bad ceiling BEFORE the (possibly huge) scan, not after. */
-export function validateMaxScanSegments(value: number, op: string): void {
-  if (!Number.isFinite(value) || value < 1) {
-    throw new ValidationError(`${op}: maxScanSegments must be a finite number >= 1; got ${value}`);
-  }
+function validateMaxScanSegments(value: number, op: string): void {
+  requirePositiveInteger(value, `${op}: maxScanSegments`);
 }
 
 /**

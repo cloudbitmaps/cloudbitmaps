@@ -3,6 +3,17 @@
  * line in a comment or a Markdown paragraph, and across two string literals joined by `+`, so a phrase split by
  * either is still one phrase.
  */
+import { createRequire } from 'node:module';
+
+/**
+ * `text` with every match of `pattern` (a global regex) replaced until none is left, so removing one comment or tag
+ * cannot join the text around it into another. The same function the figure and calibration gates use.
+ */
+export const removeAll = (
+  createRequire(import.meta.url)('../../bench/lib/remove-all.cjs') as {
+    removeAll: (text: string, pattern: RegExp, replacement?: string) => string;
+  }
+).removeAll;
 
 /** Two string literals joined by `+` across a line break. */
 const JOIN = String.raw`['"\x60][ \t]*\+[ \t]*\n[ \t]*['"\x60]`;

@@ -21,19 +21,32 @@ await store.load({ segment: 'users' }, [42]);
 await store.segment('users').has(42);
 console.log(metrics.snapshot());
 // { storage: { gets, bytes, totalMs }, cache: { hits, misses }, retries: { transient },
-//   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto } }
+//   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto, materializeMany } }
 ```
 
-The library emits five kinds of vendor-neutral events, so it is not coupled to any telemetry system. You map the
+The library emits six kinds of vendor-neutral events, so it is not coupled to any telemetry system. You map the
 handful you care about:
 
 | Event | Carries | Fired |
 | --- | --- | --- |
-| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk request to Storage — the number of GETs, one per request however many callers were waiting on it |
-| `cache` | `hit` | every cache lookup, when a cache is configured. A miss is a lookup that found no cached chunk; it is counted even when the caller then waits on a read another caller already has open, so misses can exceed `storage.get` events |
+| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one request for chunks to Storage: a range request of a combine, `iterate` or `store.materializeMany`, which carries every chunk the read needs from a stretch of the object (`bytes` is the range's, the gaps between chunks it reads across included), or the one chunk of a point read — the number of chunk GETs, one per request however many callers were waiting on a point read. Pointer and index reads are not counted. A range a read had already requested when the caller stopped is reported too, when it settles, since it is billed. One event is one request's outcome, its retries included, and one that failed reports 0 `bytes`. A chunk a small generation's reader kept from its open is no request and reports none |
+| `cache` | `hit` | every cache lookup, and every chunk counted a miss without one, when a cache is configured. A miss is a chunk the cache did not hold; it is counted even when the caller then waits on a point read another caller already has open, and a combine or `iterate` counts every chunk it needs when it opens (a lookup each, except that on a cache that holds nothing each chunk after the one a stream starts at is a miss without one), so misses can exceed `storage.get` events, which are fewer than the chunks when a range carries several |
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
-| `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
+| `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto` / `materializeMany`), `ms` | per timed op |
+| `advisory` | `code` (`'socket-pool-below-window'`), `driver`, `bucket`, `maxSockets`, `threshold`, `concurrency` | once, after the first S3 read finishes (even one that fails), when the client's socket pool is smaller than `threshold` (twice the default `concurrency` of 32, so 64); see [socket sizing](production.md#reliability-retries-backoff--timeouts). Not a fault, and silent for a handler the store cannot read. `bucket` is your own string: do not use it as a metric label unless your bucket names are fixed |
+
+`store.materializeMany` emits one `op` event per call, `name: 'materializeMany'`, timed from its first request (the
+pins) to its last publish, and a `storage.get` event per range request it sends. The `op` event fires when the call
+ends, also when it throws after its first request (a budget refusal, a failed pin), and not when its input checks
+refuse it; a fed call's time includes the time spent waiting on the feed. A range serves every output of its group,
+so the events count the call's requests, not requests per output. It emits no `cache`
+event, since it never looks up the chunk cache, and no `intersect` event, since an output is an expression over
+several operators. A dry run (`dryRun: true`) emits the same `op` event and the same `storage.get` events, and no
+audit event, since it publishes nothing. So an `*Into` call that moves into a batch leaves its own name's op series and the chunk-skipping
+and cache-hit series: the batch's latency is one series for the whole call, not comparable with a per-output `*Into`
+one, and its reads stay in the request series. The `stats` on its result carry the rest (bytes, chunks pruned, memory
+high-water mark), and its `audit` sink fires per output.
 
 A quick look in dev is one line:
 
@@ -72,7 +85,11 @@ Events carry raw observations (bytes, counts, ms). Two things to keep in mind:
   bucket, or scrub inside the sink instead). Events never contain bitmap contents or ids — only names, counts,
   bytes, and timings.
 
-A sink that throws can never break a read: its exceptions are swallowed.
+A sink that switches on `kind` with a `never` check in its default branch, as `CountingMetricsSink` does, stops
+compiling at `advisory` until it has a case for it: ignoring the event is fine. A sink with an ordinary default branch needs no change.
+
+A sink that throws can never break a read: its exceptions are swallowed, and so is the rejection of an `async onEvent`,
+which would otherwise be an unhandled rejection that ends a Node process.
 
 ## Audit trail: security & compliance events
 
@@ -80,7 +97,8 @@ Metrics report volume (bytes, latency, hit rate). The **audit sink** records the
 changes an auditor cares about: when a segment's data was published or a load of it refused, when its pointer was
 rolled back, and when it was rewritten, erased or disposed of. It is the natural feed for an append-only audit log or
 SIEM, and doubles as your GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it is an injected
-`IAuditSink`, it is off by default (a no-op), and a throwing sink can never break the operation it observes.
+`IAuditSink`, it is off by default (a no-op), and a throwing sink, or an async one that rejects, can never break the
+operation it observes.
 
 Unlike metrics, audit is not a store option. The events fire from the operations that write, which are separate entry
 points, so you pass `audit` to each: a load (`store.load`), an `*Into` materialization, a rollback (`store.rollback`),
@@ -104,24 +122,34 @@ await store.eraseSubject(userId, { namespace: 'eu', audit });
 await destroySegment({ segment: 'users' }, { registry: backend.registry }, { confirmSegment: 'users', audit });
 
 audit.snapshot();
-// [ { kind: 'segment.publish', segment: 'users', generation: 0 },
-//   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', fromGeneration: 4, generation: 5 },
-//   { kind: 'segment.erase',   segment: 'users' } ]
+// [ { kind: 'segment.publish', segment: 'users', incarnation: '3f9c…', generation: 0 },
+//   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', incarnation: 'a71e…', fromGeneration: 4, generation: 5 },
+//   { kind: 'segment.erase',   segment: 'users', incarnation: '3f9c…' } ]
 // (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
 ```
 
-The events are vendor-neutral. There are seven kinds, each carrying the segment's name and namespace, or, for
-`namespace.erase`, the namespace's:
+The events are vendor-neutral. There are eight kinds, each carrying the segment's name and namespace, or, for
+`namespace.erase`, the namespace's.
+
+Every `segment.*` event also carries `incarnation`, the id of the segment's registry row as the operation found or
+wrote it. A segment whose row was purged and created again starts its generations at `0` again, so a name and a
+generation number can belong to two different lives of the segment; the incarnation tells them apart. Every write of a
+row keeps its incarnation, so all the events of one life of a segment share it. Within one life a generation number
+still does not name one object for good: a number whose object was deleted, such as a refused load's or one an erasure
+deleted above the pointer, can be taken again by a later load, so read a segment's events in the order they arrived.
+It is absent when the row's token carries no incarnation id, for example from a registry of your own that issues
+tokens in another form, and on a `segment.load-refused` from a load that found no row.
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
-| `segment.publish` | a load — `store.load` or an `*Into` verb — makes a generation the current one | `generation` |
-| `segment.load-refused` | a load did not publish: a guard refused its result, the segment's row changed while it wrote, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal that follows a registry write that got no answer: that write may have landed first, so the generation may have been current for a while before it was replaced | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
-| `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward with `allowForward` — the one pointer move no automatic path makes | `fromGeneration`, `generation` |
+| `segment.publish` | a load — `store.load`, an `*Into` verb or an output of `store.materializeMany` — makes a generation the current one | `generation` |
+| `segment.load-refused` | a load did not publish (a `materializeMany` dry run emits none, nor any other audit event): a guard refused its result, the segment's row changed while it wrote or appeared where it found none, or another load took its generation number first, in which case it wrote nothing and `cardinality` is `0`. `unanswered: true` marks a refusal that follows a registry write that got no answer: that write may have landed first, so the generation may have been current for a while before it was replaced | `generation`, `reason`, `cardinality`, and `unanswered` when it applies |
+| `segment.rollback` | `store.rollback` moved the pointer to a generation it names, still in the bucket: **backwards**, or forward onto one an earlier rollback left — the one pointer move no automatic path makes. `unknown: true` marks a move the segment's row did not vouch for: `allowUnknown` was passed for a generation the row does not know or whose object is not the one it recorded, the row has no usable `knownGens`, or the target is older than a full `knownGens` reaches | `fromGeneration`, `generation`, and `unknown` when it applies |
 | `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
+| `segment.collect` | an erasure (`eraseSubject`) found the id only outside the current generation, in a retained older generation, above the pointer after a rollback, in an object left under a tombstone, or in a first load's object on a segment with no generation yet, and deleted the generations holding it without rewriting any; or deleted, whatever the id, only objects no read of the segment can open (a first load's sealed under a key the row does not hold, or encrypted under a cleartext row), which it cannot search and which the ledger then does not list; emitted once a listing of the bucket shows nothing left holding the id | `fromGeneration` (the newest generation that held it; absent when the call found it in none and deleted only objects it could not search), `collected` (every generation the call deleted, ascending) |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
 | `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
-| `namespace.erase` | `eraseNamespace` runs; also one `segment.erase` per segment actually shredded | `segmentsShredded` |
+| `namespace.erase` | `eraseNamespace` runs, after every segment is done; also one `segment.erase` per segment actually shredded, emitted as each finishes (segments are shredded eight at a time, so those arrive in no fixed order) | `segmentsShredded` |
 
 The same two caveats as metrics apply. **`onEvent` runs synchronously** on the operation, so keep it cheap and offload
 network writes to your own queue. **`segment` and `namespace` are your own strings**, so treat them as potentially PII

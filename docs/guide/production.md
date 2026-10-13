@@ -45,6 +45,20 @@ four; a custom role needs `storage.objects.create`, `storage.objects.get`, `stor
 `Storage Blob Data Contributor` role on the container covers all of them. A connection string carries the account
 key, which grants far more: prefer a `containerClient` built from a managed identity.
 
+**A bucket or container that does not exist** fails every call with a `ValidationError`, never reads as an empty store: a
+misspelt or deleted bucket cannot answer `has` with `false` and `count` with `0`. On S3 a zero-length tail
+(`getTail(key, 0)`) reads as a missing object, because S3 sends no error code on a HEAD; on GCS, see the two cases this
+paragraph ends with. The error names the bucket or
+container and says what to check (the name, and the region, endpoint, project or account the client is built for), and
+carries the service's own error (`NoSuchBucket`, `ContainerNotFound`) as its `cause`. It is not a `NotFoundError`, which
+a read answers by looking again, and a wiring fault does not heal. GCS answers a missing bucket and a missing object with the same `404`, so
+the first time a GCS request answers `404` the driver lists one object in the bucket, which only a missing bucket can
+answer with `404`, and remembers the bucket once it has seen it: one listing per driver for the life of the process.
+A missing bucket then fails with `the GCS bucket does not exist: <bucket>; check ...`. An identity without
+`storage.objects.list` is refused that listing, which says nothing about the bucket: for it, a `404` reads as a
+missing object unless GCS's message says the bucket does not exist. A bucket deleted after the driver has seen it
+reads as empty for the rest of the process, while every write to it fails.
+
 ## Bucket lifecycle
 
 Two rules to add, and one to never add.
@@ -164,16 +178,29 @@ const store = new CloudRoaring({
 });
 ```
 
-**On GCS the driver retries downloads, and the SDK should not.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
-and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the process with
-`ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The client
-`GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
-backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502, 503 or 504, and after nothing else (not a missing credentials file or a TLS failure), so a download is retried whichever
+**On GCS the driver retries downloads, and the SDK does not.** In `@google-cloud/storage` 7.x and 8.x (checked on 7.22.0
+and 8.1.0), a download the SDK retries after any status it retries (408, 429, 500, 502, 503 or 504) can crash the
+process with `ERR_STREAM_UNABLE_TO_PIPE`, thrown outside any promise, even though the retried request succeeded. The
+client `GcsStorage` builds sends each download once, and the driver runs it again itself, up to three more times with
+backoff, after a connection fault (refused, reset, timed out, a DNS failure, a body cut off) or a 408, 429, 500, 502,
+503 or 504, and after nothing else (not a missing credentials file or a TLS failure), so a download is retried whichever
 call made it and whether or not the store's own `retry` is on. What still fails after those attempts is a
-`TransientError`, which the store's read retry, above, can run again. The client's other requests keep the SDK's
-retries. A `client` you pass is used as it is: build it with `retryOptions: { autoRetry: false }`. That also turns off
-the SDK's retries of listings, metadata reads and resumable uploads on that client, which the library does not
-retry; the client `GcsStorage` builds keeps them and needs nothing.
+`TransientError`, which the store's read retry, above, can run again. The client's listings, deletes, resumable uploads
+and the metadata read that settles a write keep its retry settings (under which the SDK sends a delete with no
+precondition once); a single-request conditional write is sent without them. A client you pass as `client` keeps its own
+retries for those requests: its downloads go through a twin of it, built from its own class with the same credentials
+object, endpoint, project, user agent, timeout, checksum generator and interceptors and the SDK's retries off. The two
+clients share one credentials object, so one token fetch serves both. The twin is built even for a client whose retries
+are off, because the SDK turns a client's retries off while a delete or an upload with no precondition is in flight, so
+that setting, read once, does not say how the client was built. A `Storage` client is always used through its twin,
+which must have taken the settings that decide where and how a download goes: the same credentials object, URL and
+endpoint, and retry settings of its own, which are then turned off over any its class set. The backend refuses, when it
+is built, a client whose twin would not (a subclass that builds from options of its own), one whose class overrides
+`bucket` (as a test double built on `Storage` does), and one whose `bucket` is replaced on the instance (as by a test
+stub). Stub `Storage.prototype` (or `Bucket.prototype`, `File.prototype`) instead, which reaches the twin; a stub on the
+client's instance does not. A test double that is not a `Storage` client is used as it is when it has
+`retryOptions: { autoRetry: false }`, and refused without it; with the SDK's module mocked, pass the mock as `client`.
+What is set on a client after the backend was built, other than an interceptor, is not carried to the twin.
 
 **A GCS client's `timeout` does not bound a download** on `@google-cloud/storage` 8.x: the SDK hands it to an HTTP
 client that has no such option. Measured against a local server that accepts a read and never answers, a read through
@@ -278,7 +305,7 @@ concurrent `has()` calls with `readTimeoutMs: 2_000` lost most of their reads to
 busy too: Node runs a due timer before it reads a socket, so a synchronous stretch longer than the timeout fails the
 reads in flight even when their responses have arrived. Size `readTimeoutMs` above the
 worst queueing your concurrency implies, which is about the concurrent reads divided by the sockets, times what one
-read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. The client the store builds takes it
+read takes (8,000 ÷ 50 × 50 ms is 8 s on a client with 50 sockets; derived), or raise `maxSockets`. A registry listing keeps up to 48 row reads open at once, so on a client you pass, at the SDK's 50 sockets, your own concurrent reads may wait for a socket while a listing runs, and that wait counts toward `readTimeoutMs`; the client the store builds has 128. The client the store builds takes it
 as an option; a client you pass is yours to set:
 
 ```ts
@@ -303,17 +330,48 @@ const client = new S3Client({
 });
 ```
 
-A combine keeps up to `concurrency` chunk keys in flight (32 by default once its window has widened), and it reads
-every operand of a key at once: an `intersect` of two segments has up to 64 reads open, and an `andNot` against
-excludes up to 32 times the include plus the excludes that hold each key. The client the store builds allows 128
+A combine reads each operand as a stream of ranges and keeps up to `concurrency` range requests per operand in flight
+(32 by default once its window has widened; it opens 4 wide): an `intersect` of two segments has up to 64 reads open,
+and an `andNot` against excludes up to 32 for the include plus 32 for each exclude read in the same round; an exclude
+of an `intersect` of two or more segments is read in batches whose requests never exceed the keys the window holds, so
+up to 32 more for each exclude. Most reads need
+far fewer: chunks that sit near each other are one range, so two segments whose shared chunks lie together are one
+request each. The client the store builds allows 128
 sockets, which covers one two-operand combine with room to spare; a client you pass keeps the SDK's default of 50, and
 its reads past the 50th are not refused: they wait for a socket, and the wait counts against `readTimeoutMs`. Raise
 `maxSockets` (on the store, or on your own client) to match your concurrent combines (256 covers four two-operand
-combines or one `eraseSubject`), or pass a lower `concurrency` to the combine.
+combines), or pass a lower `concurrency` to the combine.
 
-`eraseSubject` has up to `concurrency × 32` range reads open (256 by default, since it erases 8 segments at once, each
-with a window of 32 chunk reads), and `iterate` and the storage-path `count` read up to 32 keys ahead. Its 256 needs
-`maxSockets: 256`, or a lower `concurrency`.
+**The store tells you when a client you pass is below that.** When the store has a `metrics` sink and the
+client's socket pool is smaller than twice the default window (64), the first read sends the sink one `advisory` event
+and no more: `{ kind: 'advisory', code: 'socket-pool-below-window', driver: 's3', bucket, maxSockets, threshold: 64,
+concurrency: 32 }`. Nothing is logged or printed, and the check sends no request of its own. It compares against the
+default `concurrency` of 32, because a combine's `concurrency` is chosen per call and the store cannot see it: if you
+always pass a lower one, the event is a false alarm for you and you can ignore it. It reads the pool through the SDK's
+own request handler, so it sees the SDK's default handler and the agents you give it (`maxSockets` on its `httpAgent` or
+`httpsAgent`, for the scheme your endpoint uses). It **cannot read** a request handler you wrote yourself, an HTTP/2
+handler, the Fetch handler, or an agent that does not expose `maxSockets`, and for those it sends nothing and raises no
+error, so no event does not mean the pool is large enough. A pool you raise after the first read is not seen. When your client has an `endpoint`, it reads the agent for that scheme. When it has none, or its endpoint comes from the environment (`AWS_ENDPOINT_URL`), which the client does not expose, the scheme is not known, so it reads every agent the handler has made and sends the event only if all of them are below 64: it never warns on a pool your reads do not use, and it can miss a small pool when the other agent is large. A backend given to several stores sends each store's sink its own event, once; a store built after the check has run gets it as soon as the check's result is known. The client
+the store builds, at its 128 sockets, sends none unless you set `maxSockets` below 64.
+
+`eraseSubject` has up to `concurrency × 8` requests open (64 by default, since it erases 8 segments at once, each
+reading its segment through a stream of at most 4 ranges, each up to 1 MiB, and searching its other generations for a
+holder 4 at a time, two requests each), and `iterate` reads up to 32 ranges ahead (a source that reads chunk by chunk,
+and the storage-path `count`, up to 32 keys). Its 64 fit the client the store builds (128 sockets); on a client you
+pass with the SDK's default of 50, the requests past 50 wait for a socket unless you raise `maxSockets`.
+
+### Reading ranges: the bytes between chunks
+
+A combine or `iterate` reads the chunks it needs from an object as ranges: chunks that sit within 256 KiB of each other
+are read in one request, up to 1 MiB, and the bytes between them are read and never looked at. That is what turns a
+request for every chunk into a request for a stretch of the object. It also means a read of chunks that are spread over
+an object can cover most of it: the requests fall, and the bytes read rise toward the object's size. Inside the bucket's
+region S3 Standard does not bill bytes read, so the extra bytes cost a few milliseconds of transfer and nothing else (S3
+Express One Zone bills them). **Across
+regions, and out to the internet, S3 bills the bytes**, and reading most of an object to get a few of its chunks can cost
+more in transfer than the requests it saved: run readers in the bucket's region, or measure with
+[the sizing guide's overlap tables](sizing.md#how-much-the-overlap-matters), which show the requests and the bytes read
+for chunks that lie together and for chunks that are spread. There is no setting for the 256 KiB or the 1 MiB.
 
 Raise `readTimeoutMs` too on a link too slow to deliver a read inside the timeout, since such a read fails on every attempt. The
 timer is set on each request rather than on the client, so a `client` you pass gets it without being changed. On a
@@ -389,9 +447,9 @@ Two separate limits protect you. It helps to know which one you hit.
 
 | | `budget` | the memory ceilings |
 | --- | --- | --- |
-| bounds | **cost**: backend requests a single operation may fan out into | **memory**: what a process holds resident, whatever the segments' size |
-| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap. **`budget: false` lifts none of them.** |
-| covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
+| bounds | **cost**: chunk reads a single operation may fan out into, an upper bound on its backend requests (neighbouring chunks share one) | **memory**: what a process holds resident, whatever the segments' size |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` readers, default 1024 / 64 MiB: their parsed indices, a fixed 3.75 KiB each for the objects around the index, and the chunk bytes of a small generation; and 8 × as many segments' resolutions within a sixteenth of the bytes) · the combines' `concurrency` window · the per-chunk decode cap · `maxBufferedBytes` for `materializeMany` (default 256 MiB; required with a feed). **`budget: false` lifts none of them.** |
+| covers | `count` · `iterate` · the combines · `materializeMany` · `subjectReport` · `eraseSubject` | every read, on every backend |
 
 ### The request budget
 
@@ -431,12 +489,16 @@ for await (const _ of store.segment('huge').intersect([store.segment('other')], 
 }
 ```
 
-The ceiling is checked once, before the fan-out, against work whose size is already known, so it adds nothing to the
-hot path. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
+The ceiling is checked before the fan-out, against work whose size is already known, so it adds nothing to the
+hot path. An `iterate` or a combine that lists its keys again after a move
+([a running read plans its keys again](reading.md#a-running-read-plans-its-keys-again-after-a-move)) is checked again,
+with the chunk reads it has already taken, and throws `BudgetExceededError` at that key when the segment grew past the
+ceiling. `has` is a single call and is never budgeted. The units are the chunk reads the operation will actually
 issue. For an `intersect` that is the surviving keys times the operands present at each, plus only those excludes
-that hold the key, so a large suppression list is not charged for keys it cannot affect. Bytes need no separate
-limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads the
-index with zero requests, so it approaches the ceiling only on a source that cannot serve cardinalities.
+that hold the key, so a large suppression list is not charged for keys it cannot affect. An exclude read in batches
+(an `intersect` of two or more segments) is still charged a unit for each such key, though a batch sends fewer requests than it has keys. Bytes need no separate
+limit, because every chunk read is size-capped by the safe deserializer. `count` on a loaded segment reads no
+payload: it answers from the row's summary, or from the index when the row has none it can use, so it approaches the ceiling only on a source that cannot serve cardinalities.
 
 `eraseSubject` charges one unit per registered segment, and one for each generation it opens beyond the one the
 row names. Only the enumeration can refuse the whole call. A segment that runs the budget out during the scan is
@@ -446,10 +508,10 @@ on. Re-run with a higher `budget` to finish those segments. The ledger of the er
 ### The memory ceilings
 
 `intersect`'s budget is a product (surviving keys times operands), while its memory is a window
-(`concurrency × operands × chunk`) that does not depend on segment size. A request budget cannot express a memory
+(`concurrency × operands × the 1 MiB a range may be`, which is the chunk cap) that does not depend on segment size. A request budget cannot express a memory
 bound, and `budget: false` ("I know my fan-out") must not silently also mean "unbounded RAM". A wide segment's parsed
-index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. Lower
-`cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments.
+index can reach about 1.3 MB (65,536 entries at 20 B), which is why the reader cache is bounded by bytes as well as by count. A reader also keeps the chunk bytes of a generation whose whole object arrived with its tail read, when they total at most `readerMaxBytes` / `readerMax` (64 KiB by default), and those count in the same bound, so a cache of readers that each kept a whole share holds fewer than `readerMax` of them. Each open reader counts a fixed 3.75 KiB for the objects it holds around its index besides, so readers that each kept a whole share weigh the share plus 3.75 KiB plus their index: `readerMax` readers of that kind fit in the ceiling only up to the fraction share / (share + 3.75 KiB + index), about 94% at the defaults (about 965 of 1,024), about 68% with `readerMaxBytes` at 8 MiB and about 51% at 4 MiB. A deployment that raises `readerMax` for many tiny segments is bounded by `readerMaxBytes` too: 64 MiB holds about 17,000 of them, and a `readerMaxBytes` below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Lower
+`cache.readerMaxBytes` for a memory-tight deployment, such as a 128 MB Lambda that reads across many wide segments. A running combine or `iterate` holds the reader of the generation it is reading (its parsed index, any chunk bytes it kept, and the key it unwrapped on an encrypted segment) until it moves on or ends, outside `readerMax` and `readerMaxBytes`: one reader per streamed operand, for as long as the read runs, so a process with many reads open at once holds that many readers more than the cache's bound. Both caches are keyed on the segment's generation and its row's `pointerId`, so a load's publish, a rollback or an erasure's rewrite makes each store reading the segment open its reader again at its next pointer refresh and fetch again the chunks it reads next, and a lease or a `setRetention` does not ([what a lease costs](reading.md#hold-a-generation-for-a-job-a-lease)). A store with a timed refresh also keeps each segment's resolution, the few hundred bytes of its row a read resolves through and never an unwrapped key; the wrapped keys are in it. It keeps them apart from its readers: up to 8 × `readerMax` of them within `readerMaxBytes` / 16, so 8,192 and 4 MiB by default ([what they hold](sizing.md#what-each-reader-holds)). A segment whose reader the cache let go is reopened from it with no registry read, when a read needs its index or a chunk the chunk cache does not hold, and on an encrypted segment the key is unwrapped again through the keystore.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space, about 4.29
 billion members. `maxScanSegments`, an option of `store.retireExpired` (`store.checkConsistency` holds the default of
@@ -466,6 +528,7 @@ Measured on an Apple M3 Pro on 2026-09-30, the median of 20 runs, each in a fres
 | --- | --- | --- | --- |
 | a load, `store.load()` (1M ids spread across the id space, in-memory storage) | ~526 ms | **~24 ms** (47 ms at worst) | a batch job or worker; survivable off the request path |
 | `eraseSubject` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
+| `store.materializeMany` | decodes each operand chunk once per group and encodes every output, as an `*Into` does | not measured | a batch job or worker, as for a load |
 | `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as

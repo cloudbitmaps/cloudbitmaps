@@ -16,6 +16,7 @@
  * changed underneath it. A write-once object collision is never replayed at all: the generation number is
  * taken, so the caller has to pick a new one.
  */
+import { requireFiniteNumber, requireInteger } from './check';
 import type { Clock, Rng } from './determinism';
 import { isTransientError, ValidationError } from './errors';
 
@@ -76,6 +77,26 @@ export function applyJitter(policy: RetryPolicy, delayMs: number, rng: Rng): num
   return rng.next() * delayMs; // full jitter: uniform in [0, delayMs)
 }
 
+/** A clock that can wait: the one member {@link jitteredWait} uses. */
+interface Sleeper {
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+}
+
+/**
+ * Wait a uniformly spread share of `boundMs`, whole milliseconds, by the clock's `sleep`. With no `rng` it waits the
+ * whole bound; with no `sleep` it does not wait.
+ */
+export function jitteredWait(
+  clock: Sleeper | undefined,
+  rng: Rng | undefined,
+  boundMs: number,
+): Promise<void> {
+  const sleep = clock?.sleep;
+  return sleep === undefined
+    ? Promise.resolve()
+    : sleep.call(clock, Math.floor((rng?.next() ?? 1) * boundMs));
+}
+
 /**
  * The store's read retry, as a write path takes it for the reads it makes along the way: a policy (the default when
  * absent) and what {@link withRetry} needs to run it.
@@ -93,6 +114,28 @@ export function retryRead<T>(op: () => Promise<T>, retry: ReadRetry | undefined)
 }
 
 /**
+ * `policy`, checked when it is wired rather than at the first retry: a delay or factor that is not a finite number, a
+ * negative delay, a factor below 1 or a jitter mode it does not know would make the backoff `NaN`, which a timer reads
+ * as 1 ms, so bounded backoff silently became a hot retry loop. `maxAttempts` is a whole number, and `maxDelayMs` is not
+ * below `baseDelayMs`, which it would otherwise cap every delay under.
+ */
+export function checkedRetryPolicy(policy: RetryPolicy): RetryPolicy {
+  const { maxAttempts, baseDelayMs, maxDelayMs, backoffFactor, jitter } = policy;
+  requireInteger(maxAttempts, { min: 1, what: 'retry.maxAttempts' });
+  requireFiniteNumber(baseDelayMs, { min: 0, what: 'retry.baseDelayMs' });
+  requireFiniteNumber(maxDelayMs, {
+    min: baseDelayMs,
+    what: 'retry.maxDelayMs',
+    note: 'retry.baseDelayMs',
+  });
+  requireFiniteNumber(backoffFactor, { min: 1, what: 'retry.backoffFactor' });
+  if (jitter !== 'full' && jitter !== 'none') {
+    throw new ValidationError(`retry.jitter must be 'full' or 'none'`);
+  }
+  return policy;
+}
+
+/**
  * Run `op`, retrying transient failures per `policy`. Resolves with `op`'s result, or rejects with the last
  * error once attempts are exhausted (or immediately for a non-retryable error). The thrown error is always
  * the *operation's* error — never a wrapper — so callers keep their typed-error branching.
@@ -103,18 +146,9 @@ export async function withRetry<T>(
   deps: RetryDeps,
 ): Promise<T> {
   const retryable = deps.isRetryable ?? isTransientError;
-  // `Math.max(1, x)` guards 0 and negatives but NOT NaN — `Math.max(1, NaN)` is NaN, and `1 <= NaN` is false,
-  // so the loop below would never execute: `op()` never called, and the function rejects with the literal
-  // `undefined` from `lastErr`. Every retried read would fail without touching the backend, and callers would
-  // catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
-  // var unset is NaN. Fail loudly instead, and floor it so a fractional value can't sleep on a final attempt
-  // that never happens.
-  if (!Number.isFinite(policy.maxAttempts) || policy.maxAttempts < 1) {
-    throw new ValidationError(
-      `retry.maxAttempts must be a finite number >= 1 (got ${String(policy.maxAttempts)})`,
-    );
-  }
-  const attempts = Math.floor(policy.maxAttempts);
+  // A `NaN` count (`Number(process.env.X)` with the variable unset) would skip the loop, never call `op` and reject
+  // with the literal `undefined`; a policy that bypassed `checkedRetryPolicy` is refused here instead.
+  const attempts = requireInteger(policy.maxAttempts, { min: 1, what: 'retry.maxAttempts' });
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {

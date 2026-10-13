@@ -1,0 +1,34 @@
+{
+  "node": "v24.18.1",
+  "platform": "darwin arm64",
+  "shapes": [
+    {
+      "shape": "cleartext, no metadata",
+      "entries": 8192,
+      "countedBytesEach": 322,
+      "heapBytesEach": 415,
+      "heapPerCounted": 1.29
+    },
+    {
+      "shape": "encrypted, no metadata",
+      "entries": 8192,
+      "countedBytesEach": 457,
+      "heapBytesEach": 697,
+      "heapPerCounted": 1.53
+    },
+    {
+      "shape": "cleartext, 300 B metadata",
+      "entries": 6492,
+      "countedBytesEach": 646,
+      "heapBytesEach": 800,
+      "heapPerCounted": 1.24
+    },
+    {
+      "shape": "encrypted, 300 B metadata",
+      "entries": 4804,
+      "countedBytesEach": 873,
+      "heapBytesEach": 1131,
+      "heapPerCounted": 1.3
+    }
+  ]
+}

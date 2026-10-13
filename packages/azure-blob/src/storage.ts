@@ -19,15 +19,31 @@
  * flushes and frees ~one block) finished with a conditional `commitBlockList`, so a load's write footprint
  * stays ~one block regardless of segment size, up to the advertised `maxObjectBytes`. Drivers may use
  * `node:crypto`; only `core/` is bound by the determinism lint.
+ *
+ * **A delete given `ifVersion` is a Delete Blob under `ifMatch: <that ETag>`**, unless `conditionalDelete` is turned
+ * off: Azure Blob applies the condition, and Azurite does too, as for the registry. A tail read reports the blob's ETag
+ * as its version, from the ranged download that carried the bytes, or the properties when none were asked for. A `412`
+ * (`ConditionNotMet`) is the condition failing, and is reported as {@link WriteConflictError} unless the properties then
+ * show no blob under the name: an absent blob is a no-op, whether the service answers it `404` or `412`. The delete
+ * keeps the client's retry policy: a copy that meets its own landed delete finds nothing, and one that meets a blob
+ * stored since is refused.
  */
 import {
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
+  concatBytes,
   isNotFoundError,
   isValidationError,
   isWriteConflictError,
+  normalizeObjectPrefix,
+  parseGenerationFromKey,
+  requireBool,
+  requirePositiveInt,
+  segmentObjectPrefix,
+  storageObjectKey,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   BlobSink,
@@ -35,16 +51,21 @@ import type {
   IStorageDriver,
   SegmentRef,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
 } from '@cloudbitmaps/core/driver-kit';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import type { ContainerClient } from '@azure/storage-blob';
 import {
-  storageObjectName,
-  normalizeAzurePrefix,
-  parseGenerationFromName,
-  segmentObjectPrefix,
-} from './keys';
-import { isConditionalConflict, isInvalidRange, isNotFound, isTransient } from './azure-errors';
+  isConditionalConflict,
+  isInvalidRange,
+  asMissingContainer,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+  transientFaultMessage,
+} from './azure-errors';
+import { collect } from './body';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
@@ -56,6 +77,8 @@ import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 const AZURE_BLOCK_BYTES = 8 * 1024 * 1024;
 /** Azure hard limit: a block blob has at most 50,000 committed blocks. This × the block size is the ceiling. */
 const AZURE_MAX_BLOCKS = 50_000;
+/** Azure's limit on one block, 4,000 MiB; with the block limit it bounds a blob at about 190.7 TiB. */
+const AZURE_MAX_BLOCK_BYTES = 4000 * 1024 * 1024;
 
 const OCTET_STREAM = { blobContentType: 'application/octet-stream' } as const;
 /** Write-once precondition shared by both upload paths: create only if the blob is absent. */
@@ -83,6 +106,11 @@ export interface AzureBlobStorageDriverOptions {
    * 2,147,483,647.
    */
   readonly readTimeoutMs?: number;
+  /**
+   * Whether a delete given `ifVersion` is sent with `ifMatch`, so it removes the blob only while it is the one that ETag
+   * names. Defaults to `true`: Azure Blob applies `If-Match` on a delete, and Azurite does too.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 export class AzureBlobStorageDriver implements IStorageDriver {
@@ -91,26 +119,33 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   private readonly maxObjectBytes: number;
   private readonly blockBytes: number;
   private readonly readTimeoutMs: number;
+  private readonly conditionalDelete: boolean;
 
   constructor(options: AzureBlobStorageDriverOptions) {
     this.container = options.containerClient;
-    this.prefix = normalizeAzurePrefix(options.prefix);
+    this.conditionalDelete = requireBool('conditionalDelete', options.conditionalDelete) ?? true;
+    this.prefix = normalizeObjectPrefix(options.prefix);
     this.readTimeoutMs = resolveReadTimeoutMs(options.readTimeoutMs);
     // Fail fast at the boundary: nullish-coalescing only guards `undefined`, so an explicit 0 / negative /
     // fractional value would otherwise slip through and silently reject every write (cap) or corrupt the flush
     // threshold (block size).
-    const requestedBlock = options.blockBytes ?? AZURE_BLOCK_BYTES;
-    if (!Number.isSafeInteger(requestedBlock) || requestedBlock < 1) {
+    const requestedBlock =
+      requirePositiveInt('blockBytes', options.blockBytes) ?? AZURE_BLOCK_BYTES;
+    requirePositiveInt('maxObjectBytes', options.maxObjectBytes);
+    // Past Azure's own limits a setting is not reachable: a block over 4,000 MiB is refused by the service, and so is a
+    // blob that needs one.
+    if (requestedBlock > AZURE_MAX_BLOCK_BYTES) {
       throw new ValidationError(
-        `blockBytes must be a positive safe integer; got ${requestedBlock}`,
+        `blockBytes must be at most Azure's 4,000 MiB block limit (${AZURE_MAX_BLOCK_BYTES}); got ${requestedBlock}`,
       );
     }
     if (
       options.maxObjectBytes !== undefined &&
-      (!Number.isSafeInteger(options.maxObjectBytes) || options.maxObjectBytes < 1)
+      options.maxObjectBytes > AZURE_MAX_BLOCK_BYTES * AZURE_MAX_BLOCKS
     ) {
       throw new ValidationError(
-        `maxObjectBytes must be a positive safe integer; got ${options.maxObjectBytes}`,
+        `maxObjectBytes must be at most Azure's limit of ${AZURE_MAX_BLOCKS} blocks of 4,000 MiB ` +
+          `(${AZURE_MAX_BLOCK_BYTES * AZURE_MAX_BLOCKS}); got ${options.maxObjectBytes}`,
       );
     }
     // Default the object cap to what the requested block size can cover within the 50,000-block limit; if a
@@ -120,7 +155,12 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: this.maxObjectBytes,
+      conditionalPut: true,
+      conditionalDelete: this.conditionalDelete,
+    };
   }
 
   private blob(name: string) {
@@ -131,7 +171,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectKey(this.prefix, key); // validates ref + generation
     const sink = new AzureBlockBlobSink(
       this.blob(objectName),
       this.blockBytes,
@@ -163,11 +203,17 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = storageObjectName(this.prefix, key);
+    const objectName = storageObjectKey(this.prefix, key);
     try {
       return await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
         const res = await this.blob(objectName).download(offset, length, { abortSignal });
-        const bytes = await collect(res.readableStreamBody, abortSignal);
+        const bytes = await collect(
+          res.readableStreamBody,
+          abortSignal,
+          length,
+          () => this.badRead(key, 'range', `the response is longer than the ${length}B requested`),
+          res.contentLength,
+        );
         // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result. (Azurite
         // returns a clamped-short body here rather than a 416; a start fully past EOF does 416 → mapReadError.)
         if (bytes.length !== length) {
@@ -182,38 +228,112 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     }
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectName = storageObjectName(this.prefix, key);
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    const objectName = storageObjectKey(this.prefix, key);
     try {
       // Two round-trips (properties for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). The Blob service takes no suffix range, only `bytes=start-` and `bytes=start-end`, so a
       // tail read needs the size first, and it stays two. This is on the per-*generation* open path, which the
       // reader caches — NOT the per-op cache path (has/count/intersect) — so it's amortized.
       // Each request is timed on its own: the properties, then the ranged download and its body.
-      const props = await timedRead('getProperties', this.readTimeoutMs, (abortSignal) =>
-        this.blob(objectName).getProperties({ abortSignal }),
-      );
-      const size = props.contentLength ?? 0;
-      if (!Number.isSafeInteger(size) || size < 0) {
-        throw new ValidationError(`Azure returned an invalid blob size: ${String(size)}`);
+      // The rule every driver's tail read holds to: a safe integer, and zero or less an empty tail.
+      if (!Number.isSafeInteger(maxBytes)) {
+        throw new ValidationError(`invalid tail length ${String(maxBytes)}`);
       }
-      if (maxBytes <= 0 || size === 0) return { bytes: new Uint8Array(0), size };
-      const take = Math.min(maxBytes, size);
-      const bytes = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
-        const res = await this.blob(objectName).download(size - take, take, { abortSignal });
-        return collect(res.readableStreamBody, abortSignal);
-      });
-      return { bytes, size };
+      // The download is conditional on the properties' ETag, so the size, the bytes and the version always describe
+      // one blob. A blob replaced between the two requests answers 412: the pair is read again once, and a second
+      // replacement is a `TransientError` for the caller's retry.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const props = await timedRead('getProperties', this.readTimeoutMs, (abortSignal) =>
+          this.blob(objectName).getProperties({ abortSignal }),
+        );
+        const size = props.contentLength ?? 0;
+        if (!Number.isSafeInteger(size) || size < 0) {
+          throw new ValidationError(`Azure returned an invalid blob size: ${String(size)}`);
+        }
+        if (maxBytes <= 0 || size === 0) {
+          return withVersion({ bytes: new Uint8Array(0), size }, props.etag);
+        }
+        // Without an ETag the download cannot be conditional, and a blob replaced between the two requests would
+        // hand back one blob's size with another's bytes, so a response that omits it is refused.
+        const etag = props.etag;
+        if (etag === undefined) {
+          throw this.badRead(key, 'tail', 'the properties response carries no ETag');
+        }
+        const take = Math.min(maxBytes, size);
+        let downloaded: { bytes: Uint8Array; version: string | undefined };
+        try {
+          downloaded = await timedRead('download', this.readTimeoutMs, async (abortSignal) => {
+            const res = await this.blob(objectName).download(size - take, take, {
+              abortSignal,
+              conditions: { ifMatch: etag },
+            });
+            const body = await collect(
+              res.readableStreamBody,
+              abortSignal,
+              take,
+              () => this.badRead(key, 'tail', `the response is longer than the ${take}B requested`),
+              res.contentLength,
+            );
+            return { bytes: body, version: res.etag };
+          });
+        } catch (err) {
+          if (isPreconditionFailed(err)) continue;
+          throw err;
+        }
+        if (downloaded.bytes.length !== take) {
+          throw this.badRead(
+            key,
+            'tail',
+            `the response holds ${downloaded.bytes.length}B of the ${take}B requested`,
+          );
+        }
+        return withVersion({ bytes: downloaded.bytes, size }, downloaded.version);
+      }
+      throw new TransientError(
+        `${key.segment}.${key.generation} was replaced while its tail was read`,
+      );
     } catch (err) {
       throw this.mapReadError(err, key);
     }
   }
 
-  async delete(key: GenKey): Promise<void> {
-    // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const blob = this.blob(storageObjectKey(this.prefix, key));
+    const ifVersion = options?.ifVersion;
+    if (ifVersion === undefined || !this.conditionalDelete) {
+      // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
+      try {
+        await blob.deleteIfExists();
+      } catch (err) {
+        throw this.mapError(err);
+      }
+      return;
+    }
     try {
-      await this.blob(storageObjectName(this.prefix, key)).deleteIfExists();
+      await blob.delete({ conditions: { ifMatch: ifVersion } });
     } catch (err) {
+      // An absent blob is a no-op whatever version was given (a missing container is not one: `isNotFound` excludes it),
+      // and a failed condition is a conflict only while a blob is under the name: a service may answer it for a name
+      // with nothing there, a copy of this delete that landed first included.
+      if (isNotFound(err)) return;
+      if (isPreconditionFailed(err)) {
+        if (!(await this.exists(blob))) return;
+        throw new WriteConflictError(
+          `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+        );
+      }
+      throw this.mapError(err);
+    }
+  }
+
+  /** Whether a blob is under the name, from its properties. A read that fails in any other way throws. */
+  private async exists(blob: BlockBlob): Promise<boolean> {
+    try {
+      await blob.getProperties();
+      return true;
+    } catch (err) {
+      if (isNotFound(err)) return false;
       throw this.mapError(err);
     }
   }
@@ -223,7 +343,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     try {
       // The async paging iterator drains every page; a segment has few generations, so the set is small.
       for await (const item of this.container.listBlobsFlat({ prefix })) {
-        const generation = parseGenerationFromName(prefix, item.name);
+        const generation = parseGenerationFromKey(prefix, item.name);
         if (generation !== null) {
           yield { namespace: ref.namespace, segment: ref.segment, generation };
         }
@@ -234,6 +354,12 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   /** Map Azure read errors to the driver vocabulary; pass everything else through {@link mapError}. */
+  private badRead(key: GenKey, what: 'range' | 'tail', why: string): ValidationError {
+    return new ValidationError(
+      `Azure ${what} read of ${key.segment}.${key.generation} refused: ${why}`,
+    );
+  }
+
   private mapReadError(err: unknown, key: GenKey): unknown {
     if (isValidationError(err)) return err;
     if (isNotFound(err))
@@ -247,33 +373,28 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   /**
-   * Reclassify a transient Azure fault (throttle/5xx/dropped connection) as a retryable {@link TransientError},
-   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure;
-   * everything else propagates unchanged. The final fallback at every client-call site, so callers and the read
-   * retry only ever see typed errors.
+   * Reclassify a transient Azure fault (throttle/5xx/dropped connection) as a retryable {@link TransientError}, so
+   * the store's read retry can ride it out and a write's caller can tell it from a deterministic failure, and a missing
+   * container as a `ValidationError` that names it; everything else propagates unchanged. The final fallback at every
+   * client-call site, so callers and the read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    if (isTransient(err)) {
-      return new TransientError(
-        `transient Azure fault: ${(err as { code?: unknown } | null)?.code ?? 'unknown'}`,
-        { cause: err },
-      );
-    }
-    return err;
+    return toTransient(
+      asMissingContainer(err, this.container.containerName),
+      isTransient,
+      transientFaultMessage,
+    );
   }
 }
 
 type BlockBlob = ReturnType<ContainerClient['getBlockBlobClient']>;
 
-/** Concatenate byte chunks of known total length into one buffer. */
-function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
+/** A tail read, with the version it was read at when the response carried one. */
+function withVersion(
+  tail: { bytes: Uint8Array; size: number },
+  version: string | undefined,
+): TailRead {
+  return version === undefined ? tail : { ...tail, version };
 }
 
 /**
@@ -325,7 +446,7 @@ class AzureBlockBlobSink implements BlobSink {
     // its buffer after `write()` resolves, so a shared reference could let the committed content diverge from
     // the already-hashed bytes. `new Uint8Array(bytes)` copies UNCONDITIONALLY — note `bytes.slice()` would NOT:
     // the payload is a `Buffer` (roaring serialize), whose `slice()` returns an aliasing view, not a copy.
-    // (S3/GCS + `BufferSink` share this retain-by-reference pattern; tracked as a cross-driver follow-up.)
+    // (S3/GCS + `BufferSink` retain by reference the same way.)
     this.pending.push(new Uint8Array(bytes));
     this.pendingLen += bytes.length;
     if (this.pendingLen >= this.blockBytes) await this.flushBlock();
@@ -338,7 +459,7 @@ class AzureBlockBlobSink implements BlobSink {
       // typed guard so the Azure hard limit is never a raw 4xx.
       throw new ValidationError(`upload exceeded the Azure ${AZURE_MAX_BLOCKS}-block limit`);
     }
-    const body = concatBytes(this.pending, this.pendingLen);
+    const body = concatBytes(this.pending);
     this.pending.length = 0;
     this.pendingLen = 0;
     const id = this.blockId(this.blockIds.length);
@@ -356,7 +477,7 @@ class AzureBlockBlobSink implements BlobSink {
     const options = { ...IF_ABSENT, metadata: writeIdMetadata(this.writeId) };
     try {
       if (this.blockIds.length === 0) {
-        const body = concatBytes(this.pending, this.pendingLen);
+        const body = concatBytes(this.pending);
         await this.blob.upload(body, body.length, options); // write-once (single-shot path)
       } else {
         if (this.pendingLen > 0) await this.flushBlock(); // the final block may be < blockBytes (allowed)
@@ -370,41 +491,4 @@ class AzureBlockBlobSink implements BlobSink {
     }
     return { size: this.total, sha256 };
   }
-}
-
-/**
- * Collect an Azure download's Node readable body into a `Uint8Array`. Called in the turn the download returns: the
- * loop listens for the body's errors from its first step, before the read's timer can abort it.
- */
-async function collect(
-  body: NodeJS.ReadableStream | undefined,
-  abortSignal: AbortSignal,
-): Promise<Uint8Array> {
-  if (body === undefined) {
-    throw new NotFoundError('Azure download returned no body');
-  }
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for await (const chunk of body) {
-      const u8 =
-        typeof chunk === 'string'
-          ? new TextEncoder().encode(chunk)
-          : new Uint8Array(chunk as Buffer);
-      chunks.push(u8);
-      total += u8.length;
-    }
-  } catch (err) {
-    // The SDK fails a body whose connection dropped part-way with an `AbortError`. This read's own signal aborts only
-    // on its timer, whose error the read has already thrown, so an `AbortError` with the signal unaborted is the
-    // dropped connection, and retryable, as the registry reads it.
-    if (!abortSignal.aborted && (err as { name?: unknown } | null)?.name === 'AbortError') {
-      throw Object.assign(
-        new Error('Azure Blob read was cut off before the response completed', { cause: err }),
-        { code: 'ECONNRESET' },
-      );
-    }
-    throw err;
-  }
-  return concatBytes(chunks, total);
 }

@@ -1,6 +1,7 @@
 import { BudgetExceededError, MemoryStorage, ValidationError, eraseNamespace } from '@/index';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from '@/core/registry-scan';
 import type { IRegistryDriver, RegistryRecord } from '@/core/ports';
+import { FULL_STRENGTH, heavy } from '../helpers/strength';
 
 // `eraseNamespace` lists its namespace resident and then destroys each segment, irreversibly. Its listing is held
 // to the same ceiling as every other fleet scan, and the refusal has to come before the first destroy: a namespace
@@ -123,6 +124,8 @@ describe('eraseNamespace bounds its registry scan', () => {
   });
 
   it('holds the shared default when no ceiling is passed', async () => {
+    // One row over the default, no ceiling passed: refused whole, before a row is read. Only the listing runs, so this
+    // stays at the real default on every run (under 0.1 s); it is what pins the value `eraseNamespace` falls back to.
     const over = listingOf(DEFAULT_MAX_SCAN_SEGMENTS + 1);
     const err = (await eraseNamespace(NS, over, { confirmNamespace: NS }).catch(
       (e: unknown) => e,
@@ -131,14 +134,20 @@ describe('eraseNamespace bounds its registry scan', () => {
     expect(err.message).toContain(`more than ${DEFAULT_MAX_SCAN_SEGMENTS} segments`);
     expect(over.yielded()).toBe(DEFAULT_MAX_SCAN_SEGMENTS + 1);
     expect(over.touched()).toBe(0);
+  }, 30_000);
 
-    const atDefault = listingOf(DEFAULT_MAX_SCAN_SEGMENTS);
-    // Exactly at the default is admitted: it is listed in full, and only then does a row get read.
-    const result = await eraseNamespace(NS, atDefault, { confirmNamespace: NS });
-    expect(atDefault.yielded()).toBe(DEFAULT_MAX_SCAN_SEGMENTS);
-    expect(result.destroyed).toHaveLength(DEFAULT_MAX_SCAN_SEGMENTS);
+  it('admits a namespace exactly at the ceiling: listed in full, and only then is a row read', async () => {
+    // At full strength this is the shared default with no ceiling passed. By default it is a smaller, explicit ceiling:
+    // destroying a quarter-million rows is this file's cost, and the at-the-ceiling logic is the same at any size.
+    const rows = heavy('eraseNamespaceScanRows');
+    const ceiling = FULL_STRENGTH ? {} : { maxScanSegments: rows };
+    if (FULL_STRENGTH) expect(rows).toBe(DEFAULT_MAX_SCAN_SEGMENTS);
+    const atCeiling = listingOf(rows);
+    const result = await eraseNamespace(NS, atCeiling, { confirmNamespace: NS, ...ceiling });
+    expect(atCeiling.yielded()).toBe(rows);
+    expect(result.destroyed).toHaveLength(rows);
     expect(result.destroyed.every((d) => !d.destroyed)).toBe(true); // every get threw: recorded, not thrown
-    // It drives the default ceiling's worth of rows through the scan twice, about 1.2 s on an idle machine, which a
+    // It drives the ceiling's worth of rows through the scan twice, about 1.2 s at the default on an idle machine, which a
     // loaded one stretches past the 5 s default. The limit is sized from that, with room for a machine under load.
   }, 30_000);
 

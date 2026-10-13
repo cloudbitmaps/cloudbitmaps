@@ -5,7 +5,7 @@ import {
   type Server as TcpServer,
   type Socket,
 } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { S3Storage, limitSockets } from '@/s3/backend';
 import { ValidationError } from '@/core/errors';
@@ -20,17 +20,24 @@ import { ValidationError } from '@/core/errors';
 const BURST = 200;
 const CREDENTIALS = { accessKeyId: 'a', secretAccessKey: 's' };
 
-let server: Server | TcpServer | undefined;
 let sockets = new Set<Socket>();
 let expects: (string | undefined)[] = [];
+// Every server a test parked, each with the sockets it accepted. A server stays bound until the whole file is done: an
+// aborted burst can leave its client opening one more connection to that port a moment after the test ends, and a
+// port freed in the meantime could be handed to the next test's server, which would then count the stray as its own.
+// Held, the port cannot be reused, and the stray lands in the old server's own set.
+const retained: { server: Server | TcpServer; sockets: Set<Socket> }[] = [];
 
-afterEach(async () => {
-  const s = server;
-  server = undefined;
-  if (s) {
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve) => s.close(() => resolve()));
-  }
+afterEach(() => {
+  for (const socket of sockets) socket.destroy();
+});
+
+afterAll(async () => {
+  const all = retained.splice(0);
+  for (const { sockets: accepted } of all) for (const socket of accepted) socket.destroy();
+  await Promise.all(
+    all.map(({ server }) => new Promise<void>((resolve) => server.close(() => resolve()))),
+  );
 });
 
 /** A TLS endpoint that accepts connections and never answers the handshake, so each https request holds one socket. */
@@ -40,7 +47,7 @@ async function parkTls(): Promise<string> {
   const parked = createTcpServer((socket) => {
     mine.add(socket);
   });
-  server = parked;
+  retained.push({ server: parked, sockets: mine });
   await new Promise<void>((resolve) =>
     parked.listen({ port: 0, host: '127.0.0.1', backlog: 1024 }, resolve),
   );
@@ -54,8 +61,8 @@ async function park(): Promise<string> {
   const parked = createServer((req) => {
     mineExpects.push(req.headers.expect);
   });
-  server = parked;
   const mine = sockets;
+  retained.push({ server: parked, sockets: mine });
   parked.on('connection', (socket) => mine.add(socket));
   // A request that asks for `100-continue` is answered by this event, not the request one: take it and answer nothing.
   parked.on('checkContinue', (req) => {
@@ -67,8 +74,12 @@ async function park(): Promise<string> {
   return `http://127.0.0.1:${(parked.address() as AddressInfo).port}`;
 }
 
-/** Wait until the server has accepted `count` connections, or `ms` has passed; the count it reached either way. */
-async function until(count: number, ms = 5_000): Promise<number> {
+/**
+ * Wait until the server has accepted `count` connections, or `ms` has passed; the count it reached either way. The
+ * deadline is only a bound on a hung run, since every caller waits for a count the client reaches; the quiet after it
+ * is a lower bound on how long an over-opening client has to show itself.
+ */
+async function until(count: number, ms = 10_000): Promise<number> {
   const end = Date.now() + ms;
   while (sockets.size < count && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
   // A little longer, so a client that opens more than `count` is seen doing it.
@@ -85,7 +96,7 @@ async function burst(client: S3Client, count: number, wanted: number): Promise<n
 
       .catch(() => undefined),
   );
-  const opened = await until(wanted, 1500);
+  const opened = await until(wanted);
   abort.abort();
   await Promise.all(reads);
   client.destroy();
@@ -102,7 +113,7 @@ const built = (endpoint: string, options: { maxSockets?: number } = {}): S3Clien
     ...options,
   }).client;
 
-describe('S3Storage maxSockets, on the client it builds', () => {
+describe('S3Storage maxSockets, on the client it builds', { timeout: 30_000 }, () => {
   it('allows 128 sockets by default, more than the SDK default of 50', async () => {
     expect(await burst(built(await park()), BURST, 128)).toBe(128);
   });
@@ -205,7 +216,7 @@ describe('S3Storage maxSockets, on the client it builds', () => {
     (value) => {
       const build = () => new S3Storage({ bucket: 'b', maxSockets: value });
       expect(build).toThrow(ValidationError);
-      expect(build).toThrow(/maxSockets must be a positive safe integer; got /);
+      expect(build).toThrow(/maxSockets must be an integer of at least 1; got /);
     },
   );
 
@@ -216,7 +227,7 @@ describe('S3Storage maxSockets, on the client it builds', () => {
   });
 });
 
-describe('a client the caller passes', () => {
+describe('a client the caller passes', { timeout: 30_000 }, () => {
   it('is untouched: same object, same handler, and its pool is still the SDK default', async () => {
     const client = new S3Client({ region: 'us-east-1' });
     const handler = client.config.requestHandler;

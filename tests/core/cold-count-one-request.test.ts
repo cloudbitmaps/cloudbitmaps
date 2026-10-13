@@ -1,4 +1,8 @@
 import { randomBytes } from 'node:crypto';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { NotFoundError } from '@/core/errors';
 import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
@@ -30,7 +34,7 @@ function manualClock(): Clock & { advance(ms: number): void } {
 }
 
 /** A writer store, and a counting reader store over the same bucket, which has read nothing yet. */
-function world(options: { encrypted?: boolean; readerMaxBytes?: number } = {}) {
+function world(options: { encrypted?: boolean; readerMax?: number; readerMaxBytes?: number } = {}) {
   const keystore = options.encrypted
     ? new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' })
     : undefined;
@@ -63,9 +67,10 @@ function world(options: { encrypted?: boolean; readerMaxBytes?: number } = {}) {
     new CloudRoaring({
       storage: brandAsBackend({ storage, registry }),
       ...(retry ? {} : { retry: false }),
-      ...(options.readerMaxBytes === undefined
-        ? {}
-        : { cache: { readerMaxBytes: options.readerMaxBytes } }),
+      cache: {
+        ...(options.readerMax === undefined ? {} : { readerMax: options.readerMax }),
+        ...(options.readerMaxBytes === undefined ? {} : { readerMaxBytes: options.readerMaxBytes }),
+      },
       seams: { clock },
       ...(keystore === undefined ? {} : { encryption: { keystore } }),
     });
@@ -151,6 +156,22 @@ describe('a cold count is one request', () => {
     expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 1 }); // the row, and the one chunk
   });
 
+  it('after the reader cache lets the segment go, inside the TTL: no request at all', async () => {
+    const w = world({ readerMax: 1 });
+    await w.writer.load(SEG, spread(10));
+    await w.writer.load({ ...SEG, segment: 'other' }, spread(3));
+    const store = w.reader();
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    // A reader cache of one: counting another segment lets `s` go. Its resolution is kept, for the TTL.
+    expect(await store.segment('other', { namespace: 'ns' }).count()).toBe(3);
+    w.reset();
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    expect(w.sent()).toEqual({ rows: 0, tails: 0, ranges: 0 });
+    w.clock.advance(TTL);
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(10);
+    expect(w.sent()).toEqual({ rows: 1, tails: 0, ranges: 0 });
+  });
+
   it('through the default read retries, a cold count is still one row read', async () => {
     const w = world();
     await w.writer.load(SEG, spread(10));
@@ -211,7 +232,10 @@ describe('a row with no summary it can use', () => {
   it('naming another generation: the object is opened, and the answer is the same', async () => {
     const w = world();
     await w.writer.load(SEG, spread(20));
-    w.tamper.row = (row) => ({ ...row, summary: { generation: 7, cardinality: 999 } });
+    w.tamper.row = (row) => ({
+      ...row,
+      summary: { generation: 7, cardinality: 999, fingerprint: '4096:1', tailBytes: 300 },
+    });
     const store = w.reader();
     w.reset();
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(20);
@@ -220,17 +244,21 @@ describe('a row with no summary it can use', () => {
 });
 
 describe('a torn restore', () => {
-  it('a cold count answers the row, while a read of the object throws', async () => {
+  it('a cold count and a stat answer the row, while a read of the object throws', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3, 4]);
+    const sizeBytes = (await w.backend.storage.getTail({ ...SEG, generation: 0 }, 0)).size;
     await w.backend.storage.delete({ ...SEG, generation: 0 });
     const store = w.reader();
     const seg = store.segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(4);
     await expect(seg.has(1)).rejects.toBeInstanceOf(NotFoundError);
-    await expect(store.segment('s', { namespace: 'ns' }).stat()).resolves.toMatchObject({
+    // `stat()` answers from the row's summary, whose fingerprint carries the object's size: the row's figures, which
+    // `checkConsistency` is what holds against the bucket.
+    expect(await store.segment('s', { namespace: 'ns' }).stat()).toEqual({
       generation: 0,
       cardinality: 4,
+      sizeBytes,
     });
   });
 });

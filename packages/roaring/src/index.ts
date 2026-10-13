@@ -32,22 +32,27 @@ import {
   DEFAULT_BUDGET,
   DEFAULT_RETRY_POLICY,
   withRetry,
-  isStorageBackend,
   NOOP_METRICS,
   RetryingStorageChunkSource,
   SegmentEngine,
+  LEASE_SKEW_MS,
+  LeaseExpiredError,
+  MAX_LEASE_MS,
+  NotFoundError,
   UnsupportedError,
   ValidationError,
   WriteConflictError,
-  MIN_EXPIRES_AT_MS,
   checkBudget,
   collectWithinBudget,
   excludingReservedRows,
   dropSegment,
   eraseIdFromSegment,
-  estimateCost,
-  groundedReport,
+  judgeLoad,
   loadSegment,
+  loadSegmentChunks,
+  compileCombineMany,
+  rebindCombineMany,
+  runCombineMany,
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
@@ -57,10 +62,13 @@ import {
   setSegmentRetention,
   clearSegmentRetention,
   getSegmentRetention,
+  releaseLease,
   safeMetrics,
   splitId,
+  takeLease,
 } from '@cloudbitmaps/core';
-import { validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import { pointerIdOf, requirePositiveInt, validateSegmentRef } from '@cloudbitmaps/core/driver-kit';
+import type { PinLease } from '@cloudbitmaps/core';
 import type {
   Budget,
   BudgetOption,
@@ -77,10 +85,8 @@ import type {
   CodecInterface,
   StorageChunkSource,
   ConsistencyReport,
-  CostReport,
   EngineDeps,
   DropResult,
-  EstimateInput,
   ExportManifest,
   ExportOptions,
   ExportSink,
@@ -91,7 +97,6 @@ import type {
   IRegistryDriver,
   StorageBackend,
   MetricOpName,
-  PricingProfile,
   RetentionPolicy,
   RetireExpiredOptions,
   RetireExpiredResult,
@@ -102,17 +107,28 @@ import type {
   PinnedAt,
   IdRange,
   SegmentRef,
-  Workload,
 } from '@cloudbitmaps/core';
 import { OpenChargingStorage } from './open-charging-storage';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
 import type { SegmentInfo } from '@cloudbitmaps/core';
+import type {
+  CombineExpr,
+  CombineManyFeed,
+  CombineManyFeedRecord,
+  CombineManyOperand,
+  CombineManyOperandStats,
+  CombineManyOutputStats,
+  CombineManyStats,
+} from '@cloudbitmaps/core';
 import { refuseReservedNamespace } from './reserved-namespace';
-import { bitmapAsLoadInput, roaringCodec } from './roaring-codec';
+import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
+import { guardIdIterable, guardIds, guardItems } from './lease-guards';
+import { wireStore } from './wire-store';
+import { checkOptions, keysOf, kindOf, optionsError, picked } from './options';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -125,11 +141,21 @@ class SystemRng implements Rng {
 const DEFAULT_CACHE_MAX_CHUNKS = 1024;
 /** Default in-flight fan-out for the admin scans (`subjectReport`/`eraseSubject`) — bounded, no thundering herd. */
 const DEFAULT_ADMIN_CONCURRENCY = 8;
+/**
+ * The row version a live version from a `CrbmStorageChunkSource` names: the version up to its last `#`, which starts
+ * the opened object's fingerprint, a part with no `#` of its own, so the cut is exact for every `pointerId`. It is
+ * core's `rowVersionOf` for this one caller, which is handed only that source's versions; core keeps that function
+ * off its public entry.
+ */
+function rowVersionOfLive(version: string | null): string | null {
+  if (version === null) return null;
+  const cut = version.lastIndexOf('#');
+  return cut < 0 ? version : version.slice(0, cut);
+}
+
 /** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
 function validateConcurrency(concurrency: number | undefined): void {
-  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
-    throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
-  }
+  requirePositiveInt('concurrency', concurrency);
 }
 
 /**
@@ -140,7 +166,16 @@ function validateConcurrency(concurrency: number | undefined): void {
  */
 function requireScope(options: { namespace?: string; allNamespaces?: boolean }, op: string): void {
   // A scope names a namespace like a ref does, and these two scans read the registry themselves rather than
-  // through a core function that refuses it.
+  // through a core function that refuses it. `''` or a namespace that is not a string scanned nothing and read as a
+  // clean erasure.
+  if (options.namespace !== undefined) {
+    if (typeof options.namespace !== 'string') {
+      throw new ValidationError(
+        `${op}: namespace must be a string; got ${kindOf(options.namespace)}`,
+      );
+    }
+    validateSegmentRef({ segment: 'x', namespace: options.namespace });
+  }
   refuseReservedNamespace(options.namespace);
   if (options.namespace === undefined && options.allNamespaces !== true) {
     throw new ValidationError(
@@ -149,6 +184,99 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
     );
   }
 }
+
+/**
+ * What each call that takes options takes. Each table is held to the call's options type in both directions: a key the
+ * type does not have, or one it has and the table leaves out, fails to compile.
+ */
+const CALL_KEYS = {
+  range: keysOf<IdRange>()(['after', 'through']),
+  andNot: keysOf<BaseCombineOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+  ]),
+  combine: keysOf<CombineOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'exclude',
+  ]),
+  into: keysOf<MaterializeOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'exclude',
+    'audit',
+    'allowEmpty',
+    'guard',
+    'metadata',
+    'keep',
+  ]),
+  andNotInto: keysOf<AndNotIntoOptions>()([
+    'after',
+    'through',
+    'concurrency',
+    'budget',
+    'allowAbsentOperands',
+    'audit',
+    'allowEmpty',
+    'guard',
+    'metadata',
+    'keep',
+  ]),
+  load: keysOf<LoadOptions>()(['allowEmpty', 'guard', 'keep', 'metadata', 'audit']),
+  segments: keysOf<NonNullable<Parameters<CloudRoaring['segments']>[0]>>()(['namespace']),
+  subjectReport: keysOf<NonNullable<Parameters<CloudRoaring['subjectReport']>[1]>>()([
+    'namespace',
+    'allNamespaces',
+    'concurrency',
+    'budget',
+  ]),
+  eraseSubject: keysOf<NonNullable<Parameters<CloudRoaring['eraseSubject']>[1]>>()([
+    'namespace',
+    'allNamespaces',
+    'audit',
+    'concurrency',
+    'budget',
+  ]),
+  rollback: keysOf<NonNullable<Parameters<CloudRoaring['rollback']>[2]>>()([
+    'audit',
+    'allowUnknown',
+  ]),
+  dropSegment: keysOf<Parameters<CloudRoaring['dropSegment']>[1]>()([
+    'confirmSegment',
+    'dryRun',
+    'audit',
+  ]),
+  retireExpired: keysOf<NonNullable<Parameters<CloudRoaring['retireExpired']>[0]>>()([
+    'namespace',
+    'now',
+    'limit',
+    'dryRun',
+    'audit',
+    'maxScanSegments',
+    'scan',
+    'shards',
+    'totalShards',
+    'lookbackBuckets',
+    'purgeTombstones',
+    'tombstoneGraceMs',
+  ]),
+  checkConsistency: keysOf<NonNullable<Parameters<CloudRoaring['checkConsistency']>[0]>>()([
+    'namespace',
+    'concurrency',
+    'summaries',
+    'generations',
+  ]),
+  exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
+} as const;
 
 /**
  * Wiring for a {@link CloudRoaring} store. **Only `storage` is required** — the minimal call is
@@ -204,7 +332,7 @@ export interface CloudRoaringOptions {
    * lands and then loses its response would, replayed blindly, report its own write as a conflict. A write is
    * retried only where that is safe: a load's registry write that gets no answer is settled by reading the row,
    * and a throttled write-once object is sent again by the S3 and GCS drivers. Pass a partial policy to tune it — anything you leave out keeps its
-   * default — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
+   * default, except an omitted `maxDelayMs`, which is `baseDelayMs` when that is larger than 2000 ms — or `false` to turn the read retry off (e.g. if your injected client already retries). A GCS download is retried by
    * the GCS driver whatever this says.
    * Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this
    * layer.
@@ -247,13 +375,15 @@ export interface CacheOptions {
    * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
    * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies when
    * `storage` is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. Lazy — no
-   * timer; ≤ one registry read per segment per window, opening a new reader only when the generation actually
-   * advanced.
+   * timer; ≤ one registry read per segment per window, opening a new reader only when the row's pointer was
+   * renewed (a publish, a rollback, an erasure's rewrite, a status or key change); a lease or retention write does not.
    *
    * **While the registry cannot be read, the bound stretches.** A refresh that fails with a
-   * {@link TransientError} keeps serving the generation the reader holds, and the key it unwrapped, and is tried
-   * again 500 ms later (or after this TTL, if shorter), so the store converges within one retry of the registry
-   * answering. A refresh that fails with anything else, an access denial or a row that will not parse, is not
+   * {@link TransientError} keeps serving the generation of a segment still in the reader cache, and the key its reader
+   * unwrapped (a read that needs the key, where none was unwrapped before it, unwraps it from that segment's row as
+   * resolved before the outage), and is tried again 500 ms later (or after this TTL, if shorter), so the store converges
+   * within one retry of the registry answering. A segment the reader cache has let go is not served past its resolution's TTL: once that
+   * lapses, a read of it fails with the fault, as a cold read does. A refresh that fails with anything else, an access denial or a row that will not parse, is not
    * ridden out: the read that meets it throws that error, and the reader is dropped.
    *
    * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
@@ -268,19 +398,29 @@ export interface CacheOptions {
   /**
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
-   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET.
+   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET. With a
+   * timed refresh ({@link CacheOptions.genTtlMs} above 0, and a backend) the store also keeps up to 8 times this many
+   * segments' resolutions (what it read of each segment's row: never an unwrapped key, though the wrapped keys are in
+   * it) for `genTtlMs`, apart from their readers. An evicted segment is then reopened with no registry read, on the
+   * generation it had resolved, when a read needs its index or a chunk the chunk cache does not hold: `iterate` and the
+   * combines always do, and a `has()` of a cached chunk, a `count()` and a `stat()` do not, where the row has a summary
+   * the store can use. A reader of a small generation, one whose whole object came with its tail read,
+   * also holds its chunk bytes, so a read of it makes no chunk request until the reader is evicted or the pointer refresh
+   * moves it on; a store with no timed refresh (`genTtlMs: 0`, or no registry) keeps none.
    * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
    * `StorageChunkSource` manages its own reader cache.
    */
   readonly readerMax?: number;
   /**
-   * Aggregate byte ceiling on what the open readers hold, their parsed `.crbm` indices and the metadata a
-   * generation carries (default 64 MiB) — the byte half
+   * Aggregate byte ceiling on what the open readers hold: their parsed `.crbm` indices, the metadata a
+   * generation carries, a fixed 3.75 KiB for the objects each open reader holds around its index, and the chunk bytes a reader keeps when its tail read returned a whole object whose chunks
+   * total at most this ceiling divided by {@link CacheOptions.readerMax} (default 64 MiB) — the byte half
    * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
    * parsed index can reach about 1.3 MB, so a count-only bound could let the open readers pin over a GB and blow a small
-   * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
-   * would exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight
-   * deployments that read across wide segments. Applies whenever the store builds its own read path.
+   * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed weight
+   * would exceed the ceiling — whichever of the count/byte bounds binds first. A sixteenth of it (4 MiB by default)
+   * bounds the segments' resolutions a store with a timed refresh keeps besides. Lower it for memory-tight
+   * deployments that read across wide segments. A ceiling below two readers' weight (about 7.7 KB for tiny ones) keeps one reader open at a time. Applies whenever the store builds its own read path.
    */
   readonly readerMaxBytes?: number;
 }
@@ -310,7 +450,8 @@ export interface EncryptionOptions {
  * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
  *
  * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its
- * {@link DEFAULT_RETRY_POLICY} value.
+ * {@link DEFAULT_RETRY_POLICY} value, except that an omitted `maxDelayMs` is the `baseDelayMs` when that is larger
+ * than the default cap.
  */
 export interface RetryOptions extends Partial<RetryPolicy> {
   /**
@@ -328,31 +469,13 @@ export interface SeamOptions {
   readonly rng?: Rng;
 }
 
+/**
+ * What {@link CloudRoaring.segment} takes besides the name. A handle carries no deadline: check one where you read,
+ * or record it with {@link CloudRoaring.setRetention} and run {@link CloudRoaring.retireExpired}. An `expiresAt`
+ * passed here is refused with {@link ValidationError}.
+ */
 export interface SegmentOptions {
   readonly namespace?: string;
-  /**
-   * **When this segment stops being readable** — an absolute epoch-ms instant, declared where the segment is
-   * named instead of in a separate `setRetention` call.
-   *
-   * Every read through this handle checks it first: past the deadline, `has` is `false`, `count` is `0`, and
-   * `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on every backend**.
-   * That is Redis's lazy expiry, and it is what makes an expiry *correct* rather than *eventually correct*: a
-   * deployment whose sweep is late — or which has no sweep at all, like a Lambda-only reader — still stops
-   * serving the data on time.
-   *
-   * **Two things this does NOT do, both deliberate:**
-   *
-   * - It does not reclaim the bytes. That is {@link CloudRoaring.retireExpired}, and until it runs the data is
-   *   still stored and still billed. `count()` reporting 0 while objects exist is the expected state in that
-   *   window, not a bug.
-   * - It does not apply to *other* handles. The deadline lives on this handle; a second handle opened without
-   *   the option reads the segment normally. Record the policy with {@link CloudRoaring.setRetention} to make
-   *   it durable, fleet-visible, and reclaimable.
-   *
-   * Must be **milliseconds** since the epoch and at or after {@link MIN_EXPIRES_AT_MS} — a seconds value would
-   * land in 1970 and make the segment permanently unreadable, so it is refused rather than honoured.
-   */
-  readonly expiresAt?: number;
 }
 
 /** A segment reference in a subject report / erasure ledger. */
@@ -390,8 +513,9 @@ export interface SubjectErasureEntry {
   /** The generation written without the id (present whenever one was written). */
   readonly generation?: number;
   /**
-   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — the pointer moved while
-   * the call was in flight, by a load, another erasure or a rollback, so **this call** did not erase the id;
+   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — another writer (a load,
+   * another erasure or a rollback) moved the pointer, or replaced an object the call meant to delete, while the call
+   * was in flight, so **this call** did not erase the id;
    * re-run against the new generation, which erases it if it is still there and reports nothing for the segment
    * if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment fault
    * (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing the
@@ -432,11 +556,250 @@ export interface EraseSubjectResult {
  */
 export type MaterializeRefusal = Exclude<LoadRefusal, 'superseded'>;
 
+/**
+ * An expression over the operands of a {@link CloudRoaring.materializeMany} call: a string names an operand; a node holds
+ * exactly one of `and`, `or` or `andNot` over a non-empty list of expressions. `andNot` subtracts every entry after the
+ * first from the first, so it takes at least two. Plain JSON, so it can be logged and sent between tasks.
+ */
+export type Expr = CombineExpr;
+
+/** What the call did to one operand: see {@link MaterializeManyStats.operands}. */
+export type MaterializeManyOperandStats = CombineManyOperandStats;
+/** What the call did to one output: see {@link MaterializeManyStats.outputs}. */
+export type MaterializeManyOutputStats = CombineManyOutputStats;
+/**
+ * What a {@link CloudRoaring.materializeMany} call did: the groups it ran, its requests by class, the chunk-read budget it
+ * used, the most it held resident, and, for each operand, the generation it was pinned at, began at and ended at.
+ */
+export type MaterializeManyStats = CombineManyStats;
+
+/** One output of a {@link CloudRoaring.materializeMany} call. */
+export interface MaterializeManyOutput {
+  /** The segment this output becomes a new generation of. Not an operand of the call, and named by no other output. */
+  readonly dest: Segment;
+  /** What to compute. */
+  readonly expr: Expr;
+  /** Subtracted from the result, as the entries of an `andNot` after the first are. Pinned operands it names are re-checked before the publish. */
+  readonly exclude?: Expr[];
+  /** As on {@link MaterializeOptions}. */
+  readonly guard?: LoadGuard;
+  /** As on {@link MaterializeOptions}. */
+  readonly allowEmpty?: boolean;
+  /** As on {@link MaterializeOptions}. */
+  readonly metadata?: GenerationMetadata;
+  /** As on {@link MaterializeOptions}. */
+  readonly audit?: IAuditSink;
+  /** Generations to keep below the new one, as on {@link MaterializeOptions}; overrides the call's `keep`. */
+  readonly keep?: number;
+}
+
+/**
+ * One record of the feed of {@link CloudRoaring.materializeMany}: the ids some of the fed operands hold at one chunk key.
+ * `key` is `id >>> 16`, an integer from 0 to 65,535, never below the previous record's; a key may arrive as several
+ * consecutive records, each carrying some of the operands, and one record per key is the usual shape. `operands` maps a
+ * declared fed name to its ids at the key: a real `Uint32Array` (not an `Int32Array`, `Buffer`, array or look-alike),
+ * strictly ascending, every id inside the key. A name is given at most once per key, and an empty array is the same as
+ * leaving the name out. The record is copied as it arrives, so the caller may drop or reuse its arrays once it has yielded it.
+ */
+export type MaterializeManyFeedRecord = CombineManyFeedRecord;
+
+/**
+ * Operands that arrive as records in chunk-key order instead of being stored, for {@link MaterializeManyOptions.feed}.
+ * Outputs name a fed operand as they name a stored one.
+ */
+export interface MaterializeManyFeed {
+  /** The fed operand names, declared up front. A name is either stored or fed, never both. */
+  readonly names: string[];
+  /** The records, read once, in key order. */
+  readonly records: AsyncIterable<MaterializeManyFeedRecord>;
+  /**
+   * How many ids each fed operand holds over the whole feed, **required**: an object keyed by exactly `names`, or a
+   * function returning one (or a promise of one), called once after the last record and before any fed output is
+   * published. A feed whose count of ids for any operand differs (one that ended early, or skipped a key) refuses every
+   * fed output; so does a count that is missing, extra, thrown or rejected.
+   */
+  readonly counts:
+    (() => Record<string, number> | Promise<Record<string, number>>) | Record<string, number>;
+}
+
+/** The options of {@link CloudRoaring.materializeMany}. */
+export interface MaterializeManyOptions extends IdRange {
+  /**
+   * The stored segments the expressions name. A set the caller holds in memory arrives as a {@link MaterializeManyOptions.feed}.
+   */
+  readonly operands: Record<string, Segment>;
+  /** The outputs, in the order their results come back. */
+  readonly outputs: ReadonlyArray<MaterializeManyOutput>;
+  /**
+   * Generations to keep below each new one: a non-negative integer, **required**, since a materialisation otherwise keeps
+   * every generation and a call of a thousand outputs would leave a thousand uncollected destinations on every refresh.
+   * An output's own `keep` overrides it.
+   */
+  readonly keep: number;
+  /**
+   * Read every stored operand at the generation it has when the call starts, for the whole call (default `true`): the call
+   * pins each one that is not already pinned. It is one generation per operand, **not one instant across operands**.
+   * `false` reads each live, as a combine does, which can describe two generations of one operand and break its pruning, and runs
+   * **no re-check** of an operand an output subtracts: an opt-out list can move during the call and the outputs that subtract it are
+   * published (`stats.operands` still reports, from one read at the end, that it moved).
+   * An operand passed already pinned is used as it is whatever this says.
+   */
+  readonly pin?: boolean;
+  /**
+   * The most resident bytes the call counts at once, default 256 MiB: the buffered outputs, the operand streams, the
+   * chunks being evaluated and the plan, counted as resident memory. Past it, outputs run in groups and the operands are read
+   * again for each group. Process memory is more than the count (measured 1.6 to 5 times; see the guide).
+   */
+  readonly maxBufferedBytes?: number;
+  /**
+   * The most chunk reads the call may make, counted over all its groups. Default: the store's own `budget` when it was built
+   * with one (a ceiling below the plan throws `BudgetExceededError` before any chunk is read), else what the plan needs,
+   * with headroom. `false` lifts it. The budget used is in the result's stats.
+   */
+  readonly budget?: BudgetOption;
+  /** Outputs published at once, default 8. */
+  readonly publishConcurrency?: number;
+  /** Range requests held ahead per operand, default 1. */
+  readonly concurrency?: number;
+  /** As on every combine. */
+  readonly allowAbsentOperands?: boolean;
+  /**
+   * Operands fed as records in chunk-key order, beside the stored ones; an output names a fed operand as it names a stored
+   * one. **A feed is read once, so a call with one runs its outputs as one group, and `maxBufferedBytes` is then required**:
+   * the feed's records and the fed outputs are counted against it as they arrive, and a fed call fails as soon as the count
+   * passes it. A fed output is published only after the whole feed was read and every end-of-feed check passed.
+   */
+  readonly feed?: MaterializeManyFeed;
+  /**
+   * Fed operand names allowed to hold no id. A declared fed name that appears in no record is refused at the end of the
+   * feed, because an operand that is empty is usually an upstream query that failed quietly. Naming something that is not
+   * a fed operand is a {@link ValidationError}.
+   */
+  readonly mayBeEmpty?: readonly string[];
+}
+
+/**
+ * What one output of {@link CloudRoaring.materializeMany} came to: exactly what its `*Into` would have returned (a
+ * {@link MaterializeResult}, published or refused with its `reason`), or `{ published: false, error }` for what it would
+ * have thrown, or for what stopped it: a lost race ({@link WriteConflictError}), a publish whose outcome is unknown
+ * ({@link TransientError}), a damaged operand ({@link IntegrityError}), a lapsed lease ({@link LeaseExpiredError}), a
+ * pinned exclude that moved ({@link StaleOperandError}), memory ({@link BudgetExceededError}), or, for an output that names a
+ * fed operand, a bad feed ({@link ValidationError}) or an erasure in this store while the call ran ({@link StaleOperandError}
+ * with `reason: 'erased'`).
+ */
+export type MaterializeManyOutcome =
+  MaterializeResult | { readonly published: false; readonly error: Error };
+
+/** The result of {@link CloudRoaring.materializeMany}. */
+export interface MaterializeManyRun {
+  /** One per output, in the order given: one output's refusal or error never stops another. */
+  readonly outputs: MaterializeManyOutcome[];
+  readonly stats: MaterializeManyStats;
+}
+
+/**
+ * {@link MaterializeManyOptions} for a **dry run**: every output is computed exactly as the call would compute it, and
+ * judged against its `dest` as its publish would be, and nothing is written. See {@link CloudRoaring.materializeMany}.
+ */
+export interface MaterializeManyDryRunOptions extends MaterializeManyOptions {
+  readonly dryRun: true;
+}
+
+/**
+ * What one output of a dry run would come to, with nothing written: its size, what its `dest` holds now, and the bound
+ * its publish would be refused for now. `published` is always `false`, so code that branches on it never takes a dry
+ * run for a publish.
+ */
+export interface MaterializeDryRunResult {
+  readonly dryRun: true;
+  readonly published: false;
+  /** Distinct ids the output would hold. */
+  readonly cardinality: number;
+  /** What `dest` holds now: `null` when it has no current generation, or its object is gone. Always read. */
+  readonly cardinalityBefore: number | null;
+  /** The bound a publish of the output would be refused for, judged now; absent when it would publish. */
+  readonly wouldRefuse?: MaterializeRefusal;
+}
+
+/**
+ * What one output of a dry run came to: a {@link MaterializeDryRunResult}, or `{ published: false, error }` for what its
+ * publish would have thrown or what stopped it, as on a call that publishes.
+ */
+export type MaterializeManyDryRunOutcome =
+  MaterializeDryRunResult | { readonly published: false; readonly error: Error };
+
+/** The result of {@link CloudRoaring.materializeMany} with `dryRun: true`. */
+export interface MaterializeManyDryRun {
+  /** One per output, in the order given. */
+  readonly outputs: MaterializeManyDryRunOutcome[];
+  readonly stats: MaterializeManyStats;
+}
+
+/** A dry run's value inside the call, with the requests its judgement made. */
+interface DryRunValue extends MaterializeDryRunResult {
+  readonly reads: number;
+}
+
+/** What a handle shows the store that it does not show a caller. */
+interface HandleView {
+  readonly ref: SegmentRef;
+  readonly pinnedAt: PinnedAt | undefined;
+  /** The lease error a read of the handle must throw now, or `undefined`. */
+  readonly leaseError: () => LeaseExpiredError | undefined;
+}
+
+/**
+ * Marks a segment so one from another copy of this package is recognised; `Symbol.for` is the same symbol in every
+ * copy. A combine reads these members of a segment from another copy: `ref`, `pinnedAt`, `leaseHold`, `key()` and
+ * `leaseError()`. The number at the end of the key is raised whenever one of them changes meaning, is renamed or is
+ * removed, or a combine starts to read another member of another copy's segment, so a copy at another number is
+ * refused instead of read through members it does not have.
+ */
+const SEGMENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.roaring.segment/1');
+
+/** Set by the `Segment` class, whose private state it reads. */
+let viewOf: (segment: Segment) => HandleView;
+
+const MATERIALIZE_MANY_KEYS = [
+  'operands',
+  'dryRun',
+  'outputs',
+  'keep',
+  'pin',
+  'maxBufferedBytes',
+  'budget',
+  'publishConcurrency',
+  'concurrency',
+  'allowAbsentOperands',
+  'after',
+  'through',
+  'feed',
+  'mayBeEmpty',
+] as const;
+const MATERIALIZE_MANY_OUTPUT_KEYS = [
+  'dest',
+  'expr',
+  'exclude',
+  'guard',
+  'allowEmpty',
+  'metadata',
+  'audit',
+  'keep',
+] as const;
+
+/** The default of `maxBufferedBytes`: 256 MiB. */
+const DEFAULT_MAX_BUFFERED_BYTES = 256 * 1024 * 1024;
+const DEFAULT_PUBLISH_CONCURRENCY = 8;
+const DEFAULT_BATCH_CONCURRENCY = 1;
+/** Pins taken at once. */
+const PIN_PARALLELISM = 16;
+
 /** What an `*Into` verb wrote: the new generation of the destination, and whether it became current. */
 export interface MaterializeResult {
   /**
    * The generation written. Present even when refused: the refusal deleted that object, unless the destination's
-   * row changed while it was writing, which leaves it in the bucket.
+   * row changed while it was writing, which leaves it in the bucket, an orphan a later load's collection takes; until
+   * then a rollback onto it needs `allowUnknown`.
    */
   readonly generation: number;
   /**
@@ -453,10 +816,11 @@ export interface MaterializeResult {
   readonly cardinality: number;
   /**
    * What the destination held when the guard judged it — `null` when it had no current generation, **or when
-   * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with no
-   * `guard.minRetained` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
-   * carries a summary of its current generation the count comes from the row and the object is not read; a row
-   * written before rows carried a summary costs one object-header fetch.
+   * no bound needed it**. It is taken only when a bound will use it: `allowEmpty: true` with neither
+   * `guard.minRetained` nor `guard.maxGrowth` skips it, and this is `null` even though `dest` was non-empty. When the destination's row
+   * carries a summary of its current generation the count comes from the row and the object is not read; a row with
+   * none (one a rollback left when it could not open the key, one a registry of your own stores without one, or one this store cannot use) costs
+   * one object-header fetch.
    */
   readonly cardinalityBefore: number | null;
   /** Non-empty chunks in the generation. */
@@ -469,172 +833,6 @@ export interface MaterializeResult {
    * default. See {@link MaterializeOptions.keep}.
    */
   readonly collected: readonly number[];
-}
-
-/**
- * Resolve the `storage` option to a {@link StorageChunkSource} at construction (wiring-time only — no hot-path cost).
- *
- * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two: a raw {@link IStorageDriver} exposes `putImmutable`
- * (the byte-mover seam); a pre-built {@link StorageChunkSource} exposes `getChunk` (the engine's read seam). The
- * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
- * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
- * nullish/non-object value from a JS caller): fail fast with a typed error rather than crash on a probe.
- *
- * A backend is wrapped into a {@link CrbmStorageChunkSource} over its storage half, pinned to its registry,
- * with the config's `encryption` group; a bare driver is wrapped the same way but without a
- * registry; a pre-built source is used as-is. `keystore`/`requireEncryption` are meaningful **only** where the
- * store builds the source itself — pairing either with a pre-built source is a wiring mistake, so reject it
- * rather than silently ignore it. The `CrbmStorageChunkSource` constructor enforces the rest (a keystore /
- * `requireEncryption` needs a registry, so they need a backend; the driver needs range reads).
- *
- * Returns the resolved `source` (what the engine reads through) **and** the raw `driver` when one was passed —
- * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
- * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IStorageDriver` to
- * write through, so its writes throw {@link UnsupportedError}).
- */
-/**
- * Work out what the caller handed us, and build the read path from it.
- *
- * Three accepted shapes. A backend is identified by its brand, the other two structurally — never by `instanceof`, so a backend or driver from a
- * different copy of the package still works (the same reason the error predicates are brand-based).
- */
-function resolveStorageSource(
-  options: CloudRoaringOptions,
-  clock: Pick<Clock, 'now'>,
-): {
-  source: StorageChunkSource;
-  driver: IStorageDriver | undefined;
-  registry: IRegistryDriver | undefined;
-} {
-  const storage: unknown = options.storage;
-  if (storage === null || typeof storage !== 'object') {
-    throw new ValidationError(
-      '`storage` must be a StorageBackend, an IStorageDriver, or a StorageChunkSource',
-    );
-  }
-  const asBackend = storage as Partial<StorageBackend>;
-  const isObject = (v: unknown): v is Record<string, unknown> =>
-    v !== null && typeof v === 'object';
-  const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
-  const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
-
-  // The BRAND decides, not the shape. `{ storage, registry }` is also the shape of core's free-function deps
-  // object, so before the brand any literal satisfied it — including one holding halves from two unrelated
-  // stores, which the store accepted and then answered empty for a segment that holds data.
-  const isBackend = isStorageBackend(storage);
-
-  // A branded backend that ALSO quacks like a driver or a source is genuinely ambiguous. Unreachable for the
-  // five classes, kept because the alternative to refusing is guessing.
-  if (isBackend && (hasGetChunk || hasPutImmutable)) {
-    throw new ValidationError(
-      '`storage` is a StorageBackend that also exposes ' +
-        `${hasGetChunk ? '`getChunk`' : '`putImmutable`'} — ambiguous. A backend must not also be a driver ` +
-        'or a source; pass whichever one you mean.',
-    );
-  }
-
-  // Unbranded, but carrying both halves. Three sub-cases, and they want different things said.
-  const hasStorageHalf = isObject(asBackend.storage);
-  const hasRegistryHalf = isObject(asBackend.registry);
-
-  // (a) A DRIVER that also carries a registry — the audit/metrics/tenant-scoping wrapper. Without this it
-  // falls through to the bare-driver path, where there is no pointer at all: generations resolve by
-  // list-scan, so the store answers from the HIGHEST object in the bucket rather than the published one, and
-  // a load that wrote an object but never published it is served as if it had been. Silently, and with the
-  // wrapper's registry sitting right there unused.
-  if (!isBackend && hasPutImmutable && hasRegistryHalf) {
-    throw new ValidationError(
-      '`storage` looks like a driver that also carries a `registry`. Passed as a bare driver it would have ' +
-        'no pointer at all — generations would resolve by list-scan, so reads could serve a generation that ' +
-        'was written but never published. If you meant a backend, use a backend class — S3Storage, GcsStorage, ' +
-        'AzureBlobStorage, LocalFsStorage or MemoryStorage — or, to pair a driver of your own with a registry, ' +
-        'brand the pair with `brandAsBackend` from `@cloudbitmaps/core/driver-kit`.',
-    );
-  }
-
-  // (b) Both halves, neither of them a driver or a source: the hand-assembled literal, or a spread of a real
-  // backend with one half swapped. Name the classes AND the door — the five classes cannot express an
-  // instrumented half or a foreign registry, which is exactly the case that lands here.
-  if (!isBackend && !hasGetChunk && !hasPutImmutable && hasStorageHalf && hasRegistryHalf) {
-    const storageOk =
-      typeof (asBackend.storage as Partial<IStorageDriver>).putImmutable === 'function';
-    const registryOk =
-      typeof (asBackend.registry as Partial<IRegistryDriver>).compareAndSwap === 'function';
-    // (c) …and if a half is not actually a driver, say THAT rather than lecturing about buckets.
-    if (!storageOk || !registryOk) {
-      const bad = !storageOk
-        ? '`storage` half is not an IStorageDriver (no `putImmutable`)'
-        : '`registry` half is not an IRegistryDriver (no `compareAndSwap`)';
-      throw new ValidationError(
-        '`storage` looks like a backend but its ' +
-          bad +
-          ' — use a backend class, or brand a pair of drivers with `brandAsBackend` from ' +
-          '`@cloudbitmaps/core/driver-kit`.',
-      );
-    }
-    throw new ValidationError(
-      '`storage` must be a backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ' +
-        'MemoryStorage. An object with `.storage` and `.registry` is not one: a backend builds both halves ' +
-        'from a single bucket and prefix, so they cannot disagree, and hand-assembling them re-opens exactly ' +
-        'that mismatch — a store whose pointer and generations live in different places reads as empty ' +
-        'rather than failing. A driver author who genuinely wants halves of their own — an instrumented driver, ' +
-        'a registry in a database you already run — brands the pair with `brandAsBackend` from ' +
-        '`@cloudbitmaps/core/driver-kit`, which is taking on that they agree.',
-    );
-  }
-
-  if (isBackend) {
-    const backend = storage as StorageBackend;
-    return {
-      source: new CrbmStorageChunkSource(backend.storage, {
-        registry: backend.registry,
-        keystore: options.encryption?.keystore,
-        requireEncryption: options.encryption?.required,
-        clock,
-        currentGenTtlMs: options.cache?.genTtlMs,
-        maxOpenSegments: options.cache?.readerMax,
-        maxOpenIndexBytes: options.cache?.readerMaxBytes,
-      }),
-      driver: backend.storage,
-      registry: backend.registry,
-    };
-  }
-
-  if (hasGetChunk && hasPutImmutable) {
-    throw new ValidationError(
-      '`storage` exposes both `getChunk` and `putImmutable` — ambiguous; pass a StorageBackend, an IStorageDriver, or a StorageChunkSource, not a hybrid',
-    );
-  }
-  if (!hasGetChunk && !hasPutImmutable) {
-    throw new ValidationError(
-      '`storage` must be a StorageBackend, an IStorageDriver, or a StorageChunkSource',
-    );
-  }
-  if (hasGetChunk) {
-    // Already a StorageChunkSource — used as-is. `keystore`/`requireEncryption` only apply when the store
-    // builds the source itself; with a pre-built source they are inert, so reject them rather than mislead.
-    if (options.encryption?.keystore !== undefined || options.encryption?.required === true) {
-      throw new ValidationError(
-        'keystore/requireEncryption apply only when the store builds its own read path; configure them on ' +
-          'the StorageChunkSource you passed instead',
-      );
-    }
-    return { source: storage as StorageChunkSource, driver: undefined, registry: undefined };
-  }
-  // A bare IStorageDriver: no pointer, so generations resolve by list-scan. Cleartext, read-only.
-  const driver = storage as IStorageDriver;
-  return {
-    source: new CrbmStorageChunkSource(driver, {
-      keystore: options.encryption?.keystore,
-      requireEncryption: options.encryption?.required,
-      clock,
-      currentGenTtlMs: options.cache?.genTtlMs,
-      maxOpenSegments: options.cache?.readerMax,
-      maxOpenIndexBytes: options.cache?.readerMaxBytes,
-    }),
-    driver,
-    registry: undefined,
-  };
 }
 
 /**
@@ -682,6 +880,13 @@ export class CloudRoaring {
   private readonly requireEncryption: boolean;
   /** Resolved store-level per-op budget (null = disabled); the admin scans use it, with a per-op override. */
   private readonly budget: Budget | null;
+  /**
+   * Moved at the start and at the end of each `eraseSubject` this store runs. A `materializeMany` call with a feed records
+   * it when it begins and is refused once it has moved: it reads caller memory, which no erasure can reach.
+   */
+  private erasureEpoch = 0;
+  /** How many `eraseSubject` calls of this store are running: while any is, every check of the counter counts as moved. */
+  private erasuresRunning = 0;
 
   /**
    * Refuse any option key the store does not take, at the top level or inside a group, naming each one.
@@ -737,8 +942,31 @@ export class CloudRoaring {
     );
   }
 
+  /**
+   * A seam the store calls through must have the methods it calls. Without this a `clock` with no `now`, an `rng` with
+   * no `next` or a keystore with no `createDek` builds a store that throws a raw `TypeError` at its first load or read.
+   */
+  private static rejectHollowSeams(options: CloudRoaringOptions): void {
+    const seams: Array<[unknown, string, readonly string[]]> = [
+      [options.seams?.clock, 'seams.clock', ['now', 'sleep']],
+      [options.seams?.rng, 'seams.rng', ['next']],
+      [options.encryption?.keystore, 'encryption.keystore', ['createDek', 'openDek']],
+    ];
+    for (const [seam, name, needs] of seams) {
+      if (seam === undefined || seam === null) continue;
+      const has = (m: string): boolean =>
+        typeof (seam as Record<string, unknown>)[m] === 'function';
+      if (typeof seam !== 'object' || !needs.every(has)) {
+        throw new ValidationError(
+          `CloudRoaring's \`${name}\` must be an object with ${needs.map((m) => `\`${m}()\``).join(' and ')}`,
+        );
+      }
+    }
+  }
+
   constructor(options: CloudRoaringOptions) {
     CloudRoaring.rejectUnknownOptions(options);
+    CloudRoaring.rejectHollowSeams(options);
     const clock = options.seams?.clock ?? new SystemClock();
     const rng = options.seams?.rng ?? new SystemRng();
     // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).
@@ -748,56 +976,14 @@ export class CloudRoaring {
       ttlMs: options.cache?.ttlMs,
       clock,
     });
-    // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
-    // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
-    const resolved = resolveStorageSource(options, clock);
-    let storage: StorageChunkSource = resolved.source;
-    // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
-    // out (e.g. the injected client already retries); a RetryPolicy tunes it.
-    if (options.retry !== false) {
-      // The policy is a partial, and the rest is filled from the default — so tuning one field does not mean
-      // restating all five, and `{ onRetry }` alone is a legal, useful value.
-      //
-      // Field by field with `??`, NOT `{ ...DEFAULT, ...overrides }`. A spread lets a key that is *present with
-      // value `undefined`* overwrite the default instead of falling back to it, and `exactOptionalPropertyTypes`
-      // is off, so `retry: { baseDelayMs: cfg.baseDelayMs }` typechecks clean when `cfg.baseDelayMs` is absent —
-      // the ordinary shape for a value read from env or JSON. The result was `NaN` delays; `SystemClock.sleep`
-      // takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms, so bounded jittered backoff
-      // silently became a ~1 ms hot retry loop with the read still succeeding and the retry metric still
-      // emitting. That is the thundering-herd and denial-of-wallet protection gone with nothing to see.
-      // A `Partial` policy is what puts this in reach: were a whole `RetryPolicy` required, each would be a compile
-      // error.
-      const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
-      const policy: RetryPolicy = {
-        maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
-        baseDelayMs: ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs,
-        maxDelayMs: ov.maxDelayMs ?? DEFAULT_RETRY_POLICY.maxDelayMs,
-        backoffFactor: ov.backoffFactor ?? DEFAULT_RETRY_POLICY.backoffFactor,
-        jitter: ov.jitter ?? DEFAULT_RETRY_POLICY.jitter,
-      };
-      const retryOpts: RetryingOptions = {
-        clock,
-        rng,
-        policy,
-        // Bridge transient-fault retries into the metrics stream, then call the user's own hook.
-        onRetry: (info) => {
-          metrics.onEvent({
-            kind: 'retry',
-            reason: 'transient',
-            attempt: info.attempt,
-            delayMs: info.delayMs,
-          });
-          userOnRetry?.(info);
-        },
-      };
-      storage = new RetryingStorageChunkSource(storage, retryOpts);
-      this.retryOptions = retryOpts;
-    }
+    // Resolve the storage seam, hand a backend the metrics sink, and wrap the source in the read retry: `wireStore`.
+    const wired = wireStore(options, clock, rng, metrics);
+    this.retryOptions = wired.retryOptions;
     // Resolve the denial-of-wallet budget once (validates; `false` ⇒ null = disabled) and share it between the
     // engine (count/iterate/combines) and the facade's admin scans (subjectReport/eraseSubject).
     this.budget = resolveBudget(options.budget, DEFAULT_BUDGET);
     const deps: EngineDeps = {
-      storage,
+      storage: wired.storage,
       cache,
       codec: roaringCodec, // the facade injects the flagship codec; core stays codec-agnostic
       clock,
@@ -808,8 +994,7 @@ export class CloudRoaring {
     this.cache = cache;
     // The UNWRAPPED `.crbm` source, kept for `pin()` — the only reader that resolves a specific generation.
     // `undefined` when the caller supplied a pre-built source, which has nothing to pin.
-    this.crbmSource =
-      resolved.source instanceof CrbmStorageChunkSource ? resolved.source : undefined;
+    this.crbmSource = wired.source instanceof CrbmStorageChunkSource ? wired.source : undefined;
     this.clock = clock;
     this.rng = rng;
     this.metrics = metrics;
@@ -817,8 +1002,8 @@ export class CloudRoaring {
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood — except for
     // the reads a load's guard and an erasure make along the way, which take the store's read retry (`readRetry`),
     // since a read is safe to repeat and one fault there would otherwise fail the whole write.
-    this.storageDriver = resolved.driver;
-    this.registry = resolved.registry;
+    this.storageDriver = wired.driver;
+    this.registry = wired.registry;
     this.keystore = options.encryption?.keystore;
     this.requireEncryption = options.encryption?.required ?? false;
   }
@@ -857,59 +1042,76 @@ export class CloudRoaring {
     };
   }
 
-  /** Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). */
+  /**
+   * Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). The options
+   * are a plain object holding `{ namespace }` and nothing else: any other own key, enumerable or not, is refused with
+   * {@link ValidationError}, by name, since a misspelt `namespace` would otherwise address the default namespace, and a
+   * deadline such as `expiresAt` would be left unread. A class instance, or an object built on another, is refused too,
+   * since it can carry an option no scan of its own keys sees. A key whose value is `undefined` is read as absent, so a
+   * spread of options keeps working.
+   */
   segment(name: string, options?: SegmentOptions): Segment {
-    const ref: SegmentRef = { segment: name, namespace: options?.namespace };
-    validateSegmentRef(ref);
-    refuseReservedNamespace(ref.namespace);
-    const expiresAt = options?.expiresAt;
-    if (expiresAt !== undefined) {
-      // Fail at the handle, not at the first read that silently returns nothing. The floor is the same one
-      // `setRetention` enforces: a seconds-based value would land in 1970 and make the segment permanently
-      // and invisibly empty.
-      if (
-        !Number.isFinite(expiresAt) ||
-        !Number.isInteger(expiresAt) ||
-        expiresAt < MIN_EXPIRES_AT_MS
-      ) {
+    if (options !== undefined && options !== null) {
+      if (typeof options !== 'object' || Array.isArray(options)) {
+        throw new ValidationError('segment: options must be an object such as { namespace }');
+      }
+      // A plain object of any realm has a prototype whose own prototype is null.
+      const proto = Object.getPrototypeOf(options) as object | null;
+      if (proto !== null && Object.getPrototypeOf(proto) !== null) {
         throw new ValidationError(
-          `segment: expiresAt must be an integer epoch-MILLISECONDS >= ${MIN_EXPIRES_AT_MS}; got ${expiresAt}` +
-            ` (a value in seconds lands in 1970 and would make the segment read as permanently empty)`,
+          'segment: options must be a plain object such as { namespace }, not a class instance or an object built on another',
+        );
+      }
+      const unknown = Object.getOwnPropertyNames(options).filter(
+        (k) => k !== 'namespace' && (options as Record<string, unknown>)[k] !== undefined,
+      );
+      if (unknown.length > 0) {
+        throw new ValidationError(
+          `segment: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+            'a handle takes { namespace } only',
         );
       }
     }
+    const ref: SegmentRef = { segment: name, namespace: options?.namespace };
+    validateSegmentRef(ref);
+    refuseReservedNamespace(ref.namespace);
     return makeSegment({
       engine: this.engine,
       ref,
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, l, at) => this.pinSegment(r, l, at),
       combineEngine: (handles) => this.engineForCombine(handles),
-      expiresAt,
     });
   }
 
   /**
    * Write `ids` as a **new generation of `dest`** and publish it — the shared body of the `*Into` verbs. An `*Into`
    * materialisation is a load, and publishes the same way (hard invariant 1): every load that finds a row fences its
-   * publish on the row's token; a guarded load (the default, since the empty refusal needs the size of the current generation)
-   * also fences on the pointer it judged (`expectFrom`), and one that found no row fences on that absence instead.
-   * Only an unguarded load (`allowEmpty: true` and no `guard.minRetained`) onto a segment with no row publishes bare
-   * forward-only. The destination's previous generation stays readable until the publish lands (readers re-resolve
+   * publish on the row's token, and every load that finds none on that absence, guarded or not; a guarded load (the
+   * default, since the empty refusal needs the size of the current generation) also fences on the pointer it judged
+   * (`expectFrom`). The destination's previous generation stays readable until the publish lands (readers re-resolve
    * within `cache.genTtlMs`).
    *
    * This routes through `loadSegment` rather than writing the generation itself, and that is the whole point
    * of it. A materialisation is a load whose ids happen to come from a combine instead of from upstream, so
    * everything `load()` learned the hard way applies unchanged: the generation is written UNPUBLISHED, the
    * guard runs while the old generation is still authoritative, the publish is fenced as above, and a refused
-   * object is reclaimed only when a re-read finds the row unchanged (the same token) or gone (hard invariant 1:
-   * deleting it after a purge-and-recreate would put a live row over a missing generation).
+   * object is reclaimed only when a re-read finds the row unchanged (the same token, or one that differs only in
+   * its leases), `destroyed`, or gone, or finds key material on it when the load wrote cleartext; under any other
+   * row it is kept (hard invariant 1: deleting it after a purge-and-recreate would put a live row over a missing
+   * generation).
    *
-   * That last check narrows the window rather than closing it: the row read and the delete are two round
-   * trips, and `IStorageDriver` has no conditional delete to make them one. the collection a load runs carries
-   * the same residual. The failure it leaves is an orphan object, which costs storage until
-   * something collects it — deliberately the cheaper side of the trade.
+   * Where the row is gone, or keyed over a cleartext write, the object's footer must match what the load wrote, and
+   * the delete passes the version that read reported, so on a storage driver that reports `conditionalDelete` an
+   * object put under the number since is kept. Where the row is unchanged or `destroyed`, the check narrows the
+   * window rather than closing it: the row read and the delete are two round trips, and the delete is by number,
+   * since the write reports no version of the object it made. The other deletes a load leads to are by number too: its
+   * collection deletes what a listing, or the row's list of kept generations, names below the pointer, and a drop's
+   * sweep and a tombstoned segment's collection delete what a listing names under a `destroyed` row. The failure the
+   * checks leave when they refuse is an orphan object, which costs storage until something collects it —
+   * deliberately the cheaper side of the trade.
    *
    * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
    * swallowed everything, an operand that had not loaded yet — would silently replace `dest` with an empty
@@ -923,16 +1125,17 @@ export class CloudRoaring {
    * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
    * before you write the retry. `'superseded'` covers five different causes — the write-once PUT collided,
    * the pointer moved, a row appeared where the load found none, the row's token changed, the row was purged —
-   * and only the first three are the "somebody beat us" the name suggests. A token can also change on a write
-   * that is not a supersession at all, such as a `setRetention` on the destination. On top of that, the collection pass that runs AFTER a
-   * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
+   * and only the first two are always the "somebody beat us" the name suggests. A row can appear, and a token can
+   * change, on a write that is not a supersession at all: a `setRetention` on the destination creates its row when it
+   * has none, and rewrites it when it has one. On top of that, the collection pass that runs AFTER a successful
+   * publish can raise the same error. So: treat it as "re-read the destination and decide",
    * never as "the write did not happen".
    *
    * **And by default it collects nothing**, unlike `load()`. See the `keep` default below.
    */
   private async materialize(
     dest: SegmentRef,
-    ids: AsyncIterable<number>,
+    ids: LoadInput | CombineChunks,
     op: string,
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
@@ -943,7 +1146,7 @@ export class CloudRoaring {
     const metadata = options?.metadata;
     let result: Awaited<ReturnType<typeof loadSegment>>;
     try {
-      result = await loadSegment(dest, ids, deps, {
+      const loadOptions = {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
         ...(metadata === undefined ? {} : { metadata }),
@@ -956,7 +1159,11 @@ export class CloudRoaring {
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
         keep: options?.keep ?? KEEP_EVERY_GENERATION,
         ...(options?.audit === undefined ? {} : { audit: options.audit }),
-      });
+      };
+      result =
+        ids instanceof CombineChunks
+          ? await loadSegmentChunks(dest, ids.chunks, deps, loadOptions)
+          : await loadSegment(dest, ids, deps, loadOptions);
     } finally {
       // As `load()` does: this store's view of `dest` is behind whatever just happened, and a throw can still have
       // published first. Left alone, the store read its own write's predecessor: indefinitely, with no timed refresh.
@@ -967,18 +1174,21 @@ export class CloudRoaring {
     // without an assertion. `'superseded'` only ever accompanies `published: false` anyway.
     const reason = result.reason;
     if (reason === 'superseded') {
-      // The object is durable, but a concurrent writer published a higher generation of `dest` between our
-      // numbering and our publish, so ours is an orphan no reader will resolve. Returning it here would name
-      // `generation` as "the destination's new current generation" — which is what `MaterializeResult`
-      // documents it to be, and it would be false. The destination holds someone else's content.
+      // The object is durable, but this call's write may not be the one that made it current: a concurrent writer
+      // published a higher generation of `dest` between our numbering and our publish, or a write that renewed the
+      // row over ours left us unable to tell it from another writer's. Ours may then be an orphan no reader will
+      // resolve. Returning it here would name `generation` as "the destination's new current generation" — which is
+      // what `MaterializeResult` documents it to be, and it could be false. The destination may hold someone else's
+      // content.
       //
       // A throw rather than a flag: every other write path in the library reports a lost race loudly, and a
       // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
       // own.
       // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
-      // apart: the object either exists as an orphan (collected by the first load that collects once a generation
-      // above it is current, or deleted by the refusal itself when the destination was dropped meanwhile) or was
-      // never written at all, because the write-once PUT itself collided. Telling someone to look for an
+      // apart: the object either exists (an orphan, collected by the first load that collects once a generation
+      // above it is current or deleted by the refusal itself when the destination was dropped meanwhile; or current
+      // but not provably this call's, when a write renewed the row's `pointerId` over it) or was never written at all,
+      // because the write-once PUT itself collided. Telling someone to look for an
       // orphan that does not exist is a wasted investigation.
       // Deliberately does NOT assert which of the four causes it was. "A newer generation was published first"
       // is wrong for two of them: a `setRetention` on the
@@ -987,12 +1197,12 @@ export class CloudRoaring {
       // investigation. `size > 0` is the one thing this path can state as fact.
       const wrote =
         result.size > 0
-          ? `generation ${result.generation} was written and is not current`
+          ? `generation ${result.generation} was written and may not be current`
           : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
         `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so its ` +
-          `result is not the destination's current generation: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
-          `(a retention policy does this), dropped or purged. Re-read the destination and re-run.`,
+          `result may not be the destination's current generation: ${wrote}. The pointer may have moved, the row may have been created or rewritten ` +
+          `(a retention policy does either), dropped or purged. Re-read the destination and re-run.`,
       );
     }
     return {
@@ -1005,6 +1215,486 @@ export class CloudRoaring {
       size: result.size,
       collected: result.collected,
     };
+  }
+
+  /**
+   * **A dry run:** every output computed exactly as the call would compute it, and judged against its `dest` as its
+   * publish would be, with nothing written: no object, no pointer, no audit event. Each output's result says how many ids
+   * it would hold, what its `dest` holds now, and the bound its publish would be refused for now (`wouldRefuse`). The
+   * call reads its operands as a publishing call does, takes its feed if it has one, and fails an output for what would
+   * fail its publish (a `dest` whose lease has ended, a destroyed one, a moved exclude, an erasure). It reads the operands as
+   * the publishing call does, and for each output the reads a publish's guard makes: one registry read for `dest`'s size,
+   * or two where its row has no usable summary. It holds the memory a publish would, so it fails for memory where one
+   * would, and reports to the metrics sink as the same `materializeMany` op.
+   *
+   * What it reports holds for now only: a publish made later reads the operands and judges each `dest` as they are then.
+   * To publish what was reviewed, call again without `dryRun`, on the same pinned handles or with the same feed (the
+   * guide's recipe).
+   */
+  materializeMany(options: MaterializeManyDryRunOptions): Promise<MaterializeManyDryRun>;
+  /**
+   * The call with `dryRun` a switch held in a variable, optional or not: a {@link MaterializeManyDryRun} when it is
+   * `true` and a {@link MaterializeManyRun} when it is `false` or absent, so with a `boolean` (or `boolean | undefined`)
+   * the result is typed as either, and the flag passed says which. A literal `true` or `false`, and a call without
+   * `dryRun`, are typed exactly, as by the forms either side of this one.
+   */
+  materializeMany<D extends boolean | undefined = undefined>(
+    options: MaterializeManyOptions & { readonly dryRun?: D },
+  ): Promise<D extends true ? MaterializeManyDryRun : MaterializeManyRun>;
+  /**
+   * **Many outputs, each operand read once per group.** Each output is an expression over named stored operands (`and`, `or`, `andNot`, nested
+   * to depth 64) published as a new generation of its own `dest`, exactly as an `*Into` would publish it, but computed
+   * together: each operand's chunks are read once for all the outputs that use them, instead of once per output and
+   * once more for every scratch segment a nested expression would otherwise need.
+   *
+   * ```ts
+   * const run = await store.materializeMany({
+   *   operands: { us: store.segment('us'), engaged: store.segment('engaged'), optOut: store.segment('opt-out') },
+   *   outputs: [
+   *     { dest: store.segment('send-1'), expr: { and: ['us', 'engaged'] }, exclude: ['optOut'] },
+   *     { dest: store.segment('send-2'), expr: { andNot: ['us', 'engaged'] } },
+   *   ],
+   *   keep: 3,
+   * });
+   * run.outputs[0]; // a MaterializeResult, or { published: false, error }
+   * ```
+   *
+   * **Results.** `run.outputs[i]` is index-aligned with `outputs` and is exactly what output `i`'s `*Into` would have
+   * returned (a {@link MaterializeResult}: published, or refused with its `reason`), or `{ published: false, error }` for
+   * what it would have thrown. One output's refusal or error never stops another. The call itself throws only for bad
+   * input ({@link ValidationError} naming the output index and path, before any request), an operand that names no
+   * segment (unless `allowAbsentOperands`), and a `budget` its own plan exceeds, the last two before any chunk is read.
+   *
+   * **One generation per operand.** By default every stored operand is pinned for the call: read at the generation it had
+   * when the call started, however long the call runs and whatever loads land meanwhile. That is one generation per
+   * operand, not one instant across operands (two pins are two registry reads). `pin: false` reads live, as a combine does.
+   *
+   * **Every pinned operand an output subtracts is re-checked.** An output subtracts an operand when it is in its `exclude`
+   * or under any entry of an `andNot` after the first, at any depth. Immediately before the publishes the call re-reads the
+   * registry row of each such operand and compares its generation and incarnation, and the fingerprint of the current
+   * object where both reads carry one, with what was pinned (a name deleted and created again is a replacement though it
+   * is generation 0 again). If one was replaced, each output that subtracts it is
+   * not published and carries {@link StaleOperandError}; the others publish. It costs one registry read per such operand per
+   * group, and `stats.operands` carries every operand's pinned, start and end generation and whether it moved.
+   *
+   * **Memory.** Everything the pass holds resident is counted against `maxBufferedBytes` (default 256 MiB): each output's
+   * buffered chunks, the operand streams' ranges, the chunks being evaluated, and the plan itself, and a call whose plan alone
+   * passes it is refused before any chunk is read. When the outputs do not fit, they run in groups, each reading its operands
+   * once (so the operand reads grow with the total output size over the budget), and a group's buffers are released only as
+   * its publishes settle. A chunk count the index understated does not grow a group past the budget: the largest buffer is
+   * dropped and that output re-runs alone. An output that cannot fit alone has `BudgetExceededError` as its result. The count
+   * is the pass's own: process memory is more, measured at 1.6 times the ledger's high water on Linux and 2.5 to 5 times on
+   * macOS on the in-memory backend (the guide has the shapes and what is not counted).
+   *
+   * **Untrusted bytes.** Every operand chunk is decoded through the checks on untrusted tier data. A key an operand's index
+   * lists whose bytes are missing is an error for the outputs that read the operand, never an empty chunk.
+   *
+   * **Handles.** A handle anywhere in the call (an operand or a `dest`) whose lease has ended or was released is refused
+   * before any request, as on the `*Into` verbs. A leased operand's lease is checked before each chunk key is read: a
+   * lapse fails only the outputs that read that operand, never reads empty. Each `dest`'s lease is checked again just
+   * before its publish.
+   *
+   * **The chunk cache is bypassed:** the pass reads through the storage source and never writes the decoded-chunk cache, so
+   * a batch does not evict other readers' hot chunks. Each publish still invalidates its `dest` as an `*Into` does.
+   *
+   * **A limit of the form.** An output cannot name another output of the same call: a `dest` that is also an operand is
+   * refused. Chain two calls.
+   *
+   * **A feed.** `feed: { names, records, counts }` adds operands that arrive as records in chunk-key order, for conditions
+   * too many to hold or store. Each record is checked before the pass sees it (see {@link MaterializeManyFeedRecord}): a bad
+   * feed is refused, never read as fewer members, and **a fed output is published only after the whole feed was read and every
+   * end-of-feed check passed**, so a bad feed refuses every fed output and publishes none of them; outputs that name only
+   * stored operands are unaffected. At the end of the feed `counts` must equal the ids the feed held for each name, and a
+   * name that appeared in no record is refused unless it is in `mayBeEmpty`. A feed is read once, so the call runs its outputs
+   * as one group and **`maxBufferedBytes` is required**: each record is converted to compressed bitmaps as it arrives, the key
+   * in hand and its fed outputs are counted against the budget, and the call fails as soon as the count passes it, with
+   * {@link BudgetExceededError} for every fed output. **Erasure:** a fed call is refused at its next record, and before each
+   * fed publish, once `eraseSubject` has started in this store ({@link StaleOperandError}, `reason: 'erased'`).
+   *
+   * ```ts
+   * await store.materializeMany({
+   *   operands: { unsub: store.segment('global-unsub') },
+   *   feed: {
+   *     names: ['us', 'engaged'],
+   *     records: warehouseRecords(), // yields { key, operands: { us: Uint32Array, engaged: Uint32Array } } by key
+   *     counts: () => warehouseCounts(),
+   *   },
+   *   maxBufferedBytes: 512 * 1024 * 1024,
+   *   outputs: [{ dest: store.segment('send-1'), expr: { and: ['us', 'engaged'] }, exclude: ['unsub'] }],
+   *   keep: 12,
+   * });
+   * ```
+   */
+  materializeMany(
+    options: MaterializeManyOptions & { readonly dryRun?: false },
+  ): Promise<MaterializeManyRun>;
+  /** The one body of the forms above. */
+  async materializeMany(
+    options: MaterializeManyOptions & { readonly dryRun?: boolean },
+  ): Promise<MaterializeManyRun | MaterializeManyDryRun> {
+    if (typeof options !== 'object' || options === null) {
+      throw new ValidationError(
+        'materializeMany needs an options object with `operands`, `outputs` and `keep`',
+      );
+    }
+    // The erasure counter as the call begins: a fed call is refused once it has moved.
+    const epochAt = options.feed === undefined ? 0 : this.epochNow();
+    const unknown = Object.keys(options).filter(
+      (k) => !(MATERIALIZE_MANY_KEYS as readonly string[]).includes(k),
+    );
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `materializeMany: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}`,
+      );
+    }
+    // Read once, here: a getter or a proxy answering twice would be checked as one value and used as another.
+    const dryRunIn: unknown = options.dryRun;
+    if (dryRunIn !== undefined && typeof dryRunIn !== 'boolean') {
+      throw new ValidationError('materializeMany: dryRun must be a boolean');
+    }
+    const dryRun = dryRunIn === true;
+    const operandsIn: unknown = options.operands;
+    const outputsIn: unknown = options.outputs;
+    const keep = options.keep;
+    const after = options.after;
+    const through = options.through;
+    // `null` is not the default: a switch is `true` or `false`, as on every call.
+    const pinOption: unknown = options.pin === undefined ? true : options.pin;
+    const feedIn: unknown = options.feed;
+    const mayBeEmptyIn: unknown = options.mayBeEmpty;
+    if (feedIn !== undefined && options.maxBufferedBytes === undefined) {
+      throw new ValidationError(
+        'materializeMany: maxBufferedBytes is required with a feed: the feed is read once, so the call runs as one group and the budget is what bounds it',
+      );
+    }
+    const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    const publishConcurrency = options.publishConcurrency ?? DEFAULT_PUBLISH_CONCURRENCY;
+    const concurrency = options.concurrency ?? DEFAULT_BATCH_CONCURRENCY;
+    const budgetOption = options.budget;
+    const allowAbsentOperands = options.allowAbsentOperands;
+    if (typeof pinOption !== 'boolean')
+      throw new ValidationError('materializeMany: pin must be a boolean');
+    if (allowAbsentOperands !== undefined && typeof allowAbsentOperands !== 'boolean') {
+      throw new ValidationError('materializeMany: allowAbsentOperands must be a boolean');
+    }
+    if (typeof operandsIn !== 'object' || operandsIn === null || Array.isArray(operandsIn)) {
+      throw new ValidationError('materializeMany: operands must be an object of name to segment');
+    }
+    if (!Array.isArray(outputsIn) || outputsIn.length === 0) {
+      throw new ValidationError('materializeMany: outputs must be a non-empty array');
+    }
+    const names = Object.keys(operandsIn);
+    const handles = new Map<string, Segment>();
+    for (const name of names) {
+      const handle = (operandsIn as Record<string, unknown>)[name];
+      if (!(handle instanceof Segment)) {
+        throw new ValidationError(
+          `materializeMany: operands["${name}"] must be a segment from store.segment()`,
+        );
+      }
+      handles.set(name, handle);
+    }
+    // `mayBeEmpty` names fed operands, which the feed checks; without a feed it can name nothing.
+    if (mayBeEmptyIn !== undefined && feedIn === undefined) {
+      if (!Array.isArray(mayBeEmptyIn)) {
+        throw new ValidationError(
+          'materializeMany: mayBeEmpty must be an array of fed operand names',
+        );
+      }
+      if (mayBeEmptyIn.length > 0) {
+        const first: unknown = mayBeEmptyIn[0];
+        const what =
+          typeof first !== 'string'
+            ? 'something that is not a name'
+            : handles.has(first)
+              ? `"${first}", a stored operand`
+              : `"${first}", which is not an operand of this call`;
+        throw new ValidationError(
+          `materializeMany: mayBeEmpty names ${what}; it names fed operands, and this call has no feed`,
+        );
+      }
+    }
+    const operandKeys = new Set([...handles.values()].map((h) => h.key()));
+    const outputs: Array<{ spec: MaterializeManyOutput; dest: Segment }> = [];
+    const destKeys = new Set<string>();
+    (outputsIn as unknown[]).forEach((raw, i) => {
+      if (typeof raw !== 'object' || raw === null) {
+        throw new ValidationError(`outputs[${i}] must be an object`);
+      }
+      const bad = Object.keys(raw).filter(
+        (k) => !(MATERIALIZE_MANY_OUTPUT_KEYS as readonly string[]).includes(k),
+      );
+      if (bad.length > 0) {
+        throw new ValidationError(
+          `outputs[${i}]: unknown option${bad.length > 1 ? 's' : ''} ${bad.map((k) => `"${k}"`).join(', ')}`,
+        );
+      }
+      const spec = raw as MaterializeManyOutput;
+      const dest: unknown = spec.dest;
+      if (!(dest instanceof Segment)) {
+        throw new ValidationError(`outputs[${i}].dest must be a segment from store.segment()`);
+      }
+      if (operandKeys.has(dest.key())) {
+        throw new ValidationError(
+          `outputs[${i}].dest is also an operand of the call: one call is one pass over operands that do not change under it, so chain two calls`,
+        );
+      }
+      if (destKeys.has(dest.key())) {
+        throw new ValidationError(
+          `outputs[${i}].dest names a segment another output of the call writes`,
+        );
+      }
+      destKeys.add(dest.key());
+      outputs.push({ spec, dest });
+    });
+    // A ceiling the store was built with applies to a call that names none, as it does to every other operation; only a
+    // store left on the library default lets the call size its own from its plan.
+    const storeCeiling =
+      this.budget === null || this.budget.maxRequests !== DEFAULT_BUDGET.maxRequests
+        ? this.budget
+        : undefined;
+    const budget =
+      budgetOption === undefined ? storeCeiling : resolvePerOpBudget(budgetOption, this.budget);
+    // Every expression and option is checked here, with no operand pinned and no request made.
+    const operandSpecs = (pins: ReadonlyMap<string, PinnedAt | undefined>): CombineManyOperand[] =>
+      names.map((name) => {
+        const handle = handles.get(name)!;
+        const seg = viewOf(handle);
+        const pinnedAt = pins.get(handle.key());
+        return {
+          name,
+          ref: seg.ref,
+          ...(handle.lease === undefined ? {} : { check: () => this.assertLease(handle) }),
+          ...(pinnedAt === undefined
+            ? {}
+            : {
+                pinnedGeneration: pinnedAt.generation,
+                pinnedVersion: pinnedAt.version,
+                pinnedFingerprint: pinnedAt.fingerprint,
+              }),
+          current: (read?: { readonly fingerprint?: boolean }) =>
+            this.currentRowOf(seg.ref, read?.fingerprint === true),
+        };
+      });
+    const request = (pins: ReadonlyMap<string, PinnedAt | undefined>) => ({
+      operands: operandSpecs(pins),
+      outputs: outputs.map(({ spec, dest }) => ({
+        expr: spec.expr,
+        ...(spec.exclude === undefined ? {} : { exclude: spec.exclude }),
+        ...(spec.allowEmpty === undefined ? {} : { allowEmpty: spec.allowEmpty }),
+        ...(spec.guard === undefined ? {} : { guard: spec.guard }),
+        ...(spec.metadata === undefined ? {} : { metadata: spec.metadata }),
+        ...(spec.keep === undefined ? {} : { keep: spec.keep }),
+        beforePublish: () => this.assertLease(dest),
+        // What a settled publish proves it sent: a published one wrote its object and moved the pointer, a refused one
+        // wrote its object and deleted it. A dry run's judgement wrote nothing, and read the row and maybe the object.
+        requestsOf: (result: MaterializeResult | DryRunValue) =>
+          'dryRun' in result
+            ? { get: result.reads, put: 0 }
+            : { get: 0, put: result.published ? 2 : 1 },
+        publish: (
+          chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
+          write: {
+            readonly keep: number;
+            readonly allowEmpty?: boolean;
+            readonly guard?: LoadGuard;
+            readonly metadata?: GenerationMetadata;
+          },
+        ): Promise<MaterializeResult | DryRunValue> =>
+          dryRun
+            ? this.judgeOutput(viewOf(dest).ref, chunks, write)
+            : this.materialize(viewOf(dest).ref, new CombineChunks(chunks), 'materializeMany', {
+                ...write,
+                ...(spec.audit === undefined ? {} : { audit: spec.audit }),
+              }),
+      })),
+      keep: keep as number,
+      ...(after === undefined ? {} : { after }),
+      ...(through === undefined ? {} : { through }),
+      maxBufferedBytes,
+      publishConcurrency,
+      concurrency,
+      ...(budget === undefined ? {} : { budget }),
+      ...(allowAbsentOperands === undefined ? {} : { allowAbsentOperands }),
+      ...(feedIn === undefined ? {} : { feed: this.feedOf(feedIn, mayBeEmptyIn, epochAt) }),
+      ...(dryRun ? { dryRun: true } : {}),
+    });
+    const compiled = compileCombineMany(request(new Map()));
+    // A handle anywhere whose lease has ended or was released is refused before any request, as the `*Into` verbs refuse one.
+    for (const { dest } of outputs) this.assertLease(dest);
+    for (const handle of handles.values()) this.assertLease(handle);
+    this.lifecycleDeps('materializeMany');
+    const crbm = this.crbmSource;
+    if (crbm === undefined) {
+      throw new UnsupportedError(
+        'materializeMany needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage`',
+      );
+    }
+    // One pin per segment, shared by every name that holds it. A handle passed already pinned is used as it is.
+    const held = new Map<string, { at: PinnedAt | undefined; handle: Segment }>();
+    for (const [name, handle] of handles) {
+      const key = handle.key();
+      const at = handle.pinnedAt;
+      const prior = held.get(key);
+      if (prior === undefined) {
+        held.set(key, { at, handle });
+      } else if (prior.at !== undefined && at !== undefined) {
+        if (!samePin(prior.at, at)) {
+          throw new ValidationError(
+            `materializeMany: operand "${name}" holds a segment another operand holds, ${twoPins(prior.at, at)}: one call reads a segment at one generation`,
+          );
+        }
+      } else if (prior.at !== undefined || at !== undefined) {
+        if (!pinOption) {
+          throw new ValidationError(
+            `materializeMany: operand "${name}" holds a segment another operand holds, ${twoPins(prior.at, at)}: one call reads a segment at one generation`,
+          );
+        }
+        if (at !== undefined) held.set(key, { at, handle });
+      }
+    }
+    const pins = new Map<string, PinnedAt | undefined>();
+    const toPin: Array<[string, Segment]> = [];
+    for (const [key, { at, handle }] of held) {
+      if (at !== undefined) pins.set(key, at);
+      else if (pinOption) toPin.push([key, handle]);
+      else pins.set(key, undefined);
+    }
+    // Timed from the first request, the pins, to the last publish, as an `*Into` call is timed around its read and write.
+    const metricsOn = this.metrics !== NOOP_METRICS;
+    const work = async () => {
+      const taken = await mapWithConcurrency(
+        toPin,
+        PIN_PARALLELISM,
+        async ([key, handle]) => [key, (await handle.pin()).pinnedAt] as const,
+      );
+      for (const [key, at] of taken) pins.set(key, at);
+      const live = new Map([...pins].filter((e): e is [string, PinnedAt] => e[1] !== undefined));
+      const pinnedSource = new PinnedStorageChunkSource(crbm, live);
+      const source =
+        this.retryOptions === undefined
+          ? pinnedSource
+          : new RetryingStorageChunkSource(pinnedSource, this.retryOptions);
+      const final = rebindCombineMany(compiled, operandSpecs(pins));
+      return runCombineMany(final, {
+        source,
+        codec: roaringCodec,
+        clock: this.clock,
+        ...(metricsOn ? { metrics: this.metrics } : {}),
+      });
+    };
+    const run = metricsOn
+      ? await timeOp(this.metrics, this.clock, 'materializeMany', work)
+      : await work();
+    const results = run.outputs.map((o) => {
+      if (!o.ok) {
+        return {
+          published: false as const,
+          error: o.error instanceof Error ? o.error : new Error(String(o.error)),
+        };
+      }
+      if (!('dryRun' in o.value)) return o.value;
+      const v = o.value;
+      const judged: MaterializeDryRunResult = {
+        dryRun: true,
+        published: false,
+        cardinality: v.cardinality,
+        cardinalityBefore: v.cardinalityBefore,
+        ...(v.wouldRefuse === undefined ? {} : { wouldRefuse: v.wouldRefuse }),
+      };
+      return judged;
+    });
+    return dryRun
+      ? { outputs: results as MaterializeManyDryRunOutcome[], stats: run.stats }
+      : { outputs: results as MaterializeManyOutcome[], stats: run.stats };
+  }
+
+  /**
+   * A dry run's publish of one output: count what the finished chunks hold, and judge that size against `dest` as a
+   * load would, writing nothing.
+   */
+  private async judgeOutput(
+    dest: SegmentRef,
+    chunks: AsyncIterable<{ readonly chunkKey: number; readonly bitmap: CodecBitmap }>,
+    write: { readonly allowEmpty?: boolean; readonly guard?: LoadGuard },
+  ): Promise<DryRunValue> {
+    let cardinality = 0;
+    for await (const chunk of chunks) cardinality += chunk.bitmap.size;
+    const judged = await judgeLoad(dest, cardinality, this.lifecycleDeps('materializeMany'), {
+      ...(write.allowEmpty === undefined ? {} : { allowEmpty: write.allowEmpty }),
+      ...(write.guard === undefined ? {} : { guard: write.guard }),
+    });
+    return {
+      dryRun: true,
+      published: false,
+      cardinality,
+      cardinalityBefore: judged.cardinalityBefore,
+      ...(judged.wouldRefuse === undefined ? {} : { wouldRefuse: judged.wouldRefuse }),
+      reads: judged.reads,
+    };
+  }
+
+  private epochNow(): number {
+    return this.erasureEpoch;
+  }
+
+  /**
+   * Whether an erasure has started in this store since `at` was read, or was running when it was: one that is still
+   * running is seen by the count of those running, and one that has ended since by the counter, which its end moved.
+   * The one check every call that reads caller memory uses.
+   */
+  private epochMoved(at: number): boolean {
+    return this.erasuresRunning > 0 || this.epochNow() !== at;
+  }
+
+  /** A call's feed with the store's erasure counter: read once here, checked by the combine before any record is read. */
+  private feedOf(feed: unknown, mayBeEmpty: unknown, epochAt: number): CombineManyFeed {
+    if (typeof feed !== 'object' || feed === null || Array.isArray(feed)) {
+      throw new ValidationError(
+        'materializeMany: feed must be an object with names, records and counts',
+      );
+    }
+    const f = feed as Record<string, unknown>;
+    return {
+      names: f.names as string[],
+      records: f.records as AsyncIterable<CombineManyFeedRecord>,
+      counts: f.counts as CombineManyFeed['counts'],
+      ...(mayBeEmpty === undefined ? {} : { mayBeEmpty: mayBeEmpty as string[] }),
+      epoch: { moved: () => this.epochMoved(epochAt) },
+    };
+  }
+
+  /**
+   * The registry row of `ref`, read straight from the registry, not from a snapshot: a re-check must see a move. With
+   * `fingerprint`, the current generation's object is opened too (one tail read, as a pin of it makes), and its
+   * fingerprint is returned beside the row: a generation's number is identified by its row and its object, since a number
+   * can be taken again once its object is gone.
+   */
+  private async currentRowOf(
+    ref: SegmentRef,
+    fingerprint: boolean,
+  ): Promise<{ generation: number | null; token: string; fingerprint?: string | null } | null> {
+    const registry = this.requireRegistry('materializeMany');
+    if (fingerprint && this.crbmSource !== undefined) {
+      const crbm = this.crbmSource;
+      const at = await this.withRetries(() => crbm.pinGeneration(ref));
+      const colon = at?.version.indexOf(':') ?? -1;
+      if (at !== null && colon >= 0) {
+        return {
+          generation: at.generation,
+          token: at.version.slice(colon + 1),
+          fingerprint: at.fingerprint,
+        };
+      }
+    }
+    const row = await this.withRetries(() => registry.get(ref));
+    return row === null ? null : { generation: row.currentGen, token: pointerIdOf(row) };
+  }
+
+  /** Throw what a read of, or a publish to, `handle` must throw now: its lease error, if it has one. */
+  private assertLease(handle: Segment): void {
+    const lease = viewOf(handle).leaseError();
+    if (lease !== undefined) throw lease;
   }
 
   /**
@@ -1031,6 +1721,8 @@ export class CloudRoaring {
       budget?: BudgetOption;
     } = {},
   ): Promise<SubjectReport> {
+    checkOptions(options, 'subjectReport', CALL_KEYS.subjectReport, ['allNamespaces']);
+    options ??= {};
     const registry = this.requireRegistry('subjectReport');
     requireScope(options, 'subjectReport'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
@@ -1058,13 +1750,15 @@ export class CloudRoaring {
         // The row this scan just listed is authoritative; the reader's snapshot may be up to `cache.genTtlMs` behind
         // it, or have no timed refresh (`genTtlMs: 0`). An access report must not lag another process's load or
         // erasure, so a segment whose snapshot is not the listed row's is forgotten before the read. The snapshot's
-        // version is `<generation>:<row token>` (invariant 1: the row's OCC token is the identity, the number
-        // restarts at 0 once a row is purged), so a retired name loaded again is told apart too. Only a segment
-        // that differs is re-resolved: one whose row has not moved keeps its snapshot and costs no extra read.
+        // version is `<generation>:<pointerId>` (invariant 2: the number restarts at 0 once a row is purged, and is taken
+        // again once its object is deleted, and every write that leads there renews the row's pointerId), so a retired
+        // name loaded again is told apart too, followed by `#` and the fingerprint of the object its reader opened, which
+        // is left out here. Only a segment whose resolution differs is re-resolved: one whose row has not moved, or has
+        // moved only by a lease or a policy write, keeps its snapshot and costs no extra read.
         if (this.crbmSource !== undefined) {
           const held = await this.crbmSource.currentVersion(ref);
-          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${String(rec.token)}`;
-          if (held !== listed) this.engine.invalidate(ref);
+          const listed = rec.currentGen === null ? null : `${rec.currentGen}:${pointerIdOf(rec)}`;
+          if (rowVersionOfLive(held) !== listed) this.engine.invalidate(ref);
         }
         return (await this.engine.has(ref, id))
           ? { segment: rec.segment, namespace: rec.namespace }
@@ -1086,10 +1780,14 @@ export class CloudRoaring {
    * can still hold it, and so can one above the pointer after a {@link CloudRoaring.rollback}, which the rollback
    * could make current again. Each holder is deleted — below the pointer by a `keep: 0` collection, above it one
    * by one, re-proved against the row first — and the generations above the pointer that never held the id stay
-   * as rollback targets. An entry says `erased: true` only once the call has listed the bucket and read what is
-   * left: **no generation of the segment holds the id**. The returned per-segment record is your **erasure ledger** —
-   * persist it / route it to your audit sink as the proof of deletion (a `segment.rewrite` audit event is also
-   * emitted per rewrite when you pass `audit`).
+   * as rollback targets, but for any object no read of the segment can open, which goes whatever the id. An entry
+   * says `erased: true` only once the call has listed the bucket and read what is left: **no generation of the
+   * segment holds the id**. The returned per-segment record is your **erasure ledger** —
+   * persist it / route it to your audit sink as the proof of deletion (when you pass `audit`, an audit event is also
+   * emitted per segment erased: `segment.rewrite` for a rewrite, `segment.collect` where only other generations held
+   * the id and nothing was rewritten). A segment where the erasure deleted only objects no read of it can open (a first
+   * load's sealed under a key no row holds) found the id in none, so the ledger does not list it; the audit sink gets
+   * `segment.collect` for it with no `fromGeneration`, which is the only record of that deletion.
    *
    * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
    * over the same generation. Requires the store built with a **backend** (throws
@@ -1109,14 +1807,23 @@ export class CloudRoaring {
    * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
    * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as an outcome rather than
    * an error, read off the row: a moved pointer is a `'superseded'` entry, which a re-run settles, and a segment
-   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger, as a fresh
-   * call would leave it out.
+   * that a concurrent `dropSegment` tombstoned or a retention sweep purged is left out of the ledger. A tombstoned
+   * segment is still searched: a cleartext object left under it that holds the id is deleted, with everything under
+   * the tombstone, and the entry reads `erased: true`. So is a segment whose row names no generation yet (a retention
+   * policy set before its first load): a first load's object that holds the id is deleted, once the row's `pointerId`
+   * is renewed so that the load, if still running, is refused at its publish, and the entry reads `erased: true`. An
+   * encrypted first load's object there cannot be searched, so it is deleted whatever the id: on an encrypted store,
+   * an erasure of any id refuses an encrypted first load in flight that has written its object onto a segment made
+   * ahead of its data. Each such delete, and each of a holder above the pointer, names the object the erasure read:
+   * on a storage driver that reports `conditionalDelete`, another erasure of the id that deletes it first, followed by
+   * a load that takes the number freed and publishes, does not lose that load's generation to this erasure's delete,
+   * which is refused, and the entry says what the row says; on one that does not, it can.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
-   * another writer (a load, another erasure, or a rollback) moved the pointer mid-call, so **this call** did not
-   * erase the id. Re-run: it erases the id if it is still there, and lists nothing for the segment if a racing
-   * erasure of the same id already removed it. Do not read `'superseded'` as "the id is still present" —
-   * read it as "not done by this call, and the re-run settles it".
+   * another writer (a load, another erasure, or a rollback) moved the pointer, or replaced an object the call meant to
+   * delete, mid-call, so **this call** did not erase the id. Re-run: it erases the id if it is still there, and lists
+   * nothing for the segment if a racing erasure of the same id already removed it. Do not read `'superseded'` as
+   * "the id is still present" — read it as "not done by this call, and the re-run settles it".
    * `` `error: …` `` is a per-segment fault (caught so one segment can't discard the whole ledger) and it can land
    * on either side of the publish: if the rewrite had not published, the id is still there and a re-run erases
    * it; if the publish succeeded and only the **collection** of the old generation failed, the id is already
@@ -1147,6 +1854,24 @@ export class CloudRoaring {
       budget?: BudgetOption;
     } = {},
   ): Promise<EraseSubjectResult> {
+    // An erasure in progress counts as one that moved: a call feeding on caller memory is refused from the start. One refused
+    // for its options still moves the counter: conservative, so an erasure is never missed.
+    this.erasureEpoch++;
+    checkOptions(options, 'eraseSubject', CALL_KEYS.eraseSubject, ['allNamespaces']);
+    options ??= {};
+    this.erasuresRunning++;
+    try {
+      return await this.eraseSubjectRun(id, options);
+    } finally {
+      this.erasuresRunning--;
+      this.erasureEpoch++;
+    }
+  }
+
+  private async eraseSubjectRun(
+    id: number,
+    options: NonNullable<Parameters<CloudRoaring['eraseSubject']>[1]>,
+  ): Promise<EraseSubjectResult> {
     const deps = this.lifecycleDeps('eraseSubject');
     requireScope(options, 'eraseSubject'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
@@ -1174,7 +1899,6 @@ export class CloudRoaring {
       recs,
       options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
       async (rec): Promise<SubjectErasureEntry | null> => {
-        if (rec.status === 'destroyed') return null; // already crypto-shredded — nothing to erase
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
         try {
           // The rewrite does its own membership check against the CURRENT registry generation — not the
@@ -1236,6 +1960,8 @@ export class CloudRoaring {
    * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
    * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
+   * Each entry says whether the row knows the generation (`known`): a known generation needs no `allowUnknown`; an unknown
+   * one does, except below a row's pointer when the row has no usable record or the target is older than a full one reaches.
    *
    * Needs a backend.
    */
@@ -1257,10 +1983,9 @@ export class CloudRoaring {
    * exists. It is `false` for a segment whose row was minted ahead of its first load (by `setRetention`) and
    * for a `destroyed` tombstone, because a read answers empty in both cases.
    *
-   * Two states answer `true` where a read still gives you nothing: a torn restore (a live pointer whose object
+   * One state answers `true` where a read still gives you nothing: a torn restore (a live pointer whose object
    * was deleted) makes reads of the object *throw* rather than answer empty, while a cold `count()` answers the number
-   * its row records — `checkConsistency` is the call for that — and
-   * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
+   * its row records — `checkConsistency` is the call for that.
    *
    * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
    * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a storage backend.
@@ -1304,6 +2029,8 @@ export class CloudRoaring {
    * ```
    */
   segments(options: { namespace?: string } = {}): AsyncIterable<SegmentInfo> {
+    checkOptions(options, 'segments', CALL_KEYS.segments);
+    options ??= {};
     if (options.namespace !== undefined) {
       // Synchronously, at the call, where `listSegments` (an async generator, which refuses the reserved
       // namespace too for a direct caller) would only throw at the first iteration.
@@ -1324,38 +2051,63 @@ export class CloudRoaring {
    * (`segment.rollback`), because every other pointer move can be reconstructed from "a load happened" and this
    * one cannot.
    *
-   * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
-   * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
-   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one tail read of it,
-   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself.
+   * It refuses rather than guesses. The row records, in `knownGens`, the generations its loads and rollbacks made
+   * current, each with the footer checksum of its object, and a rollback moves only onto one of those: a generation the
+   * row does not know (a load that wrote its object and died before the publish, a refused load's object, an object
+   * sealed under a key no row holds, a load published after the point a registry was restored to) throws
+   * {@link ValidationError} before any request to storage, and a known one whose object carries another checksum than
+   * the recorded one throws {@link IntegrityError}, with or without a keystore, since the footer is in the clear. A
+   * generation not in the bucket (collected, or never written) throws `NotFoundError` naming what *is* available, a
+   * crypto-shredded segment throws {@link ValidationError} because every generation of it is unreadable, and a target
+   * that is cleartext under an encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from
+   * one tail read of it, because every read would refuse it. Rolling to the generation already current is a no-op that
+   * reports itself, once one footer read finds its object in the bucket (and the one the row recorded); when the object is
+   * gone it throws `NotFoundError` naming what is.
    *
    * The same tail read (and a range read when the target's index is longer than it) gives the target's id count and
    * metadata, which the rollback writes into the row with the pointer, so a reader that sees the target as current sees
    * what describes it. The store's keystore opens an encrypted target for this; without it, or when it cannot open the
-   * key for any reason, the segment still rolls back and the row carries no summary of the target.
+   * key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out
+   * as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback onto a known generation still happens,
+   * opening nothing, and the row carries no summary of the target. Any other failure of the keystore is
+   * thrown. A swap of the pointer that gets no answer is settled by reading the row: one that landed, the row being the
+   * one the swap leaves, is checked as any is, and otherwise its `TransientError` is thrown. After the swap the target's
+   * footer is read once more, and the pointer put back if the object is gone or is another.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
-   * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
-   * load whose number one of them holds numbers above them all, and collection then keeps the newest `keep` of what is
-   * below its pointer), {@link CloudRoaring.dropSegment}
-   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and only those holding
-   * the id when the current generation does not. An operator who has just undone a bad load should not have the
+   * and are then *above* `currentGen`, where collection never looks, and still known to the row, so rolling forward onto
+   * one needs no flag. They remain until loads pass them (the first load whose
+   * number one of them holds numbers above them all, and collection then keeps `keep` of what is below its pointer, the
+   * generation that load superseded first), {@link CloudRoaring.dropSegment}
+   * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and, when the
+   * current generation does not hold the id, only those holding it and any no read of the segment can open, whatever
+   * the id. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
    * erasure undoable.
    *
-   * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
-   * without it: that is also where objects live that were never published, such as a load that wrote its object
-   * and died before the publish. Undoing an earlier rollback is what the opt-in is for.
+   * `{ allowUnknown: true }` moves onto a present object the row does not vouch for, or one whose checksum differs from
+   * the recorded one, as long as it is the segment's kind of object, opens, and names the generation, and records it as
+   * known (over a usable record; a row with none stays without one). On an encrypted segment, outside the two cases the pointer alone decides (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
+   * one that does not unwrap it, it is refused with `KeyUnavailableError` before the target is read, since an object
+   * sealed under a key no row holds passes every check that needs no key, and a key service that did not answer in
+   * time is thrown as `TransientError`, to retry. Every move the row did not vouch for is audited with `unknown: true`.
+   * Two cases are decided by the pointer alone: a target below it needs no flag, no key and no checksum check, and the
+   * move is audited the same way. They are a row with no usable `knownGens` (a registry that drops the field, or a pointer
+   * moved by hand), and a target numbered below the bound of a full record (128 entries or more, leased ones included),
+   * which is its least recently current entry that no lease names (an `*Into` destination keeps every generation in the
+   * bucket and names only the newest 128). A generation a publish with a smaller `keep` no longer names but that stays in
+   * the bucket (a lease spared it, or its delete failed) needs `allowUnknown` until a later listing collects it.
    *
    * Needs a backend.
    */
   async rollback(
     ref: SegmentRef,
     toGeneration: number,
-    options: { audit?: IAuditSink; allowForward?: boolean } = {},
+    options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
   ): Promise<RollbackResult> {
     validateSegmentRef(ref);
+    checkOptions(options, 'rollback', CALL_KEYS.rollback, ['allowUnknown']);
+    options ??= {};
     const deps = this.lifecycleDeps('rollback');
     try {
       return await rollbackSegment(ref, toGeneration, deps, options);
@@ -1414,26 +2166,34 @@ export class CloudRoaring {
    * published, a retention change, a rollback or an erasure wrote the row, or the row was deleted.
    *
    * A refused load deletes the object it wrote before returning — it sits above `currentGen`, where generation
-   * collection deliberately never looks — but only while the segment's registry row is unchanged or gone. Once
-   * another write has changed the row, the generation number it holds may name another incarnation's live object,
-   * so it leaves the orphan rather than risk deleting live data. The orphan is an ordinary generation once a later
-   * one is current above it, and collection counts it within `keep`.
+   * collection deliberately never looks — but only while the segment's registry row is unchanged (or differs only in
+   * its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
+   * encrypted segment's bucket. Under a row that is gone or keyed, one read of the object's footer must match what the
+   * load wrote first. Once another write has otherwise changed the row, the generation number it holds may name another
+   * writer's object, and a footer names bytes, not the load that wrote them, so it leaves the orphan rather than risk
+   * deleting live data. A publish never adds the orphan to the row's list, and a load's listing deletes it once a
+   * generation above it is current, unless the row's list names it; where the row records none (after a rollback, or
+   * with a `keep` above 64), that listing's window can keep it and, at a `keep` up to 64, record it, and the publishes
+   * after carry it until the window pushes it out. Until it goes, a rollback onto it is refused unless `allowUnknown` is passed, since the list never names it (a list seeded
+   * over a row with none can); with the override it publishes what no load published.
    *
-   * **Collection is by name for the default `keep`.** With `keep` of 0 or 1, a load that found nothing above the
-   * pointer deletes the one generation its publish pushed out of the window and lists nothing; it lists the segment's
-   * objects on every sixteenth generation, and on any load that met an object above the pointer or whose check found
-   * the current generation's object gone, to take what the name-only passes leave, such as the generations an
-   * earlier, wider `keep` held. `keep` of 2 or more lists on every load. {@link LoadResult.collected} then names what
-   * the pass deleted by name, and that generation may have been gone already.
+   * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
+   * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists
+   * nothing. It lists the segment's objects on every sixteenth generation, and on any load that met an object above the
+   * pointer or whose check found the current generation's object gone, to take what the name-only passes leave, such as
+   * an object a crashed load left below the pointer. A `keep` above 64 records no list and lists on every load, and so
+   * does the first load of a row that records none, which then records it. {@link LoadResult.collected} then names
+   * what the pass deleted by name, and one name may have been gone already.
    *
    * What it **throws** for is a fault rather than an outcome: invalid options or ids, and a crypto-shredded
    * segment (`ValidationError`); a key the keystore cannot provide (`KeyUnavailableError`); a current generation
    * that will not open when a guard has to read its size, which it does only when the row has no usable summary of it
-   * (`IntegrityError`); a driver failure; and a collection pass
-   * by listing that could not prove the segment was still the same one (`WriteConflictError`). That one, and a
-   * failure in the collection's own reads or deletes, can be raised **after** the publish already landed, so a throw
-   * does not by itself mean the load did not take effect — re-read the pointer rather than assuming. A collection by
-   * name that finds the segment changed returns an empty `collected` instead.
+   * (`IntegrityError`); a driver failure; and a fault in the collection's own reads, listing or deletes, or in the write
+   * that records the window (anything but a lost race). A collection fault can be raised **after** the publish already
+   * landed, so a throw does not by itself mean the load did not take effect — re-read the pointer rather than assuming.
+   * A collection, by name or by listing, that finds another writer has moved the row since the publish (a load, a
+   * rollback, a purge) stops and returns what it deleted in `collected`: a load that took effect does not throw for a
+   * race it won.
    *
    * **A `TransientError` from the registry write can leave the publish unsettled, and deletes nothing.** The
    * generation's object is sent again after a throttle where the backend allows it (a write id tells a first send
@@ -1449,6 +2209,8 @@ export class CloudRoaring {
    */
   async load(ref: SegmentRef, input: LoadInput, options: LoadOptions = {}): Promise<LoadResult> {
     validateSegmentRef(ref);
+    checkOptions(options, 'load', CALL_KEYS.load, ['allowEmpty']);
+    options ??= {};
     const deps = this.lifecycleDeps('load');
     try {
       return await loadSegment(ref, bitmapAsLoadInput(input), deps, options);
@@ -1510,9 +2272,17 @@ export class CloudRoaring {
     options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
   ): Promise<DropResult> {
     validateSegmentRef(ref);
+    if (options === undefined || options === null) {
+      throw new ValidationError('dropSegment: options { confirmSegment } are required');
+    }
+    checkOptions(options, 'dropSegment', CALL_KEYS.dropSegment, ['dryRun']);
     const deps = this.lifecycleDeps('dropSegment');
     try {
-      return await dropSegment(ref, { registry: deps.registry, storage: deps.storage }, options);
+      return await dropSegment(
+        ref,
+        { registry: deps.registry, storage: deps.storage, clock: deps.clock, rng: deps.rng },
+        options,
+      );
     } finally {
       if (options.dryRun !== true) this.engine.invalidate(ref);
     }
@@ -1546,7 +2316,11 @@ export class CloudRoaring {
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateSegmentRef(ref);
-    return setSegmentRetention(ref, { registry: this.requireRegistry('setRetention') }, policy);
+    return setSegmentRetention(
+      ref,
+      { registry: this.requireRegistry('setRetention'), clock: this.clock, rng: this.rng },
+      policy,
+    );
   }
 
   /**
@@ -1567,7 +2341,11 @@ export class CloudRoaring {
    */
   async clearRetention(ref: SegmentRef): Promise<boolean> {
     validateSegmentRef(ref);
-    return clearSegmentRetention(ref, { registry: this.requireRegistry('clearRetention') });
+    return clearSegmentRetention(ref, {
+      registry: this.requireRegistry('clearRetention'),
+      clock: this.clock,
+      rng: this.rng,
+    });
   }
 
   /**
@@ -1621,8 +2399,8 @@ export class CloudRoaring {
    * Pass `purgeTombstones: false` to keep every tombstone, that row included. On a backend whose registry reports
    * `conditionalDelete` (AWS S3, Azure Blob, the local filesystem and memory, by default; GCS when you set `conditionalDelete: true`)
    * the purge removes the row from the bucket for good, by a delete the store applies only to the version it judged,
-   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere,
-   * and for a row a release before 0.12 wrote, it leaves a tombstone. Each retirement files a pointer in the due index
+   * so a full sweep reads what is live or inside its grace rather than every name a namespace ever held; elsewhere it
+   * leaves a tombstone. Each retirement files a pointer in the due index
    * under the day its tombstone's grace ends, so `scan: 'index'` purges as well as retires.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
@@ -1631,14 +2409,16 @@ export class CloudRoaring {
   async retireExpired(
     options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
   ): Promise<RetireExpiredResult> {
+    checkOptions(options, 'retireExpired', CALL_KEYS.retireExpired, ['dryRun', 'purgeTombstones']);
+    const opts = picked(options, CALL_KEYS.retireExpired);
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
-      { registry: deps.registry, storage: deps.storage },
-      { ...options, now: options.now ?? this.clock.now() },
+      { registry: deps.registry, storage: deps.storage, clock: this.clock, rng: this.rng },
+      { ...opts, now: opts.now ?? this.clock.now() },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
     // nothing, so it invalidates nothing.
-    if (options.dryRun !== true) {
+    if (opts.dryRun !== true) {
       for (const entry of result.entries) {
         this.engine.invalidate({ segment: entry.segment, namespace: entry.namespace });
       }
@@ -1670,7 +2450,10 @@ export class CloudRoaring {
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
-   * object back, the pin reads it again.
+   * object back, the pin reads it again. A read of the segment already running on this store, a pin's and a combine's
+   * with a pinned operand included, caches nothing more of what it began reading before the call, and a pinned one
+   * opens its object again before its next chunk, failing with `NotFoundError` if the object is gone or replaced, or
+   * its row is gone or destroyed.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
@@ -1691,9 +2474,10 @@ export class CloudRoaring {
    *
    * The pinned handle gets its own engine but **shares the store's chunk cache**, under keys of its own: the
    * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
-   * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
+   * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}). It
+   * shares the store engine's invalidations too, so the store's writes reach a pinned read already running.
    */
-  private async pinSegment(ref: SegmentRef, expiresAt?: number): Promise<Segment> {
+  private async pinSegment(ref: SegmentRef, leaseUntil?: number, named?: PinAt): Promise<Segment> {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
@@ -1701,8 +2485,57 @@ export class CloudRoaring {
           'that cannot resolve a generation has nothing to pin)',
       );
     }
-    // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
-    const at = await this.withRetries(() => crbm.pinGeneration(ref));
+    // A lease is taken between the pin's row read and its open (see `pinGeneration`). The holder is drawn once, here,
+    // outside the retries, so a write that landed unseen is found by its holder when the pin is run again.
+    let hold: LeaseHold | undefined;
+    let take: PinLease | undefined;
+    if (leaseUntil !== undefined) {
+      const registry = this.requireRegistry('pin({ leaseUntil })');
+      if (registry.capabilities().canWrite === false) {
+        throw new UnsupportedError(
+          "pin({ leaseUntil }) needs a registry that can write a row, and this store's cannot in this runtime",
+        );
+      }
+      const holder = this.mintHolder();
+      const deps = { registry, clock: this.clock, rng: this.rng };
+      // A pin takes the generation current when its row is read, which must still be current when the write lands; a
+      // `pinAt` takes the one it names, which only has to be published.
+      const generationOf = (row: { currentGen: number | null }): number =>
+        named?.generation ?? (row.currentGen as number);
+      hold = {
+        holder,
+        until: leaseUntil,
+        released: false,
+        done: false,
+        release: () => releaseLease(ref, deps, holder),
+      };
+      take = {
+        take: (row) =>
+          takeLease(ref, deps, {
+            holder,
+            generation: generationOf(row),
+            until: leaseUntil,
+            row,
+            current: named === undefined,
+          }),
+      };
+    }
+    let at: Awaited<ReturnType<CrbmStorageChunkSource['pinGeneration']>>;
+    try {
+      // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
+      at = await this.withRetries(() =>
+        named === undefined
+          ? crbm.pinGeneration(ref, take)
+          : crbm.pinGenerationAt(ref, named, take),
+      );
+      if (hold !== undefined && at === null) {
+        throw new NotFoundError(`segment "${ref.segment}" has no generation to lease`);
+      }
+    } catch (err) {
+      // A lease that landed and was not handed to a caller is released, so it holds nothing for its whole length.
+      if (hold !== undefined) await hold.release().catch(() => undefined);
+      throw err;
+    }
     const pinnedAt: PinnedAt = {
       generation: at?.generation ?? null,
       version: at?.version ?? null,
@@ -1715,18 +2548,29 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       materialize: (dest, ids, op, options) => this.materialize(dest, ids, op, options),
-      pinned: (r, e) => this.pinSegment(r, e),
+      pinned: (r, l, at) => this.pinSegment(r, l, at),
       combineEngine: (handles) => this.engineForCombine(handles),
-      expiresAt,
       pinnedAt,
+      lease: hold,
     });
+  }
+
+  /** 16 hex digits from the store's `Rng`, which names the holder of one lease: unique, not secret. */
+  private mintHolder(): string {
+    let id = '';
+    for (let i = 0; i < 4; i++)
+      id += Math.floor(this.rng.next() * 0x10000)
+        .toString(16)
+        .padStart(4, '0');
+    return id;
   }
 
   /**
    * An engine reading every segment in `pins` at its pinned generation and everything else live, with the store's
    * retries, so a transient fault on a pinned read is retried as it would be on a live one.
    *
-   * It **shares the store's chunk cache and its memory bound**, under keys of its own for each pinned segment.
+   * It **shares the store's chunk cache and its memory bound**, under keys of its own for each pinned segment, and the
+   * store engine's invalidations, so an invalidation of a pinned segment reaches a read of the pin already running.
    */
   private engineWithPins(pins: ReadonlyMap<string, PinnedAt>): SegmentEngine {
     const crbm = this.crbmSource;
@@ -1747,6 +2591,7 @@ export class CloudRoaring {
       clock: this.clock,
       metrics: this.metrics,
       budget: this.budget,
+      sharesInvalidationsWith: this.engine,
     });
   }
 
@@ -1820,9 +2665,16 @@ export class CloudRoaring {
    * A segment whose pointer names a missing object is the torn restore this reports; a cold `count()` of it still
    * answers the number its row records, while a read of the object throws, so the count alone never shows it. With
    * `summaries: true` it also opens each segment's current object (one tail read each) and reports a segment whose
-   * row's summary says another id count or metadata than the object holds as `summary-mismatch`, which is what a
+   * row's summary names another object by its fingerprint, or says another id count or metadata than the object holds,
+   * as `summary-mismatch`, which is what a
    * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
    * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
+   *
+   * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
+   * included, against its object: one footer read each (104 bytes, no key, not retried), reporting
+   * `known-generation-mismatch` with the `generation` where the object under that number is not the one the row
+   * recorded. A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot
+   * be used is counted in `generationsUnchecked`, and none of its objects is read.
    *
    * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
    * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
@@ -1830,8 +2682,18 @@ export class CloudRoaring {
    * `storage` and `registry` with a higher `maxScanSegments`.
    */
   async checkConsistency(
-    options: { namespace?: string; concurrency?: number; summaries?: boolean } = {},
+    options: {
+      namespace?: string;
+      concurrency?: number;
+      summaries?: boolean;
+      generations?: boolean;
+    } = {},
   ): Promise<ConsistencyReport> {
+    checkOptions(options, 'checkConsistency', CALL_KEYS.checkConsistency, [
+      'summaries',
+      'generations',
+    ]);
+    options ??= {};
     const deps = this.lifecycleDeps('checkConsistency');
     return runConsistencyCheck(
       { storage: deps.storage, registry: deps.registry, keystore: deps.keystore },
@@ -1852,20 +2714,11 @@ export class CloudRoaring {
    * CLI wraps this with a filesystem sink.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
+    checkOptions(options, 'exportSegments', CALL_KEYS.exportSegments);
+    const opts = picked(options, CALL_KEYS.exportSegments);
     const registry = this.requireRegistry('exportSegments');
     // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
-    return runExport(this, registry, sink, {
-      ...options,
-      codec: options.codec ?? roaringCodec,
-    });
-  }
-
-  /**
-   * Planning cost estimate — pure, no instance/data needed: sizing, sales, what-if. For a real, grounded report
-   * from live segment sizes, use `store.segment(name).costReport()`. See {@link CostReport}.
-   */
-  static estimateCost(input: EstimateInput): CostReport {
-    return estimateCost(input);
+    return runExport(this, registry, sink, { ...opts, codec: opts.codec ?? roaringCodec });
   }
 }
 
@@ -1877,11 +2730,15 @@ export class CloudRoaring {
  */
 export interface BaseCombineOptions extends IdRange {
   /**
-   * Max chunk keys resolved concurrently — bounds the Storage footprint (about `concurrency × operands` chunks in
-   * flight). A positive integer; default 32. The window opens 8 keys wide (or `concurrency`, if lower) and widens
-   * as keys are taken, so a read that stops early fetches no more than a few keys ahead; one that runs to the end
-   * spends nearly all of its round trips at the full width. A read that stops early has requested up to
-   * `concurrency` keys per operand past the last one it used.
+   * How far ahead each operand is read: a positive integer, default 32. The library's own stores read each operand as
+   * one stream of coalesced ranges (chunks that sit near each other are one request), and `concurrency` is how many
+   * range requests a stream holds ahead of the read, in flight or landed and not yet used. So about
+   * `concurrency × operands` requests are in flight at most, and, since a range is at most 1 MiB (one chunk, when a chunk
+   * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
+   * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
+   * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
+   * reads chunk by chunk (a custom one) is read `concurrency` chunk keys at once, opening 8 wide. A running
+   * stream holds its operand's reader outside the reader cache's bounds until it ends or the segment moves on.
    */
   readonly concurrency?: number;
   /** Override the store's per-op denial-of-wallet budget for this call (`false` lifts it). */
@@ -1915,10 +2772,7 @@ export interface BaseCombineOptions extends IdRange {
  * list costs reads proportional to the audience, not to itself.
  */
 export interface CombineOptions extends BaseCombineOptions {
-  /**
-   * Segments whose ids are subtracted from the result. An **expired** handle here excludes nothing, in every
-   * combine — it is skipped without being read, exactly as in {@link Segment.andNot}.
-   */
+  /** Segments whose ids are subtracted from the result. */
   readonly exclude?: Segment[];
 }
 
@@ -1966,24 +2820,39 @@ export interface MaterializeOptions extends CombineOptions {
    * recovery story can depend on a materialisation collecting nothing: `rollbackSegment` refuses a target that
    * has been collected. Pass a number to collect on the way through; `0` keeps only the
    * generation this call publishes. It collects by listing the destination, so it clears every generation below the
-   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the one generation its
+   * new one beyond `keep`, however many earlier calls kept, where a `load()` deletes by name the generations its
    * publish pushes out of the window.
    */
   readonly keep?: number;
 }
 
 /**
+ * An id stream as an iterator: the ids ascending, driven by `for await` or by hand with `next()`, `return()` and
+ * `throw()`, as a generator is, on a handle that holds a lease as on one that does not. It is its own iterator and
+ * single-use. {@link Segment.everyNth} returns this; the streams of {@link IdStream} add `batches()`.
+ */
+export interface IdIterator extends AsyncIterableIterator<number> {
+  /** Ends the read, as a generator's `return` does, and resolves done with `value`. */
+  return(value?: unknown): Promise<IteratorResult<number, unknown>>;
+  /** Throws `err` into the read, as a generator's `throw` does: it rejects with `err` unless the read handles it. */
+  throw(err: unknown): Promise<IteratorResult<number, unknown>>;
+}
+
+/**
  * What a streaming read returns: the ids, ascending, one at a time under `for await`, or one chunk at a time from
  * {@link IdStream.batches}.
  *
- * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as it always did. A live read is the
+ * It is an `AsyncIterable<number>`, so every consumer of an id stream takes it as an async iterable, and an
+ * {@link IdIterator}, so `next()`, `return()` and `throw()` are typed. A live read is the
  * engine's async generator itself, with `batches` attached: `for await` it, or drive it with `next()`, `return()` and
- * `throw()`, exactly as before, and it is single-use (a second `for await` over it yields nothing). `batches()` is a
+ * `throw()`, and it is single-use (a second `for await` over it yields nothing). A handle that holds a lease returns a
+ * stream of the same shape, which checks the lease as it reads. `batches()` is a
  * separate, new read: it starts when called, fetches its chunks afresh and charges the per-op budget again, whether or
  * not the per-id stream was read, and reading both is two reads (invariant 3 applies to each separately). Nothing is
- * fetched until a read is first pulled.
+ * fetched until a read is first pulled. A stream pulled with `next()` and dropped without `return()` is held by nothing
+ * in the store, so it is garbage once the caller lets it go.
  */
-export interface IdStream extends AsyncIterable<number> {
+export interface IdStream extends IdIterator {
   /**
    * The same ids as the per-id stream, in the same order, one `Uint32Array` per chunk: each array ascending, holding
    * every id of one chunk the read yields (a range trimmed at its edges exactly as the per-id stream trims it), and
@@ -2009,17 +2878,19 @@ const withBatches = (
   batches: () => AsyncIterable<Uint32Array>,
 ): IdStream => Object.assign(gen, { batches });
 
-/**
- * A stream that fails when it is first read, either way. A combine refuses its arguments this way, as the engine's
- * own checks do, so a caller's try/catch around the iteration catches it.
- */
-const failing = (err: unknown): IdStream => {
-  const rejecting = (): AsyncIterator<never> => ({ next: () => Promise.reject(err) });
-  return {
-    [Symbol.asyncIterator]: rejecting,
-    batches: () => ({ [Symbol.asyncIterator]: rejecting }),
+/** A generator function whose generator throws `err` on its first pull: what a refused read is, so its caller can drive it as any other. */
+const refusing = (err: unknown) =>
+  // eslint-disable-next-line require-yield
+  async function* (): AsyncGenerator<never> {
+    throw err;
   };
-};
+
+/**
+ * A stream that fails when it is first read, either way, and has the shape of one that does not: a generator, with
+ * `batches` attached. A combine refuses its arguments this way, as the engine's own checks do, so a caller's try/catch
+ * around the iteration catches it.
+ */
+const failing = (err: unknown): IdStream => withBatches(refusing(err)(), refusing(err));
 
 /** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
 const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>
@@ -2059,14 +2930,73 @@ const readOptions = (options: BaseCombineOptions): EveryField<BaseCombineOptions
 
 const NO_SEGMENTS: readonly Segment[] = [];
 
-/** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
-const EMPTY_IDS: IdStream = {
-  async *[Symbol.asyncIterator]() {
-    // deliberately yields nothing
-  },
-  async *batches() {
-    // deliberately yields nothing
-  },
+/**
+ * `list` when it is an array, else a {@link ValidationError} naming `what`. A combine takes its operands and its
+ * `exclude` as arrays: a `Set` or a lone segment from plain JavaScript would otherwise fail with a raw `TypeError`, or,
+ * as an `exclude`, be read as no exclusion at all.
+ */
+function segmentList(list: unknown, what: string): readonly Segment[] {
+  if (!Array.isArray(list)) throw new ValidationError(`${what} must be an array of segments`);
+  return list as readonly Segment[];
+}
+
+type CombineVerb = 'intersect' | 'union' | 'andNot';
+
+/** How a refused operand list is named: `andNot` takes `excludes`, the others take `others`. */
+function operandsLabel(verb: CombineVerb): string {
+  return verb === 'andNot' ? 'andNot: `excludes`' : `${verb}: \`others\``;
+}
+
+type EngineCombine = Parameters<SegmentEngine['intersect']>[1];
+type EngineAndNot = Parameters<SegmentEngine['andNot']>[2];
+
+/**
+ * What a combine is read as: the ids a caller streams, or the chunks an `*Into` writes. The three verbs make the
+ * same decisions about `exclude`, the engine and the options whichever it is, so each is written once over this, and
+ * only the last step differs.
+ */
+interface CombineOutput<T> {
+  /** A combine that fails when first read, as the engine's own refusals do. */
+  readonly failing: (err: unknown) => T;
+  /** The same combine, checking a lease each time it reads a chunk. */
+  readonly guard: (result: T, check: () => void) => T;
+  readonly intersect: (engine: SegmentEngine, refs: SegmentRef[], opts: EngineCombine) => T;
+  readonly union: (engine: SegmentEngine, refs: SegmentRef[], opts: EngineCombine) => T;
+  readonly andNot: (
+    engine: SegmentEngine,
+    base: SegmentRef,
+    refs: SegmentRef[],
+    opts: EngineAndNot,
+  ) => T;
+}
+
+/** Combines read as ids: what `intersect`, `union` and `andNot` return. */
+const AS_IDS: CombineOutput<IdStream> = {
+  failing,
+  guard: guardIds,
+  intersect: (engine, refs, opts) =>
+    withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts)),
+  union: (engine, refs, opts) =>
+    withBatches(engine.union(refs, opts), () => engine.unionBatches(refs, opts)),
+  andNot: (engine, base, refs, opts) =>
+    withBatches(engine.andNot(base, refs, opts), () => engine.andNotBatches(base, refs, opts)),
+};
+
+/** A combine's result as the chunks it is made of. */
+type ChunkStream = AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>;
+
+/** A combine's chunks on their way to a load, which writes them as they are. */
+class CombineChunks {
+  constructor(readonly chunks: ChunkStream) {}
+}
+
+/** Combines read as chunks: what the `*Into` verbs write into the new generation, with no id built on the way. */
+const AS_CHUNKS: CombineOutput<ChunkStream> = {
+  guard: guardItems,
+  failing: (err) => refusing(err)(),
+  intersect: (engine, refs, opts) => engine.intersectChunks(refs, opts),
+  union: (engine, refs, opts) => engine.unionChunks(refs, opts),
+  andNot: (engine, base, refs, opts) => engine.andNotChunks(base, refs, opts),
 };
 
 /**
@@ -2081,16 +3011,15 @@ export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
 /**
  * The `keep` a materialisation passes when the caller does not: a grace window wide enough to collect nothing.
  *
- * The collection keeps the newest `keep` generations below the pointer and deletes the rest, so an
+ * The collection keeps `keep` generations below the pointer and deletes the rest, so an
  * integer at the top of the range keeps all of them. It has to be an integer — `loadSegment` validates that,
  * and `Infinity` is rejected — which is why this is `MAX_SAFE_INTEGER` and not the value that reads more
  * naturally.
  */
 const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
-/** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
-type Pin = (ref: SegmentRef, expiresAt?: number) => Promise<Segment>;
+type Pin = (ref: SegmentRef, leaseUntil?: number, at?: PinAt) => Promise<Segment>;
 
 /**
  * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
@@ -2098,9 +3027,10 @@ type Pin = (ref: SegmentRef, expiresAt?: number) => Promise<Segment>;
  */
 type CombineEngine = (handles: readonly Segment[]) => SegmentEngine | undefined;
 
+/** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 type Materialize = (
   dest: SegmentRef,
-  ids: AsyncIterable<number>,
+  ids: LoadInput | CombineChunks,
   op: string,
   options?: MaterializeOptions,
 ) => Promise<MaterializeResult>;
@@ -2115,17 +3045,86 @@ interface SegmentParts {
   /** Build a pinned twin of this handle — injected so `Segment` stays free of store wiring. */
   pinned: Pin;
   combineEngine: CombineEngine;
-  expiresAt?: number;
   pinnedAt?: PinnedAt;
+  /** The lease this handle holds, when it came from `pin({ leaseUntil })`. */
+  lease?: LeaseHold;
 }
 
-/** What {@link Segment.stat} answers: the generation a handle reads, its id count and its metadata. */
+/**
+ * The state of the lease a handle holds. `released` is set first by `release()`, so a read racing it already fails; `done`
+ * once the registry write has landed, so a second `release()` makes no request.
+ */
+interface LeaseHold {
+  readonly holder: string;
+  readonly until: number;
+  released: boolean;
+  done: boolean;
+  readonly release: () => Promise<void>;
+}
+
+/** What {@link Segment.pin} and {@link Segment.pinAt} take besides the generation. */
+export interface PinOptions {
+  /**
+   * Hold the pinned generation until this instant: epoch-**milliseconds**, after now and at most
+   * {@link MAX_LEASE_MS} (14 days) from it. A load's collection leaves a leased generation in the bucket until the lease
+   * ends, and a read of the handle after it throws {@link LeaseExpiredError}, never empty.
+   */
+  readonly leaseUntil?: number;
+}
+
+/** The lease a pinned handle holds, as {@link Segment.lease} reports it. */
+export interface Lease {
+  /** 16 hex digits naming this lease in the segment's registry row. */
+  readonly holder: string;
+  /** Epoch-ms the lease runs to on this store's clock. */
+  readonly until: number;
+}
+
+/**
+ * The generation {@link Segment.pinAt} reopens: what an earlier pin recorded in {@link Segment.pinnedAt}. The
+ * fingerprint is required, since a generation number is taken again after a purge and re-create.
+ */
+export interface PinAt {
+  /** The generation number an earlier pin held. */
+  readonly generation: number;
+  /** The fingerprint of that generation's object, from the earlier pin's `pinnedAt.fingerprint`. */
+  readonly fingerprint: string;
+}
+
+/**
+ * What {@link Segment.stat} answers: the generation a handle reads, its id count, its metadata and the size of its
+ * object.
+ */
 export interface SegmentStat {
   /** The generation read, or `null` when the segment has none. */
   readonly generation: number | null;
   readonly cardinality: number;
   /** The metadata the generation was loaded with; absent when it has none. */
   readonly metadata?: GenerationMetadata;
+  /**
+   * The generation's object in storage, in bytes: what the segment stores. From the registry row's summary, which
+   * records the object's size with its checksum, or from the object's footer when the row has no summary to use.
+   * `null` when the segment has no generation, or when the store's source cannot report a size.
+   */
+  readonly sizeBytes: number | null;
+}
+
+/**
+ * Time `fn` with `clock` and emit an `op` metric to `metrics` when it settles, on success or throw: the store's timing,
+ * as a segment's `timed` does its own inline, which keeps a promise off the path of `has` and `count`.
+ */
+async function timeOp<T>(
+  metrics: IMetricsSink,
+  clock: Clock,
+  name: MetricOpName,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const startedAt = clock.now();
+  try {
+    return await fn();
+  } finally {
+    metrics.onEvent({ kind: 'op', name, ms: Math.max(0, clock.now() - startedAt) });
+  }
 }
 
 /** The store's one way to mint a {@link Segment}, bound by the class's static block. */
@@ -2152,15 +3151,21 @@ export class Segment {
   private readonly materialize: Materialize;
   private readonly pinned: Pin;
   private readonly combineEngine: CombineEngine;
-  /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
-  readonly expiresAt?: number;
   /**
    * The generation this handle is held at, when it came from {@link Segment.pin}. Read by the store so a
    * pinned handle passed as an **operand** is still read at its pin rather than live.
    */
   readonly pinnedAt?: PinnedAt;
+  /**
+   * The lease this handle holds, when it came from `pin({ leaseUntil })`; `undefined` otherwise. It reports what was
+   * taken and does not change when the lease ends: a read after `lease.until` (or after {@link Segment.release}) throws
+   * {@link LeaseExpiredError}.
+   */
+  readonly lease?: Lease;
+  private readonly leaseHold?: LeaseHold;
 
   static {
+    Object.defineProperty(Segment.prototype, SEGMENT_BRAND, { value: true });
     makeSegment = (parts) => {
       minting = true;
       try {
@@ -2169,6 +3174,11 @@ export class Segment {
         minting = false;
       }
     };
+    viewOf = (segment) => ({
+      ref: segment.ref,
+      pinnedAt: segment.pinnedAt,
+      leaseError: () => segment.leaseError(),
+    });
   }
 
   /**
@@ -2188,8 +3198,11 @@ export class Segment {
     this.materialize = parts.materialize;
     this.pinned = parts.pinned;
     this.combineEngine = parts.combineEngine;
-    this.expiresAt = parts.expiresAt;
     this.pinnedAt = parts.pinnedAt;
+    this.leaseHold = parts.lease;
+    if (parts.lease !== undefined) {
+      this.lease = Object.freeze({ holder: parts.lease.holder, until: parts.lease.until });
+    }
     this.metricsOn = parts.metrics !== NOOP_METRICS;
   }
 
@@ -2219,11 +3232,20 @@ export class Segment {
    * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
    * instant it pinned, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does.
    *
-   * **It is a hold, not a lease.** Nothing here stops a collection deleting the generation underneath
-   * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
-   * is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover your longest pinned
-   * job — see [Generations and `keep`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#generations-and-keep) — or take the pin on a segment
-   * you are not collecting.
+   * **It is a hold, and `pin({ leaseUntil })` makes it a bounded one.** Without a lease nothing stops a collection
+   * deleting the generation underneath you: a pinned read deliberately does **not** heal forward, because silently
+   * serving a different generation is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover
+   * your longest pinned job — see [Generations and `keep`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#generations-and-keep) — take the pin on a segment
+   * you are not collecting, or lease it.
+   *
+   * **A lease** (`leaseUntil`: epoch **milliseconds**, after now and at most 14 days out) keeps the generation out of
+   * a load's collection until then, from any process, and the pin is taken with it: the lease is written to the segment's
+   * row before the object is opened. A read of the handle after the lease, or after {@link Segment.release}, throws
+   * {@link LeaseExpiredError} at every read site, including when the handle is an operand or an `exclude` of a combine
+   * or the target of an `*Into`, and never reads empty. A stream checks the lease each time it reads a chunk. A segment
+   * holds at most 64 live leases ({@link LeaseLimitError}). A collector holds a lease 60 seconds past its end, which covers
+   * clocks that differ by that much. Erasure, shred, drop and retention expiry ignore a lease. See
+   * [Hold a generation for a job](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/reading.md#hold-a-generation-for-a-job-a-lease).
    *
    * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned
    * segment whose row is later dropped or destroyed fails once it must open its object again, rather than go empty
@@ -2237,11 +3259,16 @@ export class Segment {
    * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
    *
    * An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
-   * destroyed.
+   * destroyed. A read of the pin already running when the invalidation comes, a combine on this store with the pin as
+   * an operand included, looks the pin up again before it hands out its next chunk: it carries on with what it holds
+   * where the object is still there, and fails with `NotFoundError` where it is gone. It caches nothing more of what it
+   * began reading before the invalidation, so the pin's next read opens the object again too.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
-   * {@link CloudRoaring.invalidate} is called on this store. Where the
+   * {@link CloudRoaring.invalidate} is called on this store. A combine on another store that takes the pin as an
+   * operand reads it through that store's reader and chunk cache, which only that store's own writes and its
+   * `invalidate` reach. Where the
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
    * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
    *
@@ -2263,8 +3290,193 @@ export class Segment {
    * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
    * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
    */
-  async pin(): Promise<Segment> {
-    return this.pinned(this.ref, this.expiresAt);
+  async pin(options?: PinOptions): Promise<Segment> {
+    // A leased handle pins nothing once its lease is over. The pin it makes is an ordinary one: it takes the generation
+    // that is current now, which is not the leased one, and holds no lease of its own unless asked.
+    this.assertLease();
+    const leaseUntil = this.leaseUntilOf('pin', options);
+    return this.pinned(this.ref, leaseUntil);
+  }
+
+  /**
+   * Hold what this pin names until `leaseUntil`, or `undefined` for a pin with no lease. Refuses an option it does not
+   * know, a value that is not epoch-milliseconds in the future, and one past the longest lease, before any request is
+   * made.
+   */
+  private leaseUntilOf(op: string, options: PinOptions | null | undefined): number | undefined {
+    if (options === undefined || options === null) return undefined;
+    if (typeof options !== 'object' || Array.isArray(options)) {
+      throw new ValidationError(`${op}: options must be an object such as { leaseUntil }`);
+    }
+    // Own enumerable string keys only, as `pinAt` reads its argument.
+    const unknown = Object.keys(options).filter((k) => k !== 'leaseUntil');
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `${op}: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { leaseUntil } only',
+      );
+    }
+    const until = options.leaseUntil;
+    if (until === undefined) return undefined;
+    const now = this.clock.now();
+    if (typeof until !== 'number' || !Number.isSafeInteger(until)) {
+      throw new ValidationError(
+        `${op}: leaseUntil must be an integer epoch-MILLISECONDS; got ${String(until)}`,
+      );
+    }
+    if (until <= now) {
+      throw new ValidationError(
+        `${op}: leaseUntil (${until}) is not after now (${now}); it is epoch MILLISECONDS, so a value in seconds ` +
+          'reads as long past. Use `Date.now() + hours * 3_600_000`',
+      );
+    }
+    if (until > now + MAX_LEASE_MS) {
+      throw new ValidationError(
+        `${op}: leaseUntil is more than 14 days away; the longest lease is ${MAX_LEASE_MS} ms. Take a new lease when a job outlasts it`,
+      );
+    }
+    return until;
+  }
+
+  /**
+   * End this handle's lease now, so a load's collection may take its generation. Idempotent: a handle with no lease, or
+   * one already released, does nothing and makes no request. Every read of the handle after it throws
+   * {@link LeaseExpiredError} (reason `'released'`), including one already under way at its next chunk. A lease that has
+   * ended by its own time needs no release: this then makes no request either, and the registry row's entry is pruned
+   * by a later write. Otherwise it is one registry read and one write; a failure of either is thrown as the registry's own
+   * typed error, and the entry then holds until its time ends, `release()` being safe to call again.
+   */
+  async release(): Promise<void> {
+    const hold = this.leaseHold;
+    if (hold === undefined) return;
+    hold.released = true;
+    if (hold.done) return;
+    if (this.clock.now() >= hold.until + LEASE_SKEW_MS) {
+      hold.done = true;
+      return;
+    }
+    await hold.release();
+    hold.done = true;
+  }
+
+  /**
+   * The error a read of this handle must throw, or `undefined` when it holds no lease or the lease is live. One property
+   * read on a handle with no lease. A read past a lease throws; it never reads empty.
+   */
+  private leaseError(): LeaseExpiredError | undefined {
+    const hold = this.leaseHold;
+    if (hold === undefined) return undefined;
+    const name = this.ref.namespace
+      ? `${this.ref.namespace}/${this.ref.segment}`
+      : this.ref.segment;
+    if (hold.released) {
+      return new LeaseExpiredError(
+        `the lease on segment "${name}" was released`,
+        hold.until,
+        'released',
+      );
+    }
+    if (this.clock.now() >= hold.until) {
+      return new LeaseExpiredError(
+        `the lease on segment "${name}" ended; a read of a handle past its lease throws, never reads empty`,
+        hold.until,
+        'expired',
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment, a value a JavaScript caller
+   * passed. It runs first in every combine, before the lease check reads the handles.
+   */
+  private assertSegments(handles: readonly unknown[]): void {
+    for (const h of handles) {
+      // A segment of another copy of this package (a second install) is not an instance of this one's class, so it
+      // is recognised by the versioned `Symbol.for` brand every segment carries.
+      if (
+        h instanceof Segment ||
+        (typeof h === 'object' &&
+          h !== null &&
+          (h as Record<symbol, unknown>)[SEGMENT_BRAND] === true)
+      ) {
+        continue;
+      }
+      throw new ValidationError(
+        'an operand must be a segment from `store.segment()` of a compatible copy of @cloudbitmaps/roaring; install one version of it',
+      );
+    }
+  }
+
+  /**
+   * Throw the first lease error among `handles`: this handle and every operand and exclude of a call. It runs before
+   * the engine, so no operand, exclude or cached reader can answer past a lease.
+   */
+  private assertLeases(handles: readonly Segment[]): void {
+    for (const h of handles) {
+      const err = h.leaseError();
+      if (err !== undefined) throw err;
+    }
+  }
+
+  /** Throw this handle's lease error, if it has one. The calls that return a value instead of throwing use {@link leaseError}. */
+  private assertLease(): void {
+    const err = this.leaseError();
+    if (err !== undefined) throw err;
+  }
+
+  /**
+   * Reopen a generation a pin named earlier, as a pinned handle like the one {@link Segment.pin} returns, held at
+   * `at.generation` instead of the current one. Pass what the earlier pin recorded, `{ generation, fingerprint }`
+   * from its {@link Segment.pinnedAt}. A generation number alone is not an identity, since a purged and re-created
+   * name starts again at 0, so the fingerprint is required: a bare number, a malformed fingerprint or a key other
+   * than `generation` and `fingerprint` is a {@link ValidationError}. Identify a pin by its `generation` and
+   * `fingerprint`: the handle's `pinnedAt.version` can differ from the earlier pin's.
+   *
+   * Throws {@link NotFoundError} when the generation is gone (collected, purged, or on a crypto-shredded segment),
+   * is above the row's pointer, or is another object than the fingerprint names, and never reads empty. A rollback
+   * deletes nothing, so once a later load moves the pointer past a generation it rolled back from, that one can be
+   * reopened while its object is stored. Nothing keeps a generation alive unless you lease it: a later load's
+   * collection can delete it, which is sized by `keep` on every writer, or held by `options.leaseUntil` (see
+   * {@link PinOptions} and {@link Segment.pin}). A leased `pinAt` writes the lease before it verifies the object, and
+   * releases it if the verify fails; for a generation below the pointer, a collector that read the row before the lease
+   * landed can still delete the generation inside its own round trip, and the handle then fails with `NotFoundError`
+   * like any swept pin. A leased handle is checked at every read site as a leased `pin()` is. With a registry it costs one row read and one tail read,
+   * and a leased `pinAt` one conditional write to the row besides; the handle
+   * then reads as one from `pin()` does, including its failure on a chunk it has not cached once the generation is
+   * swept. Works for an encrypted segment. The first argument is an object so that fields can join it later; the lease
+   * is in `options`, the second.
+   */
+  async pinAt(at: PinAt, options?: PinOptions): Promise<Segment> {
+    // A leased handle past its lease pins nothing, as for `pin()`.
+    this.assertLease();
+    const { generation, fingerprint } = (at ?? {}) as Partial<PinAt>;
+    // Own enumerable string keys only: a symbol, non-enumerable or inherited key is not seen.
+    const unknown =
+      typeof at === 'object' && at !== null
+        ? Object.keys(at).filter((k) => k !== 'generation' && k !== 'fingerprint')
+        : [];
+    if (unknown.length > 0) {
+      throw new ValidationError(
+        `pinAt: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"${k}"`).join(', ')}; ` +
+          'this version takes { generation, fingerprint } only',
+      );
+    }
+    if (
+      typeof generation !== 'number' ||
+      !Number.isSafeInteger(generation) ||
+      generation < 0 ||
+      typeof fingerprint !== 'string' ||
+      !/^\d+:\d+$/.test(fingerprint)
+    ) {
+      throw new ValidationError(
+        'pinAt: pass { generation, fingerprint } as recorded by an earlier pin (its pinnedAt); a generation number ' +
+          'without the fingerprint of its object does not identify it',
+      );
+    }
+    // `at` takes `{ generation, fingerprint }` and nothing else; the lease goes in the options, the second argument.
+    const leaseUntil = this.leaseUntilOf('pinAt', options);
+    return this.pinned(this.ref, leaseUntil, { generation, fingerprint });
   }
 
   /**
@@ -2278,56 +3490,30 @@ export class Segment {
   }
 
   /**
-   * Has this handle's deadline passed? **The lazy half of expiry** — the whole check is one comparison against
-   * the injected clock, so it costs nothing on a handle with no deadline and no I/O on one that has expired.
-   *
-   * Deliberately evaluated per call rather than cached: a long-lived handle created before its deadline must
-   * start reading empty the moment the deadline passes, without the caller re-creating it.
-   */
-  private expired(): boolean {
-    return this.expiresAt !== undefined && this.clock.now() >= this.expiresAt;
-  }
-
-  /**
-   * Refuse a materialisation that involves an **expired** handle. Called by the three `*Into` verbs only.
-   *
-   * On the read verbs an expired handle answers empty, which is the point of lazy expiry. On a *write* the same
-   * rule would be destructive in a way nobody asks for: `a.intersectInto(dest, [b])` where `b`'s deadline has
-   * quietly passed would, unrefused, replace `dest` with an **empty generation** — a wipe, reported as a successful
-   * write, with the cause (a deadline on a handle somewhere) nowhere in the result. Reads degrade to empty; writes must not.
-   *
-   * So every handle in the call is checked, `dest` included: an expired `dest` does not change the bytes written,
-   * but a caller who put a deadline on the thing they are writing into has said something contradictory and is
-   * better told than guessed at. Open a handle without `expiresAt` to write, or drop the deadline.
-   *
-   * (The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
-   * `allowEmpty` override — covers these verbs too: they route through the same guarded write path as
-   * {@link CloudRoaring.load}. The two stay separate because they differ in kind. That one is a REPORTED
-   * refusal a caller may legitimately override; an expired handle is a wiring mistake, so it THROWS, before
-   * any object is written — and `allowEmpty: true` does not reach it.)
+   * Refuse an `*Into` whose handles cannot be read, before any object is written: anything that is not a segment
+   * ({@link ValidationError}), and a handle (this one, `dest` or an operand) whose lease has ended or was released
+   * ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
    * a synchronous throw out of a promise-returning method escapes a caller who attached `.catch()` instead of
    * awaiting.
    */
-  private refuseIfExpired(op: string, dest: Segment, operands: readonly Segment[]): void {
-    const stale: string[] = [];
-    for (const seg of [this, dest, ...operands]) {
-      if (seg.expired())
-        stale.push(seg.ref.namespace ? `${seg.ref.namespace}/${seg.ref.segment}` : seg.ref.segment);
-    }
-    if (stale.length > 0) {
-      throw new ValidationError(
-        `${op}: refusing to publish a generation while these handles have expired — ${[...new Set(stale)].join(', ')}. ` +
-          `An expired handle reads as empty, so this would write an empty (or short) generation over "${dest.ref.segment}". ` +
-          `Open the handles without \`expiresAt\` if you meant to materialise, or drop the deadline.`,
-      );
-    }
+  private assertIntoHandles(dest: Segment, operands: readonly Segment[]): void {
+    this.assertSegments([dest, ...operands]);
+    this.assertLeases([this, dest, ...operands]);
+  }
+
+  /** `result` as is, or, when a handle of the call holds a lease, checking that lease each time it reads a chunk. */
+  private guarded<T>(out: CombineOutput<T>, handles: readonly Segment[], result: T): T {
+    return handles.some((h) => h.leaseHold !== undefined)
+      ? out.guard(result, () => this.assertLeases(handles))
+      : result;
   }
 
   /**
-   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). Skipped
-   * entirely when no sink is wired, so the default path pays nothing.
+   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). With no sink wired it
+   * reads no clock and emits nothing, but a call still passes through this async frame; `has()` and `count()` return the
+   * engine's promise directly instead.
    */
   private async timed<T>(name: MetricOpName, fn: () => Promise<T>): Promise<T> {
     if (!this.metricsOn) return fn();
@@ -2339,17 +3525,23 @@ export class Segment {
     }
   }
 
-  /** Membership: one chunk — the cache, else one ranged GET. Throws {@link ValidationError} on a bad id. */
+  /**
+   * Membership: one chunk. A cold resolution of the segment is one registry read and a warm one none; then a cached
+   * chunk answers with no request, and an uncached one is one range read, after a tail read when no reader of the
+   * generation is open, unless that tail carried the chunk. Throws {@link ValidationError} on a bad id.
+   */
   has(id: number): Promise<boolean> {
-    if (this.expired()) return Promise.resolve(false);
+    const lease = this.leaseError();
+    if (lease !== undefined) return Promise.reject(lease);
+    if (!this.metricsOn) return this.engine.has(this.ref, id);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
   /**
    * Cardinality of the generation this handle reads: **one registry read when cold, none when warm, and no read of the
    * object**, with **zero payload reads**. The registry row records the id count of the generation it names, written
    * by the write that made it current, and a count answers from that. A row with no summary it can use (one written
-   * before rows carried it, one that names another generation, a sealed one that does not open) sends the count to the
-   * `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
+   * without it, as a registry of your own may, one that names another generation, a sealed one that does not open)
+   * sends the count to the `.crbm` index, summed with a tail read of the object. A segment whose pointer names a missing object (a torn
    * restore) still counts the row's number, while a read of the object throws; `checkConsistency` is what finds it.
    *
    * What this trusts: the row's summary, or the index's sum, and no payload is decoded to confirm it. The summary is
@@ -2363,25 +3555,40 @@ export class Segment {
    * structure is checked.
    */
   count(): Promise<number> {
-    if (this.expired()) return Promise.resolve(0);
+    const lease = this.leaseError();
+    if (lease !== undefined) return Promise.reject(lease);
+    if (!this.metricsOn) return this.engine.count(this.ref);
     return this.timed('count', () => this.engine.count(this.ref));
   }
   /**
-   * What the generation this handle reads is, from one resolution: its number, its id count and the metadata it
-   * was loaded with (absent when it has none). It is what answers {@link Segment.count}, so the three describe one
-   * generation and cannot straddle a publish. One registry read when cold, none while warm, and none on a pinned
-   * handle, which answers for the generation it pinned. A segment with no generation, and an expired handle,
-   * answer `{ generation: null, cardinality: 0 }`.
+   * What the generation this handle reads is, from one resolution: its number, its id count, the metadata it was
+   * loaded with (absent when it has none), and `sizeBytes`, its object's bytes in storage. All four come from the
+   * registry row when it has a summary this store can use, as `count()`'s do: the summary records the object's
+   * fingerprint, its size with its checksum. That is **one registry read when cold, none when warm, and no read of the
+   * object**. With no summary it can use, they come from the generation's object, opened once: its footer and index,
+   * with no payload read, which is a tail read of the object more when cold (and a range read for an index longer than
+   * the tail) and keeps the generation in the reader cache as a read does. On a pinned handle it answers for the
+   * generation it pinned, from the pinned object. A segment with no generation answers
+   * `{ generation: null, cardinality: 0, sizeBytes: null }`, and a store whose source cannot report a size answers
+   * `sizeBytes: null`. A pointer that names a missing object (a torn restore) still answers from the row's summary, as
+   * `count()` does, while a read of the object throws `NotFoundError`; with no summary to use, `stat()` throws it too.
+   * `checkConsistency` is what finds such a row.
    *
-   * Trust is as for `count()`: the registry row's word, not confirmed against the object until the object is
-   * opened, when a disagreement makes this process stop using that row's summary.
+   * Trust is as for `count()`: what the row's summary says is believed until the object is next opened. Every open of
+   * the generation holds the object to the fingerprint the summary records, so another object under the number is
+   * refused when it is opened, and holds its count against the summary's; a disagreement in count makes this process
+   * stop using that summary, so `stat()` then answers from the object, whose index is checked for internal consistency
+   * and whose count is the index's sum. A reader already open is not checked again until the row changes, it is
+   * evicted or it is invalidated.
+   *
+   * `sizeBytes` is what `groundedReport` in `@cloudbitmaps/tools` prices storage from.
    *
    * ```ts
-   * const { generation, cardinality, metadata } = await store.segment('active-30d').stat();
+   * const { generation, cardinality, metadata, sizeBytes } = await store.segment('active-30d').stat();
    * ```
    */
   async stat(): Promise<SegmentStat> {
-    if (this.expired()) return { generation: null, cardinality: 0 };
+    this.assertLease();
     return this.engine.stat(this.ref);
   }
   /**
@@ -2396,22 +3603,83 @@ export class Segment {
    * ```
    *
    * Each bound is optional and an integer in `0..4294967295`; a bad one throws {@link ValidationError} when the
-   * stream is first read. `after >= through` is an empty range, which reads nothing. An expired handle reads empty
-   * without checking its options, as every read of one does.
+   * stream is first read. `after >= through` is an empty range, which reads nothing.
    */
   iterate(options?: IdRange): IdStream {
-    if (this.expired()) return EMPTY_IDS;
+    const lease = this.leaseError();
+    if (lease !== undefined) return failing(lease);
+    const bad = optionsError(options, 'iterate', CALL_KEYS.range);
+    if (bad !== undefined) return failing(bad);
     // Neither bound set is no range at all, which the engine reads on its full-read path.
     const range = options == null ? undefined : rangeOf(options);
     const none = range === undefined || (range.after === undefined && range.through === undefined);
     const { engine, ref } = this;
     const bounds = none ? undefined : range;
-    return withBatches(engine.iterate(ref, bounds), () => engine.iterateBatches(ref, bounds));
+    const stream = withBatches(engine.iterate(ref, bounds), () =>
+      engine.iterateBatches(ref, bounds),
+    );
+    return this.leaseHold === undefined ? stream : guardIds(stream, () => this.assertLease());
+  }
+
+  /**
+   * **Pinned handles only.** The ids at 1-based ranks `n`, `2n`, `3n` …, counted over the ids in `(after, through]`
+   * when a range is given, ascending: `everyNth(1000)` yields the 1,000th id, then the 2,000th, and so on. A last
+   * partial window yields nothing, so a caller cutting a send into windows of `n` appends its own final end.
+   *
+   * It places each boundary from the per-chunk counts the pin already holds and reads only the chunks that hold one,
+   * each once however many boundaries it holds, so it reads at most one chunk per boundary and never more chunks
+   * than the object has. A range with `after` inside a chunk reads that chunk too, to count the ids at or below
+   * `after`, even when fewer than `n` ids remain above it; when the chunks in range hold fewer than `n` ids in all,
+   * nothing is fetched. `through` stops the read and no chunk past it is read, though a `through` inside a chunk may read that last chunk and
+   * yield nothing from it. The reads and the read-ahead window are
+   * those of {@link Segment.iterate}, and the per-op budget is charged before the first fetch, with an upper bound on
+   * the chunks the read can take. A pinned read after the generation is swept throws {@link NotFoundError}.
+   *
+   * The ranks come from the index's counts, which are trusted as {@link Segment.count} trusts them. A chunk that is
+   * read must hold the number of ids its index says, or the read throws {@link IntegrityError}; a chunk that is not
+   * read is not checked, so an index that is wrong about one, and, on an unencrypted object, still adds up to the footer's
+   * total, moves the ids after it to the wrong ranks. An encrypted object's index is authenticated and bound to the
+   * object, so a wrong count there needs the key.
+   *
+   * A live handle is refused with {@link UnsupportedError} at the first read, because its counts and its chunks could
+   * come from two generations and name the wrong id. `n` that is not a positive integer throws
+   * {@link ValidationError} at the first read, as does a bad bound.
+   *
+   * ```ts
+   * const audience = await store.segment('audience').pin();
+   * const ends: number[] = [];
+   * for await (const id of audience.everyNth(1_000)) ends.push(id); // the end of each window of 1,000
+   * ```
+   */
+  everyNth(n: number, options?: IdRange): IdIterator {
+    // The lease first: a leased handle past its lease throws, never reads empty.
+    const lease = this.leaseError();
+    if (lease !== undefined) return refusing(lease)();
+    const bad = optionsError(options, 'everyNth', CALL_KEYS.range);
+    if (bad !== undefined) return refusing(bad)();
+    if (this.pinnedAt === undefined) {
+      return refusing(
+        new UnsupportedError(
+          'everyNth needs a pinned handle: a live handle can place a rank by one generation ' +
+            'and read it from another. Call `pin()` first.',
+        ),
+      )();
+    }
+    const stream = this.engine.everyNth(
+      this.ref,
+      n,
+      options == null ? undefined : rangeOf(options),
+    );
+    // A stream with no `.batches()`: guarded before its first pull, so a stream built live and pulled after the lease
+    // ended throws even when no rank falls in its range, and at each chunk after that.
+    return this.leaseHold === undefined
+      ? stream
+      : guardIdIterable(stream, () => this.assertLease());
   }
 
   /**
    * The options a combine hands the engine, read once, when it is called ({@link readOptions}), with the `exclude`
-   * it was given, already reduced to its live handles ({@link liveExcludes}) and mapped down to the plain refs
+   * it was given ({@link excludesOf}) and mapped down to the plain refs
    * `core` takes. A method rather than a module function because `ref` is class-private — the encapsulation is
    * worth more than the free function.
    *
@@ -2431,43 +3699,28 @@ export class Segment {
   }
 
   /**
-   * The handles in `options.exclude` that have not expired. **An expired exclusion excludes nothing**, in every
-   * combine, so it is dropped here, before the engine is asked for anything: it is never fetched, never
-   * checked for absence, and never counted in the pin-consistency check. `exclude` is read once, so a getter sees
-   * one call.
-   *
-   * With no `exclude` this is one property read and a shared empty list, and with none expired it returns the
-   * caller's own array, so the common case allocates nothing.
+   * The handles in `options.exclude`, read once so a getter sees one call. With none this is one property read and
+   * a shared empty list; otherwise it is the caller's own array, so the common case allocates nothing.
    */
-  private liveExcludes(options: CombineOptions | null | undefined): readonly Segment[] {
+  private excludesOf(options: CombineOptions | null | undefined): readonly Segment[] {
     const exclude = options?.exclude;
-    if (exclude == null || exclude.length === 0) return NO_SEGMENTS;
-    return exclude.some((e) => e.expired()) ? exclude.filter((e) => !e.expired()) : exclude;
+    if (exclude == null) return NO_SEGMENTS;
+    return segmentList(exclude, '`exclude`').length === 0 ? NO_SEGMENTS : exclude;
   }
 
   /**
    * Chunk-skipping intersection: stream the ids in **this** segment AND every segment in `others`, ascending.
    * Fetches only the Storage chunks present in *all* operands (a key absent from any operand contributes nothing
-   * and is never downloaded), streaming under a bounded in-flight window — so the Storage footprint stays small
-   * (Lambda-friendly) regardless of segment size. Pass `concurrency` to tune that window (a positive integer, 32 by default).
+   * and is never downloaded), reading each operand's as coalesced ranges under a bounded in-flight window — so the Storage
+   * footprint stays small (Lambda-friendly) regardless of segment size. Pass `concurrency` to tune that window (the range
+   * requests held ahead per operand: a positive integer, 32 by default).
    * AND is commutative, so `a.intersect([b])` and `b.intersect([a])` yield the same ids. Pass `budget` to
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
    */
   intersect(others: Segment[], options?: CombineOptions): IdStream {
-    // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
-    // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
-    // contribute members to an intersection.
-    if (this.expired() || others.some((o) => o.expired())) return EMPTY_IDS;
-    const exclude = this.liveExcludes(options);
-    let engine: SegmentEngine;
-    try {
-      engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
-    } catch (err) {
-      return failing(err);
-    }
-    const refs = [this.ref, ...others.map((o) => o.ref)];
-    const opts = this.refsIn(options, exclude);
-    return withBatches(engine.intersect(refs, opts), () => engine.intersectBatches(refs, opts));
+    const bad = optionsError(options, 'intersect', CALL_KEYS.combine, ['allowAbsentOperands']);
+    if (bad !== undefined) return failing(bad);
+    return this.combineAs(AS_IDS, 'intersect', others, options ?? undefined);
   }
 
   /**
@@ -2483,25 +3736,20 @@ export class Segment {
    * write is **refused and reported**: `published: false`, `reason: 'empty'`, and `dest` keeps what it had.
    * Pass `allowEmpty: true` when emptying the destination is the point.
    *
-   * `guard` adds the same plausibility bounds `load()` takes — `minCardinality` and `minRetained` — judged
+   * `guard` adds the same plausibility bounds `load()` takes — `minCardinality`, `minRetained` and `maxGrowth` — judged
    * against what `dest` held before. A refusal is **reported, not thrown**, exactly as on `load()`; branch on
    * `published`. A lost race is the one outcome that still throws ({@link WriteConflictError}), because a
    * materialisation that silently did not take effect is the one thing a caller cannot detect on its own.
    *
-   * A call involving an **expired handle** is refused before any of this. See {@link refuseIfExpired}.
+   * A call involving a handle whose lease has ended, or anything that is not a segment, is refused before any of this.
    */
   async intersectInto(
     dest: Segment,
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.refuseIfExpired('intersectInto', dest, [...others, ...(options?.exclude ?? [])]);
-    // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
-    // broken destination would otherwise answer first, and hide the refusal behind its own error.
-    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]);
-    return this.timed('intersectInto', () =>
-      this.materialize(dest.ref, this.intersect(others, options), 'intersectInto', options),
-    );
+    checkOptions(options, 'intersectInto', CALL_KEYS.into, ['allowEmpty', 'allowAbsentOperands']);
+    return this.combineInto('intersectInto', dest, others, options);
   }
 
   /**
@@ -2515,34 +3763,9 @@ export class Segment {
    * segment once (`unionInto`, or a load) is the cheaper shape.
    */
   union(others: Segment[], options?: CombineOptions): IdStream {
-    // OR: drop the expired operands and union what is left. All expired ⇒ empty.
-    const live = others.filter((o) => !o.expired());
-    if (this.expired()) {
-      if (live.length === 0) return EMPTY_IDS;
-      return (live[0] as Segment).union(live.slice(1), options);
-    }
-    if (live.length === 0 && others.length > 0) {
-      // Every operand expired ⇒ just us. But `exclude` is not an operand of the union, it is a subtraction
-      // applied to the result, so it still applies: `(this ∪ nothing) \ exclude` is `this \ exclude`. Returning
-      // a bare `iterate()` here dropped it silently — an opt-out list that does not apply, on a library whose
-      // headline is composable suppression, and reachable from nothing more exotic than a segment handle aging
-      // out. `andNot` reads each exclude only where it overlaps, so this is also the cheap spelling.
-      // With no exclude it is this segment alone, read as a one-operand union rather than as `iterate()`, so the
-      // call's own `budget`, `concurrency` and range apply exactly as they would have to the union.
-      const exclude = this.liveExcludes(options);
-      return exclude.length > 0 ? this.andNot([...exclude], options) : this.union([], options);
-    }
-    if (live.length !== others.length) return this.union(live, options);
-    const exclude = this.liveExcludes(options);
-    let engine: SegmentEngine;
-    try {
-      engine = this.combineEngine([this, ...others, ...exclude]) ?? this.engine;
-    } catch (err) {
-      return failing(err);
-    }
-    const refs = [this.ref, ...others.map((o) => o.ref)];
-    const opts = this.refsIn(options, exclude);
-    return withBatches(engine.union(refs, opts), () => engine.unionBatches(refs, opts));
+    const bad = optionsError(options, 'union', CALL_KEYS.combine, ['allowAbsentOperands']);
+    if (bad !== undefined) return failing(bad);
+    return this.combineAs(AS_IDS, 'union', others, options ?? undefined);
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2551,11 +3774,8 @@ export class Segment {
     others: Segment[],
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
-    this.refuseIfExpired('unionInto', dest, [...others, ...(options?.exclude ?? [])]);
-    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]); // as intersectInto: before any read
-    return this.timed('unionInto', () =>
-      this.materialize(dest.ref, this.union(others, options), 'unionInto', options),
-    );
+    checkOptions(options, 'unionInto', CALL_KEYS.into, ['allowEmpty', 'allowAbsentOperands']);
+    return this.combineInto('unionInto', dest, others, options);
   }
 
   /**
@@ -2566,39 +3786,13 @@ export class Segment {
    * suppression list: at most one read per surviving key of `this`, so subtracting a 61,000-chunk global
    * opt-out list from a 40-chunk audience costs at most 40 reads, not 61,000.
    *
-   * An expired handle in `excludes` excludes nothing, and is skipped without being read; if every one has
-   * expired the result is `this` whole. An expired `this` is empty. `exclude` on `intersect` and `union` follows
-   * the same rule.
-   *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
    */
   andNot(excludes: Segment[], options?: BaseCombineOptions): IdStream {
-    // MINUS: an expired base is empty; an expired exclusion excludes nothing.
-    if (this.expired()) return EMPTY_IDS;
-    const liveExcludes = excludes.filter((e) => !e.expired());
-    // Every exclusion expired ⇒ nothing to subtract. Recursing with an empty list would throw, since `andNot`
-    // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
-    // It is read as a one-operand union rather than as `iterate()`, so the call's own `budget`, `concurrency` and range
-    // still apply.
-    // Only the call's own options go on, not an `exclude` a caller routed here with it: the excludes that expired are
-    // the ones this branch exists to drop, and an expired exclusion excludes nothing.
-    if (liveExcludes.length === 0 && excludes.length > 0) {
-      return this.union([], options == null ? undefined : readOptions(options));
-    }
-    if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
-    let engine: SegmentEngine;
-    try {
-      engine = this.combineEngine([this, ...excludes]) ?? this.engine;
-    } catch (err) {
-      return failing(err);
-    }
-    const base = this.ref;
-    const refs = excludes.map((o) => o.ref);
-    const opts = options == null ? undefined : readOptions(options);
-    return withBatches(engine.andNot(base, refs, opts), () =>
-      engine.andNotBatches(base, refs, opts),
-    );
+    const bad = optionsError(options, 'andNot', CALL_KEYS.andNot, ['allowAbsentOperands']);
+    if (bad !== undefined) return failing(bad);
+    return this.combineAs(AS_IDS, 'andNot', excludes, options ?? undefined);
   }
 
   /** Materialize `this \ (excludes…)` as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -2607,40 +3801,78 @@ export class Segment {
     excludes: Segment[],
     options?: AndNotIntoOptions,
   ): Promise<MaterializeResult> {
-    this.refuseIfExpired('andNotInto', dest, excludes);
-    this.combineEngine([this, ...excludes]); // as intersectInto: before any read
-    return this.timed('andNotInto', () =>
-      this.materialize(dest.ref, this.andNot(excludes, options), 'andNotInto', options),
+    checkOptions(options, 'andNotInto', CALL_KEYS.andNotInto, [
+      'allowEmpty',
+      'allowAbsentOperands',
+    ]);
+    return this.combineInto('andNotInto', dest, excludes, options);
+  }
+  /**
+   * The one body of the three combines, read as ids or as chunks. `operands` is `others` for `intersect` and
+   * `union`, and `excludes` for `andNot`, which takes no `exclude` option.
+   */
+  private combineAs<T>(
+    out: CombineOutput<T>,
+    verb: CombineVerb,
+    operands: Segment[],
+    options?: CombineOptions,
+  ): T {
+    // Order of the checks: the lists are arrays, every handle is a segment, then no handle's lease has ended, all before
+    // the engine is asked for anything, so a handle past its lease throws `LeaseExpiredError` and never reads empty.
+    let exclude: readonly Segment[];
+    let handles: readonly Segment[];
+    try {
+      exclude = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
+      handles = [this, ...segmentList(operands, operandsLabel(verb)), ...exclude];
+      this.assertSegments(handles);
+      this.assertLeases(handles);
+    } catch (err) {
+      return out.failing(err);
+    }
+    let engine: SegmentEngine;
+    try {
+      engine = this.combineEngine([this, ...operands, ...exclude]) ?? this.engine;
+    } catch (err) {
+      return out.failing(err);
+    }
+    if (verb === 'andNot') {
+      const refs = operands.map((o) => o.ref);
+      const opts = options == null ? undefined : readOptions(options);
+      return this.guarded(out, handles, out.andNot(engine, this.ref, refs, opts));
+    }
+    const refs = [this.ref, ...operands.map((o) => o.ref)];
+    const opts = this.refsIn(options, exclude);
+    return this.guarded(
+      out,
+      handles,
+      verb === 'union' ? out.union(engine, refs, opts) : out.intersect(engine, refs, opts),
     );
   }
 
-  /**
-   * Grounded cost report for this segment: storage cost from its **real** `.crbm` size (exact, no payload
-   * reads); request cost from the supplied `workload` rates. A segment with no Storage generation reports zero
-   * storage. The pointer refresh is priced at the store's own `cache.genTtlMs`, or at none when the store never
-   * refreshes, unless the workload sets `genTtlMs`. See {@link CostReport} — it always includes a verdict (incl.
-   * the lose-zone).
-   */
-  async costReport(options?: {
-    pricing?: PricingProfile;
-    workload?: Workload;
-  }): Promise<CostReport> {
-    const canMeasure = this.engine.supportsStorageSize;
-    const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
-    const refreshMs = this.engine.pointerRefreshMs;
-    const workload =
-      refreshMs === undefined || options?.workload?.genTtlMs !== undefined
-        ? options?.workload
-        : { ...options?.workload, genTtlMs: refreshMs };
-    return groundedReport({
-      storageBytes: size?.sizeBytes ?? 0,
-      grounded: canMeasure,
-      workload,
-      pricing: options?.pricing,
-      extraNotes: canMeasure
-        ? undefined
-        : ['storage source has no sizeOf() — storage not measured, reported as $0.'],
-    });
+  /** The one body of the three `*Into` verbs, after each has checked its own options. */
+  private combineInto(
+    name: `${CombineVerb}Into`,
+    dest: Segment,
+    operands: Segment[],
+    options: MaterializeOptions | undefined,
+  ): Promise<MaterializeResult> {
+    const verb = name.slice(0, -'Into'.length) as CombineVerb;
+    const all =
+      verb === 'andNot'
+        ? segmentList(operands, `${name}: \`excludes\``)
+        : [...segmentList(operands, `${name}: \`others\``), ...this.excludesOf(options)];
+    this.assertIntoHandles(dest, all);
+    // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
+    // broken destination would otherwise answer first, and hide the refusal behind its own error.
+    this.combineEngine([this, ...all]);
+    return this.timed(name, () =>
+      this.materialize(
+        dest.ref,
+        new CombineChunks(this.combineAs(AS_CHUNKS, verb, operands, options)),
+        name,
+        options,
+      ),
+    );
   }
 }
 
@@ -2652,6 +3884,8 @@ export class Segment {
 // `@cloudbitmaps/core` and `@cloudbitmaps/core/driver-kit`. A name added here is a public name of this package, so
 // add one on purpose: `tests/docs/api-reference-sync.test.ts` fails until the API reference lists it.
 // ---------------------------------------------------------------------------------------------------
+// Decode portable bytes you hold, through the check a `{ serialized }` load makes.
+export { deserializePortable };
 export {
   // Backends
   MemoryStorage,
@@ -2663,6 +3897,10 @@ export {
   excludingReservedRows,
   readRetentionPolicy,
   MIN_EXPIRES_AT_MS,
+  // The bounds of a lease on a pin
+  LEASE_SKEW_MS,
+  MAX_LEASE_MS,
+  MAX_LEASES_PER_SEGMENT,
   // Encryption
   InProcessKeystore,
   NodeAead,
@@ -2678,22 +3916,29 @@ export {
   TransientError,
   KeyUnavailableError,
   BudgetExceededError,
+  LeaseExpiredError,
+  LeaseLimitError,
+  StaleOperandError,
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,
   isNotFoundError,
   isIntegrityError,
   isValidationError,
+  isLeaseExpiredError,
+  isLeaseLimitError,
+  isStaleOperandError,
+  isUnsupportedError,
+  isCapabilityError,
+  isBudgetExceededError,
+  isKeyUnavailableError,
   // The `.crbm` reader and its blob source
   CrbmReader,
   BufferReader,
-  // Metrics, audit and pricing
+  // Metrics, audit and retry
   CountingMetricsSink,
   RecordingAuditSink,
   DEFAULT_RETRY_POLICY,
-  AWS_US_EAST_1_ONDEMAND,
-  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
-  ONE_REDIS_HA_CLUSTER,
 } from '@cloudbitmaps/core';
 export type {
   Aead,
@@ -2710,7 +3955,6 @@ export type {
   ConsistencyErrorEntry,
   ConsistencyIssue,
   ConsistencyReport,
-  CostReport,
   CrbmCrypto,
   CrbmReaderOptions,
   CrbmStorageChunkSourceOptions,
@@ -2719,12 +3963,12 @@ export type {
   DropResult,
   EncodedChunk,
   EraseDeps,
-  EstimateInput,
   ExportFailure,
   ExportFormat,
   ExportManifest,
   ExportOptions,
   ExportSink,
+  ExportSkipped,
   ExportWriter,
   ExportedSegment,
   GenKey,
@@ -2752,14 +3996,14 @@ export type {
   PinnedAt,
   PinnedObject,
   PortableBitmap,
-  PricingProfile,
-  RedisNodeType,
-  RedisSizing,
   RegCaps,
   RegistryPatch,
   RegistryRecord,
   RegistryStatus,
   RegistrySummary,
+  RegistryWriteOptions,
+  KnownGeneration,
+  LeaseEntry,
   RetentionPolicy,
   RetireEntry,
   RetireExpiredOptions,
@@ -2771,12 +4015,12 @@ export type {
   SegmentInfo,
   SegmentRef,
   SegmentSize,
-  SegmentSizing,
   SetRetentionResult,
   StorageBackend,
   StorageCaps,
   StorageChunkSource,
+  StorageDeleteOptions,
+  TailRead,
   Token,
-  Workload,
   WrappedDek,
 } from '@cloudbitmaps/core';

@@ -5,7 +5,7 @@ import {
   registryConcurrency,
   registryDeleteConformance,
 } from '@/testing/conformance';
-import { GcsRegistryDriver } from '@/gcs/registry';
+import { GcsRegistryDriver, GcsRegistryStore } from '@/gcs/registry';
 import { GcsStorage } from '@/gcs/backend';
 import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
@@ -46,6 +46,8 @@ class FakeGcs {
   readonly deletes: Array<{ name: string; ifGenerationMatch?: number }> = [];
   /** Run just before the next delete is applied: another writer landing between the delete's read and it. */
   beforeDelete: (() => Promise<void>) | undefined;
+  /** When set, an upload fails with it as it ends. */
+  uploadFault: Error | undefined;
 
   /** Put `text` at `name` as a new generation, as another writer left it. */
   plant(name: string, text: string): void {
@@ -129,6 +131,7 @@ class FakeGcs {
           // The upload lands when the stream ends, as the SDK's does: check and store in one step, so two
           // concurrent writers race exactly where they do against the service.
           final: (done) => {
+            if (this.uploadFault !== undefined) return done(this.uploadFault);
             const cur = this.objects.get(name);
             const expect = opts?.preconditionOpts?.ifGenerationMatch;
             // The emulator enforces the precondition ONLY on the simple (non-resumable) path.
@@ -178,6 +181,18 @@ const driverOver = (
 
 // The GCS registry must pass the SAME contract as memory / LocalFs / S3 / Azure, in the fast lane.
 registryConformance('GcsRegistryDriver (fake GCS)', () => driverOver(new FakeGcs()));
+
+it('GcsRegistryDriver declares that it reports write tokens', () => {
+  expect(driverOver(new FakeGcs()).reportsWriteTokens).toBe(true);
+});
+// The same contract over a fake that pages its listing three objects at a time, so the listing must follow its token.
+registryConformance(
+  'GcsRegistryDriver (fake GCS, three objects a page)',
+  () => driverOver(new FakeGcs(3)),
+  {
+    pagedListSize: 10,
+  },
+);
 
 // …and the cross-process fence, against a fake that enforces preconditions exactly where GCS does.
 registryConcurrency('GcsRegistryDriver (fake GCS)', () => {
@@ -352,6 +367,31 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     expect(seen.sort()).toEqual(['s0', 's1', 's2', 's3', 's4', 's5', 's6']);
   });
 
+  it('a page that hands back the token it was asked with is refused, not asked again forever', async () => {
+    const storage = new FakeGcs(1);
+    const d = driverOver(storage);
+    for (let i = 0; i < 3; i++) await d.create({ segment: `s${i}` }, { currentGen: i });
+    const bucket = storage.bucket() as {
+      getFiles: (q: { pageToken?: string }) => Promise<unknown[]>;
+    };
+    const real = bucket.getFiles;
+    let asked = 0;
+    storage.bucket = () => ({
+      ...bucket,
+      getFiles: async (q: { pageToken?: string }) => {
+        asked += 1;
+        const [files] = await real(q);
+        return [files, { pageToken: q.pageToken ?? 'first' }];
+      },
+    });
+    await expect(
+      (async () => {
+        for await (const _ of d.list()) void _;
+      })(),
+    ).rejects.toThrow('returned the page token it was given');
+    expect(asked).toBe(2);
+  });
+
   it('rejects an oversized object on its advertised length, before buffering it', async () => {
     const storage = new FakeGcs();
     const d = driverOver(storage);
@@ -425,5 +465,73 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     await expect(d.compareAndSwap(ref, '"etag-1"', { currentGen: 1 })).rejects.toBeInstanceOf(
       Error,
     );
+  });
+});
+
+describe('GcsRegistryDriver: a missing bucket under a delete or a read', () => {
+  const REF = { segment: 's' };
+  const bucketGone = (): Error =>
+    Object.assign(gcsError(404), { message: 'The specified bucket does not exist.' });
+  /** A bucket whose object listing answers 404, as a bucket that is not there does. */
+  const listingIsMissing = (storage: FakeGcs): void => {
+    const real = FakeGcs.prototype.bucket.call(storage) as object;
+    (storage as unknown as { bucket: () => unknown }).bucket = () => ({
+      ...real,
+      getFiles: async () => {
+        throw gcsError(404);
+      },
+    });
+  };
+
+  it('a delete the service answers with a missing bucket is a ValidationError, not a lost race', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage, 'cloudbitmaps', true);
+    const { token } = await d.create(REF, { currentGen: 0 });
+    storage.beforeDelete = async () => {
+      throw bucketGone();
+    };
+    const err = (await d.delete(REF, token).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.message).toContain('does not exist: b;');
+  });
+
+  it('a plain 404 on a read asks whether the bucket exists, and a missing bucket is a ValidationError, not an absent row', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    listingIsMissing(storage);
+    await expect(d.get(REF)).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('a plain 404 on a row write asks whether the bucket exists, and a missing bucket is a ValidationError', async () => {
+    const storage = new FakeGcs();
+    listingIsMissing(storage);
+    storage.uploadFault = gcsError(404);
+    const store = new GcsRegistryStore(
+      storage as unknown as Storage,
+      storage as unknown as Storage,
+      'b',
+      0,
+      true,
+    );
+    const err = await store.write('k', new Uint8Array([1]), 'absent').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as Error).message).toContain('does not exist: b;');
+  });
+
+  it('a plain 404 on a conditional delete asks the same, rather than reading as a lost race', async () => {
+    const storage = new FakeGcs();
+    // The row is put there by another driver: this one has not yet asked whether the bucket exists.
+    const { token } = await driverOver(storage, 'cloudbitmaps', true).create(REF, {
+      currentGen: 0,
+    });
+    const d = driverOver(storage, 'cloudbitmaps', true);
+    listingIsMissing(storage);
+    storage.beforeDelete = async () => {
+      storage.objects.clear();
+    };
+    const readsBefore = storage.reads;
+    await expect(d.delete(REF, token)).rejects.toBeInstanceOf(ValidationError);
+    // The delete's own 404 asks about the bucket at once; without that it would read the row again to find out.
+    expect(storage.reads - readsBefore).toBe(1);
   });
 });

@@ -26,15 +26,36 @@
  * keep the SDK's retry. **Each read can be timed** ({@link timedRead}): with `readTimeoutMs` set, a `GetObject` or
  * `HeadObject` that has not finished, body included, after it throws {@link TransientError}. It is off by default, and
  * nothing else is timed. Drivers may use `node:crypto`; only `core/` is bound by the determinism lint.
+ *
+ * **A delete given `ifVersion` is a `DeleteObject` under `If-Match: <that ETag>`** where `conditionalDelete` holds: by
+ * default when the host the client resolves is an AWS S3 host and the SDK sends the header, as for the registry's row
+ * delete ({@link appliesDeleteIfMatch}), resolved once, on the first such delete; MinIO, for one, accepts the header and
+ * ignores it. A tail read reports the object's `ETag` as its version, from the `GetObject` that carried the bytes, or
+ * the `HeadObject` when none were asked for. A `412` is the precondition failing, and a `409` a conditional request
+ * that raced another on the key, which says nothing of which object is there; the delete has removed nothing either
+ * way, and both are reported as {@link WriteConflictError} unless a `HeadObject` then finds no object under the key: an
+ * absent object is a no-op, whichever of `204`, `404` or `412` the service answers for it. The delete keeps the SDK's
+ * retry: a copy that meets its own landed delete finds nothing, and one that meets an object stored since is refused.
+ * An ETag is computed from the bytes for an object stored without SSE-KMS or SSE-C, so the condition cannot tell apart
+ * two objects with the same bytes, each stored whole in one request, or each in parts of the same sizes.
  */
 import {
+  IntegrityError,
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
+  concatBytes,
   isNotFoundError,
   isValidationError,
   isWriteConflictError,
+  normalizeObjectPrefix,
+  parseGenerationFromKey,
+  requireBool,
+  requirePositiveInt,
+  segmentObjectPrefix,
+  storageObjectKey,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type {
   BlobSink,
@@ -42,7 +63,10 @@ import type {
   IStorageDriver,
   SegmentRef,
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
 } from '@cloudbitmaps/core/driver-kit';
+import type { Clock, Rng } from '@cloudbitmaps/core';
 import { createHash, randomBytes, type Hash } from 'node:crypto';
 import {
   AbortMultipartUploadCommand,
@@ -57,29 +81,33 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import {
-  storageObjectKey,
-  normalizeS3Prefix,
-  parseGenerationFromKey,
-  segmentObjectPrefix,
-} from './keys';
-import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingBucket,
   isNoSuchUpload,
   isNotFound,
+  spanFromContentRange,
   isPreconditionFailed,
   isThrottle,
   isTransient,
   totalFromContentRange,
+  transientFaultMessage,
 } from './s3-errors';
 import { resolveReadTimeoutMs, timedRead, type ReadSendOptions } from './read-timeout';
+import type { SocketAdvisory } from './socket-advisory';
 import { sendOnce } from './send-once';
+import { readBounded } from './bounded-body';
+import { scrubCredentials } from './scrub-error';
+import { appliesDeleteIfMatch, probeClient, type ClientFacts } from './client-probe';
 
 /** Part size for multipart uploads. ≥ the S3 5 MiB minimum; an object that fits in one part uses a single
  * conditional PUT instead (no multipart overhead, strongest write-once). Peak write memory ≈ one part. */
 const S3_PART_BYTES = 8 * 1024 * 1024;
 /** S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the real object ceiling. */
 const S3_MAX_PARTS = 10_000;
+/** S3 hard limits on one object (5 TiB) and one part (5 GiB). */
+const S3_MAX_OBJECT_BYTES = 5 * 1024 ** 4;
+const S3_MAX_PART_BYTES = 5 * 1024 ** 3;
 /** The user-metadata name an object's write id is stored under (`x-amz-meta-cbwid`). Short: every write sends it. */
 const WRITE_ID_KEY = 'cbwid';
 /** How many times a throttled commit is sent again: four sends in all, as many as the SDK's own retry makes. */
@@ -88,15 +116,15 @@ const THROTTLE_RESENDS = 3;
 const THROTTLE_BASE_DELAY_MS = 500;
 
 /** What the throttle backoff waits on. */
-interface Sleeper {
-  sleep(ms: number): Promise<void>;
-}
+type Sleeper = Pick<Clock, 'sleep'>;
 
 const REAL_TIME: Sleeper = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+/** Where the backoff's jitter comes from when none is injected. */
+const REAL_RNG: Rng = { next: () => Math.random() };
 
-export interface S3StorageDriverOptions {
+interface S3StorageDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
   readonly client: S3Client;
   /** Target bucket (must already exist). */
@@ -125,8 +153,21 @@ export interface S3StorageDriverOptions {
    * `cacheMiddleware: true`, a timed read resolves its middleware each time.
    */
   readonly readTimeoutMs?: number;
+  /** The socket-pool check, run as each read finishes; absent for a driver built on its own. */
+  readonly sockets?: SocketAdvisory;
   /** What the backoff before re-sending a throttled commit waits on; real time when absent. */
   readonly clock?: Sleeper;
+  /** Where the jitter of that backoff is drawn from; `Math.random` when absent. */
+  readonly rng?: Rng;
+  /**
+   * Whether a delete given `ifVersion` is sent with `If-Match`, so it removes the object only while it is the one that
+   * ETag names. Defaults as the registry's option does: on when the host the client resolves is an AWS S3 host and the
+   * SDK sends the header, resolved on the first such delete (until then `capabilities()` reads `false`), and off for any
+   * other host, and for a client that cannot be resolved then (no region), whose deletes stay unconditional. Set it for
+   * an S3-compatible store only once you know the store applies `If-Match` on a delete. A `true` never overrides an SDK
+   * that does not send the header.
+   */
+  readonly conditionalDelete?: boolean;
 }
 
 export class S3StorageDriver implements IStorageDriver {
@@ -137,21 +178,35 @@ export class S3StorageDriver implements IStorageDriver {
   private readonly partBytes: number;
   private readonly readTimeoutMs: number;
   private readonly clock: Sleeper;
+  private readonly rng: Rng;
+  private readonly sockets: SocketAdvisory | undefined;
+  private readonly explicitConditionalDelete: boolean | undefined;
+  private probed: Promise<void> | undefined;
+  private facts: ClientFacts | undefined;
 
   constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
+    this.explicitConditionalDelete = requireBool('conditionalDelete', options.conditionalDelete);
+    this.sockets = options.sockets;
     this.bucket = options.bucket;
-    this.prefix = normalizeS3Prefix(options.prefix);
+    this.prefix = normalizeObjectPrefix(options.prefix);
     this.clock = options.clock ?? REAL_TIME;
+    this.rng = options.rng ?? REAL_RNG;
     // Fail fast at the boundary: `??` only guards `undefined`, so NaN, 0, a negative or a fraction would otherwise
     // reach the arithmetic below and size every part (and the advertised cap) from garbage.
-    for (const [name, value] of [
-      ['partBytes', options.partBytes],
-      ['maxObjectBytes', options.maxObjectBytes],
-    ] as const) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
-        throw new ValidationError(`${name} must be a positive safe integer; got ${value}`);
-      }
+    requirePositiveInt('partBytes', options.partBytes);
+    requirePositiveInt('maxObjectBytes', options.maxObjectBytes);
+    // Past S3's own limits a cap is not reachable: the part grown to cover it would pass the part limit, an object up
+    // to that size would be held in memory whole, and one PutObject of it would be refused.
+    if (options.maxObjectBytes !== undefined && options.maxObjectBytes > S3_MAX_OBJECT_BYTES) {
+      throw new ValidationError(
+        `maxObjectBytes must be at most S3's 5 TiB object limit (${S3_MAX_OBJECT_BYTES}); got ${options.maxObjectBytes}`,
+      );
+    }
+    if (options.partBytes !== undefined && options.partBytes > S3_MAX_PART_BYTES) {
+      throw new ValidationError(
+        `partBytes must be at most S3's 5 GiB part limit (${S3_MAX_PART_BYTES}); got ${options.partBytes}`,
+      );
     }
     const requestedPart = Math.max(options.partBytes ?? S3_PART_BYTES, 5 * 1024 * 1024);
     // Default the object cap to what the requested part size can actually cover within S3's 10,000-part limit;
@@ -162,7 +217,20 @@ export class S3StorageDriver implements IStorageDriver {
   }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: this.maxObjectBytes,
+      conditionalPut: true,
+      conditionalDelete: appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts),
+    };
+  }
+
+  /** Ask the client once where its requests go and whether it sends `If-Match` on a delete; it sends nothing. */
+  private settle(): Promise<void> {
+    this.probed ??= probeClient(this.client, this.bucket).then((facts) => {
+      this.facts = facts;
+    });
+    return this.probed;
   }
 
   async putImmutable(
@@ -178,6 +246,7 @@ export class S3StorageDriver implements IStorageDriver {
       this.maxObjectBytes,
       this.readTimeoutMs,
       this.clock,
+      this.rng,
     );
     try {
       await write(sink);
@@ -217,51 +286,128 @@ export class S3StorageDriver implements IStorageDriver {
         }),
         options,
       );
-      const bytes = await collect(res.Body);
+      const bytes = await readBounded(
+        res.Body,
+        length,
+        () => this.badRead(key, 'range', `the response is longer than the ${length}B requested`),
+        res.ContentLength,
+      );
       // A short read means the range ran past EOF — treat as out-of-bounds, never a partial result.
       if (bytes.length !== length) {
         throw new ValidationError(
           `range [${offset}, ${offset + length}) out of bounds (got ${bytes.length}B)`,
         );
       }
+      // The bytes must be the ones asked for, not as many from elsewhere: a range answer names its span, and one
+      // without it (a 200, the whole object) is the range only when the range starts at 0.
+      const span = spanFromContentRange(res.ContentRange);
+      const wanted =
+        span === undefined
+          ? offset === 0
+          : span.start === offset && span.end === offset + length - 1;
+      if (!wanted) {
+        throw this.badRead(
+          key,
+          'range',
+          `the response holds ${res.ContentRange === undefined ? 'the object from its start' : `bytes ${res.ContentRange}`}, not [${offset}, ${offset + length})`,
+        );
+      }
       return bytes;
     });
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
     const objectKey = storageObjectKey(this.prefix, key);
+    // The rule every driver's tail read holds to: a safe integer, and zero or less an empty tail.
+    if (!Number.isSafeInteger(maxBytes)) {
+      throw new ValidationError(`invalid tail length ${String(maxBytes)}`);
+    }
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
-      return { bytes: new Uint8Array(0), size: (await this.headSize(key, objectKey)) ?? 0 };
+      const head = await this.head(key, objectKey);
+      return withVersion({ bytes: new Uint8Array(0), size: head.size ?? 0 }, head.version);
     }
-    const { bytes, contentRange } = await this.read('GetObject', key, async (options) => {
-      const res = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey, Range: `bytes=-${maxBytes}` }),
-        options,
-      );
-      return { bytes: await collect(res.Body), contentRange: res.ContentRange };
+    const read = await this.read('GetObject', key, async (options) => {
+      try {
+        const res = await this.client.send(
+          new GetObjectCommand({
+            Bucket: this.bucket,
+            Key: objectKey,
+            Range: `bytes=-${maxBytes}`,
+          }),
+          options,
+        );
+        const bytes = await readBounded(
+          res.Body,
+          maxBytes,
+          () => this.badRead(key, 'tail', `the response is longer than the ${maxBytes}B requested`),
+          res.ContentLength,
+        );
+        return { bytes, contentRange: res.ContentRange, version: res.ETag };
+      } catch (err) {
+        // A zero-byte object has no suffix to satisfy, so S3 refuses the range with a 416. The HEAD below settles
+        // whether that is an empty object or a real range fault.
+        if (isInvalidRange(err)) return { refused: err };
+        throw err;
+      }
     });
+    if ('refused' in read) {
+      const head = await this.head(key, objectKey);
+      if (head.size !== 0) throw this.mapReadError(read.refused, key);
+      return withVersion({ bytes: new Uint8Array(0), size: 0 }, head.version);
+    }
+    const { bytes, contentRange, version } = read;
     let size = totalFromContentRange(contentRange);
+    if (contentRange !== undefined && !(size === 0 && bytes.length === 0)) {
+      // A ranged answer must be the suffix asked for and hold exactly its bytes, as a range read's must. An empty
+      // object has no suffix: a server may answer it with `bytes 0--1/0`.
+      const span = spanFromContentRange(contentRange);
+      const suffix =
+        span !== undefined &&
+        span.end - span.start + 1 === bytes.length &&
+        (size === undefined ||
+          (span.end === size - 1 && span.start === Math.max(0, size - maxBytes)));
+      if (!suffix) {
+        throw this.badRead(
+          key,
+          'tail',
+          `the response holds ${contentRange} in ${bytes.length}B, not the last ${maxBytes}B of the object`,
+        );
+      }
+    }
     if (size === undefined) {
       // A spec-compliant backend omits Content-Range only on a 200 (whole object), where bytes.length
       // IS the size. If the body is exactly maxBytes we can't rule out a clamped partial from a
       // non-compliant backend — confirm the true size with a HEAD rather than trust a possibly-short read.
       size =
         bytes.length === maxBytes
-          ? ((await this.headSize(key, objectKey)) ?? bytes.length)
+          ? ((await this.head(key, objectKey)).size ?? bytes.length)
           : bytes.length;
     }
-    return { bytes, size };
+    // The version of the object the bytes came from: the ETag of the response that carried them.
+    return withVersion({ bytes, size }, version);
   }
 
-  /** The object's size from a `HeadObject`, or `undefined` when the response does not carry one. */
-  private headSize(key: GenKey, objectKey: string): Promise<number | undefined> {
+  private badRead(key: GenKey, what: 'range' | 'tail', why: string): ValidationError {
+    return new ValidationError(
+      `S3 ${what} read of ${key.segment}.${key.generation} refused: ${why}`,
+    );
+  }
+
+  /**
+   * The object's size and ETag from a `HeadObject`, each `undefined` when the response does not carry it. A missing
+   * object throws {@link NotFoundError}.
+   */
+  private head(
+    key: GenKey,
+    objectKey: string,
+  ): Promise<{ size: number | undefined; version: string | undefined }> {
     return this.read('HeadObject', key, async (options) => {
       const head = await this.client.send(
         new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }),
         options,
       );
-      return head.ContentLength;
+      return { size: head.ContentLength, version: head.ETag };
     });
   }
 
@@ -279,18 +425,53 @@ export class S3StorageDriver implements IStorageDriver {
         return await run(options);
       } catch (err) {
         throw this.mapReadError(err, key);
+      } finally {
+        this.sockets?.afterRequest();
       }
     });
   }
 
-  async delete(key: GenKey): Promise<void> {
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const objectKey = storageObjectKey(this.prefix, key);
+    const ifVersion = options?.ifVersion;
+    if (ifVersion !== undefined && this.explicitConditionalDelete !== false) await this.settle();
+    const conditional =
+      ifVersion !== undefined && appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts);
     // Idempotent: S3 DeleteObject succeeds even if the key is absent (GC may race / retry).
     try {
       await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key: storageObjectKey(this.prefix, key) }),
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: objectKey,
+          ...(conditional ? { IfMatch: ifVersion } : {}),
+        }),
       );
-    } catch (err) {
+    } catch (raw) {
+      const err = scrubCredentials(raw);
+      if (conditional) {
+        // An absent object is a no-op whatever version was given, and a failed precondition (`412`, or `409` for a
+        // conditional request racing another on the key) is a conflict only while an object is under the key: a
+        // service may answer it for a key with nothing there, a copy of this delete that landed first included.
+        if (isNotFound(err)) return;
+        if (isConditionalConflict(err)) {
+          if (!(await this.exists(key, objectKey))) return;
+          throw new WriteConflictError(
+            `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+          );
+        }
+      }
       throw this.mapError(err);
+    }
+  }
+
+  /** Whether an object is under the key, from one `HeadObject`. A read that fails in any other way throws. */
+  private async exists(key: GenKey, objectKey: string): Promise<boolean> {
+    try {
+      await this.head(key, objectKey);
+      return true;
+    } catch (err) {
+      if (isNotFoundError(err)) return false;
+      throw err;
     }
   }
 
@@ -317,12 +498,21 @@ export class S3StorageDriver implements IStorageDriver {
           yield { namespace: ref.namespace, segment: ref.segment, generation };
         }
       }
+      // A page that says more follow and gives no way to ask for them would end the listing short, silently.
+      if (res.IsTruncated === true && res.NextContinuationToken === undefined) {
+        throw new IntegrityError('S3 listing says it is truncated but gives no continuation token');
+      }
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (res.IsTruncated === true && res.NextContinuationToken === token) {
+        throw new IntegrityError('S3 listing returned the continuation token it was given');
+      }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);
   }
 
   /** Map S3 read errors to the driver vocabulary; pass everything else through {@link mapError}. */
   private mapReadError(err: unknown, key: GenKey): unknown {
+    err = scrubCredentials(err);
     if (isValidationError(err)) return err;
     if (isNotFound(err)) {
       return new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
@@ -336,31 +526,23 @@ export class S3StorageDriver implements IStorageDriver {
   }
 
   /**
-   * Reclassify a transient S3 fault (throttle/5xx/dropped connection) as a retryable {@link TransientError},
-   * so the store's read retry can ride it out and a write's caller can tell it from a deterministic failure;
-   * everything else propagates unchanged. The final fallback at every `client.send` site, so callers and the
-   * read retry only ever see typed errors.
+   * Reclassify a transient S3 fault (throttle/5xx/dropped connection) as a retryable {@link TransientError}, so the
+   * store's read retry can ride it out and a write's caller can tell it from a deterministic failure, and a missing
+   * bucket as a `ValidationError` that names it; everything else propagates unchanged. The final fallback at every
+   * `client.send` site, so callers and the read retry only ever see typed errors.
    */
   private mapError(err: unknown): unknown {
-    if (isTransient(err)) {
-      return new TransientError(
-        `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
-        { cause: err },
-      );
-    }
-    return err;
+    const scrubbed = asMissingBucket(scrubCredentials(err), this.bucket);
+    return toTransient(scrubbed, isTransient, transientFaultMessage);
   }
 }
 
-/** Concatenate a list of byte chunks of known total length into one buffer. */
-function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
+/** A tail read, with the version it was read at when the response carried one. */
+function withVersion(
+  tail: { bytes: Uint8Array; size: number },
+  version: string | undefined,
+): TailRead {
+  return version === undefined ? tail : { ...tail, version };
 }
 
 /**
@@ -390,6 +572,7 @@ class S3MultipartSink implements BlobSink {
     private readonly maxObjectBytes: number,
     private readonly readTimeoutMs: number,
     private readonly clock: Sleeper,
+    private readonly rng: Rng,
   ) {}
 
   async write(bytes: Uint8Array): Promise<void> {
@@ -400,7 +583,8 @@ class S3MultipartSink implements BlobSink {
       throw new ValidationError(`object exceeds maxObjectBytes ${this.maxObjectBytes}`);
     }
     this.hash.update(bytes);
-    this.pending.push(bytes);
+    // A copy: the caller may reuse its buffer once this write resolves, and the part is sent later.
+    this.pending.push(new Uint8Array(bytes));
     this.pendingLen += bytes.length;
     if (this.pendingLen >= this.partBytes) await this.flushPart();
   }
@@ -420,7 +604,7 @@ class S3MultipartSink implements BlobSink {
       }
       this.uploadId = res.UploadId;
     }
-    const body = concatBytes(this.pending, this.pendingLen);
+    const body = concatBytes(this.pending);
     this.pending.length = 0;
     this.pendingLen = 0;
     this.partNumber += 1;
@@ -445,7 +629,7 @@ class S3MultipartSink implements BlobSink {
   async finish(): Promise<{ size: number; sha256: string }> {
     const sha256 = this.hash.digest('hex');
     if (this.uploadId === undefined) {
-      const body = concatBytes(this.pending, this.pendingLen);
+      const body = concatBytes(this.pending);
       await this.commit('PutObject', () =>
         sendOnce(
           this.client,
@@ -501,7 +685,8 @@ class S3MultipartSink implements BlobSink {
       try {
         await send();
         return;
-      } catch (err) {
+      } catch (raw) {
+        const err = scrubCredentials(raw);
         if (resent > 0 && (isConditionalConflict(err) || isNoSuchUpload(err))) {
           const stored = await this.storedObject();
           if (stored?.id === this.writeId) return;
@@ -521,7 +706,7 @@ class S3MultipartSink implements BlobSink {
             { cause: err },
           );
         }
-        await this.clock.sleep(Math.floor(Math.random() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
+        await this.clock.sleep(Math.floor(this.rng.next() * THROTTLE_BASE_DELAY_MS * 2 ** resent));
       }
     }
   }
@@ -561,17 +746,3 @@ class S3MultipartSink implements BlobSink {
     }
   }
 }
-
-/**
- * Collect an S3 response body into a `Uint8Array`. `transformToByteArray` is added at runtime to the SDK's
- * Node stream by `@aws-sdk`'s sdk-stream-mixin, so the structural cast is sound on Node.
- */
-async function collect(body: GetObjectCommandBody): Promise<Uint8Array> {
-  if (body === undefined) {
-    throw new NotFoundError('S3 GetObject returned an empty body');
-  }
-  return body.transformToByteArray();
-}
-
-/** The S3 `GetObject` Body type, narrowed to the part we use (`transformToByteArray`). */
-type GetObjectCommandBody = { transformToByteArray(): Promise<Uint8Array> } | undefined;

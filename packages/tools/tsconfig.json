@@ -1,0 +1,18 @@
+{
+  "//": "@cloudbitmaps/tools — offline tools that need nothing internal from a store. `@cloudbitmaps/core` is a real dependency, reached through its main entry alone (`pnpm lint` refuses a subpath, a relative path into core and the `@/` alias): the `paths` below resolve it to core's SOURCE so this package typechecks without core being built first, while `scripts/build.mjs` marks `@cloudbitmaps/*` external so the BUNDLE imports it at runtime instead of inlining a private copy.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@cloudbitmaps/core": ["../core/src/index.ts"],
+
+      // CORE's self-alias, not this package's. The entry above resolves `@cloudbitmaps/core` to core's SOURCE,
+      // which pulls core's `@/…`-importing files into this program, and `paths` REPLACES the inherited map
+      // rather than merging with it, so without this line those imports resolve against nothing. Nothing under
+      // packages/tools/src may import `@/…` itself: here it would mean core's internals, which `pnpm lint`
+      // refuses for this package.
+      "@/*": ["../core/src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

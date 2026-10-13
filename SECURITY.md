@@ -59,6 +59,11 @@ not hold what its header says with `IntegrityError`, before anything is publishe
 are a `ValidationError`, since they are the caller's input rather than a stored object, and nothing is read or
 written.
 
+**A caller must not modify an input buffer while a load reads it.** The checks above hold for
+a buffer that stays as it was handed in. A buffer another thread, an unfinished `fs.read` or an asynchronous addon call
+is still writing can differ between the structural check and the decode, and the load's re-check of each container
+catches a difference only after the native code has read it. Hand in a buffer that nothing else writes, or a copy of it.
+
 Encryption-at-rest (opt-in) is envelope AES-256-GCM with a per-segment DEK wrapped under operator-held KEK(s);
 the AEAD wiring is pinned to published known-answer vectors and the envelope/rotation/crypto-shred paths are
 tested (`tests/crypto-vectors.test.ts`, `tests/key-rotation.test.ts`, `tests/drivers/crypto.test.ts`, `tests/core/encryption-lifecycle.test.ts`).
@@ -90,6 +95,8 @@ smuggles in a breaking change.
 | `nanoid >=3.3.18 <4` | the vitest toolchain | |
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
 | `esbuild >=0.28.2 <0.29` | a direct devDependency, and `vitest` -> `vite` | |
+| `source-map-js >=1.2.2 <2` | the vitest toolchain: `vite` -> `postcss` | |
+| `shell-quote >=1.11.0 <2` | the changesets CLI: `@changesets/cli` -> `launch-editor` | |
 
 An override is a **claim that the forced version still works**, which is only worth making if it is tested, and
 only meaningful while something in the tree actually resolves to it. Every row above binds to at least one
@@ -105,12 +112,21 @@ unbounded range resolved to 14.x, which is three majors of blast radius for no s
 **None of these overrides reach consumers.** A `pnpm.overrides` entry applies to *this workspace's* install
 tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
 ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
-`@cloudbitmaps/core`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
+`@cloudbitmaps/core` and none for `@cloudbitmaps/tools`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
 (the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). One of the packages above does
 sit under a shipped SDK transitively — `uuid` under `@google-cloud/storage` — at whatever version that SDK
 itself resolves, which is the surface to reason about here, not our pinned one. `undici` is **not** in that
 category: it reaches this repo only through `roaring`'s `node-gyp`, an optional install-time path, and never
 through a package a consumer installs.
+
+**A consumer's `npm audit` lists two moderate findings through `@cloudbitmaps/gcs`**: `uuid` below 11.1.1
+([GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq)) and `gaxios`, which depends on it, by the
+path `@cloudbitmaps/gcs` → `@google-cloud/storage` → `gaxios` → `uuid@9`. The advisory is a missing bounds check in
+`uuid`'s `v3`, `v5` and `v6` when the caller passes a buffer to fill. `gaxios` calls `uuid.v4()` with no buffer
+argument, to make a multipart boundary, so the flaw is not reachable here. The finding clears when the upstream SDK moves
+to a `gaxios` that no longer depends on that `uuid`; a consumer that gates on `npm audit` can add
+`"overrides": { "uuid": "^11.1.1" }` to its own manifest in the meantime. No other `@cloudbitmaps` package, and no
+other SDK it installs, shows a finding.
 
 ### Triaged (accepted) advisories
 
@@ -131,6 +147,10 @@ must be removed and the advisory addressed, not ignored.
 CloudBitmaps is published through a hardened pipeline so that a consumer can verify **exactly what source
 produced the package they installed**. The controls:
 
+- **Static analysis.** The [CodeQL workflow](.github/workflows/codeql.yml) analyses the JavaScript and TypeScript
+  source on every pull request, on every push to `main` and weekly, and reports findings as code-scanning alerts. It
+  covers the packages, the scripts and bench harnesses that CI runs, and the site; it leaves out the test suite and
+  the fuzz harnesses, which ship nowhere. Its action versions are pinned to commits like every other workflow's.
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
   `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
   manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*
@@ -147,11 +167,10 @@ produced the package they installed**. The controls:
   **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
   publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is
   bootstrapped by hand, from a laptop, which has no workflow identity and therefore no provenance. Those are
-  published under the `rc` dist-tag at a throwaway prerelease (`0.10.0-rc.0`) and are never what `latest`
-  serves. If you are checking signatures, expect exactly those prerelease versions to have none, and treat an
+  published under the `rc` dist-tag at a throwaway prerelease of the family version (for example `0.20.0-rc.0`). The registry can point `latest` at a name's first publish, so until the real release ships, a plain install of a new name may serve that prerelease. If you are checking signatures, expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none, and treat an
   unattested tarball at a **real** version as untrusted.
 - **Publish only a re-verified tree.** The release workflow re-runs the gate that governs the artifact
-  (`lint · lint:arch · format:check · typecheck · test · audit · build · smoke`, plus a `leak-scan` of the
+  (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is
   necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
   served from `main`, not what is published. A pushed `vX.Y.Z` tag must also match every package's
@@ -194,7 +213,7 @@ produced the package they installed**. The controls:
 - **Recoverable checks run before the irreversible one.** Every gate above that a run performs — the re-run test
   suite, the audit, the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`,
   and [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if the audit, the tag/version
-  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
+  agreement, the release-notes check or the tarball scan is ever moved after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the six packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds

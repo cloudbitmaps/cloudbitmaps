@@ -17,7 +17,7 @@ forms and template in [`.github/`](.github/); security reports go **privately** 
 Every change must pass these locally, and CI runs each of them on every pull request (TypeScript, pnpm):
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
-  `pnpm smoke`
+  `pnpm api:surface:check` · `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
   Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
   (`docker compose up -d`, as [`tests/README.md`](tests/README.md) says), and a change that touches a driver runs it
@@ -38,22 +38,48 @@ Every change must pass these locally, and CI runs each of them on every pull req
   registered `Symbol.for`s, since with one shared copy of core a plain `Symbol` passes too; that is
   [`tests/core/error-predicates.test.ts`](tests/core/error-predicates.test.ts)'s to prove.
 
+- `pnpm api:surface:check` (after `pnpm build`) guards **signatures**, which the API reference's name check does not.
+  `scripts/api-surface.cjs` reads the declarations the build emitted for every public entry point and compares one line
+  per exported symbol and per public member (overloads each), and the types those signatures name without exporting
+  them, with the snapshot committed in [`api-surface/`](api-surface/README.md). A change you meant to make regenerates
+  it with `pnpm api:surface` (it builds first), and the snapshot diff in your pull request is what a reviewer reads.
+  On a pull request the `api-surface-base` workflow also runs `node scripts/api-surface.cjs --against origin/<base>`,
+  with no build: an entry the base branch lists that is **removed or changed** (a parameter rename included) fails unless
+  `api-surface/allowed.json` names it with a reason in a row this change adds; a row the base already has, with the same
+  reason, excuses nothing. That is a public-contract change: it needs the maintainer's agreement before you build it. A new export, a new
+  class member, an optional member of an interface or object type, and any member of a type that is itself new are
+  additions and pass. A **required** member (a property or method without `?`, or an index, call or construct signature)
+  added to an interface or object type the base already has is a change, because it breaks everyone who implements or
+  builds that type: it fails with "a required member added to an existing interface" unless a row excuses it. An empty
+  allowlist is the normal state. What it does not see: a change in behaviour behind an
+  unchanged signature (that is for tests); an overload appended after the last one (it reads as an addition); a type
+  from outside the workspace, beyond its name in the signature; a member added to a class, abstract or not, which
+  binds a subclass; and, after a TypeScript upgrade that changes how
+  declarations print, it needs one `--write`.
+
 CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
-`bench:check`), scans the tracked tree and the packed tarballs for leaks, and checks the fuzz lockfile; separate
+`bench:range-counts:check`, `bench:expected-figures:check`, `bench:check`, `api:surface:check`), scans the tracked tree and the packed tarballs for leaks, and checks the fuzz lockfile; separate
 jobs run the dependency audit, the smoke test on the declared Node floor, the Lambda deployability smoke, the hard
 RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 says why each one is there.
+
+`pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:
+[`.github/workflows/full-nightly.yml`](.github/workflows/full-nightly.yml) runs the whole unit suite (`pnpm test`) at full strength on
+`main` every night, on each Node version `ci.yml` tests, and on demand (`workflow_dispatch`). It is not a required check
+and gates no pull request; a red run shows on the Actions tab. It also runs on a pull request that changes the workflow, the switch or a heavy test. Run it locally with `CB_TEST_STRENGTH=full pnpm test`,
+before changing one of the heavy tests or the code under it. [`tests/README.md`](tests/README.md#full-strength) lists
+them and their sizes.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
 **no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
 want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
 for `test:integration`).
-Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all five packages.
+Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all six packages.
 
-## Repo layout (a pnpm workspace of five packages)
+## Repo layout (a pnpm workspace of six packages)
 
-The `@cloudbitmaps` family is five packages, so this repo is a workspace
+The `@cloudbitmaps` family is six packages, so this repo is a workspace
 (`pnpm-workspace.yaml` → `packages/*`). Where code lives:
 
 | Path | Package | Holds |
@@ -61,15 +87,17 @@ The `@cloudbitmaps` family is five packages, so this repo is a workspace
 | `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (internal, not exported), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
 | `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit` and nothing else of ours — never a flavor, never a sibling |
+| `packages/tools/src/` | **`@cloudbitmaps/tools`** (depends on core; no third-party dependency) | offline tools that need nothing internal from a store: the cost model (`estimateCost`, `groundedReport`, the price lists). It imports `@cloudbitmaps/core`'s public main entry alone, and keeps its own copies of the few store figures it prices, which a test holds equal to core's |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json`. [`tests/README.md`](tests/README.md) maps each directory and every documentation gate |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | the benchmarks ([`bench/README.md`](bench/README.md)), fuzz targets ([`fuzz/README.md`](fuzz/README.md)), the build, release and gate scripts ([`scripts/README.md`](scripts/README.md)), the static site ([`site/README.md`](site/README.md)), and the docs trees below |
 
 A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
 (`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
-directly. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
+directly. `@cloudbitmaps/tools` is a third, for whoever prices a store, and needs neither a flavor nor a driver package. The dependency arrow is one-way — `pnpm lint` fails if core imports a flavor or a driver package, if
 core or the flavor names a cloud SDK, or if `core/` reaches a driver impl, and `pnpm smoke` fails if a built main
-entry outside a driver package names an SDK or a driver package. `pnpm lint:arch` proves each of those lint rules
-fires.
+entry outside a driver package names an SDK or a driver package. `pnpm lint` also fails if `@cloudbitmaps/tools` imports anything of
+core's but its public main entry (a subpath, a path into core's source, the `@/` alias), a flavor, a driver package, a
+cloud SDK or a node builtin. `pnpm lint:arch` proves each of those lint rules fires.
 
 `core/` is also **runtime**-agnostic: `pnpm lint` fails on any `node:*` import under `packages/core/src/core` (a dynamic `import()` is refused there
 whatever its source), and
@@ -99,7 +127,7 @@ the ones marked **nothing** fail no gate at all, so this table is the only thing
 | `.github/workflows/release.yml` | `EXPECTED_PACKAGES`, the number of manifests the release must find | `pnpm test`: `tests/ci/release-workflow.test.ts` compares it with the workspace |
 | `.github/ISSUE_TEMPLATE/bug_report.yml` · `tests/docs/issue-template-sync.test.ts` | the two dropdown options, and the backend's label in the test's `LABELS` map | `pnpm test`: the test derives which drivers exist from the packages, and spells each one's options from `LABELS` |
 | `docker-compose.yml` | the backend's emulator, as a service on a pinned image | a floating tag: `pnpm test` (`tests/ci/compose-images.test.ts`). The service: `pnpm test:integration`, once a test needs it. The CI image pull reads the file, so it needs no edit |
-| `tests/integration/` | a test that runs the conformance suite against that emulator, as `s3.test.ts`, `gcs.test.ts` and `azure.test.ts` do | **nothing** — the package is then never run against a backend |
+| `tests/integration/` | a test that runs the conformance suite against that emulator, as `s3.test.ts`, `gcs.test.ts` and `azure.test.ts` do, with `missingLocation` (a driver over a bucket that was never created) and a `pagedListSize` past one of the service's listing pages | **nothing** — the package is then never run against a backend |
 | the package's `README.md` · `site/usage.html` | the SDK range the manifest declares, verbatim, in both: the README's statement of it and the site's driver table | `pnpm test`: `tests/docs/sdk-floor-claims.test.ts` compares all three |
 | docs and site | the README install + driver tables, the `docs/guide/` pages that show wiring, the API reference entry points and export index, the guide index, and every site page that lists the drivers (`grep -rl '@cloudbitmaps/gcs' site` finds them) | the API reference: `pnpm test` (`tests/docs/api-reference-sync.test.ts`). The rest: **nothing** |
 | every place that names the SDK roots, if the new SDK is not under `@aws-sdk/`, `aws-sdk`, `@google-cloud/` or `@azure/` | the new root in each eslint `group` list, `SDK_ROOTS` in `scripts/sdk-specifiers.cjs`, `CLOUD_SDK` in `scripts/smoke.cjs`, and the SDK patterns in `tests/docs/issue-template-sync.test.ts` and `tests/docs/sdk-floor-claims.test.ts` | **nothing** — those gates then do not see the package as a driver, so the eslint, issue-template and SDK-range rows above fail nothing either |
@@ -107,6 +135,13 @@ the ones marked **nothing** fail no gate at all, so this table is the only thing
 
 One thing to copy rather than invent: the package declares its SDK as a **real dependency**, never an optional
 peer.
+
+**A package that is not a driver**, as `@cloudbitmaps/tools` is, takes the rows above that are not about an SDK or a
+backend: the root `package.json`, `tsconfig.json`, both vitest configs, an `eslint.config.js` block of its own with
+planted violations in `tests/arch/import-boundaries.test.ts` (the generic package block is a driver's list, so the
+package restates the list that fits it), `EXPECTED_PACKAGES`, the docs and the API reference's export index, and
+bootstrapping its name; and a row in the [dependency policy](#dependency-policy) below. The issue template,
+`docker-compose.yml`, `tests/integration/`, the SDK range and `scripts/sdk-specifiers.cjs` are a driver's alone.
 
 ## Dependency policy
 
@@ -117,6 +152,7 @@ Third-party runtime dependencies are counted **per package**, and each one is de
 | `@cloudbitmaps/core` | **none** |
 | `@cloudbitmaps/roaring` | `roaring` — the native codec, the reason a flavor is a package |
 | `@cloudbitmaps/s3` · `/gcs` · `/azure-blob` | its own cloud SDK, and only its own |
+| `@cloudbitmaps/tools` | **none** — its one dependency is `@cloudbitmaps/core`, ours |
 
 A user therefore installs a flavor and the driver for the storage they actually have; nothing is an optional
 peer, and no package pulls an SDK for a service the user does not use. Keep it that way:
@@ -185,10 +221,10 @@ order:
    property tests over loaded generations and crash/race tests for the write-then-publish path.
 3. **Run the full local gate — and it must be green.** Before review or merge, run every gate command and
    confirm each passes: `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · **`pnpm typecheck`** ·
-   `pnpm test` · `pnpm build` · `pnpm smoke`. **`pnpm typecheck` is a required gate exactly like lint and the
+   `pnpm test` · `pnpm build` · `pnpm api:surface:check` · `pnpm smoke`. **`pnpm typecheck` is a required gate exactly like lint and the
    tests**, and it runs two compilers, each `--noEmit` over the root program and every package's own
    `tsconfig.json`: TypeScript 5.9, which lint and the declaration build use, and TypeScript 7
-   (`typecheck:next`). A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
+   (`typecheck:next`); `typecheck` collapses to TypeScript 7 alone once `typescript-eslint` supports it. A clean typecheck (zero errors *and* zero editor red squiggles, e.g. deprecations) is
    mandatory, never deferred or `// @ts-ignore`-d away. CI runs the same set and more; a fresh clone must pass it
    with no manual setup. Don't open/merge a PR on a red gate.
 4. **Run the adversarial review gate (every pull request).** Spawn **multiple parallel
@@ -244,12 +280,13 @@ root-level project files. What each one is, and when it must be updated:
 2. **API reference** — a new export **cannot** merge undocumented; CI enforces it.
 3. **README** — refresh the status line / "what works today" / quick taste if the surface moved.
 4. **CHANGELOG** — add a bullet at the **top** of its subsection of `[Unreleased]` (newest first): **Breaking**
-   (with what a caller does about it, and the section's opening count kept in step), **Added**, **Changed** or
-   **Fixed**. This is the prose, and it
+   (with what a caller does about it, and the section's opening count kept in step), **Added**, **Changed**,
+   **Deprecated** (with where the replacement is), **Removed** (with what a caller does instead), **Fixed** or
+   **Security**. This is the prose, and it
    is hand-written: `.changeset/` does **not** generate it, deliberately
    ([why](.changeset/README.md)).
 5. **Changeset** — `pnpm changeset`, if the change should move the version. It records the **bump type**
-   only; all five packages move together, and pre-`1.0` a breaking change is a **minor**. A change that ships
+   only; all six packages move together, and pre-`1.0` a breaking change is a **minor**. A change that ships
    no version move (docs, tests, tooling) needs none.
 6. **Roadmap** — update [`docs/ROADMAP.md`](docs/ROADMAP.md) after any meaningful change, not only at
    milestones. It must **never lag reality**.
@@ -269,7 +306,7 @@ gets the reasoning rather than a dead reference to it.
 This applies to code comments as much as prose: a doc-comment reaches users on hover in their editor and
 inside the published `.d.ts` and sourcemaps. **CI-enforced** by
 [`tests/docs/internal-citations.test.ts`](tests/docs/internal-citations.test.ts), which scans every `.ts`, `.js`,
-`.cjs`, `.mjs`, `.md`, `.html`, `.json`, `.yml`, `.yaml` and `.txt` file in the tree — except itself and this file,
+`.cjs`, `.mjs`, `.md`, `.html`, `.json`, `.yml`, `.yaml` and `.txt` file git tracks — except itself and this file,
 which spell the forms out to define the rule. A shell or Python script is not scanned, so keep ids out of those by
 hand. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
 [`AGENTS.md`](AGENTS.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
@@ -280,7 +317,7 @@ hand. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
   (`WriteConflictError`, `IntegrityError`, …) over thrown strings — callers must learn *why* something failed.
 - Tests live at the **repo root under `tests/`, mirroring the package source trees** (e.g.
   `packages/core/src/core/lru.ts` → `tests/core/lru.test.ts`), not co-located with source and not split per
-  package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-five-packages)) keeps that
+  package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-six-packages)) keeps that
   mirror intact across the packages. Integration tests under `tests/integration/`. Property tests over loaded
   generations, and race tests for the write-then-publish path.
 - Pluggable drivers behind explicit interfaces; a driver **conformance suite**

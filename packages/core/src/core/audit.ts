@@ -3,7 +3,7 @@
  * from the metrics sink (`IMetricsSink`). Different audience (an audit log / SIEM, not a dashboard), different
  * retention, and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics
  * sink). It doubles as the GDPR Art. 30 "record of processing" surface: publishes, refused loads, rollbacks,
- * rewrites, erasures and disposals.
+ * rewrites, an erasure's deletion of the generations holding an id, crypto-shreds and disposals.
  *
  * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the operations that emit — a load, the `*Into`
  * verbs, a rollback, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped
@@ -17,19 +17,33 @@
  * add a `kek.rotate` variant; until then, audit key changes at your keystore-config layer.
  */
 
-/** A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor. */
+import { ValidationError } from './errors';
+
+/**
+ * A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor.
+ *
+ * Every event about a segment carries `incarnation`: the id of the registry row's incarnation the operation acted on.
+ * A segment's name can be purged and created again, and its generations then start again at `0`; the incarnation
+ * tells those lives of the name apart, and every write of a row keeps it. It does not make a generation number name
+ * one object for good: within one incarnation, a number whose object was deleted (a refused load's object, or a
+ * generation an erasure deleted above the pointer) can be taken again by a later load. It is absent when the row's
+ * token carries no incarnation id, for example from a registry of the caller's own that issues tokens in another
+ * form, and on a `segment.load-refused` from a load that found no row.
+ */
 export type AuditEvent =
   | {
       /** A new immutable Storage generation *became the segment's current generation*, by a load's publish. */
       readonly kind: 'segment.publish';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row whose pointer the publish moved. */
+      readonly incarnation?: string;
       readonly generation: number;
     }
   | {
       /**
        * A segment's pointer was moved by a rollback to a generation still in the bucket that the caller named:
-       * **backwards**, or forward with `allowForward`, which undoes an earlier rollback.
+       * **backwards**, or forward onto a generation a rollback left above the pointer, which undoes an earlier rollback.
        *
        * The only non-forward-only pointer move in the library, and the only one no automatic path can perform —
        * a human decided the current generation was wrong and named the one they wanted. Every other pointer move
@@ -41,8 +55,18 @@ export type AuditEvent =
       readonly kind: 'segment.rollback';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row whose pointer the rollback moved. */
+      readonly incarnation?: string;
       readonly fromGeneration: number | null;
       readonly generation: number;
+      /**
+       * Present, and `true`, when the row did not vouch for the target: the call passed `allowUnknown` for a generation the
+       * row does not know or whose object is not the one it recorded, or the row has no usable record of its generations
+       * (a registry that drops the field, or a pointer moved by hand) or the target is below a full record's bound, where the
+       * pointer alone decides for a target below it. Absent when the move was
+       * checked against the row's record.
+       */
+      readonly unknown?: true;
     }
   | {
       /**
@@ -51,7 +75,7 @@ export type AuditEvent =
        * downstream system reconciling "the segment should now contain X" needs as much as it needs the publish.
        *
        * `reason` is `'empty'` (an empty result over a non-empty segment, with no `allowEmpty`),
-       * `'min-cardinality'`, `'min-retained'`, or `'superseded'` (another load took the generation number, or the
+       * `'min-cardinality'`, `'min-retained'`, `'max-growth'`, or `'superseded'` (another load took the generation number, or the
        * segment's registry row changed while the load was writing). `cardinality` is what the refused generation
        * would have contained, and `0` for a load that lost its generation number and wrote nothing.
        *
@@ -63,8 +87,10 @@ export type AuditEvent =
       readonly kind: 'segment.load-refused';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row the load read before it wrote; absent when it found no row. */
+      readonly incarnation?: string;
       readonly generation: number;
-      readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'superseded';
+      readonly reason: 'empty' | 'min-cardinality' | 'min-retained' | 'max-growth' | 'superseded';
       readonly cardinality: number;
       readonly unanswered?: true;
     }
@@ -74,13 +100,49 @@ export type AuditEvent =
        * place. Today the one emitter is `eraseIdFromSegment` (a subject erasure clearing one id), and the event is
        * emitted at the publish — before the superseded generation is collected — so the record exists the moment
        * the generation without the id is authoritative. A `segment.publish` is NOT also emitted for a rewrite: a
-       * rewrite derives its content from the segment itself, a publish brings content in from outside.
+       * rewrite derives its content from the segment itself, a publish brings content in from outside. An erasure
+       * that finds the id only outside the current generation, or deletes only objects no read of the segment can
+       * open, rewrites nothing and emits `segment.collect`.
        */
       readonly kind: 'segment.rewrite';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row the rewrite read `fromGeneration` from and published on. */
+      readonly incarnation?: string;
       readonly fromGeneration: number;
       readonly generation: number;
+    }
+  | {
+      /**
+       * An erasure of one id **deleted objects** no reader resolves, and rewrote none. It found the id only in such
+       * objects, or deleted only objects no read of the segment can open, which it cannot search and deletes whatever
+       * the id. The cases: an id that only generations other than the current one hold (someone who left the segment,
+       * whose bit the reader grace window or a rollback target keeps); objects left under a tombstone (a cleartext
+       * destroy, or a drop whose sweep left one); a first load's object on a segment with no generation yet (its load
+       * still running, or one that crashed before its publish); and an object sealed under a key the segment's row does
+       * not hold, or an encrypted one under a cleartext row (a first load's that lost the race, or crashed). The one
+       * emitter is `eraseIdFromSegment`, once a listing of the bucket shows nothing left holding the id, so the record
+       * exists only for a finished erasure. A call that ends otherwise throws or reports `erased: false` with another
+       * reason and emits nothing, even when it had deleted a holder; its re-run emits when it finishes, and reports
+       * `'not-member'` with no event when another collection deleted the last holder meanwhile, as its ledger entry
+       * does. One finished erasure emits it and then throws `NotFoundError`: one that found, after its deletes, the
+       * segment's pointer on a generation it had deleted (a rollback moved it there meanwhile), so the deletion is on
+       * the record although the call cannot answer.
+       *
+       * `fromGeneration` is the newest generation the call found holding the id, and is absent when it found the id in
+       * none and deleted only objects it could not search: then the ledger lists no entry for the segment, and this
+       * event is the record of the deletion. `collected` is every generation the call deleted, ascending, and the same
+       * list as its result's: below the pointer, when a searched generation held the id, that is every generation,
+       * holder or not, since the deletion takes them all; above it, and wherever none did, only the holders and the
+       * objects it could not search. A holder another collection deleted first is not in it, so the list can be empty.
+       */
+      readonly kind: 'segment.collect';
+      readonly namespace?: string;
+      readonly segment: string;
+      /** The incarnation of the row the erasure read: the active row, or the tombstone. */
+      readonly incarnation?: string;
+      readonly fromGeneration?: number;
+      readonly collected: readonly number[];
     }
   | {
       /**
@@ -91,6 +153,8 @@ export type AuditEvent =
       readonly kind: 'segment.erase';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the row the shred turned into a tombstone. */
+      readonly incarnation?: string;
     }
   | {
       /**
@@ -113,6 +177,8 @@ export type AuditEvent =
       readonly kind: 'segment.dispose';
       readonly namespace?: string;
       readonly segment: string;
+      /** The incarnation of the tombstone the drop wrote or found. */
+      readonly incarnation?: string;
       readonly generationsDeleted: number;
     }
   | {
@@ -136,19 +202,44 @@ export const NOOP_AUDIT: IAuditSink = {
 
 /**
  * Wrap a sink so a throwing/buggy `onEvent` can never break the lifecycle operation it observes — audit is
- * strictly observation. Returns {@link NOOP_AUDIT} unchanged (so the no-op case skips even the try/catch alloc).
+ * strictly observation. That covers an `async onEvent` that rejects, whose rejection would otherwise surface as an
+ * unhandled one, which ends a Node process by default. Returns {@link NOOP_AUDIT} unchanged (so the no-op case
+ * skips even the try/catch alloc).
  */
 export function safeAudit(sink: IAuditSink): IAuditSink {
   if (sink === NOOP_AUDIT) return sink;
   return {
     onEvent(event: AuditEvent): void {
       try {
-        sink.onEvent(event);
+        ignoreRejection(sink.onEvent(event) as unknown);
       } catch {
         /* swallow — an audit sink must never break the operation it observes */
       }
     },
   };
+}
+
+/**
+ * Refuse an `audit` that is not a sink. One without an `onEvent` method (a bare callback, a method named `emit`) would
+ * receive nothing and say nothing, since {@link safeAudit} swallows what calling it throws. Called at the top of each
+ * entry that takes one, before anything irreversible; `undefined` and `null` read as none.
+ */
+export function checkedAuditSink(sink: unknown, op: string): void {
+  if (sink === undefined || sink === null) return;
+  if (typeof (sink as { onEvent?: unknown }).onEvent !== 'function') {
+    throw new ValidationError(
+      `${op}: audit must be a sink with an onEvent(event) method, such as a RecordingAuditSink`,
+    );
+  }
+}
+
+/** Observe the rejection of what a sink's `onEvent` returned, when it returned a promise, so it is never unhandled. */
+export function ignoreRejection(returned: unknown): void {
+  if (typeof (returned as { then?: unknown } | null | undefined)?.then === 'function') {
+    (returned as PromiseLike<unknown>).then(undefined, () => {
+      /* swallow — a sink must never break the operation it observes, later included */
+    });
+  }
 }
 
 /** A ready-made sink that records events into an in-memory list — handy for tests + simple audit trails. */
@@ -161,7 +252,9 @@ export class RecordingAuditSink implements IAuditSink {
 
   /** An independent copy of the recorded events, in emission order. */
   snapshot(): AuditEvent[] {
-    return this.recorded.map((e) => ({ ...e }));
+    return this.recorded.map((e) =>
+      e.kind === 'segment.collect' ? { ...e, collected: [...e.collected] } : { ...e },
+    );
   }
 
   reset(): void {

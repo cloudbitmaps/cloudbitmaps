@@ -49,7 +49,7 @@ function describe(value: unknown): string {
 }
 
 /** The SDK call a timed read makes, named in the error a timeout throws. */
-export type ReadOperation = 'download' | 'getProperties';
+type ReadOperation = 'download' | 'getProperties';
 
 /**
  * Run `read` with an abort signal of its own, under a `timeoutMs` timer (`0`: none). `read` passes the signal to its

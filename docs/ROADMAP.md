@@ -30,42 +30,55 @@ Everything described under [Shipped today](#shipped-today) is implemented and co
 property-vs-oracle, conformance suites run against real backends (or a faithful emulator), coverage-guided
 fuzzing of the untrusted-`.crbm` boundary, and mutation testing of the highest-risk core modules.
 
-**Where it is headed (September 2026).** `1.0` centres on the **loaded store**: sets are computed upstream and
+**Where it is headed (October 2026).** `1.0` centres on the **loaded store**: sets are computed upstream and
 loaded as immutable generations, then read and chunk-skipping-intersected from anywhere — one bucket, one
 registry row per segment, no background process. Every roaring-based engine that needs freshness micro-batches
 into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
 Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
-Where each piece sits today. A bare **shipped** is in `0.14.0` or earlier; anything on `main` after it is marked
+Where each piece sits today. A bare **shipped** is in `0.21.0` or earlier; anything on `main` after it is marked
 with the release it is to ship in, and sits under `[Unreleased]` in the [changelog](../CHANGELOG.md#unreleased):
 
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialization, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request, erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped** — see the [changelog](../CHANGELOG.md#0130--2026-10-03); measured on S3 in-region by run `2026-10-04-73668`: the `andNot` against ten excludes took 3,335.85 ms and the cold intersect 290.06 ms, with the same requests as the previous release's run; the rounds sit a fifth to a half above the engine's rounds model, and the run does not say why, since it did not vary its 50 sockets ([the window, measured against its model](benchmarks.md#the-window-of-32--measured-against-the-model)) |
-| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-04-73668` from AWS CloudShell in `us-east-1`: the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks took 290.06 ms and made 204 GETs, $81.60 per million at list prices; a segment's first single-part `store.load()` is 2 PUT + 4 GET, $11.60 per million, and ran at 2.42 million ids a second — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-04-73668) publishes it, and the [report](../bench/calibration/2026-10-04-73668.md) explains every figure. Still owed: Lambda cold start, the `*Into` verbs, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
-| `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and deletes the object it wrote while the segment's row is unchanged or gone; once another write has changed the row, it leaves the object for collection. It reads the segment's row once, checks that its next number is free instead of listing for it, and with the default `keep` collects by name, deleting the one generation its publish pushed out of the window and listing the segment only every 16th generation: a steady load on S3 is 8 requests |
-| A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
-| Registry rows at schema 2, and tokens no two writes share | **shipped** — a row carries an optional summary of its current generation, and a token with a random incarnation id and a random part for every write; a 0.11 process refuses a schema-2 row, so every 0.11 process stops before the first 0.12 write and there is no downgrade ([upgrade order](../CHANGELOG.md#0120--2026-10-03)) |
+| Wider read windows (`concurrency` 32), concurrent cold reads of one chunk sharing one request (point reads and chunk-by-chunk sources only), erasure read-ahead, `andNot` excludes read in the same round trip, and an oversized index entry refused at open | **shipped** — see the [changelog](../CHANGELOG.md#0130--2026-10-03); measured on S3 in-region by run `2026-10-06-9d36b`: the `andNot` against ten excludes took 351.64 ms and the cold intersect 99.80 ms ([the run, on the benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-06-9d36b)) |
+| Coalesced chunk reads — combines and `iterate` read each operand's chunks as ranges through the optional `getChunks` port method | **shipped, measured on S3 in-region** by run `2026-10-06-9d36b` — chunks within 256 KiB of each other are one range request, up to 1 MiB, and each is checked as before; a cold intersect of two segments sharing 100 chunks that lie together took 99.80 ms at the median and made 6 GETs, $2.40 per million, and an `andNot` against ten excludes took 351.64 ms and made 33, as [`bench/range-counts.cjs`](../bench/range-counts.cjs) counts from the engine and CI holds it to; `concurrency` counts range requests held ahead per operand; spread layouts read most of an object (a range of 1,022,196 bytes, against 51,600 when the chunks lie together), which matters outside the bucket's region. `iterate`'s 3 GETs are [expected, not measured](benchmarks.md#expected-not-measured): the run did not time it |
+| `*Into` written from the combine's chunks, through `loadSegmentChunks` | **shipped** — `intersectInto`, `unionInto` and `andNotInto` hand each chunk's result to the encoder as the bitmap it is, so no id is built for a value; the generation is byte for byte what the ids would write, and the load writes only bitmaps the store's codec made |
+| `materializeMany`: many `*Into` outputs, each operand read once per group | **shipped** — a batch of expression outputs (`and`, `or`, `andNot`, nested) over named stored operands, each published as an `*Into` would publish it, with every operand chunk read once per group, stored operands pinned for the call, every pinned operand an output subtracts re-checked before the publishes, and a resident-bytes memory budget that regroups. Its request counts are the engine's, counted in memory, not measured on S3, and it is outside the [validated envelope](#the-validated-envelope--whats-proven-and-what-isnt) like the `*Into` verbs. [Guide](guide/loading.md#many-outputs-from-one-pass-materializemany) |
+| `materializeMany` with a feed: operands that arrive as records in chunk-key order | **shipped** — conditions too many to hold or store are fed to the batch as records, one chunk key resident at a time, beside stored operands; every record is checked before the pass sees it, a bad feed (or an early-ended one, caught by `counts`) refuses every fed output and publishes none, a declared name that never appears is refused unless it may be empty, the call runs as one group under a required budget enforced while the feed is read, and an erasure in the store refuses a fed call. Counted in memory, not measured on S3. [Guide](guide/loading.md#operands-that-arrive-as-records-a-feed) |
+| A set the caller holds, as an operand of `materializeMany` | **shipped: through the feed only** — a set you hold is fed as a one-name feed, the guide's recipe ([a set you hold](guide/loading.md#a-set-you-hold-feed-it)) |
+| `materializeMany({ dryRun: true })`: a refresh looked at before any of it is live | **shipped** — every output computed and judged against its `dest` as its publish would be, with nothing written; each result says how many ids it would hold, what its `dest` holds now, and the bound its publish would be refused for. The guide shows how to publish what was reviewed, with the erasure caveat of a replayed feed ([a dry run](guide/loading.md#look-before-you-publish-a-dry-run)) |
+| `materializeMany` reported to the metrics sink | **shipped** — one `op` event named `materializeMany` per call, and a `storage.get` event per range request it sends, as the `*Into` verbs report; no `cache` event, since the call never looks the cache up ([observability](guide/observability.md)) |
+| A deadline on a set — `setRetention` with `retireExpired`, or a check where you read | **shipped** — `store.segment(name, options)` takes `{ namespace }` only, a plain object, and refuses any other key, `expiresAt` included, with `ValidationError`, so a deadline is never dropped in silence ([a deadline on a set](guide/retention.md#a-deadline-on-a-set)) |
+| A registry write sent on the row the load read | **shipped** — a publish passes the row it read, so the S3, GCS and Azure Blob registries send their conditional write with no read of the row first; the store's own condition still refuses a row another writer changed; measured on S3 in-region by run `2026-10-06-9d36b`: a segment's first load made 2 PUT + 3 GET ([the run](benchmarks.md#the-in-region-run--run-2026-10-06-9d36b)) |
+| Loaded-store benchmarks — load throughput, intersect latency | **partly owed**: the rest is below. What is measured, on S3 in-region by run `2026-10-06-9d36b` from AWS CloudShell in `us-east-1`: a single-part load ran at 2.59 million ids a second, a segment's first single-part `store.load()` made 2 PUT + 3 GET, $11.20 per million at the default prices, and each kind of steady `store.load()` at `keep: 12` had its requests measured, on the release the run installed — the [benchmarks page](benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) publishes it, and the [report](../bench/calibration/2026-10-06-9d36b.md) explains every figure. Run `2026-10-07-88cd3` measured cold combines and the `*Into` verbs on the large suite's operands ([benchmarks](benchmarks.md#large-operands--run-2026-10-07-88cd3)). Still owed: a steady `store.load()` at a `keep` other than 12 on S3, Lambda cold start, `materializeMany` on S3, other combine shapes, and in-region GCS and Azure runs. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally |
+| `load()` with the empty guard and `guard: { minCardinality, minRetained, maxGrowth }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, unless a rollback moved the pointer onto the object the refusal deleted, which throws `NotFoundError` ([a rollback that races a collection](guide/loading.md#a-rollback-that-races-a-collection)); and it deletes the object it wrote while the segment's row is unchanged, changed only in its leases, or `destroyed`, and, once one read of its footer matches, while the row is gone or holds key material over a cleartext object; once another write has changed the row, it leaves the object for collection, and until it goes a rollback onto it needs `allowUnknown` ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). It reads the segment's row once, checks that its next number is free instead of listing for it, and at any `keep` up to 64 collects by name, deleting the generations its publish pushed out of the window that its row records and listing the segment only every 16th generation: a steady load on S3 is counted at 2 PUT-class requests, 5 GET-class and a delete, 8 requests, and held by a test; only `keep: 12` is measured on S3, by a run of an earlier release, whose loads read the pointer once fewer to collect |
+| `guard.maxGrowth`: a ceiling on how much a load may grow a segment | **shipped** — the ceiling to `minRetained`'s floor, for a source that lands duplicated or joined on the wrong key: a generation larger than `maxGrowth` times the current one is refused with `reason: 'max-growth'`, on `load`, the `*Into` verbs and each `materializeMany` output. It does not judge a first load or a load onto an empty segment, and setting it reads the current size and fences the publish on it, `allowEmpty: true` or not ([when a load is refused](guide/loading.md#when-a-load-is-refused)) |
+| A load from a bitmap — `{ bitmap }`, `{ serialized }` | **shipped** — a caller holding the result as an in-memory Roaring bitmap loads it as one: the bytes are checked before anything is written, the chunks are cut from the bitmap's own containers with no per-id work, and the generation is byte for byte the one its ids write. `deserializePortable(bytes)` decodes portable bytes through the same check, for bytes that crossed a process boundary. Its time against the id path is measured by `pnpm bench:load-input`, whose figures are not recorded yet |
+| Registry rows at schema 5: a ledger of the generations a row made current (`knownGens`), a random token for every write, and the row's `pointerId` | **shipped** — a row carries an optional summary of its current generation that names the generation's object by its fingerprint (its size and checksum) and records `tailBytes` (a cold open of a cleartext generation sizes its tail read from it, so a wide segment's index comes in one request), the ledger of the generations it made current with each object's footer checksum (the window its loads keep, drawn from the order they were made current, the generations a live lease holds, and what a rollback left), its live leases (`leases`), a token with a random incarnation id and a random part for every write, and `pointerId`, the token of the last write that named a field a read resolves through (the pointer, the status, the keys or the summary), at any value. A reader keys what it caches on the generation with the row's `pointerId`, so a lease or a retention write leaves its caches warm, and every open of a row with a summary holds the object to its fingerprint. This release reads rows stamped 5 only |
 | A generation's metadata, and a row that describes its current generation — `metadata` on `load` and the `*Into` verbs | **shipped** — [below](#the-loaded-store) |
 | A cold `count()` in one request, and `seg.stat()` | **shipped** — [below](#the-loaded-store) |
+| The cost model in a package of its own, `@cloudbitmaps/tools`, and `stat()` reporting the generation's size | **shipped** — `estimateCost`, `groundedReport` and the price lists are in `@cloudbitmaps/tools`, offline tools that need nothing internal from a store, released with the family; the library carries no prices. `stat()` reports `sizeBytes`, the bytes of the current generation's object, which the row's summary records, so a grounded report is `groundedReport({ storageBytes: (await seg.stat()).sizeBytes })` and a cold `stat()` is one registry read ([the cost guide](guide/cost.md), [`stat()`](guide/reading.md#stat-the-generation-its-count-its-metadata-and-its-size)) |
 | A throttled write sent again, and a registry write that gets no answer settled by reading the row | **shipped** — [below](#the-loaded-store) |
 | A purged registry row removed for good, and `scan: 'index'` that purges as well as retires | **shipped**, where the registry reports `conditionalDelete` — [below](#security--data-protection) |
 | Read timeouts on S3, GCS and Azure Blob (`readTimeoutMs`) | **shipped**, off unless set |
-| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
+| `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a target the row's `knownGens` does not name and one whose footer checksum is not the recorded one (with or without a key), unless `allowUnknown` is passed, which is audited; a collected target, a crypto-shredded segment; rolling to the current generation checks its object is there and is the recorded one, and a swap that gets no answer is settled by reading the row |
 | No character rules on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Three limits remain: 256 characters once encoded for storage, where escaping makes a name longer than it looks (anything outside `[A-Za-z0-9._-]`, and on the local filesystem the device names and trailing dots above); well-formed UTF-16, since an unpaired surrogate has no UTF-8 encoding; and a namespace starting with `cbm.due.`, which the retention index keeps its own rows in and every fleet-wide scan skips |
 | `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
-| Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
-| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
+| Extending the load guard to the `*Into` verbs | **shipped** — a materialization routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained, maxGrowth }` adds the plausibility bounds, judged against what `dest` held |
+| A lease on a pin — `pin({ leaseUntil })` keeps the pinned generation out of a load's collection until the lease ends, and a read after it throws `LeaseExpiredError` at every site, never empty | **shipped** — recorded in the registry row's `leases` field (beside `knownGens`); erasure, shred, drop and retention ignore it; see [Hold a generation for a job](guide/reading.md#hold-a-generation-for-a-job-a-lease) and the [changelog](../CHANGELOG.md#0170--2026-10-05) |
+| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs`. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded (`NotFoundError` if it is gone or another object, never empty), and `pin({ leaseUntil })` and `pinAt(at, { leaseUntil })` hold the generation out of every load's collection for up to 14 days, besides sizing `keep` |
 | Id-range reads for keyset paging — `iterate({ after, through })` and the same bounds on every combine | **shipped**. Yields only the ids in `(after, through]` and fetches only the chunks the range overlaps |
 | A public docs + site pass leading with the loaded store's strengths | **shipped** |
 | Reading a chunk at a time — `.batches()` on `iterate`, `intersect`, `union` and `andNot` | **shipped** — the same ids in the same order as one `Uint32Array` per chunk, reading the same chunks; see the [changelog](../CHANGELOG.md#0140--2026-10-04) and [Read a chunk at a time](guide/reading.md#read-a-chunk-at-a-time-batches) |
-| The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — up from the SDK's 50, so one two-operand `intersect` at the default `concurrency` no longer queues behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). The in-region run's figures were taken with 50 sockets, and the effect of 128 on them is not measured |
-| Deferred past `0.14.0` | **not built** — `generations({ describe: true })`, the chunk-level `*Into`, the tombstone reaper, an `op` metric for `store.load`, the compare-and-swap memo, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, and the reconcile for `rollback`, `setRetention`, shred and `eraseSubject` writes: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
+| The ids at ranks `n`, `2n`, `3n` … of a pin — `pin.everyNth(n, range?)` | **shipped** — places each boundary from the index's per-chunk counts and reads only the chunks that hold one, each once, through `iterate`'s stream, window and budget; a live handle is refused, and a chunk that is read must match its count ([reading guide](guide/reading.md#every-nth-id-of-a-pin-everynth)) |
+| The built S3 client allows 128 sockets, and `maxSockets` sets it | **shipped** — twice the SDK's 50, so one two-operand `intersect` at the default `concurrency` does not queue behind its own socket pool; see the [changelog](../CHANGELOG.md#0140--2026-10-04). A store with a `metrics` sink gets one `advisory` event when the client's pool is under 64 sockets, as a client you pass with the SDK's 50 is ([observability](guide/observability.md)). The in-region run's client had 128 sockets |
+| Deferred | **not built** — `generations({ describe: true })`, an `op` metric for `store.load`, an unscoped listing that skips the due index's pointers, one generation from parts built in several processes, the reconcile for `setRetention` and shred writes, and the resend of a `rollback` swap the row shows did not land: [On the way to 1.0](#on-the-way-to-10), item 9, says what each is |
 | WASM CRoaring research | **after** the loaded store |
+| A large suite of the calibration harness, for combines on operands of a million to ten million ids and the `*Into` verbs; one module for the engine's checks on untrusted tier data; a CI gate that holds the public signatures | **shipped** — see the [changelog](../CHANGELOG.md#0180--2026-10-06); no library behaviour changes: the large suite has run against real S3, run `2026-10-07-88cd3`, whose figures are on the [benchmarks page](benchmarks.md#large-operands--run-2026-10-07-88cd3) |
 
-**What is next:** a Lambda run, the `*Into` verbs and other combine shapes against a real store, and in-region GCS
-and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
+**What is next:** the batch stage (a refresh-shaped `materializeMany` measured on S3), a Lambda run, other combine shapes, and in-region GCS and Azure runs. [On the way to 1.0](#on-the-way-to-10) lists everything that stands before `1.0`.
 
 Current install and publish status lives in the [README](../README.md) — this page deliberately doesn't
 restate it, so the two can't drift. You install **one codec flavor plus the one storage package you need**,
@@ -78,7 +91,8 @@ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, 
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
 is a dependency of both and is never installed directly. The storage drivers are their own packages
-(`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each depending on its SDK for real.
+(`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each depending on its SDK for real. `@cloudbitmaps/tools`, the offline
+cost model, is an optional sixth package that needs neither a flavor nor a driver.
 
 ## Shipped today
 
@@ -87,10 +101,9 @@ is a dependency of both and is never installed directly. The storage drivers are
 - **One write path: the load.** `store.load` builds a generation from an unsorted sync **or async**
   ID stream without holding the *input* in memory (memory is bounded by the distinct result set, not the input
   length), writes it as one write-once object, judges it against the guard, and publishes it with a
-  compare-and-swap on the registry row. A load that finds a row fences on the row's token; a default load also
-  fences on the pointer it judged, or on the row's absence; only an unguarded load (`allowEmpty: true` and no
-  `guard.minRetained`) onto a segment with no row is bare forward-only; and a duplicate publish is an idempotent
-  no-op. A segment larger than
+  compare-and-swap on the registry row. A load that finds a row fences on the row's token, and one that finds none
+  on that absence, guarded or not; a default load also fences on the pointer it judged; and a duplicate publish is an
+  idempotent no-op. A segment larger than
   RAM wants the external-merge bulk load listed under [Planned](#planned--exploring). A load also takes a whole
   bitmap, `{ bitmap }` (anything with `serialize('portable')`) or `{ serialized }` portable Roaring bytes: checked
   structurally and safely deserialized before anything is written, then written from the bitmap's own containers,
@@ -100,17 +113,19 @@ is a dependency of both and is never installed directly. The storage drivers are
   as throttled (`503 SlowDown`; `429` or `503`) is sent again, up to three more times with backoff, and a random write
   id in its metadata tells a first send that landed from another writer's object; on Azure Blob the client's retry does
   the same, with the same id. A registry row is sent once by the driver. When its write gets no answer, the load reads
-  the row and reports its own landed write as published (proved by the object's footer); and when the row is as it was,
-  the load sends a fresh compare-and-swap from the version it read, at most three times with backoff on the injected
-  clock, under the registry's fence, so at most one copy lands. Throttling that never clears throws the registry's
-  `TransientError` with the object kept: nothing is deleted after an ambiguous outcome, because a write may still land.
+  the row and reports its own landed write as published (proved by the tokens the registry reported for the writes it
+  sent, or, on a registry of your own that does not report tokens, by the object's footer); and when the row is as it
+  was, the load sends a fresh compare-and-swap from the version it read, at most three times with backoff on the
+  injected clock, under the registry's fence, so at most one copy lands. Throttling that never clears throws the
+  registry's `TransientError` with the object kept: nothing is deleted after an ambiguous outcome, because a write may
+  still land.
   A throttle only adds requests, so the cost model is unchanged. **Proven against** stubbed services under each real
   SDK (the throttle answers, a request applied and then refused, one applied after the load gave up, a request delayed
   past the fresh one) and, for the objects, against MinIO and fake-gcs-server with the throttle injected at the client.
   **Not yet captured** from the real services: whether S3, GCS and Azure apply a request they answered as throttled is
-  not documented, so correctness rests on the write id, the footer and the registry's fence, never on that, and the
-  in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an S3-compatible
-  service is not retried and not classified transient on S3.
+  not documented, so correctness rests on the write id, the write's token and the registry's fence, never on that, and
+  the in-region calibration is where real throttle answers are measured. **Known limit:** a bare `429` from an
+  S3-compatible service is not retried and not classified transient on S3.
 - **Metadata on a generation, and a row that describes its current generation**. `load` and the `*Into` verbs take a
   small record of your own (`metadata`: string keys, string or finite-number values, at most 1,024 bytes as canonical
   JSON), checked before the first request and stored in the generation's object. The write that moves the pointer also
@@ -119,22 +134,25 @@ is a dependency of both and is never installed directly. The storage drivers are
   it over, a shred and a drop clear the summary, and a guarded load sizes the current generation from it and opens no
   object for that. A load that does so looks for the current object with one zero-byte read before it deletes by name,
   so a segment whose current object was removed from outside keeps the one generation left to roll back to; that look
-  stands in for the tail read, so a steady load on S3 makes 8 requests (derived, and held by a test). **Proven
-  against** the in-memory and local-file drivers and the real registry protocol over counting stores, with every
-  decision mutation-checked.
+  stands in for the tail read, so a steady load on S3 makes 2 PUT-class requests, 5 GET-class and a delete, 8 requests
+  (counted, and held by a test; measured on S3 at `keep: 12` only). **Proven against** the in-memory and local-file drivers and the real registry
+  protocol over counting stores, with every decision mutation-checked.
 - **A one-request cold `count()`, and `stat()`**. A cold `count()` is the pointer read and nothing else: the row records
   the current generation's id count, so no object is read, cleartext or encrypted, whatever the index's width (derived
   from the driver ports and held by a test; one wire request on each emulator in the integration lane). `seg.stat()`
-  returns the generation's number, count and metadata from the same resolution, one request when cold and none when warm
-  or pinned, and the current entry of `store.generations()` carries them from the row it already reads. A snapshot is a
+  returns the generation's number, count and metadata, and its object's
+  size beside them, from the same row: a cold `stat()` is the pointer read too, and a row with no summary to use adds a
+  tail read of the object; the current entry of `store.generations()` carries the number, count and metadata from the
+  row it already reads. A snapshot is a
   resolved target with a reader opened on first use, so a `count` and the `has` after it read one generation. The row's
   summary is used only for the generation it names, in the shape the keys call for, and is held against the object
-  whenever a read opens it anyway: a disagreement stops that store using it and fails nothing, and
+  whenever a read opens it anyway. Every open holds the object to the fingerprint the summary records, and an object
+  that is not the row's is refused when it is opened; a disagreement in count stops that store using the summary and fails nothing, and
   `checkConsistency({ summaries: true })` reports it as `summary-mismatch`. **Proven against** the in-memory and
   local-file drivers over counting stores, random sequences of loads, materialisations, rollbacks, erasures and
   retention writes, and each emulator, with every decision mutation-checked.
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
-  *every* operand, with bounded read concurrency (32 chunk keys by default, which also shares one request among concurrent cold reads of a chunk) and a bounded streaming window.
+  *every* operand, with bounded read concurrency (32 range requests held ahead per operand by default, chunk keys on a source that reads chunk by chunk, where concurrent cold reads of a chunk share one request) and a bounded streaming window.
 - **Id-range reads for keyset paging** —
   `iterate`, and every combine, take `after` / `through` and yield only the ids in `(after, through]`, fetching
   only the chunks the range overlaps, on a live or a pinned handle.
@@ -148,6 +166,9 @@ is a dependency of both and is never installed directly. The storage drivers are
   collected }`. An empty or implausible result over a non-empty destination is **refused** rather than
   published, with `allowEmpty` / `guard` to override — the same guard `load()` takes. Unlike `load()` it
   collects nothing by default, so a `rollback` target survives the materialization.
+- **Many materializations in a pass per group.** `store.materializeMany` computes many `*Into` outputs together: expressions over
+  named stored operands, each operand read once per group, one result per output that is exactly what its `*Into` returns
+  or throws, and a required `keep`. See [the guide](guide/loading.md#many-outputs-from-one-pass-materializemany).
 - **Cheap counts.** `count()` answers from the registry row's summary of the current generation (one request when cold),
   else sums per-chunk cardinality from the `.crbm` index, so a segment counts with **zero payload reads**.
 - **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
@@ -177,11 +198,18 @@ is a dependency of both and is never installed directly. The storage drivers are
   `(namespace, segment, generation, chunk)`, KEK rotation, and an offline recovery KEK. Keys stay in your
   process; no cloud KMS dependency is forced on you.
 - **Subject erasure as a rewrite.** `eraseSubject` finds every registered segment an id is in, rewrites each
-  one's current generation without the id (a window of 32 chunk reads ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
-  and deletes every generation that held the bit before returning, above the pointer as well as below it —
+  one's current generation without the id (read through the coalesced chunk stream, at most 4 ranges ahead of the writer, one bit cleared), publishes it fenced on the generation it streamed,
+  and deletes every generation that held the bit before returning, above the pointer as well as below it, and a
+  first load's object on a segment with no generation yet —
   **physical deletion on return**, with a
-  per-segment ledger and a `segment.rewrite` audit event. `subjectReport` is the read side (access). What a
-  rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for.
+  per-segment ledger and an audit event per segment erased: `segment.rewrite`, or `segment.collect` where only other
+  generations held the id, which is also emitted, with no `fromGeneration`, for a segment where the erasure deleted only
+  objects no read of it can open. `subjectReport` is the read side (access). What a
+  rewrite cannot reach — backups, replicas, noncurrent versions — is what crypto-shred is for. A holder an erasure
+  deletes by name, above the pointer or on a segment with no generation yet, is deleted only while it is the object
+  the erasure read, on a storage driver that reports
+  `conditionalDelete` (in-memory, Azure Blob, S3 on an AWS host, GCS when set), so a load that took its number since
+  keeps its generation ([the limits](guide/erasure.md#how-it-stays-correct)); the local-filesystem driver cannot.
 - **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
   destruction that survives immutable backups and WORM.
 - **Segment disposal** — `store.dropSegment` retires a segment and *reclaims its storage*: tombstone first, then
@@ -212,11 +240,12 @@ is a dependency of both and is never installed directly. The storage drivers are
 
 - **Observability without telemetry** — an injected metrics sink and a separate, off-by-default audit sink
   emitting compliance state changes. Nothing is sent anywhere by default; there is no phone-home.
-- **Honest cost tooling** — `CloudRoaring.estimateCost` for planning and a grounded per-segment `costReport` from the
-  segment's measured size, with a pluggable pricing profile that will tell you when CloudBitmaps *loses* to flat
-  Redis. The crossover is a **read rate** at a given cache-hit rate, net of storage and the pointer refresh a
-  long-lived reader pays, with a loads term that counts what `store.load()` sends. Each request count is held to
-  the engine by a test. The published crossover chart is in [Benchmarks](benchmarks.md).
+- **Honest cost tooling** — `estimateCost` for planning and `groundedReport` for a segment's measured size, which
+  `stat()` reports, in `@cloudbitmaps/tools`, with a pluggable pricing
+  profile that will tell you when CloudBitmaps *loses* to flat Redis. The crossover is a **read rate** at a given
+  cache-hit rate, net of storage and the pointer refresh a long-lived reader pays, with a loads term that counts what
+  `store.load()` sends. Each request count is held to the engine by a test. The published crossover chart is in
+  [Benchmarks](benchmarks.md).
 - **An exit path.** `exportSegments` and the `export-segments` CLI dump every segment to portable
   `roaring` / `ndjson` that is readable **without** this library, with per-segment fault isolation. If the
   project vanished tomorrow, nothing of yours is locked up.
@@ -255,16 +284,17 @@ envelope**:
 | | Inside the envelope | Outside it (use with your own testing) |
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
-| **Scale** | up to ~100K segments; reads and intersects of segments up to 500,000 ids on S3 and 2,000,000 in memory, the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments, which a load holds in RAM as their distinct ids (an external-merge bulk load is planned), and ids past 2³²−1, which want the reserved 64-bit format |
-| **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has a published in-region run, for cost and latency: the 2026-10-04 calibration run kept its pointer in the same bucket as the data |
+| **Scale** | up to ~100K segments; reads and combines of operands up to 10,000,000 ids on S3 (run `2026-10-07-88cd3`), the largest with published evidence, and loads up to the 12,582,912-id segments the calibration run wrote and did not read | larger segments, which a load holds in RAM as their distinct ids (an external-merge bulk load is planned), and ids past 2³²−1, which want the reserved 64-bit format |
+| **Backends** | S3 storage — the validated tier | the GCS and Azure Blob registries and storage: conformance-passing and correctness-clean, but not envelope-validated. The S3 registry has a published in-region run, for cost and latency: the 2026-10-06 calibration run kept its pointer in the same bucket as the data |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
-| **Cost figures** | the **in-region run `2026-10-04-73668`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; the `*Into` verbs and other combine shapes; and GCS and Azure on a real account |
+| **Cost figures** | the **in-region run `2026-10-06-9d36b`** (`us-east-1`, from CloudShell: a cold intersect and a load, pointer included, and their latency) and the **large run `2026-10-07-88cd3`** (combines and the `*Into` verbs on the large suite's operands, their requests and latency) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; Lambda cold start; `materializeMany` on S3; other combine shapes; and GCS and Azure on a real account |
 
 **Measured, not asserted — and measured on what.** The cloud figures on the [benchmarks page](benchmarks.md) are
-the requests the engine actually issued and the time they took, from the 2026-10-04 run in `us-east-1`, driven from
+the requests the engine actually issued and the time they took, from the 2026-10-06 run in `us-east-1`, driven from
 inside the region. It measured the topology that ships, with the pointer in the same bucket as the data: what a cold
-intersect and a load cost, pointer included, how long they take, and how fast a load runs. What is **not** yet
-measured is [what is still owed](benchmarks.md#what-is-still-owed): a Lambda's cold start, `*Into` latency, other
+intersect and a load cost, pointer included, how long they take, and how fast a load runs. The 2026-10-07 large run,
+from the same place, measured combines and the `*Into` verbs on operands of about 1, 5 and 10 million ids. What is **not** yet
+measured is [what is still owed](benchmarks.md#what-is-still-owed): a Lambda's cold start, `materializeMany` on S3, other
 combine shapes, and GCS and Azure on a real account. RSS under a soak is measured and published
 as a ceiling. There is no stress, tail-latency or chaos harness for the loaded store. Benchmark numbers come with their methodology: the benchmarks page and each run's report say,
 section by section, whether a figure is measured, derived, modelled or expected, and laptop and emulator numbers
@@ -276,12 +306,11 @@ are labelled as such.
 between here and there:
 
 1. **Real-cloud calibration — measured on S3, in-region.**
-   The [in-region run](benchmarks.md#the-in-region-run--run-2026-10-04-73668) of 2026-10-04 is published: 40 of 40
-   cold intersects exact, each fetching 100 of 1,999 chunks per segment; 204 GETs and 290.06 ms for the median cold
-   intersect of that shape, **$81.60 per million** (204 GETs, $81.60, expected with each pointer read once);
-   a segment's first single-part `store.load()` **$11.60 per million**, pointer included, at 2.42 million ids a second. Its
-   [report](../bench/calibration/2026-10-04-73668.md) explains every figure, and a gate holds each one to the
-   run's committed results file. Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 50 sockets, so it does not say why. The client this release builds allows 128 sockets, and the run's figures were taken with 50, so no figure is claimed for the effect of 128. What remains: a
+   The [in-region run](benchmarks.md#the-in-region-run--run-2026-10-06-9d36b) of 2026-10-06 is published:
+   40 of 40 cold intersects exact, with every request counted;
+   single-part loads at 2.59 million ids a second, a segment's first load in 2 PUT + 3 GET, and a steady load at `keep: 12`, each kind of it in the requests the benchmarks page lists. Its
+   [report](../bench/calibration/2026-10-06-9d36b.md) explains every figure, and a gate holds each one to the
+   run's committed results file. Its rounds sit above the engine's rounds model, which assumes no socket limit; the run did not vary its client's 128 sockets, and no stage held more than 11 requests in flight, so it does not say why. What remains: a
    **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
    function; in-region **GCS** and **Azure** runs; and a **real-GCS run of the conditional-delete probe**
    (`tests/integration/real-cloud-conditional-delete.test.ts`, skipped unless a bucket is named). The probe shows
@@ -291,8 +320,11 @@ between here and there:
    been run, so GCS defaults off and needs the probe before its default turns on; the emulators the integration lane
    runs ignore the precondition, so CI cannot show it. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput and `intersect` latency are measured in-region (the
-   run above, with a sweep to 2,000 shared chunks). `*Into` latency, and `intersect` over more operands and other
-   overlaps, are still owed against a real object store from inside the region; the harness does not measure them yet.
+   run above, with a sweep to 2,000 shared chunks). `*Into` latency and combines on operands of a million to ten million ids
+   are measured on S3 by the harness's [large suite](../bench/README.md#the-large-suite) (`node bench/calibrate-aws.cjs --suite large`),
+   run `2026-10-07-88cd3`; `materializeMany` on S3, `intersect` over more than two
+   operands and other overlaps are not measured.
+   `iterate`'s request count is expected from the engine, not measured: the harness does not time it.
    **The RSS soak is measured:** `pnpm rss-gate` records its run, and
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard
    384 MiB cgroup limit with swap off, no OOM — is published on the
@@ -305,12 +337,13 @@ between here and there:
    non-empty destination is refused rather than published.
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
-   describes a single instant rather than whichever generations happened to be current as it went. Generation
+   describes a single instant rather than whichever generations happened to be current as it went. `segment.pinAt({ generation, fingerprint })` reopens a generation an earlier pin recorded, and, unless leased, holds nothing alive. Generation
    GC's grace window (`keep`) never provided this: of the four things that move a long read to another
    generation, a larger `keep` removes one, the sweep's heal, except after an erasure, whose rewrite collects the
-   erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
-   Size `keep` past your longest pinned job — a pinned read does not heal
-   forward, it fails, which is the honest failure for a caller that asked for one instant.
+   erased generation whatever `keep` says; it leaves the TTL, an eviction (of the reader on a store with no timed
+   refresh, of the segment's resolution on one with), and invalidations.
+   Size `keep` past your longest pinned job, or lease the pin (`pin({ leaseUntil })`, up to 14 days) — a pinned read
+   does not heal forward, it fails, which is the honest failure for a caller that asked for one instant.
 5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry exports what the library
    supports and not what it merely happens to reach: the due-index scheduler, `.crbm` construction internals,
    object-key layout and defaults stated in prose are not importable. `1.0` freezes the format; a small surface is
@@ -324,34 +357,55 @@ between here and there:
    code, and another refuses a count of third-party dependencies that does not name the package it counts.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe. The row is at schema
-   2: an optional cached summary of the current generation (its id count and metadata, sealed on an encrypted
-   segment), and a token that carries a random 128-bit incarnation id and a random part for every write, so a
+   5: an optional cached summary of the current generation (its id count,
+   its object's fingerprint, its tail size and its metadata, sealed on an encrypted segment), a ledger of the
+   generations it made current, each with its object's footer checksum, and its
+   live leases, a token that carries a random 128-bit incarnation id and a random part for every write, so a
    re-created name is told apart from its earlier incarnations even once their rows are gone, and a row restored from
-   a backup from the tokens it had before. Every row change before the freeze rides that one bump.
+   a backup from the tokens it had before, and a `pointerId`, the token of the last write that named a field a read
+   resolves through (the pointer, the status, the keys or the summary), at any value.
    The object format stays 1.0: a generation written with metadata carries it in an extension block of typed
-   sections, flagged in its footer (a reader skips a section type it does not know, and a reader before 0.12
-   refuses the flag); a generation without metadata is the same bytes as before.
+   sections, flagged in its footer (a reader skips a section type it does not know); a generation without metadata has
+   no block and no flag.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-9. **Closing the named deferrals.** None of these is in `0.14.0`:
+9. **Closing the named deferrals.** None of these is built:
    - self-healing disaster recovery;
    - an exclusion predicate on the retention sweep (legal hold);
-   - an automated reconcile of unstamped tombstones, and a cleanup of the tombstones a registry already holds (the
-     tombstone reaper: each is still read by every full listing, and safe to remove once no process on a release
-     before 0.12 is left);
+   - an automated reconcile of unstamped tombstones;
    - an unscoped listing that skips the due index's pointers before reading them;
    - `generations({ describe: true })`, which would open every listed generation to describe it;
-   - an `op` metric for `store.load`, which the metrics sink does not time, and a memo of the row version a load has
-     already read, which would take the compare-and-swap's own read of the row out of a steady load's three row reads;
-   - the reconcile of an unanswered registry write, for the writes of `rollback`, `setRetention`, a crypto-shred and
-     `eraseSubject`; the publish of a load, an `*Into` or an erasure's rewrite settles one by reading the row;
-   - the chunk-level `*Into` and the parts stretch, both under [Planned](#planned--exploring);
-   - a `rollback` onto an encrypted target on a store with no keystore, which opens nothing: it checks that the object
-     is in the bucket, and from its footer that it is encrypted exactly when the row has keys, so it can still move
-     onto a generation a first load wrote and never published, sealed under a key the registry never stored, which
-     then fails every read and which `checkConsistency` does not flag. (With a keystore, a rollback opens the target's
-     index and metadata before it moves the pointer, and refuses one that does not open.)
+   - an `op` metric for `store.load`, which the metrics sink does not time;
+   - the reconcile of an unanswered registry write, for the writes of `setRetention` and a crypto-shred; the publish
+     of a load, an `*Into` or an erasure's rewrite, and the write an erasure makes to the row before it deletes an
+     object a load may still publish, settle one by reading the row. A `rollback` reads the row too, and goes on from a
+     swap the row shows landed, but does not send again one the row shows did not land: it throws the
+     `TransientError`;
+   - a `rollback` with no key at hand (no keystore, or one that cannot open the key) below the pointer of an encrypted
+     segment whose row has no usable `knownGens`, or onto a number below a full list's oldest entry, which opens nothing:
+     it checks that the object is in the bucket and, from its footer, that it is encrypted exactly when the row has
+     keys, so it can still move onto an object sealed under a key no row holds, which then fails every read and which
+     `checkConsistency` does not flag. Every other target is held to the row's recorded footer checksum, or needs
+     `allowUnknown` and the key;
+   - the parts stretch, under [Planned](#planned--exploring).
 
    Multi-tenant isolation is tracked separately, post-`1.0`.
+10. **The cost model in a package of its own — ✅ Shipped.** `estimateCost`,
+    `groundedReport` and the price lists are in `@cloudbitmaps/tools`, a package of offline tools that need nothing
+    internal from a store, and the library carries none of them. `stat()` reports the generation's byte size, so a
+    grounded report needs nothing internal, and a price list for S3, GCS or Azure is a change to that package alone,
+    which ships with the family's next release.
+11. **A segment's resolution kept apart from its reader — ✅ Shipped.** A store with
+    a timed refresh keeps each segment's resolution (the fields of its row a read resolves through: the generation, the
+    `pointerId`, the wrapped keys and the summary, never an unwrapped key) for `cache.genTtlMs` from the instant the
+    registry read was sent, whether or not the segment's reader is still open, in a cache bounded by
+    8 × `cache.readerMax` entries and `cache.readerMaxBytes` / 16 bytes. A store reading more segments at once than its
+    reader cache keeps (as on a small Lambda) no longer asks the registry again for a segment whose reader was let go,
+    and every chunk of a read agrees on one generation until the refresh, unless the resolution cache lets the
+    resolution go or a read of the segment heals it (finding its generation swept or another object under its number)
+    or fails to open it. An eviction costs only the reopen a read needs: where the row has a summary the store can use,
+    the version a cached chunk is checked against comes from it, since it names the object, so a `has()` of a cached
+    chunk, a `count()` and a `stat()` open nothing, while `iterate` and the combines open the object for its index. On
+    an encrypted segment the key is unwrapped again. A store with no timed refresh keeps no resolution, and an eviction re-resolves there.
 
 ## Planned / exploring
 
@@ -366,9 +420,16 @@ move it up.
   would also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
   question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- **`*Into` written from the combine's own chunks.** A materialisation holds each result chunk as a bitmap, then
-  hands the load its ids, which the load groups back into the same chunks. Writing those chunks through the path a
-  bitmap load uses would remove the per-id work from every `*Into`, with no change to the API or the bytes.
+- **A ledger that tells a generation a load published from one a seed recorded.** A rollback refuses a generation the
+  row's `knownGens` does not name, but a publish over a row with no usable ledger seeds one from the bucket, an orphan or
+  stray included, so a rollback accepts a seeded orphan as it accepts any known generation. An object's footer names its
+  bytes, not the load that wrote it, and a load of the same ids writes the same bytes, so the ledger's footer checksum
+  cannot tell a generation a load published from a same-bytes object another write stored under its number
+  ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Telling them apart takes an identity each
+  write carries.
+- **Segment handles across installed versions.** A segment handle carries a versioned brand, raised when what a
+  combine reads from another copy's handle changes, and a combine refuses a handle whose brand differs from its own.
+  Which versions' handles a combine accepts is part of the `1.0` compatibility promise.
 - **One generation from parts built in several processes.** Several workers, each owning a disjoint range of the id
   space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
   and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every
@@ -386,13 +447,9 @@ move it up.
 - **The weaknesses, and a direction for each** — the [what it saves](guide/why-cloudbitmaps.md#what-is-planned-for-each-weakness)
   page has them side by side. None is built; each will be proposed in an issue on this repo before it is, and one that
   changes the public API agreed there first.
-  - **Coalesced reads**, the largest lever. Fetch neighbouring chunks, or a small segment whole, in one ranged GET,
-    and check each chunk's checksum inside it, as today. A cold intersect's requests, and the chain they wait on,
-    would stop growing with the chunks it shares where those lie together. Designed first and benchmarked on a layout that spreads the shared
-    chunks, since the calibration run's puts them side by side, which flatters coalescing.
-  - **A reader cache sized by bytes, and small segments kept whole.** The chunk cache is bounded by count today, so
-    the same setting holds very different amounts of memory for sparse and dense chunks; bounding it by bytes, and
-    keeping what the index read already brought in, lets a repeat intersect read no chunks however small they are.
+  - **A chunk cache sized by bytes.** The chunk cache is bounded by count today, so the same setting holds very
+    different amounts of memory for sparse and dense chunks; bounding it by bytes lets a repeat intersect read no
+    chunks however small they are.
   - **A shared cache tier, by composition** — a port that a Valkey, Redis or local-disk adapter package implements,
     holding the hot set's immutable bytes for a fleet of stateless readers, with nothing added to a store that does
     not use it.
@@ -439,7 +496,8 @@ Saying no is part of the design:
   reading is swept, the fetch re-resolves the pointer and retries once, serving the newer committed generation —
   so a floor buys an avoided round trip, not a saved query. A job that genuinely must not change generations
   needs a snapshot handle (above), and a window merely wide enough to hope with is a different, weaker promise
-  wearing the same words. The cost side — generations piling up because nothing collects them — is what `keep`
+  wearing the same words. A job with a known end can lease that handle (`pin({ leaseUntil })`, up to 14 days), which
+  holds the one generation it names, never delays any other, and ends in a typed error. The cost side — generations piling up because nothing collects them — is what `keep`
   is for; sizing it is in the
   [guide](guide/loading.md#generations-and-keep).
 - **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and

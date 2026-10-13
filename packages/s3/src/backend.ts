@@ -13,16 +13,24 @@
  * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
  * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
  */
-import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import {
+  STORAGE_BACKEND,
+  ValidationError,
+  brandAsBackend,
+  refuseUnknownOptions,
+  requirePositiveInt,
+} from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { S3Client } from '@aws-sdk/client-s3';
+import { defined } from './defined';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
-import { describe } from './read-timeout';
+import { SocketAdvisory, type PooledHandler } from './socket-advisory';
+import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
 
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
@@ -67,7 +75,8 @@ export interface S3StorageOptions {
   /**
    * Largest object the backend will write and advertise. Default = `partBytes × 10,000` (≈ 80 GiB at the default
    * 8 MiB part) — the honest ceiling reachable within S3's 10,000-part limit. Set it higher and `partBytes`
-   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max.
+   * auto-grows so 10,000 parts still cover it (raising peak write memory to ~one part); up to the 5 TiB S3 max, and a
+   * larger cap, or a `partBytes` above S3's 5 GiB part limit, is refused with `ValidationError`.
    * Must be a positive safe integer.
    */
   readonly maxObjectBytes?: number;
@@ -95,11 +104,13 @@ export interface S3StorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /**
-   * Whether the registry removes a deleted row for good, by a `DeleteObject` sent with `If-Match`, rather than leaving
-   * a tombstone a full listing reads forever. Defaults to `true` when the host the client resolves is an AWS S3 host,
-   * whichever way its endpoint was set (`endpoint`, `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file),
-   * and to `false` for any other host: set it for an S3-compatible store only once you know the store applies `If-Match`
-   * on a delete. MinIO, for one, ignores it. It is never `true` for an SDK that does not send the header.
+   * Whether the store applies `If-Match` on a `DeleteObject`, which both halves rely on when it is on: the registry
+   * removes a deleted row for good rather than leaving a tombstone a full listing reads forever, and the storage half
+   * removes an erasure's holder only while it is the object the erasure searched, by its ETag. Defaults to `true` when
+   * the host the client resolves is an AWS S3 host, whichever way its endpoint was set (`endpoint`,
+   * `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, the shared config file), and to `false` for any other host: set it for an
+   * S3-compatible store only once you know the store applies `If-Match` on a delete. MinIO, for one, ignores it. It is
+   * never `true` for an SDK that does not send the header.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -130,15 +141,6 @@ const CLIENT_SETTINGS = ['region', 'endpoint', 'pathStyle', 'credentials', 'maxS
 
 /** Default socket limit of a client the store builds: two operands at the default window of 32 reads each, doubled. */
 const DEFAULT_MAX_SOCKETS = 128;
-
-/** What of the SDK's request handler the limit needs: its one `handle` and the agents it exposes once it has run. */
-interface PooledHandler {
-  handle(request: unknown, options?: unknown): Promise<unknown>;
-  httpHandlerConfigs?: () => {
-    httpAgent?: { maxSockets: number };
-    httpsAgent?: { maxSockets: number };
-  };
-}
 
 /**
  * Cap the sockets the SDK's own request handler opens, and change nothing else about it. The handler stays the SDK's
@@ -179,27 +181,6 @@ export function limitSockets(client: S3Client, maxSockets: number): void {
   };
 }
 
-/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
-function refuseUnknown(
-  name: string,
-  options: unknown,
-  keys: readonly string[],
-  hint: string,
-): void {
-  if (options === null || typeof options !== 'object') {
-    throw new ValidationError(
-      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
-    );
-  }
-  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
-  if (unknown.length > 0) {
-    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
-    throw new ValidationError(
-      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
-    );
-  }
-}
-
 export class S3Storage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -207,9 +188,23 @@ export class S3Storage implements StorageBackend {
   readonly registry: IRegistryDriver;
   /** The client both halves share — built here unless one was supplied. */
   readonly client: S3Client;
+  private readonly sockets: SocketAdvisory;
 
   constructor(options: S3StorageOptions) {
-    refuseUnknown('S3Storage', options, S3_STORAGE_OPTION_KEYS, 'an S3 client goes in `client`');
+    refuseUnknownOptions(
+      'S3Storage',
+      options,
+      S3_STORAGE_OPTION_KEYS,
+      'an S3 client goes in `client`',
+    );
+    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+      throw new ValidationError('S3Storage needs a `bucket`: the name of one, a non-empty string');
+    }
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "S3Storage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its region, endpoint, addressing style and credentials, so a setting
       // beside it is ignored, and ignoring it leaves the store talking to somewhere the caller did not mean:
@@ -225,38 +220,47 @@ export class S3Storage implements StorageBackend {
       }
       this.client = options.client;
     } else {
-      const { maxSockets = DEFAULT_MAX_SOCKETS } = options;
-      if (!Number.isSafeInteger(maxSockets) || maxSockets < 1) {
-        throw new ValidationError(
-          `maxSockets must be a positive safe integer; got ${describe(options.maxSockets)}`,
-        );
-      }
-      this.client = new S3Client({
-        ...(options.region === undefined ? {} : { region: options.region }),
-        ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
-        ...(options.pathStyle === undefined ? {} : { forcePathStyle: options.pathStyle }),
-        ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
-      });
+      const maxSockets =
+        requirePositiveInt('maxSockets', options.maxSockets) ?? DEFAULT_MAX_SOCKETS;
+      // `credentials` is not the last member: the leak scan reads a property read that ends a built line as a
+      // possible secret, and the bundler drops the trailing comma after the last one.
+      this.client = new S3Client(
+        defined({
+          credentials: options.credentials,
+          region: options.region,
+          endpoint: options.endpoint,
+          forcePathStyle: options.pathStyle,
+        }),
+      );
       limitSockets(this.client, maxSockets);
     }
+    this.sockets = new SocketAdvisory(this.client, options.bucket);
     const shared = {
       client: this.client,
       bucket: options.bucket,
-      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
+      ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new S3StorageDriver({
       ...shared,
-      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
-      ...(options.partBytes === undefined ? {} : { partBytes: options.partBytes }),
+      sockets: this.sockets,
+      ...defined({
+        maxObjectBytes: options.maxObjectBytes,
+        partBytes: options.partBytes,
+        conditionalDelete: options.conditionalDelete,
+      }),
     });
     this.registry = new S3RegistryDriver({
       ...shared,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
+  }
+
+  /**
+   * Called by a store given a metrics sink. After the first read, a client whose socket pool is smaller than twice the
+   * default window (64) sends the sink one `advisory` event, once; see the production guide's socket sizing.
+   */
+  attachMetrics(sink: IMetricsSink): void {
+    this.sockets.attach(sink);
   }
 }

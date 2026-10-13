@@ -16,14 +16,19 @@ import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { isConditionalConflict } from '@/azure-blob/azure-errors';
-import { storageObjectName } from '@/azure-blob/keys';
-import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { IntegrityError, NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import {
+  expectMissingLocationFails,
+  expectMissingObjectIsAbsent,
+} from '../helpers/missing-location';
 
 /**
  * A keyspace unique to THIS run.
@@ -77,6 +82,10 @@ const ticking = (): (() => number) => {
   let t = 1_000;
   return () => (t += 1);
 };
+// Never created: the emulator answers as the service does for a container that is not there.
+const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+// Azure Blob lists 5,000 blobs a page.
+const PAST_ONE_PAGE = 5_001;
 registryConformance(
   'AzureBlobRegistryDriver (Azurite)',
   () =>
@@ -85,6 +94,15 @@ registryConformance(
       prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
+  {
+    missingLocation: () =>
+      new AzureBlobRegistryDriver({
+        containerClient: service.getContainerClient(MISSING),
+        prefix: `${RUN}/missing`,
+        now: ticking(),
+      }),
+    pagedListSize: PAST_ONE_PAGE,
+  },
 );
 
 // The cross-process half of the contract: two drivers over one container, racing the same row. Azurite
@@ -105,7 +123,16 @@ const freshDriver = (): AzureBlobStorageDriver =>
 // The Azure driver must pass the SAME storage-source contract as in-memory + LocalFs + S3 + GCS.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
-storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver);
+storageDriverConformance('AzureBlobStorageDriver (Azurite)', freshDriver, {
+  missingLocation: () =>
+    new AzureBlobStorageDriver({
+      containerClient: service.getContainerClient(MISSING),
+      prefix: `${RUN}/missing`,
+    }),
+  pagedListSize: PAST_ONE_PAGE,
+  // On by default: Azurite applies ifMatch on a Delete Blob, so the case runs the condition end to end.
+  conditionalDelete: true,
+});
 // The same cases with 64-byte blocks, so every object is staged blocks and a conditional commit.
 storageDriverConformance(
   'AzureBlobStorageDriver, blocks (Azurite)',
@@ -408,7 +435,7 @@ describe('Azure conflict against the write own id (Azurite)', () => {
     it('stays a conflict when the blob was written with no id', async () => {
       const prefix = uniq('noid');
       const driver = new AzureBlobStorageDriver(opts(container, prefix));
-      const name = storageObjectName(prefix, gen(1));
+      const name = storageObjectKey(prefix, gen(1));
       await container
         .getBlockBlobClient(name)
         .upload(new Uint8Array([1]), 1, { conditions: { ifNoneMatch: '*' } });
@@ -561,6 +588,33 @@ describe('AzureBlobRegistryDriver: a pointer read is one request (Azurite)', () 
     expect((await direct.get(ref))?.currentGen).toBe(1);
   });
 
+  it('a compare-and-swap made against the row get returned is one PUT under its ETag and no GET; once the row changed, Azurite refuses it', async () => {
+    const { viaProxy, direct } = fresh();
+    await direct.create(ref, { currentGen: 0 });
+    const held = (await viaProxy.get(ref))!;
+    proxy.requests.length = 0;
+    await viaProxy.compareAndSwap(ref, held.token, { currentGen: 1 }, { held });
+    expect(proxy.requests.map((r) => [r.method, r.ifMatch !== undefined])).toEqual([['PUT', true]]);
+
+    // The same record is now stale: a writer has moved the row on, and the ETag it names is gone.
+    const stale = (await viaProxy.get(ref))!;
+    await direct.compareAndSwap(ref, stale.token, { currentGen: 2 });
+    proxy.requests.length = 0;
+    await expect(
+      viaProxy.compareAndSwap(ref, stale.token, { currentGen: 9 }, { held: stale }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    // The PUT under the old ETag is refused, then the HEAD that reads the write id back to tell a lost race from a replay.
+    expect(proxy.requests.map((r) => r.method)).toEqual(['PUT', 'HEAD']);
+    expect((await direct.get(ref))?.currentGen).toBe(2);
+  });
+
+  it('a create made with no row held is one conditional PUT and no GET', async () => {
+    const { viaProxy } = fresh();
+    await viaProxy.create(ref, { currentGen: 0 }, { held: null });
+    expect(proxy.requests.map((r) => r.method)).toEqual(['PUT']);
+    expect((await viaProxy.get(ref))?.currentGen).toBe(0);
+  });
+
   it('a compare-and-swap is fenced on the ETag its read returned: a writer landing in between wins', async () => {
     const { viaProxy, direct } = fresh();
     const { token } = await direct.create(ref, { currentGen: 0 });
@@ -638,10 +692,32 @@ describe('Azure Blob (Azurite): a cold count is one request', () => {
     expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
     expect(proxy.requests[0]!.name).toContain('registry');
     proxy.requests.length = 0;
-    expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
-      generation: 0,
-      cardinality: chunks,
-    });
+    const stat = await reader.segment('s', { namespace: 'ns' }).stat();
+    expect(stat).toMatchObject({ generation: 0, cardinality: chunks });
+    // A stat after it answers from the row the count just read, whose summary records the object's size: it sends
+    // nothing, however wide the index.
     expect(proxy.requests).toEqual([]);
+    // And it is the size of the object in the bucket, which a pin opens.
+    const pinned = await reader.segment('s', { namespace: 'ns' }).pin();
+    expect(`${stat.sizeBytes}`).toBe(pinned.pinnedAt!.fingerprint!.split(':')[0]);
+  });
+});
+
+describe('a container that does not exist', () => {
+  it('fails every read and a delete with a ValidationError that names it, not as an absent object', async () => {
+    await expectMissingLocationFails(
+      () =>
+        new AzureBlobStorage({
+          containerClient: service.getContainerClient(MISSING),
+          prefix: `${RUN}/missing`,
+        }),
+      MISSING,
+    );
+  });
+
+  it('control: in the container that exists, a missing object still reads as absent', async () => {
+    await expectMissingObjectIsAbsent(
+      () => new AzureBlobStorage({ containerClient: container, prefix: `${RUN}/missing` }),
+    );
   });
 });

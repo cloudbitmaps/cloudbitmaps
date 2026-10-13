@@ -6,6 +6,7 @@
  * unit-testable without a live MinIO/S3 or even the AWS SDK. The AWS error shapes come from `./aws-errors`.
  */
 
+import { ValidationError } from '@cloudbitmaps/core/driver-kit';
 import {
   errorName,
   httpStatus,
@@ -48,8 +49,36 @@ export function isNoSuchUpload(err: unknown): boolean {
   return errorName(err) === 'NoSuchUpload';
 }
 
-/** The object / generation does not exist (GetObject → `NoSuchKey`, HeadObject → `NotFound`; both 404). */
+/**
+ * The bucket itself does not exist (`404 NoSuchBucket`): a wiring fault, never an absent object. Read as one, a
+ * misnamed or deleted bucket would answer every read as an empty segment. A HEAD carries no code, so it cannot be told
+ * apart there; every request that reaches a missing bucket with a body says so.
+ */
+export function isMissingBucket(err: unknown): boolean {
+  return errorName(err) === 'NoSuchBucket';
+}
+
+/**
+ * `err`, or the {@link ValidationError} a missing bucket is: it names the bucket and what to check, and carries the
+ * service's error as its `cause`. A wiring fault is not an absent object, so it is not a `NotFoundError`: a read
+ * re-resolves on that, and would treat a misnamed bucket as a miss it can heal.
+ */
+export function asMissingBucket(err: unknown, bucket: string): unknown {
+  if (!isMissingBucket(err)) return err;
+  return Object.assign(
+    new ValidationError(
+      `the S3 bucket does not exist: ${bucket}; check the bucket name, and the region and endpoint of the client`,
+    ),
+    { cause: err },
+  );
+}
+
+/**
+ * The object / generation does not exist (GetObject → `NoSuchKey`, HeadObject → `NotFound`; both 404), in a bucket
+ * that does: a 404 that says the bucket is missing is not one.
+ */
 export function isNotFound(err: unknown): boolean {
+  if (isMissingBucket(err)) return false;
   const name = errorName(err);
   return name === 'NoSuchKey' || name === 'NotFound' || httpStatus(err) === 404;
 }
@@ -85,6 +114,26 @@ export function isTransient(err: unknown): boolean {
     isSdkRetryable(err) ||
     isClockSkewCorrected(err)
   );
+}
+
+/**
+ * The message a transient S3 fault is handed on with: `transient S3 fault: <name>`, the SDK error's name, which names
+ * S3's error code (`SlowDown`, `InternalError`) or the transport failure (`TimeoutError`).
+ */
+export function transientFaultMessage(err: unknown): string {
+  return `transient S3 fault: ${errorName(err) ?? 'unknown'}`;
+}
+
+/** The first and last byte a `Content-Range: bytes <start>-<end>/<total>` header names, or `undefined` if unparseable. */
+export function spanFromContentRange(
+  contentRange: string | undefined,
+): { start: number; end: number } | undefined {
+  if (contentRange === undefined) return undefined;
+  const match = /^\s*bytes\s+(\d+)-(\d+)\//.exec(contentRange);
+  if (match === null) return undefined;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) ? { start, end } : undefined;
 }
 
 /**

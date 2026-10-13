@@ -49,10 +49,12 @@ type Stage = {
   discarded: Discard[];
   expectedGets?: number;
   p99ms?: number;
-  has?: { firstRead: { p99ms: number } };
+  p50ms?: number;
+  has?: { firstRead: { p50ms: number; p99ms: number } };
 };
 type Results = {
   runId: string;
+  measured: { maxSockets: number | null; maxSocketsSource: string };
   mode: string;
   target: string;
   partial: boolean;
@@ -75,11 +77,16 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
     sharedChunks: number;
     chunksPerSegment: number;
   };
+  layoutIds: (layout: unknown, i: number) => Iterable<number>;
 };
 const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   STAGES: string[];
   FIRST_LOAD: { put: number; get: number };
   coldIntersectGets: (k: number) => number;
+  STEADY_KEEP: number;
+  STEADY_LOADS: number;
+  STEADY_LOAD_REQUESTS: Record<string, { put: number; get: number; free: number }>;
+  steadyKind: (generation: number) => string;
 };
 const samples = require_(join(ROOT, 'bench', 'lib', 'calibrate-samples.cjs')) as {
   QUIET_MS: number;
@@ -96,11 +103,12 @@ const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) 
 /**
  * The workload: four calibration segments of 125,000 ids, which spread over 500 chunks with 25 shared, so each object
  * is still larger than the 256 KiB tail read, as the full workload's are; one multipart segment; four cold intersects;
- * point reads on two segments; two `andNot` calls, each against one other segment; no spread stage and no sweep. An
+ * point reads on two segments; five `andNot` calls, each against one other segment (enough for the median to be an
+ * ordinary sample of the stage, which the latency test reads the slowest against); no spread stage and no sweep. An
  * `andNot` call reads every chunk of its include operand, so it is the slowest sample here, and the smallest segment
  * that keeps the tail read whole is what keeps it short.
  */
-const W = { segments: 4, ids: 125_000, large: 1, reads: 4, point: 2, andNot: 2, excludes: 1 };
+const W = { segments: 4, ids: 125_000, large: 1, reads: 4, point: 2, andNot: 5, excludes: 1 };
 const WORKLOAD = {
   CR_CALIBRATE_SEGMENTS: String(W.segments),
   CR_CALIBRATE_IDS: String(W.ids),
@@ -119,6 +127,23 @@ const layout = guards.planLayout({
   ...guards.DEFAULT_LAYOUT,
 });
 const k = layout.sharedChunks;
+/**
+ * The range requests the engine makes of the workload's layout, counted by running it over the in-memory backend, as
+ * the harness counts them before it loads anything: a cold intersect's of each operand, and one `andNot` call's in all.
+ * The tiny chunks of this workload lie within the gap of each other, so a range holds many of them.
+ */
+const counts = require_(join(ROOT, 'bench', 'lib', 'range-counts.cjs')) as {
+  coldIntersectIds: (a: number[], b: number[]) => Promise<{ rangesPerOperand: number }>;
+  coldAndNotIds: (a: number[], b: number[][]) => Promise<{ getRange: number }>;
+};
+const idsOfSegment = (i: number): number[] => [...guards.layoutIds(layout, i)];
+const RANGES = (await counts.coldIntersectIds(idsOfSegment(0), idsOfSegment(1))).rangesPerOperand;
+const ANDNOT_RANGES = (
+  await counts.coldAndNotIds(
+    idsOfSegment(0),
+    Array.from({ length: W.excludes }, (_, i) => idsOfSegment(i + 1)),
+  )
+).getRange;
 
 /**
  * Which GetObject request, counted from 1 on the workload's client as the fault hook counts them, falls where. Every
@@ -128,10 +153,10 @@ const k = layout.sharedChunks;
  * `has()` on an open segment a chunk, and a first `has()` a pointer, a tail and a chunk.
  */
 const LOADS = (W.segments + W.large) * (stages.FIRST_LOAD.get - 1);
-const COLD = stages.coldIntersectGets(k);
-const PRIMING = W.segments * (2 + k);
+const COLD = stages.coldIntersectGets(RANGES);
+const PRIMING = W.segments * (2 + RANGES);
 /** One `andNot` call: a pointer and a tail per operand, every chunk of the include, the exclude's shared chunks. */
-const ANDNOT_CALL = 2 * (1 + W.excludes) + layout.chunksPerSegment + W.excludes * k;
+const ANDNOT_CALL = 2 * (1 + W.excludes) + ANDNOT_RANGES;
 const AT = (() => {
   // The last request of the first cold intersect: the discard made every request a finished intersect makes, more
   // than the stage's bound leaves above its expected count, so a stage held to its total would overspend.
@@ -164,7 +189,10 @@ const OFFLINE_HOME = mkdtempSync(join(tmpdir(), 'calib-rehearsal-'));
 afterAll(() => rmSync(OFFLINE_HOME, { recursive: true, force: true }));
 
 /** A rehearsal of the workload with `faults` injected, and the results file it wrote. */
-function rehearse(faults: string): { status: number | null; stderr: string; results: Results } {
+function rehearse(
+  faults: string,
+  extraEnv: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string; results: Results } {
   const runId = `${new Date().toISOString().slice(0, 10)}-it-${randomUUID().slice(0, 8)}`;
   const out = spawnSync(process.execPath, [HARNESS, '--rehearse'], {
     cwd: ROOT,
@@ -177,6 +205,7 @@ function rehearse(faults: string): { status: number | null; stderr: string; resu
       CR_CALIBRATE_RUN_ID: runId,
       CR_CALIBRATE_FAULT_GETS: faults,
       ...WORKLOAD,
+      ...extraEnv,
     },
     encoding: 'utf8',
     timeout: 150_000,
@@ -184,7 +213,7 @@ function rehearse(faults: string): { status: number | null; stderr: string; resu
   const results = JSON.parse(readFileSync(RESULTS, 'utf8')) as Results;
   // A file another run wrote would test nothing.
   expect(results.runId, `the rehearsal wrote no results:\n${out.stderr}`).toBe(runId);
-  return { status: out.status, stderr: out.stderr, results };
+  return { status: out.status, stdout: out.stdout, stderr: out.stderr, results };
 }
 
 beforeAll(async () => {
@@ -237,6 +266,15 @@ describe('a calibration rehearsal that meets transient faults', () => {
     expect(run.results.discards).toEqual({ count: 3, perRun: 3, perStage: 2 });
   });
 
+  it("records the socket limit the workload's client held, read back: the library's 128", () => {
+    expect(run.results.measured.maxSockets).toBe(128);
+    expect(run.results.measured.maxSocketsSource).toMatch(/library's own client.*read back/);
+    // The log line prints the limit read back from the agents, before anything is created.
+    expect(run.stdout).toMatch(
+      /^calibrate: workload client: 128 sockets \(read back from its agents\)$/m,
+    );
+  });
+
   it('records each discard beside its stage: the sample, the fault and the code beneath it, and its requests', () => {
     const fault = {
       name: 'TransientError',
@@ -255,7 +293,7 @@ describe('a calibration rehearsal that meets transient faults', () => {
       expect.objectContaining({ of: 'andNot call', sample: 0, ...fault }),
     ]);
     // The intersect failed at its last request, so it had made all of them; the first read at its tail, after its pointer.
-    expect(phases.intersect?.discarded[0]?.requests.get).toBe(stages.coldIntersectGets(k));
+    expect(phases.intersect?.discarded[0]?.requests.get).toBe(COLD);
     expect(phases.pointReads?.discarded[0]?.requests.get).toBe(2);
     expect(phases.andNot?.discarded[0]?.requests.get).toBeGreaterThanOrEqual(
       Math.floor(0.9 * ANDNOT_CALL),
@@ -278,19 +316,58 @@ describe('a calibration rehearsal that meets transient faults', () => {
     }
   });
 
+  // One segment loaded 18 times at keep 12, over MinIO's S3 request shape: each load makes the requests of its kind, so
+  // a harness that loaded at another keep, or an engine that does not collect by name, fills `expectedMissed` above.
+  it('runs the steady stage: 18 loads in the kinds their generations make, each with the counted requests', () => {
+    const steady = run.results.phases.steadyLoad as unknown as {
+      keep: number;
+      perLoad: Array<{
+        generation: number;
+        kind: string;
+        put: number;
+        get: number;
+        free: number;
+        commands: Record<string, number>;
+      }>;
+    };
+    expect(steady.keep).toBe(stages.STEADY_KEEP);
+    expect(steady.perLoad).toHaveLength(stages.STEADY_LOADS);
+    for (const l of steady.perLoad) {
+      expect(l.kind, `generation ${l.generation}`).toBe(stages.steadyKind(l.generation));
+      expect({ put: l.put, get: l.get, free: l.free }, `generation ${l.generation}`).toEqual(
+        stages.STEADY_LOAD_REQUESTS[l.kind],
+      );
+    }
+    // By class: a by-name load deletes one object and lists nothing, and the one listing load lists once.
+    expect(steady.perLoad.filter((l) => l.kind === 'listing')).toHaveLength(1);
+    expect(
+      steady.perLoad.map((l) => l.commands.DeleteObjectCommand ?? 0).reduce((a, b) => a + b),
+    ).toBe(5);
+    expect(
+      steady.perLoad.map((l) => l.commands.ListObjectsV2Command ?? 0).reduce((a, b) => a + b),
+    ).toBe(1);
+  });
+
   // A kept sample's clock starts in the attempt that finished. A clock started before it would time the failed attempt
-  // and the wait for its requests, which is at least QUIET_MS, into the sample run again: so that sample, and so the
-  // stage's slowest, would take longer than both together. A sample of this workload takes far less than the wait.
+  // and the wait for its requests (at least QUIET_MS) into the sample run again, so that sample, and the stage's
+  // slowest, would exceed a typical sample by at least both together. The line is drawn from this run's own figures,
+  // not from a fixed time: a busy machine slows the stage's median and the failed attempt alike, so the slowest's
+  // excess over the median is what a clock error adds, the failed attempt's time and the wait. The wait is counted as
+  // 0.9 of QUIET_MS, since the quiet is measured from the failed sample's last request and the sample run again may be
+  // a few tens of milliseconds quicker than the median.
   it("leaves the failed attempt and the wait for its requests out of the kept sample's latency", () => {
     const { phases } = run.results;
-    const slowest: Array<[string, number | undefined]> = [
-      ['intersect', phases.intersect?.p99ms],
-      ['pointReads', phases.pointReads?.has?.firstRead.p99ms],
-      ['andNot', phases.andNot?.p99ms],
+    const firstRead = phases.pointReads?.has?.firstRead;
+    const stagesRead: Array<[string, number | undefined, number | undefined]> = [
+      ['intersect', phases.intersect?.p50ms, phases.intersect?.p99ms],
+      ['pointReads', firstRead?.p50ms, firstRead?.p99ms],
+      ['andNot', phases.andNot?.p50ms, phases.andNot?.p99ms],
     ];
-    for (const [name, ms] of slowest) {
+    for (const [name, typical, slowest] of stagesRead) {
+      expect(typical, name).toBeGreaterThan(0);
+      expect(slowest, name).toBeGreaterThan(0);
       const failed = phases[name]?.discarded[0]?.failedAfterMs ?? 0;
-      expect(ms, name).toBeLessThan(failed + samples.QUIET_MS);
+      expect((slowest ?? 0) - (typical ?? 0), name).toBeLessThan(failed + 0.9 * samples.QUIET_MS);
     }
   });
 
@@ -347,6 +424,20 @@ describe('a calibration rehearsal that meets transient faults in the samples tha
   });
 });
 
+describe('a calibration rehearsal given a socket limit', () => {
+  it('runs with it, and records the value read back from the client, not the one asked for', () => {
+    const { status, stdout, stderr, results } = rehearse(`${AT.intersect}`, {
+      CR_CALIBRATE_MAX_SOCKETS: '7',
+    });
+    expect(status, stderr).toBe(0);
+    expect(stdout).toMatch(
+      /^calibrate: workload client: 7 sockets \(read back from its agents\)$/m,
+    );
+    expect(results.measured.maxSockets).toBe(7);
+    expect(results.measured.maxSocketsSource).toMatch(/CR_CALIBRATE_MAX_SOCKETS.*read back/);
+  }, 180_000);
+});
+
 describe('a calibration rehearsal that meets a fault it must not discard', () => {
   it('fails the run on a fault that is not transient, discarding nothing, and records the error by name and status', () => {
     const { status, stderr, results } = rehearse(`${LOADS + 10}:denied`);
@@ -390,14 +481,14 @@ describe('a calibration rehearsal that meets a fault it must not discard', () =>
     expect(results.phases).toEqual({});
   }, 180_000);
 
-  it('does not let a load that absorbed a transient fault on its pointer write pass as a clean sample', () => {
-    // GET 3 of the run is the read inside the load's first row write. The write gets no answer, the publish reads the
-    // row and sends it again, and the load succeeds: with two requests more than the engine makes in a steady load.
-    const { stderr, results } = rehearse('3');
-    expect(stderr).toMatch(/EXPECTED COUNT MISSED/);
-    expect(stderr).toMatch(
-      /load's kept samples made \d+ GET-class requests, the engine is expected to make \d+/,
-    );
-    expect(results.expectedMissed).toBeDefined();
+  it("fails the run on a transient fault in the next load's first read: a first load's row write makes no read of its own to absorb one", () => {
+    // GET 2 of the run is the first load's second read of its row, and a first load's create is sent without reading
+    // the row, so GET 3 is the next load's read of its row before it writes its object. Nothing in a load settles a
+    // fault on either, so the run fails and no sample passes as clean.
+    const { status, stderr, results } = rehearse('3');
+    expect(status, stderr).toBe(1);
+    expect(stderr).not.toMatch(/DISCARDED/);
+    expect(results.error).toMatchObject({ name: 'TransientError', cause: 'TimeoutError' });
+    expect(results.expectedMissed).toBeUndefined();
   }, 180_000);
 });

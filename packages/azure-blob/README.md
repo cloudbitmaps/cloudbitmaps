@@ -6,7 +6,7 @@ no second service to run.
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
-> Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
+> Pre-1.0: the API and the on-disk format can still change. On npm these docs match the version they ship in; on GitHub they describe `main`, and the changelog says what each release changed.
 
 ## Install
 
@@ -47,7 +47,7 @@ Any other key is refused by name.
 | `blockBytes` | the staged block size (default 8 MiB; the upload buffers one block at a time) |
 | `maxObjectBytes` | the largest blob (default `blockBytes` × 50,000, about 400 GiB) |
 | `readTimeoutMs` | how long each read request may take, its body included, before it is cut off with a `TransientError` the store's read retry repeats (default `0`, off) |
-| `conditionalDelete` | whether the registry removes a deleted row with Delete Blob under `ifMatch`, rather than leaving a tombstone every full listing reads. On by default: Azure Blob applies the precondition, and so does Azurite. A blob with a snapshot refuses the delete (`409 SnapshotsPresent`), which the sweep counts in `purgeFaults`. Needs a role that may delete blobs on the registry prefix |
+| `conditionalDelete` | whether the service applies `ifMatch` on a Delete Blob: the registry then removes a deleted row rather than leaving a tombstone every full listing reads, and the storage half deletes an erasure's holder only while it is the blob the erasure read, by its ETag. On by default: Azure Blob applies the precondition, and so does Azurite. A blob with a snapshot refuses the delete (`409 SnapshotsPresent`), which the sweep counts in `purgeFaults`. Needs a role that may delete blobs on the registry prefix |
 
 ## Before production
 
@@ -71,8 +71,9 @@ Any other key is refused by name.
   store's read retry runs again. It is off unless you set it. The clock starts at the call into the SDK, so waiting
   for a socket or a credential's token counts. Writes, deletes and listings are not timed.
 - **Price it with `storage.requestsPerSizedRead: 2`.** A pointer read is one GET here, as on S3 and GCS, but a
-  segment's tail read is two requests, its properties and then its bytes, because Azure Blob takes no suffix range.
-  Set it in the pricing profile you give `estimateCost` or `costReport`, and leave `requestsPerPointerRead` at 1.
+  segment's tail read is two requests, its properties and then its bytes, because Azure Blob takes no suffix range. The download is conditional on the properties' ETag, so a blob
+  replaced between the two is read again once, and a second replacement is a `TransientError`. Set it in the pricing profile you give `estimateCost` or `groundedReport` from `@cloudbitmaps/tools`, and leave
+  `requestsPerPointerRead` at 1.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: a request timeout on your client, backups of the data and the registry, and a schedule for your loads.
 

@@ -44,6 +44,7 @@ const KEY_SAFE = /[A-Za-z0-9._:-]/;
 const PATH_SAFE = /[A-Za-z0-9._-]/;
 
 const UTF8 = new TextEncoder();
+const UTF8_LENIENT = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
 
 /**
  * Percent-encode one character's UTF-8 bytes: `é` → `%C3%A9`.
@@ -78,13 +79,13 @@ function encodeWith(name: string, safe: RegExp): string {
 function decodePercent(encoded: string): string {
   const bytes: number[] = [];
   for (let i = 0; i < encoded.length;) {
-    if (encoded[i] === '%' && i + 2 < encoded.length + 1) {
+    if (encoded[i] === '%' && i + 2 <= encoded.length) {
       const hex = encoded.slice(i + 1, i + 3);
       if (!/^[0-9A-Fa-f]{2}$/.test(hex)) return encoded; // not an escape we wrote
       bytes.push(parseInt(hex, 16));
       i += 3;
     } else {
-      for (const b of new TextEncoder().encode(encoded[i])) bytes.push(b);
+      for (const b of UTF8.encode(encoded[i]!)) bytes.push(b);
       i += 1;
     }
   }
@@ -101,7 +102,7 @@ function decodePercent(encoded: string): string {
   //
   // Decode-only, so nothing that works today changes: `encode` is untouched, no stored key moves, and the
   // only names whose decoding changes are ones that are currently rejected by that round-trip guard anyway.
-  return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(new Uint8Array(bytes));
+  return UTF8_LENIENT.decode(new Uint8Array(bytes));
 }
 
 /**
@@ -125,7 +126,7 @@ export function encodeNameForKey(name: string): string {
  * ADLS Gen2, where the namespace really is hierarchical, `prefix/../x` and `x` are the same object. Those are
  * the DR-restore and eject paths this library documents.
  *
- * `normalizeS3Prefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; the name, the input an
+ * `normalizeObjectPrefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; the name, the input an
  * attacker can influence, is escaped here instead.
  *
  * Every dot is escaped rather than just the first, so the result cannot end in one either.

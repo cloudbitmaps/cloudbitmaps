@@ -13,6 +13,7 @@
  * (`getProperties`) on a missing blob returns 404 with `.code` *undefined* (no response body), so NotFound is
  * keyed off the status, not the code.
  */
+import { ValidationError, isTransportFault } from '@cloudbitmaps/core/driver-kit';
 
 /** The HTTP status of an Azure `RestError`, if present (`err.statusCode` as a number). */
 function httpStatus(err: unknown): number | undefined {
@@ -39,11 +40,16 @@ function networkCode(err: unknown): string | undefined {
  * this as **409 `BlobAlreadyExists`** (verified on both the single-upload and `commitBlockList` paths); we
  * also accept **412 `ConditionNotMet`** defensively (the status a specific-ETag precondition would use, and
  * what a non-Azurite backend might return). Both map to `WriteConflictError` (caller OCC), never a blind retry.
+ *
+ * Only those codes, or a 409 / 412 that carries none: Azure answers other refusals with the same statuses (a
+ * write-once container's `BlobImmutableDueToPolicy`, a lease's `LeaseAlreadyPresent` or `LeaseIdMissing`), and read
+ * as a lost race those would report another writer winning where the write can never succeed.
  */
 export function isConditionalConflict(err: unknown): boolean {
   const status = httpStatus(err);
-  if (status === 409 || status === 412) return true;
   const code = azureCode(err);
+  if (status === 409) return code === undefined || code === 'BlobAlreadyExists';
+  if (status === 412) return code === undefined || code === 'ConditionNotMet';
   return code === 'BlobAlreadyExists' || code === 'ConditionNotMet';
 }
 
@@ -53,7 +59,9 @@ export function isConditionalConflict(err: unknown): boolean {
  * in the way, and treating it as one would retry a delete that can only fail the same way.
  */
 export function isPreconditionFailed(err: unknown): boolean {
-  return httpStatus(err) === 412 || azureCode(err) === 'ConditionNotMet';
+  const code = azureCode(err);
+  if (httpStatus(err) === 412) return code === undefined || code === 'ConditionNotMet';
+  return code === 'ConditionNotMet';
 }
 
 /**
@@ -61,7 +69,32 @@ export function isPreconditionFailed(err: unknown): boolean {
  * HEAD (`getProperties`) since a HEAD has no response body — so the 404 status is the reliable signal.
  */
 export function isNotFound(err: unknown): boolean {
+  if (isMissingContainer(err)) return false;
   return httpStatus(err) === 404 || azureCode(err) === 'BlobNotFound';
+}
+
+/**
+ * The container itself does not exist (`404 ContainerNotFound`): a wiring fault, never an absent blob. Read as one, a
+ * misnamed or deleted container would answer every read as an empty segment. The code arrives on a HEAD too, from
+ * the `x-ms-error-code` header, which {@link azureCode} reads.
+ */
+export function isMissingContainer(err: unknown): boolean {
+  return azureCode(err) === 'ContainerNotFound';
+}
+
+/**
+ * `err`, or the {@link ValidationError} a missing container is: it names the container and what to check, and carries
+ * the service's error as its `cause`. A wiring fault is not an absent blob, so it is not a `NotFoundError`: a read
+ * re-resolves on that, and would treat a misnamed container as a miss it can heal.
+ */
+export function asMissingContainer(err: unknown, container: string): unknown {
+  if (!isMissingContainer(err)) return err;
+  return Object.assign(
+    new ValidationError(
+      `the Azure container does not exist: ${container}; check the container name and the account the client is built for`,
+    ),
+    { cause: err },
+  );
 }
 
 /** A range request started past EOF (HTTP 416 `InvalidRange`). */
@@ -71,7 +104,8 @@ export function isInvalidRange(err: unknown): boolean {
 
 /**
  * A transient Azure fault that is safe to retry: throttling (429 / `ServerBusy` / `OperationTimedOut`), any
- * 5xx, or a dropped/timed-out socket. Excludes the deterministic, caller-meaningful outcomes (409/412/404/416)
+ * 5xx, or a dropped/timed-out socket: a connection fault Node reports ({@link isTransportFault}), or a socket timeout
+ * under its older name, `ESOCKETTIMEDOUT`. Excludes the deterministic, caller-meaningful outcomes (409/412/404/416)
  * — those must never be reclassified as a blind transient (a retried doomed conditional write would just fail
  * again, and mask an OCC conflict).
  */
@@ -82,17 +116,14 @@ export function isTransient(err: unknown): boolean {
   const code = azureCode(err);
   if (code === 'ServerBusy' || code === 'OperationTimedOut' || code === 'InternalError')
     return true;
-  const net = networkCode(err);
-  return (
-    net === 'ECONNRESET' ||
-    net === 'ECONNABORTED' ||
-    net === 'ETIMEDOUT' ||
-    net === 'ESOCKETTIMEDOUT' ||
-    net === 'ECONNREFUSED' ||
-    net === 'EHOSTUNREACH' ||
-    net === 'ENETUNREACH' ||
-    net === 'EPIPE' ||
-    net === 'EAI_AGAIN' ||
-    net === 'ENOTFOUND'
-  );
+  return isTransportFault(err) || networkCode(err) === 'ESOCKETTIMEDOUT';
+}
+
+/**
+ * The message a transient Azure fault is handed on with: `transient Azure fault: <code>`, the Azure error code
+ * (`ServerBusy`) or Node's connection code (`ECONNRESET`), else the error's name.
+ */
+export function transientFaultMessage(err: unknown): string {
+  const name = (err as { name?: unknown } | null | undefined)?.name;
+  return `transient Azure fault: ${String(azureCode(err) ?? name ?? 'unknown')}`;
 }

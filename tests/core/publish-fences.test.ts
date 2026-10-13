@@ -4,7 +4,8 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { loadSegment } from '@/core/load';
 import { aadFor } from '@/core/crypto';
 import { summaryAgrees, usableSummary } from '@/core/summary';
-import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
+import { publishGeneration } from '../helpers/publish';
 import { rollbackSegment } from '@/core/rollback';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -14,6 +15,8 @@ import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
+import { incarnationOf } from '@/core/token';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
  * The two fences that stand between the write-once protocol and a wrong answer, plus three guards. None of the
@@ -80,7 +83,7 @@ function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): I
   return {
     capabilities: () => base.capabilities(),
     getTail: (k, m) => base.getTail(k, m),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (ref) => base.list(ref),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getRange: async (k, o, l) => {
@@ -164,7 +167,7 @@ describe('a publish derived from one generation lands only on that generation', 
   it('the loser deletes the rewrite it wrote — which still holds the winner’s id', async () => {
     // The loser numbered its rewrite AFTER the winner's object was in the bucket, so it sits ABOVE the winner's
     // pointer, where no collection ever looks. And it was derived from generation 0, so it still holds the id
-    // the winner has just attested gone. Left behind, it is one `rollback({ allowForward: true })` from being
+    // the winner has just attested gone. Left behind, it is one `rollback({ allowUnknown: true })` from being
     // served, and a later load's grace window keeps it as the newest superseded generation.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
@@ -198,7 +201,7 @@ describe('a publish derived from one generation lands only on that generation', 
       capabilities: () => hooked.capabilities(),
       getTail: (k, m) => hooked.getTail(k, m),
       getRange: (k, o, l) => hooked.getRange(k, o, l),
-      delete: (k) => hooked.delete(k),
+      delete: (k, o) => hooked.delete(k, o),
       list: (r) => hooked.list(r),
       putImmutable: async (k, fn) => {
         const out = await hooked.putImmutable(k, fn);
@@ -212,7 +215,7 @@ describe('a publish derived from one generation lands only on that generation', 
         return async (...a: Parameters<IRegistryDriver['get']>) => {
           // The first read after the write is the pre-verify check; the second is the cleanup's.
           if (written && ++readsAfterWrite === 2) {
-            await rollbackSegment(SEG, 2, w.deps, { allowForward: true });
+            await rollbackSegment(SEG, 2, w.deps, { allowUnknown: true });
           }
           return t.get(...a);
         };
@@ -271,7 +274,7 @@ describe('a publish derived from one generation lands only on that generation', 
       capabilities: () => w.storage.capabilities(),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       // `verifyGeneration` is the only thing that opens a reader on the generation we just wrote.
       getTail: async (k, m) => {
@@ -466,7 +469,7 @@ describe('a materialisation reports whether it actually landed', () => {
       capabilities: () => w.storage.capabilities(),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
       getTail: (k, m) => w.storage.getTail(k, m),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       putImmutable: async (k, fn) => {
         const res = await w.storage.putImmutable(k, fn);
@@ -488,8 +491,8 @@ describe('a materialisation reports whether it actually landed', () => {
       .intersectInto(store.segment('dest'), [store.segment('b')])
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WriteConflictError);
-    // What it says is true whether or not the write ever was current: the generation is not current now.
-    expect((err as Error).message).toMatch(/generation 1 was written and is not current/);
+    // What it says is true whether or not the write ever was current: it may not be current now.
+    expect((err as Error).message).toMatch(/generation 1 was written and may not be current/);
     expect((err as Error).message).not.toMatch(/never became current/);
 
     // The winner's content is what `dest` holds, and our object is the orphan.
@@ -512,13 +515,21 @@ describe('a materialisation reports whether it actually landed', () => {
     const store = w.reader();
     await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')], { audit });
 
-    expect(events).toEqual([{ kind: 'segment.publish', segment: 'dest', generation: 0 }]);
+    expect(events).toEqual([
+      {
+        kind: 'segment.publish',
+        segment: 'dest',
+        incarnation: incarnationOf((await w.registry.get({ segment: 'dest' }))!.token),
+        generation: 0,
+      },
+    ]);
   });
 
   it('a streaming combine cannot even be handed an audit sink', async () => {
     // `audit` lives on `MaterializeOptions`, which only the writing verbs take, so handing a sink to a read verb
-    // (which could only ignore it, never attest to a publish that did not happen) is a compile error rather than
-    // a silent no-op. The `@ts-expect-error` below fails the build if a read verb ever takes one.
+    // (which could only ignore it, never attest to a publish that did not happen) is a compile error, and from plain
+    // JavaScript a `ValidationError`, rather than a silent no-op. The `@ts-expect-error` below fails the build if a read
+    // verb ever takes one.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -526,12 +537,12 @@ describe('a materialisation reports whether it actually landed', () => {
     const audit = { onEvent: (e: unknown) => void events.push(e) };
 
     const store = w.reader();
-    expect(
-      await collect(
+    await expect(
+      collect(
         // @ts-expect-error a read verb writes nothing, so it does not take an audit sink
         store.segment('a').intersect([store.segment('b')], { audit }),
       ),
-    ).toEqual([2, 3]);
+    ).rejects.toThrow('intersect: unknown option "audit"');
     expect(events).toEqual([]);
   });
 
@@ -582,7 +593,7 @@ describe('the guards no happy-path test reaches', () => {
       capabilities: () => w.storage.capabilities(),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (ref) => w.storage.list(ref),
       // The index lives in the tail, so corrupting the tail read of the NEW generation is what a dropped chunk
       // would look like to the verifier.
@@ -693,7 +704,12 @@ describe('a summary never describes another generation than the one the row name
       expect(res).toMatchObject({ erased: false, reason: 'superseded' });
       const a = await agreement(w);
       expect(a.row.currentGen).toBe(1);
-      expect(a.described).toEqual({ cardinality: 4, metadata: META_B });
+      expect(a.described).toEqual({
+        cardinality: 4,
+        fingerprint: expect.stringMatching(FINGERPRINT),
+        tailBytes: expect.any(Number),
+        metadata: META_B,
+      });
       expect(a.agrees).toBe(true);
     },
   );
@@ -708,7 +724,7 @@ describe('a summary never describes another generation than the one the row name
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
@@ -728,7 +744,12 @@ describe('a summary never describes another generation than the one the row name
     );
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     const a = await agreement(w);
-    expect(a.described).toEqual({ cardinality: 2, metadata: META_A });
+    expect(a.described).toEqual({
+      cardinality: 2,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
+      metadata: META_A,
+    });
     expect(a.agrees).toBe(true);
   });
 
@@ -742,7 +763,7 @@ describe('a summary never describes another generation than the one the row name
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
@@ -762,7 +783,12 @@ describe('a summary never describes another generation than the one the row name
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     const a = await agreement(w);
     expect(a.row.currentGen).toBe(0);
-    expect(a.described).toEqual({ cardinality: 3, metadata: META_A });
+    expect(a.described).toEqual({
+      cardinality: 3,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
+      metadata: META_A,
+    });
     expect(a.agrees).toBe(true);
   });
 
@@ -775,7 +801,7 @@ describe('a summary never describes another generation than the one the row name
       ...w.storage,
       capabilities: () => w.storage.capabilities(),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getTail: async (k, m) => {
@@ -793,7 +819,12 @@ describe('a summary never describes another generation than the one the row name
     );
     const a = await agreement(w);
     expect(a.row.currentGen).toBe(2);
-    expect(a.described).toEqual({ cardinality: 5, metadata: { run: 'c' } });
+    expect(a.described).toEqual({
+      cardinality: 5,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
+      metadata: { run: 'c' },
+    });
     expect(a.agrees).toBe(true);
   });
 
@@ -806,7 +837,7 @@ describe('a summary never describes another generation than the one the row name
       capabilities: () => w.storage.capabilities(),
       getTail: (k, m) => w.storage.getTail(k, m),
       getRange: (k, o, l) => w.storage.getRange(k, o, l),
-      delete: (k) => w.storage.delete(k),
+      delete: (k, o) => w.storage.delete(k, o),
       list: (r) => w.storage.list(r),
       putImmutable: async (k, fn) => {
         const out = await w.storage.putImmutable(k, fn);
@@ -827,7 +858,12 @@ describe('a summary never describes another generation than the one the row name
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     const a = await agreement(w);
     expect(a.row.currentGen).toBe(2);
-    expect(a.described).toEqual({ cardinality: 1, metadata: META_B });
+    expect(a.described).toEqual({
+      cardinality: 1,
+      fingerprint: expect.stringMatching(FINGERPRINT),
+      tailBytes: expect.any(Number),
+      metadata: META_B,
+    });
     expect(a.agrees).toBe(true);
   });
 });

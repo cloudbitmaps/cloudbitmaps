@@ -17,6 +17,8 @@ export type Operation =
   | 'CompleteMultipartUpload'
   | 'AbortMultipartUpload'
   | 'GetObject'
+  | 'HeadObject'
+  | 'ListObjectsV2'
   | 'DeleteObject';
 
 interface StubRequest {
@@ -40,7 +42,8 @@ function operationOf(req: StubRequest): Operation {
   if (req.method === 'POST')
     return 'uploads' in q ? 'CreateMultipartUpload' : 'CompleteMultipartUpload';
   if (req.method === 'DELETE') return 'uploadId' in q ? 'AbortMultipartUpload' : 'DeleteObject';
-  if (req.method === 'GET') return 'GetObject';
+  if (req.method === 'GET') return 'list-type' in q ? 'ListObjectsV2' : 'GetObject';
+  if (req.method === 'HEAD') return 'HeadObject';
   throw new Error(`the stub does not serve ${req.method} ${req.path}`);
 }
 
@@ -159,6 +162,20 @@ export class StubBucket {
   private async apply(op: Operation, req: StubRequest): Promise<StubResponse> {
     const key = decodeURIComponent(req.path.slice(`/${BUCKET}/`.length));
     const q = req.query ?? {};
+    if (op === 'ListObjectsV2') {
+      const prefix = String(q.prefix ?? '');
+      const esc = (t: string): string => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      const contents = [...this.objects.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .sort()
+        .map((k) => `<Contents><Key>${esc(k)}</Key></Contents>`)
+        .join('');
+      return respond(
+        200,
+        { 'content-type': 'application/xml' },
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${BUCKET}</Name><IsTruncated>false</IsTruncated>${contents}</ListBucketResult>`,
+      );
+    }
     const header = (name: string): string | undefined =>
       req.headers[name] ?? req.headers[name.toLowerCase()];
     const conditional = (): StubResponse | undefined => {
@@ -221,6 +238,20 @@ export class StubBucket {
       case 'GetObject': {
         const current = this.objects.get(key);
         if (current === undefined) return s3Error(404, 'NoSuchKey');
+        const suffix = /^bytes=-(\d+)$/.exec(header('range') ?? '');
+        if (suffix !== null && current.body.length > 0) {
+          const take = Math.min(Number(suffix[1]), current.body.length);
+          const start = current.body.length - take;
+          return {
+            statusCode: 206,
+            headers: {
+              etag: current.etag,
+              'content-length': String(take),
+              'content-range': `bytes ${start}-${current.body.length - 1}/${current.body.length}`,
+            },
+            body: Readable.from([current.body.subarray(start)]),
+          };
+        }
         const range = /^bytes=(\d+)-(\d+)$/.exec(header('range') ?? '');
         if (range === null) {
           return {
@@ -240,6 +271,14 @@ export class StubBucket {
           },
           body: Readable.from([slice]),
         };
+      }
+      case 'HeadObject': {
+        const current = this.objects.get(key);
+        if (current === undefined) return respond(404, {});
+        return respond(200, {
+          etag: current.etag,
+          'content-length': String(current.body.length),
+        });
       }
       case 'DeleteObject': {
         // `If-Match` on a delete is applied as on a write; a delete without one removes whatever is there.

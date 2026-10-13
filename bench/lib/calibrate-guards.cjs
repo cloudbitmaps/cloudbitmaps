@@ -13,7 +13,7 @@ const CONFIRM_PHRASE = 'yes-spend-money';
 
 /**
  * Attempts `publishGeneration` makes to advance a segment pointer, from the loop in
- * `packages/core/src/core/crbm-storage-source.ts`.
+ * `packages/core/src/core/publish.ts`.
  *
  * The loop runs FIVE attempts, and nothing in core names that count (there is no `DEFAULT_MAX_RETRIES`), so it is
  * easy to retype wrong. A bound of 4 projects every load one attempt short — the exact "a projection the run can
@@ -60,6 +60,26 @@ function resolveSize(raw, fallback, label) {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) {
     throw new Error(`${label} is "${raw}"; expected a non-negative integer`);
+  }
+  return n;
+}
+
+/** The largest socket limit a run may ask for: beyond a process's usual file-descriptor limit (1,024 on Lambda, say). */
+const MAX_SOCKETS_BOUND = 1024;
+
+/**
+ * The socket limit of the workload's client, from `CR_CALIBRATE_MAX_SOCKETS`: a positive integer, `fallback` when unset
+ * or empty. Anything else is refused, since a limit of 0 or of "many" would be recorded as what the run had.
+ */
+function resolveMaxSockets(raw, fallback) {
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const text = String(raw).trim();
+  const n = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(n) || n < 1 || n > MAX_SOCKETS_BOUND) {
+    throw new Error(
+      `CR_CALIBRATE_MAX_SOCKETS is "${raw}"; expected a positive integer of at most ${MAX_SOCKETS_BOUND}, ` +
+        "since more sockets than a process's usual file-descriptor limit (1,024 on Lambda, for one) cannot be held",
+    );
   }
   return n;
 }
@@ -123,17 +143,20 @@ function projectOps({
   // crashed load's object) lists to number past it and lists again to collect, two listings, which on S3 bill at the
   // PUT rate, and the bound counts them. Its GET-class requests are more than one per attempt: counted against the
   // real registry protocol in tests/bench/calibrate-guards.test.ts, a load of a new segment that finds its number
-  // free checks it once and reads the pointer three times with nothing racing it, four GET-class requests, and one
-  // that finds it taken reads the pointer three times more around its collection: before and after its listing and
-  // before its delete, since the objects it met leave one outside its window, seven; each attempt a load loses adds
-  // two pointer reads, so it makes fifteen at most, fourteen pointer reads and the check, and one that loses every
-  // attempt throws after fourteen. The harness is the only writer to a bucket of its own, so its loads never race
-  // and never meet an object; the bound still has to hold if one did, for up to two (each further stray below the
-  // window adds a re-read).
-  const putPerLoad = 3 + retryBound;
-  const getPerLoad = 5 + 2 * retryBound;
+  // free checks it once and reads the pointer twice with nothing racing it (its row, then again after its ids, the
+  // create being sent without reading the row), three GET-class requests, and one that finds it taken reads the pointer
+  // four times more around its collection: before and after its listing, and before and after its delete, since the
+  // objects it met leave one outside its window, six pointer reads; a new segment's first publish is not seeded, so it
+  // reads no footer of the objects it met (a release that seeded it made one more tail read), and with the check that is
+  // seven GET-class requests; each attempt a load loses adds two pointer reads (the publish's read of the row, and the
+  // create's read after it lost), so it makes sixteen at most. At the default `keep` over two strays a new segment's load makes fifteen: fourteen pointer reads and the check (its first publish is not seeded, so it reads no stray's footer, which a release that seeded it did). At `keep: 0` over the same strays it deletes both, one more re-read of the row before its second delete, and makes sixteen, which is the bound; the bound waits for the next calibration run to change; one that
+  // loses every attempt throws after as many. The harness is the only
+  // writer to a bucket of its own, so its loads never race and never meet an object; the bound still has to hold if
+  // one did, for up to two (each further stray below the window adds a re-read).
+  const putPerLoad = 4 + retryBound;
+  const getPerLoad = 6 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same listings and pointer advance.
-  const putPerLargeLoad = 4 + partsPerLargeLoad + retryBound;
+  const putPerLargeLoad = 5 + partsPerLargeLoad + retryBound;
   // A read, per operand: resolve the pointer, read the footer and the index, then one GET per chunk fetched.
   // Three fixed GETs is the generous reading of "open a generation": the pointer, the tail read, and a second read
   // for an index longer than the tail. The pointer is read once only because the timed store has no timed refresh
@@ -151,11 +174,11 @@ function projectOps({
 /**
  * A claim on each segment's FIRST load, refusing a second.
  *
- * The projection bounds a segment's first load: its number checked once and its pointer read three times with nothing
- * racing it, six more when the check finds the number taken and the load collects what it met, and fifteen GET-class
- * requests at most when every publish attempt but the last is lost. A reload whose number is taken makes fifteen at
- * four lost races, as many as the bound, and sixteen, past it, when its row was written before rows carried a summary
- * of the current generation and it also reads that generation's index. A stage that loaded a name
+ * The projection bounds a segment's first load: its number checked once and its pointer read twice with nothing
+ * racing it, four more reads when the check finds the number taken and the load collects what it met,
+ * and sixteen GET-class requests at most when every publish attempt but the last is lost (fifteen at the default `keep`). A reload whose number is
+ * taken makes eleven when it loses four races, and twelve when its row was written before rows carried a summary of the
+ * current generation and it also reads that generation's index (`tests/bench/calibrate-stages.test.ts` counts both). A stage that loaded a name
  * twice would overspend a projection that said it was safe, so the harness loads each name once and a repeat is
  * refused before it sends anything.
  */
@@ -435,7 +458,7 @@ function clientConfigs(base, { adminTimeouts = ADMIN_TIMEOUTS } = {}) {
  * `cache.genTtlMs: 0` — no timed pointer refresh. A store re-reads a segment's pointer once `genTtlMs` (2 s by
  * default) has passed since it last read it, in the middle of an intersect too. Run 2026-09-23-94416 was 83 ms from
  * the region, its cold intersects took about 3 s, and the median one read both pointers twice: 206 GETs where the
- * same intersect inside the region would make 204. A request count that moves with the network describes the
+ * same intersect inside the region made 204 on the engine of that run. A request count that moves with the network describes the
  * network, and the projection has no term for it. Every timed intersect has a store of its own, so turning the
  * refresh off costs nothing in coldness: each pointer is still read, exactly once. What the default refresh costs a
  * long-lived reader is a separate figure — at most one pointer read per segment per `genTtlMs` while it is read —
@@ -541,6 +564,17 @@ function checkCleanupId(runId) {
 }
 
 /**
+ * Where a suite's evidence lives. The default suite's is {@link EVIDENCE_DIR}; the large suite's is a directory of its
+ * own beneath it, which the figures gates read nothing from: they list `EVIDENCE_DIR` without descending, so a large
+ * run can never become the default suite's latest report.
+ */
+function suiteEvidenceDir(suite) {
+  if (suite === 'default') return EVIDENCE_DIR;
+  if (suite === 'large') return `${EVIDENCE_DIR}/large`;
+  throw new Error(`"${String(suite)}" is not a suite: the suites are default and large`);
+}
+
+/**
  * Where a run's results are written, relative to the repository root.
  *
  * A real run that finished writes its evidence under {@link EVIDENCE_DIR}. One that did not — interrupted, failed
@@ -549,15 +583,20 @@ function checkCleanupId(runId) {
  * own, which git also ignores: it writes the same shape as a real run, and under the real run's name it would sit
  * one `git add` away from being committed as the evidence behind a published figure.
  */
-function resultsFile(rehearse, runId, { partial = false, stamp } = {}) {
-  if (rehearse) return 'bench/calibrate-aws-rehearsal.json';
+function resultsFile(rehearse, runId, { partial = false, stamp, suite = 'default' } = {}) {
+  const dir = suiteEvidenceDir(suite);
+  if (rehearse) {
+    return suite === 'default'
+      ? 'bench/calibrate-aws-rehearsal.json'
+      : `bench/calibrate-aws-rehearsal-${suite}.json`;
+  }
   const id = checkRunId(runId);
   if (stamp !== undefined) {
     // Where a run goes whose own name was taken while it ran: named for its start, which only it can have.
     if (!/^\d{8}T\d{9}Z$/.test(stamp)) throw new Error(`"${stamp}" is not a run's start stamp`);
-    return `${EVIDENCE_DIR}/${id}.${stamp}.partial.json`;
+    return `${dir}/${id}.${stamp}.partial.json`;
   }
-  return `${EVIDENCE_DIR}/${id}${partial ? '.partial' : ''}.json`;
+  return `${dir}/${id}${partial ? '.partial' : ''}.json`;
 }
 
 /** A run's start as a file-name stamp: `2026-09-23T05:01:02.345Z` is `20260923T050102345Z`. */
@@ -613,6 +652,7 @@ function checkWorkload({
   pointSegments = 0,
   andNotCalls = 0,
   andNotExcludes = 0,
+  steadyLoads = 0,
 }) {
   const pairs = (n, reading, name, env) => {
     if (reading > 0 && n < 2) {
@@ -641,7 +681,10 @@ function checkWorkload({
     segments +
     largeSegments +
     spreadSegments +
-    (sweepEntries > 0 ? sweepSegments * sweepEntries : 0);
+    (sweepEntries > 0 ? sweepSegments * sweepEntries : 0) +
+    // The steady segment can leave a generation, a pointer version and a delete marker for each of its loads, each
+    // segment two versions.
+    Math.ceil((3 * steadyLoads) / 2);
   if (loaded > MAX_SEGMENTS) {
     throw new Error(
       `${loaded} segments would leave more object versions than teardown's first listing reaches; ` +
@@ -709,6 +752,8 @@ module.exports = {
   DEFAULT_LAYOUT,
   parseCeiling,
   resolveSize,
+  resolveMaxSockets,
+  MAX_SOCKETS_BOUND,
   probeMeansAbsent,
   projectOps,
   firstLoads,
@@ -720,6 +765,7 @@ module.exports = {
   maskAccount,
   redact,
   resultsFile,
+  suiteEvidenceDir,
   stampOf,
   checkRunId,
   checkCleanupId,

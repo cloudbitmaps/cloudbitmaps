@@ -52,6 +52,39 @@ describe('budget helper (core/budget)', () => {
   });
 });
 
+describe('a budget is { maxRequests } or false', () => {
+  it('refuses any other shape, so a cap the caller wrote is never silently the default', () => {
+    // What plain JavaScript lets through where `{ maxRequests: 5 }` was meant: each read as no override at all.
+    for (const bad of [5, '5', true, [5], { maxRequest: 5 }]) {
+      expect(() => resolveBudget(bad as never, DEFAULT_BUDGET)).toThrow(ValidationError);
+      expect(() => resolvePerOpBudget(bad as never, { maxRequests: 9 })).toThrow(ValidationError);
+    }
+    expect(() => resolvePerOpBudget({ maxRequest: 5 } as never, null)).toThrow(
+      'budget: unknown option "maxRequest"; it takes { maxRequests } or false',
+    );
+  });
+
+  it('reads null and undefined-valued keys as absent: a per-op null inherits the store, even a disabled one', () => {
+    expect(resolvePerOpBudget(null as never, null)).toBeNull();
+    expect(resolvePerOpBudget(null as never, { maxRequests: 9 })).toEqual({ maxRequests: 9 });
+    expect(
+      resolvePerOpBudget({ maxRequests: undefined, other: undefined } as never, { maxRequests: 9 }),
+    ).toEqual({
+      maxRequests: 9,
+    });
+  });
+
+  it('a combine refuses a per-op budget of the wrong shape before it reads', async () => {
+    const { store } = await loadedStore({ a: THREE_CHUNKS, b: THREE_CHUNKS });
+    for (const bad of [5, { maxRequest: 1 }]) {
+      const options = { budget: bad } as never;
+      await expect(
+        collect(store.segment('a').intersect([store.segment('b')], options)),
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
+  });
+});
+
 describe('per-op budget enforced by the store', () => {
   /** A store whose ceiling (2 requests) sits below a three-chunk fan-out. */
   const tinyBudgetStore = (segments: Record<string, number[]>) =>

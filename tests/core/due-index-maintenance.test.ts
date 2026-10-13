@@ -169,3 +169,43 @@ describe('due index — the drift directions that make it safe', () => {
     expect((await registry.get(SEG))?.retention).toEqual({ expiresAt: T0 + 10 * DAY });
   });
 });
+
+describe('due index — an index scan holds a bounded number of stray pointers', () => {
+  it('pointers to segments that are gone, past maxScanSegments, are left for a later scan', async () => {
+    const { store, registry, advance } = await harness();
+    const expiresAt = T0 + DAY;
+    const refs = Array.from({ length: 5 }, (_, i) => ({
+      namespace: 'active',
+      segment: `gone-${i}`,
+    }));
+    for (const ref of refs) {
+      await store.setRetention(ref, { expiresAt });
+      await registry.delete(ref); // the row goes, the pointer stays: a stray
+    }
+    expect(await pointersIn(registry, dueBucket(expiresAt))).toHaveLength(5);
+    advance(2 * DAY);
+    const res = await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
+    expect(res.retired).toBe(0);
+    // At most two held, and forgotten, this call; the other three wait for the next.
+    expect(await pointersIn(registry, dueBucket(expiresAt))).toHaveLength(3);
+    await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
+    await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
+    expect(await pointersIn(registry, dueBucket(expiresAt))).toHaveLength(0);
+  });
+
+  it('a live expired segment behind more strays than the bound is still retired', async () => {
+    const { store, registry, advance } = await harness();
+    const expiresAt = T0 + DAY;
+    // Pointers are read in name order, so the strays come first.
+    for (let i = 0; i < 3; i++) {
+      const ref = { namespace: 'active', segment: `a-gone-${i}` };
+      await store.setRetention(ref, { expiresAt });
+      await registry.delete(ref);
+    }
+    const live = { namespace: 'active', segment: 'z-live' };
+    await store.setRetention(live, { expiresAt });
+    advance(2 * DAY);
+    const res = await store.retireExpired({ scan: 'index', maxScanSegments: 2 });
+    expect(res).toMatchObject({ retired: 1, eligible: 1 });
+  });
+});

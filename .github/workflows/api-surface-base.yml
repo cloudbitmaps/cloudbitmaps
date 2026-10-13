@@ -1,0 +1,36 @@
+name: Public signatures against the base
+
+# A pull request may not remove or change a public signature the base branch's snapshot lists, unless it adds a row with a
+# reason to api-surface/allowed.json. The comparison is of two committed files, so it needs no install and no build.
+#
+# Its own workflow, and with `edited` among the types, because `ci.yml` runs on opened, synchronized and reopened pull
+# requests only: retargeting a pull request at another branch triggers none of those, so the comparison would keep
+# standing for the old base.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  against-base:
+    name: public signatures against the base branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # The base branch by name, so the ref exists whatever the checkout fetched. The name arrives through `env`, never
+      # spliced into the script.
+      - name: Compare with the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          node scripts/api-surface.cjs --against "origin/${BASE_REF}"

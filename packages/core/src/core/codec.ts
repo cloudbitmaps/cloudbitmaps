@@ -70,7 +70,7 @@ export interface CodecBitmap {
    * The largest value in the set, or `undefined` when empty.
    *
    * **Optional, and deliberately so.** The engine uses it for one thing: asserting that a payload it is about
-   * to interpret **as a chunk** holds only 16-bit remainders (see {@link assertChunkPayload}). A codec that
+   * to interpret **as a chunk** holds only 16-bit remainders (see {@link assertChunkPayloadInRange} in `chunk-checks.ts`). A codec that
    * cannot answer this in better than O(n) should simply omit it — the engine then skips the check rather
    * than walking every value on the read path, which is the one thing this must never cost.
    *
@@ -158,6 +158,16 @@ export interface CodecInterface {
     maxBytes: number,
     options?: { readonly whole?: boolean },
   ): CodecBitmap;
+  /**
+   * Whether `bitmap` is one this codec made: its own type, with the invariants its own operations keep (a `size` that
+   * is the true cardinality, a `serialize()` that decodes back to the same set). A load of a combine's chunks
+   * ({@link loadSegmentChunks}) writes bitmaps it is given without decoding them again, so it asks this of each and
+   * refuses any that answers `false`.
+   *
+   * **Optional.** A codec without it cannot vouch for a bitmap, so a load of chunks refuses every chunk it is given.
+   * The answer is the whole check: an `owns` that answers `true` for anything lets any object through as a bitmap.
+   */
+  owns?(bitmap: unknown): boolean;
 }
 
 /**

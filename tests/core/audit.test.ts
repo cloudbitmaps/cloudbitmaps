@@ -13,12 +13,14 @@ import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { incarnationOf } from '@/core/token';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
  * `segment.rollback` (the pointer moved back), `segment.load-refused` (a load's guard refused it),
- * `segment.rewrite` (a subject erasure), `segment.erase` (a crypto-shred), `segment.dispose` (storage
- * reclaimed) and `namespace.erase`.
+ * `segment.rewrite` (a subject erasure), `segment.collect` (a subject erasure that deleted generations and rewrote
+ * none), `segment.erase` (a crypto-shred), `segment.dispose` (storage reclaimed) and `namespace.erase`. Each segment
+ * event's `incarnation` is covered in `audit-incarnation.test.ts`.
  *
  * Two properties are load-bearing throughout, because an audit trail exists to prevent exactly these:
  * **never over-attest** (no event for an operation that did not happen — a no-op publish, an idempotent
@@ -88,6 +90,36 @@ describe('safeAudit', () => {
     expect(() => boom.onEvent({ kind: 'segment.erase', segment: 's' })).not.toThrow();
   });
 
+  it('swallows the rejection of an async sink, which would otherwise end a Node process as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // An `async onEvent` is assignable to `onEvent(): void`, and an audit service that is down rejects.
+      const rejects: IAuditSinkLike = {
+        onEvent: async () => {
+          throw new Error('the audit service is down');
+        },
+      };
+      safeAudit(rejects).onEvent({ kind: 'segment.erase', segment: 's' });
+      const w = world();
+      const published = await bulkLoadCrbmGeneration(
+        w.storage,
+        { ...SEG, generation: 0 },
+        [1, 2, 3],
+        {
+          registry: w.registry,
+          audit: rejects,
+        },
+      );
+      expect(published).toBeDefined();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('returns NOOP_AUDIT unchanged (identity fast-path)', () => {
     expect(safeAudit(NOOP_AUDIT)).toBe(NOOP_AUDIT);
   });
@@ -114,7 +146,15 @@ describe('audit: segment.publish (bulk-load)', () => {
       { registry: w.registry, audit },
     );
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.publish', namespace: 'ns', segment: 's', generation: 3 },
+      {
+        kind: 'segment.publish',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf(
+          (await w.registry.get({ namespace: 'ns', segment: 's' }))!.token,
+        ),
+        generation: 3,
+      },
     ]);
   });
 
@@ -175,7 +215,16 @@ describe('audit: segment.rewrite (subject erasure)', () => {
 
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rewrite', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rewrite',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf(
+          (await w.registry.get({ namespace: 'ns', segment: 's' }))!.token,
+        ),
+        fromGeneration: 0,
+        generation: 1,
+      },
     ]);
   });
 
@@ -257,7 +306,16 @@ describe('audit: segment.erase / namespace.erase', () => {
       audit,
     });
     expect(res.cryptoShredded).toBe(true);
-    expect(audit.snapshot()).toEqual([{ kind: 'segment.erase', namespace: 'ns', segment: 's' }]);
+    expect(audit.snapshot()).toEqual([
+      {
+        kind: 'segment.erase',
+        namespace: 'ns',
+        segment: 's',
+        incarnation: incarnationOf(
+          (await w.registry.get({ namespace: 'ns', segment: 's' }))!.token,
+        ),
+      },
+    ]);
   });
 
   it('does NOT emit on the idempotent already-destroyed call', async () => {
@@ -374,6 +432,8 @@ describe('AuditEvent union', () => {
         case 'segment.publish':
           return e.segment;
         case 'segment.rewrite':
+          return e.segment;
+        case 'segment.collect':
           return e.segment;
         case 'segment.load-refused':
           return e.segment;

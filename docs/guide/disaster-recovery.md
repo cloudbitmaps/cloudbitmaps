@@ -71,21 +71,22 @@ difference can tear. The obvious case is a **registry that is ahead of the objec
 
 This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — storage
 restored to a *later* point than the registry — tears the same way. Storage generations are immutable, but they
-are not kept: a `load` collects, by default, the generations below its new pointer except the newest one (`keep: 1`),
-taking the one its publish pushes out by name and the rest on every 16th generation; a subject erasure collects every
+are not kept: a `load` collects, by default, the generations below its new pointer except the one it superseded
+(`keep: 1`), taking the ones its publish pushes out of its row's window by name and the rest on every 16th generation; a subject erasure collects every
 one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
 to delete the generation the restored registry names.
 
-**The summary a row carries.** A row also holds a summary of its current generation, its id count and metadata, written
-by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records, which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the count alone does not show the tear. A disagreement between a row and an object that is there (a registry restored from another point than its bucket, with a number re-taken since) is caught whenever a read opens the object, which stops that store using the row's summary, and by `checkConsistency({ summaries: true })`. A load
+**The summary a row carries.** A row also holds a summary of its current generation, its id count, its metadata and its
+object's fingerprint, written
+by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records, which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the count alone does not show the tear. An object that is there but is not the one the row's summary names by its fingerprint (a registry restored from another point than its bucket, with a number re-taken since) is refused whenever a read opens it, with `NotFoundError`, as a missing object is, and `checkConsistency({ summaries: true })` reports it; a summary whose count or metadata disagree with the object it names stops that store using the summary. A load
 sizes the current generation from it for its guard and opens no object. That changes what a repair load meets in a torn
 restore: the row names a generation whose object is gone, and the summary still says how many ids it held, so a repair
-smaller than `guard.minRetained` allows is refused. Repair without `minRetained` (`allowEmpty: true` does not lift it), and the
+smaller than `guard.minRetained` allows, or larger than `guard.maxGrowth` allows, is refused. Repair without either (`allowEmpty: true` lifts neither), and the
 load publishes a new generation and a new summary. The load also keeps the older
 generation a listing keeps, which is the one you can still roll back to: before it takes a generation by name it looks
-for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key, for any reason, rolls back all the same and leaves the row with none, and an `allowForward` rollback whose target was replaced after it was read puts the pointer back. A row from before rows carried a summary has
-none, and is read from the object as before. A summary that names another generation, or a sealed one that does not
-open, is not used.
+for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does not unwrap the key, or a keystore that throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK report a timeout) rolls back onto a generation the row knows all the same, opening nothing, and leaves the row with none (a generation the row does not know needs `allowUnknown`, and then the key, so it throws `KeyUnavailableError`, or `TransientError` when the key service did not answer in time, a timeout as its `cause`); and a rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
+could not open the key, is read from the object, and its object is checked against nothing. A summary that names another
+generation, a sealed one that does not open, and a clear one whose fingerprint names no object are not used.
 
 ## The hard requirement: one restore point for both stores
 
@@ -162,7 +163,8 @@ you can lose.
     until Azure garbage-collects uncommitted blocks, a week after the last one staged for that blob.
   - **`LocalFsStorage`**: an object is written to a temporary file beside it
     (`<segment>.<generation>.crbm.<uuid>.tmp`) and linked into place. A killed process leaves that file; a listing
-    ignores it and nothing in the library deletes it, so remove stale `.tmp` files yourself.
+    ignores it, and a write of an object or a registry row removes the `.tmp` files of that kind beside it that were
+    last written over 24 hours ago, scanning each directory at most once an hour per process.
 - [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to restore every row to
       `T`, and the store that sets your RPO. It also keeps the wrapped keys a crypto-shred removes from a row; see
       [Encryption & DR](#encryption--dr).
@@ -213,9 +215,9 @@ makes the coordinated restore point easy to hit rather than something you have t
    has no such version; the row's body names its `namespace` and `segment`. If you do not want that segment's
    objects, first run `store.dropSegment(ref, { confirmSegment: ref.segment, audit })`, which deletes them and
    removes the wrapped key from the row. Then remove the row with the backend's `registry.delete(ref)`. On a registry
-   that reports `conditionalDelete` it removes a row created by 0.12 outright, by a delete fenced on the version it
-   read; any other row it replaces with a tombstone that keeps the row's token counter, and the rest of the row
-   with it, wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
+   that reports `conditionalDelete` it removes the row outright, by a delete fenced on the version it read; on any
+   other it replaces the row with a tombstone that keeps the row's token counter, and the rest of the row with it,
+   wrapped keys included — the reason for dropping first. Prefer it to an object-store delete, which
    removes whatever version is current when it lands, a row written since you looked included. A segment you delete
    the row of without dropping keeps its objects in the bucket with no row; `store.generations(ref)` lists them.
    Step 6 is what tells you the result is coherent.
@@ -226,8 +228,14 @@ makes the coordinated restore point easy to hit rather than something you have t
 5. **Restore the keystore** (if encryption is on), and check it can open the key of every restored segment:
    [Encryption & DR](#encryption--dr) has the check.
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
-7. If it reports `inconsistent` segments, resolve them (restore the missing generations, or roll the registry
-   back to a generation that exists — see below) and re-run until clean.
+7. If it reports `inconsistent` segments, resolve them (restore the missing generations, or roll the registry back to
+   a generation that exists — see below) and re-run until clean. It does not look in the bucket of a row with no
+   generation, so before step 8 also list `store.generations(ref)` for each restored row whose `currentGen` is `null`.
+   Objects there are what is left of a state of the row the restore went back past (a first load that landed after
+   `T`, say), and step 8's erasures treat them as a first load's: each that holds an erased id goes, and every one it
+   cannot open (on a row with no key, every encrypted one), whatever the id. Keep what you need of them first, by
+   restoring the row to the state that names them or loading their ids again
+   ([erasure](erasure.md#three-rules-while-you-erase)).
 8. **Re-apply every erasure made after `T`.** The restore undid them: a crypto-shred's row has its wrapped key back,
    and a dropped or erased segment has its generations back, with the registry pointing at them. Take the segments
    from the events your audit sink stamped after `T`, and the subjects from your own record of erasure requests,
@@ -262,15 +270,22 @@ makes the coordinated restore point easy to hit rather than something you have t
    touched** (`store.invalidate(ref)`), then route traffic. Until then a store answers from what it resolved before
    the restore: for up to `cache.genTtlMs` if it refreshes on a timer, and for as long as
    [readers still on an old generation](#readers-still-on-an-old-generation) says if it does not. A restored row
-   carries the token it had at `T`, and every write after the restore gives it a token it never had, because each
-   write draws a random part of its token, so a store keying a segment's cached chunks by generation and token never
-   takes them for a generation written since. Optionally run a targeted `subjectReport`/read spot-check on a few
-   known segments.
+   carries the token and the `pointerId` it had at `T`, and every write after the restore that names a field a read
+   resolves through (the pointer, the status, the keys or the summary) gives it a `pointerId` it never had, because
+   each write draws a random part of its token and the `pointerId` is the token of such a write, so a store keying a
+   segment's cached chunks by generation and `pointerId`, checked against the object the row's summary names whenever
+   it opens one, never takes them for a generation written since, nor for another object put back under the same
+   number. A restored row whose summary names another object than
+   the one restored under its number (a row and a bucket restored from two points) has every read that opens that
+   generation refused with `NotFoundError`, while a `count()` and a `stat()` answer the row's figures:
+   `checkConsistency({ summaries: true })` finds it. A row with no summary has no fingerprint, so a torn restore there
+   is guarded only by `pointerId`. A reader a process already holds open is not checked again: restart the process or
+   `invalidate(ref)` it. Optionally run a targeted `subjectReport`/read spot-check on a few known segments.
 
 ## Quiesce writers during a restore
 
 Writers are safe *against each other* without any coordination. A load publishes with a compare-and-swap fenced
-on the row it read (an unguarded load onto a segment with no row publishes forward-only instead), and a
+on the row it read (a load that read no row creates the row, which fails when one appeared meanwhile), and a
 subject-erasure rewrite on the generation it streamed, so the one that loses a race
 reports `superseded` rather than clobbering the newer generation: a load as `published: false, reason:
 'superseded'`, a rewrite as `erased: false, note: 'superseded'`. A load that finds its generation number already
@@ -292,8 +307,9 @@ it re-reads the pointer (and while the registry cannot be read because of a tran
 apart reaches it), and decoded chunks sit in the cache for as long as the cache keeps them. After a manual
 `currentGen` roll, a long-lived process may therefore keep answering from the generation it resolved *before* the
 roll for that window. After a registry restore, restart each store or invalidate the restored segments in it (step 9
-of the procedure) rather than wait: a restored row's later writes are given tokens it never had, so no cache is
-misled, but each store answers from the generation it resolved before the restore until it re-reads the row. Some
+of the procedure) rather than wait: a restored row's later writes are given tokens it never had, and with them every
+`pointerId` they set, so no cache is misled, but each store answers from the generation it resolved before the restore
+until it re-reads the row. Some
 stores need more than waiting after a roll too. One with no registry (built on a bare
 `IStorageDriver`), with **`cache: { genTtlMs: 0 }`**, or on a pre-built `StorageChunkSource` built with no clock, has no timed refresh, so nothing bounds how
 long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
@@ -356,7 +372,7 @@ segments by design. **The symptom you will actually notice is downstream**, and 
 
 | | What you see |
 |---|---|
-| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` skips it. Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
+| **The name is fenced, permanently** | A load **throws** on a `destroyed` row, and `eraseSubject` finds no generation of it to rewrite: it searches only the objects under the tombstone, and deletes them all when a cleartext one holds the id ([erasure](erasure.md#how-it-stays-correct)). Re-loading that segment name never produces a readable generation — the load's object may land in the bucket, but nothing will ever point at it. |
 | **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and nothing else in the library runs the collection for a tombstone the sweep does not own — so any generations left behind (and any object a late load wrote) stay. |
 
 ### Detect
@@ -476,8 +492,10 @@ const report = await store.checkConsistency();
 
 if (report.inconsistent.length > 0) {
   for (const i of report.inconsistent) {
-    // { segment, namespace?, currentGen, issue: 'missing-storage-generation' }
-    console.error(`torn: ${i.namespace ?? '_default'}/${i.segment} → gen ${i.currentGen} missing from storage`);
+    // { segment, namespace?, currentGen, issue: 'missing-storage-generation' | 'summary-mismatch'
+    //   | 'known-generation-mismatch', generation? }  (the last two only with `summaries` / `generations`)
+    console.error(`${i.issue}: ${i.namespace ?? '_default'}/${i.segment} → current gen ${i.currentGen}` +
+      (i.generation === undefined ? '' : `, generation ${i.generation}`));
   }
   process.exit(1); // do not serve traffic
 }
@@ -506,25 +524,75 @@ if (report.errored.length > 0) {
   followed by a GC of the superseded generation — or an `eraseSubject`, which collects its predecessor
   immediately — landing in the tiny per-segment read gap can still yield a transient false positive: run the
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
-- **Detection is backend-agnostic.** It relies only on `IStorageDriver.list()` + `IRegistryDriver.get()`, so it
-  covers **any** storage backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
-  backend-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
-  *exists* in storage. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
+- **Detection is backend-agnostic.** It relies only on `IStorageDriver.getTail()` (and `list()` for a segment that
+  read does not find or fails on) and on `IRegistryDriver.list()` + `get()`, so it covers **any** storage backend (S3 / GCS /
+  Azure Blob) with **any** registry backend — nothing about the check is backend-specific. What it verifies is
+  **presence**: that each segment's `currentGen` `.crbm` object *exists* in storage. It therefore catches the torn /
+  dangling-`currentGen` restore, but **not**:
   - **byte corruption inside a present object** — the trust boundary catches that on read, failing closed with
     `IntegrityError` (the per-chunk CRC), which is what the read spot-check in the procedure is for;
   - **a pointer that is valid but older than you intended** — a registry restored to an earlier point than you
     meant is stale, not torn, wherever the generations it names are still in the bucket, and reads serve a correct
     older view;
+  - **another object under the number** — an object put back under the generation's key that is not the one the row
+    names; use `summaries: true`, below, which holds the current one to the summary's fingerprint, and
+    `generations: true`, which holds every generation the row's ledger names to the footer checksum it recorded;
   - **objects above the pointer** — loads that published after the registry's restore point. Reads through a
     backend never see them (a store on a bare `IStorageDriver` serves the newest of them; see
     [readers still on an old generation](#readers-still-on-an-old-generation)); see
     [what a restore does and does not bring back](#what-a-restore-does-and-does-not-bring-back).
-- **`summaries: true` also checks what a count answers from.** The default check lists, and reads no object. With the
-  option it opens each segment's current object (one tail read each, a second for an index longer than that) and holds
-  the row's summary against it: the same id count and the same metadata. A segment whose summary disagrees is
-  reported as `summary-mismatch` in `inconsistent`. A sealed summary needs the store's keystore; a segment whose
-  summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row with no summary
-  has nothing to check.
+- **`summaries: true` also checks what a count answers from.** The default check reads no object: it asks whether
+  each one is there with a zero-length tail read, one request, and lists the segment's objects only when that read
+  does not find it. With the option it opens each segment's current object (one tail read each, sized from the summary so that it takes the
+  index however wide it is) and holds the row's summary against it: the object its fingerprint names, the same id count, the
+  same metadata and the same `tailBytes`. A segment whose summary disagrees is reported as `summary-mismatch` in `inconsistent`, and so is
+  a clear summary whose fingerprint names no object, which no read uses. A sealed summary needs the store's keystore;
+  a segment whose summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row
+  with no summary has nothing to check.
+- **`generations: true` also checks the older generations the row knows.** A row's ledger of known generations
+  (`knownGens`) records, for each generation it made current and has not decided to delete, the footer checksum of
+  its object. With the option the check reads the footer of every generation the usable ledger names, the current one
+  included, and compares its checksum with the entry. A generation whose object is not the one recorded is reported as
+  `known-generation-mismatch` in `inconsistent`, with the number in `generation` (it is `currentGen` when the current
+  object is the one that differs). It means the object under that number is not the one the row recorded: another
+  object put back under the key, or bytes that are not a `.crbm` object at all. It does not say what a rollback to
+  that generation does. With `summaries: true` as well, a swapped current object is in the report twice, once as
+  `summary-mismatch` and once with its `generation`.
+  - **What it covers.** It holds each object's footer to the recorded checksum, so it finds another object, or bytes
+    that are not a `.crbm`, under a known number. It does not find damage inside an object whose footer is intact (a
+    cut or a flipped byte in the body: a read of that generation reports it as `IntegrityError`), nor a metadata change
+    that keeps the footer's bytes: an object with the same ids and other metadata of the same length has the same
+    footer. A check of the bytes themselves is a read of the generation.
+  - **How a footer read is classed.** A footer whose checksum is not the recorded one, or that fails its own checks
+    (the bytes are not a `.crbm`, or are cut short of a footer), is a mismatch. A missing object is skipped. A storage
+    driver that answers a size that is not a byte count is the driver's fault, not the object's, so the segment lands
+    in `errored`, as does any other failed read.
+  - **The bound.** A segment adds at most 1 plus its ledger's length entries to `inconsistent` (its current object,
+    and one per ledger entry), and the ledger holds at most 384 entries (a library writer writes at most 192). The
+    report is not capped.
+  - **A generation missing from the bucket is not reported.** A lifecycle rule, a restore of the bucket from another
+    point than the registry, or an object removed by hand leaves ledger entries whose objects are gone, and they harm
+    nothing; reporting them would bury the torn restore this check is for. The check does not list the segment: a read of an object that is not there
+    answers `NotFoundError`, which is how an absent one is told. A current object that is missing is still
+    `missing-storage-generation`, and the older generations of that row are still held.
+  - **A ledger it cannot use is counted, not read.** A row with a pointer whose ledger is absent, or fails the
+    validation every reader of it applies (it does not end at the pointer, or its last checksum is not the one the
+    row's clear summary carries), or is not shaped as a registry of this library stores it (an array of at most 384
+    entries, each exactly a non-negative whole `generation` and a `footerCrc` from 0 to 2^32 - 1, no number twice; a
+    registry of your own can hand back anything), is counted in
+    `generationsUnchecked` and none of its objects is read. The count is present only when `generations` was asked for. A row with no pointer is skipped, as ever, and is not counted.
+  - **It needs no key.** A footer is readable whether the object is sealed or not, and the ledger's checksum is the
+    footer's, so the check fetches no key and a store with no keystore checks sealed rows too.
+  - **Each footer is one 104-byte read, and is not retried, as the check's other reads are.** A read that fails, a
+    transient fault included, stops that segment's footer reads and lands the segment in
+    `errored`, with the mismatches found before it kept. A segment's footer reads run one after another, so the check
+    never has more requests in flight than its `concurrency`; a segment with a wide ledger (up to 128 entries on a
+    destination an `*Into` call wrote) is correspondingly slower than one with two. Its cost is in
+    [what a consistency check costs](cost.md).
+- **A store that answers reads but refuses listings does not make every segment errored.** An identity without list
+  permission, or a listing-only outage, leaves the zero-length read to answer, so each object that is there is
+  reported present. A segment whose object that read does not find is settled by the listing, and its error, if it
+  fails, is the segment's.
 - **A segment with no Storage generation is healthy, not torn.** A registry row whose `currentGen` is `null` says
   *this segment exists and has no Storage data yet* — a row minted by `setRetention` ahead of the first load, so the
   policy is recorded before the data. There is no generation that ought to exist, so nothing can be missing, and
@@ -548,23 +616,49 @@ await store.rollback(ref, 4, { audit });   // put the pointer on one that exists
 await store.checkConsistency();            // confirm
 ```
 
-`rollback` refuses rather than guessing: a generation not in the bucket throws `NotFoundError` and **names what is
-available**, a `destroyed` row (a crypto-shred's or a drop's tombstone) throws `ValidationError`, a row that
-changed after `rollback` read it throws `WriteConflictError` and moves nothing, and a target *above* the pointer
-needs an explicit `allowForward: true` — above the pointer is where objects live that may never have been current,
-such as a load that wrote its object and died before the publish. Make a forward move with
-`await store.rollback(ref, n, { allowForward: true, audit })`; `store.rollback` invalidates its own store. It deletes
-nothing, so the rollback is itself reversible. It records the move as `segment.rollback` on the `audit` sink passed
-to the call, and that event is the only record the library makes of it: with no sink, it records nothing. A
-rollback to the generation already current changes nothing and records nothing.
+`rollback` refuses rather than guessing, and the row says what it can vouch for. After a restore of the registry, the row
+is the version you copied back, and its `knownGens` lists the generations that row knew: roll back to one of them with
+no flag, with or without a key, since the footer checksum the row recorded vouches for the object. A generation
+published after that version needs `{ allowUnknown: true }`, and the key on an encrypted segment. `store.generations(ref)`
+lists such a generation with `known: false`. A row whose pointer you moved by hand with `backend.registry.compareAndSwap`
+has no `knownGens`: a rollback below its pointer needs no flag and no key (the pointer alone decides), and its audit event says
+`unknown: true`. Until the next load writes a new list, such a row has none of the checks a list gives (a rollback writes none).
 
-**A rollback can fail half-way.** It moves the pointer and then checks the target is still in the bucket, because
-collection can take a generation below the pointer between the listing and the move. If the target has gone, it
-moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
+```ts
+await store.generations(ref);
+// [{ generation: 4, current: false, known: true },
+//  { generation: 5, current: true,  known: true },    // the restored row's pointer
+//  { generation: 6, current: false, known: false }]   // a stray above it, published after the restore point
+await store.rollback(ref, 4, { audit });                      // either: the row knows 4, so no flag
+await store.rollback(ref, 6, { audit, allowUnknown: true });  // or: move onto the stray, which the row cannot vouch for
+```
+
+The current generation is always known on a row whose list is usable, so `generations()` never marks it `known: false`.
+Otherwise: a generation the row does not know throws `ValidationError`, before any request to storage; a known
+generation whose object is another one than the row recorded throws `IntegrityError`; a generation not in the bucket
+throws `NotFoundError` and **names what is available**; a `destroyed` row (a crypto-shred's or a drop's tombstone)
+throws `ValidationError`; and a row that changed after `rollback` read it throws `WriteConflictError` and moves nothing.
+A generation above the pointer that a rollback left is known, so undoing a rollback needs no flag; `store.rollback`
+invalidates its own store. It deletes nothing, so the rollback is itself reversible. It records the move as
+`segment.rollback` on the `audit` sink passed to the call, with `unknown: true` when the row did not vouch for the
+target, and that event is the only record the library makes of it: with no sink, it records nothing. A rollback to the
+generation already current changes nothing and records nothing, once one footer read finds its object, and the one the
+row recorded; when the object is gone it throws `NotFoundError` naming what is in the bucket.
+
+**A rollback can fail half-way.** It moves the pointer and then reads the target's footer once more, because a
+collection can take a generation below the pointer between its read of the target and the move when the row does not
+hold it off: for a rollback with `allowUnknown`, and for one below the pointer on a row with no list or below a full
+list's bound. An erasure takes what it will delete out of the list first, so a rollback without the flag cannot land on a
+generation an erasure is deleting, outside the two cases the pointer alone decides (a row with no usable list, or below a
+full list's bound). If the target has gone, or another object holds its
+number, it moves the pointer back and throws `NotFoundError` saying `the pointer was put back`. If moving it back fails too
 (the row changed again, or the registry write failed), it throws `NotFoundError` saying
 `the move back failed, so the pointer may still name <n>`. It says "may" because a write that landed and lost its
 response reads as a failure: the pointer may already be back, or moved elsewhere by the write that beat the undo,
-or still on the missing generation, the torn state this section resolves.
+or still on the missing generation, the torn state this section resolves. A move that gets no answer at all
+(`TransientError`) is settled by reading the row: one the row shows landed (the row is the one the move leaves) is
+checked as above, and otherwise the rollback throws the `TransientError`, and the pointer may still move, since the
+write may yet land.
 Check with `store.generations(ref)`, which marks the current generation, and `checkConsistency()`; roll back again
 to a generation it lists, or restore the object. Neither failure records `segment.rollback` — the event is emitted
 only once the pointer is on the target — so keep the error with your incident record.
@@ -574,7 +668,8 @@ only once the pointer is on the target — so keep the error with your incident 
 > pointer, and not one above it, which is where a rollback leaves the generations it rolled back from. An erasure
 > performed *after* a rollback deletes **every** generation up there that holds the id, so no rollback can bring
 > the id back. If the generation the pointer names does not hold the id, the ones up there that never held it stay
-> as rollback targets; if it does, the rewrite is numbered above everything and its `keep: 0` collection takes
+> as rollback targets, but for any object no read of the segment can open, which goes whatever the id; if it does, the
+> rewrite is numbered above everything and its `keep: 0` collection takes
 > every older generation, above the pointer or below. A rollback that lands *while* an
 > erasure is running is not attested over: that erasure reports `note: 'superseded'`, or an `error: …` note if
 > its rewrite had already published, and a re-run settles it. So if you roll back a segment while a subject
@@ -584,15 +679,17 @@ only once the pointer is on the target — so keep the error with your incident 
 
 The registry reads a row only in a shape the library writes, and refuses anything else rather than guess at it:
 a body that is not JSON, that has no `schemaVersion`, that carries a field the library does not write (at the top
-level or in the record) or one its `schemaVersion` did not have, or that holds a value out of range, such as an
-unknown `status`, a malformed `wrappedDeks` list, a malformed `summary`, or a `token` in none of the forms the
-library writes. A row stamped 1 holds a decimal counter; one stamped 2 holds a decimal counter and a write part
-(16 lowercase hex digits), `.`-separated, or 32 lowercase hex digits of incarnation id before those two. Each is an
+level or in the record), or that holds a value out of range, such as an unknown `status`, a malformed `wrappedDeks`
+list, a malformed `summary` (one without the fingerprint of its object included), a malformed `knownGens` or `leases`
+list, a `token` in any form but the library's, or a `pointerId` that is not one of the row's own tokens. A token is 32
+lowercase hex digits of incarnation id, a decimal counter and a write part (16 lowercase hex digits), `.`-separated; a
+`pointerId` has the same form, the token's incarnation and a counter no higher than the token's. Each is an
 `IntegrityError`, and its message names the row's key, except for a row over the 1 MiB size cap and a malformed
-`wrappedDeks` list. This release writes rows stamped 2 and reads rows stamped 1 or 2. A row with a higher
-`schemaVersion` than this build reads was written by a newer release; it is refused with `UnsupportedError`, and the
-fix is to upgrade the process reading it, not to touch the row. A release before 0.12 refuses every row this one
-writes the same way.
+`wrappedDeks` list. Rows are stamped `schemaVersion` 5, and the registry reads rows stamped 5 only. A row with another
+`schemaVersion` is refused with `UnsupportedError` naming its key: a higher one was written by a newer release, and the
+fix is to upgrade the process reading it, not to touch the row; one stamped 1 to 4 cannot be read, deleted or dropped
+by the library, and the fix is to move the bucket's segments to a new prefix by the steps in the [CHANGELOG](../../CHANGELOG.md)'s Breaking entry for registry schema 5, then delete the old one. A process that
+reads an older schema refuses a schema-5 row the same way.
 
 One refused row costs far more than its own segment:
 
@@ -616,7 +713,7 @@ copy. An object under the prefix whose key is not a row's key is skipped by the 
 
 1. If a version of it that the library wrote is available — a noncurrent object version, or a backup of the
    file — copy that version back to current, as restore step 4 does. Then restart or invalidate the stores over
-   the bucket, as after any registry restore: the row moves back to the token it had then.
+   the bucket, as after any registry restore: the row moves back to the token and the `pointerId` it had then.
 2. If there is no such version, delete the object with the object store's own delete; `registry.delete(ref)` cannot,
    since it has to read the row first. That also removes any token counter the key held, so a row created later
    under the same name starts its counter again at 0, under a new random incarnation id that keeps its tokens apart
@@ -640,7 +737,10 @@ resolution:
 - **Torn restore** (registry recovered ahead of storage) and a **lost `.crbm`** are detected as
   `missing-storage-generation`, then cleared by rolling `currentGen` back with `store.rollback`, which records a
   `segment.rollback` (remedy (b) above), or by restoring the object from backup (remedy (a)). A read of the torn
-  segment's object fails with `NotFoundError` until then, while its count answers the row's number.
+  segment's object fails with `NotFoundError` until then, while its count answers the row's number. The drill moves the
+  pointer with a raw registry write, which leaves the row with no `knownGens`, so its rollback needs no flag and its
+  audit event says `unknown: true`; a second case keeps the row, deletes the current generation's object, and shows the
+  rollback onto the generation below it checked against the row, with no flag and no `unknown` on its event.
 - **Byte corruption inside a present `.crbm`** is the one case `checkConsistency()` **cannot** see — it verifies
   the generation is *present*, not its bytes. The drill confirms the sweep stays clean **and** that a read fails
   closed with `IntegrityError` (the per-chunk CRC), so the corruption surfaces at the trust boundary, not as a
@@ -734,23 +834,40 @@ current versions.
   object holds it, and collection usually freed the numbers just above the restored pointer, so the first re-runs can
   number *below* the strays and leave them above the pointer; the first load whose number a stray holds numbers
   above every object in the bucket, which puts them all below the pointer. List `store.generations(ref)` and load
-  until the pointer is above the highest stray. Below the pointer, collection counts them within `keep` like any
-  other generation: `keep` counts every generation below the new pointer, strays first, so collection takes
-  all but the newest `keep` of them, and each later load takes one more. Under the default `keep: 1` it keeps the
-  newest stray and collects the rest, the restored generation included. The re-runs that number below the strays
-  are generations below the pointer too, so by the time the pointer passes the strays every number from the restored
-  pointer to the highest stray can be there: if the restored generation must stay a rollback target, pass a `keep` of
-  at least the highest stray minus the restored pointer, plus one, on every re-run until the pointer is above the
-  strays. With the pointer restored to 1 and strays at 4 and 5, that is `keep: 5`; a `keep` of the number of strays
-  plus one, 3, collects generation 1 on the re-run that passes them. Do not hand-publish an
-  object you cannot vouch for. A stray
-  above the pointer is a whole object — every backend commits an object atomically, so a crash never leaves a
-  partial one — but the bucket cannot tell you whether it was ever current. After a restore it is usually a load
-  published after `T`; otherwise it can be a load whose process died between writing and publishing, a load refused
-  or superseded after the row changed, or a load whose publish threw. A `TransientError` from a load whose registry
-  writes were never answered leaves its object for that reason: a write can still land after the load returned, and
-  then points the row at it, so a load never deletes it. A rollback with
-  `allowForward: true` will point at it if asked.
+  until the pointer is above the highest stray.
+
+  Below the pointer, collection treats the strays as any generation no load published there. A row restored from a
+  backup carries the window its ledger (`knownGens`) names as of the restore, and a row repaired by hand names none: the
+  first load that publishes over it writes the window a count by `keep` keeps from the bucket, the generation the row
+  named as current first and then the newest by number. From then on each load draws its window from the ledger, the
+  `keep` most recently current generations, and the load that passes the strays lists the segment and deletes every
+  generation below its pointer that the ledger does not name, the strays among them.
+
+  The re-runs that number below the strays are generations below the pointer too, so by the time the pointer passes
+  the strays every number from the restored pointer to the highest stray can be there. With generations 0 and 1 from
+  before `T`, the pointer restored to 1, and strays at 4 and 5, re-runs publish 2 and 3, and the next numbers 6, past
+  the strays. Each re-run uses the same `keep`, and the bucket then holds, whether the restored row names a window or not:
+
+  | `keep` | the bucket after the load that passes the strays |
+  |---|---|
+  | `1` | 3, 6 |
+  | `3` | 1, 2, 3, 6 |
+  | `5` | 0, 1, 2, 3, 6 |
+
+  So under the default `keep: 1` the load that passes the strays keeps only the generation it superseded, the last
+  re-run, and collects the rest, the strays and the restored generation included. If the restored generation must stay a
+  rollback target, pass a larger `keep` on every re-run until the pointer is above the strays: `keep: 3` keeps generation
+  1 here, and `keep: 5` keeps generation 0 as well. The strays go at the load that passes them whatever `keep` is, unless a window holds them.
+
+  Do not hand-publish an object you cannot vouch for. A stray above the pointer is a whole object — every backend
+  commits an object atomically, so a crash never leaves a partial one — but the bucket cannot tell you whether it was
+  ever current. After a restore it is usually a load published after `T`; otherwise it can be a load whose process died
+  between writing and publishing, a load refused or superseded after the row changed, or a load whose publish threw. A
+  `TransientError` from a load whose registry writes were never answered leaves its object for that reason: a write can
+  still land after the load returned, and then points the row at it, so a load never deletes it. A rollback with
+  `allowUnknown: true` will point at it if asked: a restored row does not know a stray above its pointer, so a rollback
+  without the flag throws `ValidationError`, and with it, on an encrypted segment, only from a store whose keystore opens
+  the segment's key, and only when the object opens under it.
 
 ## Not shipped: rebuilding the registry from storage
 

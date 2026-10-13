@@ -1,7 +1,13 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '../helpers/publish';
 import { randomBytes } from 'node:crypto';
-import { MemoryStorage, CloudRoaring, CrbmStorageChunkSource } from '@/index';
+import {
+  MemoryStorage,
+  CloudRoaring,
+  CrbmStorageChunkSource,
+  destroySegment,
+  eraseNamespace,
+} from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   NotFoundError,
@@ -9,7 +15,7 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@/core/errors';
-import type { IKeystore, SegmentRef } from '@/index';
+import type { IKeystore, IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { dropSegment } from '@cloudbitmaps/core';
@@ -764,5 +770,117 @@ describe('segment.dispose audit event', () => {
       audit: { onEvent: (e) => events.push(e) },
     });
     expect(events).toEqual([]);
+  });
+
+  it('names a generation once when the listing yields its object twice', async () => {
+    const w = await world();
+    await seed(w, [1]);
+    await seed(w, [1, 2]);
+    const storage = new Proxy(w.storage, {
+      get(target, prop, rx) {
+        if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
+        return async function* (ref: SegmentRef) {
+          for await (const key of w.storage.list(ref)) {
+            yield key;
+            yield key;
+          }
+        };
+      },
+    });
+    const deps: DropDeps = { storage, registry: w.registry };
+
+    const preview = await dropSegment(SEG, deps, { ...CONFIRM, dryRun: true });
+    expect(preview.wouldDelete).toEqual([0, 1]);
+
+    const dropped = await dropSegment(SEG, deps, CONFIRM);
+    expect(dropped.generationsDeleted).toEqual([0, 1]);
+    expect(await generationsInStorage(w)).toEqual([]);
+  });
+});
+
+describe('the shred an erasure runs: its options and the command it names', () => {
+  const SHRED_SEG: SegmentRef = { namespace: 'ns', segment: 'seg' };
+
+  /** `registry` with every compare-and-swap refused as contention, and `create` as a lost race when asked to. */
+  const contended = (
+    registry: IRegistryDriver,
+    createRaces?: (ref: SegmentRef) => Promise<void>,
+  ): IRegistryDriver =>
+    new Proxy(registry, {
+      get(target, prop, receiver) {
+        if (prop === 'compareAndSwap') {
+          return async () => {
+            throw new WriteConflictError('contended');
+          };
+        }
+        if (prop === 'create' && createRaces !== undefined) {
+          return async (ref: SegmentRef) => {
+            await createRaces(ref);
+            throw new WriteConflictError('lost the race');
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as IRegistryDriver;
+
+  it('eraseNamespace leaves a cleartext segment alone unless asked, and destroys it when asked', async () => {
+    const w = await loadedStore({}, { retry: false });
+    await w.load(SHRED_SEG, [1, 2, 3]);
+    const deps = { storage: w.storage as IStorageDriver, registry: w.registry };
+    const refused = await eraseNamespace('ns', deps, { confirmNamespace: 'ns' });
+    expect(refused.destroyed).toMatchObject([{ destroyed: false, reason: 'cleartext' }]);
+    expect((await w.registry.get(SHRED_SEG))?.status).toBe('active');
+    const allowed = await eraseNamespace('ns', deps, {
+      confirmNamespace: 'ns',
+      allowCleartext: true,
+    });
+    expect(allowed.destroyed).toMatchObject([{ destroyed: true }]);
+  });
+
+  it('destroySegment leaves a cleartext segment alone unless asked', async () => {
+    const w = await loadedStore({}, { retry: false });
+    await w.load(SHRED_SEG, [1, 2, 3]);
+    const deps = { storage: w.storage as IStorageDriver, registry: w.registry };
+    const refused = await destroySegment(SHRED_SEG, deps, { confirmSegment: 'seg' });
+    expect(refused).toMatchObject({ destroyed: false, reason: 'cleartext' });
+    expect((await w.registry.get(SHRED_SEG))?.status).toBe('active');
+  });
+
+  it('destroySegment and dropSegment each name themselves when the shred gives up on contention', async () => {
+    const w = await loadedStore({}, { retry: false });
+    await w.load(SHRED_SEG, [1, 2, 3]);
+    const deps = { storage: w.storage as IStorageDriver, registry: contended(w.registry) };
+    await expect(
+      destroySegment(SHRED_SEG, deps, { confirmSegment: 'seg', allowCleartext: true }),
+    ).rejects.toThrow(/^destroySegment: contention shredding/);
+    await expect(dropSegment(SHRED_SEG, deps, { confirmSegment: 'seg' })).rejects.toThrow(
+      /^dropSegment: contention shredding/,
+    );
+  });
+
+  it('a drop that loses the race to create the row names itself too, when the shred it falls back to gives up', async () => {
+    const w = await loadedStore({}, { retry: false });
+    await w.load(SHRED_SEG, [1, 2, 3]);
+    // The row a racing writer would have created is there once `create` says it lost; with no row at the first look,
+    // the drop meets it only in the fallback shred.
+    const real = w.registry;
+    let hidden = true;
+    const registry = new Proxy(
+      contended(real, async () => void (hidden = false)),
+      {
+        get(target, prop, receiver) {
+          if (prop === 'get') return async (ref: SegmentRef) => (hidden ? null : real.get(ref));
+          return Reflect.get(target, prop, receiver) as unknown;
+        },
+      },
+    ) as IRegistryDriver;
+    await expect(
+      dropSegment(
+        SHRED_SEG,
+        { storage: w.storage as IStorageDriver, registry },
+        { confirmSegment: 'seg' },
+      ),
+    ).rejects.toThrow(/^dropSegment: contention shredding/);
   });
 });

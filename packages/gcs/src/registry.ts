@@ -38,19 +38,30 @@ import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
   TransientError,
-  ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
+  requireBool,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import type { Storage } from '@google-cloud/storage';
-import { isNotFound, isPreconditionFailed, isTransient, isTransportFault } from './gcs-errors';
+import {
+  asMissingBucket,
+  missingBucketError,
+  isNotFound,
+  isPreconditionFailed,
+  isTransient,
+  transientFaultMessage,
+} from './gcs-errors';
+import { BucketPresence } from './bucket-presence';
+import { crc32cBase64 } from './crc32c';
 import { retryDownload } from './download-retry';
+import { scrubCredentials } from './scrub-error';
 import { downloadFile, readOnce, singleHeader } from './read-once';
 import { ReadTimedOut, resolveReadTimeoutMs, startDeadline } from './read-timeout';
 import { saveOnce } from './send-once';
 
-export interface GcsRegistryDriverOptions {
+interface GcsRegistryDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
   /** The client the downloads go through; `storage` when absent (see `GcsStorageDriverOptions.readStorage`). */
@@ -69,8 +80,7 @@ export interface GcsRegistryDriverOptions {
   readonly readTimeoutMs?: number;
   /**
    * Whether a delete removes a row for good, by an object delete sent with `ifGenerationMatch: <the generation it
-   * read>`, rather than leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before
-   * 0.12 wrote is always tombstoned. Defaults to `false`, on the public endpoint too: whether real GCS applies
+   * read>`, rather than leaving a tombstone. Defaults to `false`, on the public endpoint too: whether real GCS applies
    * `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server accepts the
    * precondition and ignores it, so CI cannot show it. Set `true` to remove rows for good.
    */
@@ -80,6 +90,7 @@ export interface GcsRegistryDriverOptions {
 /** The calls {@link ObjectStoreRegistry} needs, in GCS's dialect. Exported for the tests that drive one directly. */
 export class GcsRegistryStore implements ObjectRegistryStore {
   readonly label = 'GCS';
+  private readonly presence: BucketPresence;
 
   constructor(
     private readonly storage: Storage,
@@ -87,7 +98,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     private readonly bucket: string,
     private readonly readTimeoutMs: number,
     readonly conditionalDelete: boolean,
-  ) {}
+  ) {
+    this.presence = new BucketPresence(storage, bucket);
+  }
 
   /** A handle on one registry object. */
   private file(name: string) {
@@ -123,8 +136,11 @@ export class GcsRegistryStore implements ObjectRegistryStore {
         deadline,
       );
     } catch (err) {
-      if (isNotFound(err)) return null;
-      throw mapReadError(err);
+      if (isNotFound(err)) {
+        await this.presence.confirm(); // a missing bucket is an error, not an absent row
+        return null;
+      }
+      throw mapReadError(err, this.bucket);
     }
     if (res.status !== 200) {
       throw new IntegrityError(`registry read answered HTTP ${res.status}, not 200: ${key}`);
@@ -153,6 +169,11 @@ export class GcsRegistryStore implements ObjectRegistryStore {
       // of data over two.
       await saveOnce(this.file(key), body, {
         contentType: 'application/json',
+        // The checksum goes with the upload, for GCS to check before it stores anything. The SDK's own check runs
+        // after the upload instead, and on a mismatch, or an answer that names no checksum, deletes the object by
+        // name with no precondition: for a row, that is the live row, another writer's newer one included.
+        validation: false,
+        metadata: { crc32c: crc32cBase64(body) },
         preconditionOpts: {
           ifGenerationMatch: expect === 'absent' ? 0 : generationFence(expect.version, key),
         },
@@ -161,7 +182,9 @@ export class GcsRegistryStore implements ObjectRegistryStore {
       if (isPreconditionFailed(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
-      throw mapError(err);
+      // A row write's 404 can be the bucket's: settle it before it is passed on.
+      if (isNotFound(err)) await this.presence.confirm();
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -174,9 +197,10 @@ export class GcsRegistryStore implements ObjectRegistryStore {
     } catch (err) {
       // A 412 (the generation moved on) or a 404 (the object is gone): the version to delete is not there.
       if (isPreconditionFailed(err) || isNotFound(err)) {
+        if (isNotFound(err)) await this.presence.confirm();
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -192,9 +216,15 @@ export class GcsRegistryStore implements ObjectRegistryStore {
           .bucket(this.bucket)
           .getFiles({ prefix, autoPaginate: false, maxResults: 1000, pageToken });
       } catch (err) {
-        throw mapError(err);
+        // A listing names no object, so its 404 can only be the bucket's.
+        if (isNotFound(err)) throw missingBucketError(this.bucket, scrubCredentials(err));
+        throw mapError(err, this.bucket);
       }
       for (const f of files ?? []) yield f.name;
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (next?.pageToken !== undefined && next.pageToken === pageToken) {
+        throw new IntegrityError('GCS listing returned the page token it was given');
+      }
       pageToken = next?.pageToken;
     } while (pageToken !== undefined);
   }
@@ -214,38 +244,27 @@ function generationFence(version: string, key: string): number {
   return generation;
 }
 
-/** A read's error: a connection that failed or was cut off is transient too, after the driver's retries. */
-function mapReadError(err: unknown): unknown {
+/**
+ * A read's error: a connection that failed or was cut off is transient too, after the driver's retries, whichever code
+ * Node gave it, as `isTransient` takes every transport fault.
+ */
+function mapReadError(err: unknown, bucket: string): unknown {
+  err = scrubCredentials(err);
   // Timed out on every attempt: transient, in words that name the read and the timeout.
   if (err instanceof ReadTimedOut) return new TransientError(err.message, { cause: err });
-  if (isTransportFault(err)) {
-    return new TransientError(`transient GCS fault: ${String((err as { code?: unknown }).code)}`, {
-      cause: err,
-    });
-  }
-  return mapError(err);
+  return mapError(err, bucket);
 }
 
-/** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */
-function mapError(err: unknown): unknown {
-  if (isTransient(err)) {
-    return new TransientError(
-      `transient GCS fault: ${(err as { code?: unknown } | null)?.code ?? (err as { name?: string } | null)?.name ?? 'unknown'}`,
-      { cause: err },
-    );
-  }
-  return err;
-}
-
-/** {@link GcsRegistryDriverOptions.conditionalDelete}, checked, or its default: off. */
-function resolveConditionalDelete(value: unknown): boolean {
-  if (value === undefined) {
-    return false;
-  }
-  if (typeof value !== 'boolean') {
-    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
-  }
-  return value;
+/**
+ * Reclassify a transient GCS fault as a retryable {@link TransientError} and a missing bucket as a `ValidationError`;
+ * any other error is passed through.
+ */
+function mapError(err: unknown, bucket: string): unknown {
+  return toTransient(
+    asMissingBucket(scrubCredentials(err), bucket),
+    isTransient,
+    transientFaultMessage,
+  );
 }
 
 export class GcsRegistryDriver extends ObjectStoreRegistry {
@@ -256,7 +275,7 @@ export class GcsRegistryDriver extends ObjectStoreRegistry {
         options.readStorage ?? options.storage,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        resolveConditionalDelete(options.conditionalDelete),
+        requireBool('conditionalDelete', options.conditionalDelete) ?? false,
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

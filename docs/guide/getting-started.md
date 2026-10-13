@@ -88,8 +88,15 @@ await store.load({ segment: 'active-this-week' }, [1, 2, 3]);
 // A new process that opens the same folder reads the same set.
 ```
 
-`LocalFsStorage` is for one process on one folder: two processes on the same folder do not protect each other from
+`LocalFsStorage` creates its files owner-only (`0600`) and its directories `0700`, whatever the process umask, so another user of the machine cannot read or list your segments; a missing parent of the root is created with the default mode, an existing directory keeps the mode it has, a registry row is always rewritten `0600`, and Windows ignores modes. It is for one process on one folder: two processes on the same folder do not protect each other from
 writing at once. Use it for a laptop, a test or a single CI job. For anything shared, use a bucket.
+
+Names keep their case, but a case-insensitive filesystem (the macOS and Windows default) would open one file for
+`TenantA` and `tenanta`. `LocalFsStorage` compares the name it finds on disk exactly, so there a name in another case
+reads as absent, and a load that would write beside an existing case variant fails with a `ValidationError` that says
+so. The on-disk layout does not change, and a case-sensitive filesystem pays nothing for the check. A name is also
+refused, before anything is written, when a file name derived from it (the segment, its generation and the temp file's
+suffix, or the namespace directory) would pass the 255 bytes filesystems allow: about 207 characters of segment name.
 
 ## Load real data
 
@@ -203,8 +210,8 @@ The *read* side carries over one-for-one:
 | `BITOP AND dst a b` | `a.intersect([b])` / `a.intersectInto(dst, [b])` | streams, and skips chunks that cannot contribute; `dst` becomes a new generation |
 | `BITOP OR dst a b` | `a.union([b])` / `unionInto` | none in meaning |
 | `BITOP DIFF dst a b` (Redis 8.2+) | `a.andNot([b])` / `andNotInto` | none in meaning; reads `b` only where it overlaps `a` |
-| `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
-| `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
+| `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | `store.materializeMany` with `expr: { and: ['x', { or: ['y1', 'y2'] }] }` | one pass, no temp segment; one call can write many such outputs ([many outputs from one pass](loading.md#many-outputs-from-one-pass-materializemany)) |
+| `BITOP XOR` | `store.materializeMany` with `expr: { andNot: [{ or: ['a', 'b'] }, { and: ['a', 'b'] }] }` | one pass: `(a ∪ b) \ (a ∩ b)`, written to a segment |
 | `BITOP NOT` · `BITOP ONE` | — | no equivalent |
 | `SETBIT key id 1` / `SETBIT key id 0` | — | **no per-id write.** Build the set upstream and `store.load()` it; remove one id everywhere with `eraseSubject` (a rewrite, for compliance — not a hot-path verb) |
 | `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [retention](retention.md#retention-ttl-and-pruning--what-exists-and-what-doesnt) |
@@ -259,7 +266,9 @@ keys of encrypted segments all live there. There is no second service to run.
 - **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, and which resource each one goes on.
 - **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
-  generation can be overwritten without an error. Check yours.
+  generation can be overwritten without an error. It must also answer a read of an object as missing as soon as its
+  delete returns (read-after-delete): a rollback reads the target's footer once after moving the pointer and takes a
+  read that succeeds as proof the object is there. Check yours.
 - **If you pass your own `client`, use `@aws-sdk/client-s3` 3.700.0 or later.** Older versions drop a conditional
   header they do not model, without an error: they overwrite an existing object, which loses a published generation,
   or send the registry's compare-and-swap unconditionally. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.
@@ -400,17 +409,19 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
 | **ref** | The object that names a segment: `{ segment: 'active' }` or `{ namespace, segment }`. |
 | **chunk** | A block of up to 65,536 consecutive ids inside a generation. Reads fetch only the chunks they need. |
 | **cardinality** | How many ids a set holds. |
-| **guard** | The `guard` option of a load, such as `{ minRetained: 0.5 }`: it refuses a result smaller than you allow instead of publishing it. Without one, a load still refuses an empty result over a non-empty segment. |
+| **guard** | The `guard` option of a load, such as `{ minRetained: 0.5 }`, or `{ maxGrowth: 1.5 }` for the other direction: it refuses a result smaller or larger than you allow instead of publishing it. Without one, a load still refuses an empty result over a non-empty segment. |
 | **keep** | How many old generations a load leaves behind for readers still using them. The default, `1`, is right for almost everyone. |
 | **operand** | A segment you combine with another: in `a.intersect([b])`, `b` is an operand. |
 | **exclude** | A segment whose ids are removed from the result of a combine, in the same pass. |
-| **combine** | `intersect`, `union` or `andNot`: a read that combines a segment with others. Each has an `*Into` twin that writes the result as a new generation of another segment. |
+| **combine** | `intersect`, `union` or `andNot`: a read that combines a segment with others. Each has an `*Into` twin that writes the result as a new generation of another segment, and `store.materializeMany` writes many such results, each an expression over named operands, in one pass. |
 | **collect** | Delete old generations that a newer one has superseded. A load does it as its last step and leaves `keep` of them. |
 | **`cache.genTtlMs`** | How long a reader may keep serving the generation it has before it checks for a newer one: 2 s by default. See [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load). |
 | **sweep** | `store.retireExpired()`, which you schedule: it retires the segments whose recorded expiry has passed. |
+| **dry run** | `dryRun: true` on `materializeMany`, `dropSegment` or `retireExpired`: the call reads what it would read and reports what it would do, and writes nothing. |
 | **pin** | `segment.pin()` returns a handle that keeps reading the generation that was current when you pinned it. |
 | **tombstone** | The row a dropped or crypto-shredded segment leaves behind, marking it as gone. |
 | **token** | An opaque value the registry row carries. Every write to the row changes it, so a write can tell whether the row moved since it read it. |
+| **`pointerId`** | The token of the last write that named a field a read resolves through (the generation, the status, the keys or the summary), at any value. A reader keys what it caches on the generation with it, so a lease or a retention write leaves its caches warm. |
 | **fence** | A write that names the generation and token it expects to replace, and is refused if either moved. Loads do this for you. |
 
 ## Where next

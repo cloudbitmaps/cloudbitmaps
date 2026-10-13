@@ -5,8 +5,8 @@
  * Design: the library emits **neutral domain events** and stays vendor-agnostic — you (or a ~12-line
  * adapter) map them to OpenTelemetry / Datadog / a log line. The default is a **no-op**, and emission is
  * skipped entirely when no sink is wired (near-zero overhead, no telemetry dependency). Events carry **raw
- * observations** (bytes, counts, ms); turning those into billable units / dollars is the cost model's job,
- * which keeps rates pluggable.
+ * observations** (bytes, counts, ms); turning those into billable units / dollars is left to whoever reads them,
+ * which keeps rates out of the library (`@cloudbitmaps/tools` prices a workload you give it).
  *
  * Two caveats for sink authors: `onEvent` runs **synchronously on the I/O path**, so keep it cheap and
  * non-blocking (offload batching/network to your own async queue); and `segment`/`namespace` are
@@ -15,8 +15,19 @@
  * guide.
  */
 
-/** The segment operations that emit an `op` latency event (timed with the injected clock, at the facade). */
-export type MetricOpName = 'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto';
+import { ignoreRejection } from './audit';
+import { ValidationError } from './errors';
+
+/**
+ * The operations that emit an `op` latency event (timed with the injected clock, at the facade). `materializeMany` is
+ * timed from its first request, the pins, to its last publish: a call its input checks refuse emits none.
+ *
+ * A name added here stops two kinds of code compiling: a sink that switches on `name` with an exhaustive `never` check
+ * (add a case, or use a `default` branch, which needs no change), and a `Record<MetricOpName, …>` built by hand, a
+ * `MetricsSnapshot` literal among them (add the key).
+ */
+export type MetricOpName =
+  'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto' | 'materializeMany';
 
 /**
  * One observability event. A discriminated union on `kind` — new variants can be added over time without
@@ -29,20 +40,30 @@ export type MetricEvent =
       readonly kind: 'storage.get';
       readonly namespace?: string;
       readonly segment: string;
-      /** One event per request, however many callers were waiting on it. Bytes returned (0 if the chunk was absent — a GET still happened). */
+      /**
+       * One event per request for chunks: a range request of a combine, `iterate` or `materializeMany`, which carries
+       * every chunk the read needs from a stretch of the object, or the one chunk of a read made on its own, however
+       * many callers were waiting on it. A `materializeMany` range serves every output of its group, so its events
+       * count the requests the call sent, not requests per output. Bytes returned: the range's, the gaps between its
+       * chunks included (0 if a single chunk was absent — a GET still happened).
+       */
       readonly bytes: number;
       /**
-       * Elapsed wall time of the read — includes any transient-retry backoff on the storage call. From the
-       * injected clock, clamped to ≥ 0 (0 under the no-wait test clock).
+       * Elapsed wall time of the request — includes any transient-retry backoff on the storage call. From the
+       * injected clock, clamped to ≥ 0 (0 under the no-wait test clock). For a range of a stream, the time from the
+       * range being asked for to its answer, which the source measures.
        */
       readonly ms: number;
     }
   | {
       /**
-       * One decoded-chunk cache lookup (emitted only when a cache is configured). `hit: false` means the lookup found
-       * no cached chunk. A caller that missed while another caller's read of the same chunk was open waits on that
-       * read and adds no `storage.get`, so the misses can outnumber the `storage.get` events; the `storage.get`
-       * count is the number of requests.
+       * One decoded-chunk cache lookup, or one chunk counted a miss without a lookup (emitted only when a cache is
+       * configured). `hit: false` means the cache did not hold the chunk. A combine or `iterate` counts every chunk it
+       * needs when it opens its streams: a lookup each, except that on a cache that holds nothing each chunk after the
+       * one a stream starts at is counted a miss without one. A caller that
+       * missed while another caller's read of the same chunk was open waits on that read and adds no `storage.get`, and a
+       * range carries several chunks, so the misses can outnumber the `storage.get` events; the `storage.get` count is
+       * the number of requests for chunks. `materializeMany` never looks up the cache, so it emits none.
        */
       readonly kind: 'cache';
       readonly hit: boolean;
@@ -56,6 +77,10 @@ export type MetricEvent =
       readonly delayMs: number;
     }
   | {
+      /**
+       * One per chunk-aligned combine of one operator. `materializeMany` emits none: an output is an expression over
+       * several operators, and the call's `stats.chunks.pruned` counts the index keys it did not read.
+       */
       readonly kind: 'intersect';
       /**
        * Which chunk-aligned combine this was. **Optional** — absent means `'intersect'`.
@@ -88,7 +113,32 @@ export type MetricEvent =
        */
       readonly skippedChunks: number;
     }
-  | { readonly kind: 'op'; readonly name: MetricOpName; readonly ms: number };
+  | { readonly kind: 'op'; readonly name: MetricOpName; readonly ms: number }
+  | {
+      /**
+       * A once-only note that a setting looks too small for how the store is used. It is not a fault: nothing failed.
+       * Emitted by a backend that can read the setting, never on a request's path after the first, and silent for
+       * anything the backend cannot read, so no event does not mean the setting is large enough.
+       *
+       * `'socket-pool-below-window'`: the S3 client's pool is smaller than `threshold` sockets, twice `concurrency`.
+       * `concurrency` is the default window of a combine (32), since a combine's own `concurrency` is chosen per call
+       * and the backend cannot see it: a store that always passes a lower one can ignore the event. `maxSockets` is
+       * the `maxSockets` of the agent for the scheme of the client's endpoint, or, when the client does not expose an
+       * endpoint, the larger of the agents its handler has made (the event fires only when all are below `threshold`).
+       * `driver` and `bucket` say which backend the pool
+       * belongs to; they never carry a credential, an endpoint or a key.
+       *
+       * A sink that switches on `kind` with an exhaustive `never` check stops compiling at this variant: add a case
+       * for `'advisory'` (ignoring it is fine). A sink with a `default` branch needs no change.
+       */
+      readonly kind: 'advisory';
+      readonly code: 'socket-pool-below-window';
+      readonly driver: string;
+      readonly bucket: string;
+      readonly maxSockets: number;
+      readonly threshold: number;
+      readonly concurrency: number;
+    };
 
 /**
  * The sink you plug in. One method, synchronous, fire-and-forget. It must never throw back into the
@@ -111,12 +161,18 @@ export const NOOP_METRICS: IMetricsSink = {
  */
 export function safeMetrics(sink: IMetricsSink): IMetricsSink {
   if (sink === NOOP_METRICS) return sink;
+  // One without an `onEvent` method would receive nothing and say nothing: the swallow below hides the throw.
+  if (typeof (sink as { onEvent?: unknown } | null)?.onEvent !== 'function') {
+    throw new ValidationError(
+      'metrics must be a sink with an onEvent(event) method, such as a CountingMetricsSink',
+    );
+  }
   return {
     onEvent(event: MetricEvent): void {
       try {
-        sink.onEvent(event);
+        ignoreRejection(sink.onEvent(event) as unknown);
       } catch {
-        /* swallow — a metrics sink must never break a read */
+        /* swallow — a metrics sink must never break a read, an async one's rejection included */
       }
     },
   };
@@ -143,12 +199,13 @@ const OP_NAMES: readonly MetricOpName[] = [
   'intersectInto',
   'unionInto',
   'andNotInto',
+  'materializeMany',
 ];
 
 /**
- * A ready-made sink that tallies events into a {@link MetricsSnapshot} — handy for tests, quick scripts,
- * and as the grounded-request-cost source behind `costReport()`. `snapshot()` returns an independent copy;
- * `reset()` zeroes the counters.
+ * A ready-made sink that tallies events into a {@link MetricsSnapshot} — handy for tests, quick scripts, and for
+ * reading the request rates a cost model is given. `snapshot()` returns an independent copy; `reset()` zeroes the
+ * counters.
  */
 export class CountingMetricsSink implements IMetricsSink {
   private storage = { gets: 0, bytes: 0, totalMs: 0 };
@@ -192,6 +249,9 @@ export class CountingMetricsSink implements IMetricsSink {
         op.totalMs += event.ms;
         break;
       }
+      case 'advisory':
+        // A note for the sink's author, not a quantity to total.
+        break;
       default: {
         const exhaustive: never = event;
         return exhaustive;

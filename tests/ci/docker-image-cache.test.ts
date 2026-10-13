@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import { vi } from 'vitest';
 import { ROOT, jobs, packageScripts, readYaml, type Job, type Step } from '../helpers/workflows';
 
 /**
@@ -132,6 +133,12 @@ interface World {
   resetCalls: () => void;
   /** A new runner, as each CI job gets: no images at all, and only what the save of `cache` would keep. */
   freshRunner: (cache?: string) => void;
+  /**
+   * Start from the cache a run's save leaves after pulling each of `images`, on a new runner: a tar of each, holding the
+   * local name the stand-in `docker save` writes into it (a test below pulls once and reads that back), and no image
+   * held, no call recorded.
+   */
+  keep: (...images: string[]) => void;
   /** Whether the stand-in holds an image under `name`. */
   has: (name: string) => boolean;
 }
@@ -157,6 +164,9 @@ function world(): World {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
     STUB: dir,
+    // The helper's path reaches the shell as a variable, not as text in the command, so a checkout path holding a
+    // space or a quote still runs.
+    DOCKER_PULL_HELPER: HELPER,
   };
   for (const name of [
     'DOCKER_IMAGE_CACHE',
@@ -216,6 +226,11 @@ function world(): World {
         : [],
     resetCalls,
     freshRunner,
+    keep: (...images) => {
+      mkdirSync(cache, { recursive: true });
+      for (const image of images)
+        writeFileSync(join(cache, `${idOf(image)}.tar`), localName(image));
+    },
     has: (name) => existsSync(join(dir, 'images', name.replace(/[/:@]/g, '_'))),
   };
 }
@@ -226,11 +241,17 @@ const DIGEST = 'cgr.dev/chainguard/minio@sha256:abc';
 const idOf = (image: string) => createHash('sha256').update(image).digest('hex').slice(0, 16);
 const localName = (image: string) => `cloudbitmaps-ci.invalid/cache:${idOf(image)}`;
 const tarOf = (w: World, image: string) => join(w.cache, `${idOf(image)}.tar`);
-const pull = (image: string) => `. ${HELPER} && docker_pull_with_backoff '${image}'`;
-const PRUNE = `. ${HELPER} && docker_image_cache_prune`;
+const pull = (image: string) => `. "$DOCKER_PULL_HELPER" && docker_pull_with_backoff '${image}'`;
+const PRUNE = `. "$DOCKER_PULL_HELPER" && docker_image_cache_prune`;
 const prune = PRUNE;
 const overrideOf = (file: string) =>
   (parse(readFileSync(file, 'utf8')) as { services: Record<string, { image: string }> }).services;
+
+// Nothing here reads a clock: `sleep`, `date` and `timeout` are stand-ins that return at once, so there is no timer to
+// fake. What costs time is the bash processes each case starts, up to a few hundred of them, and on a machine running
+// the whole suite that can pass the default 5 s of a case that takes under a second alone. So this file's cases get a
+// limit that only a hung script reaches.
+vi.setConfig({ testTimeout: 60_000 });
 
 describe('an image CI runs is kept in the Actions cache, and a registry is asked only when it must be', () => {
   let w: World;
@@ -264,8 +285,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it("loads a tag's copy on a fresh runner without asking the registry, when the cache is this month's", () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     const r = w.run(pull(TAG), THIS_MONTH());
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain(`${TAG} from the cache`);
@@ -276,16 +296,14 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it("pulls a tag again when the cache is an older month's, and keeps the new copy", () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     expect(w.run(pull(TAG), OLDER()).code).toBe(0);
     expect(w.pulls()).toEqual([`pull -q ${TAG}`]);
     expect(w.calls().some((c) => c.startsWith('save '))).toBe(true);
   });
 
   it('asks for an image named by digest once a month, and loads its copy the rest of the month', () => {
-    w.run(pull(DIGEST), CACHE());
-    w.freshRunner();
+    w.keep(DIGEST);
     // An older month's entry: the registry is asked whether it still serves the digest.
     expect(w.run(pull(DIGEST), OLDER()).code).toBe(0);
     expect(w.pulls()).toEqual([`pull -q ${DIGEST}`]);
@@ -300,8 +318,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('falls back on the copy a refused pull finds, says so, and keeps it for the next run', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     const r = w.run(pull(TAG), { ...OLDER(), STUB_FAIL_PULLS: TAG });
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain('Data limit exceeded'); // the registry's own error is still in the log
@@ -315,8 +332,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('warns the run when a copy stands in for a refused pull, so a green run does not hide it', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     const r = w.run(pull(TAG), { ...CACHE(), STUB_FAIL_PULLS: TAG, GITHUB_ACTIONS: 'true' });
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain(
@@ -325,8 +341,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('keeps what the last, loud pull got, and loads no older copy over it', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     const r = w.run(pull(TAG), { ...CACHE(), STUB_FAIL_QUIET_PULLS: TAG });
     expect(r.code, r.out).toBe(0);
     const calls = w.calls();
@@ -403,8 +418,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('keeps the older copy when a pulled image cannot be kept, and saves nothing that lacks an image', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     expect(w.run(pull(TAG), { ...OLDER(), STUB_FAIL_SAVE: idOf(TAG) }).code).toBe(0);
     // The copy last month's entry held is whole, and stands in for the one this run could not keep.
     expect(w.run(prune, CACHE()).stdout).toBe('true\n');
@@ -457,8 +471,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('keeps going when neither the pull nor the older copy can be recorded, and saves nothing', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     mkdirSync(join(w.cache, '.used'));
     const r = w.run(`set -euo pipefail; ${pull(TAG)}; echo pulled`, {
       ...OLDER(),
@@ -470,8 +483,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('says the registry stalled when only the last, loud pull stalls', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     const r = w.run(pull(TAG), {
       ...OLDER(),
       STUB_FAIL_QUIET_PULLS: TAG,
@@ -502,8 +514,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it('falls back at once on a pull that stalls when a copy is kept, rather than wait out the job', () => {
-    w.run(pull(TAG), CACHE());
-    w.freshRunner();
+    w.keep(TAG);
     const r = w.run(pull(TAG), { ...OLDER(), STUB_STALL: TAG, GITHUB_ACTIONS: 'true' });
     expect(r.code, r.out).toBe(0);
     expect(w.stalls()).toHaveLength(1);
@@ -596,14 +607,14 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   it('runs an image named by digest by its local name once a copy is loaded, and by the image with no cache', () => {
     const runName = (env: Record<string, string>) =>
       w.run(`${pull(DIGEST)} >/dev/null 2>&1 && docker_image_run_name '${DIGEST}'`, env).stdout;
-    w.run(pull(DIGEST), CACHE());
-    w.freshRunner();
+    w.keep(DIGEST);
     expect(runName(THIS_MONTH())).toBe(localName(DIGEST));
     expect(runName({})).toBe(DIGEST);
   });
 
   describe('scripts/ci-backend-images.sh', () => {
-    const script = () => `scripts/ci-backend-images.sh '${join(w.dir, 'override.yml')}'`;
+    // The path reaches the shell as `$STUB` (the world's directory), not as text in the command.
+    const script = () => `scripts/ci-backend-images.sh "$STUB/override.yml"`;
     const override = () => overrideOf(join(w.dir, 'override.yml'));
 
     it('runs each backend on the local name its own image is kept under, and on the image itself with no cache', () => {
@@ -618,8 +629,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
     });
 
     it('readies every backend from the cache on a fresh runner, asking no registry', () => {
-      w.run(script(), CACHE());
-      w.freshRunner();
+      w.keep(DIGEST, TAG);
       const r = w.run(script(), THIS_MONTH());
       expect(r.code, r.out).toBe(0);
       expect(w.pulls()).toEqual([]);

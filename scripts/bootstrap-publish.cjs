@@ -142,7 +142,7 @@ const version = versions[0];
 //    A hand publish carries no provenance attestation — provenance attests to a workflow identity and a
 //    laptop has none. Burning the family's real version here would therefore make the new packages the only
 //    unattested tarballs in the release, and it would be worse than that: `pnpm publish` SILENTLY SKIPS a
-//    version already on the registry (exit 0), so the pipeline would then skip those three names on the real
+//    version already on the registry (exit 0), so the pipeline would then skip those names on the real
 //    tag and report success having published nothing for them.
 //
 //    So the name is created at `<version>-rc.0` under the `rc` dist-tag, and the real version still ships
@@ -273,8 +273,8 @@ console.log(`bootstrap-publish: publishing under --tag ${effectiveTag} (expect a
 //
 // This stays `pnpm publish` rather than a per-package `npm publish`: every other package depends on core via
 // `workspace:^`, and pnpm is what rewrites that to a real version range on the way out. npm would publish the
-// protocol string verbatim and ship four packages nobody can install. `pnpm -r` also walks the workspace in
-// topological order, so core goes up before the four that name it.
+// protocol string verbatim and ship packages nobody can install. `pnpm -r` also walks the workspace in
+// topological order, so core goes up before the packages that name it.
 //
 // Only the MISSING names are published, each named explicitly rather than by the `./packages/**` glob, so a
 // name that already exists cannot be republished by hand even if the precondition above were wrong.

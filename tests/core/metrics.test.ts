@@ -48,6 +48,7 @@ describe('CountingMetricsSink', () => {
       'count',
       'has',
       'intersectInto',
+      'materializeMany',
       'unionInto',
     ]);
   });
@@ -59,6 +60,21 @@ describe('CountingMetricsSink', () => {
     const s = c.snapshot();
     expect(Object.values(s.ops).every((o) => o.count === 0)).toBe(true);
     expect(s.ops).not.toHaveProperty('add');
+  });
+
+  it('an advisory event is a note, not a quantity: the snapshot does not change', () => {
+    const c = new CountingMetricsSink();
+    const before = c.snapshot();
+    c.onEvent({
+      kind: 'advisory',
+      code: 'socket-pool-below-window',
+      driver: 's3',
+      bucket: 'b',
+      maxSockets: 50,
+      threshold: 64,
+      concurrency: 32,
+    });
+    expect(c.snapshot()).toEqual(before);
   });
 
   it('snapshot() returns an independent copy (later events do not mutate it)', () => {
@@ -104,6 +120,24 @@ describe('safeMetrics', () => {
     const c = new CountingMetricsSink();
     safeMetrics(c).onEvent({ kind: 'cache', hit: true });
     expect(c.snapshot().cache.hits).toBe(1);
+  });
+
+  it('swallows the rejection of an async sink, which would otherwise end a Node process as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const rejects: IMetricsSink = {
+        onEvent: async () => {
+          throw new Error('the metrics backend is down');
+        },
+      };
+      safeMetrics(rejects).onEvent({ kind: 'cache', hit: true });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('returns the no-op sink unchanged (no needless wrapper)', () => {

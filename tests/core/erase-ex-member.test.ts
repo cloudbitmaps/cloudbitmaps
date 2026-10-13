@@ -1,7 +1,7 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
 import { MemoryStorage, CloudRoaring } from '@/index';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { openGenerationReader } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
 import { roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
@@ -94,7 +94,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     const storage: IStorageDriver = {
       capabilities: () => real.capabilities(),
       getRange: (k, o, l) => real.getRange(k, o, l),
-      delete: (k) => real.delete(k),
+      delete: (k, o) => real.delete(k, o),
       list: (r) => real.list(r),
       putImmutable: (k, fn) => real.putImmutable(k, fn),
       getTail: (k, m) => {
@@ -118,7 +118,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     const storage: IStorageDriver = {
       capabilities: () => real.capabilities(),
       getRange: (k, o, l) => real.getRange(k, o, l),
-      delete: (k) => real.delete(k),
+      delete: (k, o) => real.delete(k, o),
       list: (r) => real.list(r),
       putImmutable: (k, fn) => real.putImmutable(k, fn),
       getTail: async (k, m) => {
@@ -144,7 +144,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     const storage: IStorageDriver = {
       capabilities: () => real.capabilities(),
       getRange: (k, o, l) => real.getRange(k, o, l),
-      delete: (k) => real.delete(k),
+      delete: (k, o) => real.delete(k, o),
       list: (r) => real.list(r),
       putImmutable: (k, fn) => real.putImmutable(k, fn),
       getTail: (k, m) =>

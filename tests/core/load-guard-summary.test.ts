@@ -97,7 +97,7 @@ describe('a guarded load whose row carries a summary for its current generation'
     const w = world();
     await loadMany(w, 2);
     // The object holds 2 ids; the row says 1,000.
-    await plant(w, { generation: 1, cardinality: 1_000 });
+    await plant(w, { generation: 1, cardinality: 1_000, fingerprint: '4096:1', tailBytes: 300 });
     const refused = await loadSegment(SEG, idsOf(10), w.deps, { guard: { minRetained: 0.5 } });
     expect(refused).toMatchObject({
       published: false,
@@ -155,7 +155,9 @@ describe('a guarded load whose row has no summary it can use reads the tail, as 
         if (p !== 'get') return value;
         return async (...args: Parameters<IRegistryDriver['get']>) => {
           const row = await (value as IRegistryDriver['get']).apply(t, args);
-          return row === null ? null : { ...row, summary: { generation: 1, cardinality: 1_000 } };
+          return row === null
+            ? null
+            : { ...row, summary: { generation: 1, cardinality: 1_000, fingerprint: '4096:1' } };
         };
       },
     });
@@ -200,7 +202,7 @@ describe('an encrypted segment', () => {
     await loadMany(w, 2);
     const row = (await w.registry.get(SEG))!;
     const aead = await keystore.openDek(row.wrappedDeks!);
-    await plant(w, sealSummary(aead, SEG, 1, 1_000));
+    await plant(w, sealSummary(aead, SEG, 1, 1_000, '4096:1', 300));
     const refused = await loadSegment(SEG, idsOf(10), w.deps, { guard: { minRetained: 0.5 } });
     expect(refused).toMatchObject({
       published: false,
@@ -216,7 +218,10 @@ describe('an encrypted segment', () => {
     const row = (await w.registry.get(SEG))!;
     const aead = await keystore.openDek(row.wrappedDeks!);
     // Sealed for generation 1, moved onto the row that names generation 2.
-    await plant(w, { generation: 2, sealed: sealSummary(aead, SEG, 1, 1_000).sealed });
+    await plant(w, {
+      generation: 2,
+      sealed: sealSummary(aead, SEG, 1, 1_000, '4096:1', 300).sealed,
+    });
     w.reset();
     const r = await loadSegment(SEG, idsOf(10), w.deps, { guard: { minRetained: 0.5 } });
     expect(r).toMatchObject({ published: true, cardinalityBefore: 3 });
@@ -274,13 +279,13 @@ describe('a load over a current object that was removed from outside', () => {
     zero.reset();
     await loadSegment(SEG, idsOf(10), zero.deps, { keep: 0 });
     expect(zero.tails).toEqual([0]);
-    // keep 2 lists, whatever is there.
+    // keep 2 collects by name a generation the window keeps, so it looks for the current object first, as keep 1 does.
     const wide = world();
     await loadMany(wide, 4, { keep: 2 });
     wide.reset();
     await loadSegment(SEG, idsOf(10), wide.deps, { keep: 2 });
-    expect(wide.tails).toEqual([0]);
-    expect(wide.calls.list).toBe(1);
+    expect(wide.tails).toEqual([0, 0]);
+    expect(wide.calls.list).toBeUndefined();
     // An unguarded load made no such read before the summary existed, and makes none now.
     const bare = world();
     await loadMany(bare, 3);

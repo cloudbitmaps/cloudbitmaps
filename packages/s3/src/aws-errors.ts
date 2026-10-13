@@ -5,6 +5,7 @@
  * lower-level `code`/`errno`, and the SDK's own `$retryable` marker — so the (subtle, easy-to-get-wrong)
  * transient-vs-fatal decision is unit-testable without a live backend or even the SDK installed. They import no SDK.
  */
+import { isTransportFault } from '@cloudbitmaps/core/driver-kit';
 
 export function httpStatus(err: unknown): number | undefined {
   return (err as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode;
@@ -37,15 +38,6 @@ const NETWORK_NAMES = new Set([
   'NetworkingError',
   'AbortError',
 ]);
-const NETWORK_CODES = new Set([
-  'ETIMEDOUT',
-  'ECONNRESET',
-  'ECONNREFUSED',
-  'EPIPE',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'ECONNABORTED',
-]);
 
 // Message-text fallback for when the structural signals (name/code/$metadata/$retryable) are absent. Kept
 // SPECIFIC on purpose: a loose `/timed? ?out/` matches deterministic messages like "value timed out of
@@ -54,9 +46,12 @@ const NETWORK_CODES = new Set([
 const NETWORK_MESSAGE =
   /socket hang up|network (error|failure)|(connection|request|socket|operation|read|write)\s+tim(e|ed)\s?out|connection (reset|refused|aborted|closed)/i;
 
-/** A dropped/timed-out connection — transient by nature; a retry on a fresh connection usually succeeds. */
+/**
+ * A dropped/timed-out connection — transient by nature; a retry on a fresh connection usually succeeds. The SDK's
+ * transport error names, the codes Node gives a failed connection ({@link isTransportFault}), and the messages above.
+ */
 export function isNetworkOrTimeout(err: unknown): boolean {
   if (NETWORK_NAMES.has(errorName(err) ?? '')) return true;
-  if (NETWORK_CODES.has(errorCode(err) ?? '')) return true;
+  if (isTransportFault(err)) return true;
   return NETWORK_MESSAGE.test((err as { message?: string } | null)?.message ?? '');
 }

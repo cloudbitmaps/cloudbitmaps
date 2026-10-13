@@ -135,6 +135,53 @@ describe('crafted (hostile) index — reader-side guards', () => {
     expect([...(await reader.getChunk(3))!]).toEqual([5, 6]);
   });
 
+  // Each guard below is the only one that refuses its forgery: the footer's own CRC is re-stamped to match, and the
+  // index bytes are left exactly as written, so nothing later in the open would catch what the guard is for.
+  const oneChunk = (): Uint8Array => {
+    const payload = Uint8Array.of(1, 2, 3, 4);
+    return assembleCrbm({
+      payloadRegion: payload,
+      rawEntries: [{ keyDelta: 0, offDelta: 0, length: 4, cardinality: 2, crc: crc32c(payload) }],
+    });
+  };
+  const withFooter = (bytes: Uint8Array, edit: (view: DataView) => void): Uint8Array => {
+    const out = bytes.slice();
+    const footer = out.subarray(out.length - FOOTER_BYTES);
+    const view = new DataView(footer.buffer, footer.byteOffset, FOOTER_BYTES);
+    edit(view);
+    view.setUint32(FOOTER.footerCrc32c, crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)), true);
+    return out;
+  };
+
+  it('rejects a footer u64 field past the safe-integer range, each one, as IntegrityError', async () => {
+    for (const field of ['indexOffset', 'indexLength', 'totalCardinality', 'generation'] as const) {
+      const forged = withFooter(oneChunk(), (v) =>
+        v.setBigUint64(FOOTER[field], BigInt(Number.MAX_SAFE_INTEGER) + 2n, true),
+      );
+      const err = await open(forged).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err, field).toBeInstanceOf(IntegrityError);
+      expect(String(err), field).toMatch(/exceeds safe-integer range/);
+    }
+  });
+
+  it('rejects an index byte changed without its CRC, before the index is parsed', async () => {
+    const bytes = oneChunk();
+    const indexOffset = Number(
+      new DataView(
+        bytes.buffer,
+        bytes.byteOffset + bytes.length - FOOTER_BYTES,
+        FOOTER_BYTES,
+      ).getBigUint64(FOOTER.indexOffset, true),
+    );
+    const tampered = bytes.slice();
+    tampered[indexOffset + 2] = tampered[indexOffset + 2]! ^ 0x01; // the entry's length varint
+    await expect(open(tampered)).rejects.toThrow('.crbm index CRC mismatch');
+    await expect(open(tampered)).rejects.toBeInstanceOf(IntegrityError);
+  });
+
   it('rejects a duplicate chunkKey (zero delta after the first)', async () => {
     const payload = Uint8Array.of(1, 2);
     const bytes = assembleCrbm({

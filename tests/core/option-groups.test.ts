@@ -1,4 +1,8 @@
 import { SafeBitmap } from '@/roaring-codec';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
 import { randomBytes } from 'node:crypto';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage } from '@/index';
@@ -36,18 +40,21 @@ describe('grouped options reach the thing they configure', () => {
       registry: backend.registry,
     });
     // One deadline, two injected clocks either side of it: the ONLY thing deciding the answer is the clock
-    // that reached the store, so a `seams.clock` that never arrived would answer 1 both times.
+    // that reached the store. A lease must end after now, so a store whose clock is past the deadline refuses a
+    // lease that ends at it, where a `seams.clock` that never arrived would take it on the system clock.
     const deadline = 1_800_000_000_000;
     const after = new CloudRoaring({
       storage: backend,
       seams: { clock: { now: () => deadline + 1, sleep: async () => {} } },
     });
-    expect(await after.segment('s', { expiresAt: deadline }).count()).toBe(0);
+    await expect(after.segment('s').pin({ leaseUntil: deadline })).rejects.toThrow(
+      /is not after now/,
+    );
     const before = new CloudRoaring({
       storage: backend,
       seams: { clock: { now: () => deadline - 1, sleep: async () => {} } },
     });
-    expect(await before.segment('s', { expiresAt: deadline }).count()).toBe(1);
+    expect(await (await before.segment('s').pin({ leaseUntil: deadline })).count()).toBe(1);
   });
 
   it('`encryption.keystore` + `encryption.required` reach the read path', async () => {
@@ -100,7 +107,9 @@ describe('grouped options reach the thing they configure', () => {
   // ceiling someone had deliberately lowered for a small heap, and nothing else would notice.
   //
   // The effect: one reader, two segments, read alternately. At a ceiling of 1 each read evicts the other's
-  // reader and must re-open it with a fresh tail GET; at the default both stay open.
+  // reader and must re-open it with a fresh tail GET; at the default both stay open. Each read is an `iterate`, which
+  // needs the generation's index, so only an open reader answers it: a `has()` of a cached chunk would open nothing
+  // either way, since the store keeps a segment's resolution when its reader goes.
   // Re-opening an evicted reader costs a TAIL read, not a chunk GET, so count at the driver rather than
   // through the metrics sink (which counts chunk gets and is identical either way, so an assertion on it
   // cannot tell the two ceilings apart).
@@ -128,8 +137,11 @@ describe('grouped options reach the thing they configure', () => {
       cache,
     });
     for (let i = 0; i < 4; i++) {
-      await store.segment('a').has(1);
-      await store.segment('b').has(1);
+      for (const seg of ['a', 'b']) {
+        const ids: number[] = [];
+        for await (const id of store.segment(seg).iterate()) ids.push(id);
+        expect(ids).toEqual([1]);
+      }
     }
     return tails;
   };
@@ -332,6 +344,20 @@ describe('a partial retry policy fills from the default, even for an explicit un
     expect(await sleepsFor({ baseDelayMs: 100, maxDelayMs: 150 })).toEqual([100, 150]);
   });
 
+  it('an omitted maxDelayMs is the default cap, or the baseDelayMs given when that is larger', async () => {
+    expect(await sleepsFor({ baseDelayMs: 5000 })).toEqual([5000, 5000]);
+    expect(await sleepsFor({ baseDelayMs: 1500 })).toEqual([1500, 2000]);
+  });
+
+  it('a maxDelayMs of NaN is refused, not replaced by the default', () => {
+    const build = (retry: Record<string, number>) => () =>
+      new CloudRoaring({ storage: new MemoryStorage(), retry });
+    expect(build({ maxDelayMs: Number.NaN })).toThrow(
+      /retry\.maxDelayMs must be a finite number of at least 50 \(retry\.baseDelayMs\); got NaN/,
+    );
+    expect(build({ baseDelayMs: 0, maxDelayMs: 0 })).not.toThrow();
+  });
+
   // The hazard itself. Under a plain spread, each of these produces NaN delays — a ~1 ms hot loop.
   it.each(['baseDelayMs', 'maxDelayMs', 'backoffFactor', 'maxAttempts', 'jitter'])(
     'an explicitly-undefined `%s` falls back to the default rather than erasing it',
@@ -380,7 +406,7 @@ describe('`retry` retries reads of segment data, and no write', () => {
       getRange: (key, offset, length) => s.getRange(key, offset, length),
       getTail: (key, maxBytes) =>
         trips('getTail') ? Promise.reject(blip('getTail')) : s.getTail(key, maxBytes),
-      delete: (key) => s.delete(key),
+      delete: (key, o) => s.delete(key, o),
       list: (ref) =>
         trips('list')
           ? (async function* () {
@@ -457,5 +483,26 @@ describe('`retry` retries reads of segment data, and no write', () => {
     f.arm();
     expect(await f.store.segment('s').has(1)).toBe(true);
     expect(f.retries).toEqual([1]);
+  });
+});
+
+describe('cache.genTtlMs is a number of milliseconds', () => {
+  it('refuses one that is not finite and non-negative, which would silently turn the pointer refresh off', () => {
+    // `Number(process.env.X)` with X unset is NaN: read as no refresh, it kept another process's load and erasure
+    // from ever reaching a long-lived reader.
+    for (const bad of [Number.NaN, -1, '2s', Number.POSITIVE_INFINITY]) {
+      expect(
+        () => new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: bad as never } }),
+        String(bad),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  it('takes 0, which turns the timed refresh off on purpose, any finite positive value, and null as absent', () => {
+    for (const ok of [0, 1, 2_000, 0.5, null, undefined]) {
+      expect(
+        () => new CloudRoaring({ storage: new MemoryStorage(), cache: { genTtlMs: ok as never } }),
+      ).not.toThrow();
+    }
   });
 });

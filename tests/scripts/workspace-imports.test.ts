@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
  *
  * WHY THIS FILE EXISTS. `packages/roaring` re-exports from core by name, so a name core keeps internal —
  * `drainRegistry`, `DEFAULT_MAX_SCAN_SEGMENTS`, `CrbmWriter`, `BufferSink` — and a name core exports but the
- * flavor leaves on core — `collectWithinBudget`, `estimateCost` — are absent from the flavor. A script that
+ * flavor leaves on core — `collectWithinBudget`, `runExport` — are absent from the flavor. A script that
  * destructures one from there gets `undefined`, which throws only when the script uses it:
  *
  *   const { drainRegistry } = require('@cloudbitmaps/roaring') → TypeError: drainRegistry is not a function

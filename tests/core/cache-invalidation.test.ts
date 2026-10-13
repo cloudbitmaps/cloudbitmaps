@@ -1,4 +1,8 @@
 import { MemoryStorage, CloudRoaring, InProcessKeystore } from '@/index';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { destroySegment } from '@/core/erasure';
 import { setSegmentRetention } from '@/core/retention';
 import type { IStorageDriver, SegmentRef } from '@/index';
@@ -180,7 +184,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const storage: IStorageDriver = {
       capabilities: () => real.capabilities(),
       getTail: (k, m) => real.getTail(k, m),
-      delete: (k) => real.delete(k),
+      delete: (k, o) => real.delete(k, o),
       list: (r) => real.list(r),
       putImmutable: (k, fn) => real.putImmutable(k, fn),
       getRange: (k, o, l) => {

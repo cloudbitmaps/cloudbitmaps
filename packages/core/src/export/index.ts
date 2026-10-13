@@ -26,6 +26,8 @@
  * masquerades as complete. Therefore "a manifest exists" means *the run finished*, not that every segment
  * succeeded — check `failed` (the CLI also exits non-zero when it's non-empty).
  */
+import { requirePositiveInteger } from '../core/check';
+import { ValidationError } from '../core/errors';
 import { isReservedRow } from '../core/registry-scan';
 import type { CodecInterface } from '../core/codec';
 import { requireCodec } from '../core/codec';
@@ -88,6 +90,16 @@ export interface ExportFailure {
   readonly error: string;
 }
 
+/**
+ * A registered segment the export did not read, and why. `'destroyed'` is a tombstone: the segment was crypto-shredded
+ * or dropped, so it resolves no generation and has nothing to export.
+ */
+export interface ExportSkipped {
+  readonly segment: string;
+  readonly namespace?: string;
+  readonly reason: 'destroyed';
+}
+
 /** What {@link runExport} produced — a self-describing summary the CLI persists as `manifest.json`. */
 export interface ExportManifest {
   /** Schema version of this manifest shape (currently `1`) — insurance for evolving the format post-1.0. */
@@ -101,13 +113,28 @@ export interface ExportManifest {
    * "a manifest exists" ⇒ the run finished, **not** that every segment succeeded — always check this list.
    */
   readonly failed: readonly ExportFailure[];
+  /**
+   * Registered segments the export did not read, each with its reason (empty when there were none). With `segments`
+   * and `failed` it accounts for every segment row the registry listed, so a `totalSegments` below the registry's
+   * segment count is explained rather than silent. The registry's internal due-index rows are not segments, and are in
+   * none of the three.
+   */
+  readonly skipped: readonly ExportSkipped[];
 }
 
-/** The minimal read surface the export needs from a store — a `CloudRoaring` satisfies this structurally. */
+/**
+ * The minimal read surface the export needs from a store — a `CloudRoaring` satisfies this structurally: `segment(name,
+ * { namespace? })` returns a handle whose `pin()` resolves to something that iterates the ids. A segment's
+ * `pin()` resolves its generation once and reads only that generation's object, so one segment's export is one instant.
+ */
 export interface SegmentReader {
-  segment(name: string, options?: { namespace?: string }): { iterate(): AsyncIterable<number> };
+  segment(
+    name: string,
+    options?: { namespace?: string },
+  ): { pin(): Promise<{ iterate(): AsyncIterable<number> }> };
 }
 
+const UTF8 = new TextEncoder();
 const DEFAULT_NDJSON_BATCH_BYTES = 64 * 1024;
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -123,12 +150,18 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  * `close()` fault is likewise recorded (never triggering `abort()` — they're mutually exclusive).
  *
  * Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
- * disappeared — export to a fresh directory for a clean dump. For a *current* image, run against a
- * freshly-constructed store: a store's storage source re-resolves each segment's generation on a short TTL, or, with
- * no registry, with `cache.genTtlMs: 0`, or built without a clock, only when an eviction, a sweep or an invalidation
- * makes it, so a long-lived store may export a view one load behind, or more. Each segment is read live, not pinned:
- * a publish while a long segment exports can re-resolve it part-way, and its file then holds chunks of two
- * generations, each whole and verified. For one generation per file, export from a quiet window.
+ * disappeared — export to a fresh directory for a clean dump.
+ *
+ * Each segment is pinned for its export: its generation is read from the registry when its export begins, on a warm
+ * store as on a cold one, and only that generation's object is read for the whole segment, so a publish during a long
+ * segment's export cannot put two generations in one file. A cold store makes one registry read and one tail read
+ * per segment; a warm store makes one registry read per segment. A pin holds nothing: if a collection or an erasure
+ * removes the pinned generation mid-export, that segment's export fails, recorded in `failed`, and never reads the
+ * newer generation. Different segments are different instants.
+ *
+ * `reader` is any object with `segment(name, { namespace? })` returning a handle with `pin()`, which resolves to
+ * `{ iterate(): AsyncIterable<number> }` (see {@link SegmentReader}). A reader without that shape throws a
+ * `ValidationError` before any file is opened.
  */
 export async function runExport(
   reader: SegmentReader,
@@ -136,13 +169,51 @@ export async function runExport(
   sink: ExportSink,
   options: ExportOptions = {},
 ): Promise<ExportManifest> {
+  // A sink without `open` would fail every segment, one by one, into `failed`: refused before anything is read.
+  if (sink === null || typeof sink !== 'object' || typeof sink.open !== 'function') {
+    throw new ValidationError(
+      'runExport: the sink must be an object with an open(ref, ext) method',
+    );
+  }
+  options ??= {};
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
+  if (options.format !== undefined && options.format !== 'roaring' && options.format !== 'ndjson') {
+    throw new ValidationError(`runExport: format must be 'roaring' or 'ndjson'`);
+  }
+  const batch = options.ndjsonBatchBytes;
+  // `NaN` or `Infinity` never flushed, so a segment became one string; 0 or a negative wrote once per id.
+  if (batch !== undefined) requirePositiveInteger(batch, 'runExport: ndjsonBatchBytes');
   const format = options.format ?? 'roaring';
   const ext = format === 'roaring' ? '.roaring' : '.ndjson';
   const batchCap = options.ndjsonBatchBytes ?? DEFAULT_NDJSON_BATCH_BYTES;
   const segments: ExportedSegment[] = [];
   const failed: ExportFailure[] = [];
+  const skipped: ExportSkipped[] = [];
   let totalIds = 0;
+  if (typeof (reader as { segment?: unknown } | undefined)?.segment !== 'function') {
+    throw new ValidationError(
+      "runExport: the reader must have a segment(name, { namespace? }) method returning a handle with pin(), as a store's does",
+    );
+  }
+  // The first segment's handle is checked once, before any file is opened: a reader that cannot pin fails the run, not
+  // every segment into `failed`.
+  let probed = false;
+  let unusable: Error | undefined;
+
+  // A segment that exports no ids is either empty or destroyed between the listing and its pin, where a tombstone
+  // resolves no generation and reads as empty. Its row is read again to tell the two apart.
+  const rowIsGone = async (ref: SegmentRef): Promise<boolean> => {
+    const row = await registry.get(ref);
+    return row === null || row.status === 'destroyed';
+  };
+  const skipGone = async (ref: SegmentRef, writer: ExportWriter): Promise<void> => {
+    try {
+      await writer.abort?.();
+    } catch {
+      /* best-effort cleanup */
+    }
+    skipped.push({ segment: ref.segment, namespace: ref.namespace, reason: 'destroyed' });
+  };
 
   const exportRef = async (ref: SegmentRef): Promise<void> => {
     let writer: ExportWriter | undefined;
@@ -150,7 +221,18 @@ export async function runExport(
     let bytes = 0;
     try {
       validateSegmentRef(ref); // defense-in-depth: registry rows are untrusted bytes here
-      const ids = reader.segment(ref.segment, { namespace: ref.namespace }).iterate();
+      const handle = reader.segment(ref.segment, { namespace: ref.namespace });
+      if (!probed) {
+        probed = true;
+        if (typeof handle?.pin !== 'function') {
+          unusable = new ValidationError(
+            "runExport: the reader's segment(name, { namespace? }) must return a handle with a pin() method; " +
+              'a segment is exported at one pinned generation',
+          );
+          throw unusable;
+        }
+      }
+      const ids = (await handle.pin()).iterate();
       writer = await sink.open(ref, ext);
       if (format === 'roaring') {
         const bm = requireCodec(options.codec, "runExport({ format: 'roaring' })").empty();
@@ -158,6 +240,7 @@ export async function runExport(
           bm.add(id);
           count += 1;
         }
+        if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         const out = bm.serialize(); // portable RoaringBitmap32 — the cross-language CRoaring format
         await writer.write(out);
         bytes = out.length;
@@ -167,19 +250,21 @@ export async function runExport(
           buf += `${id}\n`;
           count += 1;
           if (buf.length >= batchCap) {
-            const b = Buffer.from(buf, 'utf8');
+            const b = UTF8.encode(buf);
             await writer.write(b);
             bytes += b.length;
             buf = '';
           }
         }
+        if (count === 0 && (await rowIsGone(ref))) return await skipGone(ref, writer);
         if (buf.length > 0) {
-          const b = Buffer.from(buf, 'utf8');
+          const b = UTF8.encode(buf);
           await writer.write(b);
           bytes += b.length;
         }
       }
     } catch (err) {
+      if (err === unusable) throw err;
       // Read/write fault: discard the partial (best-effort, so a failing cleanup can't mask the real fault),
       // record it, and move on — one bad segment never blocks the rest.
       if (writer !== undefined) {
@@ -209,8 +294,20 @@ export async function runExport(
     // A due-index pointer row is not a segment: an unscoped eject would otherwise write one empty file per pointer
     // into the portability dump — the artifact whose whole value is being a faithful copy of the user's data.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
-    if (rec.status === 'destroyed') continue; // crypto-shredded → bytes unrecoverable; nothing to export
+    if (rec.status === 'destroyed') {
+      // A tombstone resolves no generation, so there is nothing to export: recorded, so the dump accounts for the row.
+      skipped.push({ segment: rec.segment, namespace: rec.namespace, reason: 'destroyed' });
+      continue;
+    }
     await exportRef({ segment: rec.segment, namespace: rec.namespace });
   }
-  return { version: 1, format, totalSegments: segments.length, totalIds, segments, failed };
+  return {
+    version: 1,
+    format,
+    totalSegments: segments.length,
+    totalIds,
+    segments,
+    failed,
+    skipped,
+  };
 }

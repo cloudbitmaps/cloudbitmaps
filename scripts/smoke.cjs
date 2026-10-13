@@ -21,6 +21,7 @@ const { pathToFileURL } = require('node:url');
 const PKG = '@cloudbitmaps/roaring';
 const CORE = '@cloudbitmaps/core';
 const S3 = '@cloudbitmaps/s3';
+const TOOLS = '@cloudbitmaps/tools';
 /**
  * The packages whose whole job is to name a cloud SDK. Everything else must not.
  *
@@ -203,8 +204,6 @@ async function exerciseCore(label, m) {
   for (const name of ['CloudRoaring', 'MemoryStorage']) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  if (typeof m.CloudRoaring.estimateCost !== 'function')
-    throw new Error(`${label}: CloudRoaring.estimateCost is missing`);
   // A BACKEND, which is what the docs tell users to build, so the round-trip goes through the pointer. A raw
   // driver with no registry would leave the pointer path silently dead: a store with one generation
   // list-scans to the same answer, so the round-trip would keep passing. This file is plain CJS, so no
@@ -214,6 +213,43 @@ async function exerciseCore(label, m) {
   const seg = store.segment('smoke');
   const ok = (await seg.has(42)) && (await seg.has(70_000)) && (await seg.count()) === 2;
   if (!ok) throw new Error(`${label}: load/read round-trip returned a wrong result`);
+  const { sizeBytes } = await seg.stat();
+  if (!(Number.isSafeInteger(sizeBytes) && sizeBytes > 0))
+    throw new Error(`${label}: stat() reported no size for a generation it holds: ${sizeBytes}`);
+}
+
+/**
+ * The tools package loads beside the flavor and prices a report from the size a built `stat()` reports, and its
+ * refusal is the `ValidationError` core exports: it takes core's public entry, external like every package's, so one
+ * copy of core serves both.
+ */
+function exerciseTools(label, tools, core, storageBytes) {
+  for (const name of ['estimateCost', 'groundedReport', 'AWS_US_EAST_1_ONDEMAND']) {
+    if (tools[name] == null) throw new Error(`${label}: ${TOOLS} is missing export ${name}`);
+  }
+  const report = tools.groundedReport({ storageBytes, workload: { readsPerSec: 1 } });
+  if (!(report.monthlyUSD.total > 0) || report.assumptions.grounded !== true)
+    throw new Error(`${label}: ${TOOLS} priced a measured segment wrong`);
+  let caught;
+  try {
+    tools.estimateCost({ segments: [{ sizeBytes: -1 }] });
+  } catch (e) {
+    caught = e;
+  }
+  if (!(caught instanceof core.ValidationError) || !core.isValidationError(caught))
+    throw new Error(
+      `${label}: ${TOOLS}'s refusal is not core's ValidationError, so it carries its own copy of core`,
+    );
+  console.log(
+    `  ${label}: ${TOOLS} prices a stat().sizeBytes and refuses with core's ValidationError`,
+  );
+}
+
+/** The size of a one-segment store's generation, through the built flavor's `stat()`. */
+async function sizeThroughStat(m) {
+  const store = new m.CloudRoaring({ storage: new m.MemoryStorage({ now: () => 0 }) });
+  await store.load({ segment: 'priced' }, [1, 2, 3]);
+  return (await store.segment('priced').stat()).sizeBytes;
 }
 
 /*
@@ -231,7 +267,7 @@ async function exerciseCore(label, m) {
  * mismatch — replacing every `Symbol.for(…)` with `Symbol(…)` in the built chunk leaves a format check green.
  *
  * Nor the PACKAGE boundary: the build marks `@cloudbitmaps/*` external, and `assertPackagesShareOneCopy`
- * asserts one copy of core across all five packages, so `instanceof` holds and the identity the predicates
+ * asserts one copy of core across the packages, so `instanceof` holds and the identity the predicates
  * defend is the one a normal install already has.
  *
  * So what these checks pin is that the predicates are WIRED UP across a real package boundary — that the
@@ -334,6 +370,8 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
  * `import('@aws-sdk/client-s3')` in `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a
  * hard `Cannot find module` for any consumer building with `skipLibCheck: false`.
  *
+ * The same sweep runs over every other package that is not a driver, `@cloudbitmaps/tools` among them.
+ *
  * WHAT IS NOT. The three driver packages, which name an SDK because that is what they are for. The boundary is
  * a package name, so this is a list of packages to skip rather than a path prefix to avoid, and core is
  * SDK-free unconditionally.
@@ -344,7 +382,7 @@ const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers
 /**
  * Every `.d.ts` under `dist/`, as a path relative to `dist`. Both sweeps take the whole tree; which
  * PACKAGES each one runs over is decided by the caller, since the SDK sweep skips the driver packages while
- * the specifier sweep covers all five.
+ * the specifier sweep covers every package.
  */
 function declarationFiles(dist) {
   const { readdirSync } = require('node:fs');
@@ -514,6 +552,13 @@ async function main() {
 
   await exerciseCore('esm', await import(PKG));
   await exerciseCore('cjs', require(PKG));
+  exerciseTools(
+    'esm',
+    await import(TOOLS),
+    await import(CORE),
+    await sizeThroughStat(await import(PKG)),
+  );
+  exerciseTools('cjs', require(TOOLS), require(CORE), await sizeThroughStat(require(PKG)));
 
   // Same-package legs: cheap consistency, and cover for a future build that stops sharing the ESM chunk.
   exerciseCrossBundleErrors('esm', await import(CORE), await import(S3), await import(PKG));

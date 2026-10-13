@@ -21,9 +21,15 @@ import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } f
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
-import type { GenerationMetadata } from '../ports';
+import type { ChunkRead, GenerationMetadata, ReadChunksOptions } from '../ports';
+import { requirePositiveInteger } from '../check';
 import { crc32c } from './crc32c';
+import { ChunkWindow } from '../chunk-window';
+import { validateChunkKeyOrder } from '../validate';
+import { MAX_RANGES_IN_FLIGHT, planChunkReads } from './plan-reads';
+import type { ChunkExtent, PlannedRead } from './plan-reads';
 import { readVarint } from './varint';
+import { fingerprintFor, sizePart } from './fingerprint';
 import {
   AEAD_NONCE_BYTES,
   AEAD_TAG_BYTES,
@@ -61,7 +67,7 @@ import {
  * `cardinalityMinusOne` stores `cardinality - 1` because a chunk's cardinality runs `[1, 65536]` and 65,536 does
  * not fit a `u16`; an offset is a `f64` because an object past 4 GiB puts a payload beyond a `u32`.
  */
-export interface ParsedIndex {
+interface ParsedIndex {
   readonly keys: Uint16Array;
   readonly cardinalityMinusOne: Uint16Array;
   readonly lengths: Uint32Array;
@@ -100,7 +106,12 @@ export function indexCapacity(indexLength: number): number {
 }
 
 export interface CrbmReaderOptions {
-  /** Speculative tail size in bytes (default 256 KB; clamped up to at least the footer size). */
+  /**
+   * How many bytes the first tail read asks for, a whole number (default 256 KiB; clamped up to at least the footer
+   * size). Any value of at least an object's `tailBytes` opens it in that one read. Where an open keeps a small object's
+   * chunks (a `CrbmStorageChunkSource`'s does), it keeps them only when this read covers the whole object, so a value
+   * below the default can leave them to reads of their own.
+   */
   readonly tailBytes?: number;
   /** Hard cap on a single chunk payload length (default: the 1 MiB decode cap, plus the 28-byte nonce and tag on an encrypted object). The engine decodes under `maxBitmapBytes`; raise this with it. */
   readonly maxPayloadBytes?: number;
@@ -130,17 +141,11 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
   );
 }
 
-/** What names an object: its size, then its footer's CRC. One spelling, for an open reader and a footer read alone. */
-const sizePart = (size: number): string => `${size}:`;
-/** An object's fingerprint, from its size and its footer's CRC (see {@link CrbmReader.fingerprint}). */
-export const fingerprintFor = (size: number, footerCrc: number): string =>
-  `${sizePart(size)}${footerCrc}`;
-
 /**
  * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that
  * is not would turn off every bounds check an open makes against it.
  */
-function checkSize(tail: Uint8Array, size: number): void {
+export function checkSize(tail: Uint8Array, size: number): void {
   if (!Number.isSafeInteger(size) || size < tail.length) {
     throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
   }
@@ -168,15 +173,29 @@ function checkedFooter(
 }
 
 /**
+ * What the footer of the object behind `blob` says with no key and no index, from one tail read of a footer's worth:
+ * whether it is encrypted, and its CRC (the one in {@link CrbmReader.fingerprint}). A footer that fails its own checks
+ * throws, as an open would.
+ */
+export async function readFooter(
+  blob: BlobReader,
+): Promise<{ readonly encrypted: boolean; readonly footerCrc: number }> {
+  const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
+  const { fview, storedFooterCrc } = checkedFooter(tail, size);
+  return {
+    encrypted: (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) !== 0,
+    footerCrc: storedFooterCrc,
+  };
+}
+
+/**
  * Whether the object behind `blob` says it is encrypted, from one tail read of a footer's worth, with no key and no
  * index; a footer that fails its own checks throws, as an open would. For a caller that must not open an object with
  * the key it holds: an erasure looking for an id in a cleartext object under an encrypted segment, and a rollback
  * checking that its target is what the row says.
  */
 export async function footerSaysEncrypted(blob: BlobReader): Promise<boolean> {
-  const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
-  const { fview } = checkedFooter(tail, size);
-  return (fview.getUint32(FOOTER.flags, true) & FLAG_ENCRYPTED) !== 0;
+  return (await readFooter(blob)).encrypted;
 }
 
 /** Read a u64 footer field, rejecting values past JS safe-integer range (precision would be lost). */
@@ -186,6 +205,35 @@ function readU64(view: DataView, offset: number, field: string): number {
     throw new IntegrityError(`.crbm ${field} ${big} exceeds safe-integer range`);
   }
   return Number(big);
+}
+
+/**
+ * What a caller of {@link openCrbmReaderKeeping} asked for, by the options object `open` receives: the most chunk bytes
+ * the reader may keep. Held here, not on {@link CrbmReaderOptions}, so the option is not part of the public surface.
+ */
+const keepLimits = new WeakMap<object, number>();
+
+/**
+ * {@link CrbmReader.open} for a reader that keeps a copy of the chunk region when the tail read returned the whole
+ * object and that region is at most `keepChunkBytesUpTo` bytes. Not exported from a package entry.
+ */
+export function openCrbmReaderKeeping(
+  blob: BlobReader,
+  options: CrbmReaderOptions,
+  keepChunkBytesUpTo: number | undefined,
+): Promise<CrbmReader> {
+  const asked = { ...options };
+  if (keepChunkBytesUpTo !== undefined) keepLimits.set(asked, keepChunkBytesUpTo);
+  return CrbmReader.open(blob, asked);
+}
+
+/**
+ * How many bytes the first tail read of an open asks for: the caller's `tailBytes` or the default, and a footer's worth
+ * at least. Not exported from a package entry: {@link CrbmReader.open} and a caller that sends that read ahead of it
+ * ask for the same size.
+ */
+export function openTailBytes(options: { readonly tailBytes?: number }): number {
+  return Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
 }
 
 export class CrbmReader {
@@ -213,6 +261,14 @@ export class CrbmReader {
     readonly metadata: GenerationMetadata | undefined,
     /** What that metadata adds to {@link retainedBytes}; 0 when there is none. */
     private readonly metadataWeight: number,
+    /** Where the chunk payloads end: the extension block's start when there is one, else the index's. */
+    private readonly payloadEnd: number,
+    /**
+     * A copy of the chunk region, `[PAYLOAD_START, payloadEnd)`, when `open()` kept one (see
+     * {@link openCrbmReaderKeeping}); `undefined` otherwise. Never handed out: a read of it is a copy or is
+     * consumed before it returns.
+     */
+    private readonly kept: Uint8Array | undefined,
   ) {}
 
   /**
@@ -224,9 +280,17 @@ export class CrbmReader {
     return fingerprintFor(this.objectSize, this.footerCrc);
   }
 
-  /** Total object bytes (from the one-GET tail read) — for grounded storage cost. */
+  /** Total object bytes (from the one-GET tail read): the `sizeBytes` a segment's `stat()` reports. */
   get sizeBytes(): number {
     return this.objectSize;
+  }
+
+  /**
+   * The bytes of the object after its chunk payloads: any extension block, the index and the footer. A tail read of
+   * this many bytes covers all of them.
+   */
+  get tailBytes(): number {
+    return this.objectSize - this.payloadEnd;
   }
 
   /**
@@ -248,11 +312,12 @@ export class CrbmReader {
   /**
    * What this reader holds, the weight the storage reader cache bounds on: its parsed index
    * ({@link retainedIndexBytes}), plus a weight for the metadata it decoded, from its canonical length and its number
-   * of keys. Equal to {@link retainedIndexBytes} for a generation with no metadata. A cache heuristic, not a contract:
-   * how the metadata is weighed may change in any release.
+   * of keys, plus the chunk bytes kept from the open, when it kept any. Equal to {@link retainedIndexBytes} for a
+   * generation with no metadata and nothing kept. A cache heuristic, not a contract: how the metadata is weighed may
+   * change in any release.
    */
   get retainedBytes(): number {
-    return this.retainedIndexBytes + this.metadataWeight;
+    return this.retainedIndexBytes + this.metadataWeight + (this.kept?.length ?? 0);
   }
 
   /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
@@ -280,7 +345,7 @@ export class CrbmReader {
 
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {
     // Always fetch at least a footer's worth, regardless of a smaller caller request.
-    const tailBytes = Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
+    const tailBytes = openTailBytes(options);
     const maxIndexBytes = options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     const { bytes: tail, size } = await blob.getTail(tailBytes);
     const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
@@ -505,12 +570,21 @@ export class CrbmReader {
         ? 0
         : RETAINED_BYTES_PER_METADATA_BYTE * metadataLength +
             RETAINED_BYTES_PER_METADATA_KEY * Object.keys(metadata).length,
+      payloadEnd,
+      // Only a tail that began at the front of the object holds the chunks, and only a region the caller's limit
+      // allows is kept: a copy of just that region, so the tail buffer is not held.
+      tailCoversFrom === 0 && payloadEnd - PAYLOAD_START <= (keepLimits.get(options) ?? 0)
+        ? tail.slice(PAYLOAD_START, payloadEnd)
+        : undefined,
     );
   }
 
   /** Chunk keys present in this generation, ascending. */
   chunkKeys(): number[] {
-    return Array.from(this.index.keys);
+    const keys = this.index.keys;
+    const out = new Array<number>(keys.length);
+    for (let i = 0; i < keys.length; i++) out[i] = keys[i]!;
+    return out;
   }
 
   /** Segment cardinality from the footer (no payload reads) — the cheap `count()` path. */
@@ -533,6 +607,47 @@ export class CrbmReader {
     return -1;
   }
 
+  /**
+   * {@link slotOf} for a key at or after the one that held slot `at`, which a walk over ascending keys has: the slot
+   * itself or the next are tried first, so a read of nearly every chunk costs no search.
+   */
+  private slotFrom(chunkKey: number, at: number): number {
+    const keys = this.index.keys;
+    if (keys[at] === chunkKey) return at;
+    if (keys[at + 1] === chunkKey) return at + 1;
+    let lo = at;
+    let hi = keys.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const k = keys[mid]!;
+      if (k === chunkKey) return mid;
+      if (k < chunkKey) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return -1;
+  }
+
+  /**
+   * The extents of the chunks `chunkKeys` name that this generation holds, in key order, each once (a key given twice
+   * is read once). A walk, so nothing is looked up until the plan pulls it.
+   */
+  private *neededExtents(chunkKeys: readonly number[]): Generator<ChunkExtent> {
+    let at = 0;
+    let previous = -1;
+    for (const key of chunkKeys) {
+      if (key === previous) continue;
+      previous = key;
+      const slot = this.slotFrom(key, at);
+      if (slot < 0) continue;
+      at = slot;
+      yield {
+        key: this.index.keys[slot]!,
+        offset: this.index.offsets[slot]!,
+        length: this.index.lengths[slot]!,
+      };
+    }
+  }
+
   has(chunkKey: number): boolean {
     return this.slotOf(chunkKey) >= 0;
   }
@@ -540,8 +655,8 @@ export class CrbmReader {
   /**
    * Range-GET one chunk's payload, verifying its CRC32C before returning. Returns `null` if the chunk is
    * absent. Throws `IntegrityError` on a CRC mismatch (the bytes must never reach the native
-   * deserializer). The returned buffer is a **read-only view** owned by the reader/driver — callers must
-   * not mutate it.
+   * deserializer). The returned bytes may be shared (a small generation's chunks are kept by the reader and handed out
+   * again), so callers must not change them.
    */
   async getChunk(chunkKey: number): Promise<Uint8Array | null> {
     const slot = this.slotOf(chunkKey);
@@ -552,7 +667,36 @@ export class CrbmReader {
     if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
       throw new IntegrityError(`chunk ${chunkKey} payload out of bounds`);
     }
-    const bytes = await this.blob.getRange(offset, length);
+    const held = this.keptRange(offset, length);
+    return this.openChunk(slot, chunkKey, held ?? (await this.blob.getRange(offset, length)));
+  }
+
+  /**
+   * `[offset, offset + length)` of the object from the kept chunk region, or `undefined` when it is not wholly in it
+   * (or nothing was kept). The bounds checks are defence on untrusted bytes: the index's validation at open keeps every
+   * extent inside the region, so they do not fire for a reader that opened.
+   *
+   * The range is returned as a copy, so nothing a caller or an AEAD does with it changes the next read.
+   */
+  private keptRange(offset: number, length: number): Uint8Array | undefined {
+    const kept = this.kept;
+    if (
+      kept === undefined ||
+      offset < PAYLOAD_START ||
+      offset + length > PAYLOAD_START + kept.length
+    ) {
+      return undefined;
+    }
+    const from = offset - PAYLOAD_START;
+    return kept.slice(from, from + length);
+  }
+
+  /**
+   * Check one chunk's stored bytes against the index, and open them: the CRC32C first, then, on an encrypted object,
+   * the AEAD with the chunk's own associated data. The one check every read of a chunk goes through, whether the
+   * bytes came from a range of their own or from a slice of a larger one.
+   */
+  private openChunk(slot: number, chunkKey: number, bytes: Uint8Array): Uint8Array {
     if (crc32c(bytes) !== this.index.crcs[slot]) {
       throw new IntegrityError(`chunk ${chunkKey} payload CRC mismatch`);
     }
@@ -570,6 +714,202 @@ export class CrbmReader {
       },
       this.crypto.aadFor(chunkKey),
     );
+  }
+
+  /**
+   * The next needed chunk of the range in `cur`, checked and opened, as a stream hands it out; the range is let go of
+   * when this is its last chunk.
+   */
+  private nextChunk(
+    cur: { range: LandedRange | undefined; at: number },
+    slot: number,
+    key: number,
+  ): Omit<ChunkRead, 'version'> {
+    const range = cur.range!;
+    const chunk = range.read.chunks[cur.at++]!;
+    if (cur.at === range.read.chunks.length) cur.range = undefined;
+    const from = chunk.offset - range.read.offset;
+    const bytes = this.openChunk(slot, chunk.key, range.bytes.subarray(from, from + chunk.length));
+    return { key, bytes };
+  }
+
+  /**
+   * Read several chunks as a stream, one storage request per merged range ({@link planChunkReads}) rather than one per
+   * chunk. `chunkKeys` are in ascending order, a key may repeat, and anything else is a {@link ValidationError}. One
+   * item comes out per position of `chunkKeys`, in order: the chunk's bytes, or `null` where this generation has none,
+   * as {@link getChunk} answers for an absent key. A key given twice is read once and answered at both positions with
+   * the same view.
+   *
+   * The key list is planned against this one generation's index ({@link planChunkReads}), as a walk the window pulls
+   * from only as it opens a range, so a stream that stops early has planned little: the same ranges, in the same
+   * order, as a plan of the whole list would make, and each chunk's extent is checked before the range that carries
+   * it is requested. The ranges run through a window of `options.concurrency` reads ({@link MAX_RANGES_IN_FLIGHT} by
+   * default) that counts a range until the consumer has taken it, so a stream never holds more than that many ranges,
+   * in flight or landed, however many keys it was given or how slowly it is read; with `options.ramp` the window opens
+   * 1, 2, 4 … wide. A range is at most 1 MiB
+   * unless it is one chunk, which is at most the payload cap, so the bound is that many times the per-chunk cap
+   * (1 MiB, and 28 bytes more for an encrypted chunk). Nothing is read until the first item is asked for, and a
+   * consumer that stops launches no more: ranges already in flight finish and are dropped, and a failure of one of
+   * those is never raised.
+   *
+   * Every chunk is held to the check a read of it alone gets: its slice of the range must match its index entry's
+   * CRC32C, and on an encrypted object it opens under its own associated data, so a chunk moved to another place in
+   * the object, or another key's bytes, is refused. The bytes in a gap between needed chunks are never parsed. A
+   * range that comes back shorter than asked is an {@link IntegrityError}, and a chunk that fails its check ends the
+   * stream with that error when its turn comes, as a read of it alone would fail.
+   *
+   * `options.readRange`, when given, runs each range read, so a caller can retry one request without repeating the
+   * others; `options.now` times each request for `options.onRequest`, which hears of every range request that was sent, once, when
+   * it settles: taken, abandoned after the consumer stopped, or failed (a reader has no clock of its own, so `ms` is 0
+   * without one).
+   * A plain chunk is a view into the range it was read in, so keeping it keeps that whole range: copy a chunk to keep it
+   * alone. Callers must not change it, as with {@link getChunk}.
+   *
+   * A stream that fails (a range that errors, a chunk that fails its check) raises at once and sends nothing further:
+   * the ranges it still had in flight finish in the background, are not retried and never raise. Its `settled()`
+   * resolves when those have finished, for a caller that is about to read again and does not want them beside its next
+   * window (the source awaits it before a heal, and only then). It waits as long as the slowest of them takes to
+   * answer, which only the store's own read timeout bounds, so a read that never answers delays a heal and never an
+   * error.
+   */
+  readChunks(
+    chunkKeys: readonly number[],
+    options: {
+      readonly concurrency?: number;
+      readonly ramp?: boolean | number;
+      readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
+      readonly now?: () => number;
+      readonly onRequest?: ReadChunksOptions['onRequest'];
+    } = {},
+  ): ChunkStream {
+    const open: { window: { settle(): Promise<void> } | undefined } = { window: undefined };
+    const stream = this.streamChunks(chunkKeys, options, open);
+    return Object.assign(stream, {
+      settled: (): Promise<void> => open.window?.settle() ?? Promise.resolve(),
+    });
+  }
+
+  private async *streamChunks(
+    chunkKeys: readonly number[],
+    options: {
+      readonly concurrency?: number;
+      readonly ramp?: boolean | number;
+      readonly readRange?: <T>(read: () => Promise<T>) => Promise<T>;
+      readonly now?: () => number;
+      readonly onRequest?: ReadChunksOptions['onRequest'];
+    },
+    open: { window: { settle(): Promise<void> } | undefined },
+  ): AsyncGenerator<Omit<ChunkRead, 'version'>> {
+    const width = options.concurrency ?? MAX_RANGES_IN_FLIGHT;
+    requirePositiveInteger(width, 'concurrency');
+    validateChunkKeyOrder(chunkKeys);
+    const ramp = options.ramp ?? false;
+    if (typeof ramp === 'number') requirePositiveInteger(ramp, 'ramp');
+    const readRange = options.readRange ?? (<T>(read: () => Promise<T>): Promise<T> => read());
+    const now = options.now ?? ((): number => 0);
+    const reads = planChunkReads(this.neededExtents(chunkKeys), {
+      start: PAYLOAD_START,
+      end: this.payloadEnd,
+    });
+    let closed = false;
+    const report = (bytes: number, ms: number): void => {
+      try {
+        options.onRequest?.({ bytes, ms });
+      } catch {
+        // A sink that throws must not fail a read, or a range nobody is waiting for.
+      }
+    };
+    const window = new ChunkWindow<LandedRange, PlannedRead>(
+      reads,
+      async (read) => {
+        const held = this.keptRange(read.offset, read.length);
+        // Nothing is sent, so nothing is reported: `onRequest` hears of requests.
+        if (held !== undefined) return { read, bytes: held };
+        const startedAt = now();
+        let sent = false;
+        let moved = 0;
+        try {
+          // Checked before each attempt, so a stream that was abandoned does not go on retrying: an attempt already
+          // sent finishes, and nothing further is sent.
+          const bytes = await readRange(() => {
+            if (closed) throw new StreamClosed();
+            sent = true;
+            return this.blob.getRange(read.offset, read.length);
+          });
+          moved = bytes.length;
+          if (bytes.length !== read.length) {
+            throw new IntegrityError(
+              `.crbm range [${read.offset}, +${read.length}) answered ${bytes.length} bytes, not the ${read.length} asked for`,
+            );
+          }
+          return { read, bytes };
+        } finally {
+          // Every request that was sent is reported, whoever is left to want it.
+          if (sent) report(moved, Math.max(0, now() - startedAt));
+        }
+      },
+      width,
+      ramp !== false,
+      typeof ramp === 'number' ? ramp : 1,
+    );
+    open.window = window;
+    // The range being handed out, and where in it. It is let go of with its last chunk, before the next range is
+    // asked for, so a stream holds `width` ranges and not one more.
+    const cur: { range: LandedRange | undefined; at: number } = { range: undefined, at: 0 };
+    let last: Omit<ChunkRead, 'version'> | undefined;
+    try {
+      let at = 0; // the slot of the last chunk handed out: the keys ascend, so the next is at or after it
+      for (const [i, key] of chunkKeys.entries()) {
+        const slot = this.slotFrom(key, at);
+        if (slot < 0) {
+          yield { key, bytes: null };
+          continue;
+        }
+        at = slot;
+        if (last !== undefined && last.key === key) {
+          yield { key, bytes: last.bytes };
+          if (chunkKeys[i + 1] !== key) last = undefined;
+          continue;
+        }
+        if (cur.range === undefined) {
+          // No local names the landed range: a binding of this loop body lives as long as the generator's frame, and
+          // would keep the range just consumed alive while the next one is awaited.
+          cur.range = await window.take();
+          cur.at = 0;
+        }
+        // Built by a call of its own and handed straight out, so no local of this loop keeps the chunk, or the range
+        // it is a view into, alive while the consumer is slow.
+        if (chunkKeys[i + 1] === key) {
+          last = this.nextChunk(cur, slot, key);
+          yield last;
+        } else {
+          yield this.nextChunk(cur, slot, key);
+        }
+      }
+    } finally {
+      // However the stream ends (done, abandoned, or failed), no further attempt of any range is sent; an attempt
+      // already sent finishes, and what it brings is dropped.
+      closed = true;
+    }
+  }
+}
+
+/** What {@link CrbmReader.readChunks} returns: the stream, and a way to wait for the reads it left in flight. */
+export type ChunkStream = AsyncGenerator<Omit<ChunkRead, 'version'>> & {
+  /** Resolves, never rejects, once every range the stream launched and did not hand out has finished. */
+  settled(): Promise<void>;
+};
+
+/** A range that has landed, with the needed chunks it carries. */
+interface LandedRange {
+  readonly read: PlannedRead;
+  readonly bytes: Uint8Array;
+}
+
+/** Raised inside a range read of a stream that was abandoned or failed, so a retrying runner stops. Never surfaces. */
+class StreamClosed extends Error {
+  constructor() {
+    super('the chunk stream was closed');
   }
 }
 

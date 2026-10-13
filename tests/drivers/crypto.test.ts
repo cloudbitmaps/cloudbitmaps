@@ -144,6 +144,11 @@ describe('InProcessKeystore (envelope BYOK)', () => {
     }).createDek();
     const other = new InProcessKeystore({ keys: { k2: key() }, activeKeyId: 'k2' });
     await expect(other.openDek(wrapped)).rejects.toBeInstanceOf(KeyUnavailableError);
+    // The message names the ids the wrappings reference, never the ids of the keys this process holds: it reaches the
+    // erasure ledger and logs.
+    const message = String(await other.openDek(wrapped).catch((e: unknown) => e));
+    expect(message).toContain('k1');
+    expect(message).not.toContain('k2');
     // An empty wrapping list (a shredded segment) is likewise unrecoverable.
     await expect(other.openDek([])).rejects.toBeInstanceOf(KeyUnavailableError);
   });
@@ -172,10 +177,57 @@ describe('InProcessKeystore (envelope BYOK)', () => {
     ).toThrow(ValidationError);
   });
 
+  it('counts only the keys it was given as key ids, never a name every object inherits', () => {
+    for (const inherited of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      expect(
+        () => new InProcessKeystore({ keys: { k: key() }, activeKeyId: inherited }),
+        inherited,
+      ).toThrow(ValidationError);
+      expect(
+        () =>
+          new InProcessKeystore({ keys: { k: key() }, activeKeyId: 'k', recoveryKeyId: inherited }),
+        inherited,
+      ).toThrow(ValidationError);
+    }
+    // An id that is not a string is no key either, however the object's own keys read.
+    for (const id of [1, null, {}, Symbol('k')]) {
+      expect(
+        () => new InProcessKeystore({ keys: { '1': key() }, activeKeyId: id as unknown as string }),
+      ).toThrow(ValidationError);
+    }
+    // A real key that happens to share such a name is still a key.
+    expect(
+      () => new InProcessKeystore({ keys: { constructor: key() }, activeKeyId: 'constructor' }),
+    ).not.toThrow();
+  });
+
   it('rejects a corrupt/foreign wrapped blob under a held keyId (IntegrityError)', async () => {
     const ks = new InProcessKeystore({ keys: { k1: key() }, activeKeyId: 'k1' });
     await expect(
       ks.openDek([{ keyId: 'k1', wrapped: Buffer.from('garbage').toString('base64') }]),
     ).rejects.toBeInstanceOf(IntegrityError);
+  });
+});
+
+describe('key material is held in buffers of its own', () => {
+  // `Buffer.from` of a small key is a view on a slab of Node's shared pool (8 KiB on Node 22, 64 KiB on recent Node 24): held for as long as an open reader holds its
+  // key, it pins the whole slab, which no cache weight counts, and keeps key bytes in a pool shared with other data.
+  const own = (held: unknown): number => (held as Uint8Array).buffer.byteLength;
+
+  it('a NodeAead key is exactly 32 bytes of memory', () => {
+    expect(own((new NodeAead(randomBytes(32)) as unknown as { key: Uint8Array }).key)).toBe(32);
+    // A key given as a pooled view still ends up in its own memory.
+    expect(
+      own((new NodeAead(Buffer.from(randomBytes(32))) as unknown as { key: Uint8Array }).key),
+    ).toBe(32);
+  });
+
+  it('the keystore holds each KEK, and each DEK it opens, in memory of its own', async () => {
+    const store = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    for (const kek of (store as unknown as { keys: Map<string, Uint8Array> }).keys.values())
+      expect(own(kek)).toBe(32);
+    const { wrapped } = await store.createDek();
+    const aead = await store.openDek(wrapped);
+    expect(own((aead as unknown as { key: Uint8Array }).key)).toBe(32);
   });
 });

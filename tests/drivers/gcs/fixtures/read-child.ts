@@ -4,12 +4,14 @@
  * and the parent reads the exit code: 1 is that crash, 0 is a call that settled and left the process alone.
  *
  * argv: the stub's endpoint, then the call to make (`tail`, `range`, `registry`, `list`, or `exists`, a facade call that reads the registry with the store's own retry off), then optionally `count-connects`, which adds how many connections the
- * call opened to the endpoint's port, or `creds-missing`, which reads through a client that authenticates against the
- * endpoint (whose credentials file, named by the environment, does not exist) and adds how many reads it opened.
+ * call opened to the endpoint's port, `creds-missing`, which reads through a client that authenticates against the
+ * endpoint (whose credentials file, named by the environment, does not exist) and adds how many reads it opened, or
+ * `own-client`, which hands the backend a client of the caller's own with the SDK's default retries, or
+ * `own-pinned`, the same from a subclass that sets a retry policy of its own over the options it is given.
  * Prints one JSON line.
  */
 import { Socket } from 'node:net';
-import { File, Storage } from '@google-cloud/storage';
+import { File, Storage, type StorageOptions } from '@google-cloud/storage';
 import { CloudRoaring } from '../../../../packages/roaring/src/index';
 import { GcsStorage } from '../../../../packages/gcs/src/backend';
 
@@ -41,24 +43,42 @@ File.prototype.createReadStream = function (this: File, ...args: unknown[]) {
   );
 } as typeof createReadStream;
 
+class Pinned extends Storage {
+  constructor(options: StorageOptions = {}) {
+    super({ ...options, retryOptions: { maxRetries: 3 } });
+  }
+}
+
 const backend =
-  count === 'creds-missing'
+  count === 'own-pinned'
     ? new GcsStorage({
         bucket: 'b',
         prefix: 'p',
-        client: new Storage({
-          apiEndpoint: endpoint,
-          projectId: 'proj',
-          useAuthWithCustomEndpoint: true,
-          retryOptions: { autoRetry: false },
-        }),
+        client: new Pinned({ apiEndpoint: endpoint, projectId: 'proj' }),
       })
-    : new GcsStorage({
-        bucket: 'b',
-        prefix: 'p',
-        apiEndpoint: endpoint,
-        projectId: 'proj',
-      });
+    : count === 'own-client'
+      ? new GcsStorage({
+          bucket: 'b',
+          prefix: 'p',
+          client: new Storage({ apiEndpoint: endpoint, projectId: 'proj' }),
+        })
+      : count === 'creds-missing'
+        ? new GcsStorage({
+            bucket: 'b',
+            prefix: 'p',
+            client: new Storage({
+              apiEndpoint: endpoint,
+              projectId: 'proj',
+              useAuthWithCustomEndpoint: true,
+              retryOptions: { autoRetry: false },
+            }),
+          })
+        : new GcsStorage({
+            bucket: 'b',
+            prefix: 'p',
+            apiEndpoint: endpoint,
+            projectId: 'proj',
+          });
 const key = { segment: 's', generation: 0 };
 
 async function run(): Promise<unknown> {

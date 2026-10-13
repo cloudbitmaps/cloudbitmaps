@@ -7,15 +7,21 @@
 #
 # WHY THE PUBLISHED PACKAGES. This installs @cloudbitmaps/roaring and @cloudbitmaps/s3 from npm into a scratch
 # directory and runs the harness against those, not against a build of this checkout. The figures then describe
-# what a consumer actually installs, and CloudShell never needs this repository's toolchain.
+# what a consumer actually installs, and CloudShell never needs this repository's toolchain. It installs
+# @cloudbitmaps/tools of the same release too, whose default prices the run is billed at.
 #
 # Usage, from a clone of this repository inside CloudShell:
 #   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.05 bash bench/calibrate-cloudshell.sh
 #
 # Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
 #           CR_CALIBRATE_PACKAGE_VERSION=0.11.0 overrides the release measured (default: this clone's version).
+#           CR_CALIBRATE_MAX_SOCKETS=64 sets the workload client's socket limit (default 128, the limit the library gives
+#           the client it builds; the AWS SDK's own default is 50). A positive integer of at most 1024, refused otherwise.
 #           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script. Any
 #           other value than unset, 0 or 1 is refused.
+#           CR_CALIBRATE_SUITE=large runs the large suite (combines on operands of 10^6 to 10^7 ids) in place of the
+#           default one, and CR_CALIBRATE_LARGE_READS and CR_CALIBRATE_LARGE_INTOS size it; its evidence is written
+#           under bench/calibration/large/. Any other suite name is refused by the harness, before anything is created.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -31,6 +37,42 @@ refuse_bad_rehearse() {
   esac
 }
 refuse_bad_rehearse
+
+# Only unset, empty, `default` or `large` name a suite. The harness refuses any other, but only once the packages are
+# installed, so it is refused here first, and a name it would take is left to it.
+refuse_bad_suite() {
+  case "${CR_CALIBRATE_SUITE:-}" in
+    '' | default | large) ;;
+    *)
+      echo "cloudshell: CR_CALIBRATE_SUITE must be default or large, not \"${CR_CALIBRATE_SUITE}\"" >&2
+      exit 2
+      ;;
+  esac
+}
+refuse_bad_suite
+
+# The workload client's socket limit, by the harness's own rule: digits, 1 to 1024 (beyond a process's usual
+# file-descriptor limit, 1,024 on Lambda for one, it cannot be held). Whitespace only is unset. Refused here, before
+# anything is installed, and normalised, so the line echoed below is the number the harness will use.
+MAX_SOCKETS_ASKED="${CR_CALIBRATE_MAX_SOCKETS:-}"
+MAX_SOCKETS_ASKED="${MAX_SOCKETS_ASKED#"${MAX_SOCKETS_ASKED%%[![:space:]]*}"}"
+MAX_SOCKETS_ASKED="${MAX_SOCKETS_ASKED%"${MAX_SOCKETS_ASKED##*[![:space:]]}"}"
+MAX_SOCKETS_SHOWN="128 (the library's default)"
+if [ -n "$MAX_SOCKETS_ASKED" ]; then
+  case "$MAX_SOCKETS_ASKED" in
+    *[!0-9]*)
+      echo "cloudshell: CR_CALIBRATE_MAX_SOCKETS is \"${CR_CALIBRATE_MAX_SOCKETS}\"; expected a positive integer of at most 1024 (more than a process's usual file-descriptor limit, 1,024 on Lambda, cannot be held)" >&2
+      exit 2
+      ;;
+  esac
+  MAX_SOCKETS_NUM=$((10#$MAX_SOCKETS_ASKED))
+  if [ "$MAX_SOCKETS_NUM" -lt 1 ] || [ "$MAX_SOCKETS_NUM" -gt 1024 ]; then
+    echo "cloudshell: CR_CALIBRATE_MAX_SOCKETS is \"${CR_CALIBRATE_MAX_SOCKETS}\"; expected a positive integer of at most 1024 (more than a process's usual file-descriptor limit, 1,024 on Lambda, cannot be held)" >&2
+    exit 2
+  fi
+  MAX_SOCKETS_SHOWN="$MAX_SOCKETS_NUM"
+  export CR_CALIBRATE_MAX_SOCKETS="$MAX_SOCKETS_NUM"
+fi
 
 # The shell must be IN the region measured: a latency taken from another region is labelled in-region by a floor under
 # 30 ms, which a neighbouring region can also make. So the shell's own region, which CloudShell exports, has to exist,
@@ -57,6 +99,8 @@ if [ -z "$PKG_VERSION" ]; then
   exit 2
 fi
 echo "cloudshell: measuring @cloudbitmaps/roaring and @cloudbitmaps/s3 at ${PKG_VERSION}"
+# The harness validates the number and records the limit it read back from the client; this line says what was asked.
+echo "cloudshell: the workload client's socket limit is ${MAX_SOCKETS_SHOWN}"
 MODE_FLAG="--run"
 if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then
   MODE_FLAG="--rehearse"
@@ -73,8 +117,10 @@ harness_ref() {
   local ref
   ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
   if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
-    bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
-    bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs 2>/dev/null)" ]; then
+    bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs \
+    bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs \
+    bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs \
+    bench/lib/range-counts.cjs 2>/dev/null)" ]; then
     ref="${ref}-dirty"
   fi
   echo "$ref"
@@ -86,8 +132,10 @@ export CR_CALIBRATE_HARNESS_REF
 # so a run named after a committed one is refused HERE, before anything is installed or spent. An unset id is
 # generated by the harness, with a random suffix no committed run can share.
 refuse_committed_run_id() {
-  if [ -n "${CR_CALIBRATE_RUN_ID:-}" ] && [ -f "bench/calibration/${CR_CALIBRATE_RUN_ID}.json" ]; then
-    echo "cloudshell: bench/calibration/${CR_CALIBRATE_RUN_ID}.json is committed evidence — choose another CR_CALIBRATE_RUN_ID, or leave it unset" >&2
+  local dir="bench/calibration"
+  if [ "${CR_CALIBRATE_SUITE:-}" = "large" ]; then dir="bench/calibration/large"; fi
+  if [ -n "${CR_CALIBRATE_RUN_ID:-}" ] && [ -f "${dir}/${CR_CALIBRATE_RUN_ID}.json" ]; then
+    echo "cloudshell: ${dir}/${CR_CALIBRATE_RUN_ID}.json is committed evidence — choose another CR_CALIBRATE_RUN_ID, or leave it unset" >&2
     exit 2
   fi
 }
@@ -136,32 +184,41 @@ WORK="$(mktemp -d)"
 # scratch directory deleted with them inside would throw away a run already paid for.
 # shellcheck disable=SC2329 # called by the EXIT trap below
 finish() {
-  # A real run writes its evidence as bench/calibration/<runId>.json, or <runId>.partial.json if it did not finish;
+  # A real run writes its evidence as bench/calibration/<runId>.json, or <runId>.partial.json if it did not finish (the
+  # large suite's under bench/calibration/large/);
   # a rehearsal writes a file of its own, so it can never be mistaken for a real run's evidence. Commit a finished
-  # run's file at that same path. Nothing here may abort the trap or overwrite a file already in $HOME. A name that
+  # run's file at that same path: the large suite's are copied out under the same path in $HOME, since a large run
+  # committed beside the default suite's would become the default suite's latest report. Nothing here may abort the
+  # trap or overwrite a file already in $HOME. A name that
   # is taken gets this run's copy beside it, stamped, since CloudShell keeps $HOME between sessions and not the
   # scratch directory; a copy that still fails leaves the scratch directory in place and says where.
   set +e
   # A reader that has gone, such as a `tee` a Ctrl-C stopped, must fail an echo here rather than kill the copy.
   trap '' PIPE
   local kept=0
-  for f in "$WORK"/bench/calibration/*.json "$WORK/bench/calibrate-aws-rehearsal.json"; do
+  local tilde='~'
+  for f in "$WORK"/bench/calibration/*.json "$WORK"/bench/calibration/large/*.json \
+    "$WORK/bench/calibrate-aws-rehearsal.json" "$WORK/bench/calibrate-aws-rehearsal-large.json"; do
     [ -f "$f" ] || continue
-    local name dest
+    local name dest out
     name="$(basename "$f")"
-    dest="$HOME/$name"
+    out="$HOME"
+    case "$f" in
+      "$WORK"/bench/calibration/large/*) out="$HOME/bench/calibration/large" ;;
+    esac
+    dest="$out/$name"
     if [ -e "$dest" ]; then
       # The stamp goes before `.partial.json`, so a copy of a partial file is still one git ignores.
       local stamp
       stamp="$(date -u +%Y%m%dT%H%M%SZ)"
       case "$name" in
-        *.partial.json) dest="$HOME/${name%.partial.json}.$stamp.partial.json" ;;
-        *) dest="$HOME/${name%.json}.$stamp.json" ;;
+        *.partial.json) dest="$out/${name%.partial.json}.$stamp.partial.json" ;;
+        *) dest="$out/${name%.json}.$stamp.json" ;;
       esac
-      echo "cloudshell: ~/$name already exists and was left alone" >&2
+      echo "cloudshell: ${out/#$HOME/$tilde}/$name already exists and was left alone" >&2
     fi
-    if [ ! -e "$dest" ] && cp "$f" "$dest"; then
-      echo "cloudshell: results at ~/$(basename "$dest") (Actions → Download file, or cat it)"
+    if [ ! -e "$dest" ] && mkdir -p "$out" && cp "$f" "$dest"; then
+      echo "cloudshell: results at ${dest/#$HOME/$tilde} (Actions → Download file, or cat it)"
     else
       echo "cloudshell: could not copy the results — they are at $f" >&2
       kept=1
@@ -206,7 +263,7 @@ run_harness() {
 
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-large-resources.cjs bench/lib/calibrate-large-stages.cjs bench/lib/calibrate-large.cjs bench/lib/calibrate-process.cjs bench/lib/calibrate-samples.cjs bench/lib/calibrate-spread.cjs bench/lib/calibrate-stages.cjs bench/lib/large-counts.cjs bench/lib/range-counts.cjs "$WORK/bench/lib/"
 echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"
@@ -215,7 +272,7 @@ echo "cloudshell: installing the published packages at ${PKG_VERSION}"
   # its native binary; without this the install exits 0 and the first import throws. npm 10 and 11 run it anyway.
   node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.allowScripts={roaring:true};fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
   npm i --no-audit --no-fund --loglevel=error \
-    "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" \
+    "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" "@cloudbitmaps/tools@${PKG_VERSION}" \
     @aws-sdk/client-s3 @aws-sdk/client-sts
   # Fail here, before anything is created or spent, if the native binary did not arrive.
   node -e 'import("@cloudbitmaps/roaring").catch((e)=>{console.error("cloudshell: @cloudbitmaps/roaring does not load: "+e.message.split("\n")[0]);process.exit(2)})'

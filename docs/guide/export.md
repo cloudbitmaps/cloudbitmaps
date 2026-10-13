@@ -43,7 +43,8 @@ const manifest = await store.exportSegments(sink, {
 });
 // manifest: { version, format, totalSegments, totalIds,
 //             segments: [{ segment, namespace?, count, bytes }],
-//             failed:   [{ segment, namespace?, error }] }   // segments that could not be read (see below)
+//             failed:   [{ segment, namespace?, error }],              // segments that could not be read (see below)
+//             skipped:  [{ segment, namespace?, reason: 'destroyed' }] } // tombstones: nothing to export
 ```
 
 Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives bytes, `close` commits a
@@ -64,7 +65,10 @@ CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 
 Each file is written to a unique `.part` temp file and then renamed atomically, and artifacts are owner-only (`0o600`).
 The command writes a self-describing `manifest.json` last, also atomically, so a directory with a `manifest.json`
-means the run finished. A crash leaves none, so re-run. The command exits non-zero if any segment could not be read.
+means the run finished. A re-run removes the last run's `manifest.json` before it writes anything, so a crash leaves
+none, and you re-run. The command exits non-zero if any segment could not be read, and before it writes anything if
+`CR_EXPORT_ROOT` does not exist or is empty (a typo, or a volume that is not mounted), which would otherwise export
+nothing and report a finished run.
 The manifest of a command run also carries a `generatedAt` timestamp.
 
 ## Read an export back
@@ -97,19 +101,48 @@ And a store loads one straight back, with no per-id work:
   segment has a registry row (the publish writes it), so the registry is complete by construction. Build the store on
   the backend the loads used.
 - **Encrypted segments are decrypted** transparently if the store has the keystore, so the export is **cleartext**.
-  Protect it. Crypto-shredded segments are skipped.
+  Protect it. A destroyed segment (crypto-shredded or dropped) resolves no generation, so it is skipped and listed in
+  the manifest's `skipped[]`: with `segments` and `failed`, the manifest accounts for every segment row the registry
+  listed. (The registry's internal due-index rows are not segments, and are in none of the three.) A segment
+  destroyed after the listing named it and before its export began is skipped the same way: when a segment yields no
+  ids, its row is read again, and a row now destroyed or gone is recorded in `skipped[]` and no file is committed.
+- **The command refuses a namespace named `manifest.json`, in any letter case.** Its directory would be the manifest's
+  path (on a filesystem that ignores case, `Manifest.json` is the same path), so each of its segments is recorded in
+  `failed[]` with a `ValidationError` message, and the run still writes its manifest and exports every other namespace.
+  An output directory that already holds a directory named `manifest.json` is refused up front with a `ValidationError`
+  telling you to remove or rename it; the command never deletes it. A namespace directory left empty because every
+  segment in it was skipped is removed.
 - **A segment that cannot be read does not stop the run.** A corrupt storage object, or an encrypted segment when the
   store has no keystore (the command wires none, so it cannot decrypt those), is recorded in the manifest's `failed[]`.
   The export continues, and that segment's partial output is discarded. So "a `manifest.json` exists" means the run
   finished, not that every segment succeeded. Always check `failed`.
+- **An export carries ids, not the segment's other state.** A file holds the ids of the segment's current generation and
+  nothing else: not its generation metadata, its `retention` and `residency` policy, its leases, nor the older
+  generations `keep` retained. If you will load the files into a new prefix, save beside each file the segment's
+  generation metadata (`seg.stat()`) and its row's whole `retention` and `residency` objects
+  (`backend.registry.get(ref)`). After each load, read the row the load created (`const row = await
+  backend.registry.get(ref)`) and write back the ones the old row had with `backend.registry.compareAndSwap(ref,
+  row.token, { retention, residency })`, since `store.setRetention` writes `expiresAt` alone; then, for a policy with an
+  `expiresAt`, call `store.setRetention(ref, { expiresAt })` as well, which keeps your other keys and files the segment
+  in the retention sweep's due index. A destroyed segment (crypto-shredded or dropped) is skipped (`manifest.skipped`),
+  and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it.
+  A file also holds what the segment held when it was read, so run again every erasure processed since the export
+  began.
 - **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
   disappeared.** Export to a fresh directory for a clean dump.
-- **For a current dump, use a freshly built store.** A long-lived store may be up to `cache.genTtlMs` behind a publish
-  (see [how soon a reader sees a new load](reading.md#how-soon-a-reader-sees-a-new-load)); the command builds a fresh
-  store per run.
-- **For a consistent dump, pause your loads.** Each segment is read live, so a publish while a long segment exports can
-  leave its file holding chunks of two generations. Pause your loads or export from a quiet window, for one segment or
-  across segments.
+- **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds
+  already there passes when an earlier run left it (yours and owner-only). A symlink, a path that is not a directory, a
+  directory of another user, or one open to group or others in its place is refused with a `ValidationError`. The check
+  reads the directory and then creates the file by path, so it is not proof against a process that changes the directory
+  between the two, and `CR_EXPORT_OUT` itself is used as given. Point it at a directory only you can write to.
+- **Each segment is exported as one instant.** The export pins a segment when it begins it: the generation is read from
+  the registry then, on a warm store as on a cold one, and only that generation's object is read for the whole segment,
+  so a load that publishes meanwhile cannot put chunks of two generations in one file. A cold store makes one registry
+  read and one tail read per segment; a warm store makes one registry read per segment. A pin holds nothing: if a
+  collection or an erasure removes the pinned generation while the segment is still being read, that segment fails with
+  the error a pinned read gets, is recorded in `failed[]` and its partial output is discarded, and it never reads the
+  newer generation. Different segments are different instants: a dump of several segments is not a snapshot of the
+  store. Pause your loads, or export from a quiet window, for that.
 
 This is also a building block for a data-portability response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's
 [Your data stays yours](../../README.md#your-data-stays-yours).

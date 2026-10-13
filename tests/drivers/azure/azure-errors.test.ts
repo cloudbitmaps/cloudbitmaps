@@ -1,7 +1,11 @@
+import { isValidationError } from '@/core/errors';
 import {
   isConditionalConflict,
   isInvalidRange,
+  asMissingContainer,
+  isMissingContainer,
   isNotFound,
+  isPreconditionFailed,
   isTransient,
 } from '@/azure-blob/azure-errors';
 
@@ -26,11 +30,54 @@ describe('Azure error classification', () => {
     expect(isTransient(statusErr(412))).toBe(false);
   });
 
+  it('a 409 or 412 that names another cause is not a lost race', () => {
+    // A write-once (WORM) container refuses every overwrite with 409 BlobImmutableDueToPolicy, and a blob leased in
+    // the portal answers 412 LeaseIdMissing: read as a lost race, a load reported another loader winning and a
+    // registry write spent its attempts as "contention".
+    for (const [status, code] of [
+      [409, 'BlobImmutableDueToPolicy'],
+      [409, 'LeaseAlreadyPresent'],
+      [409, 'BlobArchived'],
+      [412, 'LeaseIdMissing'],
+      [412, 'LeaseNotPresentWithBlobOperation'],
+    ] as const) {
+      expect(isConditionalConflict({ statusCode: status, code })).toBe(false);
+      expect(isConditionalConflict({ statusCode: status, details: { errorCode: code } })).toBe(
+        false,
+      );
+      expect(isPreconditionFailed({ statusCode: status, code })).toBe(false);
+      expect(isTransient({ statusCode: status, code })).toBe(false);
+    }
+    expect(isPreconditionFailed({ statusCode: 412, code: 'ConditionNotMet' })).toBe(true);
+    expect(isPreconditionFailed(statusErr(412))).toBe(true);
+    expect(isConditionalConflict({ statusCode: 409, code: 'BlobAlreadyExists' })).toBe(true);
+    expect(isConditionalConflict({ statusCode: 412, code: 'ConditionNotMet' })).toBe(true);
+  });
+
   it('404 = not found — keyed off status (code is undefined on a HEAD/getProperties)', () => {
     expect(isNotFound(statusErr(404))).toBe(true); // getProperties: no body, no code
     expect(isNotFound(detailsErr('BlobNotFound'))).toBe(true); // GET: details.errorCode present
     expect(isNotFound(codeErr('BlobNotFound'))).toBe(true);
+    // A missing container is not a missing blob, on a GET (code) or a HEAD (the header's code only).
+    const noContainer = { statusCode: 404, code: 'ContainerNotFound' };
+    const noContainerHead = { statusCode: 404, details: { errorCode: 'ContainerNotFound' } };
+    expect(isMissingContainer(noContainer)).toBe(true);
+    expect(isMissingContainer(noContainerHead)).toBe(true);
+    expect(isNotFound(noContainer)).toBe(false);
+    expect(isNotFound(noContainerHead)).toBe(false);
+    expect(isTransient(noContainer)).toBe(false);
+    expect(isMissingContainer(detailsErr('BlobNotFound'))).toBe(false);
     expect(isTransient(statusErr(404))).toBe(false);
+  });
+
+  it('a missing container becomes a ValidationError that names it and keeps the service error as its cause', () => {
+    const noContainer = { statusCode: 404, code: 'ContainerNotFound' };
+    const err = asMissingContainer(noContainer, 'my-container') as Error;
+    expect(isValidationError(err)).toBe(true);
+    expect(err.message).toMatch(/^the Azure container does not exist: my-container; check /);
+    expect(err.cause).toBe(noContainer);
+    const noBlob = codeErr('BlobNotFound');
+    expect(asMissingContainer(noBlob, 'my-container')).toBe(noBlob);
   });
 
   it('416 = out-of-range (never a transient)', () => {

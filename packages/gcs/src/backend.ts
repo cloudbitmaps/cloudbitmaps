@@ -8,15 +8,22 @@
  * as the same word meaning two things. That is why this class builds the client itself: `new GcsStorage({ bucket })`
  * never makes you write `{ storage: storage }`. Supply `client` when you need your own.
  */
-import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import {
+  STORAGE_BACKEND,
+  ValidationError,
+  brandAsBackend,
+  refuseUnknownOptions,
+} from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { Storage as GcsClient } from '@google-cloud/storage';
+import { defined } from './defined';
 import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
+import { downloadClient } from './read-client';
 
 export interface GcsStorageOptions {
   /** Target bucket (must already exist). */
@@ -26,11 +33,16 @@ export interface GcsStorageOptions {
   /**
    * A constructed `@google-cloud/storage` client. One is built from the ambient credentials when absent. Its retry
    * options apply to every request except the single-request conditional writes, which the driver sends without
-   * that retry whatever they say: a registry row once, and a generation's object again only after a throttle, under
-   * its own backoff. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408, 429, 500, 502, 503 or 504 can crash the process
-   * with `ERR_STREAM_UNABLE_TO_PIPE`, so build it with `retryOptions: { autoRetry: false }`; the driver retries
-   * downloads itself. That also turns off the SDK's retries of listings, metadata reads and resumable uploads on
-   * this client, which the store does not retry. The client built here needs none of this: only its downloads are sent once.
+   * that retry whatever they say (a registry row once, and a generation's object again only after a throttle, under
+   * its own backoff), and the downloads. In `@google-cloud/storage` 7.x and 8.x a download the SDK retries after a 408,
+   * 429, 500, 502, 503 or 504 can crash the process with `ERR_STREAM_UNABLE_TO_PIPE`, so downloads go through a twin of
+   * this client, built from its own class with the same credentials object, endpoint and settings and the SDK's retries
+   * off over any its class set, and the driver retries them itself. A client whose twin would use other credentials or
+   * another endpoint (a subclass that builds from options of its own), whose class overrides `bucket` (a test double
+   * built on `Storage`), or whose `bucket` is replaced on the instance (a test stub; stub `Storage.prototype` instead)
+   * is refused at construction. A test double that is not a `Storage` client is used as it is when it has
+   * `retryOptions: { autoRetry: false }`, and refused without it. What is set on the client after the backend was
+   * built, other than an interceptor, is not carried to the twin.
    */
   readonly client?: GcsClient;
   /** Project id for the client built when `client` is absent (refused beside `client`). Falls back to the SDK's own resolution. */
@@ -63,10 +75,13 @@ export interface GcsStorageOptions {
    */
   readonly readTimeoutMs?: number;
   /**
-   * Whether the registry removes a deleted row for good, by an object delete sent with `ifGenerationMatch`, rather
-   * than leaving a tombstone a full listing reads forever. Defaults to `false`, on the public endpoint too: whether real
-   * GCS applies `ifGenerationMatch` to a delete has not been verified by a run against the service, and fake-gcs-server
-   * accepts the precondition and ignores it, so CI cannot show it. Set `true` to remove rows for good.
+   * Whether the service applies `ifGenerationMatch` on an object delete, which both halves rely on when it is set: the
+   * registry removes a deleted row for good rather than leaving a tombstone a full listing reads forever, and the
+   * storage half removes an erasure's holder only while it is the object the erasure searched, by its generation.
+   * Defaults to `false`, on the public endpoint too: whether real GCS applies `ifGenerationMatch` to a delete has not
+   * been verified by a run against the service, and fake-gcs-server accepts the precondition and ignores it, so CI
+   * cannot show it. Set `true` once you know it does. Until then, the window in which an erasure's stalled delete
+   * takes a generation a load put under the number since stays open on GCS.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -92,27 +107,6 @@ export const GCS_STORAGE_OPTION_KEYS = [
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
 const CLIENT_SETTINGS = ['projectId', 'apiEndpoint'] as const;
 
-/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
-function refuseUnknown(
-  name: string,
-  options: unknown,
-  keys: readonly string[],
-  hint: string,
-): void {
-  if (options === null || typeof options !== 'object') {
-    throw new ValidationError(
-      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
-    );
-  }
-  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
-  if (unknown.length > 0) {
-    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
-    throw new ValidationError(
-      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
-    );
-  }
-}
-
 export class GcsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -123,12 +117,20 @@ export class GcsStorage implements StorageBackend {
 
   constructor(options: GcsStorageOptions) {
     let readClient: GcsClient;
-    refuseUnknown(
+    refuseUnknownOptions(
       'GcsStorage',
       options,
       GCS_STORAGE_OPTION_KEYS,
       'a @google-cloud/storage client goes in `client`',
     );
+    if (typeof options.bucket !== 'string' || options.bucket.length === 0) {
+      throw new ValidationError('GcsStorage needs a `bucket`: the name of one, a non-empty string');
+    }
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "GcsStorage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.client !== undefined && options.client !== null) {
       // A supplied client already carries its project and endpoint, so a setting beside it is ignored, and
       // ignoring it leaves the store talking to somewhere the caller did not mean: an `apiEndpoint` meant for an
@@ -143,41 +145,32 @@ export class GcsStorage implements StorageBackend {
         );
       }
       this.client = options.client;
-      readClient = options.client;
+      readClient = downloadClient(options.client, true);
     } else {
-      const settings = {
-        ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
-        ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
-      };
-      this.client = new GcsClient(settings);
-      // A second client, for downloads only. `@google-cloud/storage` 7.x and 8.x retry a failed download by default, and
-      // when the retried request succeeds they throw `ERR_STREAM_UNABLE_TO_PIPE` outside any promise, which ends the
-      // process whatever the caller wrote around the call. A download is sent once instead, and the driver retries it
-      // itself (`download-retry.ts`). Everything else keeps the default retries: a resumable upload's session, a
-      // listing, a metadata read, none of which the store retries on its own. Two clients mean two `GoogleAuth`
-      // instances: lazy, so the first download makes a second token fetch, and a second hourly refresh follows.
-      readClient = new GcsClient({ ...settings, retryOptions: { autoRetry: false } });
+      this.client = new GcsClient(
+        defined({ projectId: options.projectId, apiEndpoint: options.apiEndpoint }),
+      );
+      // Downloads go through a twin that sends each once (see `read-client.ts`); it shares this client's credentials
+      // object, so one token fetch and one hourly refresh serve both.
+      readClient = downloadClient(this.client, false);
     }
     const shared = {
       storage: this.client,
       readStorage: readClient,
       bucket: options.bucket,
-      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
+      ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new GcsStorageDriver({
       ...shared,
-      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
-      ...(options.simpleUploadThresholdBytes === undefined
-        ? {}
-        : { simpleUploadThresholdBytes: options.simpleUploadThresholdBytes }),
+      ...defined({
+        maxObjectBytes: options.maxObjectBytes,
+        simpleUploadThresholdBytes: options.simpleUploadThresholdBytes,
+        conditionalDelete: options.conditionalDelete,
+      }),
     });
     this.registry = new GcsRegistryDriver({
       ...shared,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

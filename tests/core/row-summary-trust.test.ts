@@ -3,8 +3,10 @@ import { KeyUnavailableError } from '@/core/errors';
 import type {
   IRegistryDriver,
   IStorageDriver,
+  ClearRegistrySummary,
   RegistryRecord,
   RegistrySummary,
+  SealedRegistrySummary,
   SegmentRef,
 } from '@/core/ports';
 import { brandAsBackend } from '@/core/ports';
@@ -70,10 +72,26 @@ function world(
   return { keystore, backend, tamper, writer, reader, clock, calls, registry: backend.registry };
 }
 
-const withSummary = (summary: RegistrySummary | undefined) => (row: RegistryRecord) => ({
-  ...row,
-  summary,
-});
+/**
+ * The row with `summary` in place of its own: a clear one names the object the row's own summary named, so only what
+ * it says of that object differs.
+ */
+const withSummary =
+  (
+    summary:
+      Omit<ClearRegistrySummary, 'fingerprint' | 'tailBytes'> | SealedRegistrySummary | undefined,
+  ) =>
+  (row: RegistryRecord): RegistryRecord => ({
+    ...row,
+    summary:
+      summary === undefined || 'sealed' in summary
+        ? summary
+        : ({
+            ...summary,
+            fingerprint: (row.summary as { fingerprint?: string } | undefined)?.fingerprint,
+            tailBytes: (row.summary as { tailBytes?: number } | undefined)?.tailBytes,
+          } as RegistrySummary),
+  });
 
 describe('a summary that disagrees with its object', () => {
   it('is believed by a cold count, caught by the next open, and not used again: nothing fails', async () => {
@@ -85,7 +103,12 @@ describe('a summary that disagrees with its object', () => {
     expect(await seg.count()).toBe(99); // the row's word, not confirmed on the cold path
     expect(await seg.has(1)).toBe(true); // the open holds the row's summary against the object
     expect(await seg.count()).toBe(3); // distrusted: the same snapshot now answers from the object
-    expect(await seg.stat()).toEqual({ generation: 0, cardinality: 3, metadata: META });
+    expect(await seg.stat()).toEqual({
+      generation: 0,
+      cardinality: 3,
+      metadata: META,
+      sizeBytes: expect.any(Number),
+    });
     // A later resolution of the same row, after the TTL, does not trust it again.
     w.clock.advance(TTL + 1);
     expect(await seg.count()).toBe(3);
@@ -104,13 +127,17 @@ describe('a summary that disagrees with its object', () => {
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 
+  // `stat()` answers from the row as a count does, so a cold one says what the row claims, and so does `generations()`,
+  // which reads the row and opens nothing; once an open has found the disagreement, `stat()` says what the object says.
   it('metadata that differs is the same disagreement', async () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3], { metadata: META });
     w.tamper.row = withSummary({ generation: 0, cardinality: 3, metadata: { def: 'forged' } });
-    const seg = w.reader().segment('s', { namespace: 'ns' });
+    const store = w.reader();
+    const seg = store.segment('s', { namespace: 'ns' });
+    expect((await store.generations(SEG)).at(-1)?.metadata).toEqual({ def: 'forged' });
     expect((await seg.stat()).metadata).toEqual({ def: 'forged' });
-    await seg.has(1);
+    expect(await seg.has(1)).toBe(true);
     expect((await seg.stat()).metadata).toEqual(META);
   });
 
@@ -118,10 +145,16 @@ describe('a summary that disagrees with its object', () => {
     const w = world();
     await w.writer.load(SEG, [1, 2, 3]);
     w.tamper.row = withSummary({ generation: 0, cardinality: 3, metadata: META });
-    const seg = w.reader().segment('s', { namespace: 'ns' });
+    const store = w.reader();
+    const seg = store.segment('s', { namespace: 'ns' });
+    expect((await store.generations(SEG)).at(-1)?.metadata).toEqual(META);
     expect((await seg.stat()).metadata).toEqual(META);
-    await seg.has(1);
-    expect(await seg.stat()).toEqual({ generation: 0, cardinality: 3 });
+    expect(await seg.has(1)).toBe(true);
+    expect(await seg.stat()).toEqual({
+      generation: 0,
+      cardinality: 3,
+      sizeBytes: expect.any(Number),
+    });
   });
 
   it('an agreeing summary stays in use after the open', async () => {
@@ -131,7 +164,12 @@ describe('a summary that disagrees with its object', () => {
     await seg.has(1);
     w.calls.getTail = 0;
     w.clock.advance(TTL + 1);
-    expect(await seg.stat()).toEqual({ generation: 0, cardinality: 3, metadata: META });
+    expect(await seg.stat()).toEqual({
+      generation: 0,
+      cardinality: 3,
+      metadata: META,
+      sizeBytes: expect.any(Number),
+    });
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 });
@@ -184,7 +222,7 @@ describe('a row that names nothing to read', () => {
     await destroySegment(SEG, { registry: w.registry }, { confirmSegment: 's' });
     const seg = w.reader().segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(0);
-    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0 });
+    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0, sizeBytes: null });
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 
@@ -193,7 +231,7 @@ describe('a row that names nothing to read', () => {
     await w.writer.setRetention(SEG, { expiresAt: 4_102_444_800_000 });
     const seg = w.reader().segment('s', { namespace: 'ns' });
     expect(await seg.count()).toBe(0);
-    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0 });
+    expect(await seg.stat()).toEqual({ generation: null, cardinality: 0, sizeBytes: null });
     expect(w.calls.getTail ?? 0).toBe(0);
   });
 });

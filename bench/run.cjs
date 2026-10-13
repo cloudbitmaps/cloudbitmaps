@@ -21,9 +21,9 @@
  *   - site-next/index.html          the homepage's crossover, generated (BENCH:HOMECHART)
  *   - docs/benchmarks.md            chart <img> + stats table (between BENCH markers)
  *
- * `require()` loads @cloudbitmaps/core, which ships ESM only, through Node's `require(esm)` — unflagged from 22.12,
- * the floor the packages declare. There is no CJS build. Core, not the flavor: this is arithmetic, and the flavor
- * would load the native addon for nothing.
+ * `require()` loads @cloudbitmaps/tools, which ships ESM only, through Node's `require(esm)` — unflagged from 22.12,
+ * the floor the packages declare. There is no CJS build. The tools package, not the flavor: this is arithmetic, and
+ * the flavor would load the native addon for nothing.
  */
 'use strict';
 const fs = require('node:fs');
@@ -32,7 +32,7 @@ const {
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
-} = require('@cloudbitmaps/core');
+} = require('@cloudbitmaps/tools');
 
 const ROOT = path.resolve(__dirname, '..');
 const check = process.argv.includes('--check');

@@ -8,41 +8,74 @@
  * one generation. Storage-agnostic and time/random-free (the determinism seam): all I/O is via the injected
  * source; the cache carries its own `Clock`.
  */
-import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER, U32_MAX } from './bit-route';
+import { requirePositiveInteger } from './check';
+import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
+import { refuseAbsent } from './absent-operands';
+import {
+  assertChunkCardinalityInRange,
+  assertChunkKeyInRange,
+  checkedChunkKeys,
+  decodeChunkBytes,
+} from './chunk-checks';
+import { ChunkStream } from './chunk-stream';
 import { ChunkWindow } from './chunk-window';
+import { boundedAll } from './concurrency';
 import type { Clock } from './determinism';
-import { IntegrityError, ValidationError } from './errors';
+import { IntegrityError, UnsupportedError, ValidationError } from './errors';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
-import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
+import {
+  cutToWindow,
+  edgeIds,
+  firstAbove,
+  isEdge,
+  keysAbove,
+  keysWithin,
+  remaindersWithin,
+  WHOLE_ID_SPACE,
+  windowOf,
+} from './id-window';
+import type { IdWindow } from './id-window';
+import { InvalidationScope } from './invalidation-scope';
+import type { OpenRead } from './invalidation-scope';
+import { KeptSegmentKeys, chunkKeyUnder, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
-import type {
-  ChunkRef,
-  GenerationMetadata,
-  StorageChunkSource,
-  SegmentRef,
-  SegmentSize,
-} from './ports';
+import type { ChunkRef, GenerationMetadata, StorageChunkSource, SegmentRef } from './ports';
 
 /**
- * Chunk keys a combine resolves at once by default, and how far `iterate` and `count` read ahead — bounds memory and
- * concurrent reads (invariant 6). A read of `n` chunks takes about `n / 32` sequential round trips, so this, not the
- * network, is what sets how long a long read takes.
+ * Range requests a stream holds ahead of a combine or `iterate` by default (chunk keys, on a source that reads chunk by
+ * chunk, and for `count`'s fallback) — bounds memory and concurrent reads (invariant 6). A read that does not fit
+ * one range of a source's stream takes about one sequential round trip per this many ranges, so this, not the network,
+ * is what sets how long a long read takes.
  */
-const DEFAULT_INTERSECT_CONCURRENCY = 32;
+export const DEFAULT_INTERSECT_CONCURRENCY = 32;
 /** A combine's window opens this many keys wide (or `concurrency` wide, if that is less) and doubles per key taken. */
 const COMBINE_WINDOW_START = 8;
+/** A combine's chunk streams open this many ranges wide (or `concurrency` wide, if that is less) and double per range taken. */
+const COMBINE_RANGE_START = 4;
+/**
+ * The most operands a combine reads at once before and between its chunk reads (invariant 6): listing their chunk keys,
+ * asking whether one that holds none exists, and looking up their versions. A combine of fewer operands reads them all at
+ * once.
+ */
+const OPERANDS_AT_ONCE = 16;
+/** Turns of the microtask queue with no new key asking before a batch of an exclude whose keys are all started is read. */
+const BATCH_QUIET_HOPS = 16;
 
 /** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
 
 export interface EngineDeps {
   readonly storage: StorageChunkSource;
-  /** Optional cache of decoded (immutable) Storage chunks. */
+  /**
+   * Optional cache of decoded (immutable) Storage chunks. A cache whose `size` is 0 is taken to hold nothing: a read
+   * that opens a stream on it looks up the chunk the stream starts at and counts each later chunk a miss without
+   * looking it up.
+   */
   readonly cache?: BoundedLru<string, CodecBitmap>;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
   readonly maxBitmapBytes?: number;
@@ -62,6 +95,19 @@ export interface EngineDeps {
    * Read ops refuse before fan-out if they'd exceed it.
    */
   readonly budget?: Budget | null;
+  /**
+   * An engine over the same `cache` whose invalidations this one shares: an {@link SegmentEngine.invalidate} through
+   * either reaches the reads running on both. It is opt-in, and engines that read through one chunk cache must be
+   * built with it: two built without it share nothing, so a read running on one when the other invalidates its
+   * segment writes the chunks it read before the invalidation back into the cache, and later reads through it are
+   * answered from them, an erased id included, until the cache evicts them. The `CloudRoaring` facade builds the
+   * engines of its pins and of its combines with a pinned operand this way.
+   *
+   * The engines share their requests in flight too: a cache miss on one joins a request the other opened for the same
+   * cache key, and gets what that engine's storage, codec and `maxBitmapBytes` made of it, as a cache hit hands over
+   * the chunk the other decoded. Throws {@link ValidationError} unless it is a `SegmentEngine` over the same `cache`.
+   */
+  readonly sharesInvalidationsWith?: SegmentEngine;
 }
 
 /**
@@ -74,8 +120,9 @@ export interface EngineDeps {
  * a combine's operands exist.
  *
  * A read with a range fetches only the chunks the range overlaps, on a combine for every operand and every
- * `exclude`. The per-op budget is charged once, before the first fetch, for every chunk in the range, so with
- * `after` alone it is charged to the end of the segment however early the caller stops; pass `through` to bound it.
+ * `exclude`. The per-op budget is charged before the first fetch, for every chunk in the range, so with `after` alone
+ * it is charged to the end of the segment however early the caller stops; pass `through` to bound it. A read that
+ * lists its keys again after a move is charged again, with the chunks it has already taken.
  */
 export interface IdRange {
   /** Exclusive lower bound: the read yields only ids greater than this. */
@@ -87,11 +134,15 @@ export interface IdRange {
 /** Options common to the chunk-aligned combines. */
 export interface CombineOptions extends IdRange {
   /**
-   * Max chunk keys resolved concurrently — bounds the Storage footprint (about `concurrency × operands` chunks in
-   * flight). A positive integer; default 32. The window opens 8 keys wide (or `concurrency`, if lower) and widens
-   * as keys are taken, so a read that stops early fetches no more than a few keys ahead; one that runs to the end
-   * spends nearly all of its round trips at the full width. A read that stops early has requested up to
-   * `concurrency` keys per operand past the last one it used.
+   * How far ahead each operand is read: a positive integer, default 32. The library's own stores read each operand as
+   * one stream of coalesced ranges (chunks that sit near each other are one request), and `concurrency` is how many
+   * range requests a stream holds ahead of the read, in flight or landed and not yet used. So about
+   * `concurrency × operands` requests are in flight at most, and, since a range is at most 1 MiB (one chunk, when a chunk
+   * is larger), about `concurrency × operands` MiB are held, whatever the segment's size. The stream opens 4 ranges wide
+   * (or `concurrency`, if lower) and widens as ranges are taken, so a read that stops early has asked for little past
+   * where it stopped, and a read that fits one range makes one request however many chunks it needs. A source that
+   * reads chunk by chunk (a custom one) is read `concurrency` chunk keys at once, opening 8 wide. A running
+   * stream holds its operand's reader outside the reader cache's bounds until it ends or the segment moves on.
    */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
@@ -106,97 +157,219 @@ export interface CombineOptions extends IdRange {
   readonly allowAbsentOperands?: boolean;
 }
 
+/**
+ * Whether a chunk a running read was served came from another version than the one its plan was made under, a sign
+ * that one of its segments moved: a chunk of its stream named by another version (on a source that names versions,
+ * `currentVersion`), or a chunk cached under the plan's version that is no longer the segment's. Before the next key
+ * the read looks at its segments' versions ({@link Looks}), and plans its keys again where one is no longer the plan's.
+ * Setting it costs nothing the read did not already do: the version is compared where the chunk is served. One per
+ * plan, so a chunk that the stream of a plan already replaced still delivers cannot mark the plan that replaced it.
+ */
+interface Moves {
+  moved: boolean;
+}
+
+/** How one chunk lookup is made; see `storageChunk`. */
+interface StorageChunkOptions {
+  readonly recheck?: boolean;
+  readonly report?: boolean;
+  readonly moves?: Moves;
+}
+
+/**
+ * When a running read next looks at its segments' versions: the lookup a read of one cached chunk makes, which costs no
+ * request while the store holds the segment's resolution (within `cache.genTtlMs` of the registry read that made it).
+ * Every running read looks before the first key it takes after an invalidation in the store, which costs it a number
+ * compare per key while there is none. A combine with an exclude, or a union, also looks once every `every` keys,
+ * since the keys it has left may not read an operand that moved (an exclude whose keys the survivors do not reach, an
+ * include of a union past its last key), whose chunks then never show the move. A read with no such operand has
+ * `every` infinite.
+ */
+interface Looks {
+  readonly every: number;
+  /** The invalidation epoch when the read last looked. */
+  epoch: number;
+  /** Keys left to take before the next look. */
+  left: number;
+}
+
+/** The chunks of a plan's keys, taken in ascending key order: see {@link SegmentEngine.chunkSequence}. */
+interface ChunkSequence {
+  take(chunkKey: number): Promise<CodecBitmap | null>;
+  close(): void;
+}
+
+/** One plan of an `iterate`: the keys it reads, the version they were listed under, and their chunks. */
+interface IteratePlan {
+  readonly keys: readonly number[];
+  /** The index in `keys` of the next key to take. */
+  at: number;
+  readonly gen: string | number | null | undefined;
+  readonly chunks: ChunkSequence;
+  readonly moves: Moves;
+  /** The invalidation epoch the keys were listed from. */
+  readonly epoch: number;
+}
+
+/**
+ * An `iterate` in progress: its current plan and the key it last took. A move met while it runs plans the keys above
+ * that key again, from the generation current then ({@link SegmentEngine.replanIterate}).
+ */
+interface IterateRun {
+  readonly seg: SegmentRef;
+  /** The read's range, `null` for every id. */
+  readonly w: IdWindow | null;
+  plan: IteratePlan;
+  /** The key last taken, -1 before the first. */
+  key: number;
+  /** When it next looks: before the first key after an invalidation in the store. */
+  readonly looks: Looks;
+  /** Keys taken under the plans before this one: charged to the budget beside this plan's when it plans again. */
+  spent: number;
+}
+
 /** One resolved operand of a chunk-aligned combine: its chunk-key set + pinned generation. */
 interface Operand {
   readonly seg: SegmentRef;
-  /** The operand's chunk keys, inside the read's range when it has one. */
+  /**
+   * The operand's chunk keys, inside the read's range when it has one. Added from the ascending listing
+   * ({@link SegmentEngine.listKeys}), so they iterate ascending.
+   */
   readonly keys: Set<number>;
   /** Whether the segment has no chunks at all, whatever the range: what the absent-operand check judges. */
   readonly chunkless: boolean;
   /** The cache-key component — a `currentVersion` string, a generation number, or absent. */
   readonly gen: string | number | null | undefined;
+  /** The invalidation count when the operand began to be resolved: see {@link StreamedChunks.epoch}. */
+  readonly epoch: number;
+  /** The operand's chunks as a coalesced stream, when it is read that way; else each chunk is read on its own. */
+  streamed?: StreamedChunks;
+  /** The exclude's chunks read in batches, when it waits on an AND of two or more includes: see {@link ExcludeBatch}. */
+  batch?: ExcludeBatch;
 }
 
-/** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
-interface IdWindow {
-  readonly loKey: number;
-  readonly loRem: number;
-  readonly hiKey: number;
-  readonly hiRem: number;
+/** One key's ask of an {@link ExcludeBatch}, answered when the batch it joins is read. */
+interface BatchAsk {
+  readonly key: number;
+  readonly resolve: (chunk: CodecBitmap | null) => void;
+  readonly reject: (error: unknown) => void;
 }
 
 /**
- * Validate a read's range. `null` when none was asked for, so the read does no extra work; `'empty'` when no id can
- * be in it.
+ * The reads of one exclude that waits on an AND of two or more includes. A key asks for its exclude chunk only once its
+ * AND is known not to be empty, and a chunk the cache holds or another read has in flight is read as before; the keys
+ * left, whose chunks would be requested, are held and read together as one stream of coalesced ranges over those keys
+ * alone: when half the combine's concurrency in keys is held, when the caller is waiting on a slot (it has nothing else
+ * to do, so holding keys back only delays it), when the oldest key held is within half a window of a caller that is
+ * working (so a key is read at least that far ahead of it), or when every key has been started and none is left to ask.
+ * A batch sends at most one request per key it holds, so it never costs more than reading each key on its own, and one
+ * request where the keys sit together in the object.
  */
-function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
-  const after = range?.after;
-  const through = range?.through;
-  if (after === undefined && through === undefined) return null;
-  for (const [name, bound] of [
-    ['after', after],
-    ['through', through],
-  ] as const) {
-    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      const got = typeof bound === 'number' ? String(bound) : `a ${typeof bound}`;
-      throw new ValidationError(`${name} must be an integer in 0..${U32_MAX}; got ${got}`);
-    }
-  }
-  const lo = after === undefined ? 0 : after + 1;
-  const hi = through ?? U32_MAX;
-  if (lo > hi) return 'empty';
-  return {
-    loKey: Math.floor(lo / CHUNK_COUNT),
-    loRem: lo % CHUNK_COUNT,
-    hiKey: Math.floor(hi / CHUNK_COUNT),
-    hiRem: hi % CHUNK_COUNT,
-  };
+interface ExcludeBatch {
+  readonly operand: Operand;
+  readonly moves: Moves;
+  /** The range requests each batch's stream holds ahead: the read's concurrency. */
+  readonly concurrency: number;
+  /** The keys held that make a batch read: half the concurrency, at least one. */
+  readonly half: number;
+  /** The window the keys are read for: what tells a batch how far the caller is from the keys it holds. */
+  window: CombineWindow | undefined;
+  /** The slot, in the window's keys, of the oldest key held: `Infinity` when none is. */
+  oldest: number;
+  /** The keys held, in the order they asked. */
+  pending: BatchAsk[];
+  /** The distinct keys held: an exclude named twice asks for each key twice. */
+  readonly held: Set<number>;
+  /** Whether a wait for the asking to go quiet is running. */
+  scheduled: boolean;
+  /** Set when the combine stops or plans again: nothing more is sent, and a late ask is refused. */
+  closed: boolean;
 }
-
-/** The window a range with neither bound set describes: every id. */
-const WHOLE_ID_SPACE: IdWindow = {
-  loKey: 0,
-  loRem: 0,
-  hiKey: CHUNK_COUNT - 1,
-  hiRem: MAX_REMAINDER,
-};
 
 /**
- * Whether the range cuts inside `chunkKey`: one of its two edge chunks, and only where the bound falls inside the
- * chunk rather than on its boundary. A chunk the range covers whole is yielded by the plain loop.
+ * An operand's chunks read as one stream of coalesced ranges, in key order. The stream opens lazily, at the first chunk
+ * the chunk cache does not hold, over the keys from there on that the cache does not hold: a read whose chunks are all
+ * cached opens none and looks each up once, as a read of that chunk alone would. A chunk the cache held when the stream
+ * opened is looked up again when it is asked for, so what an invalidation or the LRU dropped meanwhile is read afresh.
  */
-const isEdge = (chunkKey: number, w: IdWindow): boolean =>
-  (chunkKey === w.loKey && w.loRem > 0) || (chunkKey === w.hiKey && w.hiRem < MAX_REMAINDER);
-
-/** The ids of an edge chunk that lie inside the window. The chunk iterates ascending, so it stops at the top. */
-function* edgeIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow): Generator<number> {
-  const from = chunkKey === w.loKey ? w.loRem : 0;
-  const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
-  for (const remainder of chunk) {
-    if (remainder > to) return;
-    if (remainder >= from) yield joinId(chunkKey, remainder);
-  }
+interface StreamedChunks {
+  readonly seg: SegmentRef;
+  /**
+   * The version the read looks its cached chunks up under: the one it planned under, until a move carries it on. A chunk
+   * is cached under the version it was read from, which may be newer.
+   */
+  gen: string | number | undefined;
+  /**
+   * The invalidation epoch when the read began to resolve its generation. A stream that opens after it has moved is
+   * marked `invalidated`, on a source with no `currentVersion`: it may read newer bytes than the generation it planned
+   * under, which must not be cached under that generation's key.
+   */
+  readonly epoch: number;
+  /** The segment's cache-key prefix, which its invalidations are recorded under. */
+  readonly prefix: string;
+  /**
+   * The invalidation epoch when the stream opened, set by {@link SegmentEngine.startStream}: a chunk it delivers is not
+   * cached once its segment has been invalidated since.
+   */
+  openedAt: number;
+  /** The keys the read will take, ascending. */
+  readonly keys: readonly number[];
+  /** Where a chunk that shows the segment moved says so: its plan's. */
+  readonly moves: Moves;
+  /** The range requests the stream holds ahead, and how many it opens with. */
+  readonly concurrency: number;
+  readonly rampStart: number;
+  /** Whether the stream has been opened, by the first chunk the cache did not hold. */
+  opened: boolean;
+  /** The keys the stream carries; `undefined` when it carries every key from where it opened (nothing was cached). */
+  inStream: ReadonlySet<number> | undefined;
+  stream: ChunkStream | undefined;
+  /**
+   * Whether a chunk the stream delivers from now on is left out of the cache, on a source with no `currentVersion`:
+   * an invalidation came between the read beginning and the stream opening, or the read moved to another generation
+   * while the stream was open, so what the stream still delivers cannot be told to be of either one. An invalidation
+   * of the segment after the stream opened is found through {@link openedAt}.
+   */
+  invalidated: boolean;
 }
 
-/** The ascending `keys` inside the window's chunk span: two binary searches, no scan. */
-function keysWithin(keys: readonly number[], w: IdWindow): number[] {
-  const firstAtLeast = (key: number): number => {
-    let lo = 0;
-    let hi = keys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (keys[mid]! < key) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
-  return keys.slice(firstAtLeast(w.loKey), firstAtLeast(w.hiKey + 1));
+/** One chunk of a combine's result: the bitmap of its remainders, owned by whoever reads it. */
+export interface CombinedChunk {
+  readonly chunkKey: number;
+  readonly bitmap: CodecBitmap;
 }
 
-/** What a combine settled before reading: its range window, and the ordered fan-out over the keys that survive. */
+/** What a combine settled before reading, or again after a move: the ordered fan-out over the keys that survive. */
 interface CombinePlan {
-  readonly w: IdWindow | null;
   readonly window: CombineWindow;
+  /** The operands' chunk streams, closed when the read ends or stops, or plans again. */
+  readonly streams: readonly StreamedChunks[];
+  /** The excludes read in batches, closed with the streams. */
+  readonly batches: readonly ExcludeBatch[];
+  readonly operands: readonly Operand[];
+  readonly excludes: readonly Operand[];
+  /** The keys the window reads, ascending. */
+  readonly keys: readonly number[];
+  readonly moves: Moves;
+}
+
+/**
+ * A combine in progress: what it was asked, its current plan, and when it next looks at its operands' versions. A move
+ * met while it runs plans the keys above the one it last took again ({@link SegmentEngine.replanCombine}).
+ */
+interface CombineRun {
+  readonly segs: readonly SegmentRef[];
+  readonly excludeSegs: readonly SegmentRef[];
+  readonly mode: 'all' | 'any';
+  readonly op: 'intersect' | 'union' | 'andNot';
+  readonly limit: number;
+  readonly budget: Budget | null;
+  /** The read's range, `null` for every id. */
+  readonly w: IdWindow | null;
+  plan: CombinePlan;
+  readonly looks: Looks;
+  /** Chunk reads charged to the keys taken under the plans before this one. */
+  spent: number;
 }
 
 /** One key's combined chunk, or the error its read raised, held until the key's turn comes. */
@@ -220,6 +393,8 @@ class CombineWindow {
   private readonly inFlight: Array<Promise<CombineSlot>> = [];
   private next_ = 0;
   private taken = 0;
+  /** The key of the slot last handed out, -1 before the first. */
+  last = -1;
 
   constructor(
     private readonly keys: readonly number[],
@@ -227,6 +402,38 @@ class CombineWindow {
     private readonly read: (key: number) => Promise<CodecBitmap | null>,
   ) {
     this.fill();
+  }
+
+  /** Whether a caller is waiting on the next slot: it works on nothing else, so reads ahead of it cannot be late. */
+  waiting = false;
+  /**
+   * Runs when a caller asks for a slot: the exclude batches holding keys are read once the asking has gone quiet, if the
+   * caller is then waiting or near them. It adds latency, not correctness: no test isolates it, and without it keys held
+   * when the caller begins to wait or comes near are read only at the next ask, which made a read of ids one at a time
+   * 5 to 11% slower (wall time under 20 and 50 ms of storage latency).
+   */
+  onWait: (() => void) | undefined;
+
+  /** How many slots have been handed out: the slot of the next one. */
+  get position(): number {
+    return this.taken;
+  }
+
+  /** The slot of `key`, which is one of the window's keys. */
+  slotOf(key: number): number {
+    let lo = 0;
+    let hi = this.keys.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.keys[mid]! < key) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** Whether every key has been started: no key is left that could still ask. */
+  get started(): boolean {
+    return this.next_ >= this.keys.length;
   }
 
   private fill(): void {
@@ -248,8 +455,13 @@ class CombineWindow {
   /** The next key's chunk in ascending key order, `undefined` when the keys are used up; throws that key's error. */
   async next(): Promise<CombineSlot | undefined> {
     if (this.inFlight.length === 0) return undefined;
-    const slot = await this.inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
+    const head = this.inFlight.shift()!; // FIFO over ascending keys ⇒ ascending output
+    this.waiting = true;
+    this.onWait?.();
+    const slot = await head;
+    this.waiting = false;
     this.taken += 1;
+    this.last = slot.key;
     this.fill();
     if (slot.error !== undefined) throw slot.error;
     return slot;
@@ -264,10 +476,8 @@ class CombineWindow {
 function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uint32Array {
   let rem = chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
   if (w !== null && isEdge(chunkKey, w)) {
-    const from = chunkKey === w.loKey ? w.loRem : 0;
-    const to = chunkKey === w.hiKey ? w.hiRem : MAX_REMAINDER;
     // A copy, not a view: a batch owns exactly its ids, and does not pin the whole chunk's buffer.
-    rem = rem.slice(firstAbove(rem, from - 1), firstAbove(rem, to));
+    rem = remaindersWithin(rem, chunkKey, w).slice();
   }
   // Not `<<`: a key of 32768 or more would wrap negative. A remainder is masked as `joinId` masks it.
   const base = chunkKey * CHUNK_COUNT;
@@ -275,22 +485,52 @@ function chunkIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow | null): Uin
   return rem;
 }
 
-/** The index of the first element of ascending `a` greater than `value`: a binary search. */
-function firstAbove(a: Uint32Array, value: number): number {
-  let lo = 0;
-  let hi = a.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (a[mid]! <= value) lo = mid + 1;
-    else hi = mid;
+/**
+ * The keys a combine reads, ascending. Candidate keys come from the INCLUDE operands only: an exclude can subtract ids
+ * from a chunk but can never introduce one, so a key no include holds cannot appear in the result however large the
+ * suppression list is. That asymmetry is what makes suppression cheap.
+ *
+ *   'all' (intersect / andNot): keys present in EVERY include. Start from the smallest set to minimize the scan: a key
+ *                               missing from any operand cannot survive the AND.
+ *   'any' (union):              keys present in ANY include. No pruning is possible; see `union`'s note.
+ */
+function alignKeys(operands: readonly Operand[], mode: 'all' | 'any'): number[] {
+  const candidates: number[] = [];
+  if (mode === 'all') {
+    const pivot = operands.reduce((a, b) => (a.keys.size <= b.keys.size ? a : b));
+    for (const k of pivot.keys) {
+      if (operands.every((o) => o.keys.has(k))) candidates.push(k);
+    }
+    // Ascending as they are: one operand's keys, which iterate ascending (see `Operand.keys`).
+    return candidates;
   }
-  return lo;
+  const seen = new Set<number>();
+  for (const o of operands) for (const k of o.keys) seen.add(k);
+  for (const k of seen) candidates.push(k);
+  // The operands' keys come one operand after another, not in one ascending run: sorted here.
+  return candidates.sort((a, b) => a - b);
 }
 
-/** A chunk read in flight: `token` tells the read whether its entry is still the registered one. */
-interface OpenRead {
-  readonly token: object;
-  readonly read: Promise<CodecBitmap | null>;
+/**
+ * What a combine's `keys` up to `through` charge its denial-of-wallet budget: the chunk reads it will actually issue,
+ * counted per key, every include present at that key (all of them under 'all') and only the excludes that hold it.
+ * Counting excludes as always present would refuse work that costs nothing, the whole point of the asymmetry in
+ * {@link alignKeys}. For a plain `intersect` with no excludes this is `keys × operands`.
+ */
+function combineReads(
+  keys: readonly number[],
+  operands: readonly Operand[],
+  excludes: readonly Operand[],
+  mode: 'all' | 'any',
+  through: number,
+): number {
+  let units = 0;
+  for (const key of keys) {
+    if (key > through) break;
+    for (const o of operands) if (mode === 'all' || o.keys.has(key)) units += 1;
+    for (const e of excludes) if (e.keys.has(key)) units += 1;
+  }
+  return units;
 }
 
 export class SegmentEngine {
@@ -304,11 +544,15 @@ export class SegmentEngine {
   /** Resolved per-op budget (null = disabled); undefined deps ⇒ the generous default. */
   private readonly budget: Budget | null;
   /**
-   * The chunk reads open right now, by cache key: a caller that misses the cache and finds its key here awaits that
-   * read instead of making its own. An entry lives from the request until it settles, so the map holds at most one
-   * promise per distinct key in flight.
+   * The invalidations this engine shares with every engine over its chunk cache that was built to share them
+   * ({@link EngineDeps.sharesInvalidationsWith}), and the chunk reads open on all of them.
    */
-  private readonly openReads = new Map<string, OpenRead>();
+  private readonly scope: InvalidationScope;
+  /**
+   * The cache-key prefixes ({@link segmentPrefix}) of the segments this engine reads, kept rather than encoded for each
+   * chunk. A kept prefix is the one {@link invalidate} finds the segment's chunks by.
+   */
+  private readonly prefixes = new KeptSegmentKeys(segmentPrefix);
 
   constructor(deps: EngineDeps) {
     this.storage = deps.storage;
@@ -322,6 +566,16 @@ export class SegmentEngine {
     // throwing sink can't break the data path; `metricsOn` short-circuits all emission when unused.
     this.metrics = safeMetrics(deps.metrics ?? NOOP_METRICS);
     this.metricsOn = this.metrics !== NOOP_METRICS;
+    const shared = deps.sharesInvalidationsWith;
+    if (
+      shared !== undefined &&
+      (!(shared instanceof SegmentEngine) || shared.cache !== this.cache)
+    ) {
+      throw new ValidationError(
+        'sharesInvalidationsWith must be a SegmentEngine over the same chunk cache',
+      );
+    }
+    this.scope = shared?.scope ?? new InvalidationScope();
   }
 
   /** Membership: one chunk lookup — the cache, else one Storage fetch of that chunk. */
@@ -349,131 +603,432 @@ export class SegmentEngine {
     if (cardinalities) {
       let total = 0;
       for (const [k, n] of cardinalities) {
-        this.assertChunkKeyInRange(k);
+        assertChunkKeyInRange(k);
+        // A count of 0 adds nothing and a custom source may report an emptied chunk; anything else must be a count.
+        if (n !== 0) assertChunkCardinalityInRange(n);
         total += n;
       }
       return total;
     }
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'count'); // one storage fetch per chunk (before fan-out)
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    const gen = await this.cacheVersion(seg); // after the shape read — see `listKeys`
     // Order does not matter to a sum, but the window hands chunks back in key order: no more state than that.
-    const window = this.chunkWindow(seg, chunkKeys, gen, false);
+    const window = this.chunkWindow(seg, chunkKeys, gen, { ramp: false });
     let total = 0;
     for (let i = 0; i < chunkKeys.length; i++) total += (await window.take())?.size ?? 0;
     return total;
   }
 
   /**
-   * What the segment's current generation is: its number, its id count and its metadata, from one resolution, so the
-   * three cannot straddle a publish. A source with no summary answers from `count()` and the generation it resolves.
+   * What the segment's current generation is: its number, its id count, its metadata and the size of its object in
+   * bytes. A source with a `stat` (the `.crbm` source) answers all four from one resolution, so they cannot straddle
+   * a publish: from the registry row's summary when it can use it, else from the opened generation's footer and
+   * index, with no payload read. A source without one answers from its other methods, each its own resolution: its
+   * summary when it has one, else `count()` and the generation it resolves, and its `sizeOf`, or `sizeBytes: null`
+   * when it has none. A segment with no generation answers `{ generation: null, cardinality: 0, sizeBytes: null }`.
    */
-  async stat(
-    seg: SegmentRef,
-  ): Promise<{ generation: number | null; cardinality: number; metadata?: GenerationMetadata }> {
+  async stat(seg: SegmentRef): Promise<{
+    generation: number | null;
+    cardinality: number;
+    metadata?: GenerationMetadata;
+    sizeBytes: number | null;
+  }> {
+    if (this.storage.stat) {
+      const found = await this.storage.stat(seg);
+      if (found === null) return { generation: null, cardinality: 0, sizeBytes: null };
+      return found;
+    }
     if (this.storage.summary) {
-      return (await this.storage.summary(seg)) ?? { generation: null, cardinality: 0 };
+      const summary = await this.storage.summary(seg);
+      if (summary === null) return { generation: null, cardinality: 0, sizeBytes: null };
+      return { ...summary, sizeBytes: await this.sizeOf(seg) };
     }
     const generation = this.storage.currentGeneration
       ? await this.storage.currentGeneration(seg)
       : null;
-    return { generation, cardinality: await this.count(seg) };
+    return { generation, cardinality: await this.count(seg), sizeBytes: await this.sizeOf(seg) };
   }
 
-  /** Whether the Storage source can measure segment size (for grounded cost); false ⇒ storage isn't grounded. */
-  get supportsStorageSize(): boolean {
-    return typeof this.storage.sizeOf === 'function';
+  /** The size of the segment's current generation from the source's `sizeOf`, or `null` when it cannot say. */
+  private async sizeOf(seg: SegmentRef): Promise<number | null> {
+    return this.storage.sizeOf ? ((await this.storage.sizeOf(seg))?.sizeBytes ?? null) : null;
   }
 
-  /** How often the Storage source re-reads a pointer while reading (cost reporting); undefined if it does not say. */
-  get pointerRefreshMs(): number | undefined {
-    return this.storage.pointerRefreshMs;
-  }
-
-  /** Grounded Storage size of a segment's current generation (cost reporting), or null if it has no generation. */
-  segmentSize(seg: SegmentRef): Promise<SegmentSize | null> {
-    return this.storage.sizeOf ? this.storage.sizeOf(seg) : Promise.resolve(null);
-  }
-
-  /** The chunks of `seg` at `chunkKeys`, read through a window of {@link DEFAULT_INTERSECT_CONCURRENCY}. */
+  /**
+   * The chunks of `seg` at `chunkKeys`, read through a window of {@link DEFAULT_INTERSECT_CONCURRENCY}. A cached chunk
+   * that is no longer the segment's version marks `moves`, when given.
+   */
   private chunkWindow(
     seg: SegmentRef,
     chunkKeys: readonly number[],
     gen: string | number | null | undefined,
-    ramp: boolean,
+    { ramp, moves }: { readonly ramp: boolean; readonly moves?: Moves },
   ): ChunkWindow<CodecBitmap | null> {
     return new ChunkWindow(
       chunkKeys,
-      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen),
+      (chunkKey) => this.storageChunk({ ...seg, chunkKey }, gen, { recheck: true, moves }),
       DEFAULT_INTERSECT_CONCURRENCY,
       ramp,
     );
   }
 
   /**
-   * Every id, ascending, reading ahead through a window of up to 32 chunk fetches that opens 1, 2, 4 … 32 wide, so a
-   * read that stops early has fetched only a handful of chunks past the one it stopped in; with `range`, only the ids in `(after, through]`, fetching only the
-   * chunks the range overlaps (see {@link IdRange}).
+   * The chunks of `seg` at `chunkKeys`, taken in ascending key order by a read that may stop at any point: one stream of
+   * coalesced ranges when the source has `getChunks`, opening 1, 2, 4 … ranges wide up to {@link DEFAULT_INTERSECT_CONCURRENCY},
+   * else the chunk-by-chunk window of that many reads. `close` stops what is left of it. A chunk that shows the segment
+   * moved marks `moves`: one of the stream named by another version, or one cached under `gen` that is no longer the
+   * segment's.
+   */
+  private chunkSequence(
+    seg: SegmentRef,
+    chunkKeys: readonly number[],
+    gen: string | number | null | undefined,
+    epoch: number,
+    moves: Moves,
+  ): ChunkSequence {
+    const streamed = this.openStreamed(
+      seg,
+      chunkKeys,
+      gen,
+      epoch,
+      moves,
+      DEFAULT_INTERSECT_CONCURRENCY,
+      1,
+    );
+    if (streamed !== undefined) {
+      return {
+        take: (chunkKey) => this.streamedChunk(streamed, chunkKey),
+        close: () => this.closeStreamed(streamed),
+      };
+    }
+    const window = this.chunkWindow(seg, chunkKeys, gen, { ramp: true, moves });
+    return { take: () => window.take(), close: () => undefined };
+  }
+
+  /**
+   * Every id, ascending, reading the chunks as one stream of coalesced ranges (chunks that sit near each other are one
+   * request) that opens 1, 2, 4 … 32 ranges wide, so a read that stops early has asked for only a few ranges past the
+   * one it stopped in (each at most 1 MiB); with `range`, only the ids in `(after, through]`, fetching only the
+   * chunks the range overlaps (see {@link IdRange}). A source that reads chunk by chunk is read through a window of up to
+   * 32 chunk fetches that opens 1, 2, 4 … 32 wide.
+   *
+   * The chunk keys are listed once, before the first fetch. A move of the segment the read meets while it runs (see
+   * {@link Moves}) lists them again, from the generation current then, and the read goes on with the keys above the one
+   * it last took: it reads a chunk the new generation added, and not one it dropped.
    *
    * Two generators, not one with a branch: a second `yield` site in the full read's generator grows its frame, and
-   * every id of a read that asked for no range paid for it (measured at about 5% per id). The full read keeps the
-   * loop it always had.
+   * every id of a read that asked for no range paid for it (measured at about 5% per id). The full read keeps one
+   * `yield`, in a loop of its own.
    */
   iterate(seg: SegmentRef, range?: IdRange): AsyncGenerator<number> {
     return range === undefined ? this.iterateAll(seg) : this.iterateRange(seg, range);
   }
 
   private async *iterateAll(seg: SegmentRef): AsyncGenerator<number> {
-    const chunkKeys = await this.chunkKeys(seg);
-    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const window = this.chunkWindow(seg, chunkKeys, gen, true);
-    for (const chunkKey of chunkKeys) {
-      const chunk = await window.take();
-      if (chunk === null) continue;
-      // Read straight off the (possibly cached) instance: iteration does not mutate it.
-      for (const remainder of chunk) yield joinId(chunkKey, remainder);
+    const run = await this.planIterate(seg, null);
+    try {
+      for (
+        let chunk = await this.nextChunk(run);
+        chunk !== undefined;
+        chunk = await this.nextChunk(run)
+      ) {
+        if (chunk === null) continue;
+        const chunkKey = run.key;
+        // Read straight off the (possibly cached) instance: iteration does not mutate it.
+        for (const remainder of chunk) yield joinId(chunkKey, remainder);
+      }
+    } finally {
+      run.plan.chunks.close();
     }
   }
 
   private async *iterateRange(seg: SegmentRef, range: IdRange): AsyncGenerator<number> {
     const w = windowOf(range) ?? WHOLE_ID_SPACE;
     if (w === 'empty') return;
-    const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
-    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const window = this.chunkWindow(seg, chunkKeys, gen, true);
-    for (const chunkKey of chunkKeys) {
-      const chunk = await window.take();
-      if (chunk === null) continue;
-      if (isEdge(chunkKey, w)) {
-        for (const id of edgeIds(chunk, chunkKey, w)) yield id;
-      } else {
-        for (const remainder of chunk) yield joinId(chunkKey, remainder);
+    const run = await this.planIterate(seg, w);
+    try {
+      for (
+        let chunk = await this.nextChunk(run);
+        chunk !== undefined;
+        chunk = await this.nextChunk(run)
+      ) {
+        if (chunk === null) continue;
+        const chunkKey = run.key;
+        if (isEdge(chunkKey, w)) {
+          for (const id of edgeIds(chunk, chunkKey, w)) yield id;
+        } else {
+          for (const remainder of chunk) yield joinId(chunkKey, remainder);
+        }
       }
+    } finally {
+      run.plan.chunks.close();
     }
   }
 
   /**
    * {@link iterate}, one `Uint32Array` per chunk instead of one id at a time: the same chunks, in the same order, with
    * the same ids (a range cut at its edges the same way), and no array for a chunk that holds none of them. The
-   * reads, the budget charge and the window are the per-id read's. Each array is at most 65,536 ids (256 KiB) and is
-   * the caller's to keep.
+   * reads, the budget charge, the window and a move met while it runs are the per-id read's. Each array is at most
+   * 65,536 ids (256 KiB) and is the caller's to keep.
    */
   async *iterateBatches(seg: SegmentRef, range?: IdRange): AsyncGenerator<Uint32Array> {
     const w = windowOf(range);
     if (w === 'empty') return;
-    const chunkKeys =
-      w === null ? await this.chunkKeys(seg) : keysWithin(await this.chunkKeys(seg), w);
-    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
-    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
-    const window = this.chunkWindow(seg, chunkKeys, gen, true);
-    for (const chunkKey of chunkKeys) {
-      const chunk = await window.take();
-      if (chunk === null) continue;
-      const ids = chunkIds(chunk, chunkKey, w);
-      if (ids.length > 0) yield ids;
+    const run = await this.planIterate(seg, w);
+    try {
+      for (
+        let chunk = await this.nextChunk(run);
+        chunk !== undefined;
+        chunk = await this.nextChunk(run)
+      ) {
+        if (chunk === null) continue;
+        const ids = chunkIds(chunk, run.key, w);
+        if (ids.length > 0) yield ids;
+      }
+    } finally {
+      run.plan.chunks.close();
     }
+  }
+
+  /**
+   * Plan an `iterate` of the keys of `seg` above `after` and inside `w`: list them with their version
+   * ({@link listKeys}), charge the budget one storage fetch for each and for each of the `spent` keys earlier plans
+   * took, before any fetch, and open their chunks.
+   */
+  private async iteratePlan(
+    seg: SegmentRef,
+    w: IdWindow | null,
+    after: number,
+    spent: number,
+  ): Promise<IteratePlan> {
+    const { listed, gen, epoch } = await this.listKeys(seg);
+    const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
+    checkBudget(this.budget, spent + keys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
+    const moves: Moves = { moved: false };
+    const chunks = this.chunkSequence(seg, keys, gen, epoch, moves);
+    return { keys, at: 0, gen, chunks, moves, epoch };
+  }
+
+  /** The first plan of an `iterate`: every key in `w`. */
+  private async planIterate(seg: SegmentRef, w: IdWindow | null): Promise<IterateRun> {
+    const plan = await this.iteratePlan(seg, w, -1, 0);
+    return { seg, w, plan, key: -1, looks: this.looks(Infinity, plan.epoch), spent: 0 };
+  }
+
+  /**
+   * The chunk at the next key of `run`, and `run.key` that key, or `undefined` once its keys are used up. Not `async`:
+   * when nothing has moved and no look is due, the chunk's own promise is all a key costs.
+   */
+  private nextChunk(run: IterateRun): Promise<CodecBitmap | null | undefined> {
+    run.looks.left -= 1; // one key nearer the next look
+    if (run.plan.moves.moved || this.lookDue(run.looks)) return this.nextChunkAfterLook(run);
+    return this.takeNext(run);
+  }
+
+  private takeNext(run: IterateRun): Promise<CodecBitmap | null | undefined> {
+    const plan = run.plan;
+    if (plan.at === plan.keys.length) return Promise.resolve(undefined);
+    const key = plan.keys[plan.at++]!;
+    run.key = key;
+    return plan.chunks.take(key);
+  }
+
+  /**
+   * {@link nextChunk} once the read has looked at its segment's version, and planned again if it is not the one the
+   * plan was made under. A chunk that suggested a move is confirmed so: a source whose chunks name their version
+   * otherwise than its `currentVersion` does costs a look, never a plan.
+   */
+  private async nextChunkAfterLook(run: IterateRun): Promise<CodecBitmap | null | undefined> {
+    // Cleared first, so a chunk that shows a move while the look waits is looked at again.
+    run.plan.moves.moved = false;
+    this.looked(run.looks);
+    const now = await this.cacheVersion(run.seg);
+    if (now !== run.plan.gen) await this.replanIterate(run);
+    return this.takeNext(run);
+  }
+
+  /**
+   * Plan the rest of `run` again, after a move: the keys above the one it last took, from the generation current now.
+   * What the plan's stream still has in flight is dropped, not served.
+   */
+  private async replanIterate(run: IterateRun): Promise<void> {
+    run.plan.chunks.close();
+    run.spent += run.plan.at;
+    run.plan = await this.iteratePlan(run.seg, run.w, run.key, run.spent);
+  }
+
+  /**
+   * A segment's chunk keys, ascending and checked, and the version they are read under, with the invalidation epoch
+   * they were listed from. The version is resolved AFTER the shape read (`listChunkKeys`): a non-empty shape read means
+   * the source resolved and cached a non-null snapshot, so the version cannot then come back null while storage data is
+   * present, and `storageChunk` cannot skip every chunk on a stale null.
+   *
+   * A write of this store that moves the segment while the two are read would leave the keys of one generation under
+   * the version of the next, and nothing later could tell: the read's chunks and its looks would all name that newer
+   * version. So when the segment was invalidated in this store's scope while they were read, they are read again. Only
+   * that segment's invalidations count, so a store busy invalidating other segments costs a listing nothing more; with
+   * none since the listing began the check is a number compare.
+   *
+   * Honest note on how much the ordering buys, so a future reader does not take an untested claim for a tested one.
+   * Against a `CrbmStorageChunkSource`, the only source with a generation to resolve, both reads go through the same
+   * resolved-reader memo, so the pathological state (keys non-empty, version null) does not arise and swapping the two
+   * is observably identical. The ordering is kept because it is the order that is correct for *any* source satisfying
+   * the port (a custom source that resolves its shape and its generation independently can still produce that state),
+   * not because a test can currently tell the difference. Within a call shorter than `cache.genTtlMs` the two share one
+   * snapshot, so the read is generation-consistent, absent cache-pressure eviction (see `intersect`).
+   */
+  private async listKeys(seg: SegmentRef): Promise<{
+    listed: number[];
+    gen: string | number | null | undefined;
+    epoch: number;
+  }> {
+    const prefix = this.prefixes.of(seg);
+    for (;;) {
+      const epoch = this.scope.epoch;
+      const listed = await this.chunkKeys(seg);
+      const gen = await this.cacheVersion(seg);
+      if (!this.scope.invalidatedSince(prefix, epoch)) return { listed, gen, epoch };
+    }
+  }
+
+  /**
+   * A read's {@link Looks}, from the invalidation epoch `epoch` its plan began at: due at the first key after a later
+   * invalidation, or after `every` keys.
+   */
+  private looks(every: number, epoch: number): Looks {
+    return { every, epoch, left: every };
+  }
+
+  /**
+   * Whether a look is due before the next key: an invalidation since the read last looked, or its keys counted down. The
+   * caller counts the key, as it takes one, before it asks.
+   */
+  private lookDue(looks: Looks): boolean {
+    return looks.epoch !== this.scope.epoch || looks.left < 0;
+  }
+
+  /**
+   * The read looks now, before the key it takes next: the next look is due `every` keys on, or at the next
+   * invalidation. Called before the look awaits, so an invalidation while it waits is met at the next key.
+   */
+  private looked(looks: Looks): void {
+    looks.epoch = this.scope.epoch;
+    looks.left = looks.every - 1;
+  }
+
+  /**
+   * The ids at 1-based ranks `n`, `2n`, `3n` … counted over the ids in `range`, ascending. The rank of each boundary
+   * is placed from the index's per-chunk counts, so only the chunks that hold a boundary are read, each once however
+   * many boundaries it holds, through the same coalesced stream, window and budget unit as {@link iterate}. A range with
+   * `after` inside a chunk reads that chunk too, to count the ids at or below `after`. A last partial window yields
+   * nothing.
+   *
+   * The counts place ids, and are trusted as `count()` trusts them: a chunk that is read must decode to the size its
+   * index says, or the read throws {@link IntegrityError} (invariant 5), but a chunk that is not read is not checked, so
+   * an index that lies consistently about one (on an unencrypted object, the sum still matches the footer's total,
+   * which opening the object checks before any boundary is placed) shifts the ranks after it. An encrypted object's
+   * index is authenticated and bound to the object, so a wrong count there needs the key. The index and the chunks must come from one
+   * generation (invariant 3): the caller reads through a source that holds one, a pinned one, and a source with no
+   * per-chunk counts is refused.
+   *
+   * Nothing is fetched when the chunks in range hold fewer than `n` ids. The budget is charged before the first fetch
+   * with an upper bound, the cut chunk plus one chunk per boundary the counts allow (capped by the chunks in range),
+   * which can exceed the chunks actually read. A range that cuts its first chunk reads it even when the ids above
+   * `after` turn out to be fewer than `n`, and one that cuts its last chunk may read it and yield nothing.
+   */
+  async *everyNth(seg: SegmentRef, n: number, range?: IdRange): AsyncGenerator<number> {
+    requirePositiveInteger(n, 'n');
+    const epoch = this.scope.epoch;
+    const w = windowOf(range);
+    if (w === 'empty') return;
+    const span = w ?? WHOLE_ID_SPACE;
+    const { loKey, loRem, hiKey, hiRem } = span;
+    if (this.storage.cardinalities === undefined) {
+      throw new UnsupportedError('everyNth needs a storage source that reports per-chunk counts');
+    }
+    const counts = await this.storage.cardinalities(seg);
+    if (counts === null) return;
+    const keys = keysWithin(
+      [...counts.keys()].sort((a, b) => a - b),
+      span,
+    );
+    for (const k of keys) {
+      assertChunkKeyInRange(k);
+      const c = counts.get(k)!;
+      assertChunkCardinalityInRange(c);
+    }
+    const gen = await this.cacheVersion(seg); // after the shape read — see `listKeys`
+
+    // Ids of the first chunk at or below `after` do not count, so a range that cuts it reads it to know how many
+    // there are. Before any fetch: no boundary can exist when the chunks in range hold fewer than `n` ids, and the
+    // budget is charged with the most chunks the read can take (the cut chunk, and one per possible boundary).
+    const cutsFirst = loRem > 0 && keys[0] === loKey;
+    let upper = 0;
+    for (const k of keys) upper += counts.get(k)!;
+    if (upper < n) return;
+    const cut = cutsFirst ? 1 : 0;
+    checkBudget(this.budget, cut + Math.min(keys.length - cut, Math.floor(upper / n)), 'everyNth');
+    let first: Uint32Array | undefined;
+    let below = 0;
+    if (cutsFirst) {
+      first = this.chunkRemainders(
+        await this.storageChunk({ ...seg, chunkKey: loKey }, gen),
+        loKey,
+        counts,
+      );
+      below = firstAbove(first, loRem - 1);
+    }
+
+    // Place each boundary in a chunk, by the ids counted before it; `index` is where it sits in the chunk's array.
+    const hits: Array<{ key: number; index: number }> = [];
+    let before = 0;
+    for (const key of keys) {
+      const skipped = key === loKey && cutsFirst ? below : 0;
+      const size = counts.get(key)! - skipped;
+      const next = (Math.floor(before / n) + 1) * n;
+      if (next <= before + size) hits.push({ key, index: skipped + next - before - 1 });
+      before += size;
+    }
+    if (hits.length === 0) return;
+    const streamed = hits.filter((h) => !(cutsFirst && h.key === loKey)).map((h) => h.key);
+    // Never planned again: the ranks were placed from one generation's counts, which a pinned source holds.
+    const chunks =
+      streamed.length > 0
+        ? this.chunkSequence(seg, streamed, gen, epoch, { moved: false })
+        : undefined;
+    try {
+      for (const { key, index } of hits) {
+        const rem =
+          cutsFirst && key === loKey && first !== undefined
+            ? first
+            : this.chunkRemainders(await chunks!.take(key), key, counts);
+        const base = key * CHUNK_COUNT;
+        for (let i = index; i < rem.length; i += n) {
+          const remainder = rem[i]! & MAX_REMAINDER;
+          if (key === hiKey && remainder > hiRem) return;
+          yield base + remainder;
+        }
+      }
+    } finally {
+      chunks?.close();
+    }
+  }
+
+  /** A chunk's remainders ascending, once its size is confirmed against the index's count for it (invariant 5). */
+  private chunkRemainders(
+    chunk: CodecBitmap | null,
+    chunkKey: number,
+    counts: ReadonlyMap<number, number>,
+  ): Uint32Array {
+    const expected = counts.get(chunkKey)!;
+    if (chunk === null || chunk.size !== expected) {
+      const got = chunk === null ? 'no bytes' : `${chunk.size} ids`;
+      throw new IntegrityError(
+        `chunk ${chunkKey} holds ${got}, but the object's index says ${expected}`,
+      );
+    }
+    return chunk.toUint32Array ? chunk.toUint32Array() : Uint32Array.from(chunk);
   }
 
   /**
@@ -490,22 +1045,30 @@ export class SegmentEngine {
    *
    * Chunk-skipping intersection. Aligns each segment's chunk-key set (read from the `.crbm` index, no payload),
    * keeps only keys present in **all** operands (a key missing from any operand can't contribute → its Storage
-   * chunks are never fetched — the core saving), then for each surviving key fetches the operands' chunks in
-   * parallel and hands them to the codec for the AND, streaming results through a bounded in-flight window.
+   * chunks are never fetched — the core saving), then reads each operand's surviving chunks as one stream of coalesced
+   * ranges and hands them, key by key, to the codec for the AND, streaming results through a bounded window.
    *
-   * **Memory:** the Storage payload footprint is bounded by the window (`concurrency × operands × chunk`), not by
-   * segment size — that's the Lambda-friendly property.
+   * **Memory:** the Storage payload footprint is bounded by the window (`concurrency × operands × chunk`, a range being
+   * at most a chunk's cap of 1 MiB), not by segment size — that's the Lambda-friendly property.
    *
    * Generation-consistent within the call (normal case): each operand's current generation is resolved **once**
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
    * hit is invariant 3's: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an
    * operand's not-yet-requested chunks may re-resolve forward to the newer generation (a generation hop within one long
-   * call) — the call never crashes or returns a torn object, but may mix generations. Three things hop it without
-   * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
-   * (`maxOpenSegments`), whose re-read re-resolves fresh; a sweep deleting the generation it was reading, which
-   * heals the read forward; and an invalidation, which this store's own `load`, `rollback` and `eraseSubject` make
-   * and `invalidate()` makes on request. Still whole/immutable per read, never torn.
+   * call) — the call never crashes or returns a torn object, but may mix generations. Some things hop it without
+   * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call** on a
+   * store with no timed refresh (`maxOpenSegments`), whose re-read re-resolves fresh, and on a store with one the
+   * resolution cache letting the operand's resolution go; a sweep deleting the generation it was reading, or another
+   * object under its number, met by this read or another, which heals the read forward, as another read's failed open
+   * of the operand does; and an invalidation, which this store's own `load`, `rollback` and `eraseSubject` make and
+   * `invalidate()` makes on request. Still whole/immutable per read, never torn. An operand's stream resolves its
+   * segment again before it serves each chunk, so each of those moves a running read as it would a read of one chunk, and
+   * the ranges it had requested of the earlier generation are dropped, not served. The read then lists every operand's
+   * keys again above the key it last took, from the generation current then, so a key an operand gained is read and one
+   * it lost is not asked for. It meets a move through a chunk it is served that comes from another generation than it
+   * listed its keys under, and by looking at its operands' generations before the first key after an invalidation, and,
+   * with an `exclude` or as a union, every `concurrency` keys.
    */
   intersect(segs: readonly SegmentRef[], options?: CombineOptions): AsyncGenerator<number> {
     return this.combine(segs, options?.exclude ?? [], 'all', 'intersect', options);
@@ -560,6 +1123,39 @@ export class SegmentEngine {
   }
 
   /**
+   * {@link intersect}, as the chunks the result is made of: `{ chunkKey, bitmap }` in ascending key order, each a
+   * non-empty bitmap of the chunk's 16-bit remainders, cut to the read's range. What a materialisation writes
+   * straight into its new generation, with no id built on the way.
+   *
+   * **Each bitmap belongs to the caller, who may change it:** it is the combine's own accumulator or a bitmap built
+   * for the range's edge, never a chunk the cache holds or another operand's. The reads, the budget, the metric and the
+   * errors are the id reads' own.
+   */
+  intersectChunks(
+    segs: readonly SegmentRef[],
+    options?: CombineOptions,
+  ): AsyncGenerator<CombinedChunk> {
+    return this.combineChunks(segs, options?.exclude ?? [], 'all', 'intersect', options);
+  }
+
+  /** {@link union}, as chunks: see {@link intersectChunks}. */
+  unionChunks(
+    segs: readonly SegmentRef[],
+    options?: CombineOptions,
+  ): AsyncGenerator<CombinedChunk> {
+    return this.combineChunks(segs, options?.exclude ?? [], 'any', 'union', options);
+  }
+
+  /** {@link andNot}, as chunks: see {@link intersectChunks}. */
+  andNotChunks(
+    seg: SegmentRef,
+    excludes: readonly SegmentRef[],
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<CombinedChunk> {
+    return this.combineChunks([seg], excludes, 'all', 'andNot', options);
+  }
+
+  /**
    * Everything a combine decides before it reads a chunk: validation, each operand's keys and generation, the
    * absent-operand refusal, key alignment, the budget and the metric. `null` when the range is empty. The per-id
    * read and the batch read share it, so the two cannot disagree about what is read or charged.
@@ -570,7 +1166,7 @@ export class SegmentEngine {
     mode: 'all' | 'any',
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
-  ): Promise<CombinePlan | null> {
+  ): Promise<CombineRun | null> {
     // Validated HERE rather than in the public wrappers, deliberately. `combine` is an async generator, so a
     // throw surfaces when the caller first iterates — which is the behaviour `intersect` has always had, and
     // `await expect(collect(engine.intersect([]))).rejects` in the suite depends on it. Guarding in the
@@ -584,11 +1180,7 @@ export class SegmentEngine {
       throw new ValidationError('andNot requires at least one segment to subtract');
     }
     const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
-    if (!Number.isInteger(limit) || limit < 1) {
-      throw new ValidationError(
-        `concurrency must be a positive integer; got ${options?.concurrency}`,
-      );
-    }
+    requirePositiveInteger(limit, 'concurrency');
     // Per-op budget override (else the store budget); resolved before any I/O so a bad value fails fast. A
     // partial override inherits the store's tightening (not the generous default) — see resolvePerOpBudget.
     const budget = resolvePerOpBudget(options?.budget, this.budget);
@@ -599,68 +1191,14 @@ export class SegmentEngine {
 
     // ① Index-map extraction: each operand's chunk-key set + its current generation, resolved ONCE here (not
     // per chunk) so the fan-out below adds no per-chunk generation re-resolve. Only metadata so far.
-    //
-    // Generation resolution ordering: resolve `gen` AFTER the shape read (`listChunkKeys`). A non-empty shape
-    // read means the source resolved and cached a non-null snapshot, so `gen` cannot then come back null while
-    // storage data is present, and `storageChunk` cannot skip every chunk on a stale null.
-    //
-    // Honest note on how much this ordering buys, so a future reader does not take an untested claim for a tested
-    // one. Against a `CrbmStorageChunkSource` — the
-    // only source with a generation to resolve — both reads go through the same resolved-reader memo, so the
-    // pathological state (`keys` non-empty, `gen` null) does not arise and swapping the two is observably
-    // identical. The ordering is kept because it is the order that is correct for *any* source
-    // satisfying the port — a custom source that resolves its shape and its generation independently can still
-    // produce that state — not because a test can currently tell the difference.
-    //
-    // Within a call shorter than `cache.genTtlMs` the two share one snapshot, so the read is
-    // generation-consistent — absent cache-pressure eviction (see `intersect`).
-    const extract = async (seg: SegmentRef): Promise<Operand> => {
-      const all = await this.chunkKeys(seg);
-      const gen = await this.cacheVersion(seg);
-      const keys = w === null ? all : keysWithin(all, w);
-      return { seg, keys: new Set(keys), chunkless: all.length === 0, gen };
-    };
-    const [operands, excludes] = await Promise.all([
-      Promise.all(segs.map(extract)),
-      Promise.all(excludeSegs.map(extract)),
-    ]);
+    const epoch = this.scope.epoch;
+    const [operands, excludes] = await this.combineOperands(segs, excludeSegs, w, -1);
     await this.refuseAbsentOperands([...operands, ...excludes], options?.allowAbsentOperands, op);
 
-    // ② Key alignment. Candidate keys come from the INCLUDE operands only — an exclude can subtract ids from a
-    // chunk but can never introduce one, so a key no include holds cannot appear in the result however large
-    // the suppression list is. That asymmetry is what makes suppression cheap here.
-    //
-    //   'all' (intersect / andNot): keys present in EVERY include. Start from the smallest set to minimize the
-    //                               scan — a key missing from any operand cannot survive the AND.
-    //   'any' (union):              keys present in ANY include. No pruning is possible; see `union`'s note.
-    const candidates: number[] = [];
-    if (mode === 'all') {
-      const pivot = operands.reduce((a, b) => (a.keys.size <= b.keys.size ? a : b));
-      for (const k of pivot.keys) {
-        if (operands.every((o) => o.keys.has(k))) candidates.push(k);
-      }
-    } else {
-      const seen = new Set<number>();
-      for (const o of operands) for (const k of o.keys) seen.add(k);
-      for (const k of seen) candidates.push(k);
-    }
-    candidates.sort((a, b) => a - b); // defensive: `chunkKeys` already returns sorted; don't rely on it
-    const common = candidates;
-
-    // Denial-of-wallet budget (before the fan-out AND before we emit a "work done" metric): the heavy cost is
-    // one storage fetch per surviving key per operand — refuse up front if that would exceed the budget. Placed
-    // above the metric so a refused intersect doesn't report chunks it never fetched.
-    //
-    // Units are the chunk reads this will actually issue, counted per key: every include present at that key
-    // (all of them under 'all'), plus only those excludes that hold the key. Counting excludes as always-present
-    // would refuse work that costs nothing — the whole point of the asymmetry above. For a plain `intersect`
-    // with no excludes this reduces to `common.length * operands.length`.
-    let units = 0;
-    for (const key of common) {
-      for (const o of operands) if (mode === 'all' || o.keys.has(key)) units += 1;
-      for (const e of excludes) if (e.keys.has(key)) units += 1;
-    }
-    checkBudget(budget, units, op);
+    // ② Key alignment, and ③ the budget, before the fan-out and before the "work done" metric below, so a refused
+    // combine does not report chunks it never fetched.
+    const common = alignKeys(operands, mode);
+    checkBudget(budget, combineReads(common, operands, excludes, mode, Infinity), op);
 
     // Emit the chunk-skipping efficiency: `fetched` = shared keys we'll read, `skipped` = distinct keys
     // pruned across all operands (never fetched — the core saving). Bounded metadata work, no extra I/O.
@@ -684,11 +1222,156 @@ export class SegmentEngine {
     }
 
     return {
+      segs,
+      excludeSegs,
+      mode,
+      op,
+      limit,
+      budget,
       w,
-      window: new CombineWindow(common, limit, (key) =>
-        this.combineChunk(operands, excludes, mode, key),
-      ),
+      plan: this.openCombine(operands, excludes, mode, common, limit),
+      // An exclude, or an include of a union, may not be read at the keys left: such a combine also looks every round
+      // of its window.
+      looks: this.looks(excludeSegs.length > 0 || mode === 'any' ? limit : Infinity, epoch),
+      spent: 0,
     };
+  }
+
+  /**
+   * Each operand's chunk-key set inside the read's range and above the key `after`, and the version it was listed under
+   * ({@link listKeys}), include operands first, each in its order. At most {@link OPERANDS_AT_ONCE} are listed at once;
+   * the first listing to fail rejects the plan at once, and no other is begun after it.
+   */
+  private async combineOperands(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    w: IdWindow | null,
+    after: number,
+  ): Promise<[Operand[], Operand[]]> {
+    const extract = async (seg: SegmentRef): Promise<Operand> => {
+      const { listed, gen, epoch } = await this.listKeys(seg);
+      const keys = after < 0 && w === null ? listed : keysAbove(listed, w, after);
+      return { seg, keys: new Set(keys), chunkless: listed.length === 0, gen, epoch };
+    };
+    const all = await boundedAll([...segs, ...excludeSegs], OPERANDS_AT_ONCE, extract);
+    return [all.slice(0, segs.length), all.slice(segs.length)];
+  }
+
+  /**
+   * The operands' streams over `keys` and the window that reads them. Each include is read as a stream of coalesced
+   * ranges, and so is each exclude that is read with the includes (one include, or a union). An exclude that waits on
+   * an AND of two or more includes is read in batches of the keys whose AND is not empty ({@link ExcludeBatch}), since
+   * an emptied AND never needs its chunk. The window starts its first reads at once, so a plan is opened only once its
+   * budget has passed.
+   */
+  private openCombine(
+    operands: Operand[],
+    excludes: Operand[],
+    mode: 'all' | 'any',
+    keys: readonly number[],
+    limit: number,
+  ): CombinePlan {
+    const moves: Moves = { moved: false };
+    const streams: StreamedChunks[] = [];
+    const batches: ExcludeBatch[] = [];
+    const streamExcludes = mode === 'any' || operands.length === 1;
+    const open = (o: Operand, wanted?: (key: number) => boolean): void => {
+      o.streamed = this.openStreamed(
+        o.seg,
+        wanted === undefined ? keys : keys.filter(wanted),
+        o.gen,
+        o.epoch,
+        moves,
+        limit,
+        COMBINE_RANGE_START,
+      );
+      if (o.streamed) streams.push(o.streamed);
+    };
+    for (const o of operands) open(o, mode === 'all' ? undefined : (k) => o.keys.has(k));
+    if (streamExcludes) for (const e of excludes) open(e, (k) => e.keys.has(k));
+    else {
+      const shared = new Map<string, ExcludeBatch>();
+      for (const e of excludes) this.openBatch(e, moves, limit, batches, shared);
+    }
+    const window = new CombineWindow(keys, limit, (key) =>
+      this.combineChunk(operands, excludes, mode, key, moves),
+    );
+    for (const batch of batches) batch.window = window;
+    if (batches.length > 0) {
+      window.onWait = () => {
+        for (const batch of batches) if (batch.pending.length > 0) this.settleSoon(batch);
+      };
+    }
+    return {
+      window,
+      streams,
+      batches,
+      operands,
+      excludes,
+      keys,
+      moves,
+    };
+  }
+
+  /**
+   * The next key's combined chunk of `run`, `undefined` once its keys are used up. Not `async`: when nothing has moved
+   * and no look is due, the window's own promise is all a key costs.
+   */
+  private nextSlot(run: CombineRun): Promise<CombineSlot | undefined> {
+    run.looks.left -= 1; // one key nearer the next look
+    if (run.plan.moves.moved || this.lookDue(run.looks)) return this.nextSlotAfterLook(run);
+    return run.plan.window.next();
+  }
+
+  /**
+   * {@link nextSlot} once the read has looked at every operand's version, and planned again if one is not the version
+   * the plan was made under. An operand the keys left do not read would otherwise never show the read its move: an
+   * exclude whose keys the survivors do not reach, or an include of a union past its last key. A chunk that suggested a
+   * move is confirmed so, as in {@link nextChunkAfterLook}. The versions are looked up at most {@link OPERANDS_AT_ONCE}
+   * at once, all of them: a look that finds no move has compared every one.
+   */
+  private async nextSlotAfterLook(run: CombineRun): Promise<CombineSlot | undefined> {
+    const plan = run.plan;
+    // Cleared first, so a chunk that shows a move while the look waits is looked at again.
+    plan.moves.moved = false;
+    this.looked(run.looks);
+    const all = [...plan.operands, ...plan.excludes];
+    const now = await boundedAll(all, OPERANDS_AT_ONCE, (o) => this.cacheVersion(o.seg));
+    if (now.some((version, i) => version !== all[i]!.gen)) await this.replanCombine(run);
+    return run.plan.window.next();
+  }
+
+  /**
+   * Plan the rest of `run` again, after a move: every operand's keys above the key it last took, from the generation
+   * current now, aligned, charged to the budget with the reads of the keys already taken, and read through new streams
+   * and a new window. What the plan it replaces still has in flight is dropped, not served. The absent-operand refusal
+   * and the metric are the first plan's alone: a segment dropped while the read runs reads empty from there on.
+   */
+  private async replanCombine(run: CombineRun): Promise<void> {
+    const old = run.plan;
+    const after = old.window.last;
+    this.closeCombine(old);
+    const spent = run.spent + combineReads(old.keys, old.operands, old.excludes, run.mode, after);
+    const [operands, excludes] = await this.combineOperands(
+      run.segs,
+      run.excludeSegs,
+      run.w,
+      after,
+    );
+    const keys = alignKeys(operands, run.mode);
+    checkBudget(
+      run.budget,
+      spent + combineReads(keys, operands, excludes, run.mode, Infinity),
+      run.op,
+    );
+    run.plan = this.openCombine(operands, excludes, run.mode, keys, run.limit);
+    run.spent = spent;
+  }
+
+  /** Stop the streams of `plan`; the reads its window holds settle on their own and are dropped. */
+  private closeCombine(plan: CombinePlan): void {
+    for (const stream of plan.streams) this.closeStreamed(stream);
+    for (const batch of plan.batches) this.closeBatch(batch);
   }
 
   private async *combine(
@@ -698,17 +1381,25 @@ export class SegmentEngine {
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
   ): AsyncGenerator<number> {
-    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
-    if (plan === null) return;
-    const { w, window } = plan;
-    for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
-      if (slot.result && !slot.result.isEmpty) {
-        if (w !== null && isEdge(slot.key, w)) {
-          for (const id of edgeIds(slot.result, slot.key, w)) yield id;
-        } else {
-          for (const remainder of slot.result) yield joinId(slot.key, remainder);
+    const run = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (run === null) return;
+    const { w } = run;
+    try {
+      for (
+        let slot = await this.nextSlot(run);
+        slot !== undefined;
+        slot = await this.nextSlot(run)
+      ) {
+        if (slot.result && !slot.result.isEmpty) {
+          if (w !== null && isEdge(slot.key, w)) {
+            for (const id of edgeIds(slot.result, slot.key, w)) yield id;
+          } else {
+            for (const remainder of slot.result) yield joinId(slot.key, remainder);
+          }
         }
       }
+    } finally {
+      this.closeCombine(run.plan);
     }
   }
 
@@ -719,14 +1410,51 @@ export class SegmentEngine {
     op: 'intersect' | 'union' | 'andNot',
     options?: Omit<CombineOptions, 'exclude'>,
   ): AsyncGenerator<Uint32Array> {
-    const plan = await this.combinePlan(segs, excludeSegs, mode, op, options);
-    if (plan === null) return;
-    const { w, window } = plan;
-    for (let slot = await window.next(); slot !== undefined; slot = await window.next()) {
-      if (slot.result) {
-        const ids = chunkIds(slot.result, slot.key, w);
-        if (ids.length > 0) yield ids;
+    const run = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (run === null) return;
+    const { w } = run;
+    try {
+      for (
+        let slot = await this.nextSlot(run);
+        slot !== undefined;
+        slot = await this.nextSlot(run)
+      ) {
+        if (slot.result) {
+          const ids = chunkIds(slot.result, slot.key, w);
+          if (ids.length > 0) yield ids;
+        }
       }
+    } finally {
+      this.closeCombine(run.plan);
+    }
+  }
+
+  /** The chunk read: the plan every combine shares, then each key's result, cut to the range at its edges. */
+  private async *combineChunks(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
+    op: 'intersect' | 'union' | 'andNot',
+    options?: Omit<CombineOptions, 'exclude'>,
+  ): AsyncGenerator<CombinedChunk> {
+    const run = await this.combinePlan(segs, excludeSegs, mode, op, options);
+    if (run === null) return;
+    const { w } = run;
+    try {
+      for (
+        let slot = await this.nextSlot(run);
+        slot !== undefined;
+        slot = await this.nextSlot(run)
+      ) {
+        if (!slot.result || slot.result.isEmpty) continue;
+        const bitmap =
+          w !== null && isEdge(slot.key, w)
+            ? cutToWindow(this.codec, slot.result, slot.key, w)
+            : slot.result;
+        if (!bitmap.isEmpty) yield { chunkKey: slot.key, bitmap };
+      }
+    } finally {
+      this.closeCombine(run.plan);
     }
   }
 
@@ -744,6 +1472,7 @@ export class SegmentEngine {
     excludes: ReadonlyArray<Operand>,
     mode: 'all' | 'any',
     chunkKey: number,
+    moves: Moves,
   ): Promise<CodecBitmap | null> {
     // Under 'any' an include may simply not hold this key; skip it rather than fetching a certainly-empty
     // chunk. Under 'all' every include holds every candidate key by construction, so the filter is a no-op.
@@ -756,9 +1485,7 @@ export class SegmentEngine {
     const relevant = excludes.filter((e) => e.keys.has(chunkKey));
     const together = relevant.length > 0 && (mode === 'any' || present.length === 1);
     const reads = together ? [...present, ...relevant] : present;
-    const fetched = await Promise.all(
-      reads.map((op) => this.storageChunk({ ...op.seg, chunkKey }, op.gen)),
-    );
+    const fetched = await Promise.all(reads.map((op) => this.operandChunk(op, chunkKey, moves)));
     const chunks = together ? fetched.slice(0, present.length) : fetched;
     // A key the index lists but the source cannot produce bytes for reads as empty — and under AND an empty
     // operand empties the result.
@@ -781,7 +1508,13 @@ export class SegmentEngine {
     if (relevant.length > 0) {
       const cuts = together
         ? fetched.slice(present.length)
-        : await Promise.all(relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen)));
+        : await Promise.all(
+            relevant.map((e) =>
+              e.batch === undefined
+                ? this.storageChunk({ ...e.seg, chunkKey }, e.gen, { recheck: true, moves })
+                : this.excludeChunk(e, e.batch, chunkKey, moves),
+            ),
+          );
       for (const cut of cuts) {
         if (cut === null) continue;
         acc.andNotInPlace(cut);
@@ -791,56 +1524,453 @@ export class SegmentEngine {
     return acc;
   }
 
-  /** The segment's chunk keys, ascending — a shape read off the index, no payload. Keys are untrusted (invariant 5). */
-  private async chunkKeys(seg: SegmentRef): Promise<number[]> {
-    const keys = [...(await this.storage.listChunkKeys(seg))];
-    for (const k of keys) this.assertChunkKeyInRange(k);
-    keys.sort((a, b) => a - b);
-    // A key listed twice would be read and yielded twice; the `.crbm` reader refuses one, a custom source may not.
-    for (let i = 1; i < keys.length; i++) {
-      if (keys[i] === keys[i - 1]) {
-        throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);
+  /**
+   * Read `exclude` in batches, when the source can read ranges and the exclude has a generation; one that names the same
+   * segment and version as an exclude already opened shares its batch. Nothing is requested until a key asks.
+   */
+  private openBatch(
+    exclude: Operand,
+    moves: Moves,
+    concurrency: number,
+    batches: ExcludeBatch[],
+    shared: Map<string, ExcludeBatch>,
+  ): void {
+    if (this.storage.getChunks === undefined || exclude.gen === null) return;
+    const identity = `${this.prefixes.of(exclude.seg)}${String(exclude.gen)}`;
+    const same = shared.get(identity);
+    if (same !== undefined) {
+      exclude.batch = same;
+      return;
+    }
+    exclude.batch = {
+      operand: exclude,
+      moves,
+      half: Math.max(1, Math.ceil(concurrency / 2)),
+      concurrency,
+      pending: [],
+      held: new Set(),
+      scheduled: false,
+      closed: false,
+      window: undefined,
+      oldest: Infinity,
+    };
+    shared.set(identity, exclude.batch);
+    batches.push(exclude.batch);
+  }
+
+  /**
+   * The chunk `exclude` holds at `chunkKey`, for a key whose AND is not empty. One the cache holds, or another read has
+   * in flight, is read as a read of that chunk alone is (cache lookup and version check, or joining the read); only a
+   * chunk that would be requested waits for the batch.
+   */
+  private excludeChunk(
+    exclude: Operand,
+    batch: ExcludeBatch,
+    chunkKey: number,
+    moves: Moves,
+  ): Promise<CodecBitmap | null> {
+    const ref = { ...exclude.seg, chunkKey };
+    const cacheKey = this.chunkCacheKey(ref, exclude.gen ?? undefined);
+    if (this.cache?.get(cacheKey) !== undefined || this.scope.hasOpenRead(cacheKey)) {
+      return this.storageChunk(ref, exclude.gen, { recheck: true, moves });
+    }
+    return this.askBatch(batch, chunkKey);
+  }
+
+  /**
+   * Ask `batch` for the exclude chunk at `key`. A batch is read when it holds half the combine's concurrency in keys; when
+   * the asking has gone quiet for {@link BATCH_QUIET_HOPS} turns of the microtask queue (checked as each key asks and as
+   * the caller asks for each slot) and the caller is waiting on a slot, or has come within half a
+   * window of the oldest key held, so a held key is read at least that far ahead of it; and when every key of the combine
+   * has been started (none is left that could still ask).
+   * Refused once the combine has stopped or planned again, so a key it was still working on sends nothing more.
+   */
+  private askBatch(batch: ExcludeBatch, key: number): Promise<CodecBitmap | null> {
+    if (batch.closed)
+      return Promise.reject(new Error('the combine this read belongs to has stopped'));
+    return new Promise((resolve, reject) => {
+      batch.pending.push({ key, resolve, reject });
+      batch.held.add(key);
+      batch.oldest = Math.min(batch.oldest, batch.window?.slotOf(key) ?? 0);
+      if (batch.held.size >= batch.half) this.flushBatch(batch);
+      else this.settleSoon(batch);
+    });
+  }
+
+  /** Start the wait of `batch` for its asking to go quiet, unless it is running. */
+  private settleSoon(batch: ExcludeBatch): void {
+    if (batch.scheduled) return;
+    batch.scheduled = true;
+    void this.settleBatch(batch);
+  }
+
+  /**
+   * Wait until no key has asked for {@link BATCH_QUIET_HOPS} turns of the microtask queue. If the caller is waiting on a
+   * slot, or is within half a window of the oldest key held, or every key of the combine has been started (so no more
+   * can ask), the keys held are read; otherwise they are held for the keys the combine has yet to start, until half a
+   * window of them is held or the caller comes near. The wait is of microtask turns, so it always ends, and the loop is left rather than spun while
+   * keys are held.
+   */
+  private async settleBatch(batch: ExcludeBatch): Promise<void> {
+    let seen = batch.pending.length;
+    for (let quiet = 0; quiet < BATCH_QUIET_HOPS;) {
+      await undefined;
+      if (batch.pending.length === seen) quiet += 1;
+      else {
+        seen = batch.pending.length;
+        quiet = 0;
       }
     }
-    return keys;
+    batch.scheduled = false;
+    const window = batch.window;
+    if (
+      window === undefined ||
+      window.started ||
+      window.waiting ||
+      batch.oldest - window.position <= batch.half
+    ) {
+      this.flushBatch(batch);
+    }
   }
 
-  /**
-   * Tier-derived keys are untrusted (invariant 5) — fail fast on a corrupt/out-of-range key rather than
-   * letting it flow into the id-routing step and produce a bogus id.
-   */
-  private assertChunkKeyInRange(k: number): void {
-    if (!Number.isInteger(k) || k < 0 || k >= CHUNK_COUNT) {
-      throw new IntegrityError(`chunk key from a tier is out of range: ${k}`);
+  /** Read the keys `batch` holds now. */
+  private flushBatch(batch: ExcludeBatch): void {
+    const asks = batch.pending;
+    if (asks.length === 0) return;
+    batch.pending = [];
+    batch.held.clear();
+    batch.oldest = Infinity;
+    try {
+      this.readBatch(batch, asks);
+    } catch (error) {
+      // Not reachable by a source that behaves; but a throw here must reach the keys waiting, not an unhandled rejection.
+      for (const ask of asks) ask.reject(error);
     }
   }
 
   /**
-   * The other half of invariant 5: a chunk payload holds **remainders** — 16-bit offsets within one chunk — so
-   * every value must be `<= 0xffff`.
-   *
-   * Nothing upstream establishes that. The byte cap bounds *size*, and CRC/AEAD prove the bytes are the bytes
-   * that were written — which anyone able to write the bucket satisfies trivially. A value `>= 65536` would then
-   * reach the id-routing step, which masks it (`remainder & 0xffff`) and emits a **fabricated id belonging to a different
-   * chunk's id space**: indistinguishable from real data, inflating `count()` and creating spurious `intersect`
-   * matches.
-   *
-   * Costs one `maximum()` per chunk, not per id — `maximum` is optional on the codec seam precisely so a codec
-   * that cannot answer in O(1) opts out instead of making the read path walk every value.
-   *
-   * One value stands for all of them only because the decode is structurally checked. Roaring answers `maximum()`
-   * from its last container, so a payload listing its containers out of order would report the wrong one's
-   * largest value and pass here while holding values above 65,535. The codec's `safeDeserialize` refuses that
-   * payload, and every other shape that would make this answer wrong, before it reaches this check.
+   * Read the keys that asked: one whose chunk is already being read (by another read, or by an earlier key of this batch
+   * that names it again) joins that read, and the rest are one stream of coalesced ranges over those keys alone, so a
+   * request is sent for each range of them and never for a chunk nobody asked for. The stream is a
+   * {@link StreamedChunks} like an include's, so a chunk is cached under the version it was read from, counted as a cache
+   * hit or miss once, checked against the segment's version when it comes from the cache, and marks `moves` when it
+   * shows the segment moved. Each key it reads is registered as the open read of its chunk, so a read of that chunk by
+   * anything else joins it. Every ask is answered, with its own key's chunk or the error its read raised.
    */
-  private assertChunkPayloadInRange(bitmap: CodecBitmap, chunkKey: number): void {
-    const max = bitmap.maximum?.();
-    if (max !== undefined && max > MAX_REMAINDER) {
-      throw new IntegrityError(
-        `chunk ${chunkKey} payload holds value ${max}, outside the 16-bit remainder range ` +
-          `[0, ${MAX_REMAINDER}] — the stored object is corrupt or was not written by this codec`,
-      );
+  private readBatch(batch: ExcludeBatch, asks: BatchAsk[]): void {
+    if (batch.closed) {
+      for (const ask of asks) ask.reject(new Error('the combine this read belongs to has stopped'));
+      return;
     }
+    asks.sort((a, b) => a.key - b.key);
+    const { operand, moves } = batch;
+    const { seg, gen } = operand;
+    if (gen === null) {
+      for (const ask of asks) ask.resolve(null); // no generation: no bytes, as `storageChunk` answers
+      return;
+    }
+    // The asks that read the stream: one whose chunk is being read already, or that names a key an earlier ask of this
+    // batch does, joins that read instead.
+    const streams = new Set<BatchAsk>();
+    const streamKeys: number[] = [];
+    for (const ask of asks) {
+      const open = this.scope.hasOpenRead(this.chunkCacheKey({ ...seg, chunkKey: ask.key }, gen));
+      if (!open && streamKeys[streamKeys.length - 1] !== ask.key) {
+        streams.add(ask);
+        streamKeys.push(ask.key);
+      }
+    }
+    const streamed = this.openStreamed(
+      seg,
+      streamKeys,
+      gen,
+      operand.epoch,
+      moves,
+      batch.concurrency,
+      batch.concurrency,
+    );
+    let left = asks.length;
+    const settled = (): void => {
+      left -= 1;
+      if (left === 0 && streamed !== undefined) this.closeStreamed(streamed);
+    };
+    // The takes of a stream are made in key order, each before anything is awaited, as the stream requires.
+    for (const ask of asks) {
+      let read: Promise<CodecBitmap | null>;
+      try {
+        if (streamed !== undefined && streams.has(ask)) {
+          read = this.streamedChunk(streamed, ask.key);
+          this.registerRead({ ...seg, chunkKey: ask.key }, gen, read, moves);
+        } else {
+          read = this.storageChunk({ ...seg, chunkKey: ask.key }, gen, { recheck: true, moves });
+        }
+      } catch (error) {
+        read = Promise.reject(error);
+      }
+      read.then(ask.resolve, ask.reject).finally(settled);
+    }
+  }
+
+  /**
+   * Register the read of the chunk `ref` that a batch's stream makes as its open read, so a read of it by anything else
+   * joins it, until it settles. A joiner does not share the stream's failure: a stream ends at its first failed range
+   * and fails every take after it, those of keys whose own ranges did not fail included, so when the read fails the
+   * entry goes and a joiner reads the chunk on its own, one request for each joined key that failed.
+   */
+  private registerRead(
+    ref: ChunkRef,
+    gen: string | number | undefined,
+    read: Promise<CodecBitmap | null>,
+    moves: Moves,
+  ): void {
+    const cacheKey = this.chunkCacheKey(ref, gen);
+    // Armed only when a joiner asks for it: a failed key nobody joined sends no read of its own.
+    let joined: Promise<CodecBitmap | null> | undefined;
+    const entry: OpenRead = {
+      token: {},
+      get read(): Promise<CodecBitmap | null> {
+        return (joined ??= read.catch(() => {
+          scope.endRead(cacheKey, entry);
+          return storageChunk();
+        }));
+      },
+    };
+    const scope = this.scope;
+    const storageChunk = (): Promise<CodecBitmap | null> =>
+      this.storageChunk(ref, gen, { recheck: true, report: false, moves });
+    this.scope.beginRead(cacheKey, entry);
+    const done = (): void => this.scope.endRead(cacheKey, entry);
+    read.then(done, done);
+  }
+
+  /**
+   * Stop `batch`: the keys still waiting are refused. The streams of the batches in flight are not closed: every range of
+   * one was requested when it was read, a read of one of its chunks by another call may be joined to it, and each closes
+   * itself once its last key is answered.
+   */
+  private closeBatch(batch: ExcludeBatch): void {
+    batch.closed = true;
+    this.flushBatch(batch);
+  }
+
+  /**
+   * One operand's chunk at `key`: from its stream when it has one, else a read of that chunk on its own, whose cached
+   * chunk marks `moves` when it is no longer the operand's version. Not `async`, so a stream's take is made before
+   * anything is awaited: concurrent takes of one stream must be made in key order.
+   */
+  private operandChunk(op: Operand, chunkKey: number, moves: Moves): Promise<CodecBitmap | null> {
+    return op.streamed === undefined
+      ? this.storageChunk({ ...op.seg, chunkKey }, op.gen, { recheck: true, moves })
+      : this.streamedChunk(op.streamed, chunkKey);
+  }
+
+  /**
+   * `keys` of `seg` as a stream of coalesced ranges, or `undefined` when the read is per key: a source with no
+   * `getChunks`, a segment with no generation, or nothing to read. Nothing is requested, and no cache lookup made, until
+   * the first chunk is asked for (see {@link StreamedChunks}).
+   */
+  private openStreamed(
+    seg: SegmentRef,
+    keys: readonly number[],
+    gen: string | number | null | undefined,
+    epoch: number,
+    moves: Moves,
+    concurrency: number,
+    rampStart: number,
+  ): StreamedChunks | undefined {
+    if (this.storage.getChunks === undefined || gen === null || keys.length === 0) return undefined;
+    return {
+      seg,
+      gen,
+      epoch,
+      keys,
+      moves,
+      concurrency,
+      rampStart,
+      prefix: this.prefixes.of(seg),
+      openedAt: epoch, // set again when the stream opens
+      opened: false,
+      inStream: undefined,
+      stream: undefined,
+      invalidated: false,
+    };
+  }
+
+  /**
+   * Open the stream of `streamed`, at its first uncached chunk `from`: over that chunk and the later keys the cache does
+   * not hold. Each later key is counted as a cache hit or miss here, so a key is counted once whichever way it is served.
+   */
+  private startStream(streamed: StreamedChunks, from: number): void {
+    const { seg, gen } = streamed;
+    const getChunks = this.storage.getChunks!;
+    let wanted = streamed.keys.slice(streamed.keys.indexOf(from));
+    if (this.cache) {
+      const cache = this.cache;
+      const prefix = streamed.prefix;
+      // The keys the cache does not hold, built only once one is held: until then they are `wanted`'s own first keys.
+      let misses: number[] | undefined;
+      // A cache holding nothing cannot hold a key, so a first read in a process looks none up, and counts each a miss.
+      const empty = cache.size === 0;
+      for (let i = 1; i < wanted.length; i++) {
+        const chunkKey = wanted[i]!;
+        const hit = empty ? undefined : cache.get(chunkKeyUnder(prefix, chunkKey, gen));
+        if (hit) misses ??= wanted.slice(0, i);
+        else misses?.push(chunkKey);
+        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: hit !== undefined });
+      }
+      if (misses !== undefined) {
+        streamed.inStream = new Set(misses);
+        wanted = misses;
+      }
+    }
+    // Every range request the stream sends is reported, one `storage.get` each, when it settles: the ones a read took,
+    // and the ones still in flight when it stopped, which are billed all the same.
+    const onRequest = this.metricsOn
+      ? (request: { readonly bytes: number; readonly ms: number }): void => {
+          this.metrics.onEvent({
+            kind: 'storage.get',
+            namespace: seg.namespace,
+            segment: seg.segment,
+            bytes: request.bytes,
+            ms: request.ms,
+          });
+        }
+      : undefined;
+    streamed.stream = new ChunkStream(
+      getChunks.call(this.storage, seg, wanted, {
+        concurrency: streamed.concurrency,
+        ramp: streamed.rampStart,
+        ...(onRequest === undefined ? {} : { onRequest }),
+      }),
+    );
+    streamed.opened = true;
+    streamed.openedAt = this.scope.epoch;
+    // Only a source with no `currentVersion` caches a chunk under the planned key, so only there can an invalidation
+    // since the read began put newer bytes under an older key; elsewhere a chunk is cached under the version it read.
+    streamed.invalidated =
+      this.storage.currentVersion === undefined && this.scope.epoch !== streamed.epoch;
+  }
+
+  /**
+   * Stop the stream of `streamed`. Nothing else is kept for an open stream, so a read whose caller drops it without
+   * closing it leaves nothing behind in the engine.
+   */
+  private closeStreamed(streamed: StreamedChunks): void {
+    streamed.stream?.close();
+  }
+
+  /**
+   * The decoded chunk at `chunkKey` of a streamed read: from the cache while the stream is unopened and the cache holds
+   * it; else the next chunk of its stream, or, for a chunk the cache held when the stream opened, the cached instance
+   * while it is still there, and a read of that chunk alone once it is not.
+   */
+  private streamedChunk(streamed: StreamedChunks, chunkKey: number): Promise<CodecBitmap | null> {
+    if (!streamed.opened) {
+      const cache = this.cache;
+      if (cache) {
+        const ref = { ...streamed.seg, chunkKey };
+        const hit = cache.get(this.chunkCacheKey(ref, streamed.gen));
+        if (hit)
+          return this.cachedIfCurrent(ref, streamed.gen, hit, true, streamed.moves, streamed);
+        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
+      }
+      this.startStream(streamed, chunkKey);
+    } else if (streamed.inStream !== undefined && !streamed.inStream.has(chunkKey)) {
+      // Counted as a hit when the stream opened, so not counted again here.
+      const ref = { ...streamed.seg, chunkKey };
+      const hit = this.cache?.get(this.chunkCacheKey(ref, streamed.gen));
+      return hit
+        ? this.cachedIfCurrent(ref, streamed.gen, hit, false, streamed.moves, streamed)
+        : this.storageChunk(ref, streamed.gen, {
+            recheck: true,
+            report: false,
+            moves: streamed.moves,
+          });
+    }
+    return streamed.stream!.take(chunkKey).then((read) => {
+      // A chunk of another version than the read looks under: the source moved the stream to the generation current
+      // now, whose keys the read plans again. Only a source that names versions can say so (`currentVersion`).
+      if (
+        read.version !== streamed.gen &&
+        streamed.gen !== undefined &&
+        this.storage.currentVersion !== undefined
+      ) {
+        streamed.moves.moved = true;
+      }
+      if (read.bytes === null) return null;
+      const bitmap = decodeChunkBytes(this.codec, read.bytes, chunkKey, this.maxBitmapBytes);
+      // Cached under the version the bytes came from, not the one the read planned under: a source that re-resolved
+      // mid-read answers newer bytes, and those must not sit under the older version's key. Not cached at all if the
+      // segment was invalidated while the read ran, through this engine or another sharing its invalidations.
+      if (
+        this.cache &&
+        !streamed.invalidated &&
+        !this.scope.invalidatedSince(streamed.prefix, streamed.openedAt)
+      ) {
+        const version = this.streamedVersion(streamed.gen, read.version);
+        if (version !== null) {
+          this.cache.set(this.chunkCacheKey({ ...streamed.seg, chunkKey }, version), bitmap);
+        }
+      }
+      return bitmap;
+    });
+  }
+
+  /**
+   * The version a streamed chunk is cached under, or `null` for one not to cache: the version its read reports when the
+   * source names versions as its lookups do (`currentVersion`), and otherwise the one the read planned under, since a
+   * lookup by generation number would never find a chunk cached under a stream's version.
+   */
+  private streamedVersion(
+    planned: string | number | null | undefined,
+    read: string | null,
+  ): string | number | null | undefined {
+    return planned === undefined || this.storage.currentVersion === undefined ? planned : read;
+  }
+
+  /**
+   * `hit`, a chunk cached under the version a multi-chunk read planned under, if that is still the segment's version;
+   * else the chunk as it is now. A read resolves the segment again before it serves each chunk, which the source's
+   * stream does for the chunks it delivers; a chunk served from the cache is checked here, or a read whose chunks are
+   * all cached would go on serving the generation it planned under, an erased id included, for as long as it is pulled.
+   * Within `cache.genTtlMs` the source answers from its snapshot, so the check is a lookup, not a request. `report`:
+   * emit the `cache` event for this lookup, which a key counted when its stream opened does not. `moves`: where the read
+   * this chunk belongs to learns of a move, so it plans its keys again. `streamed`: the read's stream, which a move
+   * carries to the version now current, so the rest of it looks there: a read whose stream is not yet open reads the
+   * rest as one stream, not a chunk at a time.
+   */
+  private async cachedIfCurrent(
+    ref: ChunkRef,
+    planned: string | number | null | undefined,
+    hit: CodecBitmap,
+    report: boolean,
+    moves?: Moves,
+    streamed?: StreamedChunks,
+  ): Promise<CodecBitmap | null> {
+    const now = planned === undefined ? undefined : await this.cacheVersion(ref);
+    if (now === planned) {
+      if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
+      return hit;
+    }
+    // The read's keys were listed under the version it planned under: it plans them again.
+    if (moves !== undefined) moves.moved = true;
+    if (streamed !== undefined && streamed.gen === planned && now !== null) {
+      streamed.gen = now;
+      // On a source with no `currentVersion` a streamed chunk is cached under the read's generation, which has just
+      // moved while the stream may still be reading the earlier one: cache nothing more it delivers.
+      if (streamed.opened && this.storage.currentVersion === undefined) streamed.invalidated = true;
+    }
+    return this.storageChunk(ref, now, { report });
+  }
+
+  /** The cache key of a chunk: by the version it was read under, or by segment and key alone for a source with none. */
+  private chunkCacheKey(ref: ChunkRef, version: string | number | undefined): string {
+    return chunkKeyUnder(this.prefixes.of(ref), ref.chunkKey, version);
+  }
+
+  /** The segment's chunk keys, ascending, checked as untrusted tier data. */
+  private async chunkKeys(seg: SegmentRef): Promise<number[]> {
+    return checkedChunkKeys(await this.storage.listChunkKeys(seg));
   }
 
   /**
@@ -861,7 +1991,8 @@ export class SegmentEngine {
    * chunks — a segment with data is self-evidently registered — so the check is a registry read exactly when
    * a combine was about to do something suspicious, and no reads at all otherwise. A source that cannot answer
    * `exists` (it has no notion of registration) skips the check rather than guessing. An operand is judged by
-   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious.
+   * all its chunks, not those inside a range: one with nothing in range but data elsewhere is not suspicious. At most
+   * {@link OPERANDS_AT_ONCE} are asked after at once.
    */
   private async refuseAbsentOperands(
     resolved: readonly Operand[],
@@ -869,26 +2000,25 @@ export class SegmentEngine {
     op: string,
   ): Promise<void> {
     if (allow === true || this.storage.exists === undefined) return;
-    const empty = resolved.filter((o) => o.chunkless);
-    if (empty.length === 0) return;
-    const checked = await Promise.all(
-      empty.map(async (o) => ({ seg: o.seg, exists: await this.storage.exists!(o.seg) })),
-    );
-    const absent = checked.filter((c) => !c.exists).map((c) => c.seg);
-    if (absent.length === 0) return;
-    const named = absent
-      .map((s) => (s.namespace === undefined ? `"${s.segment}"` : `"${s.namespace}/${s.segment}"`))
-      .join(', ');
-    throw new ValidationError(
-      `${op}: operand ${named} names a segment that does not exist, so it would contribute nothing — ` +
-        `an exclude would suppress no ids and an include would contribute none. Check the name and the ` +
-        `namespace (a segment addressed without its \`namespace\` is a DIFFERENT segment). ` +
-        `Pass \`allowAbsentOperands: true\` if you meant it.`,
+    await refuseAbsent(
+      op,
+      resolved.filter((o) => o.chunkless),
+      OPERANDS_AT_ONCE,
+      (o) => this.storage.exists!(o.seg),
+      ({ seg }) => (seg.namespace === undefined ? seg.segment : `${seg.namespace}/${seg.segment}`),
     );
   }
 
   /**
-   * Drop every piece of state this engine derived from `ref`, and tell the Storage source to do the same.
+   * Forget what was derived from `ref`: drop its decoded chunks from the chunk cache, which every engine sharing this
+   * one's invalidations reads through, record the invalidation where they all see it, and tell this engine's Storage
+   * source to forget the segment too. An engine sharing the invalidations over another source instance does not tell
+   * its own source: engines that read one source, as the facade's do, need only one of them told. A read of the
+   * segment already running on any of them caches nothing more of what it began reading before the call, whether a
+   * request already in flight or a stream already open; a stream that opens after the call, or a request sent after
+   * it, reads afresh and, on a source that names versions (`currentVersion`), caches what it reads. On one that does
+   * not, a read that began before the call caches nothing from a stream it opens after it, unless the call landed while
+   * the read listed the segment's keys: the read then lists them again, and caches as a read begun after the call.
    *
    * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
    * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation
@@ -900,9 +2030,8 @@ export class SegmentEngine {
    */
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
+    this.scope.invalidate(prefix);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
-    // A read already open was asked for before this call, so a caller after it must not join it.
-    for (const key of this.openReads.keys()) if (key.startsWith(prefix)) this.openReads.delete(key);
     this.storage.invalidate?.(ref);
   }
 
@@ -944,57 +2073,98 @@ export class SegmentEngine {
    *
    * The returned instance is **shared** (it may be the cached one, and every caller that joined a read gets the same
    * one): callers read it or clone it, never mutate it.
+   *
+   * `recheck`: `gen` was planned for a read of many chunks, so a cached chunk is served only while it is still the
+   * segment's version ({@link cachedIfCurrent}), and one that is not marks `moves`. A point read resolves `gen` just
+   * before it asks, and passes none. `report`: emit the `cache` event for this lookup; a key already counted for this
+   * read does not.
    */
   private async storageChunk(
     ref: ChunkRef,
     gen: string | number | null | undefined,
+    { recheck = false, report = true, moves }: StorageChunkOptions = {},
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
-    const cacheKey = gen === undefined ? chunkRefKey(ref) : chunkGenKey(ref, gen);
+    const cacheKey = this.chunkCacheKey(ref, gen);
     if (this.cache) {
       const cached = this.cache.get(cacheKey);
       if (cached) {
-        if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
+        if (recheck) return this.cachedIfCurrent(ref, gen, cached, report, moves);
+        if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: true });
         return cached;
       }
-      if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
+      if (report && this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
-    const open = this.openReads.get(cacheKey);
-    if (open) return open.read;
+    const open = this.scope.openRead(cacheKey);
+    if (open) return open;
     const token = {};
-    const entry: OpenRead = { token, read: this.fetchChunk(ref, cacheKey, token) };
-    this.openReads.set(cacheKey, entry);
-    // Whether it resolves or rejects the entry goes, so a later caller reads again. An invalidation may have dropped
-    // this entry and a newer read taken the key: leave that one.
-    const settled = (): void => {
-      if (this.openReads.get(cacheKey) === entry) this.openReads.delete(cacheKey);
-    };
+    const entry: OpenRead = { token, read: this.fetchChunk(ref, gen, cacheKey, token) };
+    this.scope.beginRead(cacheKey, entry);
+    // Whether it resolves or rejects the entry goes, so a later caller reads again.
+    const settled = (): void => this.scope.endRead(cacheKey, entry);
     entry.read.then(settled, settled);
     return entry.read;
   }
 
-  /** One request for one chunk, decoded, range-checked and cached. */
+  /**
+   * One chunk, decoded, range-checked and cached. A source with `getChunks` is read through it, as a one-key stream, so
+   * a `storage.get` is reported only for a request that was sent (a chunk the source holds in memory sends none);
+   * the chunk is cached under the version it came from, as a stream's chunk is. A source without it is read by
+   * `getChunk`, one event a call.
+   */
   private async fetchChunk(
     ref: ChunkRef,
+    gen: string | number | null | undefined,
     cacheKey: string,
     token: object,
   ): Promise<CodecBitmap | null> {
-    const startedAt = this.metricsOn ? this.clock.now() : 0;
-    const bytes = await this.storage.getChunk(ref);
-    if (this.metricsOn) {
-      this.metrics.onEvent({
-        kind: 'storage.get',
-        namespace: ref.namespace,
-        segment: ref.segment,
-        bytes: bytes ? bytes.length : 0,
-        ms: Math.max(0, this.clock.now() - startedAt),
-      });
+    const getChunks = this.storage.getChunks;
+    let bytes: Uint8Array | null;
+    let key = cacheKey;
+    if (getChunks === undefined) {
+      const startedAt = this.metricsOn ? this.clock.now() : 0;
+      bytes = await this.storage.getChunk(ref);
+      if (this.metricsOn) {
+        this.metrics.onEvent({
+          kind: 'storage.get',
+          namespace: ref.namespace,
+          segment: ref.segment,
+          bytes: bytes ? bytes.length : 0,
+          ms: Math.max(0, this.clock.now() - startedAt),
+        });
+      }
+    } else {
+      const stream = new ChunkStream(
+        getChunks.call(this.storage, ref, [ref.chunkKey], {
+          ...(this.metricsOn
+            ? {
+                onRequest: (request: { readonly bytes: number; readonly ms: number }): void =>
+                  this.metrics.onEvent({
+                    kind: 'storage.get',
+                    namespace: ref.namespace,
+                    segment: ref.segment,
+                    bytes: request.bytes,
+                    ms: request.ms,
+                  }),
+              }
+            : {}),
+        }),
+      );
+      try {
+        const read = await stream.take(ref.chunkKey);
+        bytes = read.bytes;
+        // Cached as a stream's chunk is: a source that re-resolved mid-read answers newer bytes, which must not sit
+        // under the older version's key.
+        const version = this.streamedVersion(gen, read.version);
+        key = version === null ? '' : this.chunkCacheKey(ref, version);
+      } finally {
+        stream.close();
+      }
     }
     if (!bytes) return null;
-    const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
-    this.assertChunkPayloadInRange(bitmap, ref.chunkKey);
+    const bitmap = decodeChunkBytes(this.codec, bytes, ref.chunkKey, this.maxBitmapBytes);
     // A read whose entry an invalidation dropped is not cached: its bytes may be older than what a newer read cached.
-    if (this.openReads.get(cacheKey)?.token === token) this.cache?.set(cacheKey, bitmap);
+    if (key !== '' && this.scope.isOpen(cacheKey, token)) this.cache?.set(key, bitmap);
     return bitmap;
   }
 }

@@ -30,6 +30,8 @@
  */
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
+import { casRetry } from './cas-retry';
+import type { ChurnDeps } from './leases';
 import type { GovernanceMeta, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateUserRef } from './validate';
 
@@ -60,7 +62,7 @@ export interface RetentionPolicy {
   readonly expiresAt: number;
 }
 
-export interface RetentionDeps {
+export interface RetentionDeps extends ChurnDeps {
   readonly registry: IRegistryDriver;
 }
 
@@ -87,12 +89,44 @@ export interface SetRetentionResult {
   readonly indexed: boolean;
 }
 
+/**
+ * The key of the retention sweep's mark on a tombstone it wrote, which is what lets a later sweep purge the row. Only the
+ * sweep's own tombstone write sets it, and every other tombstone write removes it ({@link withoutSweepMark}), so a
+ * restored or hand-edited row cannot hand the sweep a tombstone it did not write.
+ */
+export const SWEEP_MARK = 'retiredBySweepAt';
+
+/** `meta` without the sweep's mark, or `undefined` when it carries none, so a write that changes nothing is not made. */
+export function withoutSweepMark(
+  meta: GovernanceMeta | undefined,
+): GovernanceMeta | undefined | null {
+  if (meta === undefined || meta === null || typeof meta !== 'object' || Array.isArray(meta))
+    return null;
+  if (!Object.prototype.hasOwnProperty.call(meta, SWEEP_MARK)) return null;
+  const rest = Object.fromEntries(Object.entries(meta).filter(([key]) => key !== SWEEP_MARK));
+  return Object.keys(rest).length === 0 ? undefined : (rest as GovernanceMeta);
+}
+
+/** The latest epoch millisecond a `Date` can hold. An expiry past it is no date, and no index bucket holds it. */
+const MAX_DATE_MS = 8_640_000_000_000_000;
+
 /** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
 function validateRetentionPolicy(policy: RetentionPolicy): void {
+  if (policy === null || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new ValidationError(
+      `retention policy must be an object such as { expiresAt }; got ${policy === null ? 'null' : Array.isArray(policy) ? 'an array' : `a ${typeof policy}`}`,
+    );
+  }
   const { expiresAt } = policy;
   if (typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)) {
     throw new ValidationError(
       `retention.expiresAt must be an integer epoch-ms; got ${String(expiresAt)}`,
+    );
+  }
+  if (expiresAt > MAX_DATE_MS) {
+    throw new ValidationError(
+      `retention.expiresAt (${expiresAt}) is past the latest time a date can name (${MAX_DATE_MS}); to keep a segment, ` +
+        'leave it without a policy or call clearRetention',
     );
   }
   if (expiresAt < MIN_EXPIRES_AT_MS) {
@@ -142,15 +176,6 @@ export async function getSegmentRetention(
   return readRetentionPolicy(record.retention);
 }
 
-/**
- * Record when a segment becomes eligible for retirement, creating its registry row if it has none.
- *
- * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
- * row's `retention` metadata are preserved — this owns one key, not the whole object.
- *
- * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
- * a sweep repeatedly "retire" bytes that are already gone.
- */
 /** The expiry currently recorded on a row, if any — the input to deciding which old pointer to remove. */
 function readExpiresAt(record: { retention?: GovernanceMeta } | null): number | undefined {
   const parsed = record === null ? null : readRetentionPolicy(record.retention);
@@ -203,6 +228,15 @@ async function reindex(
   return indexed;
 }
 
+/**
+ * Record when a segment becomes eligible for retirement, creating its registry row if it has none.
+ *
+ * Idempotent and safe to re-run: writing the same instant twice is a no-op in effect. Other keys already in the
+ * row's `retention` metadata are preserved — this owns one key, not the whole object.
+ *
+ * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
+ * a sweep repeatedly "retire" bytes that are already gone.
+ */
 export async function setSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
@@ -211,12 +245,20 @@ export async function setSegmentRetention(
   validateUserRef(ref);
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
-  /** The bucket this segment was already in, if any — its pointer has to be removed when the expiry moves. */
-  let previousExpiresAt: number | undefined;
-  for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
-    const record = await deps.registry.get(ref);
-    try {
-      previousExpiresAt = readExpiresAt(record);
+  // `casRetry` waits out a race lost to a lease write without using an attempt, up to the churn bound.
+  return casRetry(
+    deps,
+    ref,
+    {
+      attempts: RETENTION_CAS_ATTEMPTS,
+      contention: () =>
+        new WriteConflictError(
+          `setRetention: contention writing the retention policy for segment "${ref.segment}"`,
+        ),
+    },
+    async (record) => {
+      /** The bucket this segment was already in, if any — its pointer has to be removed when the expiry moves. */
+      const previousExpiresAt = readExpiresAt(record);
       if (record === null) {
         // A policy ahead of the first load. `currentGen: null` is what makes this safe: the row exists purely so
         // the segment is enumerable, and it claims no Storage generation, so generation resolution takes the same
@@ -242,13 +284,7 @@ export async function setSegmentRetention(
         createdRow: false,
         indexed: await reindex(ref, deps, policy.expiresAt, previousExpiresAt),
       };
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-      // Lost the race (a load's publish, another policy write) — re-read and retry.
-    }
-  }
-  throw new WriteConflictError(
-    `setRetention: contention writing the retention policy for segment "${ref.segment}"`,
+    },
   );
 }
 
@@ -265,14 +301,22 @@ export async function clearSegmentRetention(
   deps: RetentionDeps,
 ): Promise<boolean> {
   validateUserRef(ref);
-  for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
-    const record = await deps.registry.get(ref);
-    if (record === null) return false; // nothing to clear — and creating a row to say so would be litter
-    if (record.status === 'destroyed') return false; // terminal; a tombstone has no expiry to cancel
-    if (record.retention === undefined || !(EXPIRES_AT in record.retention)) return false;
-    const rest = { ...record.retention };
-    delete rest[EXPIRES_AT];
-    try {
+  return casRetry(
+    deps,
+    ref,
+    {
+      attempts: RETENTION_CAS_ATTEMPTS,
+      contention: () =>
+        new WriteConflictError(
+          `clearRetention: contention clearing the retention policy for segment "${ref.segment}"`,
+        ),
+    },
+    async (record) => {
+      if (record === null) return false; // nothing to clear — and creating a row to say so would be litter
+      if (record.status === 'destroyed') return false; // terminal; a tombstone has no expiry to cancel
+      if (record.retention === undefined || !(EXPIRES_AT in record.retention)) return false;
+      const rest = { ...record.retention };
+      delete rest[EXPIRES_AT];
       // `retention: undefined` CLEARS the field (a patch clears by mentioning), which is what an emptied policy
       // object should become — a row carrying `{}` reads as "has retention metadata" to anything inspecting it.
       await deps.registry.compareAndSwap(ref, record.token, {
@@ -280,12 +324,7 @@ export async function clearSegmentRetention(
       });
       await reindex(ref, deps, undefined, readExpiresAt(record));
       return true;
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err;
-    }
-  }
-  throw new WriteConflictError(
-    `clearRetention: contention clearing the retention policy for segment "${ref.segment}"`,
+    },
   );
 }
 

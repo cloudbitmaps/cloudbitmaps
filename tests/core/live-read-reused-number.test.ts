@@ -1,4 +1,8 @@
 import { loadSegment } from '@/core/load';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError } from '@/core/errors';
 import { rollbackSegment } from '@/core/rollback';

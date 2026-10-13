@@ -19,6 +19,7 @@ import { collect, loadedStore } from '../helpers/loaded';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { brandAsBackend } from '@/core/ports';
 import { MemoryStorageDriver } from '@/drivers/memory';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `subjectReport` (Art. 15) and `eraseSubject` (Art. 17) — the store-level admin scans over every registered
@@ -74,7 +75,7 @@ function poisonStorageReadOf(base: IStorageDriver, segment: string): IStorageDri
       key.segment === segment
         ? Promise.reject(new Error('poison storage read'))
         : base.getTail(key, m),
-    delete: (key) => base.delete(key),
+    delete: (key, o) => base.delete(key, o),
     list: (r) => base.list(r),
   };
 }
@@ -143,6 +144,22 @@ describe('subjectReport', () => {
     await expect(
       w.reader().subjectReport(1, { allNamespaces: true, concurrency: 0 }),
     ).rejects.toBeInstanceOf(ValidationError);
+    for (const concurrency of [1.5, 2 ** 53, 1e300]) {
+      await expect(
+        w.reader().subjectReport(1, { allNamespaces: true, concurrency }),
+      ).rejects.toThrow(`concurrency must be an integer of at least 1; got ${concurrency}`);
+    }
+    // …before the registry is read: a scan that had started would have called `list`.
+    let listed = 0;
+    const list = w.registry.list.bind(w.registry);
+    w.registry.list = ((...args: Parameters<typeof list>) => {
+      listed++;
+      return list(...args);
+    }) as typeof w.registry.list;
+    await expect(
+      w.reader().subjectReport(1, { allNamespaces: true, concurrency: 2 ** 53 }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(listed).toBe(0);
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
       // raw objects behind a poisoned read, paired with the real registry that resolves generations
@@ -240,7 +257,7 @@ describe('eraseSubject', () => {
     expect(await members(w.reader(), 'a', 'other')).toEqual([1]); // untouched
   });
 
-  it('skips a destroyed segment — already unreadable, never listed', async () => {
+  it('erases a cleartext object a tombstone left readable, and skips a tombstone with nothing readable', async () => {
     const w = await world();
     await w.seed('dead', [1]);
     await w.seed('live', [1]);
@@ -251,8 +268,15 @@ describe('eraseSubject', () => {
     );
 
     const res = await w.reader().eraseSubject(1, { namespace: NS });
-    expect(res.scannedSegments).toBe(2); // scanned, but…
-    expect(res.erasedFrom.map((e) => e.segment)).toEqual(['live']); // …a tombstone holds nothing to erase
+    expect(res.scannedSegments).toBe(2);
+    // A cleartext destroy leaves its object readable in the bucket, so the id is erased there too.
+    expect(res.erasedFrom.map((e) => [e.segment, e.erased]).sort()).toEqual([
+      ['dead', true],
+      ['live', true],
+    ]);
+    // Searched again, the tombstone has nothing left to erase.
+    const again = await w.reader().eraseSubject(1, { namespace: NS });
+    expect(again.erasedFrom.map((e) => e.segment)).toEqual([]);
   });
 
   it('emits segment.rewrite with fromGeneration/generation for each rewritten segment', async () => {
@@ -264,7 +288,14 @@ describe('eraseSubject', () => {
     await w.reader().eraseSubject(1, { namespace: NS, audit });
 
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rewrite', namespace: NS, segment: 'a', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rewrite',
+        namespace: NS,
+        segment: 'a',
+        incarnation: incarnationOf((await w.registry.get({ namespace: NS, segment: 'a' }))!.token),
+        fromGeneration: 0,
+        generation: 1,
+      },
     ]);
   });
 
@@ -278,9 +309,18 @@ describe('eraseSubject', () => {
   it('rejects a bad concurrency before scanning', async () => {
     const w = await world();
     await w.seed('a', [1]);
-    await expect(
-      w.reader().eraseSubject(1, { allNamespaces: true, concurrency: 0 }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    let listed = 0;
+    const list = w.registry.list.bind(w.registry);
+    w.registry.list = ((...args: Parameters<typeof list>) => {
+      listed++;
+      return list(...args);
+    }) as typeof w.registry.list;
+    for (const concurrency of [0, 1.5, 2 ** 53, 1e300]) {
+      await expect(
+        w.reader().eraseSubject(1, { allNamespaces: true, concurrency }),
+      ).rejects.toThrow(`concurrency must be an integer of at least 1; got ${concurrency}`);
+    }
+    expect(listed).toBe(0);
     expect(await members(w.reader(), 'a')).toEqual([1]);
   });
 

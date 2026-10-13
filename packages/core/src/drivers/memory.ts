@@ -6,7 +6,7 @@
  * Not in `core/` (this is a driver), so it may hold concrete state.
  */
 import { createHash } from 'node:crypto';
-import { BufferSink } from '../core/blob';
+import { BufferSink, checkTailLength } from '../core/blob';
 import type { BlobSink } from '../core/blob';
 import type { Entropy } from '../core/determinism';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
@@ -14,6 +14,8 @@ import { segmentKey } from '../core/keys';
 import { validateSegmentRef } from '../core/validate';
 import type {
   StorageCaps,
+  StorageDeleteOptions,
+  TailRead,
   GenKey,
   IStorageDriver,
   IRegistryDriver,
@@ -21,9 +23,11 @@ import type {
   RegCaps,
   RegistryPatch,
   RegistryRecord,
+  RegistryWriteOptions,
   SegmentRef,
   Token,
 } from '../core/ports';
+import { requireInteger } from '../core/check';
 import {
   applyRegistryPatch,
   drawIncarnation,
@@ -35,7 +39,7 @@ import {
 } from './_shared/registry';
 import { entropyIsAvailable, webCryptoEntropy } from './_shared/entropy';
 
-export interface MemoryRegistryDriverOptions {
+interface MemoryRegistryDriverOptions {
   /** Injected clock for `createdAt`/`updatedAt`; defaults to `Date.now` (drivers may use ambient time). */
   readonly now?: () => number;
   /** Draws every token's random parts; defaults to Web Crypto. Inject one only to make a test replayable. */
@@ -71,13 +75,22 @@ export class MemoryRegistryDriver implements IRegistryDriver {
       : { strongRead: true, canWrite: false, conditionalDelete: true };
   }
 
+  /** Every write reports its token to `onToken` before it is applied. */
+  get reportsWriteTokens(): true {
+    return true;
+  }
+
   async get(ref: SegmentRef): Promise<RegistryRecord | null> {
     validateSegmentRef(ref);
     const row = this.rows.get(segmentKey(ref));
     return row ? structuredClone(row) : null; // clone out: callers can't mutate stored (nested) state
   }
 
-  async create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }> {
+  async create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
     const checked = validateNewRegistryRecord(record);
     const key = segmentKey(ref);
@@ -85,16 +98,22 @@ export class MemoryRegistryDriver implements IRegistryDriver {
       throw new WriteConflictError(`registry row already exists for segment ${ref.segment}`);
     }
     const token = this.nextToken(drawIncarnation(this.entropy));
+    options?.onToken?.(token);
     // clone in: the caller's (nested) retention/residency can't alias stored state (value semantics, parity
     // with the serialize-based persistent drivers).
     this.rows.set(key, structuredClone(recordFromNew(ref, checked, this.now(), token)));
     return { token };
   }
 
+  /**
+   * A caller's `held` row (see `RegistryWriteOptions`) has no read to spare here: the token is compared with the stored row in the same step
+   * as the write, in memory, so a stale one fails exactly as a lost race does.
+   */
   async compareAndSwap(
     ref: SegmentRef,
     expected: Token,
     patch: RegistryPatch,
+    options?: RegistryWriteOptions,
   ): Promise<{ token: Token }> {
     validateSegmentRef(ref);
     const checked = validateRegistryPatch(patch);
@@ -103,12 +122,16 @@ export class MemoryRegistryDriver implements IRegistryDriver {
     if (!existing || existing.token !== expected) {
       throw new WriteConflictError(`OCC token mismatch for registry row ${ref.segment}`);
     }
-    const token = this.nextToken(incarnationOf(existing.token) ?? drawIncarnation(this.entropy));
+    // Every row here was created by this driver, so its token carries an incarnation, which every write keeps.
+    const token = this.nextToken(incarnationOf(existing.token)!);
+    options?.onToken?.(token);
     this.rows.set(key, structuredClone(applyRegistryPatch(existing, checked, this.now(), token)));
     return { token };
   }
 
   async *list(namespace?: string): AsyncIterable<RegistryRecord> {
+    // A namespace that is given is checked as every other name is: `''` names none, and reads as an error, not as empty.
+    if (namespace !== undefined) validateSegmentRef({ segment: 'x', namespace });
     for (const row of this.rows.values()) {
       if (namespace === undefined || row.namespace === namespace) yield structuredClone(row);
     }
@@ -128,12 +151,25 @@ export class MemoryRegistryDriver implements IRegistryDriver {
  * In-memory {@link IStorageDriver} — write-once immutable generation objects as opaque bytes. A "dumb byte
  * mover" (understands neither roaring nor `.crbm`), so it's a faithful storage backend for tests and a zero-setup
  * local storage tier. Mirrors the LocalFs/S3 contract (write-once, range/tail reads).
+ *
+ * Every object stored gets a version from a counter the driver never reuses, so two objects stored one after the other
+ * under one key never share one, whatever their bytes. A delete given `ifVersion` compares it with the stored object's
+ * and removes it in the same step, with no await between them: `conditionalDelete` is `true`.
  */
 export class MemoryStorageDriver implements IStorageDriver {
-  private readonly objects = new Map<string, Uint8Array>();
+  private readonly objects = new Map<
+    string,
+    { readonly body: Uint8Array; readonly version: string }
+  >();
+  private stored = 0;
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: true };
+    return {
+      rangeRead: true,
+      maxObjectBytes: Number.MAX_SAFE_INTEGER,
+      conditionalPut: true,
+      conditionalDelete: true,
+    };
   }
 
   async putImmutable(
@@ -149,15 +185,15 @@ export class MemoryStorageDriver implements IStorageDriver {
         `generation already exists (write-once): ${key.segment}.${key.generation}`,
       );
     }
-    this.objects.set(k, body);
+    this.stored += 1;
+    this.objects.set(k, { body, version: String(this.stored) });
     return { size: body.length, sha256: createHash('sha256').update(body).digest('hex') };
   }
 
   async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
-    if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
-      throw new ValidationError(`invalid range offset=${offset} length=${length}`);
-    }
-    const body = this.require(key);
+    requireInteger(offset, { min: 0, what: 'range offset' });
+    requireInteger(length, { min: 0, what: 'range length' });
+    const { body } = this.require(key);
     if (offset + length > body.length) {
       throw new ValidationError(
         `range [${offset}, ${offset + length}) out of bounds for ${body.length}B`,
@@ -166,14 +202,24 @@ export class MemoryStorageDriver implements IStorageDriver {
     return body.slice(offset, offset + length);
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const body = this.require(key);
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    checkTailLength(maxBytes);
+    const { body, version } = this.require(key);
     const take = Math.min(Math.max(maxBytes, 0), body.length);
-    return { bytes: body.slice(body.length - take), size: body.length };
+    return { bytes: body.slice(body.length - take), size: body.length, version };
   }
 
-  async delete(key: GenKey): Promise<void> {
-    this.objects.delete(genObjectKey(key)); // idempotent
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    const k = genObjectKey(key);
+    const ifVersion = options?.ifVersion;
+    const stored = this.objects.get(k);
+    // The check and the removal in one step: nothing can store another object under the key between them.
+    if (ifVersion !== undefined && stored !== undefined && stored.version !== ifVersion) {
+      throw new WriteConflictError(
+        `generation ${key.segment}.${key.generation} is another object than the version given; not deleted`,
+      );
+    }
+    this.objects.delete(k); // idempotent
   }
 
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
@@ -190,20 +236,18 @@ export class MemoryStorageDriver implements IStorageDriver {
     }
   }
 
-  private require(key: GenKey): Uint8Array {
-    const body = this.objects.get(genObjectKey(key));
-    if (body === undefined) {
+  private require(key: GenKey): { readonly body: Uint8Array; readonly version: string } {
+    const stored = this.objects.get(genObjectKey(key));
+    if (stored === undefined) {
       throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
     }
-    return body;
+    return stored;
   }
 }
 
 /** Collision-proof object key for a generation: `<segmentKey> <generation>` (the name parts are encoded, so a space cannot appear inside one). */
 function genObjectKey(key: GenKey): string {
   validateSegmentRef(key);
-  if (!Number.isInteger(key.generation) || key.generation < 0) {
-    throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
-  }
+  requireInteger(key.generation, { min: 0, what: 'generation' });
   return `${segmentKey(key)} ${key.generation}`;
 }

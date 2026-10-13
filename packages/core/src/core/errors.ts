@@ -22,19 +22,30 @@
 const ERROR_BRAND: unique symbol = Symbol.for('cloudbitmaps.error');
 const TRANSIENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.error.transient');
 
+/**
+ * Each class's name as written. A minifying bundler renames the classes themselves, so the name an error carries, which
+ * the predicates match on and a log prints, comes from here: strings no minifier touches. A class not listed (an
+ * application's own subclass) keeps the name its class has.
+ */
+const NAMES = new WeakMap<abstract new (...args: never[]) => unknown, string>();
+
 /** Base class for every error CloudRoaring throws. */
 export class CloudRoaringError extends Error {
   /** Cross-bundle brand — see the predicates ({@link isCloudRoaringError}, …). Non-enumerable-ish (symbol key ⇒ not in JSON). */
   readonly [ERROR_BRAND] = true as const;
   constructor(message: string) {
     super(message);
-    // Subclass name (works under transpilation since we set it explicitly). Also the discriminator the
-    // predicates match on — a runtime string, so it survives bundling where the class identity does not.
-    this.name = new.target.name;
+    // Also the discriminator the predicates match on: a runtime string, so it survives a second copy of the package
+    // where the class identity does not, and a minifier where the class's own name does not.
+    this.name = NAMES.get(new.target) ?? new.target.name;
   }
 }
 
-/** Invalid caller input (bad id, segment name, options). Raised before any storage call. */
+/**
+ * Invalid input, which the same call fails on again. Most is refused before any storage call (a bad id, segment name
+ * or option); some is found by the call itself: a read past the end of an object, or a bucket or container a cloud
+ * driver finds does not exist.
+ */
 export class ValidationError extends CloudRoaringError {}
 
 /** An OCC conditional write/delete lost the race — the row changed since it was read. */
@@ -49,6 +60,50 @@ export class IntegrityError extends CloudRoaringError {}
  * A registry `get` of a row that is not there returns `null` instead.
  */
 export class NotFoundError extends CloudRoaringError {}
+
+/**
+ * A read of a leased pin came after its lease ended, by `until` or by `release()`. Thrown at every read site of the
+ * handle, including a leased handle used as an operand or an exclude of a combine, and never answered empty: a
+ * handle that read empty here would be an opt-out list that suppresses nobody. Carries the instant the lease ended
+ * and why; never an id or a key.
+ */
+export class LeaseExpiredError extends CloudRoaringError {
+  /** Epoch-ms the lease was taken until. */
+  readonly until: number;
+  /** `'expired'` when the clock reached `until`, `'released'` after `release()`. */
+  readonly reason: 'expired' | 'released';
+  constructor(message: string, until: number, reason: 'expired' | 'released') {
+    super(message);
+    this.until = until;
+    this.reason = reason;
+  }
+}
+
+/**
+ * A segment already has as many live leases as one row records, so another cannot be taken. Nothing was written.
+ * Release one, wait for one to end, or share one lease across the tasks of a job.
+ */
+export class LeaseLimitError extends CloudRoaringError {}
+
+/**
+ * An operand a call relied on changed while the call ran, so what the call built from it is not published. Carries the
+ * operand's name in the call and why it is stale (`'moved'`: it was pinned at a generation and its pointer has since
+ * moved; `'erased'`: an erasure ran in the store after a call with a feed began, so what the feed gave it may hold an
+ * erased id), under the stable `code`
+ * `'stale-operand'`. Deterministic: run the call again against the current operand.
+ */
+export class StaleOperandError extends CloudRoaringError {
+  readonly code = 'stale-operand' as const;
+  /** The operand's name in the call that found it stale. */
+  readonly operand: string;
+  /** Why it is stale. */
+  readonly reason: 'moved' | 'erased';
+  constructor(message: string, operand: string, reason: 'moved' | 'erased') {
+    super(message);
+    this.operand = operand;
+    this.reason = reason;
+  }
+}
 
 /**
  * This build/configuration cannot perform the requested operation, though nothing is malformed. Two uses:
@@ -108,6 +163,21 @@ export class TransientError extends CloudRoaringError {
   }
 }
 
+// The names, registered once the classes exist. A class added above and left out here is named by the minifier.
+NAMES.set(CloudRoaringError, 'CloudRoaringError');
+NAMES.set(ValidationError, 'ValidationError');
+NAMES.set(WriteConflictError, 'WriteConflictError');
+NAMES.set(IntegrityError, 'IntegrityError');
+NAMES.set(NotFoundError, 'NotFoundError');
+NAMES.set(LeaseExpiredError, 'LeaseExpiredError');
+NAMES.set(LeaseLimitError, 'LeaseLimitError');
+NAMES.set(StaleOperandError, 'StaleOperandError');
+NAMES.set(UnsupportedError, 'UnsupportedError');
+NAMES.set(CapabilityError, 'CapabilityError');
+NAMES.set(BudgetExceededError, 'BudgetExceededError');
+NAMES.set(KeyUnavailableError, 'KeyUnavailableError');
+NAMES.set(TransientError, 'TransientError');
+
 /**
  * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver
  * package boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
@@ -134,6 +204,21 @@ export function isTransientError(err: unknown): err is TransientError {
   return hasBrand(err, TRANSIENT_BRAND);
 }
 
+/** A read came after its pin's lease ended. */
+export function isLeaseExpiredError(err: unknown): err is LeaseExpiredError {
+  return isCloudRoaringError(err) && err.name === 'LeaseExpiredError';
+}
+
+/** An operand a call relied on changed while it ran. */
+export function isStaleOperandError(err: unknown): err is StaleOperandError {
+  return isCloudRoaringError(err) && err.name === 'StaleOperandError';
+}
+
+/** A segment has no room for another live lease. */
+export function isLeaseLimitError(err: unknown): err is LeaseLimitError {
+  return isCloudRoaringError(err) && err.name === 'LeaseLimitError';
+}
+
 /** A requested object/row does not exist. */
 export function isNotFoundError(err: unknown): err is NotFoundError {
   return isCloudRoaringError(err) && err.name === 'NotFoundError';
@@ -144,7 +229,29 @@ export function isIntegrityError(err: unknown): err is IntegrityError {
   return isCloudRoaringError(err) && err.name === 'IntegrityError';
 }
 
-/** Invalid caller input. */
+/**
+ * Invalid caller input; also the error a cloud driver raises for a bucket or container it finds does not exist.
+ */
 export function isValidationError(err: unknown): err is ValidationError {
   return isCloudRoaringError(err) && err.name === 'ValidationError';
+}
+
+/** This build or this store's wiring cannot do what was asked, though nothing is malformed. */
+export function isUnsupportedError(err: unknown): err is UnsupportedError {
+  return isCloudRoaringError(err) && err.name === 'UnsupportedError';
+}
+
+/** A driver lacks a capability the store's wiring needs. */
+export function isCapabilityError(err: unknown): err is CapabilityError {
+  return isCloudRoaringError(err) && err.name === 'CapabilityError';
+}
+
+/** A call would pass its per-op request budget, so it was refused before fanning out. */
+export function isBudgetExceededError(err: unknown): err is BudgetExceededError {
+  return isCloudRoaringError(err) && err.name === 'BudgetExceededError';
+}
+
+/** No key the keystore holds can unwrap an encrypted segment's data key. */
+export function isKeyUnavailableError(err: unknown): err is KeyUnavailableError {
+  return isCloudRoaringError(err) && err.name === 'KeyUnavailableError';
 }

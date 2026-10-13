@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as core from '@cloudbitmaps/core';
+import * as tools from '@cloudbitmaps/tools';
 
 /**
  * `pnpm bench:sizing:check` is the gate that holds the sizing guide, the cost guide, the explainer, the
@@ -33,9 +33,9 @@ function deepFreeze<T>(value: T): T {
  * the next case. A case that serves another estimator through `mods` does not go through this, and every page and
  * figure a case edits is still compared with the estimator's own answer.
  */
-const priced = new Map<string, ReturnType<typeof core.estimateCost>>();
-const cachedCore: typeof core = {
-  ...core,
+const priced = new Map<string, ReturnType<typeof tools.estimateCost>>();
+const cachedTools: typeof tools = {
+  ...tools,
   estimateCost: (input) => {
     // A non-finite number would otherwise print as `null`, the same key as an input that has a `null` there.
     const key = JSON.stringify(input, (_k, v: unknown) =>
@@ -43,7 +43,7 @@ const cachedCore: typeof core = {
     );
     let report = priced.get(key);
     if (report === undefined) {
-      report = deepFreeze(core.estimateCost(input));
+      report = deepFreeze(tools.estimateCost(input));
       priced.set(key, report);
     }
     return report;
@@ -56,6 +56,31 @@ class Exit extends Error {
   constructor(readonly code: number) {
     super(`exit ${code}`);
   }
+}
+
+/**
+ * Assert that reading `build(100_000)` takes time that grows with its size, not faster. The page is read at an eighth of
+ * the size and at the full size, in this process, so a slow or busy machine slows both alike: a scan that is linear in
+ * the page takes eight times as long on eight times the text, one that rescans for each match takes sixty-four, and the
+ * margin of three keeps a linear one from failing. A reading is the best of three, and a floor keeps a scan too quick
+ * to time from failing at all.
+ */
+function expectLinearTime(build: (size: number) => Record<string, string>): void {
+  const best = (size: number): number => {
+    const pages = build(size);
+    let least = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const started = performance.now();
+      sizingCheck(pages);
+      least = Math.min(least, performance.now() - started);
+    }
+    return least;
+  };
+  const small = best(12_500);
+  const big = best(100_000);
+  expect(big, `${small.toFixed(1)} ms at 12,500, ${big.toFixed(1)} ms at 100,000`).toBeLessThan(
+    3 * 8 * Math.max(small, 20),
+  );
 }
 
 /**
@@ -113,7 +138,7 @@ function sizingCheck(
   const modules: Record<string, unknown> = {
     'node:fs': fs,
     'node:child_process': childProcess,
-    '@cloudbitmaps/core': cachedCore,
+    '@cloudbitmaps/tools': cachedTools,
     ...mods,
   };
   const lines: string[] = [];
@@ -170,8 +195,11 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a generated figure edited by hand', () => {
-    expect(sizing).toContain('**$280**');
-    refused({ [SIZING]: sizing.replace('**$280**', '**$281**') }, /not what the shipped estimator/);
+    expect(sizing).toContain('**$71.66**');
+    refused(
+      { [SIZING]: sizing.replace('**$71.66**', '**$72.66**') },
+      /not what the shipped estimator/,
+    );
   });
 
   it('fails a hand-edited figure in the README, and a hand-edited or missing chart', () => {
@@ -459,10 +487,10 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['[^', '[^'],
         ['[^a', '[^a'],
         ['](', ']('],
-      ])('reads 100 KB of %s well inside 2 s', (_what, unit) => {
-        const started = performance.now();
-        sizingCheck({ [WHY]: intoWhy(` ${unit.repeat(Math.ceil(100_000 / unit.length))}`) });
-        expect(performance.now() - started).toBeLessThan(2000);
+      ])('reads 100 KB of %s in time that grows with its size', (_what, unit) => {
+        expectLinearTime((size) => ({
+          [WHY]: intoWhy(` ${unit.repeat(Math.ceil(size / unit.length))}`),
+        }));
       });
 
       it.each([
@@ -547,12 +575,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         expect(sizingCheck({ [README]: edited }).out).not.toMatch(/shows nothing/);
       });
 
-      it('reads 100 KB of digits, or of an unclosed tag, in the rest of the README well inside 2 s', () => {
-        for (const text of ['1'.repeat(100_000), '<h2 '.repeat(25_000)]) {
-          const started = performance.now();
-          sizingCheck({ [README]: intoRest(text) });
-          expect(performance.now() - started).toBeLessThan(2000);
-        }
+      it('reads 100 KB of digits, or of an unclosed tag, in the rest of the README in time that grows with its size', () => {
+        expectLinearTime((size) => ({ [README]: intoRest('1'.repeat(size)) }));
+        expectLinearTime((size) => ({ [README]: intoRest('<h2 '.repeat(size / 4)) }));
       });
 
       it('passes "times out" after a number word in the rest of the README, where number words are words', () => {
@@ -1283,7 +1308,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         const first = best({ [README]: into(readme) });
         const later = best({ [README]: into(last) });
         expect(Math.max(first, later)).toBeLessThan(5 * Math.max(Math.min(first, later), 20));
-      });
+        // Six checks of a 100 KB page take about 1.5 s alone and more than the default 5 s under a full parallel
+        // suite; the ratio above is the assertion, so the time allowed to reach it is generous.
+      }, 60_000);
     });
 
     it.each([['## '], ['## #'], ['## ##'], ['## <!-- -->'], ['## <b></b>'], ['## \u200B']])(
@@ -1558,18 +1585,18 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         'the hot dashboard no longer losing',
         (t: string) =>
           t.replace(
-            'const HOT = { sizeBytes: 5e9, perSec: 100 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 200 };',
             'const HOT = { sizeBytes: 5e9, perSec: 1 };',
           ),
         /hot dashboard no longer loses/,
       ],
       [
-        // Two a second loses to Redis, but by less than the multiple the pages claim: only the 2× itself refuses it.
+        // Seventy a second loses to Redis, but by less than the multiple the pages claim: only the 2× itself refuses it.
         'the hot dashboard losing by less than a multiple',
         (t: string) =>
           t.replace(
-            'const HOT = { sizeBytes: 5e9, perSec: 100 };',
-            'const HOT = { sizeBytes: 5e9, perSec: 2 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 200 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 70 };',
           ),
         /hot dashboard no longer loses to Redis by a multiple/,
       ],
@@ -1579,13 +1606,13 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         /large deployment's segments are larger than 2,000 chunks can take/,
       ],
       [
-        // Four a second is past the medium deployment's whole-bill break-even of 3.9, and still under the 4.2 the
+        // 138 a second is past the medium deployment's whole-bill break-even of 132, and still under the 143 the
         // chart's line gives cold intersects alone: only the room the pages claim is gone.
         'a deployment with no room left',
         (t: string) =>
           t.replace(
             'intersectsPerMonth: 2_628_000, // one a second',
-            'intersectsPerMonth: 10_512_000, // one a second',
+            'intersectsPerMonth: 362_664_000, // one a second',
           ),
         /medium deployment's bill already meets its Redis/,
       ],
@@ -1601,9 +1628,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       // With intersects half price whenever a cache is in play, the medium deployment's whole-bill break-even moves
       // past the chart's line, where the room it is given still holds: only the line's own premise refuses it.
       const halved = {
-        ...core,
-        estimateCost: (input: Parameters<typeof core.estimateCost>[0]) => {
-          const r = core.estimateCost(input);
+        ...tools,
+        estimateCost: (input: Parameters<typeof tools.estimateCost>[0]) => {
+          const r = tools.estimateCost(input);
           if (!input.workload?.cacheHitRate) return r;
           const cut = r.monthlyUSD.byOp.intersects / 2;
           return {
@@ -1619,11 +1646,11 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       const r = sizingCheck(
         {},
         {
-          mods: { '@cloudbitmaps/core': halved },
+          mods: { '@cloudbitmaps/tools': halved },
           source: (t) =>
             t.replace(
               'intersectsPerMonth: 2_628_000, // one a second',
-              'intersectsPerMonth: 11_826_000, // one a second',
+              'intersectsPerMonth: 394_200_000, // one a second',
             ),
         },
       );
@@ -1633,14 +1660,14 @@ describe('bench:sizing:check fails what it exists to catch', () => {
 
     it('fails bills that cross back inside the chart, where the pages say they cross once', () => {
       const cheapPast10TB = {
-        ...core,
-        estimateCost: (input: Parameters<typeof core.estimateCost>[0]) => {
-          const r = core.estimateCost(input);
+        ...tools,
+        estimateCost: (input: Parameters<typeof tools.estimateCost>[0]) => {
+          const r = tools.estimateCost(input);
           const size = input.segments.reduce((a, g) => a + (g.sizeBytes ?? 0) * (g.count ?? 1), 0);
           return size > 1e13 ? { ...r, redisBaseline: { ...r.redisBaseline, monthlyUSD: 1 } } : r;
         },
       };
-      const r = sizingCheck({}, { mods: { '@cloudbitmaps/core': cheapPast10TB } });
+      const r = sizingCheck({}, { mods: { '@cloudbitmaps/tools': cheapPast10TB } });
       expect(r.code, r.out).not.toBe(0);
       expect(r.out).toMatch(/cross more than once/);
     });

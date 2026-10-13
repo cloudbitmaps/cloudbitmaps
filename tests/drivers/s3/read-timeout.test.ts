@@ -11,6 +11,7 @@ import { CloudRoaring } from '@/index';
 import { S3Storage } from '@/s3/backend';
 import { S3RegistryDriver } from '@/s3/registry';
 import { S3StorageDriver } from '@/s3/storage';
+import { timedRead } from '@/s3/read-timeout';
 import { IntegrityError, TransientError, ValidationError } from '@/core/errors';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import type { GenKey } from '@/core/ports';
@@ -365,8 +366,9 @@ async function settle<T>(promise: Promise<T>): Promise<Outcome<T>> {
 }
 
 /**
- * Assert a read ended in a `TransientError` that names its request and says it timed out, near `timeoutMs`: not before
- * it, and within a second after it, which a loaded machine meets and a timer set at a multiple of the value does not.
+ * Assert a read ended in a `TransientError` that names its request and says it timed out, and not before `timeoutMs`.
+ * How close to `timeoutMs` it ends is held by the fake-clock tests of `timedRead` below, to the millisecond: a wall-clock
+ * ceiling here would be decided by how busy the machine is, and a read that never ends is the `HUNG` guard in `settle`.
  */
 function expectTimedOut<T>(
   outcome: Outcome<T>,
@@ -381,17 +383,79 @@ function expectTimedOut<T>(
   // A little early is the timer's clock, not the read: Node starts a timer from the event loop's cached time, which
   // a busy loop leaves a few ms behind.
   expect(ms).toBeGreaterThanOrEqual(timeoutMs - 25);
-  expect(ms).toBeLessThan(timeoutMs + 1_000);
 }
 
 /** Wait (bounded) until every stalled response's connection has closed: a timed-out read let go of its socket. */
 async function expectReleased(stub: StubS3): Promise<void> {
-  const deadline = performance.now() + 2_000;
-  while (stub.stalled.size > 0 && performance.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  expect(stub.stalled.size).toBe(0);
+  await vi.waitFor(() => expect(stub.stalled.size).toBe(0), { timeout: 10_000, interval: 25 });
 }
+
+describe('S3: timedRead on a fake clock', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('ends a read that is still running at the timeout, to the millisecond, and aborts its request', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const outcome = timedRead('GetObject', TIMEOUT, (options) => {
+      signal = options?.abortSignal;
+      return new Promise<never>(() => {});
+    }).then(
+      () => 'settled',
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 1);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(TransientError);
+    expect((error as Error).message).toBe(`S3 GetObject timed out after ${TIMEOUT} ms`);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('keeps the timeout error when the abort makes the read itself reject', async () => {
+    vi.useFakeTimers();
+    const outcome = timedRead(
+      'HeadObject',
+      TIMEOUT,
+      (options) =>
+        new Promise<never>((_, reject) => {
+          options?.abortSignal.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    ).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect((await outcome) as Error).toMatchObject({
+      message: `S3 HeadObject timed out after ${TIMEOUT} ms`,
+    });
+  });
+
+  it('gives each read its own timer: a second read starts a full timeout after a first that took most of one', async () => {
+    vi.useFakeTimers();
+    const after = (ms: number, value: string): Promise<string> =>
+      new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    const first = timedRead('HeadObject', TIMEOUT, () => after(150, 'head'));
+    await vi.advanceTimersByTimeAsync(150);
+    expect(await first).toBe('head');
+    let signal: AbortSignal | undefined;
+    const second = timedRead('GetObject', TIMEOUT, (options) => {
+      signal = options?.abortSignal;
+      return after(150, 'body');
+    });
+    // 300 ms in all, past one timeout.
+    await vi.advanceTimersByTimeAsync(150);
+    expect(await second).toBe('body');
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it('leaves no timer behind once the read settles, and sets none when the timeout is off', async () => {
+    vi.useFakeTimers();
+    expect(await timedRead('GetObject', TIMEOUT, () => Promise.resolve('done'))).toBe('done');
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await timedRead('GetObject', 0, () => Promise.resolve('untimed'))).toBe('untimed');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   let stub: StubS3;
@@ -409,13 +473,16 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('a GET whose headers never come is a TransientError at the timeout, sent once', async () => {
+    // One fast read first, so the SDK is warm and the only thing that can end the next one is the stall.
+    expect(await settle(backend.storage.getRange(GEN, 0, 8))).toHaveProperty('value');
+    const before = stub.count('GetObject');
     stub.arm('GetObject', { kind: 'no-headers' });
 
     expectTimedOut(await settle(backend.storage.getRange(GEN, 0, 8)));
     await expectReleased(stub);
     // The SDK does not send an aborted request again: the retry is the store's to make.
     await new Promise((resolve) => setTimeout(resolve, 2 * TIMEOUT));
-    expect(stub.count('GetObject')).toBe(1);
+    expect(stub.count('GetObject') - before).toBe(1);
   });
 
   it('a GET that sends its headers and then stalls mid-body is a TransientError, and lets go of the socket', async () => {
@@ -440,27 +507,41 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   });
 
   it('the HEAD a tail read falls back to, for a backend that ignores Range, is timed too', async () => {
-    stub.ignoreRange = true;
-    stub.arm('HeadObject', { kind: 'no-headers' });
+    // A store of its own, with room for the GET before the HEAD to answer on a loaded machine: a GET cut off first
+    // would name GetObject, and say nothing of the HEAD.
+    const timeoutMs = 2_000;
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: timeoutMs });
+    try {
+      stub.ignoreRange = true;
+      stub.arm('HeadObject', { kind: 'no-headers' });
 
-    expectTimedOut(await settle(backend.storage.getTail(GEN, BYTES.length)), TIMEOUT, 'HeadObject');
-    expect(stub.count('GetObject')).toBe(1);
-    expect(stub.count('HeadObject')).toBe(1);
+      expectTimedOut(
+        await settle(timed.storage.getTail(GEN, BYTES.length)),
+        timeoutMs,
+        'HeadObject',
+      );
+      expect(stub.count('GetObject')).toBe(1);
+      expect(stub.count('HeadObject')).toBe(1);
+    } finally {
+      timed.client.destroy();
+    }
   });
 
   it('that HEAD gets a timeout of its own, not what the GET before it left', async () => {
-    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 600 });
+    // Each request is well inside the timeout (0.9 s of headroom) and the two together are past it. That a timed read
+    // gets a timer of its own per call is held on a fake clock above; this holds that a tail read makes two.
+    const timed = new S3Storage({ ...stub.options(), readTimeoutMs: 2_000 });
     try {
       stub.ignoreRange = true;
-      stub.arm('GetObject', { kind: 'delay', ms: 400 });
-      stub.arm('HeadObject', { kind: 'delay', ms: 400 });
+      stub.arm('GetObject', { kind: 'delay', ms: 1_100 });
+      stub.arm('HeadObject', { kind: 'delay', ms: 1_100 });
       const started = Date.now();
 
       const tail = await settle(timed.storage.getTail(GEN, BYTES.length));
 
       expect(tail).toMatchObject({ value: { size: BYTES.length } });
       // The two together outlast one timeout, so one clock across both would have cut the HEAD off.
-      expect(Date.now() - started).toBeGreaterThan(600);
+      expect(Date.now() - started).toBeGreaterThan(2_000);
       expect(stub.count('HeadObject')).toBe(1);
     } finally {
       timed.client.destroy();
@@ -490,11 +571,15 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
   it('readTimeoutMs: 0 turns it off: a read slower than any timeout here completes', async () => {
     const untimed = new S3Storage({ ...stub.options(), readTimeoutMs: 0 });
     try {
+      // Both held at once, so the test waits for one slow read and not for two in turn.
       stub.arm('GetObject', { kind: 'delay', ms: 3 * TIMEOUT });
-      const range = await settle(untimed.storage.getRange(GEN, 0, 4));
-      expect(range).toMatchObject({ value: new Uint8Array([0, 1, 2, 3]) });
       stub.arm('HeadObject', { kind: 'delay', ms: 3 * TIMEOUT });
-      expect(await settle(untimed.storage.getTail(GEN, 0))).toMatchObject({ value: { size: 64 } });
+      const [range, head] = await Promise.all([
+        settle(untimed.storage.getRange(GEN, 0, 4)),
+        settle(untimed.storage.getTail(GEN, 0)),
+      ]);
+      expect(range).toMatchObject({ value: new Uint8Array([0, 1, 2, 3]) });
+      expect(head).toMatchObject({ value: { size: 64 } });
     } finally {
       untimed.client.destroy();
     }
@@ -521,7 +606,7 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
           () => 'settled',
           () => 'settled',
         ),
-        new Promise((resolve) => setTimeout(() => resolve('still pending'), 5 * TIMEOUT)),
+        new Promise((resolve) => setTimeout(() => resolve('still pending'), 3 * TIMEOUT)),
       ]);
       expect(after).toBe('still pending');
     } finally {
@@ -547,11 +632,11 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
     }
   });
 
-  it('fires near its configured value: a 1,000 ms timeout ends a stalled read well before 3,000 ms', async () => {
-    const second = new S3Storage({ ...stub.options(), readTimeoutMs: 1_000 });
+  it('fires at its configured value, not a built-in one: a 400 ms timeout ends a stalled read at 400 ms', async () => {
+    const second = new S3Storage({ ...stub.options(), readTimeoutMs: 400 });
     try {
       stub.arm('GetObject', { kind: 'no-headers' });
-      expectTimedOut(await settle(second.storage.getRange(GEN, 0, 4)), 1_000);
+      expectTimedOut(await settle(second.storage.getRange(GEN, 0, 4)), 400);
     } finally {
       second.client.destroy();
     }
@@ -617,6 +702,8 @@ describe('S3: a read is cut off at readTimeoutMs', LIMIT, () => {
 describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
   let stub: StubS3;
   let backend: S3Storage;
+  /** How long each request is held: past the timeout, by more than a timer's lateness on a busy machine matters to. */
+  const HELD = TIMEOUT + 150;
 
   beforeEach(async () => {
     stub = new StubS3();
@@ -635,18 +722,18 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
     });
 
   it('a single PutObject slower than the read timeout succeeds', async () => {
-    stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('PutObject', { kind: 'delay', ms: HELD });
 
     const outcome = await settle(put(new Uint8Array([1, 2, 3])));
     expect(outcome).toMatchObject({ value: { size: 3 } });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThan(TIMEOUT);
     expect(stub.count('PutObject')).toBe(1);
     expect(stub.cut).toEqual([]);
   });
 
   it('a multipart upload whose every request is slower than the read timeout succeeds', async () => {
     for (const op of ['CreateMultipartUpload', 'UploadPart', 'CompleteMultipartUpload'] as const) {
-      stub.arm(op, { kind: 'delay', ms: 3 * TIMEOUT }, { times: 2 });
+      stub.arm(op, { kind: 'delay', ms: HELD }, { times: 2 });
     }
 
     const outcome = await settle(put(new Uint8Array(FIVE_MIB), new Uint8Array(1)));
@@ -658,7 +745,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
   });
 
   it("a failed upload's AbortMultipartUpload, slower than the read timeout, is sent in full", async () => {
-    stub.arm('AbortMultipartUpload', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('AbortMultipartUpload', { kind: 'delay', ms: HELD });
     const failed = new Error('the writer failed after one part');
 
     const outcome = await settle(
@@ -668,25 +755,25 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
       }),
     );
     expect(outcome).toMatchObject({ error: failed });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThan(TIMEOUT);
     expect(stub.answered).toContain('AbortMultipartUpload');
     expect(stub.cut).toEqual([]);
   });
 
   it('a DeleteObject slower than the read timeout succeeds', async () => {
     stub.objects.set(OBJECT_KEY, { body: BYTES, etag: '"seed"' });
-    stub.arm('DeleteObject', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('DeleteObject', { kind: 'delay', ms: HELD });
 
     const outcome = await settle(backend.storage.delete(GEN));
     expect(outcome).toHaveProperty('value');
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(3 * TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThan(TIMEOUT);
     expect(stub.objects.has(OBJECT_KEY)).toBe(false);
     expect(stub.cut).toEqual([]);
   });
 
   it("the storage's listing, slower than the read timeout, succeeds", async () => {
     stub.objects.set(OBJECT_KEY, { body: BYTES, etag: '"seed"' });
-    stub.arm('ListObjectsV2', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('ListObjectsV2', { kind: 'delay', ms: HELD });
 
     const listed = async (): Promise<number[]> => {
       const out: number[] = [];
@@ -698,7 +785,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
   });
 
   it("the registry's create, slower than the read timeout, succeeds", async () => {
-    stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('PutObject', { kind: 'delay', ms: HELD });
 
     const outcome = await settle(backend.registry.create({ segment: 's' }, { currentGen: 0 }));
     expect(outcome).toMatchObject({ value: { token: expect.stringMatching(CREATED_TOKEN) } });
@@ -707,14 +794,14 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
 
   it("the registry's compare-and-swap and delete, slower than the read timeout, succeed", async () => {
     const { token } = await backend.registry.create({ segment: 's' }, { currentGen: 0 });
-    stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('PutObject', { kind: 'delay', ms: HELD });
     const swapped = await settle(
       backend.registry.compareAndSwap({ segment: 's' }, token, { currentGen: 1 }),
     );
     expect(swapped).toMatchObject({ value: { token: expect.stringMatching(tokenAfter(token)) } });
     expect(await backend.registry.get({ segment: 's' })).toMatchObject({ currentGen: 1 });
 
-    stub.arm('PutObject', { kind: 'delay', ms: 3 * TIMEOUT }); // the tombstone
+    stub.arm('PutObject', { kind: 'delay', ms: HELD }); // the tombstone
     expect(await settle(backend.registry.delete({ segment: 's' }))).toHaveProperty('value');
     expect(await backend.registry.get({ segment: 's' })).toBeNull();
     expect(stub.cut).toEqual([]);
@@ -722,7 +809,7 @@ describe('S3: writes, deletes and listings are not timed', LIMIT, () => {
 
   it("the registry's listing, slower than the read timeout, succeeds", async () => {
     await backend.registry.create({ segment: 's' }, { currentGen: 0 });
-    stub.arm('ListObjectsV2', { kind: 'delay', ms: 3 * TIMEOUT });
+    stub.arm('ListObjectsV2', { kind: 'delay', ms: HELD });
 
     const listed = async (): Promise<string[]> => {
       const out: string[] = [];
@@ -815,6 +902,12 @@ describe("S3: the registry's read is timed too", LIMIT, () => {
   });
 });
 
+/**
+ * The stalled read waits out this timeout, and the store's retry then runs under the same one, so it has to be long
+ * enough that a loaded machine answers a fast request inside it: a retry cut off here would hide what the test is for.
+ */
+const STORE_TIMEOUT = 1_000;
+
 describe("S3: through the store, a stalled read is the store's retry to repeat", LIMIT, () => {
   let stub: StubS3;
   let backend: S3Storage;
@@ -822,7 +915,7 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
   beforeEach(async () => {
     stub = new StubS3();
     await stub.start();
-    backend = new S3Storage({ ...stub.options(), readTimeoutMs: TIMEOUT });
+    backend = new S3Storage({ ...stub.options(), readTimeoutMs: STORE_TIMEOUT });
     await new CloudRoaring({ storage: backend }).load({ segment: 's' }, [1, 2, 70_000]);
   });
   afterEach(async () => {
@@ -831,13 +924,16 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
   });
 
   it('one stalled chunk read, then a fast one: the read succeeds', async () => {
+    // One fast read first, on a store of its own, so the SDK has its connection and credentials before the stall.
+    const warm = await settle(new CloudRoaring({ storage: backend }).segment('s').has(70_000));
+    expect(warm).toMatchObject({ value: true });
     const store = new CloudRoaring({ storage: backend });
     const before = stub.count('GetObject', '.crbm');
     stub.arm('GetObject', { kind: 'no-headers' }, { keyIncludes: '.crbm' });
 
     const outcome = await settle(store.segment('s').has(70_000));
     expect(outcome).toMatchObject({ value: true });
-    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
+    expect((outcome as { ms: number }).ms).toBeGreaterThanOrEqual(STORE_TIMEOUT - 25);
     // The stalled request, then the store's retry of it, then whatever else the read needed.
     expect(stub.count('GetObject', '.crbm') - before).toBeGreaterThanOrEqual(2);
     await expectReleased(stub);
@@ -847,7 +943,7 @@ describe("S3: through the store, a stalled read is the store's retry to repeat",
     const store = new CloudRoaring({ storage: backend, retry: false });
     stub.arm('GetObject', { kind: 'no-headers' }, { keyIncludes: '.crbm' });
 
-    expectTimedOut(await settle(store.segment('s').has(70_000)));
+    expectTimedOut(await settle(store.segment('s').has(70_000)), STORE_TIMEOUT);
   });
 });
 

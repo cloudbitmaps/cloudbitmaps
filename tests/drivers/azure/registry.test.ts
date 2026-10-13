@@ -184,6 +184,10 @@ const driverOver = (container: FakeContainer, prefix = 'cloudbitmaps'): AzureBlo
 // The Azure registry must pass the SAME contract as memory / LocalFs / S3 / GCS, in the fast lane.
 registryConformance('AzureBlobRegistryDriver (fake Azure)', () => driverOver(new FakeContainer()));
 
+it('AzureBlobRegistryDriver declares that it reports write tokens', () => {
+  expect(driverOver(new FakeContainer()).reportsWriteTokens).toBe(true);
+});
+
 // …and the cross-process fence, which the sequential suite short-circuits before ever reaching.
 registryConcurrency('AzureBlobRegistryDriver (fake Azure)', () => {
   const container = new FakeContainer();
@@ -445,5 +449,49 @@ describe('AzureBlobRegistryDriver — construction + Azure specifics', () => {
     // Without a version there is nothing to compare-and-swap against; the driver must refuse, not proceed.
     await expect(d.get(ref)).rejects.toBeInstanceOf(IntegrityError);
     expect(body.produced).toBe(0);
+  });
+});
+
+describe('AzureBlobRegistryDriver: a delete into a missing container', () => {
+  it('is a ValidationError that keeps the service error, not a lost race', async () => {
+    const container = new FakeContainer();
+    const d = driverOver(container);
+    const refX = { segment: 's' };
+    const { token } = await d.create(refX, { currentGen: 0 });
+    const fault = azureError(404, 'ContainerNotFound');
+    container.deleteFault = fault;
+    const err = (await d.delete(refX, token).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.cause).toBe(fault);
+  });
+});
+
+describe('AzureBlobRegistryDriver: the length checks hold at their edges', () => {
+  it('refuses a negative advertised length, before reading its body', async () => {
+    const container = new FakeContainer();
+    const d = driverOver(container);
+    await d.create({ segment: 's' }, { currentGen: 0 });
+    const body = new Body(0, 0);
+    container.answer = (blob) => ({
+      etag: blob.etag,
+      contentLength: -1,
+      readableStreamBody: body,
+      _response: { status: 200 },
+    });
+    await expect(d.get({ segment: 's' })).rejects.toThrow(/no usable length/);
+    expect(body.produced).toBe(0);
+  });
+
+  it('refuses a body one byte longer than the length it advertised, naming that length', async () => {
+    const container = new FakeContainer();
+    const d = driverOver(container);
+    await d.create({ segment: 's' }, { currentGen: 0 });
+    container.answer = (blob) => ({
+      etag: blob.etag,
+      contentLength: 10,
+      readableStreamBody: new Body(11, 1),
+      _response: { status: 200 },
+    });
+    await expect(d.get({ segment: 's' })).rejects.toThrow(/sent more than 10B/);
   });
 });

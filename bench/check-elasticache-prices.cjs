@@ -12,7 +12,7 @@
 'use strict';
 
 const fs = require('node:fs');
-const { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: CATALOGUE } = require('@cloudbitmaps/core');
+const { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: CATALOGUE } = require('@cloudbitmaps/tools');
 const { citedVersion, disagreements } = require('./lib/elasticache-prices.cjs');
 
 const file = process.argv[2];

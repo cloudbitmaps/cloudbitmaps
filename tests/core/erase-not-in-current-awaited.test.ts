@@ -25,13 +25,13 @@ describe('an erasure that sweeps the other generations translates a NotFoundErro
       getTail: (k, m) => w.storage.getTail(k, m),
       putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       list: (ref) => w.storage.list(ref),
-      delete: async (k) => {
+      delete: async (k, o) => {
         if (!fired) {
           fired = true;
           await w.load(SEG, [6, 7, 8]); // another writer publishes generation 2 mid-sweep
           throw new NotFoundError('object already gone');
         }
-        return w.storage.delete(k);
+        return w.storage.delete(k, o);
       },
     };
 

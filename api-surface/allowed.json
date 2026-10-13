@@ -1,0 +1,466 @@
+[
+  {
+    "entry": "@cloudbitmaps/core/driver-kit ObjectRegistryStore.resolveCapabilities",
+    "reason": "removed with the tombstone reaper, its only caller: the sweep and delete settle conditionalDelete through their first read or listing, so a store that implemented it can drop it; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core CombineManyHeld*",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core HeldChunks*",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core prepareHeld",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core CombineManyOperand.held",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MemoryOperand*",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.memory",
+    "reason": "removed with held operands (store.memory): a held operand did what a feed does with the whole set resident, so a set the caller holds goes into materializeMany as a feed, by the guide's recipe; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
+    "reason": "narrowed from Record<string, Segment | MemoryOperand> to Record<string, Segment> with the removal of held operands; a call that passed segments only is unchanged; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ReapLegacyTombstones*",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ReapRegistryTombstones*",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core reapRegistryTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core IRegistryDriver.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IRegistryDriver.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit ObjectStoreRegistry.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IRegistryDriver.reapLegacyTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ReapRegistryTombstones*",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.reapRegistryTombstones",
+    "reason": "removed with the tombstone reaper: only a bucket written by a release before 0.12 holds the rows it removed, and the guide's recipe runs the reaper the 0.18 releases ship, once; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.expiresAt",
+    "reason": "removed with expiresAt on a handle: a deadline is recorded with setRetention and acted on by retireExpired, or checked where the set is read, by the guide's recipe; an expiresAt option on store.segment throws ValidationError; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentOptions.expiresAt",
+    "reason": "removed with expiresAt on a handle: a deadline is recorded with setRetention and acted on by retireExpired, or checked where the set is read, by the guide's recipe; an expiresAt option on store.segment throws ValidationError; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.materializeMany",
+    "reason": "overloaded for dryRun: the first signature is now the dry-run form (dryRun: true returns a MaterializeManyDryRun), and the plain form follows it as the last signature, so a call without dryRun (or with dryRun: false) resolves to the same parameter type and the same Promise<MaterializeManyRun> as before, and ReturnType and Parameters, which read the last signature, are unchanged; no caller's code or types change; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core LoadRefusal",
+    "reason": "widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; it is returned only to a load or an *Into that sets that bound, so an existing call's reasons are unchanged, while a caller that switches exhaustively on reason adds a case (MaterializeRefusal, derived from it, widens with it); agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring LoadRefusal",
+    "reason": "widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; it is returned only to a load or an *Into that sets that bound, so an existing call's reasons are unchanged, while a caller that switches exhaustively on reason adds a case (MaterializeRefusal, derived from it, widens with it); agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "the segment.load-refused event's reason widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; emitted only for a load or an *Into that sets that bound, so an existing sink receives what it did, while a sink that switches exhaustively on reason adds a case; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "the segment.load-refused event's reason widened by one member, 'max-growth', the refusal of the new guard.maxGrowth bound; emitted only for a load or an *Into that sets that bound, so an existing sink receives what it did, while a sink that switches exhaustively on reason adds a case; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MaterializeManyOptions.operands",
+    "reason": "widened to accept a held MemoryOperand beside a Segment before any release carried materializeMany, so no published code reads the narrower type; options built with segments compile and behave as before, and code that reads a member of operands back as a Segment narrows it first; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core MetricOpName",
+    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape and a sink with a default branch needs no change, while a sink that switches exhaustively on name adds a case, and a Record<MetricOpName, ...> built by hand (a MetricsSnapshot literal) adds the key, as the type's doc says; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring MetricOpName",
+    "reason": "widened by one member, 'materializeMany', so a batch reports its latency as the *Into calls do; the events a sink receives keep their shape and a sink with a default branch needs no change, while a sink that switches exhaustively on name adds a case, and a Record<MetricOpName, ...> built by hand (a MetricsSnapshot literal) adds the key, as the type's doc says; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core (referenced) GuardRefusal",
+    "reason": "now exported from @cloudbitmaps/core under its own name, with the same declaration: judgeLoad's wouldRefuse type, which a caller could read but not name; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.materializeMany #2",
+    "reason": "a form for dryRun held in a variable (boolean, optional or not) goes between the dry-run form and the publishing form, which moves unchanged to #3; a literal true, a literal false and a call without dryRun keep their types, dryRun typed any is typed as either result, and the utility types still read the publishing form; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core AWS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core ELASTICACHE_REDIS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core ONE_REDIS_HA_CLUSTER",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core CostReport*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core EstimateInput*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core PricingProfile*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core RedisNodeType*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core RedisSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core Workload*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AWS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ELASTICACHE_REDIS_US_EAST_1_ONDEMAND",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ONE_REDIS_HA_CLUSTER",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CostReport*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring EstimateInput*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PricingProfile*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RedisNodeType*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RedisSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentSizing*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Workload*",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core estimateCost",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core groundedReport",
+    "reason": "moved to @cloudbitmaps/tools (owner's decision): the cost model left core and roaring, removed there, pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.estimateCost",
+    "reason": "removed (owner's decision): estimateCost from @cloudbitmaps/tools replaces the static, and groundedReport from there with stat().size replaces costReport; pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.costReport",
+    "reason": "removed (owner's decision): estimateCost from @cloudbitmaps/tools replaces the static, and groundedReport from there with stat().size replaces costReport; pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core StorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core CrbmStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core PinnedStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core RetryingStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.supportsStorageSize",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.segmentSize",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring StorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CrbmStorageChunkSource.pointerRefreshMs",
+    "reason": "removed with the cost report, its only reader, when the cost model moved to @cloudbitmaps/tools (owner's decision); pre-1.0, no compatibility kept"
+  },
+  {
+    "entry": "@cloudbitmaps/core SegmentEngine.stat",
+    "reason": "stat() reports the generation's byte size (owner's decision): the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring SegmentStat.sizeBytes",
+    "reason": "stat() reports the generation's byte size (owner's decision), named sizeBytes as the port, estimateCost's segments and the reader name it, since size means a count in Roaring and JavaScript: the answer gains `sizeBytes: number | null`; SegmentStat is what stat() returns, not a type a caller implements"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "every segment event gains an optional incarnation (the registry row's incarnation id), and the union gains segment.collect, emitted by an erasure that deletes the generations holding an id and rewrites none; an exhaustive switch on kind needs a case for it; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "every segment event gains an optional incarnation (the registry row's incarnation id), and the union gains segment.collect, emitted by an erasure that deletes the generations holding an id and rewrites none; an exhaustive switch on kind needs a case for it; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ExportManifest.skipped",
+    "reason": "a required list on every manifest, like failed: the destroyed segments the export skipped, so segments, failed and skipped together account for every segment row the registry listed; code that builds its own ExportManifest (a test double) adds skipped: []; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ExportManifest.skipped",
+    "reason": "a required list on every manifest, like failed: the destroyed segments the export skipped, so segments, failed and skipped together account for every segment row the registry listed; code that builds its own ExportManifest (a test double) adds skipped: []; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core RegistryRecord.pointerId",
+    "reason": "registry schema 4: every row carries pointerId, the token of the last write that named currentGen, status, wrappedDeks, keyId or summary, which a reader keys its caches on so a lease or a policy write keeps them warm; a registry of your own sets it (renewsPointer in driver-kit gives the rule) and the conformance suite holds it to it; RegistryRecord is what a registry returns, so only a registry implementation changes; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ClearRegistrySummary.fingerprint",
+    "reason": "registry schema 4: a clear summary records the fingerprint (size and footer checksum) of the object it describes, so stat() answers its size from the row and every open holds the object to the row; every shipped summary writer writes it and the shipped registries refuse a summary without it; only a registry implementation or a test double builds one; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryRecord.pointerId",
+    "reason": "registry schema 4: every row carries pointerId, the token of the last write that named currentGen, status, wrappedDeks, keyId or summary, which a reader keys its caches on so a lease or a policy write keeps them warm; a registry of your own sets it (renewsPointer in driver-kit gives the rule) and the conformance suite holds it to it; RegistryRecord is what a registry returns, so only a registry implementation changes; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ClearRegistrySummary.fingerprint",
+    "reason": "registry schema 4: a clear summary records the fingerprint (size and footer checksum) of the object it describes, so stat() answers its size from the row and every open holds the object to the row; every shipped summary writer writes it and the shipped registries refuse a summary without it; only a registry implementation or a test double builds one; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "the segment.collect event's fromGeneration becomes optional: an erasure that deletes only objects no read of the segment can open (sealed under a key the row does not hold, or encrypted under a cleartext row) found the id in none, so the event it now emits for that deletion names no generation; every other segment.collect carries it as before, and a sink that reads it as a number checks for undefined; segment.collect is unreleased (added after 0.19.1); agreed with the maintainer (owner's decision)"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "the segment.collect event's fromGeneration becomes optional: an erasure that deletes only objects no read of the segment can open (sealed under a key the row does not hold, or encrypted under a cleartext row) found the id in none, so the event it now emits for that deletion names no generation; every other segment.collect carries it as before, and a sink that reads it as a number checks for undefined; segment.collect is unreleased (added after 0.19.1); agreed with the maintainer (owner's decision)"
+  },
+  {
+    "entry": "@cloudbitmaps/core IStorageDriver.delete",
+    "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core IStorageDriver.getTail",
+    "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IStorageDriver.delete",
+    "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit IStorageDriver.getTail",
+    "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IStorageDriver.delete",
+    "reason": "an optional second parameter, { ifVersion }: a driver that reports StorageCaps.conditionalDelete deletes only the object that version names and throws WriteConflictError for another, and any other driver ignores it, so a driver with delete(key) still implements the port and a caller that passes nothing sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IStorageDriver.getTail",
+    "reason": "the return type is named TailRead and gains an optional version, the object's version as the backend names it, which a conditional delete is conditioned on; bytes and size are unchanged, so a driver returning { bytes, size } still implements the port and a caller that reads them sees no change; agreed with the maintainer as the storage conditional delete"
+  },
+  {
+    "entry": "@cloudbitmaps/core EngineDeps.sharesInvalidationsWith",
+    "reason": "the owner agreed: an optional, opt-in member, so every existing construction compiles and returns what it did before; engines over one chunk cache built with it share one invalidation scope, so an invalidation reaches pinned engines, and engines built without it share nothing"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdStream",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/roaring Segment.everyNth",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdIterator.return",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/roaring IdIterator.throw",
+    "reason": "Widened so `next`, `return` and `throw` (which every stream has at runtime, leased or not) are typed; additive, approved by the maintainer."
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit refuseUnknownOptions",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit isTransportFault",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit requirePositiveInt",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit requireBool",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit toTransient",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit storageObjectKey",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit parseGenerationFromKey",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit segmentObjectPrefix",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core/driver-kit concatBytes",
+    "reason": "Shared driver helper exported from driver-kit, approved by the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core PinnedAt.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core PinnedObject.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedAt.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring PinnedObject.fingerprint",
+    "reason": "a pin's fingerprint is required: every pin the library makes carries one, and a pin without one read an object nothing checked; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core NewRegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core RegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core RegistryPatch",
+    "reason": "a patch names knownGens in place of keptGens: the same field the registry schema 5 ledger replaces; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ClearRegistrySummary.tailBytes",
+    "reason": "a clear summary records tailBytes, the bytes of the object's end one open reads, and is required: every summary a library writer makes carries one, and a registry schema 5 row without it is refused; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring NewRegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryRecord.keptGens",
+    "reason": "registry schema 5 replaces the list of kept generation numbers with knownGens, the ledger of the generations a row knows with each object's footer checksum: a row stamped 4 or lower is refused, and a registry of your own stores knownGens in its place; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring RegistryPatch",
+    "reason": "a patch names knownGens in place of keptGens: the same field the registry schema 5 ledger replaces; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ClearRegistrySummary.tailBytes",
+    "reason": "a clear summary records tailBytes, the bytes of the object's end one open reads, and is required: every summary a library writer makes carries one, and a registry schema 5 row without it is refused; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ConsistencyIssue.issue",
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the issue union gains 'known-generation-mismatch'; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ConsistencyIssue.issue",
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the issue union gains 'known-generation-mismatch'; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.checkConsistency",
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the options gain generations; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core runConsistencyCheck",
+    "reason": "an operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object, and the options gain generations; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core AuditEvent",
+    "reason": "the segment.rollback event gains an optional unknown: true, present when the segment's row did not vouch for the target (allowUnknown was passed, the row has no usable knownGens, or the target is older than a full one reaches); an exhaustive switch on kind is unaffected; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core GenerationEntry.known",
+    "reason": "every entry store.generations returns says whether the row's knownGens names the generation, which is whether a rollback onto it needs allowUnknown; it is a required member, so code that builds its own GenerationEntry (a test double) adds known; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring AuditEvent",
+    "reason": "the segment.rollback event gains an optional unknown: true, present when the segment's row did not vouch for the target (allowUnknown was passed, the row has no usable knownGens, or the target is older than a full one reaches); an exhaustive switch on kind is unaffected; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring GenerationEntry.known",
+    "reason": "every entry store.generations returns says whether the row's knownGens names the generation, which is whether a rollback onto it needs allowUnknown; it is a required member, so code that builds its own GenerationEntry (a test double) adds known; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core rollbackSegment",
+    "reason": "the allowForward option is replaced by allowUnknown, with no alias: a rollback moves only onto a generation the row's knownGens names, with the footer checksum it records, and allowUnknown is the one audited override; a call that passed allowForward now passes allowUnknown only for a target the row does not know, and none for a generation an earlier rollback left; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.rollback",
+    "reason": "the allowForward option is replaced by allowUnknown, with no alias: a rollback moves only onto a generation the row's knownGens names, with the footer checksum it records, and allowUnknown is the one audited override; a call that passed allowForward now passes allowUnknown only for a target the row does not know, and none for a generation an earlier rollback left; agreed with the maintainer"
+  }
+]

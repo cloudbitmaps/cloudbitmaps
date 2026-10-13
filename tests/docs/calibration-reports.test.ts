@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@/index';
+import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@cloudbitmaps/tools';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/format';
 
 /**
@@ -35,6 +35,10 @@ import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/fo
  *   TABLES    the bill, the request ledger and the table of cost by overlap match the derivation row by row,
  *             labels and billing classes included, so the right numbers on the wrong rows fail too.
  *
+ * The expected rows (what a `store.load()` bills by kind, the pointer refresh, the Redis line) belong to the model that
+ * stood when a report was written. The latest report is held to the live model; each earlier one to the model recorded
+ * for it in `RECORDED_MODELS`, so a change to the engine edits no dated record.
+ *
  * And the evidence itself must be a complete, self-consistent real run before anything is derived from it: the
  * derivation refuses a file whose parts do not reconcile, and a refusal fails here rather than quietly deriving
  * figures from a run that did not happen the way its file says. It must also be the harness's own output, touched
@@ -55,6 +59,15 @@ interface Row {
   label: string;
   says: RegExp;
 }
+interface SteadyRow {
+  kind: string;
+  says: RegExp;
+  loads: string;
+  requests: string;
+  one: string;
+  perMillion: string;
+  medianMs: string;
+}
 interface Figures {
   runId: string;
   remote: boolean;
@@ -66,25 +79,35 @@ interface Figures {
   kRows: Array<{ k: number; gets: number; usd: number }>;
   anchors: Array<[string, string]>;
   rows: Row[];
+  steadyRows: SteadyRow[];
+  steadyLoad: { loads: number } | null;
   values: Values;
   pageValues: Values;
 }
-const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
-  readSources: (root: string) => {
-    pricing: {
-      name: string;
-      getPerMillion: number;
-      putPerMillion: number;
-      storagePerGiBMonth: number;
-      redisMonthlyUSD: number;
-    };
-    secondsPerMonth: number;
-    tailBytes: number;
-    footerBytes: number;
-    preambleBytes: number;
-    genTtlMs: number;
-    intersectConcurrency: number;
+interface Model {
+  pricing: {
+    name: string;
+    getPerMillion: number;
+    putPerMillion: number;
+    storagePerGiBMonth: number;
+    redisMonthlyUSD: number;
   };
+  secondsPerMonth: number;
+  tailBytes: number;
+  footerBytes: number;
+  preambleBytes: number;
+  genTtlMs: number;
+  intersectConcurrency: number;
+  combineWindowStart: number;
+  /** What a `store.load()` bills by kind, which a report states as expected: the engine's table, or an earlier one. */
+  storeLoadRequests?: Record<
+    'first' | 'reload' | 'collecting' | 'listing',
+    { put: number; get: number }
+  >;
+}
+const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
+  readSources: (root: string) => Model;
+  STORE_LOAD_REQUESTS: NonNullable<Model['storeLoadRequests']>;
   evidenceFiles: (root: string) => string[];
   derive: (run: unknown, sources: unknown) => Figures;
   unaccounted: (text: string, values: Values) => string[];
@@ -111,6 +134,56 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 const SOURCES = figures.readSources(ROOT);
 const EVIDENCE = figures.evidenceFiles(ROOT);
 const { int, usd } = figures.format;
+
+/**
+ * The model each report was written against. A report is a dated record: its expected rows (what a `store.load()`
+ * bills, the pointer refresh, the Redis line) are the figures of the model that stood when it was written, so they are
+ * checked against that model as recorded here, not against today's engine, and an engine change does not edit a past
+ * report. Only the latest report follows the live model, which {@link figures.readSources} and the engine's own table
+ * give; every other report names its model below, and a new run makes the one before it name its own.
+ *
+ * To pin the report that stops being the latest, record the model it was written against, as the failure says. Every
+ * field is kept, though only some are printed in a report's text: `derive` reads each as an input (the pointer refresh
+ * reads the generation TTL and the month, the rounds model the window), so a figure it derives follows the record.
+ */
+const REGISTRY_WRITE_ON_HELD_ROW_MODEL: Model = {
+  pricing: {
+    name: 'aws-us-east-1-ondemand',
+    getPerMillion: 0.4,
+    putPerMillion: 5,
+    storagePerGiBMonth: 0.023,
+    redisMonthlyUSD: 346,
+  },
+  secondsPerMonth: 2_628_000,
+  tailBytes: 262_144,
+  footerBytes: 104,
+  preambleBytes: 8,
+  genTtlMs: 2_000,
+  intersectConcurrency: 32,
+  combineWindowStart: 8,
+  storeLoadRequests: {
+    first: { put: 2, get: 3 },
+    reload: { put: 2, get: 2 },
+    collecting: { put: 2, get: 4 },
+    listing: { put: 3, get: 5 },
+  },
+};
+const RECORDED_MODELS: Readonly<Record<string, Model>> = {
+  '2026-09-23-94416': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-03-e13c7': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-04-73668': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-04-f3599': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+  '2026-10-05-50b5d': REGISTRY_WRITE_ON_HELD_ROW_MODEL,
+};
+const LATEST = EVIDENCE.at(-1);
+/** The model a run is read against: the live one for the latest, the recorded one for every run before it. */
+const modelOf = (runId: string): Model => {
+  const recorded = RECORDED_MODELS[runId];
+  if (recorded !== undefined) return recorded;
+  return { ...SOURCES, storeLoadRequests: figures.STORE_LOAD_REQUESTS };
+};
+const deriveAs = (run: object): Figures =>
+  figures.derive(run, modelOf((run as { runId?: string }).runId ?? ''));
 const git = (...args: string[]): string =>
   execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 
@@ -160,7 +233,7 @@ function evidenceRemovals(cwd: string = ROOT): string[] {
  * The anchors a benchmarks-page section must state. A run that timed `store.load()` has the loads' own prices to
  * state; one that timed the write and publish has those, and the first `store.load()` the tests count.
  */
-function requiredAnchors(loadVia: string | null): string[] {
+function requiredAnchors(loadVia: string | null, steady = false): string[] {
   return [
     'run id',
     'exact cold intersects',
@@ -177,8 +250,56 @@ function requiredAnchors(loadVia: string | null): string[] {
           "per million of a segment's first store.load()",
         ]
       : ['per million single-part store.load() calls', 'per million multipart store.load() calls']),
+    ...(steady
+      ? [
+          'per million steady reloads',
+          'per million steady loads that delete by name',
+          'per million steady loads that list',
+          'per million steady loads on average',
+        ]
+      : []),
     'the run',
   ];
+}
+
+/**
+ * Holds the table of a run's steady loads, found by its header, to the figures: one row to a kind of load, each
+ * with the loads, requests, price and price per million its kind has, so a price under another kind's name fails.
+ */
+function checkSteadyTable(text: string, want: SteadyRow[]): string[] {
+  const rows = tableAfter(
+    text,
+    /^\|\s*kind of load\s*\|\s*loads\s*\|\s*requests\s*\|\s*(?:each|one)\s*\|\s*per million\s*\|/i,
+  );
+  if (rows.length === 0) return ['no table of steady loads'];
+  const problems: string[] = [];
+  const seen: string[] = [];
+  for (const row of rows) {
+    const [name = '', loads, requests, one, perMillion, medianMs] = row.map((c) =>
+      c.replace(/\*\*/g, ''),
+    );
+    const w = want.find((r) => r.says.test(name));
+    if (w === undefined) {
+      problems.push(`the "${name}" row is no kind of steady load the run made`);
+      continue;
+    }
+    seen.push(w.kind);
+    const got = { loads, requests, one, perMillion, medianMs };
+    const need = {
+      loads: w.loads,
+      requests: w.requests,
+      one: w.one,
+      perMillion: w.perMillion,
+      medianMs: w.medianMs,
+    };
+    if (JSON.stringify(got) !== JSON.stringify(need)) {
+      problems.push(`the "${name}" row says ${JSON.stringify(got)}, not ${JSON.stringify(need)}`);
+    }
+  }
+  const missing = want.map((w) => w.kind).filter((k) => !seen.includes(k));
+  if (missing.length > 0) problems.push(`no row for ${missing.join(', ')}`);
+  if (new Set(seen).size !== seen.length) problems.push('a kind of load has two rows');
+  return problems;
 }
 
 /** The rows of the markdown table whose header line matches `header`, as trimmed cells. */
@@ -299,6 +420,27 @@ describe('calibration reports are held to their evidence', () => {
     expect(SOURCES.preambleBytes).toBe(PREAMBLE_BYTES);
     expect(SOURCES.genTtlMs).toBeGreaterThan(0);
     expect(SOURCES.intersectConcurrency).toBeGreaterThan(0);
+  });
+
+  // Only the latest report follows the live model. Every run before it is read against the model recorded for it, so a
+  // change to the engine's figures edits no past report; and a run left without a record would silently follow the live
+  // model, so the record is required, and none is kept for the latest or for a run with no evidence.
+  it('reads each run but the latest against the model recorded for it, and the latest against the live one', () => {
+    const ids = EVIDENCE.map((f) => basename(f, '.json'));
+    const latest = LATEST === undefined ? undefined : basename(LATEST, '.json');
+    const live = JSON.stringify(
+      { ...SOURCES, storeLoadRequests: figures.STORE_LOAD_REQUESTS },
+      null,
+      2,
+    );
+    const unpinned = ids.filter((id) => id !== latest && RECORDED_MODELS[id] === undefined);
+    expect(
+      unpinned,
+      `these reports stop being the latest and follow no model: record in RECORDED_MODELS in this file the model each was written against. That is the live model below, unless this change also changed the engine or the pricing, in which case it is the live model as the merge base has it.\n${live}`,
+    ).toEqual([]);
+    expect(Object.keys(RECORDED_MODELS).filter((id) => !ids.includes(id) || id === latest)).toEqual(
+      [],
+    );
   });
 
   it('finds the committed runs, and every report has its evidence', () => {
@@ -454,7 +596,7 @@ describe('calibration reports are held to their evidence', () => {
   describe('the stage figures of the in-region run', () => {
     const evidence = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
     const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
-    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const f = run === undefined ? undefined : deriveAs(run);
     const check = (sentence: string): string[] =>
       f === undefined ? ['no evidence'] : figures.unaccounted(sentence, f.values);
 
@@ -481,6 +623,31 @@ describe('calibration reports are held to their evidence', () => {
       ]) {
         expect(check(wrong), wrong).not.toEqual([]);
       }
+    });
+  });
+
+  // A run that read each operand's shared chunks as one range fetched all of them in one request: its chunk figures
+  // count the chunks, and its table of cost counts the range reads, so a page can say "100 of 1,999 chunks" and cannot
+  // say that one chunk was fetched.
+  describe('a run that coalesced its reads', () => {
+    const evidence = EVIDENCE.find((e) => e.includes('2026-10-04-f3599'));
+    const run = evidence === undefined ? undefined : JSON.parse(read(evidence));
+    const f = run === undefined ? undefined : deriveAs(run);
+
+    it('fetched every shared chunk in the range reads it made', () => {
+      expect(f).toBeDefined();
+      if (f === undefined) return;
+      expect(f.anchors).toContainEqual(['chunks fetched', '100 of 1,999 chunks']);
+      expect(f.anchors).toContainEqual(['chunks skipped', '1,899 chunks']);
+      expect(
+        figures.unaccounted('It fetched 100 of 1,999 chunks, 5.0% of them.', f.values),
+      ).toEqual([]);
+      expect(figures.unaccounted('It fetched 1 of 1,999 chunks.', f.values)).not.toEqual([]);
+      expect(figures.unaccounted('It fetched 101 of 1,999 chunks.', f.values)).not.toEqual([]);
+    });
+
+    it('lists each range-read count once in its table of cost', () => {
+      expect(f?.kRows.map((r) => r.k)).toEqual([1, 10, 1000, 1999]);
     });
   });
 
@@ -573,13 +740,70 @@ describe('calibration reports are held to their evidence', () => {
   });
 
   // Which anchors a section must state follows from what the run timed.
+  describe('a run without the steady stage', () => {
+    it("is not allowed a listing load's request count, which only a run that listed made", () => {
+      const rel = EVIDENCE.find((e) => e.includes('2026-10-05-50b5d'));
+      if (rel === undefined) throw new Error('no evidence for 2026-10-05-50b5d');
+      const f = deriveAs(JSON.parse(read(rel)));
+      const report = read(join(DIR, '2026-10-05-50b5d.md'));
+      expect(figures.unaccounted(report, f.values)).toEqual([]);
+      expect(
+        figures.unaccounted(`${report}\nS3 made 3 PUT-class requests per run segment.`, f.values),
+      ).toHaveLength(1);
+    });
+  });
+
+  describe('the table of steady loads', () => {
+    const want: SteadyRow[] = [
+      {
+        kind: 'first',
+        says: /^first/i,
+        loads: '1',
+        requests: '2 PUT + 3 GET',
+        one: '$0.0000112',
+        perMillion: '$11.20',
+        medianMs: '81.73 ms',
+      },
+      {
+        kind: 'byName',
+        says: /^by name/i,
+        loads: '4',
+        requests: '2 PUT + 4 GET + 1 delete',
+        one: '$0.0000116',
+        perMillion: '$11.60',
+        medianMs: '176.94 ms',
+      },
+    ];
+    const table = (first: string, byName: string, byNameMs = '176.94 ms'): string =>
+      [
+        '| kind of load | loads | requests | each | per million | median time |',
+        '|---|---|---|---|---|---|',
+        `| first | 1 | 2 PUT + 3 GET | $0.0000112 | ${first} | 81.73 ms |`,
+        `| by name | 4 | 2 PUT + 4 GET + 1 delete | $0.0000116 | ${byName} | ${byNameMs} |`,
+      ].join('\n');
+
+    it('accepts the rows of the run', () => {
+      expect(checkSteadyTable(table('**$11.20**', '$11.60'), want)).toEqual([]);
+    });
+
+    it("refuses another kind's median time under a row", () => {
+      expect(checkSteadyTable(table('$11.20', '$11.60', '220.58 ms'), want)).toHaveLength(1);
+      expect(checkSteadyTable(table('$11.20', '$11.60', '81.73 ms'), want)).toHaveLength(1);
+    });
+
+    it("refuses a price under another kind's name, and a table that is not there", () => {
+      expect(checkSteadyTable(table('$11.20', '$11.20'), want)).toHaveLength(1);
+      expect(checkSteadyTable('no table here', want)).toEqual(['no table of steady loads']);
+    });
+  });
+
   describe('the anchors a benchmarks section must state', () => {
     const names = (via: string | null): string[] =>
       requiredAnchors(via).filter((n) => /single-part|multipart|first store\.load/.test(n));
     const anchorsOf = (path: string): string[] => {
       const ev = EVIDENCE.find((e) => e.includes(path));
       if (ev === undefined) throw new Error(`no evidence for ${path}`);
-      return figures.derive(JSON.parse(read(ev)), SOURCES).anchors.map(([n]) => n);
+      return deriveAs(JSON.parse(read(ev))).anchors.map(([n]) => n);
     };
 
     it('are, for a run that timed store.load(), its own load prices, and all of them exist', () => {
@@ -601,7 +825,7 @@ describe('calibration reports are held to their evidence', () => {
     it('fail a section that leaves out a load anchor', () => {
       const ev = EVIDENCE.find((e) => e.includes('2026-10-03-e13c7'));
       if (ev === undefined) throw new Error('no evidence');
-      const f = figures.derive(JSON.parse(read(ev)), SOURCES);
+      const f = deriveAs(JSON.parse(read(ev)));
       const section = 'run 2026-10-03-e13c7 $11.60 per million single-part';
       const missing = f.anchors
         .filter(([n]) => requiredAnchors(f.loadVia).includes(n))
@@ -724,7 +948,7 @@ describe('calibration reports are held to their evidence', () => {
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(evidence).toBeDefined();
       if (evidence === undefined) return;
-      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const f = deriveAs(JSON.parse(read(evidence)));
       const plant = (sentence: string): string[] =>
         figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
       expect(plant('')).toEqual([]);
@@ -758,7 +982,7 @@ describe('calibration reports are held to their evidence', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       if (evidence === undefined) throw new Error('no evidence for 2026-09-23-94416');
-      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const f = deriveAs(JSON.parse(read(evidence)));
       const plant = (sentence: string): string[] =>
         figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
       expect(
@@ -780,7 +1004,7 @@ describe('calibration reports are held to their evidence', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       if (evidence === undefined) throw new Error('no evidence for 2026-09-23-94416');
-      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const f = deriveAs(JSON.parse(read(evidence)));
       const plant = (sentence: string): string[] =>
         figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
       for (const [wrong, right] of [
@@ -916,8 +1140,8 @@ describe('calibration reports are held to their evidence', () => {
         (later.phases.load.singlePart.medianObjectBytes ?? 1);
       later.workload.largeIdsPerSegment = 1_536 * 8_192;
       later.startedAt = '2026-09-23T03:00:00.000Z';
-      const before = figures.derive(run, SOURCES);
-      const after = figures.derive(later, SOURCES);
+      const before = deriveAs(run);
+      const after = deriveAs(later);
       expect(after.anchors).toEqual(before.anchors);
       expect(after.rows).toEqual(before.rows);
     });
@@ -932,12 +1156,10 @@ describe('calibration reports are held to their evidence', () => {
       expect(file).toBeDefined();
       if (file === undefined) return;
       const run = JSON.parse(read(file)) as { phases: { load: Record<string, unknown> } };
-      expect(() => figures.derive(run, SOURCES)).not.toThrow();
+      expect(() => deriveAs(run)).not.toThrow();
       const later = structuredClone(run);
       later.phases.load.via = 'store.load()';
-      expect(() => figures.derive(later, SOURCES)).toThrow(
-        /records no requests for its load stage/,
-      );
+      expect(() => deriveAs(later)).toThrow(/records no requests for its load stage/);
     });
   });
 
@@ -960,7 +1182,7 @@ describe('calibration reports are held to their evidence', () => {
       let f: Figures | undefined;
       let refused: unknown;
       try {
-        f = figures.derive(run, SOURCES);
+        f = deriveAs(run);
       } catch (err) {
         refused = err;
       }
@@ -1067,10 +1289,20 @@ describe('calibration reports are held to their evidence', () => {
         expect([...seen].sort()).toEqual(expected);
       });
 
+      it("its table of steady loads holds each kind's loads, requests and price", () => {
+        expect(f).toBeDefined();
+        if (f === undefined || f.steadyLoad === null) return;
+        expect(checkSteadyTable(report, f.steadyRows)).toEqual([]);
+      });
+
       it('its table of cost by overlap follows from the request shape the run measured', () => {
         expect(f).toBeDefined();
         if (f === undefined) return;
-        const rows = tableAfter(report, /^\|\s*chunks the two share\s*\|\s*GETs\s*\|/);
+        // A run that read each operand's shared chunks as ranges counts its table by the range reads an operand makes.
+        const rows = tableAfter(
+          report,
+          /^\|\s*(?:chunks the two share|range reads an operand makes)\s*\|\s*GETs\s*\|/,
+        );
         expect(rows.map((r) => leadingNumber(r[0] ?? ''))).toEqual(f.kRows.map((r) => r.k));
         for (const [row, want] of rows.map((r, i) => [r, f?.kRows[i]] as const)) {
           if (want === undefined) continue;
@@ -1095,14 +1327,14 @@ describe('calibration reports are held to their evidence', () => {
   describe('the benchmarks page', () => {
     const latest = EVIDENCE.at(-1);
     const run = latest === undefined ? undefined : JSON.parse(read(latest));
-    const f = run === undefined ? undefined : figures.derive(run, SOURCES);
+    const f = run === undefined ? undefined : deriveAs(run);
     const doc = read(join('docs', 'benchmarks.md'));
     // What the page calls the run besides its id. A paragraph that names it either way is a claim about it; one
     // inside another run's section is not.
     const ALIASES = ['September run', 'September 2026', 'single-bucket run', 'single-bucket bill'];
     const claims = f === undefined ? null : figures.claimsAbout(doc, f.runId, ALIASES);
     const section = claims?.section ?? null;
-    const REQUIRED = requiredAnchors(f?.loadVia ?? null);
+    const REQUIRED = requiredAnchors(f?.loadVia ?? null, (f?.steadyLoad ?? null) !== null);
 
     it('has a section on the latest run, which links its report', () => {
       expect(section, `docs/benchmarks.md has no heading naming run ${f?.runId}`).not.toBeNull();
@@ -1123,6 +1355,12 @@ describe('calibration reports are held to their evidence', () => {
       expect(figures.unaccounted(`${section}\n\n${claims?.elsewhere ?? ''}`, f.pageValues)).toEqual(
         [],
       );
+    });
+
+    it("states each kind of steady load's requests and price as the run measured them", () => {
+      expect(f).toBeDefined();
+      if (f === undefined || section === null || f.steadyLoad === null) return;
+      expect(checkSteadyTable(section, f.steadyRows)).toEqual([]);
     });
 
     it('bills each operation as the derivation does', () => {

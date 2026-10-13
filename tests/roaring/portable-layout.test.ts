@@ -399,5 +399,5 @@ describe('the portable-roaring structural check', () => {
       ),
       { numRuns: 400 },
     );
-  });
+  }, 60_000); // a property run of 400 mutated payloads: a few seconds alone, more beside other suites
 });

@@ -1,7 +1,13 @@
+import { windowOf } from '@/core/known-generations';
 import fc from 'fast-check';
 import { loadSegment, type LoadOptions } from '@/core/load';
-import { LIST_COLLECTION_CADENCE, collectByName, gcOrphanGenerations } from '@/core/generation-gc';
-import { TransientError, ValidationError } from '@/core/errors';
+import {
+  LIST_COLLECTION_CADENCE,
+  collectAfterLoad,
+  deleteEvicted,
+  gcOrphanGenerations,
+} from '@/core/generation-gc';
+import { TransientError } from '@/core/errors';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { dropSegment } from '@/core/erasure';
 import { rollbackSegment } from '@/core/rollback';
@@ -16,12 +22,11 @@ import { counting } from '../helpers/counting';
 /**
  * Collecting what a load supersedes, by name instead of by listing.
  *
- * A load that numbered its generation with one existence check (the number was free: nothing above the pointer)
- * and keeps at most one generation knows exactly which generation its publish pushed out of the grace window:
- * `generation - keep - 1`. It deletes that name, re-proving the row first, and lists nothing. A listing still runs
- * for `keep` of 2 or more, whenever the check met an object, and every sixteenth generation, which is what bounds
- * what the name-only pass leaves behind. These pin each of those, the safety of the delete, and that the name-only
- * pass never deletes what a listing would have kept.
+ * The row records the generations a load keeps, so the load that published it knows which generations its publish
+ * pushed out of the window: it deletes those names, re-proving the row first, and lists nothing, at any `keep` up to
+ * the most a row records. A listing still runs for a row that records none, whenever the existence check met an
+ * object, and every sixteenth generation, which is what bounds what the name-only pass leaves behind. These pin each of
+ * those, and the safety of the delete.
  */
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
@@ -94,8 +99,8 @@ async function orphan(storage: IStorageDriver, generation: number): Promise<void
   await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, [7]);
 }
 
-describe('a load collects by name when its number was checked and keep is at most 1', () => {
-  it('deletes the generation the window pushed out, with one pointer read and no listing', async () => {
+describe('a load collects by name when its number was checked, whatever keep is', () => {
+  it('deletes the generation the window pushed out, with two pointer reads and no listing', async () => {
     const w = world();
     await loadMany(w, 3);
     expect(await generations(w.memory)).toEqual([1, 2]);
@@ -104,10 +109,38 @@ describe('a load collects by name when its number was checked and keep is at mos
     expect(r).toMatchObject({ generation: 3, published: true, collected: [1] });
     expect(w.storageCalls.list).toBeUndefined();
     expect(w.storageCalls.delete).toBe(1);
-    // The row once before the publish, and again before the delete: that is the whole pass.
-    expect(w.registryCalls.get).toBe(2);
+    // The row once before the publish, again before the delete, and once after it, which a rollback that landed between
+    // that read and the delete would be seen by: that is the whole pass.
+    expect(w.registryCalls.get).toBe(3);
     expect(await generations(w.memory)).toEqual([2, 3]);
   });
+
+  it.each([2, 3, 12, 64])(
+    'with keep %i, deletes the one generation the window pushed out',
+    async (keep) => {
+      const w = world();
+      await loadMany(w, keep + 3, { keep });
+      expect(await generations(w.memory)).toHaveLength(keep + 1);
+      w.reset();
+      const next = (await w.registry.get(SEG))!.currentGen! + 1;
+      const r = await loadSegment(
+        SEG,
+        Array.from({ length: next + 1 }, (_, i) => i),
+        w.deps,
+        { keep },
+      );
+      expect(r).toMatchObject({ generation: next, published: true });
+      expect(r.collected).toHaveLength(1);
+      expect(w.storageCalls.list).toBeUndefined();
+      expect(w.storageCalls.delete).toBe(1);
+      expect(w.registryCalls.get).toBe(3);
+      const held = await generations(w.memory);
+      expect(held).toHaveLength(keep + 1);
+      expect(held.slice(-keep - 1)).toEqual(
+        Array.from({ length: keep + 1 }, (_, i) => next - keep + i),
+      );
+    },
+  );
 
   it('with keep 0, deletes the generation it superseded', async () => {
     const w = world();
@@ -118,6 +151,21 @@ describe('a load collects by name when its number was checked and keep is at mos
     expect(r).toMatchObject({ generation: 3, published: true, collected: [2] });
     expect(w.storageCalls.list).toBeUndefined();
     expect(await generations(w.memory)).toEqual([3]);
+  });
+
+  it('with keep 0, names the superseded generation even when its object is gone, and neither looks nor lists', async () => {
+    const w = world();
+    await loadMany(w, 3, { keep: 0 });
+    expect(await generations(w.memory)).toEqual([2]);
+    await w.memory.delete({ ...SEG, generation: 2 }); // removed from outside
+    await orphan(w.memory, 0); // an object below the pointer, which a listing would take
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 0 });
+    // A `keep` of 0 takes the superseded name whether or not it is there, so it makes no read of it and lists nothing:
+    // the object below the pointer waits for the periodic pass.
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [2] });
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([0, 3]);
   });
 
   it('makes no request after the publish when nothing is yet outside the window', async () => {
@@ -166,10 +214,8 @@ describe('a load collects by name when its number was checked and keep is at mos
     await store.load(ref, idsOf(5)); // the pinned generation is now the one pushed out
     await expect(pin.has(70_000)).rejects.toThrow();
   });
-});
 
-describe('keep of 2 or more, and a number the check could not prove free, still list', () => {
-  it('lists for keep 2, and a generation inside its window survives a refused neighbour', async () => {
+  it('a window of 2 counts the generations that were published: a refused neighbour is not a gap in it', async () => {
     const w = world();
     await loadMany(w, 6, { keep: 2 }); // current 5, with 4 and 3 below it
     expect(await generations(w.memory)).toEqual([3, 4, 5]);
@@ -197,16 +243,18 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
     );
     expect(l2).toMatchObject({ generation: 7, published: true });
     expect(await generations(w.memory)).toEqual([4, 5, 7]);
-    // The next load numbers 8 with its check, a clean path. Collecting by name would take 8 - 2 - 1 = 5, which a
-    // keep of 2 promised: the two newest below 8 are 7 and 5.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([4, 5]);
+    // The next load numbers 8 with its check, a clean path. The row names 4 and 5 as kept, so 4 is the name the
+    // window pushes out, and no listing is needed to know that.
     w.reset();
     const l3 = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7, 8, 9], w.deps, { keep: 2 });
-    expect(l3).toMatchObject({ generation: 8, published: true });
-    expect(w.storageCalls.list).toBe(1);
+    expect(l3).toMatchObject({ generation: 8, published: true, collected: [4] });
+    expect(w.storageCalls.list).toBeUndefined();
     expect(await generations(w.memory)).toEqual([5, 7, 8]);
-    expect(l3.collected).toEqual([4]);
   });
+});
 
+describe('a load lists when its row records no list, or its number or current object is in doubt', () => {
   it('lists when the caller asks for a listing, whatever keep is', async () => {
     const w = world();
     await loadMany(w, 4, { keep: 9 }); // 0 to 3 kept in full
@@ -257,54 +305,28 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
     w.reset();
     const res = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(res).toMatchObject({ erased: true, generation: 4 });
-    // A name-only pass would have taken the one generation below the rewrite.
     expect(w.storageCalls.list).toBeGreaterThanOrEqual(1);
     expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
     expect(await generations(w.memory)).toEqual([4]);
+    // The rewrite records that nothing below its pointer is kept.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([]);
   });
 
-  it.each([2, 3, 4])('lists once for keep %i, as before', async (keep) => {
+  it('a keep above 64 collects by listing on every load, and writes a ledger that a load with a small keep collects from by name', async () => {
     const w = world();
-    await loadMany(w, 5, { keep });
+    const row = async () => (await w.registry.get(SEG))!;
+    await loadMany(w, 3, { keep: 65 });
+    // No window is recorded for these loads, so each collects by listing. The ledger carries every generation they made current.
+    expect((await row()).knownGens?.map((e) => e.generation)).toEqual([0, 1, 2]);
     w.reset();
-    await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { keep });
-    expect(w.storageCalls.list).toBe(1);
-  });
-
-  it('makes no request to collect when keep is at least its own generation: nothing can be outside the window', async () => {
-    const w = world();
-    await loadMany(w, 3, { keep: 9 });
-    w.reset();
-    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 3 }); // generation 3, window of 3
-    expect(r).toMatchObject({ generation: 3, published: true, collected: [] });
+    await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });
+    // The ledger names 0 and 1 below the pointer and 2 is the generation superseded: the window is by name, with no listing.
     expect(w.storageCalls.list).toBeUndefined();
-    expect(w.storageCalls.delete).toBeUndefined();
-    expect(w.registryCalls.get).toBe(1); // the row before the publish, and nothing to collect
-    // One generation later the window is outside it, so the pass lists.
+    expect(await generations(w.memory)).toEqual([1, 2, 3]);
+    expect(windowOf(await row())).toEqual([1, 2]);
     w.reset();
-    await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 3 }); // generation 4
-    expect(w.storageCalls.list).toBe(1);
-  });
-
-  it('a default *Into, which keeps everything, collects nothing and asks the bucket for nothing', async () => {
-    const memory = new MemoryStorage();
-    const calls: Record<string, number> = {};
-    const store = new CloudRoaring({
-      storage: brandAsBackend({
-        storage: counting<IStorageDriver>(memory.storage, calls),
-        registry: memory.registry,
-      }),
-    });
-    await store.load({ segment: 'a' }, [1, 2, 3]);
-    await store.load({ segment: 'b' }, [2, 3]);
-    const dest = store.segment('dest');
-    for (let i = 0; i < 3; i++) {
-      for (const k of Object.keys(calls)) delete calls[k];
-      const res = await store.segment('a').intersectInto(dest, [store.segment('b')]);
-      expect(res).toMatchObject({ generation: i, published: true, collected: [] });
-      expect(calls.list).toBeUndefined();
-      expect(calls.delete).toBeUndefined();
-    }
+    await loadSegment(SEG, [1, 2, 3, 4, 5, 6], w.deps, { keep: 2 });
+    expect(w.storageCalls.list).toBeUndefined();
   });
 
   it('lists when the existence check fails to answer, and proves nothing about the number', async () => {
@@ -337,7 +359,7 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
     expect(await generations(w.memory)).toEqual([3, 4]);
   });
 
-  it("lists when the check meets a crashed load's object, and numbers past it", async () => {
+  it("lists when the check meets a crashed load's object, numbers past it, and collects it", async () => {
     const w = world();
     await loadMany(w, 3);
     await orphan(w.memory, 3);
@@ -346,60 +368,80 @@ describe('keep of 2 or more, and a number the check could not prove free, still 
     expect(r).toMatchObject({ generation: 4, published: true });
     // One listing to number past the orphan and one to collect.
     expect(w.storageCalls.list).toBe(2);
-    // The window keeps the newest below 4, the orphan at 3; the listing collects what is under it.
-    expect(await generations(w.memory)).toEqual([3, 4]);
+    // The row names 2 as the window, so the orphan below the pointer is garbage, not a slot in it.
+    expect(await generations(w.memory)).toEqual([2, 4]);
   });
 
-  it('lists when a rollback left generations above the pointer', async () => {
+  it('lists when a rollback left generations above the pointer, and records the window afterwards', async () => {
     const w = world();
     await loadMany(w, 5, { keep: 9 });
     await rollbackSegment(SEG, 2, { storage: w.memory, registry: w.registry });
+    // Main: undefined, since an entry above the pointer made the window unknown. The ledger survives the rollback now: the
+    // generations below the pointer it names are the window, and 3 and 4 sit above.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([0, 1]);
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps);
     expect(r).toMatchObject({ generation: 5, published: true });
     expect(w.storageCalls.list).toBe(2);
+    // The window is the generation the rollback restored, which the load superseded, not 4, the newest by number.
+    expect(await generations(w.memory)).toEqual([2, 5]);
+    // The publish seeded the ledger with the window, so the next load collects by name from it.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([2]);
   });
 });
 
 describe('every sixteenth generation lists, which bounds what the name-only pass leaves', () => {
-  it.each([0, 1])('lists on generations 16 and 32 and on no other, with keep %i', async (keep) => {
+  it.each([0, 1, 2, 12])(
+    'lists on generations 16 and 32 and on no other, with keep %i',
+    async (keep) => {
+      const w = world();
+      const listed: number[] = [];
+      for (let g = 0; g < 34; g++) {
+        w.reset();
+        await loadSegment(
+          SEG,
+          Array.from({ length: g + 1 }, (_, i) => i),
+          w.deps,
+          { keep },
+        );
+        if (w.storageCalls.list !== undefined) listed.push(g);
+      }
+      expect(LIST_COLLECTION_CADENCE).toBe(16);
+      expect(listed).toEqual([16, 32]);
+    },
+  );
+
+  it('a keep that shrinks takes the extras by name, at once', async () => {
     const w = world();
-    const listed: number[] = [];
-    for (let g = 0; g < 34; g++) {
-      w.reset();
-      await loadSegment(
-        SEG,
-        Array.from({ length: g + 1 }, (_, i) => i),
-        w.deps,
-        { keep },
-      );
-      if (w.storageCalls.list !== undefined) listed.push(g);
-    }
-    expect(LIST_COLLECTION_CADENCE).toBe(16);
-    expect(listed).toEqual([16, 32]);
+    await loadMany(w, 6, { keep: 9 }); // 0 to 5, all kept
+    w.reset();
+    const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { keep: 1 });
+    expect(r).toMatchObject({ generation: 6, published: true });
+    expect([...r.collected]).toEqual([0, 1, 2, 3, 4]);
+    expect(w.storageCalls.list).toBeUndefined();
+    expect(await generations(w.memory)).toEqual([5, 6]);
   });
 
-  // What the by-name loads leave of generations 0 to 5, kept in full by an earlier keep, and what the listing takes.
-  it.each([
-    {
-      keep: 1,
-      beforeThe16th: [0, 1, 2, 3, 14, 15], // each load took the generation two below it
-      after: [15, 16],
-      collected: [0, 1, 2, 3, 14],
-    },
-    {
-      keep: 0,
-      beforeThe16th: [0, 1, 2, 3, 4, 15], // each load took the generation just below it
-      after: [16],
-      collected: [0, 1, 2, 3, 4, 15],
-    },
-  ])(
-    'collects what an earlier keep left behind on the next listing, and not before, with keep $keep',
-    async ({ keep, beforeThe16th, after, collected }) => {
+  it.each([1, 2])(
+    'collects what no list names (an object a crashed load left below the pointer) on the next listing, and not before, with keep %i',
+    async (keep) => {
       const w = world();
-      await loadMany(w, 6, { keep: 9 }); // 0 to 5, all kept
-      await loadMany(w, 10, { keep }); // 6 to 15 by name
-      expect(await generations(w.memory)).toEqual(beforeThe16th);
+      await loadMany(w, 10, { keep });
+      // Objects below the pointer that no publish named: a crashed load's, a stray.
+      await orphan(w.memory, 3);
+      await orphan(w.memory, 4);
+      const strays = async (): Promise<number[]> =>
+        (await generations(w.memory)).filter((g) => g === 3 || g === 4);
+      for (let g = 10; g < 16; g++) {
+        await loadSegment(
+          SEG,
+          Array.from({ length: g + 1 }, (_, i) => i),
+          w.deps,
+          { keep },
+        );
+      }
+      // Clean loads by name never look at them.
+      expect((await strays()).length).toBeGreaterThan(0);
       const r = await loadSegment(
         SEG,
         Array.from({ length: 17 }, (_, i) => i),
@@ -407,8 +449,9 @@ describe('every sixteenth generation lists, which bounds what the name-only pass
         { keep },
       ); // 16: listed
       expect(r).toMatchObject({ generation: 16, published: true });
-      expect(await generations(w.memory)).toEqual(after);
-      expect([...r.collected].sort((a, b) => a - b)).toEqual(collected);
+      expect(await strays()).toEqual([]);
+      const row = await w.registry.get(SEG);
+      expect(await generations(w.memory)).toEqual([...windowOf(row)!, 16]);
     },
   );
 });
@@ -452,6 +495,24 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
     const r = await loadSegment(SEG, ids, { ...w.deps, registry });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await generations(w.memory)).toEqual([3, 4, 5]);
+  });
+
+  it('collects nothing when a rollback and later loads put the name inside the row window', async () => {
+    const w = await atFour(); // present 3 and 4, kept [3]; the next load publishes 5 and evicts 3
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      // An operator rolls back to 3; the next loads number above everything and keep a wide window, which names 3.
+      await rollbackSegment(
+        SEG,
+        3,
+        { storage: w.memory, registry: w.registry },
+        { allowUnknown: true },
+      );
+      await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps, { keep: 3 });
+      expect(windowOf(await w.registry.get(SEG))).toContain(3);
+    });
+    const r = await loadSegment(SEG, ids, { ...w.deps, registry });
+    expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
+    expect(await generations(w.memory)).toContain(3);
   });
 
   /** `registry`, with `fault` thrown by its first read after the publish landed: the by-name pass's re-proof. */
@@ -535,47 +596,258 @@ describe("a name-only delete keeps invariant 4's re-proof", () => {
     expect(await generations(w.memory)).toEqual([5]);
   });
 
-  it('never deletes the generation it published', async () => {
-    const w = world();
-    await loadMany(w, 4, { keep: 0 });
-    expect(await generations(w.memory)).toEqual([3]);
-    // Called directly: the name it deletes is below the generation named, whatever keep says.
-    await expect(collectByName(SEG, w.deps, { generation: 3, keep: 0 })).resolves.toEqual([2]);
-    expect(await generations(w.memory)).toEqual([3]);
-  });
-
-  it('returns nothing for a pointer that has fallen below the generation it was told it published, and for no row', async () => {
-    const w = world();
-    await loadMany(w, 4, { keep: 9 });
-    await expect(collectByName(SEG, w.deps, { generation: 6, keep: 1 })).resolves.toEqual([]);
-    expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
-    await w.registry.delete(SEG);
-    await expect(collectByName(SEG, w.deps, { generation: 3, keep: 1 })).resolves.toEqual([]);
-    expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
-  });
-
-  it.each([2, 3, -1, 1.5, Number.NaN])(
-    'refuses a keep of %s: a name cannot serve a wider window',
-    async (keep) => {
+  describe('deleteEvicted, called directly', () => {
+    /** Generations 0 to 3 present, the pointer at 3, and the row naming `kept`. */
+    async function pointedAt3(kept: number[] | undefined): Promise<World> {
       const w = world();
       await loadMany(w, 4, { keep: 9 });
-      w.reset();
-      await expect(collectByName(SEG, w.deps, { generation: 3, keep })).rejects.toBeInstanceOf(
-        ValidationError,
+      const row = (await w.registry.get(SEG))!;
+      // The ledger names `kept`, then the current generation, with the checksums the row already records.
+      const byGeneration = new Map(row.knownGens!.map((e) => [e.generation, e]));
+      const known =
+        kept === undefined
+          ? undefined
+          : [...kept, 3].map((g) => byGeneration.get(g) ?? { generation: g, footerCrc: 1000 + g });
+      await w.registry.compareAndSwap(SEG, row.token, { knownGens: known });
+      return w;
+    }
+
+    it('never deletes the generation at the pointer, or above it', async () => {
+      const w = await pointedAt3([1, 2]);
+      await expect(deleteEvicted(SEG, w.deps, { generation: 3, evict: [3, 4] })).resolves.toEqual(
+        [],
       );
-      expect(w.storageCalls).toEqual({});
       expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('stops at a name the row still lists', async () => {
+      const w = await pointedAt3([1, 2]);
+      await expect(deleteEvicted(SEG, w.deps, { generation: 3, evict: [0, 1] })).resolves.toEqual([
+        0,
+      ]);
+      expect(await generations(w.memory)).toEqual([1, 2, 3]);
+    });
+
+    it('deletes nothing when the row records no list, or one the pointer contradicts', async () => {
+      const none = await pointedAt3(undefined);
+      await expect(deleteEvicted(SEG, none.deps, { generation: 3, evict: [0] })).resolves.toEqual(
+        [],
+      );
+      expect(await generations(none.memory)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('returns nothing for a pointer that has fallen below the generation it was told it published, and for no row', async () => {
+      const w = await pointedAt3([2]);
+      await expect(deleteEvicted(SEG, w.deps, { generation: 6, evict: [0] })).resolves.toEqual([]);
+      expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
+      await w.registry.delete(SEG);
+      await expect(deleteEvicted(SEG, w.deps, { generation: 3, evict: [0] })).resolves.toEqual([]);
+      expect(await generations(w.memory)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('requests nothing when nothing was evicted', async () => {
+      const w = await pointedAt3([2]);
+      w.reset();
+      await expect(deleteEvicted(SEG, w.deps, { generation: 3, evict: [] })).resolves.toEqual([]);
+      expect(w.storageCalls).toEqual({});
+      expect(w.registryCalls).toEqual({});
+    });
+  });
+});
+
+/**
+ * A load whose publish has landed took effect, so its collection does not fail because another writer moved the row
+ * after it: it spares what the row names now, and stops where it cannot prove a delete, and never throws a lost race.
+ */
+describe('a load whose publish landed does not fail on a race its collection meets', () => {
+  /** Sixteen loads at keep 1: generation 16 is the next, a periodic one, and 15 is current. */
+  async function atFifteen(): Promise<World> {
+    const w = world();
+    await loadMany(w, 16);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    return w;
+  }
+  const ids = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
+
+  it('the pass for generation 16, run after another load published 17, deletes nothing that load keeps', async () => {
+    const w = world();
+    await loadMany(w, 18);
+    expect(await generations(w.memory)).toEqual([16, 17]);
+    expect(windowOf(await w.registry.get(SEG))).toEqual([16]);
+    // What loader A holds when loader B published 17 between A's publish of 16 and A's pass.
+    await expect(
+      collectAfterLoad(SEG, w.deps, {
+        generation: 16,
+        keep: 1,
+        byName: true,
+        kept: { list: [15], evict: [], token: undefined },
+      }),
+    ).resolves.toEqual([]);
+    expect(await generations(w.memory)).toEqual([16, 17]);
+  });
+
+  it.each([false, true])(
+    'another load publishing between a periodic publish and its pass: the first load returns, and the second keeps its window (collectByListing %s)',
+    async (collectByListing) => {
+      const w = await atFifteen();
+      const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+        const b = await loadSegment(SEG, ids(18), w.deps); // B publishes 17 over A's 16
+        expect(b).toMatchObject({ generation: 17, published: true });
+      });
+      const a = await loadSegment(SEG, ids(17), { ...w.deps, registry, collectByListing });
+      expect(a).toMatchObject({ generation: 16, published: true });
+      expect((await w.registry.get(SEG))!.currentGen).toBe(17);
+      expect(await generations(w.memory)).toEqual([16, 17]);
     },
   );
 
-  it('requests nothing for a generation with no name below its window', async () => {
-    const w = world();
-    await loadMany(w, 2);
-    w.reset();
-    await expect(collectByName(SEG, w.deps, { generation: 1, keep: 1 })).resolves.toEqual([]);
-    await expect(collectByName(SEG, w.deps, { generation: 0, keep: 0 })).resolves.toEqual([]);
-    expect(w.storageCalls).toEqual({});
-    expect(w.registryCalls).toEqual({});
+  it('a writer that records no window publishing in that gap: its ledger still names what it found, and the pass spares it', async () => {
+    const w = await atFifteen();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await bulkLoadCrbmGeneration(w.memory, { ...SEG, generation: 17 }, [1, 2], {
+        registry: w.registry,
+      });
+      // The write carries the ledger it found, with 17 last.
+      expect((await w.registry.get(SEG))!.knownGens?.at(-1)?.generation).toBe(17);
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    // The other writer recorded no window, but its ledger carries what it found: 15 and 16, which the pass then finds named.
+    expect(await generations(w.memory)).toEqual([15, 16, 17]);
+  });
+
+  it('a rollback in that gap stops the pass, and the load still returns', async () => {
+    const w = await atFifteen();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    expect(await generations(w.memory)).toContain(15);
+  });
+
+  /** `registry`, whose `after`th read once its first compare-and-swap has landed is followed by `then`. */
+  function afterPassReads(w: World, after: number, then: () => Promise<void>): IRegistryDriver {
+    let landed = false;
+    let reads = 0;
+    return new Proxy(w.deps.registry, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p === 'compareAndSwap') {
+          return async (...a: unknown[]) => {
+            const out = await fn.apply(t, a);
+            landed = true;
+            return out;
+          };
+        }
+        if (p === 'get' && landed) {
+          return async (...a: unknown[]) => {
+            const out = await fn.apply(t, a);
+            reads += 1;
+            if (reads === after) await then();
+            return out;
+          };
+        }
+        return (...a: unknown[]) => fn.apply(t, a);
+      },
+    }) as IRegistryDriver;
+  }
+
+  it('a rollback landing after the pass read the row stops its deletes, and the load still returns', async () => {
+    const w = await atFifteen();
+    await orphan(w.memory, 3); // something below the pointer for the pass to take
+    // The pass reads the row before its listing and after it; the rollback lands before its first delete is proved.
+    const registry = afterPassReads(w, 2, async () => {
+      await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
+  });
+
+  it('the same for a row that records no list: the pass that keeps the window stops, and records nothing', async () => {
+    const w = await atFifteen();
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
+    await orphan(w.memory, 3);
+    const registry = afterPassReads(w, 2, async () => {
+      await rollbackSegment(SEG, 15, { storage: w.memory, registry: w.registry });
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(15);
+    // Main: undefined, for the same reason. The load's publish seeded a ledger (15, 16) and the rollback carried it: 16 sits
+    // above the pointer, so nothing is below it.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([]);
+    expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
+  });
+
+  it('a purge landing after the pass read the row stops its deletes, and the load still returns', async () => {
+    const w = await atFifteen();
+    await orphan(w.memory, 3);
+    const registry = afterPassReads(w, 2, () => w.registry.delete(SEG));
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
+    expect(await generations(w.memory)).toEqual([3, 14, 15, 16]);
+  });
+
+  it("a real intersectInto at generation 16, with another load publishing in the gap, returns and spares that load's window", async () => {
+    const memory = new MemoryStorage();
+    let armed = false;
+    const gap: { run?: () => Promise<void> } = {};
+    const registry = new Proxy(memory.registry, {
+      get(t, p, rx) {
+        const value: unknown = Reflect.get(t, p, rx);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...a: unknown[]) => unknown;
+        if (p !== 'compareAndSwap') return (...a: unknown[]) => fn.apply(t, a);
+        return async (...a: unknown[]) => {
+          const out = await fn.apply(t, a);
+          if (armed && (a[0] as SegmentRef).segment === 'dest') {
+            armed = false;
+            await gap.run?.();
+          }
+          return out;
+        };
+      },
+    }) as IRegistryDriver;
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage: memory.storage, registry }),
+    });
+    await store.load({ segment: 'a' }, [1, 2, 3]);
+    await store.load({ segment: 'b' }, [2, 3]);
+    const dest = store.segment('dest');
+    for (let i = 0; i < 16; i++) {
+      await store.segment('a').intersectInto(dest, [store.segment('b')], { keep: 1 });
+    }
+    const held = async (): Promise<number[]> => {
+      const out: number[] = [];
+      for await (const k of memory.storage.list({ segment: 'dest' })) out.push(k.generation);
+      return out.sort((x, y) => x - y);
+    };
+    expect((await memory.registry.get({ segment: 'dest' }))!.currentGen).toBe(15);
+    gap.run = async () => {
+      // Another load of the destination publishes 17 over this call's 16, before this call's collection runs.
+      await new CloudRoaring({ storage: memory }).load({ segment: 'dest' }, [2, 3, 4]);
+    };
+    armed = true;
+    const res = await store.segment('a').intersectInto(dest, [store.segment('b')], { keep: 1 });
+    expect(res).toMatchObject({ generation: 16, published: true });
+    expect((await memory.registry.get({ segment: 'dest' }))!.currentGen).toBe(17);
+    expect(await held()).toEqual([16, 17]);
+  });
+
+  it('a purge in that gap does not fail the load either', async () => {
+    const w = await atFifteen();
+    const registry = hookAfter(w.deps.registry, 'compareAndSwap', async () => {
+      await w.registry.delete(SEG);
+    });
+    const a = await loadSegment(SEG, ids(17), { ...w.deps, registry });
+    expect(a).toMatchObject({ generation: 16, published: true });
   });
 });
 
@@ -600,13 +872,15 @@ describe('a load that repairs a segment whose current object is gone lists, and 
     expect(w.storageCalls.list).toBe(1);
     expect(r.collected).toEqual([]);
     expect(await generations(w.memory)).toEqual([4, 6]);
+    // The ledger the publish wrote names 5, which is gone, and 6; the listing kept 4, which it does not name.
+    expect(windowOf(await w.registry.get(SEG))).toEqual([5]);
   });
 
-  it("after a subject erasure deleted an in-flight load's object above the pointer: the repair keeps 5", async () => {
+  it("a subject erasure that deletes an in-flight load's object above the pointer refuses that load", async () => {
     const w = await atFive();
     // A load writes generation 6 holding id 99, and before its publish an erasure of 99, which the current
-    // generation does not hold, deletes the object it finds above the pointer. The load's publish then lands on a
-    // missing object.
+    // generation does not hold, deletes the object it finds above the pointer. The erasure writes the row first, so
+    // the load's publish meets another writer and is refused, rather than landing on a missing object.
     const racing = hookAfter(w.deps.storage, 'putImmutable', async () => {
       const erased = await eraseIdFromSegment(SEG, 99, {
         storage: w.memory,
@@ -616,14 +890,13 @@ describe('a load that repairs a segment whose current object is gone lists, and 
       expect(erased).toMatchObject({ erased: true });
     });
     const racer = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 99], { ...w.deps, storage: racing });
-    expect(racer).toMatchObject({ generation: 6, published: true });
-    expect((await w.registry.get(SEG))?.currentGen).toBe(6);
-    expect(await generations(w.memory)).toEqual([5]); // 6 is gone: the pointer names a missing object
+    expect(racer).toMatchObject({ published: false, reason: 'superseded' });
+    expect((await w.registry.get(SEG))?.currentGen).toBe(5);
+    expect(await generations(w.memory)).toContain(5); // the pointer names an object that is there
+    expect(await generations(w.memory)).not.toContain(6);
     w.reset();
     const r = await loadSegment(SEG, [1, 2, 3, 4, 5, 6, 7], w.deps);
-    expect(r).toMatchObject({ generation: 7, published: true, cardinalityBefore: 7 });
-    expect(w.storageCalls.list).toBe(1);
-    expect(await generations(w.memory)).toEqual([5, 7]);
+    expect(r).toMatchObject({ published: true, cardinalityBefore: 6 });
   });
 
   it('a load with no guard reads nothing of the current object, cannot tell, and collects by name: the documented limit', async () => {
@@ -768,63 +1041,6 @@ async function disturb(w: World, o: Exclude<Op, { kind: 'load' | 'refused' }>): 
   }
   return false;
 }
-
-/**
- * What a listing pass would have deleted, at the instant the load's publish landed, against what the load deleted.
- * Whatever the history (loads that were refused, a crashed load's orphan above the pointer, a stray below it, a
- * rollback, a retirement, `keep` changing between loads), the load deletes a subset: collecting by name may leave
- * a generation for the next listing, and never takes one the window would have kept. The histories are those the
- * library's own operations reach, in which the object the row names is always in the bucket; a segment whose current
- * object was removed from outside is the one case where a name takes what a listing would keep.
- */
-describe('collecting by name never deletes what a listing would keep (property)', () => {
-  /** A bucket holding exactly `present`, and a row pointing at `pointer`: the state a pass would have started from. */
-  async function forked(landed: Landed) {
-    const storage = new MemoryStorageDriver();
-    for (const generation of landed.present) {
-      await storage.putImmutable({ ...SEG, generation }, (sink) => sink.write(new Uint8Array([1])));
-    }
-    const registry = new MemoryRegistryDriver();
-    await registry.create(SEG, { currentGen: landed.pointer });
-    return { storage, registry };
-  }
-
-  it('deletes a subset of what a listing pass deletes from the same state, and never the pointer', async () => {
-    let byName = 0;
-    let compared = 0;
-    let rolled = 0;
-    await fc.assert(
-      fc.asyncProperty(fc.array(ops(3), { maxLength: 40 }), async (history) => {
-        const w = world();
-        const seen = landing(w);
-        for (const o of history) {
-          if (o.kind !== 'load' && o.kind !== 'refused') {
-            if (await disturb(w, o)) rolled += 1;
-            continue;
-          }
-          seen.reset();
-          const ids = o.kind === 'load' ? Array.from({ length: o.size }, (_, i) => i) : [];
-          const r = await loadSegment(SEG, ids, seen.deps, { keep: o.keep });
-          const landed = seen.landed();
-          if (r.published && landed !== undefined) {
-            const after = await generations(w.memory);
-            const deleted = landed.present.filter((g) => !after.includes(g));
-            const listed = await gcOrphanGenerations(SEG, await forked(landed), { keep: o.keep });
-            for (const g of deleted) expect(listed, `deleted ${g}`).toContain(g);
-            expect(after).toContain(landed.pointer);
-            if (seen.listsSinceLanding() === 0 && o.keep <= 1) byName += 1;
-            compared += 1;
-          }
-        }
-      }),
-      { numRuns: 200 },
-    );
-    // Not vacuous: the histories did collect by name, often, and rollbacks took effect.
-    expect(compared).toBeGreaterThan(300);
-    expect(byName).toBeGreaterThan(150);
-    expect(rolled).toBeGreaterThan(15);
-  });
-});
 
 /**
  * How long a segment can go without a listing. Every generation divisible by the cadence lists, so a segment that

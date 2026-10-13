@@ -9,6 +9,7 @@ import { AZURE_BLOB_STORAGE_OPTION_KEYS } from '@/azure-blob/backend';
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SameKeys } from '../helpers/types';
@@ -480,5 +481,100 @@ describe('a backend is all the wiring a store needs', () => {
     await expect(readOnly.dropSegment({ segment: 's' }, { confirmSegment: 's' })).rejects.toThrow(
       /needs a storage backend/,
     );
+  });
+});
+
+describe('a backend refuses settings it can never honour, when it is built', () => {
+  const TiB = 1024 ** 4;
+  const MiB = 1024 ** 2;
+  const s3 = (o: object) => () => new S3Storage({ region: 'us-east-1', ...o } as never);
+  const gcs = (o: object) => () =>
+    new GcsStorage({ apiEndpoint: 'http://127.0.0.1:4443', ...o } as never);
+  const azure = (o: object) => () =>
+    new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', ...o } as never);
+
+  it('a bucket that is not a non-empty string', () => {
+    for (const bucket of [undefined, '', 5, null]) {
+      expect(s3({ bucket })).toThrow(ValidationError);
+      expect(gcs({ bucket })).toThrow(ValidationError);
+    }
+  });
+
+  it('a `now` that is not a function', () => {
+    expect(s3({ bucket: 'b', now: 5 })).toThrow(/`now` must be a function/);
+    expect(gcs({ bucket: 'b', now: 'today' })).toThrow(/`now` must be a function/);
+    expect(azure({ now: {} })).toThrow(/`now` must be a function/);
+    expect(s3({ bucket: 'b', now: () => 1 })).not.toThrow();
+  });
+
+  it("a size past the service's own limit", () => {
+    expect(gcs({ bucket: 'b', maxObjectBytes: 5 * TiB + 1 })).toThrow(/5 TiB object limit/);
+    expect(azure({ blockBytes: 4000 * MiB + 1 })).toThrow(/4,000 MiB block limit/);
+    expect(azure({ maxObjectBytes: Number.MAX_SAFE_INTEGER })).toThrow(/blocks of 4,000 MiB/);
+    expect(azure({ blockBytes: 4000 * MiB })).not.toThrow();
+  });
+});
+
+describe('the SDK-free backends refuse settings they can never honour, when they are built', () => {
+  it('a LocalFs root that is not a non-empty string, and nothing is made where an empty root would land', async () => {
+    // An empty root joins to `storage` and `registry` under the working directory: the paths an accepted empty root would write to.
+    for (const root of ['', undefined, null, 5, {}]) {
+      expect(() => new LocalFsStorage(root as never)).toThrow(ValidationError);
+    }
+    expect(existsSync(join(process.cwd(), 'storage'))).toBe(false);
+    expect(existsSync(join(process.cwd(), 'registry'))).toBe(false);
+  });
+
+  it('names every unknown option, not only the first', () => {
+    expect(() => new MemoryStorage({ a: 1, b: 2 } as never)).toThrow(/`a`, `b`/);
+  });
+
+  it('a misspelt option, named, on both backends', () => {
+    expect(() => new MemoryStorage({ nows: () => 1 } as never)).toThrow(/does not take `nows`/);
+    expect(() => new LocalFsStorage('/tmp/x', { nows: () => 1 } as never)).toThrow(
+      /does not take `nows`/,
+    );
+  });
+
+  it('an options bag that is not an object', () => {
+    expect(() => new MemoryStorage(null as never)).toThrow(ValidationError);
+    expect(() => new LocalFsStorage('/tmp/x', 5 as never)).toThrow(ValidationError);
+  });
+
+  it('a `now` that is not a function', () => {
+    expect(() => new MemoryStorage({ now: 5 } as never)).toThrow(/`now` must be a function/);
+    expect(() => new LocalFsStorage('/tmp/x', { now: 'today' } as never)).toThrow(
+      /`now` must be a function/,
+    );
+    expect(() => new MemoryStorage({ now: () => 1 })).not.toThrow();
+    expect(() => new MemoryStorage()).not.toThrow();
+    expect(() => new MemoryStorage({})).not.toThrow();
+  });
+});
+
+describe('a backend that builds its own client gives it the options it was given', () => {
+  it('S3: region, endpoint, pathStyle and credentials reach the client as it resolves them', async () => {
+    const { config } = new S3Storage({
+      bucket: 'b',
+      region: 'eu-west-2',
+      endpoint: 'http://127.0.0.1:9',
+      pathStyle: true,
+      credentials: { accessKeyId: 'stand-in', secretAccessKey: 'stand-in' },
+    }).client;
+    const pathStyle: unknown = config.forcePathStyle;
+    expect(pathStyle).toBe(true);
+    expect(await config.region()).toBe('eu-west-2');
+    expect(await config.endpoint?.()).toMatchObject({ hostname: '127.0.0.1', port: 9 });
+    expect(await config.credentials()).toMatchObject({ accessKeyId: 'stand-in' });
+  });
+
+  it('GCS: projectId and apiEndpoint reach the client', () => {
+    const { client } = new GcsStorage({
+      bucket: 'b',
+      projectId: 'proj-x',
+      apiEndpoint: 'http://127.0.0.1:9',
+    });
+    expect(client.projectId).toBe('proj-x');
+    expect(client.apiEndpoint).toContain('127.0.0.1:9');
   });
 });

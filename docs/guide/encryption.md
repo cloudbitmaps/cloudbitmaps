@@ -62,7 +62,9 @@ await store.segment('pii').count();
 
 Every later write to that segment reuses its DEK: a reload through `store.load` on a store wired with the keystore,
 an `*Into` verb on such a store, and the erasure rewrite. Loading a cleartext generation onto an encrypted segment is
-refused with `KeyUnavailableError`. With `encryption: { required: true }`, any cleartext write or read throws.
+refused with `KeyUnavailableError`, before anything is written. A cleartext first load that the segment's first
+encrypted load overtakes after its object is written is refused at its publish instead, as `superseded`, and its
+cleartext object is deleted. With `encryption: { required: true }`, any cleartext write or read throws.
 
 **Rotate keys without re-encrypting data.** Add a new KEK, point `activeKeyId` at it, and keep the old KEK: old
 segments keep decrypting. Use a **recovery KEK**, kept offline, so that losing the active one is not fatal.
@@ -106,10 +108,38 @@ crypto-shreds an encrypted segment and deletes its objects.
   row, and `'already'` for a tombstone.
 - **`eraseNamespace` returns one `DestroyResult` per segment** and records per-segment faults instead of throwing:
   `reason: 'contended'` or `` `failed: ...` ``, with `destroyed: false`, means the segment still holds data. Inspect
-  them. A `maxScanSegments` that is not a finite number of at least 1 throws `ValidationError`.
+  them. A `maxScanSegments` that is not a whole number of at least 1 throws `ValidationError`.
+- **`eraseNamespace` shreds eight segments at a time.** Each segment still has its own read and compare-and-swap, and
+  a fault in one is recorded against it and stops no other. `destroyed` is in the listing's order, whichever segment
+  finishes first; the `segment.erase` events are emitted as each segment finishes, so their order is not the
+  listing's, and `namespace.erase` comes last.
 - **`eraseNamespace` lists the whole namespace before it destroys anything**, and holds the listing in memory, so it
   stops at the ceiling every fleet scan keeps: `maxScanSegments`, default 250,000. A namespace over it throws
   `BudgetExceededError` with nothing erased. Pass a higher `maxScanSegments` when the namespace really is that large.
+
+## What an encrypted read costs
+
+When an encrypted segment's read opens a generation's object (a cold open, or one after the reader cache let the
+segment go), it asks your keystore to unwrap the key and reads the object's tail from storage. The two do not depend
+on each other, so an open that starts from the object (`iterate`, a combine, a pin) sends them together and takes the
+longer of the two, not the sum. Nothing from the tail is read before the key opens it: the tail's bytes stay untrusted
+until the footer has been held to the row's summary and the index has been decrypted.
+
+If the keystore fails, the read raises the keystore's error (`KeyUnavailableError`, or whatever your keystore throws,
+`TransientError` included) even when the object is also missing. An open that sent its tail early (every one but a
+`has()`'s first) has already sent that GET, so it is billed once for each attempt, and its answer is dropped: with the
+default read retry, a keystore that keeps throwing `TransientError` bills up to four tail reads for one read. A cold
+open waiting for the key holds up to `tailBytes` (256 KiB by default) of the object's tail. A store with no keystore
+sends no tail read for an encrypted row.
+
+The tail read of an encrypted row is not sized from the row's summary, as a cleartext row's is: the summary is sealed
+under the key, so sizing from it would send the tail read after the key, which is the wait the overlap removes for an open that starts from the object (a cold `has()` waits for the key first either way). A
+segment whose index is longer than the 256 KiB tail read (tens of thousands of chunks) therefore costs one range read
+for the index after the tail read, where the same cleartext segment costs none.
+
+A `has()` asks for the segment's version first, and the version needs the key, because the row's summary is sealed under
+it. Its first open therefore waits for the key before it opens the object, with nothing to overlap; an open it makes
+again after a failed one overlaps like the others.
 
 ## What is sealed where
 
@@ -142,6 +172,12 @@ Three things follow:
   segment on its tombstone, so the shred clears both.
 
 ## How it stays correct
+
+**How many seals one key takes.** Each chunk is sealed with a fresh random 96-bit nonce, and two seals under one key
+sharing a nonce stays negligibly likely below about 2³² seals. Nothing counts seals or enforces that limit. A segment
+keeps its key for its whole life, so every load and every erasure rewrite (which seals every chunk again) counts
+toward it. It is far past any realistic workload; a segment that might approach it is created again, which draws a new
+key.
 
 **A segment is never half-encrypted.** A segment's encryption is decided at its first generation. Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and

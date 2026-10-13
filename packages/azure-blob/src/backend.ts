@@ -7,13 +7,19 @@
  * **container client**, not an account client plus a container name, because a `ContainerClient` is already
  * scoped. Supply `containerClient` directly, or give a `connectionString` + `container` and one is built.
  */
-import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';
+import {
+  STORAGE_BACKEND,
+  ValidationError,
+  brandAsBackend,
+  refuseUnknownOptions,
+} from '@cloudbitmaps/core/driver-kit';
 import type {
   IRegistryDriver,
   IStorageDriver,
   StorageBackend,
 } from '@cloudbitmaps/core/driver-kit';
 import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
+import { defined } from './defined';
 import { AzureBlobStorageDriver } from './storage';
 import { AzureBlobRegistryDriver } from './registry';
 
@@ -46,8 +52,10 @@ export interface AzureBlobStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
   /**
-   * Whether the registry removes a deleted row for good, by a Delete Blob sent with `ifMatch`, rather than leaving a
-   * tombstone a full listing reads forever. Defaults to `true`.
+   * Whether the service applies `ifMatch` on a Delete Blob, which both halves rely on when it is on: the registry
+   * removes a deleted row for good rather than leaving a tombstone a full listing reads forever, and the storage half
+   * removes an erasure's holder only while it is the blob the erasure searched, by its ETag. Defaults to `true`: Azure
+   * Blob applies it, and Azurite does too.
    */
   readonly conditionalDelete?: boolean;
 }
@@ -68,27 +76,6 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
   'conditionalDelete',
 ] as const;
 
-/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
-function refuseUnknown(
-  name: string,
-  options: unknown,
-  keys: readonly string[],
-  hint: string,
-): void {
-  if (options === null || typeof options !== 'object') {
-    throw new ValidationError(
-      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
-    );
-  }
-  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
-  if (unknown.length > 0) {
-    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
-    throw new ValidationError(
-      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
-    );
-  }
-}
-
 export class AzureBlobStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -98,12 +85,17 @@ export class AzureBlobStorage implements StorageBackend {
   readonly containerClient: ContainerClient;
 
   constructor(options: AzureBlobStorageOptions) {
-    refuseUnknown(
+    refuseUnknownOptions(
       'AzureBlobStorage',
       options,
       AZURE_BLOB_STORAGE_OPTION_KEYS,
       'a container client goes in `containerClient`',
     );
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw new ValidationError(
+        "AzureBlobStorage's `now` must be a function that returns epoch milliseconds",
+      );
+    }
     if (options.containerClient !== undefined && options.containerClient !== null) {
       // `containerClient` already names the account AND the container, so anything that also names them is
       // either redundant or a contradiction — and the contradiction loses silently, leaving a store pointed
@@ -128,20 +120,19 @@ export class AzureBlobStorage implements StorageBackend {
     }
     const shared = {
       containerClient: this.containerClient,
-      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
+      ...defined({ prefix: options.prefix, readTimeoutMs: options.readTimeoutMs }),
     };
     this.storage = new AzureBlobStorageDriver({
       ...shared,
-      ...(options.maxObjectBytes === undefined ? {} : { maxObjectBytes: options.maxObjectBytes }),
-      ...(options.blockBytes === undefined ? {} : { blockBytes: options.blockBytes }),
+      ...defined({
+        maxObjectBytes: options.maxObjectBytes,
+        blockBytes: options.blockBytes,
+        conditionalDelete: options.conditionalDelete,
+      }),
     });
     this.registry = new AzureBlobRegistryDriver({
       ...shared,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.conditionalDelete === undefined
-        ? {}
-        : { conditionalDelete: options.conditionalDelete }),
+      ...defined({ now: options.now, conditionalDelete: options.conditionalDelete }),
     });
     brandAsBackend(this);
   }

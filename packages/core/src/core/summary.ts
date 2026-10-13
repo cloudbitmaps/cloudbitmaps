@@ -2,19 +2,26 @@
  * A generation's summary on its registry row: how a writer builds it, how a reader opens it, and how it is held
  * against the object it describes.
  *
- * The row carries a cached description of the current generation, `{ generation, cardinality, metadata? }`, written by
- * the same compare-and-swap that moves the pointer. On a cleartext segment the values are in the clear. On an
- * encrypted one the row holds `{ generation, sealed }` instead: the cardinality as a fixed-width little-endian u64,
- * then the metadata's canonical JSON if there is any, sealed under the segment's data key with the summary scope of
- * the associated data, which binds it to its namespace, segment and generation. The count is fixed-width so the
- * ciphertext's length reveals only the metadata's size, never how many digits the count has. Pure: no I/O.
+ * The row carries a cached description of the current generation, `{ generation, cardinality, fingerprint, tailBytes,
+ * metadata? }`, written by the same compare-and-swap that moves the pointer. The fingerprint names the generation's
+ * object, by its size and footer checksum, as `CrbmReader.fingerprint` does, and `tailBytes` is how much of the object's
+ * end one open reads. On a cleartext segment the values are in the clear. On an encrypted one the row holds
+ * `{ generation, sealed }` instead: the cardinality as a fixed-width little-endian u64, the object's size as a u64 and
+ * its footer checksum as a u32, then `tailBytes` as a u32, then the metadata's canonical JSON if there is any, sealed
+ * under the segment's data key with the summary scope of the associated data, which binds it to its namespace, segment
+ * and generation. The numbers are fixed-width so the ciphertext's length reveals only the metadata's size, never how
+ * many digits the count or the size has, and `tailBytes`, which tracks the number of chunks, is sealed for the same
+ * reason the size is. Pure: no I/O.
  *
  * The generation's `.crbm` object stays the truth, and the summary is a copy of it. {@link summaryAgrees} is the
- * comparison of one with the other.
+ * comparison of one with the other, and the fingerprint is what a reader holds every object it opens against.
  */
 import type { Aead } from './crypto';
 import { aadFor } from './crypto';
+import { U32_MAX } from './bit-route';
 import { IntegrityError, isIntegrityError } from './errors';
+import { fingerprintFor, fingerprintParts } from './crbm/fingerprint';
+import { FOOTER_BYTES, PREAMBLE_BYTES } from './crbm/frame';
 import {
   MAX_METADATA_BYTES,
   canonicalMetadataJson,
@@ -35,13 +42,60 @@ const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 /** The cardinality, sealed as a little-endian u64. */
 const COUNT_BYTES = 8;
+/** The object's size, sealed as a little-endian u64, then its footer checksum and its `tailBytes`, each a little-endian u32. */
+const SIZE_BYTES = 8;
+const CRC_BYTES = 4;
+const TAIL_BYTES = 4;
+/** The fixed part of a sealed summary's plaintext: the count, the fingerprint and `tailBytes`. */
+const FIXED_BYTES = COUNT_BYTES + SIZE_BYTES + CRC_BYTES + TAIL_BYTES;
 /** A generation holds at most every 32-bit id. */
-const MAX_CARDINALITY = 2 ** 32;
+export const MAX_SUMMARY_CARDINALITY = U32_MAX + 1;
 
-/** What a summary says about a generation: its id count, and its metadata when it has any. */
+/**
+ * The most a summary's `tailBytes` can be: the reader's own default caps on what an open fetches, an index of at most
+ * 8 MiB, an extension block of at most its cap and its trailer, and the footer. The library's writer cannot reach it. A
+ * reader can report more for an object it did not write, since it accepts bytes between the index and the footer. A
+ * literal, so the registry validators that use it do not import the format module; a test holds it to the sum of the
+ * format's constants.
+ */
+export const MAX_TAIL_BYTES = 8_392_820;
+
+/** Whether `tailBytes` is one a summary of an object of `size` bytes can carry. */
+export function tailBytesFit(tailBytes: unknown, size: number): boolean {
+  return (
+    typeof tailBytes === 'number' &&
+    Number.isInteger(tailBytes) &&
+    tailBytes >= FOOTER_BYTES &&
+    tailBytes <= size - PREAMBLE_BYTES &&
+    tailBytes <= MAX_TAIL_BYTES
+  );
+}
+
+/**
+ * What a summary says about a generation: its id count, and its metadata when it has any. `tailBytes`, when given, is
+ * the bytes of the object's end one open reads.
+ */
 export interface GenerationDescription {
   readonly cardinality: number;
   readonly metadata?: GenerationMetadata | undefined;
+  readonly tailBytes?: number | undefined;
+}
+
+/**
+ * What a row's summary says: the generation's description, the fingerprint of the object it describes and the
+ * bytes of that object's end one open reads.
+ */
+export interface SummaryDescription extends GenerationDescription {
+  readonly fingerprint: string;
+  readonly tailBytes: number;
+}
+
+/** The size of the object a fingerprint names, in bytes: what `stat()` reports from a row's summary. */
+export function sizeOfFingerprint(fingerprint: string): number {
+  const parts = fingerprintParts(fingerprint);
+  if (parts === undefined)
+    throw new IntegrityError('registry record summary: a malformed fingerprint');
+  return parts.size;
 }
 
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -79,34 +133,48 @@ function fromBase64(text: string): Uint8Array | undefined {
   return out;
 }
 
-/** The clear summary of a generation on a cleartext segment. `metadata` is left off when there is none. */
+/**
+ * The clear summary of a generation on a cleartext segment, naming its object by `fingerprint`. `metadata` is left off
+ * when there is none.
+ */
 export function clearSummary(
   generation: number,
   cardinality: number,
+  fingerprint: string,
+  tailBytes: number,
   metadata?: GenerationMetadata,
 ): ClearRegistrySummary {
   return metadata === undefined || Object.keys(metadata).length === 0
-    ? { generation, cardinality }
-    : { generation, cardinality, metadata };
+    ? { generation, cardinality, fingerprint, tailBytes }
+    : { generation, cardinality, fingerprint, tailBytes, metadata };
 }
 
 /**
- * The sealed summary of a generation on an encrypted segment: the cardinality as a u64, then the metadata's canonical
- * JSON, sealed under `aead` and bound to `ref` and `generation`.
+ * The sealed summary of a generation on an encrypted segment: the cardinality as a u64, the object's size as a u64,
+ * its footer checksum as a u32 and its `tailBytes` as a u32, then the metadata's canonical JSON, sealed under `aead` and
+ * bound to `ref` and `generation`.
  */
 export function sealSummary(
   aead: Aead,
   ref: SegmentRef,
   generation: number,
   cardinality: number,
+  fingerprint: string,
+  tailBytes: number,
   metadata?: GenerationMetadata,
 ): SealedRegistrySummary {
   const meta = metadataBytes(metadata, (message) => {
     throw new IntegrityError(`summary metadata: ${message}`);
   });
-  const plain = new Uint8Array(COUNT_BYTES + (meta?.length ?? 0));
-  new DataView(plain.buffer).setBigUint64(0, BigInt(cardinality), true);
-  if (meta !== undefined) plain.set(meta, COUNT_BYTES);
+  const parts = fingerprintParts(fingerprint);
+  if (parts === undefined) throw new IntegrityError('summary: a malformed fingerprint');
+  const plain = new Uint8Array(FIXED_BYTES + (meta?.length ?? 0));
+  const view = new DataView(plain.buffer);
+  view.setBigUint64(0, BigInt(cardinality), true);
+  view.setBigUint64(COUNT_BYTES, BigInt(parts.size), true);
+  view.setUint32(COUNT_BYTES + SIZE_BYTES, parts.footerCrc, true);
+  view.setUint32(COUNT_BYTES + SIZE_BYTES + CRC_BYTES, tailBytes, true);
+  if (meta !== undefined) plain.set(meta, FIXED_BYTES);
   const { nonce, ciphertext, tag } = aead.seal(plain, aadFor(ref, generation, 'summary'));
   const framed = new Uint8Array(nonce.length + ciphertext.length + tag.length);
   framed.set(nonce, 0);
@@ -118,14 +186,14 @@ export function sealSummary(
 /**
  * What a sealed summary says, opened with `aead` under the summary scope of `ref` and the summary's own generation.
  * The bytes are untrusted: a blob that is not base64, is the wrong size, fails its authentication (tampered, or moved
- * from another generation's row), or holds a count outside 0 to 2^32 or metadata that breaks the rules, is an
- * {@link IntegrityError}.
+ * from another generation's row), or holds a count outside 0 to 2^32, a size no object can have, or metadata that
+ * breaks the rules, is an {@link IntegrityError}.
  */
 export function openSummary(
   aead: Aead,
   ref: SegmentRef,
   summary: SealedRegistrySummary,
-): GenerationDescription {
+): SummaryDescription {
   const fail = (message: string): never => {
     throw new IntegrityError(`registry record summary: ${message}`);
   };
@@ -133,10 +201,12 @@ export function openSummary(
   const framing = NONCE_BYTES + TAG_BYTES;
   if (
     framed === undefined ||
-    framed.length < framing + COUNT_BYTES ||
-    framed.length > framing + COUNT_BYTES + MAX_METADATA_BYTES
+    framed.length < framing + FIXED_BYTES ||
+    framed.length > framing + FIXED_BYTES + MAX_METADATA_BYTES
   ) {
-    fail('the sealed summary is not a nonce, a count, up to 1 KiB of metadata and a tag');
+    fail(
+      'the sealed summary is not a nonce, a count, a fingerprint, a tail size, up to 1 KiB of metadata and a tag',
+    );
   }
   const bytes = framed as Uint8Array;
   let plain: Uint8Array;
@@ -155,29 +225,38 @@ export function openSummary(
       'the sealed summary does not open: tampered bytes, or a summary moved from another generation',
     );
   }
-  if (plain.length < COUNT_BYTES) fail('the sealed summary is shorter than its count');
-  const count = new DataView(plain.buffer, plain.byteOffset, plain.byteLength).getBigUint64(
-    0,
-    true,
-  );
-  if (count > BigInt(MAX_CARDINALITY)) fail(`cardinality ${count} is outside 0 to 2^32`);
+  if (plain.length < FIXED_BYTES)
+    fail('the sealed summary is shorter than its count, fingerprint and tail size');
+  const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
+  const count = view.getBigUint64(0, true);
+  if (count > BigInt(MAX_SUMMARY_CARDINALITY)) fail(`cardinality ${count} is outside 0 to 2^32`);
+  const size = view.getBigUint64(COUNT_BYTES, true);
+  const fingerprint = fingerprintFor(Number(size), view.getUint32(COUNT_BYTES + SIZE_BYTES, true));
+  if (size > BigInt(Number.MAX_SAFE_INTEGER) || fingerprintParts(fingerprint) === undefined) {
+    fail(`the object size ${size} is not one a .crbm object can have`);
+  }
+  const tailBytes = view.getUint32(COUNT_BYTES + SIZE_BYTES + CRC_BYTES, true);
+  if (!tailBytesFit(tailBytes, Number(size))) {
+    fail(`the tail size ${tailBytes} is not one a .crbm object of ${size} bytes can have`);
+  }
   const metadata =
-    plain.length === COUNT_BYTES ? undefined : metadataFromBytes(plain.subarray(COUNT_BYTES), fail);
-  return { cardinality: Number(count), metadata };
+    plain.length === FIXED_BYTES ? undefined : metadataFromBytes(plain.subarray(FIXED_BYTES), fail);
+  return { cardinality: Number(count), metadata, fingerprint, tailBytes };
 }
 
 /**
  * What a row's summary says of its current generation, or `undefined` when it says nothing a reader may use. It is
  * used only for the generation it names, on an active row, and in the shape the row's keys call for: clear on a row
  * with no wrapped keys, sealed on a row with them. A sealed one is opened with `aead`, and is unusable without it,
- * or when it does not open, so a summary a tamperer moved or rewrote is never believed. Never throws for a bad
- * summary: the row's copy is a cache, and a copy that cannot be used is a copy that is not there.
+ * or when it does not open, so a summary a tamperer moved or rewrote is never believed; a clear one whose fingerprint
+ * names no object is unusable too. Never throws for a bad summary: the row's copy is a cache, and a copy that cannot be
+ * used is a copy that is not there.
  */
 export function usableSummary(
   ref: SegmentRef,
-  row: RegistryRecord,
+  row: Pick<RegistryRecord, 'summary' | 'status' | 'currentGen' | 'wrappedDeks'>,
   aead: Aead | undefined,
-): GenerationDescription | undefined {
+): SummaryDescription | undefined {
   const summary: RegistrySummary | undefined = row.summary;
   if (summary === undefined || row.status !== 'active' || summary.generation !== row.currentGen) {
     return undefined;
@@ -193,7 +272,17 @@ export function usableSummary(
     }
   }
   if (keyed) return undefined;
-  return { cardinality: summary.cardinality, metadata: summary.metadata };
+  // A shipped registry refuses a clear summary whose fingerprint names no object, or whose tail size no object of that
+  // size can have, when it reads the row; a registry of your own may hand one over, and it is not used, so no read
+  // compares it with an object's.
+  const parts = fingerprintParts(summary.fingerprint);
+  if (parts === undefined || !tailBytesFit(summary.tailBytes, parts.size)) return undefined;
+  return {
+    cardinality: summary.cardinality,
+    metadata: summary.metadata,
+    fingerprint: summary.fingerprint,
+    tailBytes: summary.tailBytes,
+  };
 }
 
 /**
@@ -210,9 +299,10 @@ function canonicalOrNone(metadata: GenerationMetadata | undefined): string | und
 
 /**
  * Whether a summary's description of a generation is what its object holds: the same id count and the same metadata,
- * compared in canonical form, so key order never matters. A summary with metadata over an object with none, and the
- * reverse, disagree: whether an encrypted object's metadata block is present is not authenticated (stripping it needs
- * no key), so the row's sealed copy is what a missing block is held against.
+ * compared in canonical form, so key order never matters, and the same `tailBytes` when both say one (a cold open sizes
+ * its tail read from the row's, so a number the object does not bear out is not believed again). A summary with
+ * metadata over an object with none, and the reverse, disagree: whether an encrypted object's metadata block is present
+ * is not authenticated (stripping it needs no key), so the row's sealed copy is what a missing block is held against.
  */
 export function summaryAgrees(
   summary: GenerationDescription,
@@ -220,7 +310,10 @@ export function summaryAgrees(
 ): boolean {
   return (
     summary.cardinality === object.cardinality &&
-    canonicalOrNone(summary.metadata) === canonicalOrNone(object.metadata)
+    canonicalOrNone(summary.metadata) === canonicalOrNone(object.metadata) &&
+    (summary.tailBytes === undefined ||
+      object.tailBytes === undefined ||
+      summary.tailBytes === object.tailBytes)
   );
 }
 
@@ -230,7 +323,8 @@ export function summaryAgrees(
  * metadata block is not authenticated, so a block stripped from one reads as none, and the sealed summary on the row is
  * the one copy that says there was a block; carrying it keeps the rewrite from erasing the record of what it dropped.
  * Pass `authenticated` only for a summary that was opened (a clear one has no more authority than the block it sits
- * beside). Never refuses: a rewrite over a stripped block is still an erasure.
+ * beside). Never refuses. The erasure reaches this with a stripped block only past a fingerprint forged to match the
+ * row's, since stripping the block changes the object's size and the open is held to the row's fingerprint.
  */
 export function metadataToCarry(
   object: GenerationMetadata | undefined,
@@ -243,14 +337,43 @@ export function metadataToCarry(
     : object;
 }
 
-/** The summary of a generation of `ref`, clear or sealed under `aead` as the segment's keys call for. */
+/**
+ * The summary of a generation of `ref`, describing the object `description.fingerprint` names, clear or sealed under
+ * `aead` as the segment's keys call for. `undefined` when the object's `tailBytes` is above {@link MAX_TAIL_BYTES}: a
+ * reader accepts bytes between an object's index and its footer, so an object this library did not write can report a
+ * tail the row cannot record, and a row is legal without a summary (a read then opens the object with the default tail).
+ * The description's size, footer checksum and `tailBytes` must all come from the one object.
+ */
 export function summaryOf(
   ref: SegmentRef,
   generation: number,
-  description: GenerationDescription,
+  description: SummaryDescription,
+  aead: Aead | undefined,
+): RegistrySummary | undefined {
+  const { cardinality, fingerprint, tailBytes, metadata } = description;
+  if (tailBytes > MAX_TAIL_BYTES) return undefined;
+  return aead === undefined
+    ? clearSummary(generation, cardinality, fingerprint, tailBytes, metadata)
+    : sealSummary(aead, ref, generation, cardinality, fingerprint, tailBytes, metadata);
+}
+
+/**
+ * {@link summaryOf} for an object this library wrote, whose tail is within {@link MAX_TAIL_BYTES} by construction (its
+ * index holds at most 65,536 entries and its extension block at most 4 KiB). Throws {@link IntegrityError} for a tail
+ * that is not, which the writer cannot produce.
+ */
+export function ownSummary(
+  ref: SegmentRef,
+  generation: number,
+  description: SummaryDescription,
   aead: Aead | undefined,
 ): RegistrySummary {
-  return aead === undefined
-    ? clearSummary(generation, description.cardinality, description.metadata)
-    : sealSummary(aead, ref, generation, description.cardinality, description.metadata);
+  const summary = summaryOf(ref, generation, description, aead);
+  if (summary === undefined) {
+    throw new IntegrityError(
+      `the object written for generation ${generation} of "${ref.segment}" has a tail of ${description.tailBytes} ` +
+        `bytes, above the ${MAX_TAIL_BYTES} a summary records`,
+    );
+  }
+  return summary;
 }

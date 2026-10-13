@@ -7,10 +7,11 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { WriteConflictError } from '@/core/errors';
-import { openGenerationReader } from '@/core/crbm-storage-source';
-import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import { openGenerationReader } from '@/core/crbm-open';
+import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { incarnationOf } from '@/core/token';
 
 /**
  * `listGenerations` / `rollbackSegment` — see what a segment has been, and put it back.
@@ -41,9 +42,9 @@ describe('listGenerations', () => {
     const w = world();
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
     expect(await listGenerations(SEG, w.deps)).toEqual([
-      { generation: 0, current: false },
-      { generation: 1, current: false },
-      { generation: 2, current: true, cardinality: 1 },
+      { generation: 0, current: false, known: true },
+      { generation: 1, current: false, known: true },
+      { generation: 2, current: true, known: true, cardinality: 1 },
     ]);
   });
 
@@ -51,7 +52,7 @@ describe('listGenerations', () => {
     const w = world();
     for (const ids of [[1], [2], [3]]) await loadSegment(SEG, ids, w.load, { keep: 0 });
     expect(await listGenerations(SEG, w.deps)).toEqual([
-      { generation: 2, current: true, cardinality: 1 },
+      { generation: 2, current: true, known: true, cardinality: 1 },
     ]);
   });
 
@@ -90,8 +91,8 @@ describe('rollbackSegment', () => {
     // Everything is still there — including the generations now ABOVE the pointer, which is what lets an
     // operator who rolled back too far roll forward again.
     expect((await listGenerations(SEG, w.deps)).map((g) => g.generation)).toEqual([0, 1, 2]);
-    // Undoing the rollback needs the opt-in: above the pointer is also where never-published objects live.
-    await rollbackSegment(SEG, 2, w.deps, { allowForward: true });
+    // Undoing the rollback needs no flag: the row still knows generation 2, which the rollback left above the pointer.
+    await rollbackSegment(SEG, 2, w.deps);
     expect((await w.registry.get(SEG))!.currentGen).toBe(2);
   });
 
@@ -106,11 +107,13 @@ describe('rollbackSegment', () => {
     await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [], { codec: roaringCodec });
 
     await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toBeInstanceOf(ValidationError);
-    await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toThrow(/above the current pointer/);
+    await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toThrow(
+      /not one its row knows it published/,
+    );
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
 
     // The opt-in is for an operator who knows what they are doing.
-    const r = await rollbackSegment(SEG, 7, w.deps, { allowForward: true });
+    const r = await rollbackSegment(SEG, 7, w.deps, { allowUnknown: true });
     expect(r.generation).toBe(7);
   });
 
@@ -187,15 +190,24 @@ describe('rollbackSegment', () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 0 });
     // Generation 0 was collected. Pointing at it would be the one state the design exists to avoid.
-    await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toBeInstanceOf(NotFoundError);
-    await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(/present: 1/);
+    // The row does not know 0 either, and says so first; the override reaches the bucket and names what is there.
+    await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(rollbackSegment(SEG, 0, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    await expect(rollbackSegment(SEG, 0, w.deps, { allowUnknown: true })).rejects.toThrow(
+      /present: 1/,
+    );
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
   });
 
   it('refuses a generation that never existed', async () => {
     const w = world();
     await loadSegment(SEG, [1], w.load);
-    await expect(rollbackSegment(SEG, 99, w.deps)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(rollbackSegment(SEG, 99, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(rollbackSegment(SEG, 99, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 
   it('refuses a crypto-shredded segment — every generation of it is unreadable', async () => {
@@ -236,6 +248,7 @@ describe('rollbackSegment', () => {
         kind: 'segment.rollback',
         namespace: 'ns',
         segment: 's',
+        incarnation: incarnationOf((await w.registry.get(SEG))!.token),
         fromGeneration: 1,
         generation: 0,
       },
@@ -275,13 +288,14 @@ describe('rollback and the forward-only rule', () => {
     let fired = false;
     const racing = new Proxy(w.storage, {
       get(t, p, rx) {
-        if (p !== 'list') return Reflect.get(t, p, rx) as unknown;
-        return async function* (ref: SegmentRef) {
+        if (p !== 'getTail') return Reflect.get(t, p, rx) as unknown;
+        // The footer read of the target is the rollback's first request to storage, before its swap.
+        return async (...args: Parameters<typeof w.storage.getTail>) => {
           if (!fired) {
             fired = true;
             await loadSegment(SEG, [42], w.load, { keep: 9 });
           }
-          yield* w.storage.list(ref);
+          return w.storage.getTail(...args);
         };
       },
     }) as typeof w.storage;
@@ -312,8 +326,10 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(res.erased).toBe(true);
     expect(res.collected).toContain(1); // the above-pointer holder was taken
 
-    // And the rollback that would have resurrected it now cannot: the object is gone.
-    await expect(rollbackSegment(SEG, 1, w.deps, { allowForward: true })).rejects.toBeInstanceOf(
+    // And the rollback that would have resurrected it now cannot: the erasure took it out of the row's ledger, so it is
+    // refused as unknown, and with the override the object is gone.
+    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(rollbackSegment(SEG, 1, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
       NotFoundError,
     );
 
@@ -344,7 +360,8 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(await holdersOf(w.storage, 999)).toEqual([]);
     expect(await generationsOf(w.deps)).toEqual([0]);
     for (const g of [1, 2]) {
-      await expect(rollbackSegment(SEG, g, w.deps, { allowForward: true })).rejects.toBeInstanceOf(
+      await expect(rollbackSegment(SEG, g, w.deps)).rejects.toBeInstanceOf(ValidationError);
+      await expect(rollbackSegment(SEG, g, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
         NotFoundError,
       );
     }
@@ -384,7 +401,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     const storage = onFirstOpenOf(
       w.storage,
       (g) => g > 0,
-      () => rollbackSegment(SEG, 1, w.deps, { allowForward: true }),
+      () => rollbackSegment(SEG, 1, w.deps),
     );
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: storage.driver });
     expect(storage.fired()).toBe(true);
@@ -402,26 +419,35 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
 
   it('a load that publishes mid-scan stops the above-pointer deletes, and the bucket decides the receipt', async () => {
     // The pointer moving is a reason to stop deleting above it, not by itself a reason to refuse: a forward
-    // publish puts every holder BELOW the new pointer, where the `keep: 0` collection takes them. What is left in
-    // the bucket decides, exactly as it does when nothing raced.
+    // publish puts every holder BELOW the new pointer, where the `keep: 0` collection takes them. The call takes
+    // them out of the row's ledger first, and renews nothing: no load can publish a number below the pointer. What
+    // is left in the bucket decides, exactly as it does when nothing raced. Generation 0, which the call found
+    // clean and the load's window names, stays as the load's grace generation. Main also answers `erased: true`, but
+    // its collection takes generation 0 as well, and its bucket is `[3]`.
     const w = world();
     await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 0
     await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 1
     await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 2
     await rollbackSegment(SEG, 0, w.deps);
 
+    let loaded: RegistryRecord | undefined;
     const storage = onFirstOpenOf(
       w.storage,
       (g) => g > 0,
       async () => {
         await loadSegment(SEG, [111, 222], w.load, { keep: 9 }); // gen 3, published forward-only
+        loaded = (await w.registry.get(SEG))!;
       },
     );
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: storage.driver });
     expect(storage.fired()).toBe(true);
     expect(res).toMatchObject({ erased: true, fromGeneration: 2 });
+    expect([...res.collected].sort((a, b) => a - b)).toEqual([1, 2]);
     expect(await holdersOf(w.storage, 999)).toEqual([]);
-    expect(await generationsOf(w.deps)).toEqual([3]);
+    expect(await generationsOf(w.deps)).toEqual([0, 3]);
+    const row = (await w.registry.get(SEG))!;
+    expect(row.knownGens!.map((e) => e.generation)).toEqual([0, 3]);
+    expect(row.pointerId).toBe(loaded!.pointerId); // the prune renewed nothing
   });
 
   it('a rewrite takes every older generation, the clean ones above the pointer included', async () => {
@@ -496,7 +522,8 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
           const out = await inner.apply(w.registry, args);
           if (!fired) {
             fired = true; // the rewrite's own publish has just landed
-            await rollbackSegment(SEG, 1, w.deps);
+            // The rewrite's publish left the ledger holding itself alone, so the holder is not one the row knows.
+            await rollbackSegment(SEG, 1, w.deps, { allowUnknown: true });
           }
           return out;
         };
@@ -542,8 +569,8 @@ function afterFirstDelete(base: IStorageDriver, hook: () => Promise<unknown>): I
     getTail: (k, m) => base.getTail(k, m),
     list: (r) => base.list(r),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
-    delete: async (k) => {
-      await base.delete(k);
+    delete: async (k, o) => {
+      await base.delete(k, o);
       if (!fired) {
         fired = true;
         await hook();
@@ -562,7 +589,7 @@ function onFirstOpenOf(
   const driver: IStorageDriver = {
     capabilities: () => base.capabilities(),
     getRange: (k, o, l) => base.getRange(k, o, l),
-    delete: (k) => base.delete(k),
+    delete: (k, o) => base.delete(k, o),
     list: (r) => base.list(r),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
     getTail: async (k, m) => {
@@ -594,7 +621,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(3); // same instance
   });
 
-  it('store.rollback takes the same options as rollbackSegment, allowForward included', () => {
+  it('store.rollback takes the same options as rollbackSegment, allowUnknown included', () => {
     // Type-level: the store's wired form must not narrow the free function's options. A narrower type makes a
     // documented call — undoing a rollback — a compile error for every TypeScript caller of the store.
     expectTypeOf<NonNullable<Parameters<CloudRoaring['rollback']>[2]>>().toEqualTypeOf<
@@ -602,9 +629,10 @@ describe('rollback — the facade, and the validation the core owes', () => {
     >();
   });
 
-  it('store.rollback rolls forward with allowForward, and refuses it without', async () => {
-    // Undoing a rollback through the store: the target sits above the pointer, which is refused unless the call
-    // opts in, and with the opt-in the same store instance reads the newer generation and audits the move.
+  it('store.rollback rolls forward onto a known generation with no flag, and onto an unknown one only with allowUnknown', async () => {
+    // Undoing a rollback through the store: the target sits above the pointer, where the row still knows it, so no
+    // flag is needed and the same store instance reads the newer generation. An object no row published above the
+    // pointer needs the opt-in, which the audit event records.
     const w = world();
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 }); // gen 0
     await loadSegment(SEG, [9], w.load, { keep: 9 }); // gen 1
@@ -615,15 +643,37 @@ describe('rollback — the facade, and the validation the core owes', () => {
     await store.rollback(SEG, 0);
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(3);
 
-    await expect(store.rollback(SEG, 1)).rejects.toBeInstanceOf(ValidationError);
-    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
-
     const audit = new RecordingAuditSink();
-    const r = await store.rollback(SEG, 1, { allowForward: true, audit });
+    const r = await store.rollback(SEG, 1, { audit });
     expect(r).toEqual({ fromGeneration: 0, generation: 1 });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // same instance
+    const stray = 7;
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: stray }, [5, 6], {
+      codec: roaringCodec,
+    });
+    await expect(store.rollback(SEG, stray)).rejects.toBeInstanceOf(ValidationError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    await store.rollback(SEG, stray, { allowUnknown: true, audit });
+    expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(2);
+    const incarnation = incarnationOf((await w.registry.get(SEG))!.token);
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.rollback', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
+      {
+        kind: 'segment.rollback',
+        namespace: 'ns',
+        segment: 's',
+        incarnation,
+        fromGeneration: 0,
+        generation: 1,
+      },
+      {
+        kind: 'segment.rollback',
+        namespace: 'ns',
+        segment: 's',
+        incarnation,
+        fromGeneration: 1,
+        generation: stray,
+        unknown: true,
+      },
     ]);
   });
 
@@ -635,8 +685,8 @@ describe('rollback — the facade, and the validation the core owes', () => {
       retry: false,
     });
     expect(await store.generations(SEG)).toEqual([
-      { generation: 0, current: false },
-      { generation: 1, current: true, cardinality: 1 },
+      { generation: 0, current: false, known: true },
+      { generation: 1, current: true, known: true, cardinality: 1 },
     ]);
   });
 
@@ -652,8 +702,27 @@ describe('rollback — the facade, and the validation the core owes', () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
     for (const g of [0, 1]) await w.storage.delete({ ...SEG, generation: g });
-    // Target 0 rather than the current generation: rolling to the one already current short-circuits as a
-    // reported no-op before anything is looked up, which is correct — it changes nothing.
+    // Both the generation below the pointer and the current one, whose missing object a no-op does not report as fine.
     await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(/no generations remain/);
+    await expect(rollbackSegment(SEG, 1, w.deps)).rejects.toThrow(/no generations remain/);
+  });
+});
+
+describe('a row with no pointer has every generation above it', () => {
+  it('a rollback onto an object a first load never published needs allowUnknown', async () => {
+    // A row minted by `setRetention` before the first load, and a first load whose object landed and never published:
+    // that object was never the segment, as an object above a pointer is not.
+    const w = world();
+    await w.registry.create(SEG, { currentGen: null });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: w.registry,
+      publish: false,
+    });
+    await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(
+      /above the current pointer \(none\)/,
+    );
+    expect((await w.registry.get(SEG))!.currentGen).toBeNull();
+    await rollbackSegment(SEG, 0, w.deps, { allowUnknown: true });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
   });
 });

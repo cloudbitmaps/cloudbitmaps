@@ -1,7 +1,7 @@
 import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StorageDriver } from '@/s3/storage';
 import { ValidationError } from '@/core/errors';
-import { storageObjectKey } from '@/s3/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 
 // Constructor-level checks need no network (the client is never called), so they run on the normal lane.
 const fakeClient = {} as unknown as S3Client;
@@ -23,6 +23,22 @@ describe('S3StorageDriver construction', () => {
         ValidationError,
       );
     }
+  });
+
+  it("refuses an object cap above S3's 5 TiB and a part above its 5 GiB", () => {
+    // A cap past S3's own makes the part grow past S3's part limit, holds an object up to that size in memory whole,
+    // and sends it as one PutObject S3 refuses.
+    const TiB = 1024 ** 4;
+    const GiB = 1024 ** 3;
+    const build = (o: { maxObjectBytes?: number; partBytes?: number }) => () =>
+      new S3StorageDriver({ client: fakeClient, bucket: 'b', ...o });
+    expect(build({ maxObjectBytes: 5 * TiB + 1 })).toThrow(ValidationError);
+    expect(build({ maxObjectBytes: Number.MAX_SAFE_INTEGER })).toThrow(/maxObjectBytes .*5 TiB/);
+    expect(build({ partBytes: 5 * GiB + 1 })).toThrow(/partBytes .*5 GiB/);
+    // At the limits, the part grown to reach the cap stays within S3's part limit.
+    const atLimit = build({ maxObjectBytes: 5 * TiB, partBytes: 5 * GiB })();
+    expect(atLimit.capabilities().maxObjectBytes).toBe(5 * TiB);
+    expect(build({ maxObjectBytes: 5 * TiB })().capabilities().maxObjectBytes).toBe(5 * TiB);
   });
 
   it('rejects a prefix with control characters', () => {

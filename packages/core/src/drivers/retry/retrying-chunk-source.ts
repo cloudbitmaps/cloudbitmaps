@@ -20,11 +20,14 @@
  * Default classifier: {@link isTransientError}.
  */
 import type { Clock, Rng } from '../../core/determinism';
-import { withRetry, DEFAULT_RETRY_POLICY } from '../../core/retry';
+import { checkedRetryPolicy, withRetry, DEFAULT_RETRY_POLICY } from '../../core/retry';
+import { ValidationError } from '../../core/errors';
 import { isTransientError } from '../../core/errors';
 import type { RetryPolicy } from '../../core/retry';
 import type {
   ChunkRef,
+  ChunkRead,
+  ReadChunksOptions,
   GenerationSummary,
   StorageChunkSource,
   SegmentRef,
@@ -52,8 +55,11 @@ function toRetry(opts: RetryingOptions): {
     onRetry?: RetryingOptions['onRetry'];
   };
 } {
+  if (opts.onRetry !== undefined && typeof opts.onRetry !== 'function') {
+    throw new ValidationError('retry.onRetry must be a function');
+  }
   return {
-    policy: opts.policy ?? DEFAULT_RETRY_POLICY,
+    policy: checkedRetryPolicy(opts.policy ?? DEFAULT_RETRY_POLICY),
     deps: {
       clock: opts.clock,
       rng: opts.rng,
@@ -70,20 +76,18 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
   private readonly deps: ReturnType<typeof toRetry>['deps'];
   /** Present only when the inner source supports it — so capability detection stays honest. */
   readonly sizeOf?: (ref: SegmentRef) => Promise<SegmentSize | null>;
+  readonly getChunks?: (
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ) => AsyncIterable<ChunkRead>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly summary?: (ref: SegmentRef) => Promise<GenerationSummary | null>;
+  readonly stat?: (ref: SegmentRef) => Promise<(GenerationSummary & SegmentSize) | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
   readonly invalidate?: (ref: SegmentRef) => void;
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
   readonly currentVersion?: (ref: SegmentRef) => Promise<string | null>;
-
-  /**
-   * Forwarded, not retried: a property, with no request behind it. Without it the grounded cost report priced a
-   * retrying store's refresh at the default TTL whatever the store was configured with.
-   */
-  get pointerRefreshMs(): number | undefined {
-    return this.inner.pointerRefreshMs;
-  }
 
   constructor(inner: StorageChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -94,6 +98,19 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     if (innerSizeOf) {
       this.sizeOf = (ref) => withRetry(() => innerSizeOf.call(inner, ref), this.policy, this.deps);
     }
+    // Retried a request at a time, not as a whole: the source runs each request it makes through the runner it is
+    // handed, so a fault repeats the one request that failed and the ones that landed are not read again.
+    const innerGetChunks = inner.getChunks;
+    if (innerGetChunks) {
+      this.getChunks = (ref, keys, options) => {
+        const outer = options?.retry;
+        return innerGetChunks.call(inner, ref, keys, {
+          ...options,
+          retry: (request) =>
+            withRetry(outer === undefined ? request : () => outer(request), this.policy, this.deps),
+        });
+      };
+    }
     const innerCardinalities = inner.cardinalities;
     if (innerCardinalities) {
       this.cardinalities = (ref) =>
@@ -103,6 +120,10 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
     if (innerSummary) {
       this.summary = (ref) =>
         withRetry(() => innerSummary.call(inner, ref), this.policy, this.deps);
+    }
+    const innerStat = inner.stat;
+    if (innerStat) {
+      this.stat = (ref) => withRetry(() => innerStat.call(inner, ref), this.policy, this.deps);
     }
     const innerCurrentGeneration = inner.currentGeneration;
     if (innerCurrentGeneration) {

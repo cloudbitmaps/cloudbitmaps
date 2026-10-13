@@ -237,8 +237,8 @@ describe('release workflow shape', () => {
   });
 
   it('expects as many package manifests as the workspace actually has', () => {
-    // A hardcoded count goes stale when a package is added: a count of `2` in a five-package workspace passes
-    // a tag that ships core and roaring and silently leaves the three driver packages behind — a PARTIAL
+    // A hardcoded count goes stale when a package is added: a count of `2` in a six-package workspace passes
+    // a tag that ships core and roaring and silently leaves the driver packages and the tools behind — a PARTIAL
     // publish of a family that releases in lockstep, which is the one npm state that cannot be undone. The
     // number is a policy claim about the workspace, and nothing in the workflow can see the workspace, so the
     // comparison has to happen here.

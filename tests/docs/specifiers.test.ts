@@ -60,7 +60,7 @@ function publicFacingFiles(): string[] {
   walk('.github', (n) => n.endsWith('.md'));
   // The published source. Its doc-comments are user-facing twice over — on hover in an editor, and inside the
   // `.d.ts` files and sourcemaps that ship in the tarball.
-  // EVERY package's src, derived: all five publish `.d.ts` and sourcemaps, so all five are user-facing.
+  // EVERY package's src, derived: every one publishes `.d.ts` and sourcemaps, so every one is user-facing.
   for (const pkg of readdirSync(join(ROOT, 'packages'), { withFileTypes: true })) {
     if (pkg.isDirectory()) walk(`packages/${pkg.name}/src`, (n) => n.endsWith('.ts'));
   }
@@ -88,7 +88,7 @@ function packageReadmes(): string[] {
 const OFFENDERS: readonly RegExp[] = [
   // Every client people actually use: a pattern that matched `npm i` on one line would miss `pnpm add`,
   // `yarn add`, the `npm install` long form, and a command that wraps its package onto the next line.
-  /\b(?:npm|pnpm|yarn|bun)(?:&nbsp;| |\s)+(?:i|install|add)(?:&nbsp;| |\s)+cloud-roaring\b/,
+  /\b(?:npm|pnpm|yarn|bun)(?:&nbsp;|\s)+(?:i|install|add)(?:&nbsp;|\s)+cloud-roaring\b/,
   // `from 'cloud-roaring'` / `require("cloud-roaring/x")`, tolerating the site's syntax-highlight spans
   // between the keyword and the quoted specifier.
   /(?:from|require\s*\()[^'"\n]{0,80}['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,

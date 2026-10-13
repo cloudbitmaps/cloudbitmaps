@@ -273,6 +273,23 @@ describe('ObjectStoreRegistry: reading a row the store is racing', () => {
     // A TransientError says "retry"; returning null here would say "this segment does not exist".
     await expect(reg.get(ref)).rejects.toBeInstanceOf(TransientError);
   });
+
+  it('reads again on a race raised by another copy of the package, and rethrows any other error', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, undefined, ticking());
+    await reg.create(ref, { currentGen: 5 });
+    const read = store.read.bind(store);
+    const named = (name: string): Error => Object.assign(new Error('from elsewhere'), { name });
+    let failWith: Error | undefined = named('ObjectVersionRaced'); // same name, not the same class
+    store.read = (key) => {
+      const err = failWith;
+      failWith = undefined;
+      return err === undefined ? read(key) : Promise.reject(err);
+    };
+    expect((await reg.get(ref))?.currentGen).toBe(5);
+    failWith = named('ObjectVersionRacedNot');
+    await expect(reg.get(ref)).rejects.toThrow('from elsewhere');
+  });
 });
 
 describe('ObjectStoreRegistry: delete under contention', () => {
@@ -398,7 +415,7 @@ describe('ObjectStoreRegistry: what the shared protocol guarantees', () => {
   const build = (): ObjectStoreRegistry =>
     new ObjectStoreRegistry(new FakeObjectStore(), undefined, ticking());
 
-  it('never re-issues a token across delete-and-recreate (ABA safety)', async () => {
+  it('a tombstoning store never re-issues a token across delete-and-recreate (ABA safety)', async () => {
     // The reason `delete` tombstones instead of removing. If a recreate restarted the counter at 0, a stale
     // holder of the old token could win a compare-and-swap against a segment that is no longer the one it
     // read — which is invariant 1's "identity is the token, never the generation number".
@@ -584,20 +601,6 @@ describe('ObjectStoreRegistry: removing a row for good', () => {
     expect(await reg.get(ref)).toBeNull();
   });
 
-  it('a row born before 0.12 is tombstoned even when the store vouches for its delete', async () => {
-    const { store, a } = pair();
-    store.plant(
-      key,
-      '{"schemaVersion":1,"deleted":false,"record":{"segment":"s:v1","currentGen":2,"status":"destroyed",' +
-        '"createdAt":10,"updatedAt":20,"token":"7"}}',
-    );
-    await a.delete(ref, '7');
-    expect(store.deletes).toBe(0);
-    expect(store.has(key)).toBe(true);
-    // A re-create over that tombstone carries the counter on, as it always has.
-    expect(tokenParts((await a.create(ref, { currentGen: null })).token).counter).toBe(9);
-  });
-
   it('a name removed and created again starts a new incarnation at counter 0', async () => {
     const { a } = pair();
     const { token } = await a.create(ref, { currentGen: null });
@@ -608,5 +611,32 @@ describe('ObjectStoreRegistry: removing a row for good', () => {
     await expect(a.compareAndSwap(ref, token, { currentGen: 1 })).rejects.toBeInstanceOf(
       WriteConflictError,
     );
+  });
+});
+
+describe('a row is read only under the name it was written for', () => {
+  it('refuses a row copied under another key', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    await reg.create({ segment: 'orig' }, { currentGen: 0 });
+    const row = await store.read(registryObjectKey('conf', { segment: 'orig' }));
+    store.plant(registryObjectKey('conf', { namespace: 'ns', segment: 'orig' }), row!.bytes);
+    await expect(reg.get({ namespace: 'ns', segment: 'orig' })).rejects.toThrow(
+      /names another segment than the one it is stored for/,
+    );
+    expect(await reg.get({ segment: 'orig' })).toMatchObject({ segment: 'orig' });
+  });
+
+  it('a listing refuses it too, as it refuses any other corrupt row', async () => {
+    const store = new FakeObjectStore();
+    const reg = new ObjectStoreRegistry(store, 'conf', ticking());
+    await reg.create({ segment: 'orig' }, { currentGen: 0 });
+    const row = await store.read(registryObjectKey('conf', { segment: 'orig' }));
+    store.plant(registryObjectKey('conf', { namespace: 'ns', segment: 'orig' }), row!.bytes);
+    await expect(
+      (async () => {
+        for await (const _ of reg.list('ns')) void _;
+      })(),
+    ).rejects.toThrow(/names another segment than the one it is stored for/);
   });
 });

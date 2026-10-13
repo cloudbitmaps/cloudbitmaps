@@ -17,7 +17,11 @@
  * re-run). A segment that couldn't be read is isolated into the manifest's `failed[]` and the CLI exits non-zero
  * — always check it, because "manifest present" is *the run finished*, not "every segment succeeded". Re-running
  * overwrites the segments it re-exports but does **not** prune files for segments that have since disappeared —
- * **export to a fresh directory** for a clean dump. Artifacts are owner-only (decrypted **cleartext** — protect it).
+ * **export to a fresh directory** for a clean dump. It writes only into directories it made (or an earlier run's,
+ * owner-only): a symlink, a directory of another user, or one open to group or others in its place is refused. Artifacts are owner-only (decrypted **cleartext** — protect it).
+ *
+ * It wires no keystore, so an encrypted segment lands in `failed[]`: export an encrypted store with
+ * `store.exportSegments` from a store built with its keystore.
  *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
  * short script that builds the backend for the storage you have and calls `store.exportSegments(sink,
@@ -36,11 +40,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { encodeNameForPath, namespacePathPart } from '@cloudbitmaps/core/driver-kit';
-import { CloudRoaring, LocalFsStorage } from '../index';
+import { CloudRoaring, LocalFsStorage, ValidationError } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {
@@ -50,23 +54,52 @@ export interface ExportConfig {
   readonly namespace?: string;
 }
 
-/** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
+/** Parse + validate config from an environment map. Throws a {@link ValidationError} on misconfiguration. */
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
-    throw new Error('CR_EXPORT_ROOT is required (the local-filesystem storage root)');
+    throw new ValidationError('CR_EXPORT_ROOT is required (the local-filesystem storage root)');
   }
   const out = env.CR_EXPORT_OUT;
   if (out === undefined || out === '') {
-    throw new Error('CR_EXPORT_OUT is required (the output directory for the dump)');
+    throw new ValidationError('CR_EXPORT_OUT is required (the output directory for the dump)');
   }
-  const format = env.CR_EXPORT_FORMAT ?? 'roaring';
+  const format = env.CR_EXPORT_FORMAT || 'roaring'; // '' (an unset shell var) is the default, as the namespace's is
   if (format !== 'roaring' && format !== 'ndjson') {
-    throw new Error(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
+    throw new ValidationError(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
   }
   const namespace = env.CR_EXPORT_NAMESPACE || undefined; // treat '' (an unset shell var) as "no filter"
   return { root, out, format, namespace };
 }
+
+/**
+ * Make `dir` (a namespace directory under `out`) if it is not there, and refuse to write into one the exporter could
+ * not have made: a symlink, anything that is not a directory, one owned by another user, or one that group or others
+ * can reach (the exporter makes `0o700`). A directory an earlier run of it left passes. Without this a directory
+ * planted in a shared output location would receive the dump, or a symlink in it would send the dump elsewhere.
+ */
+async function ensureOwnDirectory(out: string, dir: string): Promise<void> {
+  await mkdir(out, { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(dir, { mode: 0o700 });
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  }
+  const found = await lstat(dir);
+  const refuse = (why: string): never => {
+    throw new ValidationError(`the export directory is not one this tool made: ${why}`);
+  };
+  if (found.isSymbolicLink()) refuse('a namespace directory is a symbolic link');
+  if (!found.isDirectory()) refuse('a namespace path is not a directory');
+  if (process.getuid !== undefined) {
+    if (found.uid !== process.getuid()) refuse('a namespace directory belongs to another user');
+    if ((found.mode & 0o077) !== 0) refuse('a namespace directory is open to group or others');
+  }
+}
+
+/** The manifest's file name, at the top of the output directory. */
+const MANIFEST_NAME = 'manifest.json';
 
 /**
  * A filesystem {@link ExportSink}. Writes each segment to a **unique** `<segment><ext>.<uuid>.part` temp
@@ -75,6 +108,10 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
  * another. Uses a `FileHandle` (not `createWriteStream`) so an I/O fault **rejects the write** rather than
  * emitting an unhandled `'error'` event that would crash the process, and loops on short writes so a partial
  * `write()` never truncates the output. Artifacts are **owner-only** (dir `0o700`, files `0o600`) — cleartext.
+ *
+ * A namespace named `manifest.json`, in any letter case, is refused with a `ValidationError`, so each of its segments
+ * lands in `failed`: its directory would take the manifest's path. Aborting a segment also removes its namespace
+ * directory when that leaves it empty.
  */
 export function fsSink(out: string): ExportSink {
   return {
@@ -87,8 +124,15 @@ export function fsSink(out: string): ExportSink {
       // `namespacePathPart`, not `encodeNameForPath(ns ?? '_default')`: the sentinel is emitted literally
       // while a caller's namespace is encoded, so a segment in a namespace actually named `_default`
       // does not land in the same directory as the un-namespaced ones.
-      const dir = join(out, namespacePathPart(ref.namespace));
-      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const part = namespacePathPart(ref.namespace);
+      // The manifest is a file at the top of `out`, so a namespace directory of that name would take its place.
+      if (part.toLowerCase() === MANIFEST_NAME) {
+        throw new ValidationError(
+          `a namespace named ${MANIFEST_NAME} (in any letter case) cannot be exported to a directory: its folder would be the manifest's path`,
+        );
+      }
+      const dir = join(out, part);
+      await ensureOwnDirectory(out, dir);
       const finalPath = join(dir, `${encodeNameForPath(ref.segment)}${ext}`);
       const tmpPath = `${finalPath}.${randomUUID()}.part`;
       const handle = await open(tmpPath, 'wx', 0o600); // wx = create-exclusive; unique name ⇒ no collision
@@ -116,10 +160,33 @@ export function fsSink(out: string): ExportSink {
           // Discard the partial; best-effort so a failing cleanup never masks the caller's original fault.
           await handle.close().catch(() => {});
           await rm(tmpPath, { force: true });
+          // Only an empty directory goes; one holding files is left alone, and any other fault is the caller's to see.
+          await rmdir(dir).catch((err: NodeJS.ErrnoException) => {
+            if (err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST' && err.code !== 'ENOENT')
+              throw err;
+          });
         },
       };
     },
   };
+}
+
+/**
+ * Refuse a root that is not a store's: one that does not exist (a typo) or holds nothing (a mount point whose volume is
+ * not mounted) would export nothing and report a finished run with no data in it.
+ */
+async function requireStoreRoot(root: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch {
+    throw new ValidationError('CR_EXPORT_ROOT does not name a directory that can be read');
+  }
+  if (entries.length === 0) {
+    throw new ValidationError(
+      'CR_EXPORT_ROOT is empty: it holds no store (an unmounted volume, or the wrong directory)',
+    );
+  }
 }
 
 const log = (obj: unknown): void => {
@@ -132,9 +199,21 @@ export async function main(
   now: () => number = () => Date.now(),
 ): Promise<ExportManifest> {
   const config = parseConfig(env);
+  await requireStoreRoot(config.root);
   const storage = new LocalFsStorage(config.root);
   const store = new CloudRoaring({ storage });
 
+  // An earlier run's manifest goes before anything of this run is written: its presence marks a finished run, and one
+  // left in place would mark this run finished, with the earlier run's counts, if this one stopped part way.
+  const priorManifest = await lstat(join(config.out, MANIFEST_NAME)).catch(() => null);
+  if (priorManifest?.isDirectory() === true) {
+    // Not removed here: it is a directory of someone's files, and only a person can say it holds nothing they want.
+    throw new ValidationError(
+      `${join(config.out, MANIFEST_NAME)} is a directory, so the manifest cannot be written there: ` +
+        'remove or rename it, or export to a fresh directory',
+    );
+  }
+  await rm(join(config.out, MANIFEST_NAME), { force: true });
   const manifest = await store.exportSegments(fsSink(config.out), {
     format: config.format,
     namespace: config.namespace,
@@ -168,6 +247,7 @@ export async function main(
     totalSegments: manifest.totalSegments,
     totalIds: manifest.totalIds,
     failed: manifest.failed.length,
+    skipped: manifest.skipped.length,
   });
   return manifest;
 }

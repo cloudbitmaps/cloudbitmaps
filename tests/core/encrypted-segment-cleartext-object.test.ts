@@ -4,12 +4,12 @@ import { rollbackSegment } from '@/core/rollback';
 import { BufferSink } from '@/core/blob';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { nextGeneration } from '@/core/generation-gc';
-import { holdsObject } from '@/core/crbm-storage-source';
+import { provenObject } from '@/core/crbm-open';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferReader } from '@/core/blob';
-import { IntegrityError, KeyUnavailableError } from '@/core/errors';
+import { IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
 import { loadSegment } from '@/core/load';
-import { publishGeneration } from '@/core/crbm-storage-source';
+import { publishGeneration } from '../helpers/publish';
 import { roaringCodec } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -39,7 +39,7 @@ function world() {
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry, keystore });
     return generation;
   };
-  return { storage, registry, store, load };
+  return { storage, registry, keystore, store, load };
 }
 
 /** A cleartext object, written with no key, whose index claims 65,536 ids and whose metadata names an owner. */
@@ -66,8 +66,10 @@ describe('a cleartext object under an encrypted segment', () => {
     const bytes = await storage.getRange(key, 0, size);
     const fingerprint = (await CrbmReader.open(new BufferReader(bytes))).fingerprint;
     expect(await CrbmReader.sameObject(new BufferReader(bytes), fingerprint)).toBe(true);
-    expect(await holdsObject(storage, key, fingerprint)).toBe(true);
-    expect(await holdsObject(storage, key, `${size}:1`)).toBe(false);
+    expect(await provenObject(storage, key, fingerprint)).toEqual({
+      version: (await storage.getTail(key, 0)).version,
+    });
+    expect(await provenObject(storage, key, `${size}:1`)).toBeNull();
   });
 
   it('a forgery in place of the current generation is refused by every read of the object', async () => {
@@ -78,8 +80,23 @@ describe('a cleartext object under an encrypted segment', () => {
     await putCleartext(storage, { ...SEG, generation });
     const seg = store().segment('s');
     // A cold count is the row's word and does not open the object, so it still says 3; every read of the object
-    // is refused.
+    // is refused: it is not the object the row's summary names, which its footer says before any key is used.
     expect(await seg.count()).toBe(3);
+    await expect(seg.has(1)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(seg.has(1)).rejects.toThrow(
+      new RegExp(`generation ${generation} is another object than its registry row names`),
+    );
+    await expect(seg.pin()).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('a forgery in place of the current generation of a row with no summary is refused as cleartext under a key', async () => {
+    const { storage, registry, store, load } = world();
+    const generation = await load([1, 2, 3]);
+    const row = (await registry.get(SEG))!;
+    await registry.compareAndSwap(SEG, row.token, { summary: undefined });
+    await storage.delete({ ...SEG, generation });
+    await putCleartext(storage, { ...SEG, generation });
+    const seg = store().segment('s');
     await expect(seg.has(1)).rejects.toThrow(
       new RegExp(`generation ${generation} is not encrypted, but it was opened with a key`),
     );
@@ -89,7 +106,9 @@ describe('a cleartext object under an encrypted segment', () => {
   it("a cleartext load racing the segment's first keyed load is refused at its publish, so reads go on", async () => {
     // An unguarded load with no keystore reads "no row", writes its cleartext object, and only then does the other
     // writer's keyed first load publish, creating the row with its key. The cleartext publish onto that row is the
-    // one way a cleartext generation could become current under a key; it is refused before its compare-and-swap.
+    // one way a cleartext generation could become current under a key. The load found no row and fences on that
+    // absence, so the row that appeared refuses it before its compare-and-swap, and the refusal deletes its cleartext
+    // object, which its footer proves its own: a cleartext object has no place in an encrypted segment's bucket.
     const { storage, registry } = world();
     const keystore = new InProcessKeystore({ keys: { k2: randomBytes(32) }, activeKeyId: 'k2' });
     const keyed = await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7, 8], {
@@ -112,17 +131,20 @@ describe('a cleartext object under an encrypted segment', () => {
         };
       },
     });
-    await expect(
-      loadSegment(
+    expect(
+      await loadSegment(
         SEG,
         [1, 2, 3],
         { storage: racing, registry, codec: roaringCodec },
         { allowEmpty: true },
       ),
-    ).rejects.toBeInstanceOf(KeyUnavailableError);
+    ).toMatchObject({ generation: 1, published: false, reason: 'superseded' });
     const row = (await registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
     expect(row.wrappedDeks?.length).toBeGreaterThan(0);
+    const left: number[] = [];
+    for await (const k of storage.list(SEG)) left.push(k.generation);
+    expect(left).toEqual([0]);
     // The segment reads as the keyed load wrote it: no cleartext generation became current.
     const reader = new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore }),
@@ -133,15 +155,19 @@ describe('a cleartext object under an encrypted segment', () => {
   });
 
   it('a rollback onto a cleartext write from before the key was made is refused, and reads go on', async () => {
-    const { storage, registry, store, load } = world();
+    const { storage, registry, keystore, store, load } = world();
     // A cleartext write that never published (a crash between the write and the publish), then the first
     // encrypted load, which numbers above it and makes the segment's key.
     await putCleartext(storage, { ...SEG, generation: 0 });
     const encrypted = await load([7, 8]);
     expect(encrypted).toBe(1);
-    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(
-      /generation 0 of "s" is cleartext, but the segment is encrypted/,
+    // The row does not know 0: refused for that, and `allowUnknown` (which needs the key) reaches the kind check.
+    await expect(rollbackSegment(SEG, 0, { storage, registry, keystore })).rejects.toBeInstanceOf(
+      ValidationError,
     );
+    await expect(
+      rollbackSegment(SEG, 0, { storage, registry, keystore }, { allowUnknown: true }),
+    ).rejects.toThrow(/generation 0 of "s" is cleartext, but the segment is encrypted/);
     expect(await store().segment('s').count()).toBe(2);
   });
 });

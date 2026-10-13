@@ -1,8 +1,22 @@
 import { MemoryStorageChunkSource } from '../helpers/memory-chunk-source';
-import { CloudRoaring, CountingMetricsSink, TransientError, ValidationError } from '@/index';
+import {
+  CloudRoaring,
+  CountingMetricsSink,
+  CrbmStorageChunkSource,
+  MemoryStorage,
+  TransientError,
+  ValidationError,
+} from '@/index';
+import type { IMetricsSink } from '@/index';
 import type { ChunkRef, Clock, StorageChunkSource, Rng, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
+import { BoundedLru } from '@cloudbitmaps/core';
+import type { CodecBitmap } from '@cloudbitmaps/core';
+import { brandAsBackend } from '@/core/ports';
+import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { withoutRangedReads } from '../helpers/no-ranged-reads';
 import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loaded';
 
@@ -147,5 +161,163 @@ describe('metrics emission (via CloudRoaring)', () => {
     const snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 0, misses: 0 }); // no spurious cache events without a cache
     expect(snap.storage.gets).toBe(1);
+  });
+});
+
+const TTL = 10;
+function manualClock(): Clock & { advance(ms: number): void } {
+  let t = 0;
+  return { now: () => t, sleep: async () => {}, advance: (ms) => void (t += ms) };
+}
+
+describe('each chunk lookup of the engine costs and reports what its kind of read says', () => {
+  const perKey = withoutRangedReads();
+  const id = (chunk: number, low: number): number => chunk * 65_536 + low;
+  beforeEach(perKey.off);
+  afterEach(perKey.restore);
+
+  function tally() {
+    const t = { hits: 0, misses: 0, gets: 0 };
+    const sink: IMetricsSink = {
+      onEvent: (e) => {
+        if (e.kind === 'cache') t[e.hit ? 'hits' : 'misses']++;
+        if (e.kind === 'storage.get') t.gets++;
+      },
+    };
+    return { t, sink };
+  }
+
+  it('a chunk the engine fetched from storage is reported as one cache miss, whichever read fetched it', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const at = (generation: number) => ({ namespace: 'ns', segment: 's', generation });
+    // Chunk 0 holds ids 1..1000, so a range that starts inside it reads that chunk to know how many ids it cuts.
+    await bulkLoadCrbmGeneration(
+      storage,
+      at(0),
+      Array.from({ length: 1000 }, (_, i) => i + 1),
+      { registry },
+    );
+    const { t, sink } = tally();
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: TTL },
+      seams: { clock: manualClock() },
+      metrics: sink,
+    });
+    const seg = await store.segment('s', { namespace: 'ns' }).pin();
+    await collect(seg.everyNth(100, { after: 500 }));
+    expect(t.gets).toBeGreaterThan(0);
+    expect(t.misses).toBe(t.gets);
+  });
+
+  it('a chunk that was cached when a read opened and has expired by the time it is taken is not counted a second time', async () => {
+    perKey.restore(); // a stream of ranges: its chunks are counted as it opens
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const CHUNKS = 12;
+    const ids = Array.from({ length: CHUNKS }, (_, k) => id(k, 1));
+    await bulkLoadCrbmGeneration(storage, { namespace: 'ns', segment: 's', generation: 0 }, ids, {
+      registry,
+    });
+    const { t, sink } = tally();
+    const clock = manualClock();
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: 1_000_000, ttlMs: 50 },
+      seams: { clock },
+      metrics: sink,
+    });
+    const seg = store.segment('s', { namespace: 'ns' });
+    await seg.has(id(2, 1)); // chunk 2 is cached
+    t.hits = t.misses = 0;
+    const out: number[] = [];
+    for await (const got of seg.iterate()) {
+      out.push(got);
+      if (out.length === 1) clock.advance(100); // the cached chunk expires before the read takes it
+    }
+    expect(out).toEqual(ids);
+    expect(t.hits + t.misses).toBe(CHUNKS); // one lookup per chunk of the read, counted once
+  });
+
+  it('a cached chunk that is no longer the segment version is replaced by a read that is counted as a miss', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const at = (generation: number) => ({ namespace: 'ns', segment: 's', generation });
+    await bulkLoadCrbmGeneration(storage, at(0), [id(0, 1), id(1, 1)], { registry });
+    const { t, sink } = tally();
+    const clock = manualClock();
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: TTL },
+      seams: { clock },
+      metrics: sink,
+    });
+    const seg = store.segment('s', { namespace: 'ns' });
+    expect(await seg.has(id(0, 1))).toBe(true); // chunk 0 is cached under generation 0
+    await bulkLoadCrbmGeneration(storage, at(1), [id(0, 2)], { registry }); // another store's publish
+    clock.advance(TTL + 1);
+    // The cached chunk is no longer the segment's: the read that replaces it is a miss, and the only chunk it reads.
+    expect(await seg.has(id(0, 2))).toBe(true);
+    expect(t.misses).toBe(t.gets);
+    expect(t.gets).toBe(2);
+  });
+
+  it('a combine that finds an exclude chunk it cached is no longer the exclude version counts the read that replaces it', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const at = (segment: string, generation: number) => ({ namespace: 'ns', segment, generation });
+    const included = Array.from({ length: 60 }, (_, k) => id(k, 1));
+    await bulkLoadCrbmGeneration(storage, at('a', 0), included, { registry });
+    await bulkLoadCrbmGeneration(storage, at('b', 0), included, { registry });
+    await bulkLoadCrbmGeneration(storage, at('c', 0), [id(0, 9), id(33, 9)], { registry });
+    const { t, sink } = tally();
+    const clock = manualClock();
+    const store = new CloudRoaring({
+      storage: brandAsBackend({ storage, registry }),
+      cache: { genTtlMs: TTL },
+      seams: { clock },
+      metrics: sink,
+    });
+    const combine = () =>
+      store.segment('a', { namespace: 'ns' }).intersect([store.segment('b', { namespace: 'ns' })], {
+        exclude: [store.segment('c', { namespace: 'ns' })],
+      });
+    await collect(combine());
+    let n = 0;
+    for await (const got of combine()) {
+      n += got >= 0 ? 1 : 0;
+      if (n === 1) {
+        await bulkLoadCrbmGeneration(storage, at('c', 1), [id(0, 9), id(33, 9), id(34, 9)], {
+          registry,
+        });
+        clock.advance(TTL + 1);
+      }
+    }
+    expect(n).toBeGreaterThan(1);
+    // Chunk by chunk, so each chunk fetched from storage is one event, and each is reported as a miss.
+    expect(t.misses).toBe(t.gets);
+  });
+
+  it('a point read of a cached chunk asks for the segment version once, not again to check the chunk it has just looked up', async () => {
+    perKey.restore();
+    const storage = new MemoryStorageDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { segment: 's', generation: 0 }, [1, 2, 3], { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry, clock: manualClock() });
+    const engine = new SegmentEngine({
+      storage: source,
+      codec: roaringCodec,
+      cache: new BoundedLru<string, CodecBitmap>({ maxEntries: 100, clock: { now: () => 0 } }),
+    });
+    expect(await engine.has({ segment: 's' }, 2)).toBe(true); // the chunk is cached
+    let asked = 0;
+    const real = source.currentVersion.bind(source);
+    source.currentVersion = (ref) => {
+      asked++;
+      return real(ref);
+    };
+    expect(await engine.has({ segment: 's' }, 2)).toBe(true);
+    expect(asked).toBe(1);
   });
 });

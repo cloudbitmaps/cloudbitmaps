@@ -15,6 +15,9 @@
  *   node bench/calibrate-aws.cjs --rehearse                  the workload against MinIO, free — no money guards
  *   node bench/calibrate-aws.cjs --run                       the real thing (region + ceiling + confirmation)
  *   node bench/calibrate-aws.cjs [--rehearse] --cleanup <id> remove a run's resources after a hard kill
+ *   node bench/calibrate-aws.cjs --suite large [--rehearse | --run]   the large suite (operands of 10^6 to 10^7 ids)
+ *                                                            in place of the default one; CR_CALIBRATE_SUITE=large
+ *                                                            names it from the environment
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
@@ -56,7 +59,7 @@ const {
   layoutIds,
   maskAccount,
   redact,
-  resultsFile,
+  resultsFile: suiteResultsFile,
   stampOf,
   checkRunId,
   checkRunRegion,
@@ -77,6 +80,32 @@ const {
 } = require('./lib/calibrate-guards.cjs');
 const { planSpread, spreadIds } = require('./lib/calibrate-spread.cjs');
 const {
+  LARGE_STAGES,
+  LARGE_SIZES,
+  planLargeLayout,
+  projectLarge,
+  expectedLarge,
+  resolveLargeKnobs,
+  suiteFrom,
+  recordCountMisses,
+  constantsIn,
+  checkEngineConstants,
+  refuseDefaultKnobs,
+  checkLargeWorkload,
+  checkResources,
+  resolveFloors,
+  rangeCap,
+} = require('./lib/calibrate-large-stages.cjs');
+const { countSize } = require('./lib/large-counts.cjs');
+const { runLargeSuite, projectionLines } = require('./lib/calibrate-large.cjs');
+const { resourcesNow, installedSources } = require('./lib/calibrate-large-resources.cjs');
+const {
+  coldIntersectIds,
+  coldAndNotIds,
+  collectsByName,
+  readsRowAfterCollect,
+} = require('./lib/range-counts.cjs');
+const {
   DISCARDS_PER_RUN,
   DISCARDS_PER_STAGE,
   transientFault,
@@ -88,13 +117,17 @@ const {
   injectFaults,
 } = require('./lib/calibrate-samples.cjs');
 const {
-  STAGES,
+  STAGES: DEFAULT_STAGES,
   parseSweep,
   coldIntersectGets,
   modelRounds,
   projectStages,
   expectedReads,
   firstLoadRequests,
+  STEADY_KEEP,
+  STEADY_LOADS,
+  steadyLoadRequestsOf,
+  steadyKind,
 } = require('./lib/calibrate-stages.cjs');
 const {
   interruptGate,
@@ -110,7 +143,8 @@ const {
   measuredSdk,
   sdkFaultClasses,
   describeFault,
-  SDK_DEFAULT_MAX_SOCKETS,
+  resolveSocketLimit,
+  limitWorkloadSockets,
 } = require('./lib/calibrate-process.cjs');
 
 const ROOT = resolve(__dirname, '..');
@@ -136,6 +170,25 @@ const MODE = argv.includes('--cleanup')
     : REHEARSE
       ? 'rehearse'
       : 'project';
+
+/** Where this suite's results go: `resultsFile` of the guards, for the suite the run is. */
+const resultsFile = (rehearse, runId, options = {}) =>
+  suiteResultsFile(rehearse, runId, { ...options, suite: SUITE });
+
+/**
+ * Which suite this run is: the default one, or the large one (`--suite large`, or `CR_CALIBRATE_SUITE=large`). It
+ * decides the stages, the projection, the expected counts and where the evidence is written.
+ */
+let SUITE = 'default';
+/** Where the suite was named: `--suite`, `CR_CALIBRATE_SUITE`, or nowhere, for the default one. */
+let SUITE_SOURCE = 'default';
+try {
+  ({ suite: SUITE, source: SUITE_SOURCE } = suiteFrom(argv, process.env));
+} catch (err) {
+  refuse(err.message);
+}
+/** The stages this suite runs: the projection, the run's end-of-run check and the harness's own refusal read this list. */
+const STAGES = SUITE === 'large' ? LARGE_STAGES : DEFAULT_STAGES;
 
 // ---- the workload ----------------------------------------------------------------------------------------------
 // Every size is overridable so a run can be made smaller; an explicit 0 really means 0.
@@ -235,26 +288,37 @@ function largePartsBound() {
  * What each stage loads and reads, from the layouts: the one input both the projection and the stages' own
  * expectations are computed from.
  */
-function planWorkload({ layout, spread, sweep }) {
+function planWorkload({ layout, spread, sweep, ranges }) {
   const sharedChunks = layout.sharedChunks;
   return {
     loads: { segments: SEGMENTS, largeSegments: LARGE, partsBound: largePartsBound() },
-    intersect: { reads: READS, sharedChunks },
+    intersect: { reads: READS, sharedChunks, rangesPerOperand: ranges.intersect },
     spread: {
       segments: spread === null ? 0 : SPREAD_SEGMENTS,
       reads: spread === null ? 0 : SPREAD_READS,
       sharedChunks: spread === null ? 0 : spread.sharedChunks,
+      rangesPerOperand: ranges.spread,
     },
-    sweep: { segments: SWEEP_SEGMENTS, entries: sweep },
+    sweep: {
+      segments: SWEEP_SEGMENTS,
+      entries: sweep.map((e, j) => ({ ...e, rangesPerOperand: ranges.sweep[j] })),
+    },
     // The warm stage repeats the calibration intersects' pairs, which touch this many segments.
-    warm: { segments: READS === 0 ? 0 : Math.min(SEGMENTS, READS + 1), sharedChunks },
+    warm: {
+      segments: READS === 0 ? 0 : Math.min(SEGMENTS, READS + 1),
+      sharedChunks,
+      rangesPerOperand: ranges.intersect,
+    },
     pointReads: { segments: POINT_SEGMENTS, sharedChunks },
     andNot: {
       calls: ANDNOT_CALLS,
       excludes: ANDNOT_EXCLUDES,
       includeChunks: layout.chunksPerSegment,
       sharedChunks,
+      ranges: ranges.andNot,
     },
+    // One segment loaded repeatedly at a `keep` that makes the loads collect by name (the stage says why).
+    steadyLoad: { loads: STEADY_LOADS, keep: STEADY_KEEP },
     retryBound: RETRY_BOUND,
     // The samples a run may discard after a transient fault, and run again (`calibrate-samples.cjs`).
     discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
@@ -263,6 +327,29 @@ function planWorkload({ layout, spread, sweep }) {
     fixedGets: 1 + RTT_SAMPLES,
     fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
   };
+}
+
+/**
+ * The range requests the engine makes of the layouts this run will load, counted by running the engine over the in-memory
+ * backend on the same ids (`bench/lib/range-counts.cjs`) before anything is created: what the exact counts the stages are
+ * held to expect of a real object store. Nothing is requested of a cloud; the ids are built and read in memory.
+ */
+async function rehearseRanges({ layout, spread, sweepLayouts }) {
+  const pairRanges = async (idsOf) => (await coldIntersectIds(idsOf(0), idsOf(1))).rangesPerOperand;
+  const intersect = READS === 0 ? 0 : await pairRanges((i) => layoutIds(layout, i));
+  const spreadRanges =
+    spread === null || SPREAD_READS === 0 ? 0 : await pairRanges((i) => spreadIds(spread, i));
+  const sweep = [];
+  for (const L of sweepLayouts) sweep.push(await pairRanges((i) => layoutIds(L, i)));
+  let andNot = 0;
+  if (ANDNOT_CALLS > 0) {
+    const counted = await coldAndNotIds(
+      layoutIds(layout, 0),
+      Array.from({ length: ANDNOT_EXCLUDES }, (_, i) => layoutIds(layout, i + 1)),
+    );
+    andNot = counted.getRange;
+  }
+  return { intersect, spread: spreadRanges, sweep, andNot };
 }
 
 /**
@@ -340,9 +427,14 @@ async function main() {
   // Everything that can be refused from the inputs alone is refused first, before the library is even imported, so a
   // refusal holds on a checkout that has not been built and costs nothing to test.
   let sweep = [];
+  let largeKnobs = null;
   try {
     // A cleanup loads nothing, so no workload setting can refuse it.
-    if (MODE !== 'cleanup') {
+    if (MODE !== 'cleanup' && SUITE === 'large') {
+      refuseDefaultKnobs(process.env);
+      largeKnobs = resolveLargeKnobs(process.env);
+      checkLargeWorkload({ sizes: LARGE_SIZES.length, intos: largeKnobs.intos });
+    } else if (MODE !== 'cleanup') {
       sweep = parseSweep(process.env.CR_CALIBRATE_SWEEP);
       checkWorkload({
         segments: SEGMENTS,
@@ -355,8 +447,22 @@ async function main() {
         pointSegments: POINT_SEGMENTS,
         andNotCalls: ANDNOT_CALLS,
         andNotExcludes: ANDNOT_EXCLUDES,
+        steadyLoads: STEADY_LOADS,
       });
     }
+  } catch (err) {
+    refuse(err.message);
+  }
+
+  // Which suite runs, and where it was named, before anything else is said: a suite named by the environment alone is
+  // easy to forget.
+  if (MODE !== 'cleanup' && SUITE_SOURCE !== 'default') {
+    log(`suite: ${SUITE} (named by ${SUITE_SOURCE})`);
+  }
+
+  // The workload client's socket limit is refused here if it is not a legal one; `limitWorkloadSockets` applies it.
+  try {
+    if (MODE !== 'cleanup') resolveSocketLimit(process.env.CR_CALIBRATE_MAX_SOCKETS);
   } catch (err) {
     refuse(err.message);
   }
@@ -436,13 +542,40 @@ async function main() {
     }
   }
 
+  // The large suite holds ten-million-id operands in flight, so a rehearsal and a run state what the machine has,
+  // once, and refuse to start below the floor it names, before the library is imported or anything is created. These
+  // come after the refusals made from the inputs alone, which hold on a checkout that has not been built.
+  let resourcesSeen = null;
+  if (SUITE === 'large' && (MODE === 'rehearse' || MODE === 'run')) {
+    const now = resourcesNow();
+    log(`resources: ${now.line}`);
+    resourcesSeen = now.have;
+    try {
+      checkResources(now.have, resolveFloors(process.env));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
+    }
+    // Its bound rests on the engine's coalescing constants and the driver's part size, copied here: the installed packages
+    // are asked, and a run against others is refused.
+    try {
+      const sources = installedSources(ROOT);
+      checkEngineConstants(constantsIn(sources.core, sources.s3));
+    } catch (err) {
+      refuse(`${redact(err.message)}. Nothing was created.`);
+    }
+  }
+
   // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
   let pricing;
   let packageVersion;
+  // Whether the installed engine's load reads the row after its collection's last delete, asked in memory: it picks the
+  // table the steady loads are held to, and is recorded with the evidence so the figures read it against the same one.
+  let readsAfterCollect;
   let sdk;
   let layout;
   let spread = null;
   let sweepLayouts = [];
+  let largeSizes = null;
   let plan;
   let ops;
   let stageBounds;
@@ -451,42 +584,117 @@ async function main() {
   let priced;
   if (MODE !== 'cleanup') {
     let AWS_US_EAST_1_ONDEMAND;
-    ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/roaring'));
+    ({ AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/tools'));
     packageVersion = measuredVersion(ROOT);
     sdk = measuredSdk(ROOT);
     pricing = AWS_US_EAST_1_ONDEMAND;
-    layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
-    // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
-    if (SPREAD_SEGMENTS > 0) {
-      spread = planSpread({
-        segments: SPREAD_SEGMENTS,
-        sharedChunks: layout.sharedChunks,
-        privateChunks: layout.privateChunks,
-        idsPerChunk: Math.max(1, Math.round(IDS / layout.chunksPerSegment)),
-        stride: DEFAULT_LAYOUT.stride,
-        seed: SPREAD_SEED,
-      });
+    // The steady-load stage is held to what the engine does at `keep` 12 from 0.17.0 on, which collects by name. An
+    // engine that does not would fail the run's evidence after it had spent the bill, so ask it first, in memory.
+    if (
+      SUITE === 'default' &&
+      MODE !== 'project' &&
+      !(await collectsByName(await import('@cloudbitmaps/roaring')))
+    ) {
+      refuse(
+        `the installed @cloudbitmaps/roaring does not collect by name at keep ${STEADY_KEEP}, which the steadyLoad ` +
+          'stage measures; 0.17.0 is the first release that does. Nothing was created. Install it, or run from the 0.17.0 release.',
+      );
     }
-    sweepLayouts = sweep.map((e) =>
-      planSweepLayout({
-        segments: SWEEP_SEGMENTS,
-        sharedChunks: e.k,
-        privateIds: layout.priv,
-        stride: DEFAULT_LAYOUT.stride,
-      }),
-    );
-    plan = planWorkload({ layout, spread, sweep });
-    ({
-      ops,
-      stages: stageBounds,
-      discards: discardBound,
-      costliestSample,
-      priced,
-    } = projection(pricing, plan));
+    if (SUITE === 'default' && MODE !== 'project') {
+      readsAfterCollect = await readsRowAfterCollect(
+        await import('@cloudbitmaps/roaring'),
+        STEADY_KEEP,
+      );
+    }
+    if (SUITE === 'large') {
+      // The layouts, and what the engine does on them, counted in memory before anything is created: the bound needs the
+      // objects' sizes and a run is held to the counts.
+      largeSizes = [];
+      for (const n of LARGE_SIZES) {
+        const L = planLargeLayout(n);
+        const counts = await countSize({ layout: L, layoutIds, intos: largeKnobs.intos });
+        largeSizes.push({
+          n,
+          layout: L,
+          counts,
+          chunksPerSegment: L.chunksPerSegment,
+          sharedChunks: L.sharedChunks,
+          operandBytes: counts.operandBytes,
+        });
+      }
+      plan = {
+        suite: 'large',
+        reads: largeKnobs.reads,
+        intos: largeKnobs.intos,
+        sizes: largeSizes,
+        retryBound: RETRY_BOUND,
+        discards: { perRun: DISCARDS_PER_RUN, perStage: DISCARDS_PER_STAGE },
+        fixedGets: 1 + RTT_SAMPLES,
+        fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
+      };
+      const bound = projectLarge(plan);
+      ops = bound.total;
+      stageBounds = bound.stages;
+      discardBound = bound.discards;
+      costliestSample = bound.costliestSample;
+      priced = priceTally({ put: ops.put, get: ops.get }, pricing);
+    } else {
+      layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
+      // The spread layout has the calibration layout's overlap: the same shared chunks, the same ids in every chunk.
+      if (SPREAD_SEGMENTS > 0) {
+        spread = planSpread({
+          segments: SPREAD_SEGMENTS,
+          sharedChunks: layout.sharedChunks,
+          privateChunks: layout.privateChunks,
+          idsPerChunk: Math.max(1, Math.round(IDS / layout.chunksPerSegment)),
+          stride: DEFAULT_LAYOUT.stride,
+          seed: SPREAD_SEED,
+        });
+      }
+      sweepLayouts = sweep.map((e) =>
+        planSweepLayout({
+          segments: SWEEP_SEGMENTS,
+          sharedChunks: e.k,
+          privateIds: layout.priv,
+          stride: DEFAULT_LAYOUT.stride,
+        }),
+      );
+      // The projection is an upper bound that asks for no count, so it reads the engine for none; a run's exact expectations do.
+      const ranges =
+        MODE === 'project'
+          ? { intersect: 0, spread: 0, sweep: sweepLayouts.map(() => 0), andNot: 0 }
+          : await rehearseRanges({ layout, spread, sweepLayouts });
+      plan = planWorkload({ layout, spread, sweep, ranges });
+      ({
+        ops,
+        stages: stageBounds,
+        discards: discardBound,
+        costliestSample,
+        priced,
+      } = projection(pricing, plan));
+    }
   }
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
+    if (SUITE === 'large') {
+      for (const line of projectionLines({
+        plan,
+        bounds: stageBounds,
+        expected: expectedLarge(plan),
+        discardBound,
+        costliestSample,
+        ops,
+        price: (t) => priceTally(t, pricing).totalUSD,
+      })) {
+        console.log(line);
+      }
+      console.log(
+        '\n  --rehearse   the workload against MinIO, free — the money guards do not run',
+      );
+      console.log('  --run        the real thing (needs region + ceiling + confirmation)');
+      return 0;
+    }
     console.log(
       `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)` +
         ` + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks`,
@@ -505,6 +713,7 @@ async function main() {
       warm: `${READS} repeats of the calibration pairs from memory, asserted at 0 GET`,
       pointReads: `count() cold and warm on ${POINT_SEGMENTS} segments, then has() on every shared chunk: open segment, warm, first read`,
       andNot: `${ANDNOT_CALLS} calls, one segment against ${ANDNOT_EXCLUDES}`,
+      steadyLoad: `${STEADY_LOADS} loads of one segment at keep ${STEADY_KEEP}: warm-up, by name, one listing`,
     };
     for (const name of STAGES) {
       const b = stageBounds[name];
@@ -546,6 +755,19 @@ async function main() {
   // `clientConfigs` says why, and the tests drive both against a server that fails on purpose.
   const configs = clientConfigs(clientOpts);
   const client = new s3.S3Client(configs.work);
+  // The workload's client has the socket limit the library gives the client it builds, so the run measures what a
+  // consumer gets by default; teardown's keeps the SDK's own, since it makes a few listings and deletes in turn.
+  // A cleanup tears down with its own client and never sends through this one, so no socket setting, and no SDK handler
+  // that will not take the limit, can refuse it.
+  let sockets = null;
+  if (MODE !== 'cleanup') {
+    try {
+      sockets = await limitWorkloadSockets(client, process.env.CR_CALIBRATE_MAX_SOCKETS);
+    } catch (err) {
+      refuse(err.message);
+    }
+    log(`workload client: ${sockets.observed} sockets (read back from its agents)`);
+  }
   const tally = meter(client);
   // A rehearsal's injected faults, on the workload's client alone; refused above in every other mode.
   if (faultGets.length > 0) injectFaults(client, faultGets);
@@ -765,27 +987,46 @@ async function main() {
     region: REHEARSE ? 'n/a (local container)' : region,
     measured: {
       packageVersion,
+      ...(readsAfterCollect === undefined ? {} : { readsRowAfterCollect: readsAfterCollect }),
       harness: harnessRef(ROOT),
       node: process.version,
-      // The AWS SDK that sent every request, and the socket cap of its handler, which bounds how many a stage can have
-      // in flight. The cap is the SDK's own default and the harness does not set it.
+      // The AWS SDK that sent every request, and the socket cap of the workload client's handler, which bounds how many
+      // a stage can have in flight. The cap is set before the run and read back from the agents after it, in
+      // `writeResults`; a run cut short before then records what the agents held when it stopped.
       sdk,
-      maxSockets: SDK_DEFAULT_MAX_SOCKETS,
-      maxSocketsSource: 'the SDK default, not set by the harness',
     },
     pricing: pricing.name,
-    workload: {
-      segments: SEGMENTS,
-      idsPerSegment: IDS,
-      chunksPerSegment: layout.chunksPerSegment,
-      sharedChunks: layout.sharedChunks,
-      largeSegments: LARGE,
-      largeChunks: LARGE_CHUNKS,
-      largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
-      coldIntersects: READS,
-      // Everything every stage loads and reads, as the projection was computed from it.
-      plan,
-    },
+    // The large suite says which suite it is; the default suite's evidence has no such field.
+    ...(SUITE === 'large' ? { suite: SUITE, resources: resourcesSeen } : {}),
+    workload:
+      SUITE === 'large'
+        ? {
+            // What each size is, and the requests the engine made of it in memory, which the run is held to.
+            reads: plan.reads,
+            intos: plan.intos,
+            sizes: largeSizes.map((s) => ({
+              idsPerSegment: s.n,
+              stride: s.layout.stride,
+              chunksPerSegment: s.chunksPerSegment,
+              sharedChunks: s.sharedChunks,
+              operandBytes: s.operandBytes,
+              rangeCap: rangeCap(Math.max(...s.operandBytes)),
+              counts: s.counts,
+            })),
+            expected: expectedLarge(plan),
+          }
+        : {
+            segments: SEGMENTS,
+            idsPerSegment: IDS,
+            chunksPerSegment: layout.chunksPerSegment,
+            sharedChunks: layout.sharedChunks,
+            largeSegments: LARGE,
+            largeChunks: LARGE_CHUNKS,
+            largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
+            coldIntersects: READS,
+            // Everything every stage loads and reads, as the projection was computed from it.
+            plan,
+          },
     projected: ops,
     projectedStages: stageBounds,
     // What the samples a run may discard can cost, beside the stages' bounds: each at the costliest sample's bound.
@@ -797,6 +1038,8 @@ async function main() {
   };
   const writeResults = () => {
     results.elapsedMs = Date.now() - started;
+    // What the agents hold now, not what was asked for: null when they cannot be read.
+    Object.assign(results.measured, sockets.evidence());
     // Only a run that finished is evidence. One that did not goes to the partial file, which the figures gates skip.
     const finished = results.partial === false && results.interrupted !== true;
     const file = finished ? out : outPartial;
@@ -892,6 +1135,8 @@ async function main() {
     wholeN: tally.reads.whole.n,
     wholeBytes: tally.reads.whole.bytes,
     requestMs: tally.requestMs,
+    free: tally.free,
+    commands: { ...tally.byCommand },
   });
   // What was sent between two snapshots, in the shape the meter's own tally has, so a stage's file can be read the
   // way the run's totals are.
@@ -1038,8 +1283,12 @@ async function main() {
     // make and what the projection allows. `setup` is what a stage loads for itself, kept apart from what it times.
     // `discarded` is every sample it discarded after a transient fault: those requests are in `requests`, since they
     // were billed, and out of what the stage is held to, which is what its kept samples made (`keptRequests`).
-    const expectedByStage = expectedReads(plan);
+    const expectedByStage = SUITE === 'large' ? {} : expectedReads(plan);
+    // The large suite's exact requests, PUT-class as well as GET-class: each of its stages is held to both.
+    const expectedLargeByStage = SUITE === 'large' ? expectedLarge(plan) : {};
     const stage = async (name, { setup, run }) => {
+      // The large suite runs its own stages (`runLargeSuite`); the default suite's are laid out below it, and are not run.
+      if (SUITE === 'large' && DEFAULT_STAGES.includes(name)) return undefined;
       if (!STAGES.includes(name)) throw new Error(`${name} is not a stage the projection covers`);
       const s0 = snap();
       const prepared = setup === undefined ? undefined : await setup();
@@ -1054,8 +1303,19 @@ async function main() {
       }
       results.phases[name] = record;
       const kept = keptRequests(record);
-      const expected = name === 'load' ? phase.expected?.get : expectedByStage[name];
-      if (expected !== undefined) {
+      const expected =
+        SUITE === 'large'
+          ? expectedLargeByStage[name]?.get
+          : name === 'load'
+            ? phase.expected?.get
+            : expectedByStage[name];
+      const expectedPut = expectedLargeByStage[name]?.put;
+      if (expectedPut !== undefined) record.expectedPuts = expectedPut;
+      if (SUITE === 'large') {
+        // The large suite's stages are held to both classes by one function, so a mismatch in either is found the same way.
+        if (expected !== undefined) record.expectedGets = expected;
+        recordCountMisses(results, name, kept, expectedLargeByStage[name], console.error);
+      } else if (expected !== undefined) {
         record.expectedGets = expected;
         if (kept.get !== expected) {
           (results.expectedMissed ??= []).push(
@@ -1069,7 +1329,9 @@ async function main() {
       }
       log(
         `${name}: ${record.requests.put} PUT-class + ${record.requests.get} GET-class` +
-          (expected === undefined ? '' : ` (expected ${expected} GET-class)`) +
+          (expected === undefined
+            ? ''
+            : ` (expected ${expectedPut === undefined ? '' : `${expectedPut} PUT-class and `}${expected} GET-class)`) +
           (discarded.length === 0
             ? ''
             : `, of which ${discarded.length} discarded sample${discarded.length === 1 ? '' : 's'} made ` +
@@ -1084,12 +1346,17 @@ async function main() {
     const loader = new CloudRoaring({ storage, ...TIMED_STORE });
     // The projection bounds a segment's FIRST load, so no segment is loaded twice (`firstLoads` says why).
     const claimFirstLoad = firstLoads();
-    const load = async (segment, ids, count, into) => {
-      claimFirstLoad(segment);
+    // `reload` is the steady stage's later loads of one segment, which its first load has claimed; `keep` is its window.
+    const load = async (segment, ids, count, into, { keep, reload = false } = {}) => {
+      if (!reload) claimFirstLoad(segment);
       const before = snap();
       const t0 = process.hrtime.bigint();
       // The whole write path, as a user runs it: the next generation number, the object, the publish, the collection.
-      const { size, published, reason } = await loader.load({ segment }, ids);
+      const { size, published, reason } = await loader.load(
+        { segment },
+        ids,
+        keep === undefined ? {} : { keep },
+      );
       if (!published) throw new Error(`load of ${segment} was refused: ${reason}`);
       const ms = msSince(t0);
       const after = snap();
@@ -1109,6 +1376,13 @@ async function main() {
         put: sent.put,
         get: sent.get,
         parts: sent.parts,
+        free: after.free - before.free,
+        commands: Object.fromEntries(
+          Object.entries(after.commands)
+            .map(([name, n]) => [name, n - (before.commands[name] ?? 0)])
+            .filter(([, n]) => n > 0),
+        ),
+        downloadBytes: after.down - before.down,
         idsPerSec: count / (ms / 1000),
         bytesPerSec: uploaded / (ms / 1000),
       });
@@ -1135,6 +1409,30 @@ async function main() {
             medianObjectBytes: median(xs.map((l) => l.objectBytes)),
             medianUploadBytes: median(xs.map((l) => l.uploadBytes)),
           };
+
+    if (SUITE === 'large') {
+      await runLargeSuite({
+        stage,
+        sample,
+        load,
+        perLoad,
+        summarise,
+        snap,
+        startDepth,
+        depthOf,
+        checkCeiling,
+        msSince,
+        median,
+        spreadOf,
+        timedStore,
+        log,
+        plan,
+        recordMissed: (message) => {
+          (results.expectedMissed ??= []).push(message);
+          console.error(`calibrate: EXPECTED COUNT MISSED — ${message}`);
+        },
+      });
+    }
 
     await stage('load', {
       run: async () => {
@@ -1173,7 +1471,7 @@ async function main() {
         };
       },
     });
-    const objectBytes = results.phases.load.singlePart.medianObjectBytes ?? Number.NaN;
+    const objectBytes = results.phases.load?.singlePart?.medianObjectBytes ?? Number.NaN;
 
     // ---- cold intersects: every one fetches from the object store -------------------------------------------------
     // A FRESH store per intersect, so no cache can answer it. With one store reused, most intersects after the
@@ -1225,10 +1523,10 @@ async function main() {
       return reads;
     };
     // The figures of a set of cold intersects. Two operands, so per-operand figures are half the per-intersect ones.
-    const describeReads = (reads, { sharedChunks, chunksPerSegment, withPayload = false }) => {
+    const describeReads = (reads, { rangesPerOperand, chunksPerSegment, withPayload = false }) => {
       if (reads.length === 0) return { runs: 0 };
       const ms = reads.map((r) => r.ms);
-      const expectedGets = coldIntersectGets(sharedChunks);
+      const expectedGets = coldIntersectGets(rangesPerOperand);
       return {
         runs: reads.length,
         cold: true,
@@ -1236,7 +1534,9 @@ async function main() {
         p50ms: q(ms, 0.5),
         p95ms: q(ms, 0.95),
         p99ms: q(ms, 0.99),
-        chunksFetchedPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
+        // The chunk range requests made of each operand: a range holds every chunk within the gap of the one before
+        // it, so this is not the number of chunks the intersect needed (`sharedChunks`).
+        rangesPerOperand: median(reads.map((r) => r.chunkReads)) / 2,
         chunksPerSegment,
         // The published claim: payload bytes fetched as a share of the two objects. The tail read is NOT in it.
         ...(withPayload
@@ -1255,7 +1555,7 @@ async function main() {
         medianPeakInFlight: median(reads.map((r) => r.peakInFlight)),
         medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
         medianRounds: median(reads.map((r) => r.rounds)),
-        modelRounds: modelRounds(sharedChunks),
+        modelRounds: modelRounds(rangesPerOperand),
         expectedGets,
         // Intersects whose request count was not the one the engine is expected to make: zero unless a read found
         // something.
@@ -1269,7 +1569,7 @@ async function main() {
       if (it.runs > 0) {
         log(
           `  ${it.runs} cold, all exact — p50 ${it.p50ms.toFixed(1)} ms, p99 ${it.p99ms.toFixed(1)} ms; ` +
-            `${it.chunksFetchedPerOperand} of ${it.chunksPerSegment} chunks per operand, median ${it.medianGets} GETs`,
+            `${it.rangesPerOperand} range request(s) per operand of ${it.chunksPerSegment} chunks, median ${it.medianGets} GETs`,
         );
       }
       return it;
@@ -1288,6 +1588,7 @@ async function main() {
             }),
             {
               sharedChunks: layout.sharedChunks,
+              rangesPerOperand: plan.intersect.rangesPerOperand,
               chunksPerSegment: layout.chunksPerSegment,
               withPayload: true,
             },
@@ -1323,7 +1624,11 @@ async function main() {
                   expected: spread.expected,
                   label: 'spread-layout',
                 }),
-                { sharedChunks: spread.sharedChunks, chunksPerSegment: spread.chunksPerSegment },
+                {
+                  sharedChunks: spread.sharedChunks,
+                  rangesPerOperand: plan.spread.rangesPerOperand,
+                  chunksPerSegment: spread.chunksPerSegment,
+                },
               ),
             ),
     });
@@ -1355,7 +1660,11 @@ async function main() {
                   expected: L.expected,
                   label: `sweep k = ${e.k}`,
                 }),
-                { sharedChunks: L.sharedChunks, chunksPerSegment: L.chunksPerSegment },
+                {
+                  sharedChunks: L.sharedChunks,
+                  rangesPerOperand: plan.sweep.entries[sweepLayouts.indexOf(L)].rangesPerOperand,
+                  chunksPerSegment: L.chunksPerSegment,
+                },
               ),
             ),
           });
@@ -1684,6 +1993,61 @@ async function main() {
           medianMeanInFlight: median(reads.map((r) => r.meanInFlight)),
           medianRounds: median(reads.map((r) => r.rounds)),
           timedStore: TIMED_STORE,
+        };
+      },
+    });
+    // ---- a steady load: one segment, loaded again and again at a keep that makes the loads collect by name --------------
+    // The calibration loads above are each a segment's first. A refresh load of a segment that already has a window
+    // makes other requests: none to collect while the window fills, a delete by name once it is full, and a listing on
+    // every sixteenth generation. Each load's own requests are recorded by class and held to its kind's count.
+    await stage('steadyLoad', {
+      run: async () => {
+        const loads = [];
+        for (let g = 0; g < STEADY_LOADS; g += 1) {
+          const ids = Array.from({ length: 1_000 }, (_, j) => g * 1_000 + j);
+          await load('steady-0', ids, ids.length, loads, { keep: STEADY_KEEP, reload: g > 0 });
+        }
+        const perLoadRecords = loads.map((l, g) => {
+          const kind = steadyKind(g, STEADY_KEEP);
+          const want = steadyLoadRequestsOf(readsAfterCollect)[kind];
+          if (l.put !== want.put || l.get !== want.get || l.free !== want.free) {
+            (results.expectedMissed ??= []).push(
+              `steadyLoad: generation ${g} (${kind}) made ${l.put} PUT-class, ${l.get} GET-class and ${l.free} deletes, ` +
+                `expected ${want.put}, ${want.get} and ${want.free}`,
+            );
+            console.error(
+              `calibrate: EXPECTED COUNT MISSED — steadyLoad generation ${g} (${kind}): ${l.put} PUT-class, ${l.get} GET-class, ${l.free} deletes`,
+            );
+          }
+          return {
+            generation: g,
+            kind,
+            ms: l.ms,
+            objectBytes: l.objectBytes,
+            uploadBytes: l.uploadBytes,
+            downloadBytes: l.downloadBytes,
+            put: l.put,
+            get: l.get,
+            free: l.free,
+            commands: l.commands,
+          };
+        });
+        const byKind = {};
+        for (const r of perLoadRecords) (byKind[r.kind] ??= []).push(r.ms);
+        log(
+          `steadyLoad: ${loads.length} loads at keep ${STEADY_KEEP}, median ` +
+            Object.entries(byKind)
+              .map(([k, xs]) => `${k} ${median(xs).toFixed(1)} ms`)
+              .join(', '),
+        );
+        return {
+          via: 'store.load()',
+          keep: STEADY_KEEP,
+          loads: STEADY_LOADS,
+          perLoad: perLoadRecords,
+          medianMsByKind: Object.fromEntries(
+            Object.entries(byKind).map(([k, xs]) => [k, median(xs)]),
+          ),
         };
       },
     });

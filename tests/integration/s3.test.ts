@@ -16,13 +16,18 @@ import {
 import { S3StorageDriver } from '@/s3/storage';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { S3RegistryDriver } from '@/s3/registry';
-import { storageObjectKey } from '@/s3/keys';
-import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import {
+  expectMissingLocationFails,
+  expectMissingObjectIsAbsent,
+} from '../helpers/missing-location';
 import { forwardingProxy } from '../helpers/forwarding-proxy';
 
 /**
@@ -84,12 +89,22 @@ beforeAll(async () => {
 let n = 0;
 const freshDriver = (): S3StorageDriver =>
   new S3StorageDriver({ client, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
+// Never created: the emulator answers as the service does for a bucket that is not there.
+const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+// MinIO lists 1,000 keys a page, as S3 does.
+const PAST_ONE_PAGE = 1_001;
 
 // The S3 driver must pass the SAME storage-source contract as in-memory + LocalFs.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
 // `largeBytes` is past one 5 MiB part, so the collision is raised by the conditional CompleteMultipartUpload.
-storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, { largeBytes: 6 * 1024 * 1024 });
+storageDriverConformance('S3StorageDriver (MinIO)', freshDriver, {
+  largeBytes: 6 * 1024 * 1024,
+  missingLocation: () => new S3StorageDriver({ client, bucket: MISSING, prefix: `${RUN}/missing` }),
+  pagedListSize: PAST_ONE_PAGE,
+  // A custom endpoint: MinIO accepts If-Match on a DeleteObject and ignores it (conditional-delete.test.ts records it).
+  conditionalDelete: false,
+});
 
 storageChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {
   const driver = freshDriver();
@@ -113,6 +128,11 @@ registryConformance(
       prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
+  {
+    missingLocation: () =>
+      new S3RegistryDriver({ client, bucket: MISSING, prefix: `${RUN}/missing`, now: ticking() }),
+    pagedListSize: PAST_ONE_PAGE,
+  },
 );
 
 // Two drivers over one bucket, racing the same row — the cross-process fence (`If-None-Match: *` /
@@ -172,6 +192,19 @@ describe('S3StorageDriver specifics (MinIO)', () => {
     const whole = await driver.getTail(gen(1), size + 1000);
     expect(whole.size).toBe(size);
     expect(whole.bytes.length).toBe(size);
+  });
+
+  it('getTail of an empty object is an empty tail of size 0', async () => {
+    const driver = freshDriver();
+    // MinIO answers a suffix range of an empty object with a 206 and `Content-Range: bytes 0--1/0`, where S3 answers 416
+    // (it answers `bytes=0-15` with 416 too). So this holds the empty tail on a real backend; the unit tests hold the 416.
+    await driver.putImmutable(gen(1), async () => {});
+    // The version is the ETag of the response that answered it.
+    expect(await driver.getTail(gen(1), 16)).toEqual({
+      bytes: new Uint8Array(0),
+      size: 0,
+      version: expect.any(String),
+    });
   });
 
   it('delete is idempotent and actually removes the object', async () => {
@@ -292,11 +325,12 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
 });
 
 // What `store.load()` sends to S3, counted by the request meter the calibration harness bills with. The in-memory
-// counts that the cost model is held to (`tests/core/cost.test.ts`) are of the driver ports; these are of the wire,
+// counts that the cost model is held to (`tests/tools/cost.test.ts`) are of the driver ports; these are of the wire,
 // command by command. A load reads its row once before the publish and checks the next generation number with one
-// HeadObject instead of listing, and sizes the current generation from the row's summary of it. It collects by name:
-// it looks for the current object with a second HeadObject, re-reads the pointer and deletes the one generation its
-// publish pushed out of the window, listing nothing, except on every sixteenth generation, where it lists instead.
+// HeadObject instead of listing, and sizes the current generation from the row's summary of it. Its publish is written
+// against the row it read, so the write makes no read of the row. It collects by name: it looks for the current object
+// with a second HeadObject, re-reads the pointer, deletes the one generation its publish pushed out of the window and
+// reads the pointer once more, listing nothing, except on every sixteenth generation, where it lists instead.
 describe('S3 (MinIO): the requests one store.load() sends', () => {
   const require_ = createRequire(import.meta.url);
   const { meter } = require_('../../bench/lib/aws-meter.cjs') as {
@@ -328,24 +362,24 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
       return { put: tally.put, get: tally.get, byCommand: { ...tally.byCommand } };
     };
     // The object and the row (2 PutObject) are PUT-class; the row read, its second read after the ids (a first load
-    // found no row), the create's read and the check are GET-class. Nothing is outside the window yet, so nothing
-    // is read or deleted after the publish.
+    // found no row) and the check are GET-class, and the create is sent without reading the row. Nothing is outside
+    // the window yet, so nothing is read or deleted after the publish.
     const first = {
-      put: 2,
-      get: 4,
-      byCommand: { GetObjectCommand: 3, HeadObjectCommand: 1, PutObjectCommand: 2 },
-    };
-    expect(await load(0)).toEqual(first);
-    // A reload takes the size of the current generation, to count what it replaces, from its row's summary and opens
-    // nothing: its row read and the compare-and-swap's read of the row's version, where the first load's second row read
-    // and create's read were, and no tail read.
-    expect(await load(1)).toEqual({
       put: 2,
       get: 3,
       byCommand: { GetObjectCommand: 2, HeadObjectCommand: 1, PutObjectCommand: 2 },
+    };
+    expect(await load(0)).toEqual(first);
+    // A reload takes the size of the current generation, to count what it replaces, from its row's summary and opens
+    // nothing: its one row read, which its compare-and-swap is written against, and the check, with no tail read.
+    expect(await load(1)).toEqual({
+      put: 2,
+      get: 2,
+      byCommand: { GetObjectCommand: 1, HeadObjectCommand: 1, PutObjectCommand: 2 },
     });
     // From the third load on the collection deletes by name: a second HeadObject first, that the current generation's
-    // object is there, and the pointer re-read before the delete.
+    // object is there, the pointer re-read before the delete, and read once more after it, to see that no rollback
+    // landed on the generation it deleted.
     const steady = {
       put: 2,
       get: 5,
@@ -357,8 +391,8 @@ describe('S3 (MinIO): the requests one store.load() sends', () => {
       },
     };
     for (let g = 2; g < 16; g++) expect(await load(g), `generation ${g}`).toEqual(steady);
-    // Every sixteenth generation lists instead: one ListObjectsV2, and the pointer read before and after it. It needs no
-    // word that the current object is there.
+    // Every sixteenth generation lists instead: one ListObjectsV2, the pointer read before and after it, and once more
+    // after its delete. It needs no word that the current object is there.
     expect(await load(16)).toEqual({
       put: 3,
       get: 6,
@@ -685,13 +719,31 @@ describe('S3 (MinIO): a cold count is one request', () => {
       expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
       expect(proxy.requests[0]!.path).toContain('registry');
       proxy.requests.length = 0;
-      expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
-        generation: 0,
-        cardinality: chunks,
-      });
+      const stat = await reader.segment('s', { namespace: 'ns' }).stat();
+      expect(stat).toMatchObject({ generation: 0, cardinality: chunks });
+      // A stat after it answers from the row the count just read, whose summary records the object's size: it sends
+      // nothing, however wide the index.
       expect(proxy.requests).toEqual([]);
+      // And it is the size of the object in the bucket, which a pin opens.
+      const pinned = await reader.segment('s', { namespace: 'ns' }).pin();
+      expect(`${stat.sizeBytes}`).toBe(pinned.pinnedAt!.fingerprint!.split(':')[0]);
     } finally {
       await proxy.close();
     }
+  });
+});
+
+describe('a bucket that does not exist', () => {
+  it('fails every read and a delete with a ValidationError that names it, not as an absent object', async () => {
+    await expectMissingLocationFails(
+      () => new S3Storage({ client, bucket: MISSING, prefix: `${RUN}/missing` }),
+      MISSING,
+    );
+  });
+
+  it('control: in the bucket that exists, a missing object still reads as absent', async () => {
+    await expectMissingObjectIsAbsent(
+      () => new S3Storage({ client, bucket: BUCKET, prefix: `${RUN}/missing` }),
+    );
   });
 });

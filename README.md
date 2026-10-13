@@ -37,7 +37,16 @@ npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs n
 
 You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
 package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it.
+arrives on its own and you never install it. The family is six packages, released together at one version:
+
+| Package | What it is | Install it |
+|---|---|---|
+| `@cloudbitmaps/roaring` | the store, `CloudRoaring`, with the in-memory and local-disk backends | always |
+| `@cloudbitmaps/s3` | S3 and S3-compatible storage, with `@aws-sdk/client-s3` | for S3 |
+| `@cloudbitmaps/gcs` | Google Cloud Storage, with `@google-cloud/storage` | for GCS |
+| `@cloudbitmaps/azure-blob` | Azure Blob Storage, with `@azure/storage-blob` | for Azure |
+| `@cloudbitmaps/tools` | offline tools that need nothing internal from a store: the [cost model](docs/guide/cost.md) | to price a store |
+| `@cloudbitmaps/core` | the engine underneath, with no cloud SDK | never: it arrives with the others |
 
 ### First run, in memory
 
@@ -124,21 +133,21 @@ A Roaring Bitmap holds a huge set of integer ids, such as *"which of my 1.2 bill
 structures, so teams reach for an always-on Redis cluster and pay for memory around the clock to hold sets that are
 mostly read. CloudBitmaps keeps the bitmap engine and puts the sets in your own object storage.
 
-What it costs at three illustrative sizes, priced by the library's own estimator against the cheapest on-demand
-Redis OSS cluster that would hold each one's data:
+What it costs at three illustrative sizes, priced by the project's own estimator (`estimateCost()` in
+`@cloudbitmaps/tools`) against the cheapest on-demand Redis OSS cluster that would hold each one's data:
 
 <!-- SIZING:WHY_SIZES:START -->
 | | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
 |---|---:|---:|---:|---:|
-| **Small** — a product team keeping its user cohorts | 200 MB | $3.29 | $35.04 | **91% less** |
-| **Medium** — an ad platform matching audiences | 20 GB | $280 | $900 | **69% less** |
-| **Large** — a marketplace filtering its catalogue | 2 TB | $6,703 | $27,325 | **75% less** |
+| **Small** — a product team keeping its user cohorts | 200 MB | $1.70 | $35.04 | **95% less** |
+| **Medium** — an ad platform matching audiences | 20 GB | $71.66 | $900 | **92% less** |
+| **Large** — a marketplace filtering its catalogue | 2 TB | $2,541 | $27,325 | **91% less** |
 <!-- SIZING:WHY_SIZES:END -->
 
 <!-- SIZING:WHY_CAVEATS:START -->
-Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 42% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 15% less and 32% less, and on three years paid upfront, 61% less, 1.3× as much and 1.02× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
+Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 94% less, 90% less and 88% less; with one replica a shard, 93% less, 88% less and 86% less; with both, 91% less, 85% less and 83% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 87% less, 78% less and 74% less, and on three years paid upfront, 80% less, 67% less and 61% less.
 
-All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 396 and 591 shared chunks.
+All three assume that two segments share 100 of their 2,000 chunks, side by side in each object, and filters over one catalogue or one audience can share most of theirs, spread over it: with every chunk shared and spread, the medium and large deployments cost 0.087× and 0.11× their Redis, and each intersect reads 8 MB and 20 MB from the two objects, most of them.
 
 The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](docs/guide/sizing.md#what-each-reader-holds)), in memory not priced here.
 <!-- SIZING:WHY_CAVEATS:END -->
@@ -150,18 +159,19 @@ explains these, S3's request rate and overlap, with the charts; [what it costs a
 
 ## What it costs on real AWS
 
-Run [`2026-10-04-73668`](bench/calibration/2026-10-04-73668.md), made on 2026-10-04 from AWS CloudShell in `us-east-1`,
-drove the packages published before this release against a real AWS account, with the pointer in
-the same bucket as the data. What each operation costs:
+A cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks made 6 GETs and took 99.80 ms at the median,
+**$2.40 per million** at list prices. The requests are measured: run [`2026-10-06-9d36b`](bench/calibration/2026-10-06-9d36b.md),
+made on 2026-10-06 from AWS CloudShell in `us-east-1` on the published packages, with the pointer in the same
+bucket as the data.
 
 | Operation | Cost | Kind |
 |---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 204 GETs at the median | **$81.60 / million** | measured requests at list prices |
-| The same, each pointer read once, as expected | $81.60 / million | expected |
-| A segment's first `store.load()`: 2 PUT + 4 GET, pointer included | **$11.60 / million** | measured requests at list prices |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 6 GETs | **$2.40 / million** | measured requests at list prices |
+| A segment's first `store.load()`: 2 PUT + 3 GET, pointer included | **$11.20 / million** | measured requests at list prices |
+| A steady `store.load()` at `keep: 12`, deleting a generation by name: 2 PUT + 5 GET and a free delete | **$12.00 / million** | counted requests at list prices |
 
-Run from inside the region with a client of 50 sockets (the client this release builds allows 128, and its effect on these figures is not measured), that cold intersect took 290.06 ms at the median, a cold `count()` is one request at
-27.82 ms, and a single-part load ran at 5,100,414 bytes a second. Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its 50 sockets, so it does not say why. The
+Run from inside the region with a client of 128 sockets, a cold `count()` is one request at
+27.19 ms, a single-part load ran at 5,443,673 bytes a second, and an `andNot` against ten excludes made 33 GETs in 351.64 ms. The
 [benchmarks page](docs/benchmarks.md#real-cloud-calibration--aws) says exactly what it did and did not measure.
 
 ## Your data stays yours
@@ -171,7 +181,7 @@ If the library breaks, you are not stuck:
 - **It is a library, not a service.** Your data lives in your bucket, your account or your filesystem. CloudBitmaps never sees it, and you are the data controller (see [`PRIVACY.md`](PRIVACY.md)).
 - **The files are an open format.** Each `.crbm` object is a documented container with a footer index and CRC32C checksums, wrapping standard Roaring serialization that every Roaring library (Java, Go, Python, C++, Rust, C#) reads.
 - **A bad load does not overwrite the last good one.** Generations are write-once and checksummed, and corruption is rejected before it is decoded. The one answer taken without decoding a payload, [`count()`](docs/guide/reading.md#what-count-trusts), comes from the registry row's summary, or from the index when the row has none, and is checked for internal consistency but not against the payloads. A bad load writes a new generation, and the previous one stays in the bucket for you to [roll the pointer back](docs/guide/loading.md#roll-back-a-segment) to. Under the default `keep: 1` it stays only until the next load, so roll back before you load again, or raise [`keep`](docs/guide/loading.md#generations-and-keep).
-- **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson`. The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
+- **You can leave.** `store.exportSegments(sink)` writes every segment's current generation to portable `roaring` or `ndjson` (a destroyed segment, crypto-shredded or dropped, is listed in the manifest's `skipped` instead). The `export-segments` command does the same for a local-filesystem store only; for S3, GCS or Azure, call `exportSegments` in code. See [Export your data](docs/guide/export.md).
 
 How this compares with pure Roaring libraries and bitmap databases on lock-in is in
 [Beyond the bill](docs/guide/why-cloudbitmaps.md#beyond-the-bill), and what a raw copy of the bucket holds is in
@@ -202,10 +212,11 @@ How this compares with pure Roaring libraries and bitmap databases on lock-in is
   │  ─────────────                     ──────────────                     │
   │  load(ref, input)    ← the write   has(id)      count()   iterate()   │
   │  segment(name, opts)               intersect()  union()   andNot()    │
-  │  exists()  segments()              intersectInto() unionInto()        │
-  │  generations() rollback()          andNotInto()                       │
+  │  materializeMany() ← many *Into    intersectInto() unionInto()        │
+  │  exists()  segments()              andNotInto()                       │
+  │  generations() rollback()                                             │
   │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
-  │  setRetention() getRetention()     costReport()                       │
+  │  setRetention() getRetention()     stat()       ← number, count, size │
   │  clearRetention()                                                     │
   │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
   │  checkConsistency() exportSegments()                                  │
@@ -255,7 +266,7 @@ bitmap of up to 65,536 ids, and it is the unit of storage and transfer: you neve
 
 - **Storage** holds immutable, generation-keyed `.crbm` objects, each with a footer index that makes single-chunk reads cheap; the registry row's summary of the current generation makes `count()` one request.
 - **The registry** is one small row per segment saying which generation is current. A load moves it by compare-and-swap, and it is the only thing a write changes.
-- **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, so a new generation misses it instead of being answered with the old one's bytes. A reader moves to a new generation within [`cache.genTtlMs`](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load), 2 s by default.
+- **The cache** is a bounded in-memory LRU of decoded chunks, keyed by generation, the row's `pointerId` and the opened object, so a new generation misses it instead of being answered with the old one's bytes. A reader moves to a new generation within [`cache.genTtlMs`](docs/guide/reading.md#how-soon-a-reader-sees-a-new-load), 2 s by default.
 
 **Intersection.** To find the ids in both of two huge segments, CloudBitmaps reads the two small chunk indexes,
 aligns their keys, and fetches only the chunks present in both. Two 100 MB segments overlapping in 5% of chunks
@@ -287,7 +298,7 @@ You need **Node ≥ 22.12** and **pnpm 9**; Docker is needed only for the integr
 
 ```bash
 pnpm install
-pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm smoke
+pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm api:surface:check && pnpm smoke
 ```
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is the canonical record of how we work. [`AGENTS.md`](AGENTS.md) is the AI-agent

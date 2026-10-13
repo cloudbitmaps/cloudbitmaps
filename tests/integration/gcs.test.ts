@@ -15,15 +15,20 @@ import {
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { GcsStorageDriver } from '@/gcs/storage';
-import { storageObjectName } from '@/gcs/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { GcsRegistryDriver } from '@/gcs/registry';
 import { GcsStorage } from '@cloudbitmaps/gcs';
-import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import { brandAsBackend, type GenKey } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import {
+  expectMissingLocationFails,
+  expectMissingObjectIsAbsent,
+} from '../helpers/missing-location';
 import { forwardingProxy } from '../helpers/forwarding-proxy';
 
 /**
@@ -91,6 +96,13 @@ const ticking = (): (() => number) => {
   let t = 1_000;
   return () => (t += 1);
 };
+// Never created: the emulator answers as the service does for a bucket that is not there.
+const MISSING = `cloudbitmaps-missing-${RUN}`.toLowerCase();
+// fake-gcs-server 1.52.2 does not page a listing: it truncates at `maxResults` and sends no `nextPageToken`, so a listing
+// past one page cannot be held here. The registry, which asks for 1,000 rows a page, is held to paging by its unit fake
+// (three rows a page). A generation listing is paged by the SDK's auto-pagination, which sends no page size, so the
+// emulator answers it in one page: there the case holds the count, and the paging rests on the SDK.
+const PAST_ONE_PAGE = 1_001;
 registryConformance(
   'GcsRegistryDriver (fake-gcs-server)',
   () =>
@@ -100,6 +112,10 @@ registryConformance(
       prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
+  {
+    missingLocation: () =>
+      new GcsRegistryDriver({ storage, bucket: MISSING, prefix: `${RUN}/missing`, now: ticking() }),
+  },
 );
 
 // And it must fence writers that do NOT share a process — the property the sequential suite above cannot
@@ -121,7 +137,13 @@ const freshDriver = (): GcsStorageDriver =>
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
 // The same IStorageDriver contract memory and LocalFs pass: write-once, typed errors, true tail size, idempotent
 // delete, read-after-delete listing.
-storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver);
+storageDriverConformance('GcsStorageDriver (fake-gcs-server)', freshDriver, {
+  missingLocation: () =>
+    new GcsStorageDriver({ storage, bucket: MISSING, prefix: `${RUN}/missing` }),
+  pagedListSize: PAST_ONE_PAGE,
+  // Off by default: fake-gcs-server ignores ifGenerationMatch on a delete (conditional-delete.test.ts records it).
+  conditionalDelete: false,
+});
 // The same cases with a 100-byte threshold, so every object takes the resumable upload. fake-gcs-server does not
 // enforce `ifGenerationMatch` on a resumable upload (a second write to the key succeeds and overwrites), so the
 // collision is skipped here: a real GCS answers it with 412, and the driver maps that the same way as the simple path.
@@ -340,7 +362,7 @@ describe('GCS resumable conflict against the write own id (fake-gcs-server)', ()
 
   it('stays a conflict when the object was written with no id', async () => {
     const prefix = `${RUN}/wid-noid/${n++}`;
-    const name = storageObjectName(prefix, gen(1));
+    const name = storageObjectKey(prefix, gen(1));
     await storage
       .bucket(BUCKET)
       .file(name)
@@ -518,7 +540,7 @@ describe('GCS (fake-gcs-server): a single-request upload the client is told was 
     await writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1, 2, 3) }]);
     const [meta] = await storage
       .bucket(BUCKET)
-      .file(storageObjectName(prefix, gen(1)))
+      .file(storageObjectKey(prefix, gen(1)))
       .getMetadata();
     expect((meta.metadata as { cbwid?: string }).cbwid).toMatch(/^[0-9a-f]{32}$/);
   });
@@ -573,13 +595,95 @@ describe('GCS (fake-gcs-server): a cold count is one request', () => {
       expect(proxy.requests.map((r) => r.method)).toEqual(['GET']);
       expect(decodeURIComponent(proxy.requests[0]!.path)).toContain('registry');
       proxy.requests.length = 0;
-      expect(await reader.segment('s', { namespace: 'ns' }).stat()).toMatchObject({
-        generation: 0,
-        cardinality: chunks,
-      });
+      const stat = await reader.segment('s', { namespace: 'ns' }).stat();
+      expect(stat).toMatchObject({ generation: 0, cardinality: chunks });
+      // A stat after it answers from the row the count just read, whose summary records the object's size: it sends
+      // nothing, however wide the index.
       expect(proxy.requests).toEqual([]);
+      // And it is the size of the object in the bucket, which a pin opens.
+      const pinned = await reader.segment('s', { namespace: 'ns' }).pin();
+      expect(`${stat.sizeBytes}`).toBe(pinned.pinnedAt!.fingerprint!.split(':')[0]);
     } finally {
       await proxy.close();
     }
+  });
+});
+
+// A registry write made against a row the caller read is one request on the wire, conditioned on the object's
+// generation, and fake-gcs-server refuses it once the row has moved on. Counted by a forwarding proxy.
+describe('GCS (fake-gcs-server): a registry write made against a held row', () => {
+  const registryOver = (apiEndpoint: string, prefix: string): GcsRegistryDriver =>
+    new GcsRegistryDriver({
+      storage: new Storage({ projectId: 'test', apiEndpoint }),
+      bucket: BUCKET,
+      prefix,
+    });
+  const ref = { namespace: 'ns', segment: 'held' };
+
+  it('a compare-and-swap is one write under ifGenerationMatch and no read; a stale row is refused', async () => {
+    const prefix = `${RUN}/held-row/${n++}`;
+    const direct = registryOver(ENDPOINT, prefix);
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const viaProxy = registryOver(proxy.url, prefix);
+      await direct.create(ref, { currentGen: 0 });
+      const held = (await viaProxy.get(ref))!;
+      proxy.requests.length = 0;
+      await viaProxy.compareAndSwap(ref, held.token, { currentGen: 1 }, { held });
+      expect(proxy.requests.map((r) => r.method)).toEqual(['POST']);
+      expect(proxy.requests[0]!.path).toMatch(/ifGenerationMatch=\d+/);
+
+      const stale = (await viaProxy.get(ref))!;
+      await direct.compareAndSwap(ref, stale.token, { currentGen: 2 });
+      proxy.requests.length = 0;
+      await expect(
+        viaProxy.compareAndSwap(ref, stale.token, { currentGen: 9 }, { held: stale }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      // The write reached fake-gcs-server, which refused it: nothing was read to decide it.
+      expect(proxy.requests.map((r) => r.method)).toEqual(['POST']);
+      expect((await direct.get(ref))?.currentGen).toBe(2);
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it('a create with no row held is one write under ifGenerationMatch=0 and no read', async () => {
+    const prefix = `${RUN}/held-row/${n++}`;
+    const proxy = await forwardingProxy(ENDPOINT);
+    try {
+      const viaProxy = registryOver(proxy.url, prefix);
+      await viaProxy.create(ref, { currentGen: 0 }, { held: null });
+      expect(proxy.requests.map((r) => r.method)).toEqual(['POST']);
+      expect(proxy.requests[0]!.path).toMatch(/ifGenerationMatch=0/);
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
+describe('a bucket that does not exist', () => {
+  it('fails every read and a delete with a ValidationError that names it, not as an absent object', async () => {
+    await expectMissingLocationFails(
+      () =>
+        new GcsStorage({
+          bucket: MISSING,
+          apiEndpoint: ENDPOINT,
+          projectId: 'test',
+          prefix: `${RUN}/missing`,
+        }),
+      MISSING,
+    );
+  });
+
+  it('control: in the bucket that exists, a missing object still reads as absent', async () => {
+    await expectMissingObjectIsAbsent(
+      () =>
+        new GcsStorage({
+          bucket: BUCKET,
+          apiEndpoint: ENDPOINT,
+          projectId: 'test',
+          prefix: `${RUN}/missing`,
+        }),
+    );
   });
 });

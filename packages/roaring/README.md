@@ -7,13 +7,14 @@ file, then ask `has`, `count`, `iterate`, `intersect`, `union` and `andNot`, wit
 > **ESM-only, Node ≥ 22.12.** Use `import`; for `require()`, Jest and TypeScript, see
 > [CommonJS, Jest and TypeScript](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
-> Pre-1.0: the API and the on-disk format can still change. These docs describe `main`, ahead of the npm release.
+> Pre-1.0: the API and the on-disk format can still change. On npm these docs match the version they ship in; on GitHub they describe `main`, and the changelog says what each release changed.
 
 ## Install
 
 ```bash
 pnpm add @cloudbitmaps/roaring              # the store, with in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3                   # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
+pnpm add @cloudbitmaps/tools                # optional: price a store, offline
 ```
 
 On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. [Details](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
@@ -52,6 +53,11 @@ request handler. `store.exists(ref)` says whether a segment has been loaded. A l
 hold: `store.load(ref, { bitmap })` for a `RoaringBitmap32`, or `{ serialized }` for portable Roaring bytes, checked
 before anything is written and loaded with no per-id work, into the same bytes its ids would write.
 
+To write many results over the same stored operands, `store.materializeMany` reads each operand once for a whole batch of
+`and` / `or` / `andNot` outputs instead of once per `*Into` call, and a set you already hold in memory streams in as its
+feed. [Many outputs from one pass](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md#many-outputs-from-one-pass-materializemany)
+covers both.
+
 ## Options
 
 `new CloudRoaring({ storage, ...options })`. Only `storage` is required. A key the store does not take is refused by
@@ -60,7 +66,7 @@ name.
 | Option | What it holds |
 |---|---|
 | `storage` (required) | a backend (see above) |
-| `cache` | `maxChunks`, `genTtlMs` (how soon a reader sees a new load, default 2000 ms), `readerMax`, `readerMaxBytes` |
+| `cache` | `maxChunks`, `ttlMs` (an optional age limit on a cached chunk; omitted, a chunk stays until evicted), `genTtlMs` (how soon a reader sees a new load, default 2000 ms), `readerMax`, `readerMaxBytes` |
 | `encryption` | `{ keystore, required }`: encrypt segments at rest with your own key |
 | `retry` | tune the retry of reads, or `false` to turn it off |
 | `metrics` | a metrics sink; off by default |
@@ -69,15 +75,17 @@ name.
 
 ## What it costs
 
-Measured against real S3 in `us-east-1`, from inside the region, with the pointer in the same bucket as the data: the median cold `intersect`
-of two 500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs, **$81.60 per million**, requesting only
-the shared chunks, and took 290.06 ms at the median from inside the region (run of 2026-10-04, whose client had 50 sockets; the client this release builds allows 128, and its effect is not measured). A segment's first `store.load()`
-is **$11.60 per million**, pointer included, from its measured requests at list prices. A cold `count()` is one pointer read: it reads no payload and no object.
+A cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs and took 99.80 ms at the median, **$2.40 per
+million** at list prices: measured on S3 in-region, in the run of 2026-10-06, whose client had 128 sockets. On a spread layout it reads more
+bytes than it needs, which cross-region can cost more than the requests it saves. A segment's first `store.load()` made
+2 PUT + 3 GET, **$11.20 per million** at the default prices, pointer included: the requests are measured on S3 in-region, in the same run. A steady `store.load()` at `keep: 12` that deletes a generation by name costs **$12.00 per million**, for 2 PUT + 5 GET and a free delete, counted by the engine's tests. A cold `count()` is one
+pointer read: it reads no payload and no object.
 
 The trade is stated plainly. A membership check that misses the cache costs a ranged GET against object storage,
 where an in-process store costs a memory read. If you need sub-millisecond answers on a working set that fits a
 bounded cache, use Redis. [The benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md)
-give the method and what the numbers do not establish.
+give the method and what the numbers do not establish. To price your own store, from the sizes `seg.stat()` reports, use
+`@cloudbitmaps/tools` ([the cost guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/cost.md)).
 
 ## Before production
 
@@ -92,7 +100,8 @@ The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/mai
 ## Coming from Redis bitmaps?
 
 `GETBIT` is `has`, `BITCOUNT` is `count`, and `BITOP AND` / `OR` / `DIFF` are `intersect` / `union` / `andNot`, with
-`intersectInto`, `unionInto` and `andNotInto` publishing the result as a new generation. `EXPIRE` becomes
+`intersectInto`, `unionInto` and `andNotInto` publishing the result as a new generation, and `materializeMany` publishing
+many such results from one pass. `EXPIRE` becomes
 `setRetention` plus a `retireExpired` sweep you schedule, per segment, never per id. `SETBIT` has no equivalent:
 there is no per-id write. Build the set upstream and load it, and do not loop one id at a time. Remove one id
 everywhere with `eraseSubject`, a rewrite for compliance, not a hot-path verb. This is not a drop-in replacement, and

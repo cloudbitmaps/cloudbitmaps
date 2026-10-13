@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream';
 import type { ContainerClient } from '@azure/storage-blob';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
-import { storageObjectName } from '@/azure-blob/keys';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
@@ -107,7 +107,7 @@ class FakeContainer {
 }
 
 const GEN: GenKey = { segment: 's', generation: 0 };
-const NAME = storageObjectName('cloudbitmaps', GEN);
+const NAME = storageObjectKey('cloudbitmaps', GEN);
 const asClient = (c: FakeContainer): ContainerClient => c as unknown as ContainerClient;
 const storageOver = (c: FakeContainer, blockBytes?: number): AzureBlobStorageDriver =>
   new AzureBlobStorageDriver({

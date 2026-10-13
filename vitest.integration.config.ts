@@ -6,6 +6,7 @@ const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url)
 const S3 = fileURLToPath(new URL('./packages/s3/src', import.meta.url));
 const GCS = fileURLToPath(new URL('./packages/gcs/src', import.meta.url));
 const AZURE = fileURLToPath(new URL('./packages/azure-blob/src', import.meta.url));
+const TOOLS = fileURLToPath(new URL('./packages/tools/src', import.meta.url));
 
 // Integration suite — runs against the object stores via `docker compose` (see docker-compose.yml).
 // The first real integration test was the S3 storage driver against MinIO; the lane now covers MinIO,
@@ -44,10 +45,13 @@ export default defineConfig({
       { find: /^@\/s3\/(.*)$/, replacement: S3 + '/$1' },
       { find: /^@\/gcs\/(.*)$/, replacement: GCS + '/$1' },
       { find: /^@\/azure-blob\/(.*)$/, replacement: AZURE + '/$1' },
+      // The offline tools package's own sources, as the driver packages' are.
+      { find: /^@\/tools\/(.*)$/, replacement: TOOLS + '/$1' },
       { find: /^@\/(.*)$/, replacement: CORE + '/$1' },
       { find: /^@cloudbitmaps\/s3$/, replacement: S3 + '/index.ts' },
       { find: /^@cloudbitmaps\/gcs$/, replacement: GCS + '/index.ts' },
       { find: /^@cloudbitmaps\/azure-blob$/, replacement: AZURE + '/index.ts' },
+      { find: /^@cloudbitmaps\/tools$/, replacement: TOOLS + '/index.ts' },
       { find: /^@cloudbitmaps\/core$/, replacement: CORE + '/index.ts' },
       { find: /^@cloudbitmaps\/core\/(.*)$/, replacement: CORE + '/$1' },
     ],

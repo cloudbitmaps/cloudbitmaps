@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto';
-import type { IStorageDriver, SegmentRef } from '@/core/ports';
+import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/core/ports';
 import { runConsistencyCheck } from '@/core/consistency';
-import { sealSummary } from '@/core/summary';
+import { openSummary, sealSummary, tailBytesFit } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, MemoryStorage } from '@/index';
 import { counting } from '../helpers/counting';
 
 /**
  * `checkConsistency({ summaries: true })` holds each row's summary against its object and reports `summary-mismatch`
- * where they differ. It opens objects only when asked: the default check lists, as it always did. A sealed summary is
+ * where they differ. It opens objects only when asked: the default check only looks for them. A sealed summary is
  * held against its object when the store has the key, and is counted as unchecked when it does not.
  */
 
@@ -28,26 +28,29 @@ function world(encrypted: boolean) {
 }
 
 describe('checkConsistency with summaries', () => {
-  it('a coherent store reports nothing, and the default check opens no object', async () => {
+  it('a coherent store reports nothing, and the default check only looks for the object', async () => {
     const w = world(false);
     await w.store.load(SEG, [1, 2, 3], { metadata: { a: 1 } });
     const plain = await runConsistencyCheck({ storage: w.storage, registry: w.registry });
     expect(plain).toEqual({ checked: 1, inconsistent: [], errored: [] });
-    expect(w.calls.getTail ?? 0).toBe(0);
+    // One zero-length tail read, which proves the object is there and opens nothing.
+    expect(w.calls.getTail).toBe(1);
     const deep = await runConsistencyCheck(
       { storage: w.storage, registry: w.registry },
       { summaries: true },
     );
     expect(deep).toEqual({ checked: 1, inconsistent: [], errored: [], summariesUnchecked: 0 });
-    expect(w.calls.getTail).toBe(1);
+    // The open's own tail read is the only one more: it answers whether the object is there as well.
+    expect(w.calls.getTail).toBe(2);
   });
 
   it('a row whose count or metadata differs from its object is a summary-mismatch', async () => {
     const w = world(false);
     await w.store.load(SEG, [1, 2, 3], { metadata: { a: 1 } });
     const row = (await w.registry.get(SEG))!;
+    const { fingerprint, tailBytes } = row.summary as { fingerprint: string; tailBytes: number };
     await w.registry.compareAndSwap(SEG, row.token, {
-      summary: { generation: 0, cardinality: 99, metadata: { a: 1 } },
+      summary: { generation: 0, cardinality: 99, fingerprint, tailBytes, metadata: { a: 1 } },
     });
     const report = await w.store.checkConsistency({ summaries: true });
     expect(report.inconsistent).toEqual([
@@ -55,12 +58,63 @@ describe('checkConsistency with summaries', () => {
     ]);
     const again = (await w.registry.get(SEG))!;
     await w.registry.compareAndSwap(SEG, again.token, {
-      summary: { generation: 0, cardinality: 3, metadata: { a: 2 } },
+      summary: { generation: 0, cardinality: 3, fingerprint, tailBytes, metadata: { a: 2 } },
+    });
+    expect((await w.store.checkConsistency({ summaries: true })).inconsistent).toHaveLength(1);
+    // The count and metadata it says, of another object than the one under its number.
+    const third = (await w.registry.get(SEG))!;
+    const [size, crc] = fingerprint.split(':').map(Number) as [number, number];
+    await w.registry.compareAndSwap(SEG, third.token, {
+      summary: {
+        generation: 0,
+        cardinality: 3,
+        fingerprint: `${size}:${(crc ^ 1) >>> 0}`,
+        tailBytes,
+        metadata: { a: 1 },
+      },
     });
     expect((await w.store.checkConsistency({ summaries: true })).inconsistent).toHaveLength(1);
     // Without asking, the check does not look.
     expect((await w.store.checkConsistency()).inconsistent).toEqual([]);
   });
+
+  // A registry of your own can hand over a clear summary whose fingerprint names no object. No read uses it, so the
+  // object is opened unchecked: that is a row the check reports, not one it passes.
+  it.each([['abc'], [5], ['0:1']])(
+    'a clear summary whose fingerprint is %j, from a registry of your own, is a summary-mismatch',
+    async (fingerprint) => {
+      const w = world(false);
+      await w.store.load(SEG, [1, 2, 3]);
+      const registry: IRegistryDriver = {
+        capabilities: () => w.registry.capabilities(),
+        get: async (ref) => {
+          const row = await w.registry.get(ref);
+          return row === null
+            ? row
+            : ({ ...row, summary: { ...row.summary!, fingerprint } } as unknown as RegistryRecord);
+        },
+        create: (ref, rec, o) => w.registry.create(ref, rec, o),
+        compareAndSwap: (ref, t, patch, o) => w.registry.compareAndSwap(ref, t, patch, o),
+        list: async function* (ns) {
+          for await (const row of w.registry.list(ns)) {
+            yield {
+              ...row,
+              summary: { ...row.summary!, fingerprint },
+            } as unknown as RegistryRecord;
+          }
+        },
+        delete: (ref, t) => w.registry.delete(ref, t),
+      };
+      const report = await runConsistencyCheck(
+        { storage: w.storage, registry },
+        { summaries: true },
+      );
+      expect(report.inconsistent).toEqual([
+        { segment: 's', namespace: 'ns', currentGen: 0, issue: 'summary-mismatch' },
+      ]);
+      expect(report.summariesUnchecked).toBe(0);
+    },
+  );
 
   it('a torn restore is still the missing generation, and is not also a mismatch', async () => {
     const w = world(false);
@@ -75,7 +129,14 @@ describe('checkConsistency with summaries', () => {
     await w.store.load(SEG, [1, 2, 3]);
     const row = (await w.registry.get(SEG))!;
     const aead = await w.keystore.openDek(row.wrappedDeks!);
-    await w.registry.compareAndSwap(SEG, row.token, { summary: sealSummary(aead, SEG, 0, 99) });
+    const { fingerprint, tailBytes } = openSummary(
+      aead,
+      SEG,
+      row.summary as { generation: number; sealed: string },
+    );
+    await w.registry.compareAndSwap(SEG, row.token, {
+      summary: sealSummary(aead, SEG, 0, 99, fingerprint, tailBytes),
+    });
     const withKey = await w.store.checkConsistency({ summaries: true });
     expect(withKey.inconsistent.map((i) => i.issue)).toEqual(['summary-mismatch']);
     expect(withKey.summariesUnchecked).toBe(0);
@@ -84,5 +145,32 @@ describe('checkConsistency with summaries', () => {
     });
     expect(keyless.inconsistent).toEqual([]);
     expect(keyless.summariesUnchecked).toBe(1);
+  });
+
+  it('a sealed summary whose tailBytes the object does not bear out is a summary-mismatch', async () => {
+    const w = world(true);
+    await w.store.load(SEG, [1, 70_000, 140_000, 210_000, 280_000]);
+    const row = (await w.registry.get(SEG))!;
+    const aead = await w.keystore.openDek(row.wrappedDeks!);
+    const opened = openSummary(aead, SEG, row.summary as { generation: number; sealed: string });
+    const wrong = opened.tailBytes + 8;
+    // Still a number a sealed summary of this object can carry, so the summary is used and held to the object.
+    expect(tailBytesFit(wrong, Number(opened.fingerprint.split(':')[0]))).toBe(true);
+    await w.registry.compareAndSwap(SEG, row.token, {
+      summary: sealSummary(
+        aead,
+        SEG,
+        0,
+        opened.cardinality,
+        opened.fingerprint,
+        wrong,
+        opened.metadata,
+      ),
+    });
+    const report = await w.store.checkConsistency({ summaries: true });
+    expect(report.inconsistent).toEqual([
+      { segment: 's', namespace: 'ns', currentGen: 0, issue: 'summary-mismatch' },
+    ]);
+    expect(report.summariesUnchecked).toBe(0);
   });
 });

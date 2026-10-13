@@ -57,7 +57,10 @@ export interface IKeystore {
   /**
    * Reconstruct the {@link Aead} from a segment's stored wrappings by unwrapping with any KEK currently held.
    * Throws {@link KeyUnavailableError} if it holds none of the referenced KEKs (lost key, or a shredded
-   * segment whose wrappings were deleted).
+   * segment whose wrappings were deleted). Throw {@link TransientError} for a fault worth riding out (a throttle, a 5xx,
+   * a dropped connection, a request timeout): a rollback below a segment's pointer goes ahead without the key on that
+   * error, as on `KeyUnavailableError`, an `IntegrityError` or an `Error` named `TimeoutError`, and is stopped by any
+   * other error the keystore throws.
    */
   openDek(wrapped: readonly WrappedDek[]): Promise<Aead>;
 }
@@ -72,6 +75,7 @@ export interface CrbmCrypto {
   aadFor(scope: number | 'index' | 'metadata'): Uint8Array;
 }
 
+const UTF8 = new TextEncoder();
 const AAD_VERSION = 1;
 const SCOPE_CHUNK = 0;
 const SCOPE_INDEX = 1;
@@ -92,9 +96,8 @@ export function aadFor(
   generation: number,
   scope: number | 'index' | 'metadata' | 'summary',
 ): Uint8Array {
-  const enc = new TextEncoder();
-  const ns = enc.encode(ref.namespace ?? '');
-  const seg = enc.encode(ref.segment);
+  const ns = UTF8.encode(ref.namespace ?? '');
+  const seg = UTF8.encode(ref.segment);
   const out = new Uint8Array(1 + 2 + ns.length + 2 + seg.length + 8 + 1 + 4);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -122,3 +125,7 @@ export function aadFor(
   view.setUint32(o, typeof scope === 'number' ? scope : 0, true);
   return out;
 }
+
+/** Whether two rows carry the same wrapped keys. */
+export const sameKeys = (a: readonly WrappedDek[] | undefined, b: readonly WrappedDek[]): boolean =>
+  a !== undefined && JSON.stringify(a) === JSON.stringify(b);

@@ -11,8 +11,12 @@
 import { UnsupportedError, ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
+import type { IMetricsSink } from './metrics';
 
-/** Opaque optimistic-concurrency token — unique per write, compared by equality only. */
+/**
+ * Opaque optimistic-concurrency token — unique per write with overwhelming probability, since it carries random parts
+ * (see {@link RegistryRecord.token}), and compared by equality only.
+ */
 export type Token = string;
 
 /**
@@ -41,11 +45,53 @@ export interface GenKey extends SegmentRef {
 }
 
 /**
- * A segment's grounded on-disk footprint — the current generation's Storage object bytes, read cheaply from the
- * `.crbm` footer/index (no payload reads). Powers the grounded `costReport()`.
+ * A segment's on-disk footprint — the current generation's Storage object bytes, read cheaply from the `.crbm`
+ * footer/index (no payload reads). It is the `sizeBytes` a segment's `stat()` reports, and what bounds the bytes a combine
+ * holds for an operand's stream.
  */
 export interface SegmentSize {
   readonly sizeBytes: number;
+}
+
+/**
+ * One chunk of a {@link StorageChunkSource.getChunks} stream: the key asked for, its bytes (`null` where the generation
+ * holds none), and the version of the generation the bytes were read from, or `null` when the segment has no
+ * generation. The version is what {@link StorageChunkSource.currentVersion} reports for that generation, so a caller
+ * can key what it keeps by the generation the bytes came from rather than the one it resolved earlier.
+ */
+export interface ChunkRead {
+  readonly key: number;
+  readonly bytes: Uint8Array | null;
+  readonly version: string | null;
+}
+
+/** Options of {@link StorageChunkSource.getChunks}. */
+export interface ReadChunksOptions {
+  /**
+   * Runs one storage request, and may run it again if it fails. A source passes each request it makes through
+   * this, so a caller that retries transient faults repeats the one request that failed, not the ones that landed.
+   * Absent, each request runs once.
+   */
+  readonly retry?: <T>(request: () => Promise<T>) => Promise<T>;
+  /**
+   * How many range requests the stream holds ahead of its consumer, in flight or landed and not yet taken: a positive
+   * integer, 32 by default. It bounds the requests in flight, and the memory the stream holds, at this many times the
+   * largest range (1 MiB, 1 MiB + 28 B for one encrypted chunk).
+   */
+  readonly concurrency?: number;
+  /**
+   * Open the window 1, 2, 4 … ranges wide up to `concurrency` instead of at full width, so a reader that stops early
+   * has asked for little; a number starts it that wide instead of at 1 (a positive integer), and it doubles from there.
+   */
+  readonly ramp?: boolean | number;
+  /**
+   * Called once for every range request the stream sends, when it settles: a request the consumer took, one that was
+   * still in flight when the consumer stopped, and one that failed. `bytes` is what the request moved, the gaps between
+   * the chunks it carried included (0 when it failed), and `ms` how long it took, retries included (0 when the source
+   * has no clock). It is how a caller counts what it is billed for, since several chunks can share a request and
+   * a stopped stream leaves some in flight. A throw from it is ignored.
+   */
+  readonly onRequest?: (request: { readonly bytes: number; readonly ms: number }) => void;
 }
 
 /** Per-chunk read view of the immutable Storage tier (implemented by the `.crbm` reader). */
@@ -54,16 +100,41 @@ export interface StorageChunkSource {
   getChunk(ref: ChunkRef): Promise<Uint8Array | null>;
   listChunkKeys(ref: SegmentRef): Promise<number[]>;
   /**
-   * Optional: the current generation's grounded size, cheaply (from the already-parsed `.crbm` index — no
-   * payload reads), or `null` if the segment has no Storage generation. Powers the grounded `costReport()`.
+   * Optional: several chunks of one segment as a stream, read **from one generation** with fewer storage requests than
+   * one per chunk where the chunks sit near each other in the object. `keys` are chunk keys in ascending order (a key
+   * may repeat; any other order is a `ValidationError`). The stream yields one {@link ChunkRead} per position of
+   * `keys`, in that order, as the requests that carry them land; a key the generation does not hold yields `null`
+   * bytes, as {@link StorageChunkSource.getChunk} answers. Each chunk is checked as a read of it alone is.
+   *
+   * **Nothing is resolved or read until the first chunk is asked for**, and the source holds at most
+   * {@link ReadChunksOptions.concurrency} ranges at a time (in flight, or landed and not yet taken), however many keys
+   * there are: a consumer that is slow holds the stream back, and one that stops early (`break`, or `return()`) stops
+   * the reads, so the requests it had already started (at most that many) finish and are dropped, and are not retried.
+   * A stream that fails raises at once and sends nothing further, and the requests it left in flight finish in the
+   * background and never raise. A plain chunk may be a view into a buffer of up to 1 MiB that it shares with its
+   * neighbours (and the same view at two positions for a key asked twice), so do not write to it, and copy a chunk to
+   * keep it.
+   *
+   * One stream reads one generation. If that generation is swept, or its object replaced, while the stream runs, a
+   * source may re-resolve the segment and continue with the keys not yet yielded from the generation that is current
+   * then; each chunk says which version it came from, and each is whole and verified either way. Before it does, it
+   * waits for the requests the failed stream left in flight, so a heal never opens a second window beside them: a
+   * request that never answers delays a heal, as it would hang a read of one chunk, until the driver's read timeout (if
+   * it has one) ends it, and never delays an error. A source that reads a pinned generation never heals.
+   *
+   * A source that cannot read a range of an object omits this, and a caller reads chunk by chunk; the `.crbm`
+   * source, which is what the stores the library ships read through, implements it.
+   */
+  getChunks?(
+    ref: SegmentRef,
+    keys: readonly number[],
+    options?: ReadChunksOptions,
+  ): AsyncIterable<ChunkRead>;
+  /**
+   * Optional: the current generation's size, cheaply (from the already-parsed `.crbm` index — no payload reads), or
+   * `null` if the segment has no Storage generation.
    */
   sizeOf?(ref: SegmentRef): Promise<SegmentSize | null>;
-  /**
-   * Optional: how often this source re-reads a segment's pointer while the segment is being read, in ms, or 0 if
-   * it never does. The grounded `costReport()` prices the pointer refresh at this interval; a source that omits it
-   * is priced at the store's default.
-   */
-  readonly pointerRefreshMs?: number;
   /**
    * Optional: the current generation's **per-chunk cardinality** (`chunkKey → count`), read from the
    * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Storage generation.
@@ -79,6 +150,17 @@ export interface StorageChunkSource {
    * summary omits this, and `count()` keeps its other paths.
    */
   summary?(ref: SegmentRef): Promise<GenerationSummary | null>;
+  /**
+   * Optional: what {@link summary} answers, with the size of the generation's object, both from **one** resolution of
+   * the segment, so the size is the size of the generation described; `null` if the segment has no Storage
+   * generation. The `.crbm` source answers from the registry row's summary when it can use it, whose fingerprint
+   * carries the object's size: one registry read and no read of the object. When it cannot, it opens the generation
+   * (one tail read of the object when it is not open already, and a range read for an index longer than the tail) and
+   * answers from its footer and index, with no payload read. For a source that omits it, `stat()` asks
+   * {@link summary} and {@link sizeOf}, two resolutions that can straddle a publish, and reports no size when
+   * there is no `sizeOf` either.
+   */
+  stat?(ref: SegmentRef): Promise<(GenerationSummary & SegmentSize) | null>;
   /**
    * Optional: the segment's **current generation number** as this source resolves it right now (registry
    * `currentGen`, or the highest storage generation), or `null` if the segment has no Storage generation. The engine
@@ -129,6 +211,10 @@ export interface StorageChunkSource {
    * Note that putting the incarnation in the *object key* would not fix this: the new incarnation still starts
    * at generation 0, so the cache key collides either way. The identity has to reach the cache.
    *
+   * Within one incarnation a number can be taken again once its object is deleted, so two objects must never share
+   * a version either, however long after its pointer read a source opens the object: the `.crbm` source's version
+   * ends with the fingerprint of the object it opened.
+   *
    * Returns `null` when the segment resolves to no generation. A source that only ever serves one immutable
    * generation may omit this, and the engine falls back to the generation alone.
    */
@@ -143,6 +229,48 @@ export interface StorageCaps {
   readonly maxObjectBytes: number;
   /** Optional: enables the pure-object `LATEST`-pointer registry variant (S3 conditional put). */
   readonly conditionalPut?: boolean;
+  /**
+   * Optional: `true` when `delete` applies {@link StorageDeleteOptions.ifVersion}. The driver then removes an object
+   * only while it is still the one that version names, by a check the backend applies in the same step as the removal
+   * (a precondition on the request, or a check and a removal with nothing between them), refuses another object under
+   * the key with {@link WriteConflictError}, and reports a `version` on every {@link IStorageDriver.getTail} of an
+   * object. `false` or absent: `delete` ignores `ifVersion` and removes whatever is under the key, and a caller that
+   * decided to delete one object can remove another stored under the key since.
+   *
+   * A driver that learns this from its client may report `false` until its first delete given `ifVersion`; what the
+   * delete does is what it states. The S3 driver does: it reads where the client sends its requests, and whether the
+   * SDK sends the header, on its first such delete, and reports `false` for good when that cannot be found out.
+   */
+  readonly conditionalDelete?: boolean;
+}
+
+/** What {@link IStorageDriver.getTail} read. */
+export interface TailRead {
+  /** The last `min(maxBytes, size)` bytes of the object. */
+  readonly bytes: Uint8Array;
+  /** The object's true total size, not the number of bytes returned. */
+  readonly size: number;
+  /**
+   * Optional: which object the read saw, as the backend names it (an S3 or Azure Blob ETag, a GCS object generation),
+   * taken from the response that carried `bytes`, or from the metadata read when no bytes were asked for. Opaque, and
+   * compared by equality only, by the driver that reported it. It names the object, not the key: two objects stored
+   * one after the other under one key carry different versions, except where the backend's version is computed from
+   * the bytes (an S3 ETag of an object stored without SSE-KMS or SSE-C is), where two objects with the same bytes, each
+   * stored whole in one request, or each in parts of the same sizes, share one. A driver that reports
+   * `conditionalDelete: true` reports it on every read; another may omit it.
+   */
+  readonly version?: string;
+}
+
+/** Options of {@link IStorageDriver.delete}. */
+export interface StorageDeleteOptions {
+  /**
+   * Delete the object only while it is the one this version names: the `version` a {@link IStorageDriver.getTail} of
+   * it reported. Pass the one read when the decision to delete was made, never one read after it, or the condition
+   * names whatever is under the key by then. Applied only by a driver that reports
+   * {@link StorageCaps.conditionalDelete}; ignored by any other, and absent, the delete is unconditional.
+   */
+  readonly ifVersion?: string;
 }
 
 /**
@@ -154,26 +282,58 @@ export interface StorageCaps {
  * shipped driver to them:
  *
  * - **`putImmutable` is write-once and reports a collision as {@link WriteConflictError}.** It never overwrites a
- *   stored object. `load` reads that error as a lost race for the generation number (`superseded`), so a driver
- *   that threw anything else for an existing key would surface as a failed load.
+ *   stored object, two concurrent writes of one key included: exactly one lands. `load` reads that error as a lost
+ *   race for the generation number (`superseded`), so a driver that threw anything else for an existing key would
+ *   surface as a failed load. A write whose writer fails stores nothing, and the key can be written after.
+ * - **Keys keep every name apart.** One segment in two namespaces, two names an encoding could fold into one (`a/b`
+ *   and `a_b`), and a name that extends another (`s` and `s.1`) are separate objects, each listed and deleted alone;
+ *   generations are listed and deleted by number, never by a prefix of one.
+ * - **A bucket or container that does not exist is not a missing object**: it fails with an error that is neither
+ *   {@link NotFoundError}, which would read as an empty segment, nor a {@link TransientError}, which a retry cannot fix.
  * - **A missing object makes `getRange` and `getTail` throw {@link NotFoundError}** — never an empty or short
  *   result. Heal-forward (a read whose generation a sweep collected re-resolves), the erasure's holder probe and
  *   its verify of the rewrite, and a pin's replaced-object check all branch on that one error. (A zero-length
  *   `getRange` may answer empty without reaching the backend, so it proves neither that the object exists nor
  *   that the offset lies inside it: the cloud drivers answer it empty, the memory and local-filesystem drivers
  *   throw for a missing object or an offset past the end.)
+ * - **A deleted object is missing to the next read**: once `delete(key)` has resolved, `getTail` and a non-empty `getRange`
+ *   of that key throw {@link NotFoundError} (a zero-length `getRange` is the exemption above), with no stale answer from a
+ *   cache or a replica. A rollback reads its target's footer once
+ *   after moving the pointer, in place of listing the bucket, and takes a read that succeeds as proof that the object is
+ *   there.
  * - **An out-of-range read throws {@link ValidationError}**: a range that runs past the end of the object, or a
  *   negative or non-integer offset or length. Never a clamped, short or adjacent read. A pin whose object
  *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
  *   to check that the object is still the one it pinned.
- * - **`getTail` reports the object's true total size**, not the number of bytes it returned.
+ * - **`getTail` reports the object's true total size**, not the number of bytes it returned, and, where the driver has
+ *   one, the object's `version` ({@link TailRead.version}) from the same response as the bytes. Its length is a safe
+ *   integer, zero or less for an empty tail; any other length throws {@link ValidationError} before anything is read.
  * - **`delete` is idempotent.** Deleting an absent key is a no-op, not an error: collection passes race each
- *   other and retry.
+ *   other and retry. That holds with `ifVersion` too: an absent object is a no-op whatever version is given.
+ * - **`delete` with `ifVersion` does what {@link StorageCaps.conditionalDelete} says.** A driver that reports `true`
+ *   removes the object only while it is the one the version names, by a check the backend applies in the same step as
+ *   the removal (S3 `If-Match`, GCS `ifGenerationMatch`, Azure Blob `ifMatch`; in memory, the check and the removal with
+ *   no await between them), and for another object under the key throws {@link WriteConflictError} and leaves it. A
+ *   check made by reading the object first and deleting after is not one step, and does not qualify. Where the service
+ *   answers a failed precondition for a key with no object, the driver looks again before it reports a conflict, so an
+ *   absent object stays a no-op. A driver that reports `false`, or omits it, ignores `ifVersion` and deletes whatever is
+ *   under the key. A number can be taken again once its object is deleted, so this is what keeps a delete decided from
+ *   one read, and delayed, from removing an object stored under the number since: the erasure's delete of a holder
+ *   above the pointer passes the version it read when it searched that object, and a refused load's delete of an
+ *   object whose footer, read once, matched what it wrote passes the version of that read.
+ * - **A driver that wraps another forwards `ifVersion` and the `version` of a tail read, or reports
+ *   `conditionalDelete: false`.** A wrapper that hands `delete` the key alone, and reports the inner driver's
+ *   capability, makes every conditional delete through it unconditional without a word.
+ * - **A conditional delete may be sent again**, by the backend client's retry, after a lost response: a copy that meets
+ *   its own landed delete finds the object absent, which is its success, and one that meets an object stored since is
+ *   refused. It can remove nothing the first copy could not.
  * - **`list` is strongly consistent, read-after-delete.** Once `delete` has resolved, `list` no longer yields
  *   that generation, and once `putImmutable` has resolved it does. The erasure's re-check for a generation still
  *   holding the id, `dropSegment`'s `generationsRemaining`, the retention sweep's check that a tombstone's storage
  *   is gone, and rollback's post-move check prove a deletion or a presence by listing, so a listing that lags
  *   reports an erasure as incomplete or a stale object as gone.
+ * - **`list` yields every generation, however many pages the service splits it into.** One that stops after its
+ *   first page drops generations from every collection and every check above.
  * - **Never replay a conditional write without telling the replay apart.** A `putImmutable` that lands and then
  *   loses its response, sent again, finds its own object and would report a collision. Either send each write
  *   once, with the backend client's retry off for that request, or recognise your own write when the
@@ -201,12 +361,19 @@ export interface IStorageDriver {
    */
   getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array>;
   /**
-   * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**. A missing
-   * object throws {@link NotFoundError}.
+   * Speculative tail read: the last `min(maxBytes, size)` bytes + the object's **true total size**, and its `version`
+   * where the driver has one ({@link TailRead}). `maxBytes` must be a safe integer: zero or less answers an empty tail
+   * with the size, and one past the size the whole object. Any other `maxBytes` (`NaN`, a fraction, a negative one
+   * included, an infinity of either sign, a whole number past the safe range (2^53 or more, or -2^53 or less)) throws
+   * {@link ValidationError} before anything is read. A missing object throws {@link NotFoundError}.
    */
-  getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }>;
-  /** Idempotent: deleting an absent key is a no-op, not an error. */
-  delete(key: GenKey): Promise<void>;
+  getTail(key: GenKey, maxBytes: number): Promise<TailRead>;
+  /**
+   * Idempotent: deleting an absent key is a no-op, not an error. With `options.ifVersion`, on a driver that reports
+   * {@link StorageCaps.conditionalDelete}, the object is removed only while it is the one that version names, and
+   * another object under the key is left and the delete throws {@link WriteConflictError}; any other driver ignores it.
+   */
+  delete(key: GenKey, options?: StorageDeleteOptions): Promise<void>;
   /**
    * Enumerate the generations present for a segment (orphan sweep / latest-gen resolution). Strongly
    * consistent, read-after-delete and read-after-put.
@@ -232,10 +399,12 @@ export type RegistryStatus = 'active' | 'destroyed';
 export type GovernanceMeta = Record<string, unknown>;
 
 /**
- * A cached description of one generation, carried on the registry row: how many ids it holds, and the metadata it
- * was loaded with. The generation's `.crbm` object stays the truth; this is a copy, written by the same write that
- * moves the pointer, and it names the generation it describes so a copy left behind by a writer that did not
- * carry it can never be taken for another generation's.
+ * A cached description of one generation, carried on the registry row: how many ids it holds, the metadata it was
+ * loaded with, and the fingerprint of its object (its size and footer checksum). The generation's `.crbm` object stays
+ * the truth; this is a copy, written by the same write that moves the pointer, and it names the generation it describes
+ * so a copy left behind by a writer that did not carry it can never be taken for another generation's. The fingerprint
+ * names the object too: a reader checks every object it opens for the row's generation against it, and refuses one
+ * that is another object under that number.
  *
  * Two shapes. On a cleartext segment the values are in the clear. On an encrypted segment (a row with
  * `wrappedDeks`) they are sealed under the segment's data key, as the generation's index is, so the row reveals
@@ -265,6 +434,18 @@ export interface ClearRegistrySummary {
   readonly generation: number;
   /** How many ids the generation holds: an integer from 0 to 2^32. */
   readonly cardinality: number;
+  /**
+   * The fingerprint of the generation's object, `<size>:<footer checksum>` in decimal, as `CrbmReader.fingerprint` and
+   * a pin's `pinnedAt.fingerprint` spell it: the object's size in bytes, which `stat()` reports, and the CRC32C its
+   * footer stores.
+   */
+  readonly fingerprint: string;
+  /**
+   * The bytes from the end of the last chunk payload to the end of the object: the extension block, if any, the index and
+   * the footer. A cold open reads this many bytes from the object's end to open it in one request. An integer from 104,
+   * the footer's size, to the object's size less its 8-byte preamble, and at most 8,392,820.
+   */
+  readonly tailBytes: number;
   /** The generation's metadata, when it has any. Never the empty object. */
   readonly metadata?: GenerationMetadata;
 }
@@ -274,10 +455,40 @@ export interface SealedRegistrySummary {
   /** The generation this describes. A non-negative safe integer. */
   readonly generation: number;
   /**
-   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64 followed by the
-   * metadata's canonical JSON, if any. The count is fixed-width, so the length reveals only the metadata's size.
+   * Base64 of `nonce(12) ‖ ciphertext ‖ tag(16)`, sealing the cardinality as a little-endian u64, the object's size as a
+   * little-endian u64 and its footer checksum as a little-endian u32 (its fingerprint), its `tailBytes` as a
+   * little-endian u32, then the metadata's canonical JSON, if any. The numbers are fixed-width, so the length reveals only
+   * the metadata's size.
    */
   readonly sealed: string;
+}
+
+/**
+ * A generation a row knows it published: its number, and the checksum its object's footer stores. A rollback moves only
+ * onto a generation the row knows, and an object whose footer carries another checksum is another object under that
+ * number. The footer's checksum covers the index's checksum, which covers each chunk's, so it commits to the object's ids
+ * and shape; for a cleartext object it does not cover the extension block's bytes.
+ */
+export interface KnownGeneration {
+  /** A non-negative safe integer. */
+  readonly generation: number;
+  /** The object's footer CRC32C (the second half of its fingerprint `<size>:<crc>`), an integer from 0 to 2^32 - 1. */
+  readonly footerCrc: number;
+}
+
+/**
+ * One lease on a generation. It names no fingerprint: a collector spares a generation by number and cannot compare an
+ * object without reading it, and a purge and re-create drops the whole list with the row. A pin's own fingerprint,
+ * which its reads check, stops a number retaken after a rollback being read as the leased object; the entry then spares a
+ * different object from collection until it ends, at most the longest lease.
+ */
+export interface LeaseEntry {
+  /** 16 lowercase hex digits drawn once per pin call; names the holder, so a retried write is idempotent. */
+  readonly holder: string;
+  /** The generation held. */
+  readonly generation: number;
+  /** Epoch-ms the lease runs to on the holder's clock; a collector holds it for the skew margin longer. */
+  readonly until: number;
 }
 
 /**
@@ -322,6 +533,34 @@ export interface RegistryRecord extends SegmentRef {
    * correct, and a reader then opens the generation instead. Trusted only for the generation it names.
    */
   readonly summary?: RegistrySummary;
+  /**
+   * The generations this row knows and has not decided to delete, the current one included, with each object's footer
+   * checksum: the ones it made current, in the order they were made current, oldest first and the current one last, and,
+   * when a publish over a row with no usable ledger seeds one, the ones a count by `keep` keeps in the bucket, which can
+   * include an object no load published (an orphan or a stray). An entry says the library knows the generation and its
+   * footer checksum, not that a load published it. A generation appears once,
+   * at its most recent time current (a rollback onto it moves it to the end). The entries before the last are the kept
+   * window, the generations a live lease holds, and what a rollback left; those numbered above `currentGen` are what a
+   * rollback left. In the clear on every
+   * row, an encrypted one included: a footer checksum of an encrypted object covers a random nonce and says nothing about
+   * its count, size or content, but the entries above the pointer show anyone who reads the registry that a rollback
+   * happened, and from which generation.
+   *
+   * Optional: absent means the row does not know, and a load then lists the bucket to collect. A shipped registry stores
+   * the list in the order given, at most 192 entries written and 384 read, and refuses a list that repeats a
+   * generation, one whose last entry is not the row's `currentGen`, and one whose current entry's checksum disagrees with
+   * a clear `summary`'s fingerprint. A stored list that disagrees with its row is read and not used. A patch that moves
+   * `currentGen` without naming it drops it.
+   */
+  readonly knownGens?: readonly KnownGeneration[];
+  /**
+   * The leases on this segment's generations: each keeps one generation out of a load's collection until it ends.
+   * Optional; absent means none. Unlike {@link knownGens} it does not follow the pointer: a patch that moves
+   * `currentGen` leaves it as it was, and only a patch that names it, or the row going away, changes it. Entries
+   * past their end are ignored by every collector and pruned by the next write that names the list. A row's identity
+   * is its token, so a purged and re-created segment starts with none.
+   */
+  readonly leases?: readonly LeaseEntry[];
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -331,13 +570,24 @@ export interface RegistryRecord extends SegmentRef {
    * restored from a backup. It holds with overwhelming probability rather than by construction, since the token carries random parts: a
    * 128-bit incarnation id drawn when the row is created, and a 64-bit part drawn for each write. Two incarnations of one
    * name meet with probability 2^-128 for any pair (about n^2 / 2^129 among n of them), and two writes at one counter,
-   * after a restore, with probability 2^-64. A bare decimal token, on a row no 0.12 or later registry has written,
-   * carries neither part.
+   * after a restore, with probability 2^-64.
    */
   readonly token: Token;
+  /**
+   * The token of the most recent write that named a field a read resolves through: the row's create, or a compare-and-swap
+   * whose patch named `currentGen`, `status`, `wrappedDeks`, `keyId` or `summary` (the resolved fields), at any value,
+   * the one the field already had included. A write that names only `leases`, `retention`, `residency` or `knownGens`
+   * leaves it. The registry sets it; a caller never does. Compared by equality only, and never reused under one name,
+   * since a token is not: a reader keys what it caches on a generation with it, so a lease or a policy write leaves a
+   * warm reader's cache standing, and a write that changes the resolution never does.
+   */
+  readonly pointerId: Token;
 }
 
-/** The caller-settable fields at {@link IRegistryDriver.create} (audit + token are driver-managed). */
+/**
+ * The caller-settable fields at {@link IRegistryDriver.create} (audit, `token` and `pointerId` are driver-managed: the new
+ * row's `pointerId` is the token the create returns).
+ */
 export interface NewRegistryRecord {
   /** `null` ⇒ the segment has no Storage generation yet — see {@link RegistryRecord.currentGen}. */
   readonly currentGen: number | null;
@@ -349,22 +599,75 @@ export interface NewRegistryRecord {
   readonly residency?: GovernanceMeta;
   /** Must name `currentGen` when given. */
   readonly summary?: RegistrySummary;
+  /** In the order made current, the last entry the new row's `currentGen`; see {@link RegistryRecord.knownGens}. */
+  readonly knownGens?: readonly KnownGeneration[];
 }
 
 /**
- * Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity + audit + token are off-limits).
+ * Fields a {@link IRegistryDriver.compareAndSwap} may mutate (identity, audit, `token` and `pointerId` are
+ * off-limits).
  *
  * Presence-based: a field the patch does not mention is left as it was. `summary` is the one exception, because it
  * describes the current generation: a patch that moves `currentGen` and does not mention `summary` drops the old
  * one rather than keep a description of another generation. A `summary` the patch gives must name the
- * `currentGen` the row will have.
+ * `currentGen` the row will have. `knownGens` follows the pointer the same way: a patch that moves `currentGen` and does
+ * not mention it drops it, and one that gives it must end with the `currentGen` the row will have.
+ * "Moves" means changes value: a patch that names `currentGen` at the value it has keeps both.
+ *
+ * A patch that names a resolved field (`currentGen`, `status`, `wrappedDeks`, `keyId`, `summary`), by presence and at any
+ * value, sets the row's {@link RegistryRecord.pointerId} to the token the write returns; any other patch leaves it.
  */
 export type RegistryPatch = Partial<
   Pick<
     RegistryRecord,
-    'currentGen' | 'wrappedDeks' | 'keyId' | 'status' | 'retention' | 'residency' | 'summary'
+    | 'currentGen'
+    | 'wrappedDeks'
+    | 'keyId'
+    | 'status'
+    | 'retention'
+    | 'residency'
+    | 'summary'
+    | 'knownGens'
+    | 'leases'
   >
 >;
+
+/**
+ * What a caller passes {@link IRegistryDriver.create} or {@link IRegistryDriver.compareAndSwap} besides the write itself.
+ */
+export interface RegistryWriteOptions {
+  /**
+   * The row the caller read, and is writing against: the record a {@link IRegistryDriver.get} of this registry returned
+   * to it, or `null` when that read found no row. A driver that would read the row to learn the version its conditional
+   * write is fenced on can use the one it observed then, and send the write at once.
+   *
+   * It is a hint, and never the fence: the write is still conditioned on the store's own version of the row, so a row
+   * that has changed since makes it fail as a lost race does, with {@link WriteConflictError}. A driver reads the row
+   * as it does without a hint when it does not recognise the record (one it did not return, or one that is not of
+   * this row), or when `held` and the `expected` token of a `compareAndSwap` disagree. A write that gets no answer is
+   * settled by reading the row, never by this record. A driver that ignores the option reads the row.
+   */
+  readonly held?: RegistryRecord | null;
+  /**
+   * Called with the token this write carries, before the write is sent. A write sent again with a new token reports
+   * it; one that repeats the same body repeats the token already reported. The token is the one the write records:
+   * when the write lands, the row's {@link RegistryRecord.token} is it, and so is its {@link RegistryRecord.pointerId}
+   * when the write names a resolved field. A write that does not land leaves no row carrying it. A call refused before
+   * it has a token to send, on a conflict its own read finds, reports none.
+   *
+   * The token is unique to that write attempt, also against another writer racing the same version: two writers that
+   * send a write against the same row version never carry the same token, so a version counter alone is not enough.
+   * Otherwise a loser's write would pass for the winner's.
+   *
+   * It tells a writer which row writes are its own, whatever became of its request: a write that failed, or got no
+   * answer, may still have landed, and the row's `pointerId` names its writer when no later write has renewed it: it is
+   * then one of the tokens the writer was told. Only a registry that reports {@link IRegistryDriver.reportsWriteTokens}
+   * calls it; one that does not ignores it, and a writer then settles such a write by reading the object it published.
+   * A registry that wraps or extends another and overrides `create` or `compareAndSwap` passes this option through to
+   * the write it forwards, or sets the flag to `false`.
+   */
+  readonly onToken?: (token: Token) => void;
+}
 
 /** Capabilities a registry driver advertises; validated fail-fast at wiring time. */
 export interface RegCaps {
@@ -381,9 +684,7 @@ export interface RegCaps {
    * `true` when this registry's `delete` removes a row from its backend for good, so that no later `list` reads it, and
    * removes it only while it is still the exact version the delete read: by a delete the backend applies under a
    * precondition (an S3 or Azure Blob ETag, a GCS object generation), or under a lock no other writer of the backend
-   * can take. Only a row whose token carries an incarnation id is removed so. A row first written by a release before
-   * 0.12 has a bare decimal token, and a delete still tombstones it: a process on that release, re-creating the name
-   * over nothing, would issue those counters again from 0, so its row could not be told apart from the deleted one.
+   * can take.
    *
    * `false` or absent: every `delete` leaves a tombstone, which every later full `list` still reads. A shipped registry
    * says which it is.
@@ -443,6 +744,14 @@ export interface StorageBackend {
   readonly storage: IStorageDriver;
   /** Where the `currentGen` pointer, the discovery index and the wrapped DEKs live. */
   readonly registry: IRegistryDriver;
+  /**
+   * Optional. A store with a metrics sink calls this once, as it is built, with that sink (already safe to call: it
+   * never throws back). A backend that has something to say about its own setup, such as a pool it can read and finds
+   * small, keeps the sink and emits an `advisory` event to it later. A backend without it is simply never told. One backend
+   * may be handed to several stores, and is called once by each, with each store's own sink. It must not throw: an
+   * exception propagates from the store's constructor, so a backend's bug fails fast rather than going unseen.
+   */
+  attachMetrics?(sink: IMetricsSink): void;
 }
 
 /**
@@ -534,8 +843,8 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
 
 /**
  * Per-segment registry — the authoritative source of `currentGen`, the discovery index, and the wrapped-DEK
- * holder. One row per segment under OCC: a never-reused, equality-compared {@link Token} (ABA-safe across
- * delete→recreate).
+ * holder. One row per segment under OCC: an equality-compared {@link Token} that is never reused, with overwhelming
+ * probability (ABA-safe across delete→recreate).
  *
  * **What a driver must do** — callers rely on each of these, and the registry conformance suite holds every
  * shipped driver to them:
@@ -550,11 +859,19 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
  *   keeps going; where nothing of the earlier row is left, or the row is restored from a backup to an older counter, the
  *   random parts alone keep the tokens apart: with probability 1 - 2^-128 per pair of incarnations, and 1 - 2^-64 per
  *   pair of writes at one counter.
+ * - **Every row carries its `pointerId`** ({@link RegistryRecord.pointerId}): `create` sets it to the token it returns,
+ *   a `compareAndSwap` whose patch names a resolved field (`renewsPointer` in `@cloudbitmaps/core/driver-kit`) sets it
+ *   to the token that write returns, and every other write leaves it. `get` and `list` return it. A caller's write
+ *   never sets it. A row returned without one fails every read of the segment with {@link UnsupportedError}.
  * - **`delete` is idempotent** without an `expected` token: deleting an absent row is a no-op, not an error.
  *   **With `expected` it is fenced**: it lands only while the row still carries that token, and otherwise throws
  *   {@link WriteConflictError} and leaves the row.
  * - **Reads are strongly consistent** (`RegCaps.strongRead`), and `list` yields every existing row,
- *   `destroyed` tombstones included, with every field (see {@link IRegistryDriver.list}).
+ *   `destroyed` tombstones included, with every field (see {@link IRegistryDriver.list}), however many pages the
+ *   service splits the listing into.
+ * - **A bucket or container that does not exist is not an absent row**: a read, a listing and a write fail with an
+ *   error that is neither {@link NotFoundError} nor a {@link TransientError}, and a read never answers `null`, which would
+ *   read as a segment with no generation.
  * - **Never replay a conditional write without telling the replay apart.** A `create` or `compareAndSwap`
  *   that lands and then loses its response, sent again, finds its own write and would report a conflict.
  *   Either send each write once, with the backend client's retry off for that request, or recognise your own
@@ -565,15 +882,45 @@ export function isStorageBackend(value: unknown): value is StorageBackend {
 export interface IRegistryDriver {
   capabilities(): RegCaps;
   /**
+   * `true` when every `create` and `compareAndSwap` of this registry reports the token its write carries to
+   * {@link RegistryWriteOptions.onToken} before sending it, a resend included. A load, an erasure's rewrite and every
+   * other publish then knows whether a write that conflicted or got no answer landed by whether the row's `pointerId`
+   * is a token it was told, which names the writer and not only the bytes. Absent or `false`: the registry reports
+   * none, and such a write is settled by reading the object the publish wrote. A shipped registry says which it is.
+   *
+   * The flag may be a getter or a field. A registry that wraps or extends another and overrides `create` or
+   * `compareAndSwap` either passes `options` through to the write it forwards, or sets `reportsWriteTokens` to
+   * `false`. One that does neither reads every write of its own that landed after an error or a lost answer as not its
+   * own (`superseded`), and deletes nothing.
+   */
+  readonly reportsWriteTokens?: boolean;
+  /**
    * The segment's record, or `null` if it doesn't exist (or was deleted). Throw {@link TransientError} for a fault
    * worth riding out (throttling, a 5xx, a dropped connection): a reader whose pointer refresh meets one keeps
    * serving what it holds and asks again shortly, while any other error reaches the read that met it.
    */
   get(ref: SegmentRef): Promise<RegistryRecord | null>;
-  /** Create the row; throws {@link WriteConflictError} if it already exists (use CAS to mutate). */
-  create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }>;
-  /** Server-side compare-and-set: apply `patch` iff the stored token equals `expected`, else `WriteConflictError`. */
-  compareAndSwap(ref: SegmentRef, expected: Token, patch: RegistryPatch): Promise<{ token: Token }>;
+  /**
+   * Create the row; throws {@link WriteConflictError} if it already exists (use CAS to mutate). With
+   * `options.held` of `null`, the caller found no row: a driver may send the create-only write without reading first,
+   * and one that then loses it reads the row, as it does without the hint.
+   */
+  create(
+    ref: SegmentRef,
+    record: NewRegistryRecord,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }>;
+  /**
+   * Server-side compare-and-set: apply `patch` iff the stored token equals `expected`, else `WriteConflictError`.
+   * `options.held` is the row the caller read, which a driver may use to skip its own read; see
+   * {@link RegistryWriteOptions}.
+   */
+  compareAndSwap(
+    ref: SegmentRef,
+    expected: Token,
+    patch: RegistryPatch,
+    options?: RegistryWriteOptions,
+  ): Promise<{ token: Token }>;
   /**
    * Discovery: every **existing** record, optionally scoped to one namespace. Order is unspecified.
    *
@@ -587,8 +934,8 @@ export interface IRegistryDriver {
    */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /**
-   * Remove the row. A registry whose {@link RegCaps.conditionalDelete} is `true` removes a row whose token carries an
-   * incarnation id from its backend; every other row is tombstoned. Either way a later `create` gets a token no
+   * Remove the row. A registry whose {@link RegCaps.conditionalDelete} is `true` removes it from its backend; any other
+   * tombstones it. Either way a later `create` gets a token no
    * earlier incarnation of the name held, but for a collision of probability 2^-128 per pair of incarnations.
    *
    * Without `expected`, idempotent: deleting an absent row is a no-op.

@@ -4,6 +4,7 @@
  * These byte widths/offsets are pinned by the golden corpus and must never change for v1 —
  * a new layout is a new format version. All multi-byte integers are little-endian (v1 fixes LE).
  */
+import { FOOTER_BYTES, PREAMBLE_BYTES } from './frame';
 
 /** 4-byte magic at both file ends: "CRBM". */
 export const MAGIC = Uint8Array.of(0x43, 0x52, 0x42, 0x4d);
@@ -11,14 +12,10 @@ export const MAGIC = Uint8Array.of(0x43, 0x52, 0x42, 0x4d);
 export const VERSION_MAJOR = 1;
 export const VERSION_MINOR = 0;
 
-/** Front preamble: magic(4) + version_major(1) + version_minor(1) + reserved(2). */
-export const PREAMBLE_BYTES = 8;
+export { FOOTER_BYTES, PREAMBLE_BYTES };
 
 /** Payloads begin immediately after the preamble. */
 export const PAYLOAD_START = PREAMBLE_BYTES;
-
-/** Fixed footer size (v1.0). */
-export const FOOTER_BYTES = 104;
 
 /** Byte offsets of each field within the 104-byte footer. */
 export const FOOTER = {
@@ -47,7 +44,7 @@ export const FOOTER_CRC_COVERAGE = FOOTER.footerCrc32c; // 96
 
 /** `flags` bit positions. */
 export const FLAG_ENCRYPTED = 1 << 0;
-export const FLAG_INDEX_COMPRESSED = 1 << 1; // reserved
+// Bit 1 is reserved.
 export const FLAG_LITTLE_ENDIAN = 1 << 2; // =1 in v1
 /**
  * The object carries an extension block just before its index (a generation's metadata). Set only when there is

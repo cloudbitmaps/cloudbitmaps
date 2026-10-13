@@ -6,7 +6,7 @@
  * WHY THIS EXISTS. The workload's client makes one attempt per request and every timed store runs with its own retry
  * off (`clientConfigs`, `TIMED_STORE` in `calibrate-guards.cjs`), so no retry's backoff can sit inside a latency
  * sample and every request count is exact. With nothing else, one transient fault anywhere in a run's requests (up to
- * ~94,600 GET-class and 364 PUT-class at the default workload) would fail the whole run, and a partial run is not
+ * ~94,600 GET-class and 405 PUT-class at the default workload) would fail the whole run, and a partial run is not
  * evidence. One in-region run failed on a single transient connection fault after about 86,300 requests; at that rate
  * a run of this size would finish about a third of the time.
  *

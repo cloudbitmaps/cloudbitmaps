@@ -15,7 +15,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 ## Run it
 
 - [**Before production**](production.md): the checklist, with permissions, lifecycle rules, timeouts and limits.
-- [**Loading in depth**](loading.md): why a load is refused, generations and `keep`, rollback, the `*Into` verbs.
+- [**Loading in depth**](loading.md): why a load is refused, generations and `keep`, rollback, the `*Into` verbs, `materializeMany` and its feed.
 - [**Reading in depth**](reading.md): the combines, what a read costs, freshness, pins and paging.
 - [**Retention**](retention.md): expiring segments, the sweep you schedule, and why there is no per-id TTL.
 - [**Encryption at rest**](encryption.md): turning it on, key management, and crypto-shred.
@@ -35,7 +35,7 @@ lists all of it. New here? Read the [README](../../README.md), then [Getting sta
 
 - [**What it saves, and where it doesn't**](why-cloudbitmaps.md): CloudBitmaps against an always-on Redis, with charts.
 - [**What it costs at your size**](sizing.md): a small, a medium and a large deployment priced term by term, and
-  [how to estimate your own](cost.md).
+  [how to estimate your own](cost.md) with `@cloudbitmaps/tools`.
 - [**Benchmarks**](../benchmarks.md): the measured cost and memory figures, and their method.
 
 ## Reference

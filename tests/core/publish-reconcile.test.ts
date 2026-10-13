@@ -1,25 +1,30 @@
+import { windowOf } from '@/core/known-generations';
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
-import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
+import { openGenerationReader } from '@/core/crbm-open';
+import { publishGeneration } from '../helpers/publish';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import type { AuditEvent } from '@/core/audit';
 import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
-import { registryObjectKey } from '@/drivers/_shared/object-registry-keys';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { setSegmentRetention } from '@/core/retention';
 import { usableSummary } from '@/core/summary';
+import { incarnationOf } from '@/core/token';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { roaringCodec } from '@/roaring-codec';
-import { CloudRoaring, MIN_EXPIRES_AT_MS } from '@/index';
+import { CloudRoaring, MIN_EXPIRES_AT_MS, RecordingAuditSink } from '@/index';
 import { brandAsBackend } from '@/core/ports';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore, counting } from '../helpers/counting';
+import { opaqueTokens } from '../helpers/opaque-tokens';
+import { withoutTokenReports } from '../helpers/no-token-reports';
+import { FINGERPRINT } from '../helpers/fingerprint';
 
 /**
  * The driver sends a publish's registry write once. When it ends without a definite answer (a throttle, a lost
@@ -207,7 +212,9 @@ describe('a publish whose registry write ends without a definite answer reads th
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 1 });
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(r.reason).toBeUndefined();
-    expect([...r.collected]).toEqual([1]); // the collection pass ran, as after any publish: by name, one outside keep
+    // The collection ran, as after any publish, by name: `threeLoads` kept every generation, so the row names 0 and 1
+    // and a `keep` of 1 takes both.
+    expect([...r.collected]).toEqual([0, 1]);
     expect(w.writes.compareAndSwap).toBe(1);
     expect((await w.base.get(SEG))!.currentGen).toBe(3);
     expect(await idsOf(w.storage, 3)).toEqual([1, 2, 3, 4]);
@@ -221,6 +228,19 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(w.writes.create).toBe(1);
     expect(writesTotal(w)).toBe(1);
     expect((await w.base.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('an unguarded first load whose create landed and lost its response is published, written once', async () => {
+    // Its fence is the absence it found, and the row read back is its own create's: the publish recognises its own
+    // write before it asks whether a row appeared.
+    const w = world();
+    w.arm({ kind: 'land-then-transient' });
+    const r = await loadSegment(SEG, [7, 8], w.deps, { allowEmpty: true });
+    expect(r).toMatchObject({ generation: 0, published: true });
+    expect(w.writes.create).toBe(1);
+    expect(writesTotal(w)).toBe(1);
+    expect((await w.base.get(SEG))!.currentGen).toBe(0);
+    expect(await idsOf(w.storage, 0)).toEqual([7, 8]);
   });
 
   it('a compare-and-swap that landed and reported a conflict is published, not superseded', async () => {
@@ -482,7 +502,9 @@ describe('a publish whose registry write ends without a definite answer reads th
   });
 
   it('a proof of its own object that fails transiently throws that TransientError, deletes nothing, and the write stays landed', async () => {
-    const w = world();
+    const w = world(undefined, (clock) =>
+      withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
     await threeLoads(w);
     w.arm({
       kind: 'land-then-transient',
@@ -498,7 +520,9 @@ describe('a publish whose registry write ends without a definite answer reads th
   });
 
   it('a proof of its own object that fails any other way is a TransientError with that cause, never the raw error', async () => {
-    const w = world();
+    const w = world(undefined, (clock) =>
+      withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
     await threeLoads(w);
     const raw = new IntegrityError('the footer is unreadable');
     w.arm({ kind: 'land-then-transient', after: () => w.failNextTail(raw) });
@@ -596,7 +620,7 @@ describe('a publish whose registry write ends without a definite answer reads th
     ]);
   });
 
-  it('an unguarded first load whose create did not land advances over a row another writer created, with a new write', async () => {
+  it('an unguarded first load whose create did not land is refused by the row another writer created meanwhile', async () => {
     const w = world();
     w.arm({
       kind: 'transient-unapplied',
@@ -605,11 +629,11 @@ describe('a publish whose registry write ends without a definite answer reads th
       },
     });
     const r = await loadSegment(SEG, [5], w.deps, { allowEmpty: true });
-    expect(r).toMatchObject({ generation: 0, published: true });
-    // The create was sent once; the advance is a compare-and-swap against the row the other writer made.
+    // It found no row and fenced on that absence: the row read back is another writer's, so no fresh write is sent.
+    expect(r).toMatchObject({ generation: 0, published: false, reason: 'superseded' });
     expect(w.writes.create).toBe(1);
-    expect(w.writes.compareAndSwap).toBe(1);
-    expect((await w.base.get(SEG))!.currentGen).toBe(0);
+    expect(w.writes.compareAndSwap ?? 0).toBe(0);
+    expect((await w.base.get(SEG))!.currentGen).toBeNull();
   });
 
   it('a pointer at this number over another object is not this publish: superseded, and that object kept', async () => {
@@ -636,8 +660,8 @@ describe('a publish whose registry write ends without a definite answer reads th
     w.arm({
       kind: 'transient-unapplied',
       meanwhile: async () => {
-        // No fence names this load's number: it read no row, and it asked for no guard. Its object is replaced under
-        // that number, and another writer creates the row, pointing at its own.
+        // It read no row, so its fence is that absence, and nothing in it names this load's number. Its object is
+        // replaced under that number, and another writer creates the row, pointing at its own.
         await w.storage.delete({ ...SEG, generation: 0 });
         await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [42, 43], {
           registry: w.base,
@@ -738,7 +762,9 @@ describe('a publish whose registry write ends without a definite answer reads th
   });
 
   it('a publish given no way to prove its object cannot settle an unanswered write that names its number', async () => {
-    const w = world();
+    const w = world(undefined, (clock) =>
+      withoutTokenReports(new MemoryRegistryDriver({ now: clock })),
+    );
     w.arm({ kind: 'land-then-transient' });
     const err = await publishGeneration(w.registry, { ...SEG, generation: 0 }).catch(
       (e: unknown) => e,
@@ -756,6 +782,50 @@ describe('a publish whose registry write ends without a definite answer reads th
     expect(r).toMatchObject({ erased: true, fromGeneration: 2, generation: 3 });
     expect(w.writes.compareAndSwap).toBe(1);
     expect(await idsOf(w.storage, 3)).toEqual([1, 3]);
+  });
+});
+
+describe('a publish settled by reading the row names its incarnation in the audit event', () => {
+  // The write's own answer carries the new token; a publish settled by a read of the row has none, so the event takes
+  // the incarnation from that read. A first load that found no row has no other source for it.
+  const publishEvent = async (w: ReturnType<typeof world>) => ({
+    kind: 'segment.publish',
+    namespace: 'ns',
+    segment: 's',
+    incarnation: incarnationOf((await w.base.get(SEG))!.token),
+  });
+
+  it("a segment's first create that landed and lost its response", async () => {
+    const w = world();
+    w.arm({ kind: 'land-then-transient' });
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [7, 8], w.deps, { audit });
+    expect(r).toMatchObject({ generation: 0, published: true });
+    expect(audit.snapshot()).toStrictEqual([{ ...(await publishEvent(w)), generation: 0 }]);
+  });
+
+  it('a compare-and-swap that landed and reported a conflict', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-conflict' });
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9, audit });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(audit.snapshot()).toStrictEqual([{ ...(await publishEvent(w)), generation: 3 }]);
+  });
+
+  it('attempts that ran out while the last unanswered write landed', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'conflict-unapplied' }, 2);
+    w.arm({ kind: 'transient-unapplied' }, 3);
+    w.duringWait(async () => {
+      if (w.waits.length === 3) await w.land();
+    });
+    const audit = new RecordingAuditSink();
+    const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9, audit });
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(audit.snapshot()).toStrictEqual([{ ...(await publishEvent(w)), generation: 3 }]);
   });
 });
 
@@ -814,63 +884,42 @@ describe('two incarnations created in the same millisecond are told apart by the
   });
 });
 
-describe('a row 0.11 wrote has no incarnation id, and its own write is still recognised', () => {
-  /** A live row as 0.11 serialized it: schema 1, a bare decimal token. */
-  const legacyRow = (currentGen: number, createdAt: number): string =>
-    `{"schemaVersion":1,"deleted":false,"record":{"segment":"s","namespace":"ns","currentGen":${currentGen},` +
-    `"status":"active","createdAt":${createdAt},"updatedAt":${createdAt},"token":"7"}}`;
-
-  /** A world over the object-store registry, with generations 0 to 2 loaded and the row then replaced by a legacy one. */
-  async function legacyWorld(): Promise<ReturnType<typeof world> & { store: CountingObjectStore }> {
-    const store = new CountingObjectStore(0);
+describe('a registry whose tokens carry no incarnation id: its own write is still recognised', () => {
+  /** A world over a registry of someone else's, whose tokens carry no id, with generations 0 to 2 loaded. */
+  async function opaqueWorld(): Promise<ReturnType<typeof world> & { at: (ms: number) => void }> {
+    let t = 30;
     const w = world(
-      () => 30,
-      (clock) => new ObjectStoreRegistry(store, undefined, clock),
+      () => t,
+      (clock) => opaqueTokens(new MemoryRegistryDriver({ now: clock })),
     );
     await threeLoads(w);
-    store.plant(registryObjectKey(undefined, SEG), legacyRow(2, 30));
-    expect((await w.base.get(SEG))!.token).toBe('7');
-    return { ...w, store };
+    expect(incarnationOf((await w.base.get(SEG))!.token)).toBeUndefined();
+    return { ...w, at: (ms) => void (t = ms) };
   }
 
-  it('a write of its own that landed and lost its response is published: both tokens have no id, so the stamp decides', async () => {
-    const w = await legacyWorld();
+  it('a write of its own that landed and lost its response is published: neither token has an id, so the stamp decides', async () => {
+    const w = await opaqueWorld();
     w.arm({ kind: 'land-then-transient' });
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: true });
-    // The row gained a write part and no incarnation.
-    expect((await w.base.get(SEG))!.token).toMatch(/^8\.[0-9a-f]{16}$/);
+    expect(incarnationOf((await w.base.get(SEG))!.token)).toBeUndefined();
   });
 
   it('a write throttled once and not applied is sent again from the row just read, and the load publishes', async () => {
-    const w = await legacyWorld();
+    const w = await opaqueWorld();
     w.arm({ kind: 'transient-unapplied' });
     const r = await loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 9 });
     expect(r).toMatchObject({ generation: 3, published: true });
     expect(w.writes.compareAndSwap).toBe(2);
   });
 
-  it('another row with no id, created at another time and pointing at the rewrite object, is another incarnation: the stamp says so', async () => {
-    const w = await legacyWorld();
+  it('a name created again at another time, pointing at the rewrite object, is another incarnation: the stamp says so', async () => {
+    const w = await opaqueWorld();
     w.arm({
       kind: 'transient-unapplied',
       meanwhile: async () => {
-        // Another legacy-form row, stamped later, names the rewrite's number over the rewrite's own object.
-        w.store.plant(registryObjectKey(undefined, SEG), legacyRow(3, 99).replace('"7"', '"9"'));
-      },
-    });
-    const r = await eraseIdFromSegment(SEG, 2, w.deps);
-    expect(r).toMatchObject({ erased: false, reason: 'superseded' });
-    expect(r.collected).toEqual([]);
-  });
-
-  it('a name created again over it in the same millisecond is another incarnation: the token form says so', async () => {
-    const w = await legacyWorld();
-    w.arm({
-      kind: 'transient-unapplied',
-      meanwhile: async () => {
-        // The legacy row is deleted and the name created again in the same millisecond (its stamp is 30 too),
-        // pointing at the rewrite's number over the rewrite's own object. The row is now born with an incarnation id.
+        // The name is deleted and created again later, naming the rewrite's number over the rewrite's own object.
+        w.at(99);
         await w.base.delete(SEG);
         await w.base.create(SEG, { currentGen: 3 });
       },
@@ -1019,7 +1068,12 @@ describe('a publish that is settled by reading the row carries the generation su
         expect(r).toMatchObject({ generation: 0, published: true });
         expect(k.w.sent.map((x) => x.write)).toEqual(Array(sends).fill('create'));
         summariesSince(k, 0);
-        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 3,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
+          metadata: META,
+        });
       });
 
       it('a later load (a compare-and-swap) holds the summary', async () => {
@@ -1036,7 +1090,12 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 5, metadata: { run: 'r2' } });
+        expect(await described(k)).toEqual({
+          cardinality: 5,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
+          metadata: { run: 'r2' },
+        });
       });
 
       it('a load onto a row that has no pointer yet holds the summary', async () => {
@@ -1055,7 +1114,12 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 3, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 3,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
+          metadata: META,
+        });
       });
 
       it('an erasure rewrite holds the summary of the rewrite', async () => {
@@ -1069,7 +1133,12 @@ describe('a publish that is settled by reading the row carries the generation su
           Array(sends).fill('compareAndSwap'),
         );
         summariesSince(k, from);
-        expect(await described(k)).toEqual({ cardinality: 4, metadata: META });
+        expect(await described(k)).toEqual({
+          cardinality: 4,
+          fingerprint: expect.stringMatching(FINGERPRINT),
+          tailBytes: expect.any(Number),
+          metadata: META,
+        });
       });
     });
   });
@@ -1085,7 +1154,109 @@ describe('a publish that is settled by reading the row carries the generation su
     expect(r.becameCurrent).toBe(true);
     expect(w.sent.map((x) => x.write)).toEqual(['create', 'create']);
     for (const { patch } of w.sent) {
-      expect(patch.summary).toEqual({ generation: 0, cardinality: 2, metadata: META });
+      expect(patch.summary).toEqual({
+        generation: 0,
+        cardinality: 2,
+        fingerprint: expect.stringMatching(FINGERPRINT),
+        tailBytes: expect.any(Number),
+        metadata: META,
+      });
     }
+  });
+});
+
+/**
+ * The window a publish records is derived from the row its write was made against, so a write that ends without an
+ * answer and then lands records, and deletes, exactly what the same write would have after a clean answer.
+ */
+describe('a publish whose write got no answer records the same window as one that did', () => {
+  /** The generations a write's patch names in its ledger. */
+  const ledgerNumbers = (patch: { knownGens?: unknown }): number[] | undefined =>
+    (patch.knownGens as { generation: number }[] | undefined)?.map((e) => e.generation);
+
+  /** `threeLoads` kept 0 and 1; a load with keep 2 now publishes 3, names 1 and 2, and pushes 0 out. */
+  const next = (w: ReturnType<typeof world>) => loadSegment(SEG, [1, 2, 3, 4], w.deps, { keep: 2 });
+
+  it('a write that landed and lost its response', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-transient' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2, 3]);
+    expect(ledgerNumbers(w.sent.at(-1)!.patch)).toEqual([1, 2, 3]);
+  });
+
+  it('a write that landed and then reported a conflict', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'land-then-conflict' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2, 3]);
+  });
+
+  it('a write throttled and not applied, sent again from the row just read', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({ kind: 'transient-unapplied' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true, collected: [0] });
+    expect(w.sent.map((s) => ledgerNumbers(s.patch))).toEqual([
+      [1, 2, 3],
+      [1, 2, 3],
+    ]);
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2, 3]);
+  });
+
+  it('a write that landed on a row with no ledger: the load lists, keeps the newest two, and the ledger it seeded names them', async () => {
+    const w = world();
+    await threeLoads(w);
+    const row = (await w.base.get(SEG))!;
+    await w.base.compareAndSwap(SEG, row.token, { knownGens: undefined });
+    w.arm({ kind: 'land-then-transient' });
+    const r = await next(w);
+    expect(r).toMatchObject({ generation: 3, published: true });
+    expect(await generations(w.storage)).toEqual([1, 2, 3]); // the window, found by listing
+    // The write seeded the ledger with the window the listing kept (the write that landed carried the seed, and the one
+    // settled by reading recomputes the same).
+    expect(windowOf(await w.base.get(SEG))).toEqual([1, 2]);
+    const again = await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps, { keep: 2 });
+    expect(again).toMatchObject({ generation: 4, published: true });
+    expect(windowOf(await w.base.get(SEG))).toEqual([2, 3]);
+    expect(await generations(w.storage)).toEqual([2, 3, 4]);
+  });
+
+  it('a write that lost to another load deletes nothing and records nothing of its own', async () => {
+    const w = world();
+    await threeLoads(w);
+    w.arm({
+      kind: 'conflict-unapplied',
+      meanwhile: async () => {
+        await loadSegment(SEG, [1, 2, 3, 4, 5], w.plain, { keep: 9 }); // publishes 3 first, keeping all
+      },
+    });
+    const r = await next(w);
+    expect(r).toMatchObject({ published: false, reason: 'superseded' });
+    // The other load numbered past the object this one had written, and published 4; the row names what it kept. The
+    // refused object stays below the pointer, named by no list: a listing takes it.
+    expect(windowOf(await w.base.get(SEG))).toEqual([0, 1, 2]);
+    expect(await generations(w.storage)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('a publish with no keep, as a bulk load makes, records no window and carries the ledger it found', async () => {
+    const w = world();
+    await threeLoads(w);
+    expect(windowOf(await w.base.get(SEG))).toEqual([0, 1]);
+    const published = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [9], {
+      registry: w.base,
+    });
+    expect(published).toBeDefined();
+    const row = (await w.base.get(SEG))!;
+    expect(row.currentGen).toBe(3);
+    expect(windowOf(row)).toEqual([0, 1, 2]);
   });
 });

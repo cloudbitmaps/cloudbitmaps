@@ -147,12 +147,31 @@ export function validateUserRef(ref: SegmentRef): void {
   if (ref.namespace !== undefined) validateUserNamespace(ref.namespace);
 }
 
+/**
+ * Validate the keys of a `getChunks` stream: in ascending order, a key may repeat. Checked before anything is
+ * resolved or read, so a caller's mistake costs no request.
+ */
+export function validateChunkKeyOrder(keys: readonly number[]): void {
+  for (let i = 1; i < keys.length; i++) {
+    if (!(keys[i]! >= keys[i - 1]!))
+      throw new ValidationError('chunk keys must be in ascending order');
+  }
+}
+
 /** Validate a chunk ref: the segment/namespace rules plus `chunkKey` ∈ `[0, 65535]` (a u16). A driver-boundary check. */
 export function validateChunkRef(ref: ChunkRef): void {
   validateSegmentRef(ref);
-  if (!Number.isInteger(ref.chunkKey) || ref.chunkKey < 0 || ref.chunkKey > CHUNK_KEY_MAX) {
-    throw new ValidationError(
-      `chunkKey must be an integer in [0, ${CHUNK_KEY_MAX}]; got ${ref.chunkKey}`,
-    );
+  validateChunkKey(ref.chunkKey);
+}
+
+/** The chunk-key half of {@link validateChunkRef}, for a caller that has already validated the segment: an integer in `[0, 65535]`. */
+export function validateChunkKey(chunkKey: number): void {
+  if (!(
+    typeof chunkKey === 'number' &&
+    chunkKey >= 0 &&
+    chunkKey <= CHUNK_KEY_MAX &&
+    (chunkKey | 0) === chunkKey
+  )) {
+    throw new ValidationError(`chunkKey must be an integer in [0, ${CHUNK_KEY_MAX}]`);
   }
 }

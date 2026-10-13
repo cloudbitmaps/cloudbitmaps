@@ -19,10 +19,12 @@ import { ValidationError } from '../errors';
 import type { AeadSealed, CrbmCrypto } from '../crypto';
 import { metadataBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
+import { requireInteger } from '../check';
 import { crc32c } from './crc32c';
 import { writeVarint } from './varint';
 import type { BlobSink } from '../blob';
 import {
+  DEFAULT_MAX_BITMAP_BYTES,
   CONTAINER_CODEC_NONE,
   ELEMENT_WIDTH_32,
   EXT_MAGIC,
@@ -85,17 +87,15 @@ export class CrbmWriter {
   private readonly metadata: Uint8Array | undefined;
   /** Bytes written so far, the footer included once {@link finish} has run. */
   private written = 0;
+  /** Where the chunk payloads end: the extension block's start when there is metadata, else the index's. */
+  private payloadEnd = 0;
   private footerCrc32c: number | undefined;
 
   constructor(
     private readonly sink: BlobSink,
     private readonly options: CrbmWriterOptions,
   ) {
-    if (!Number.isInteger(options.generation) || options.generation < 0) {
-      throw new ValidationError(
-        `generation must be a non-negative integer; got ${options.generation}`,
-      );
-    }
+    requireInteger(options.generation, { min: 0, what: 'generation' });
     this.metadata = metadataBytes(options.metadata, (message) => {
       throw new ValidationError(message);
     });
@@ -121,6 +121,12 @@ export class CrbmWriter {
       );
     }
     if (payload.length === 0) throw new ValidationError('chunk payload must be non-empty');
+    // Past the decode cap every reader refuses the object at open: refused here, before anything is written.
+    if (payload.length > DEFAULT_MAX_BITMAP_BYTES) {
+      throw new ValidationError(
+        `chunk payload of ${payload.length} bytes is over the ${DEFAULT_MAX_BITMAP_BYTES}-byte cap a reader opens`,
+      );
+    }
 
     await this.ensurePreamble();
     // Encrypt (if configured) to the on-disk bytes; the CRC + index length cover what actually lands on disk.
@@ -146,6 +152,7 @@ export class CrbmWriter {
   async finish(): Promise<void> {
     if (this.finished) throw new ValidationError('CrbmWriter already finished');
     await this.ensurePreamble();
+    this.payloadEnd = this.offset;
 
     if (this.metadata !== undefined) {
       const block = this.extensionBlock(this.metadata);
@@ -181,11 +188,20 @@ export class CrbmWriter {
   /**
    * The finished object's size and its footer's CRC: what names it, as a reader's fingerprint does. A writer that
    * has to tell its own object from another stored later under the same key compares these with the object's
-   * footer. Throws before {@link finish}.
+   * footer. `tailBytes` is the bytes after the chunk payloads (any extension block, the index and the footer), which
+   * is what {@link CrbmReader.tailBytes} reports for the object. Throws before {@link finish}.
    */
-  get identity(): { readonly size: number; readonly footerCrc: number } {
+  get identity(): {
+    readonly size: number;
+    readonly footerCrc: number;
+    readonly tailBytes: number;
+  } {
     if (this.footerCrc32c === undefined) throw new ValidationError('CrbmWriter not finished');
-    return { size: this.written, footerCrc: this.footerCrc32c };
+    return {
+      size: this.written,
+      footerCrc: this.footerCrc32c,
+      tailBytes: this.written - this.payloadEnd,
+    };
   }
 
   private async ensurePreamble(): Promise<void> {

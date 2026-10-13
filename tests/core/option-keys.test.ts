@@ -73,7 +73,7 @@ describe('the option keys the store takes', () => {
         budget: { maxRequests: 100 },
         seams: {},
         encryption: {},
-        metrics: { emit: () => {} },
+        metrics: { onEvent: () => {} },
       }),
     ).toBeUndefined();
     expect(refusal({ storage, retry: false, budget: false })).toBeUndefined();

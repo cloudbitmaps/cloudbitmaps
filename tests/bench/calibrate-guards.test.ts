@@ -15,7 +15,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND, CloudRoaring, MemoryStorage } from '@/index';
+import { CloudRoaring, MemoryStorage } from '@/index';
+import { AWS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/tools';
 import { WriteConflictError } from '@/core/errors';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
@@ -169,7 +170,7 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   resultsJson: (results: unknown) => string;
   measuredVersion: (root: string) => string;
   measuredSdk: (root: string) => { clientS3: string; nodeHttpHandler: string };
-  SDK_DEFAULT_MAX_SOCKETS: number;
+  LIBRARY_MAX_SOCKETS: number;
   HARNESS_FILES: string[];
   failureOf: (err: unknown) => Fault | null;
   stopThenTearDown: (i: {
@@ -200,7 +201,7 @@ const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
   meter: (
     client: unknown,
     tally?: unknown,
-  ) => { put: number; get: number; byCommand: Record<string, number> };
+  ) => { put: number; get: number; bytesDown: number; byCommand: Record<string, number> };
   classify: (command: string) => 'put' | 'get' | 'free';
   rangeShape: (range: unknown) => 'whole' | 'suffix' | 'range';
   priceTally: (
@@ -414,10 +415,7 @@ describe('calibrate guards — what a real run is held to', () => {
   // project every load one attempt short. Read the bound out of the source rather than retyping it, so the two
   // cannot disagree silently.
   it('uses the same retry bound as publishGeneration actually loops', () => {
-    const src = readFileSync(
-      join(ROOT, 'packages', 'core', 'src', 'core', 'crbm-storage-source.ts'),
-      'utf8',
-    );
+    const src = readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', 'publish.ts'), 'utf8');
     const body = src.slice(src.indexOf('export async function publishGeneration'));
     const bound = /for \(let attempt = 0; attempt < (\d+); attempt\+\+\)/.exec(body);
     expect(
@@ -454,6 +452,7 @@ describe('calibrate guards — what a real run is held to', () => {
     const load = async (
       lostRaces: number,
       meetsAnObject: boolean,
+      keep?: number,
     ): Promise<{
       reads: number;
       checks: number;
@@ -478,7 +477,7 @@ describe('calibrate guards — what a real run is held to', () => {
         }
       }
       try {
-        await store.load({ segment: 's' }, [1, 2, 3]);
+        await store.load({ segment: 's' }, [1, 2, 3], keep === undefined ? {} : { keep });
       } catch (err) {
         if (!(err instanceof WriteConflictError)) throw err;
       }
@@ -490,11 +489,12 @@ describe('calibrate guards — what a real run is held to', () => {
         lists: calls.list ?? 0,
       };
     };
-    // Nothing racing and the number free: three reads, the check, the object and the one conditional write, and no
+    // Nothing racing and the number free: two reads, the check, the object and the one conditional write, and no
     // listing, since a new segment has nothing outside its window to collect.
-    expect(await load(0, false)).toEqual({ reads: 3, checks: 1, writes: 1, objects: 1, lists: 0 });
-    // The number taken: three more reads and two listings, one to number past the objects and one to collect, which
-    // re-reads the pointer before its listing, after it and before its delete.
+    expect(await load(0, false)).toEqual({ reads: 2, checks: 1, writes: 1, objects: 1, lists: 0 });
+    // The number taken: four more reads and two listings, one to number past the objects and one to collect, which
+    // re-reads the pointer before its listing, after it, before its delete and after it. A new segment's first publish
+    // is not seeded, so it reads no stray's footer: main made a second tail read here (checks: 2).
     expect(await load(0, true)).toEqual({ reads: 6, checks: 1, writes: 1, objects: 1, lists: 2 });
     const p = guards.projectOps({
       loads: 1,
@@ -525,10 +525,15 @@ describe('calibrate guards — what a real run is held to', () => {
         );
       }
     }
-    // The bound is tight where it is reached: a load that finds its number taken and loses every attempt but the
-    // last makes as many GET-class requests as the bound allows.
-    expect(p.get).toBe(15);
-    expect(p.get).toBe((await load(guards.RETRY_BOUND - 1, true)).reads + 1);
+    // The bound is 16. A new segment's load at the default `keep` over two strays makes 15: 14 pointer reads and the check
+    // (main made 16 here, a footer read of a stray more, because that first publish was seeded; it no longer is). A load at
+    // `keep: 0` over the same strays still makes 16, so the bound is reached, and it stays 16 until the next calibration run
+    // on S3 lowers it with fresh evidence.
+    expect(p.get).toBe(16);
+    const nearest = await load(guards.RETRY_BOUND - 1, true);
+    expect(nearest.reads + nearest.checks).toBe(15);
+    const keepNone = await load(guards.RETRY_BOUND - 1, true, 0);
+    expect(p.get).toBe(keepNone.reads + keepNone.checks);
   });
 
   it('flags a run that exceeded its projection, and only then', () => {
@@ -898,6 +903,38 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).not.toContain(account);
   });
 
+  // A cleanup removes a paid bucket, so a stray socket setting must not block it: it reaches the identity check, past
+  // where a run applies the limit to its workload client.
+  it('does not let the socket setting refuse a cleanup', () => {
+    const out = runHarness(['--cleanup', '2026-09-23-gone'], {
+      CR_CALIBRATE_REGION: 'us-east-1',
+      CR_CALIBRATE_EXPECT_ACCOUNT: ['1234', '5678', '9012'].join(''),
+      CR_CALIBRATE_MAX_SOCKETS: 'abc',
+    });
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/could not verify credentials/);
+    expect(out.stderr).not.toMatch(/CR_CALIBRATE_MAX_SOCKETS/);
+  });
+
+  // A bad socket limit is refused before the run id is even read, so before the library is imported, a client is built
+  // or anything is created, in every mode that makes a workload.
+  it('refuses a bad CR_CALIBRATE_MAX_SOCKETS first, in every mode that runs a workload', () => {
+    for (const [args, extra] of [
+      [[], {}],
+      [['--rehearse'], { CR_CALIBRATE_RUN_ID: 'not a legal id' }],
+      [['--rehearse'], {}],
+    ] as const) {
+      for (const bad of ['abc', '0', '1025']) {
+        const out = runHarness([...args], { ...extra, CR_CALIBRATE_MAX_SOCKETS: bad });
+        expect(out.status, `${args} ${bad}`).toBe(2);
+        expect(out.stderr).toMatch(
+          /CR_CALIBRATE_MAX_SOCKETS is .*positive integer of at most 1024/,
+        );
+        expect(out.stdout).not.toMatch(/creating|workload client|identity/);
+      }
+    }
+  });
+
   // The large segments count: a workload of 499 and 2 leaves 1,002 versions, past the first listing.
   it('counts the large segments against the workload bound, before it imports anything', () => {
     const out = runHarness([], { CR_CALIBRATE_SEGMENTS: '499', CR_CALIBRATE_LARGE: '2' });
@@ -905,7 +942,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(out.stderr).toMatch(/teardown's first listing/);
     expect(
       runHarness([], {
-        CR_CALIBRATE_SEGMENTS: '498',
+        CR_CALIBRATE_SEGMENTS: '471',
         CR_CALIBRATE_LARGE: '2',
         CR_CALIBRATE_READS: '0',
         CR_CALIBRATE_SPREAD_SEGMENTS: '0',
@@ -1397,7 +1434,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   it('runs from a scratch directory with only the files the CloudShell script copies', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
     const copied = [
-      ...sh.matchAll(/^cp ((?:bench\/[\w./-]+ ?)+) "\$WORK\/(bench\/(?:lib\/)?)"$/gm),
+      ...sh.matchAll(/^cp (bench\/[\w./-]+(?: bench\/[\w./-]+)*) "\$WORK\/(bench\/(?:lib\/)?)"$/gm),
     ].flatMap((m) => (m[1] ?? '').trim().split(/\s+/));
     expect(copied).toContain('bench/calibrate-aws.cjs');
     expect(copied.length).toBeGreaterThanOrEqual(5);
@@ -1407,10 +1444,11 @@ describe('a rehearsal cannot be committed as the evidence', () => {
         mkdirSync(join(scratch, dirname(rel)), { recursive: true });
         writeFileSync(join(scratch, rel), readFileSync(join(ROOT, rel)));
       }
-      // What `npm i` leaves: the SDK as installed, and the published library, which this stands in for with the
-      // checkout's version and the price table's shape. The tests run before the build, so the workspace's own
-      // package has no entry point to import yet; what is under test is what the harness finds here, not the library.
+      // What `npm i` leaves: the SDK as installed, and the published library and its tools, which this stands in for
+      // with the checkout's version and the price table's shape. The tests run before the build, so the workspace's own
+      // packages have no entry point to import yet; what is under test is what the harness finds here, not the library.
       mkdirSync(join(scratch, 'node_modules', '@cloudbitmaps', 'roaring'), { recursive: true });
+      mkdirSync(join(scratch, 'node_modules', '@cloudbitmaps', 'tools'), { recursive: true });
       symlinkSync(
         join(ROOT, 'node_modules', '@aws-sdk'),
         join(scratch, 'node_modules', '@aws-sdk'),
@@ -1427,8 +1465,18 @@ describe('a rehearsal cannot be committed as the evidence', () => {
           exports: './index.js',
         }),
       );
+      writeFileSync(join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'index.js'), '');
       writeFileSync(
-        join(scratch, 'node_modules', '@cloudbitmaps', 'roaring', 'index.js'),
+        join(scratch, 'node_modules', '@cloudbitmaps', 'tools', 'package.json'),
+        JSON.stringify({
+          name: '@cloudbitmaps/tools',
+          version: roaring.version,
+          type: 'module',
+          exports: './index.js',
+        }),
+      );
+      writeFileSync(
+        join(scratch, 'node_modules', '@cloudbitmaps', 'tools', 'index.js'),
         "export const AWS_US_EAST_1_ONDEMAND = { name: 'aws-us-east-1-ondemand', storage: { getPerMillion: 0.4, putPerMillion: 5 } };\n",
       );
       const out = spawnSync(process.execPath, ['bench/calibrate-aws.cjs'], {
@@ -1517,13 +1565,12 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-    // This checkout's own install resolves, and the cap is the SDK's default of 50.
+    // This checkout's own install resolves, and the workload client's cap is the library's 128.
     const real = processLib.measuredSdk(ROOT);
     expect(real.clientS3).toMatch(/^\d+\.\d+\.\d+/);
     expect(real.nodeHttpHandler).toMatch(/^\d+\.\d+\.\d+/);
-    expect(processLib.SDK_DEFAULT_MAX_SOCKETS).toBe(50);
+    expect(processLib.LIBRARY_MAX_SOCKETS).toBe(128);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    expect(src).toContain('sdk,\n      maxSockets: SDK_DEFAULT_MAX_SOCKETS,');
     expect(src).toContain('sdk = measuredSdk(ROOT);');
   });
 
@@ -1817,6 +1864,37 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
     }
   });
 
+  // A HEAD names the object's size in its answer and sends no body, so it adds no bytes read; a GET of the same object does.
+  it('counts the bytes a GET brings down, and none for a HEAD that names the size of an object', async () => {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-length': '136' });
+      res.end(req.method === 'HEAD' ? undefined : Buffer.alloc(136));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    const client = clientFor(`http://127.0.0.1:${port}`, 1);
+    const tally = meterLib.meter(client);
+    const { HeadObjectCommand, GetObjectCommand } = require_('@aws-sdk/client-s3') as Record<
+      string,
+      new (i: { Bucket: string; Key: string }) => unknown
+    >;
+    try {
+      const head = (await client.send(new HeadObjectCommand!({ Bucket: 'b', Key: 'k' }))) as {
+        ContentLength: number;
+      };
+      expect(head.ContentLength).toBe(136);
+      expect(tally.bytesDown).toBe(0);
+      const got = (await client.send(new GetObjectCommand!({ Bucket: 'b', Key: 'k' }))) as {
+        ContentLength: number;
+      };
+      expect(got.ContentLength).toBe(136);
+      expect(tally.bytesDown).toBe(136);
+    } finally {
+      client.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+
   it('counts a retried request once per attempt', async () => {
     const server = await flakyS3(1);
     const client = clientFor(server.url, 3);
@@ -2072,7 +2150,7 @@ describe("a cold intersect's request count does not depend on the network", () =
 // listing every sixteenth generation. The benchmarks page prices it from the requests counted here, against local
 // drivers and the real registry protocol, until a run measures it. On S3 a listing bills at the PUT rate.
 describe('what a load requests: store.load()', () => {
-  it('writes one object and the pointer once, checks its number once, lists only every sixteenth load, and reads the pointer two to five times', async () => {
+  it('writes one object and the pointer once, checks its number once, lists only every sixteenth load, and reads the pointer one to five times', async () => {
     const storageCalls: Record<string, number> = {};
     const pointer = new CountingObjectStore(0);
     const store = new CloudRoaring({
@@ -2099,23 +2177,10 @@ describe('what a load requests: store.load()', () => {
       };
     };
     // A segment's first load: the object and the pointer written once each, one check that its generation number is
-    // free (the one tail read, of zero bytes; a HeadObject on S3), and three pointer reads, one of them after its
-    // ids, since it found no row. There is nothing to collect, so nothing is listed.
+    // free (the one tail read, of zero bytes; a HeadObject on S3), and two pointer reads, the second after its
+    // ids, since it found no row; the create is sent without reading the row. There is nothing to collect, so nothing is listed.
     const first = await load(0);
     expect(first).toEqual({
-      putImmutable: 1,
-      list: 0,
-      getTail: 1,
-      getRange: 0,
-      delete: 0,
-      pointerReads: 3,
-      pointerWrites: 1,
-    });
-    // A reload takes the size of the current generation, to count what the load would replace, from its row's summary and
-    // opens nothing, and reads the pointer twice: its row, and the compare-and-swap's read of the row's version. Both
-    // generations are inside the window.
-    const reload = await load(1);
-    expect(reload).toEqual({
       putImmutable: 1,
       list: 0,
       getTail: 1,
@@ -2124,8 +2189,21 @@ describe('what a load requests: store.load()', () => {
       pointerReads: 2,
       pointerWrites: 1,
     });
+    // A reload takes the size of the current generation, to count what the load would replace, from its row's summary and
+    // opens nothing, and reads the pointer once: its row, which the compare-and-swap is written against. Both
+    // generations are inside the window.
+    const reload = await load(1);
+    expect(reload).toEqual({
+      putImmutable: 1,
+      list: 0,
+      getTail: 1,
+      getRange: 0,
+      delete: 0,
+      pointerReads: 1,
+      pointerWrites: 1,
+    });
     // From the third load on, collection deletes by name the generation the window pushed out, after a check that the
-    // current generation's object is there, and re-reads the pointer before it. It lists nothing.
+    // current generation's object is there, and reads the pointer before the delete and after it. It lists nothing.
     const collecting = await load(2);
     expect(collecting).toEqual({
       putImmutable: 1,
@@ -2136,8 +2214,8 @@ describe('what a load requests: store.load()', () => {
       pointerReads: 3,
       pointerWrites: 1,
     });
-    // Every sixteenth generation lists instead, and reads the pointer before and after its listing. It needs no word that
-    // the current object is there.
+    // Every sixteenth generation lists instead, and reads the pointer before and after its listing, and after its delete.
+    // It needs no word that the current object is there.
     for (let g = 3; g < 16; g++) expect((await load(g)).list, `generation ${g}`).toBe(0);
     const listing = await load(16);
     expect(listing).toEqual({

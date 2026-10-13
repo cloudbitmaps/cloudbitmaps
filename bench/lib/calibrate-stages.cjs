@@ -27,6 +27,7 @@ const STAGES = Object.freeze([
   'warm',
   'pointReads',
   'andNot',
+  'steadyLoad',
 ]);
 
 /*
@@ -95,14 +96,18 @@ function windowPeak(keys, limit, start) {
  */
 const ENGINE_WINDOW = 32;
 
-/** How many keys the engine's window opens with, `COMBINE_WINDOW_START` in the engine; it widens from there. */
-const ENGINE_WINDOW_START = 8;
+/**
+ * How many ranges the engine opens each operand's stream with, `COMBINE_RANGE_START` in the engine; it widens from there.
+ */
+const ENGINE_WINDOW_START = 4;
 
 /**
- * The depth the engine is expected to make a cold intersect of `k` shared chunks: a pointer, a tail, then the window,
- * which opens `ENGINE_WINDOW_START` wide and widens as keys are taken.
+ * The depth the engine is expected to make a cold intersect that reads `ranges` range requests of each operand: a
+ * pointer, a tail, then the operand's stream of ranges, which opens `ENGINE_WINDOW_START` wide and widens as ranges are
+ * taken. `ranges` is what the engine makes of the layout (`bench/lib/range-counts.cjs` counts it), not the number of
+ * shared chunks: neighbouring chunks are read in one range.
  */
-const modelRounds = (k) => 2 + windowRounds(k, ENGINE_WINDOW, ENGINE_WINDOW_START);
+const modelRounds = (ranges) => 2 + windowRounds(ranges, ENGINE_WINDOW, ENGINE_WINDOW_START);
 
 /** The sweep over how many chunks two segments share, when none is asked for: k and how many intersects at each. */
 const DEFAULT_SWEEP = Object.freeze([
@@ -143,23 +148,32 @@ function parseSweep(raw) {
 }
 
 /**
- * A cold intersect of two operands that share `k` chunks: each operand's pointer, its tail read, and `k` chunk reads.
- * The expected count is exact while each index fits the tail read.
+ * A cold intersect of two operands that read `ranges` range requests of each: each operand's pointer, its tail read,
+ * and its chunk ranges. The expected count is exact while each index fits the tail read. `ranges` is what the engine
+ * makes of the layout, counted by running it, not a function of the shared chunks alone.
  */
-const coldIntersectGets = (k) => 4 + 2 * k;
-/** The same, bounded: a third GET an operand for an index longer than the tail read. */
+const coldIntersectGets = (ranges) => 4 + 2 * ranges;
+/**
+ * The same, bounded: a third GET an operand for an index longer than the tail read, and a request for every shared chunk
+ * `k`, which no layout can make a coalescing read exceed.
+ */
 const coldIntersectBound = (k) => 2 * (3 + k);
 
 /**
  * The most each stage can request, from the workload `w`, and the total with the run's fixed requests.
  *
  *   w.loads            { segments, largeSegments, partsBound }       the load stage
- *   w.intersect        { reads, sharedChunks }                       cold intersects, calibration layout
- *   w.spread           { segments, reads, sharedChunks }             cold intersects, spread layout
- *   w.sweep            { segments, entries: [{ k, intersects }] }    each entry has `segments` loaded of its own
- *   w.warm             { segments, sharedChunks }                    one priming pass over `segments` segments
+ *   w.intersect        { reads, sharedChunks, rangesPerOperand }     cold intersects, calibration layout
+ *   w.spread           { segments, reads, sharedChunks, rangesPerOperand }   cold intersects, spread layout
+ *   w.sweep            { segments, entries: [{ k, intersects, rangesPerOperand }] }   each entry has `segments` loaded of its own
+ *   w.warm             { segments, sharedChunks, rangesPerOperand }  one priming pass over `segments` segments
  *   w.pointReads       { segments, sharedChunks }                    `count()`, then `has()` per chunk, open and first read
- *   w.andNot           { calls, excludes, includeChunks, sharedChunks }
+ *   w.andNot           { calls, excludes, includeChunks, sharedChunks, ranges }
+ *   w.steadyLoad       { loads, keep }                               one segment loaded `loads` times at `keep`
+ *
+ * The `ranges` fields are the range requests the engine makes of the layout, counted by running it over the in-memory
+ * backend (`bench/lib/range-counts.cjs`); they appear in the exact EXPECTED counts and in no BOUND, since a bound is
+ * what a request for every chunk would cost, which no coalesced read exceeds.
  *   w.discards         { perRun, perStage }                          the samples a run may discard (`calibrate-samples.cjs`)
  *   w.retryBound, w.fixedPuts, w.fixedGets
  *
@@ -208,6 +222,9 @@ function projectStages(w) {
 
   stages.andNot = { put: 0, get: w.andNot.calls * andNotCallBound(w.andNot) };
 
+  // Every steady load is bounded as a first load is: the most any load makes, losing races, is inside it.
+  stages.steadyLoad = loads(w.steadyLoad.loads);
+
   const perRun = w.discards?.perRun;
   if (!Number.isInteger(perRun) || perRun < 0) {
     throw new Error(`discards.perRun must be a non-negative integer, got ${perRun}`);
@@ -245,6 +262,8 @@ function sampleBounds(w) {
     // for its first.
     pointReads: p.segments === 0 ? 0 : p.sharedChunks > 0 ? 4 : 3,
     andNot: w.andNot.calls > 0 ? andNotCallBound(w.andNot) : 0,
+    // Loads are not samples, and a plan from before the stage has no `steadyLoad`.
+    steadyLoad: 0,
   };
 }
 
@@ -256,30 +275,109 @@ function sampleBounds(w) {
 function expectedReads(w) {
   const a = w.andNot;
   return {
-    intersect: w.intersect.reads * coldIntersectGets(w.intersect.sharedChunks),
-    spread: w.spread.reads * coldIntersectGets(w.spread.sharedChunks),
-    sweep: w.sweep.entries.reduce((n, e) => n + e.intersects * coldIntersectGets(e.k), 0),
-    // Each segment once: a pointer, a tail and the shared chunks. The timed warm intersects make none.
-    warm: w.warm.segments * (2 + w.warm.sharedChunks),
+    intersect: w.intersect.reads * coldIntersectGets(w.intersect.rangesPerOperand),
+    spread: w.spread.reads * coldIntersectGets(w.spread.rangesPerOperand),
+    sweep: w.sweep.entries.reduce(
+      (n, e) => n + e.intersects * coldIntersectGets(e.rangesPerOperand),
+      0,
+    ),
+    // Each segment once: a pointer, a tail and its shared chunks' ranges. The timed warm intersects make none.
+    warm: w.warm.segments * (2 + w.warm.rangesPerOperand),
     // `count()` is a pointer. Each segment is opened by a tail read, and a `has()` on it is one chunk read; the first `has()` on a store of its own is a
     // pointer, a tail and a chunk.
     pointReads: 2 * w.pointReads.segments + 4 * w.pointReads.segments * w.pointReads.sharedChunks,
-    andNot: a.calls * (2 * (1 + a.excludes) + a.includeChunks + a.excludes * a.sharedChunks),
+    // Each operand's pointer and tail, and the ranges of the include and of every exclude together.
+    andNot: a.calls * (2 * (1 + a.excludes) + a.ranges),
+    // The loads' GET-class requests, by kind.
+    steadyLoad: expectedSteady(w.steadyLoad.loads, w.steadyLoad.keep).get,
   };
 }
 
 /**
  * What one `store.load()` of a segment's first generation bills, counted by a test against the real registry
  * protocol: the object and the pointer are PUT-class, and nothing is listed, since there is no generation yet for
- * collection to take; the pointer is read three times (it found no row, so it reads again after its ids, and
- * the create reads once more) and the generation number checked once, a HeadObject. A multipart object is a create,
+ * collection to take; the pointer is read twice (it found no row, so it reads again after its ids, and the create
+ * is sent without reading the row) and the generation number checked once, a HeadObject. A multipart object is a create,
  * its parts and a complete in place of the single PUT.
  */
-const FIRST_LOAD = Object.freeze({ put: 2, get: 4 });
+const FIRST_LOAD = Object.freeze({ put: 2, get: 3 });
 const firstLoadRequests = (parts) =>
   parts === 0 ? { ...FIRST_LOAD } : { put: FIRST_LOAD.put + 1 + parts, get: FIRST_LOAD.get };
 
+/**
+ * The steady-load stage: one small segment loaded `STEADY_LOADS` times at `keep: STEADY_KEEP`, so the run covers the
+ * loads that collect nothing (generation at most `keep`), the loads that delete by name, and a load that lists (a
+ * generation divisible by the engine's `LIST_COLLECTION_CADENCE`, 16). Both are held to the engine's source by a test.
+ */
+const STEADY_KEEP = 12;
+const STEADY_LOADS = 18;
+/** The generations between listing loads, `LIST_COLLECTION_CADENCE` in the engine. */
+const LIST_CADENCE = 16;
+
+/** Which kind of load generation `g` of the steady segment is. */
+function steadyKind(g, keep = STEADY_KEEP) {
+  if (g === 0) return 'first';
+  if (g <= keep) return 'reload';
+  return g % LIST_CADENCE === 0 ? 'listing' : 'byName';
+}
+
+/**
+ * What one load of each kind requests when nothing races it, on S3's request shape: PUT-class (the object, the pointer and
+ * a listing), GET-class (pointer reads and zero-byte object checks), and deletes, which are free. A load that collects
+ * reads the pointer once more after its last delete, which sees a rollback that landed between the read before that
+ * delete and the delete. Counted by a test against the real registry protocol and held equal to the figures module's
+ * `STORE_LOAD_REQUESTS`.
+ */
+const STEADY_LOAD_REQUESTS = Object.freeze({
+  first: Object.freeze({ put: 2, get: 3, free: 0 }),
+  reload: Object.freeze({ put: 2, get: 2, free: 0 }),
+  byName: Object.freeze({ put: 2, get: 5, free: 1 }),
+  listing: Object.freeze({ put: 3, get: 6, free: 1 }),
+});
+
+/**
+ * What one load of each kind requested on an engine whose load does not read the pointer after its collection's last
+ * delete: one GET fewer to collect.
+ */
+const STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE = Object.freeze({
+  first: STEADY_LOAD_REQUESTS.first,
+  reload: STEADY_LOAD_REQUESTS.reload,
+  byName: Object.freeze({ put: 2, get: 4, free: 1 }),
+  listing: Object.freeze({ put: 3, get: 5, free: 1 }),
+});
+
+/**
+ * The requests a steady load of each kind makes on the engine a run installed, from what the harness found when it ran
+ * that engine in memory before the run (`measured.readsRowAfterCollect`, from `readsRowAfterCollect` in
+ * `range-counts.cjs`). Evidence with no such answer was written by a harness that held its steady loads to the table
+ * without the read, and recorded a load that made the read as a missed count, so it is read against that table.
+ */
+function steadyLoadRequestsOf(readsRowAfterCollect) {
+  return readsRowAfterCollect === true
+    ? STEADY_LOAD_REQUESTS
+    : STEADY_LOAD_REQUESTS_WITHOUT_READ_AFTER_DELETE;
+}
+
+/** The exact requests of the stage's loads, by class: the sum of each load's kind. */
+function expectedSteady(loads = STEADY_LOADS, keep = STEADY_KEEP) {
+  const total = { put: 0, get: 0, free: 0 };
+  for (let g = 0; g < loads; g += 1) {
+    const r = STEADY_LOAD_REQUESTS[steadyKind(g, keep)];
+    total.put += r.put;
+    total.get += r.get;
+    total.free += r.free;
+  }
+  return total;
+}
+
 module.exports = {
+  STEADY_KEEP,
+  STEADY_LOADS,
+  LIST_CADENCE,
+  STEADY_LOAD_REQUESTS,
+  steadyLoadRequestsOf,
+  steadyKind,
+  expectedSteady,
   STAGES,
   ENGINE_WINDOW,
   ENGINE_WINDOW_START,

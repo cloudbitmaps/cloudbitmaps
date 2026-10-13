@@ -7,6 +7,10 @@
  * `.code` (a number); dropped/timed-out sockets surface as a Node error with a string `.code` (`ECONNRESET`,
  * `ETIMEDOUT`, …).
  */
+import {
+  ValidationError,
+  isTransportFault as isNodeTransportFault,
+} from '@cloudbitmaps/core/driver-kit';
 
 /** The HTTP status of a GCS `ApiError`, if present (`err.code` as a number, or `err.response.status`). */
 function httpStatus(err: unknown): number | undefined {
@@ -40,9 +44,45 @@ export function isThrottle(err: unknown): boolean {
   return status === 429 || status === 503;
 }
 
-/** The object / generation does not exist (GCS returns 404). */
+/** The object / generation does not exist (GCS returns 404), in a bucket that does. */
 export function isNotFound(err: unknown): boolean {
-  return httpStatus(err) === 404;
+  return httpStatus(err) === 404 && !isMissingBucket(err);
+}
+
+/**
+ * The bucket itself does not exist: a wiring fault, never an absent object. Read as one, a misnamed or deleted bucket
+ * would answer every read as an empty segment. GCS gives both the same status and reason (`404 notFound`), so only its
+ * message tells them apart: on a download the message is the response body as it came, JSON or text, and elsewhere
+ * the message and each `errors[].message` are GCS's own. A wording this does not match reads as an absent object.
+ */
+export function isMissingBucket(err: unknown): boolean {
+  if (httpStatus(err) !== 404) return false;
+  const e = err as { message?: unknown; errors?: unknown };
+  const says = (m: unknown): boolean => typeof m === 'string' && /bucket does not exist/i.test(m);
+  if (says(e.message)) return true;
+  return (
+    Array.isArray(e.errors) &&
+    e.errors.some((inner) => says((inner as { message?: unknown } | null)?.message))
+  );
+}
+
+/**
+ * The {@link ValidationError} a missing bucket is: it names the bucket and what to check, and carries the service's
+ * error as its `cause`. A wiring fault is not an absent object, so it is not a `NotFoundError`: a read re-resolves on
+ * that, and would treat a misnamed bucket as a miss it can heal.
+ */
+export function missingBucketError(bucket: string, cause: unknown): ValidationError {
+  return Object.assign(
+    new ValidationError(
+      `the GCS bucket does not exist: ${bucket}; check the bucket name and the project the client is built for`,
+    ),
+    { cause },
+  );
+}
+
+/** `err`, or {@link missingBucketError} when `err` says the bucket does not exist. */
+export function asMissingBucket(err: unknown, bucket: string): unknown {
+  return isMissingBucket(err) ? missingBucketError(bucket, err) : err;
 }
 
 /** A range request started past EOF (HTTP 416 Requested Range Not Satisfiable). */
@@ -65,29 +105,19 @@ function isSdkConnectionProblem(reason: string): boolean {
 }
 
 /**
- * The codes Node gives a connection that failed or was cut off: refused, reset, aborted, timed out, a DNS failure, an
- * unreachable host or network, a broken pipe, and a chunked body cut off mid-stream (`ERR_STREAM_PREMATURE_CLOSE`).
- * Only these: a file the credentials name that is missing or unreadable (`ENOENT`, `EACCES`) and a TLS failure
- * (`EPROTO`, a certificate error) carry codes of the same shape, and would fail the same way again.
+ * A connection that failed or was cut off: one of the codes Node gives every driver's connection faults (refused,
+ * reset, aborted, timed out, a DNS failure, an unreachable host or network, a broken pipe), or a chunked body cut off
+ * mid-stream (`ERR_STREAM_PREMATURE_CLOSE`), which the GCS download path reports. A file the credentials name that is
+ * missing or unreadable (`ENOENT`, `EACCES`) and a TLS failure (`EPROTO`, a certificate error) carry codes of the same
+ * shape, and would fail the same way again, so they are not.
  */
-const TRANSPORT_CODES = new Set([
-  'ECONNRESET',
-  'ECONNREFUSED',
-  'ECONNABORTED',
-  'ETIMEDOUT',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'EPIPE',
-  'ERR_STREAM_PREMATURE_CLOSE',
-]);
+function isConnectionFault(err: unknown): boolean {
+  return isNodeTransportFault(err) || networkCode(err) === 'ERR_STREAM_PREMATURE_CLOSE';
+}
 
-/** A download that failed in transit rather than with an HTTP status: one of {@link TRANSPORT_CODES}. */
+/** A download that failed in transit rather than with an HTTP status: a connection fault ({@link isConnectionFault}). */
 export function isTransportFault(err: unknown): boolean {
-  if (httpStatus(err) !== undefined) return false;
-  const code = networkCode(err);
-  return code !== undefined && TRANSPORT_CODES.has(code);
+  return httpStatus(err) === undefined && isConnectionFault(err);
 }
 
 /**
@@ -124,13 +154,15 @@ export function isTransient(err: unknown): boolean {
   const status = httpStatus(err);
   if (status === 408 || status === 429 || (status !== undefined && status >= 500 && status < 600))
     return true;
-  const net = networkCode(err);
-  return (
-    net === 'ECONNRESET' ||
-    net === 'ETIMEDOUT' ||
-    net === 'ECONNREFUSED' ||
-    net === 'EPIPE' ||
-    net === 'EAI_AGAIN' ||
-    net === 'ENOTFOUND'
-  );
+  // The same connection faults a download is retried on: one list, so a write and a read cannot disagree on one.
+  return isConnectionFault(err);
+}
+
+/**
+ * The message a transient GCS fault is handed on with: `transient GCS fault: <code>`, the HTTP status the SDK puts on
+ * `code` or Node's connection code, else the error's name.
+ */
+export function transientFaultMessage(err: unknown): string {
+  const e = err as { code?: unknown; name?: unknown } | null | undefined;
+  return `transient GCS fault: ${String(e?.code ?? e?.name ?? 'unknown')}`;
 }

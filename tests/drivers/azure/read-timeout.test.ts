@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import { AzureBlobStorage } from '@/azure-blob/backend';
 import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
-import { storageObjectName } from '@/azure-blob/keys';
-import { writeCrbmGeneration } from '@/core/crbm-storage-source';
+import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
+import { writeCrbmGeneration } from '@/core/crbm-write';
 import { IntegrityError, NotFoundError, TransientError, ValidationError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 import { CloudRoaring } from '@/index';
@@ -27,9 +27,11 @@ import { StubBlobService, watchProcess, type Plan } from '../../helpers/azure-bl
  */
 
 const TIMEOUT = 200;
+/** Each test's own limit: every one of these waits on real sockets and timers, and a loaded machine slows them all. */
+const LIMIT = { timeout: 20_000 };
 const GEN: GenKey = { segment: 's', generation: 1 };
 const REF = { segment: 's' };
-const DATA = storageObjectName(undefined, GEN);
+const DATA = storageObjectKey(undefined, GEN);
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 let stub: StubBlobService;
@@ -68,7 +70,8 @@ const backendWith = (readTimeoutMs: number | undefined): AzureBlobStorage =>
 const isRegistryKey = (name: string): boolean => name.includes('registry/');
 
 /**
- * `read` rejects with the timeout's `TransientError`, naming `operation`, at about `TIMEOUT`; the stalled request's
+ * `read` rejects with the timeout's `TransientError`, naming `operation`, no sooner than `TIMEOUT`, and within 2 s of a timer
+ * set for it; the stalled request's
  * connection is closed; and nothing escapes to the process.
  */
 async function timesOut(
@@ -78,15 +81,21 @@ async function timesOut(
   const watch = watchProcess();
   try {
     const t0 = performance.now();
+    // A timer set for the same time at the same moment: a busy machine holds it back as far as the read's own, so how
+    // much later than it the read ends is the code's lateness, not the machine's.
+    let control = Number.POSITIVE_INFINITY;
+    const timer = setTimeout(() => (control = performance.now()), TIMEOUT);
     const err = await read().then(
       () => undefined,
       (e: unknown) => e,
     );
-    const ms = performance.now() - t0;
+    const end = performance.now();
+    clearTimeout(timer);
+    const ms = end - t0;
     expect(err).toBeInstanceOf(TransientError);
     expect((err as Error).message).toBe(`Azure Blob ${operation} timed out after ${TIMEOUT} ms`);
     expect(ms).toBeGreaterThanOrEqual(TIMEOUT - 25);
-    expect(ms).toBeLessThan(TIMEOUT + 1_500);
+    expect(end - control, 'ends soon after a timer set for the same time').toBeLessThan(2_000);
     expect(await stub.releasedStalls()).toBe(true);
     await sleep(50);
   } finally {
@@ -96,8 +105,14 @@ async function timesOut(
 }
 
 const PHASES = ['before-headers', 'after-headers', 'mid-body'] as const;
+/**
+ * The range read is stalled in each phase; the tail read's download and the registry's read in the two that reach the
+ * SDK differently, before any answer and part-way through the body. What a stall after the headers does to the timer
+ * is the range read's case, and the timer itself is held on a fake clock in `timed-read.test.ts`.
+ */
+const NO_BODY_YET_PHASES = ['before-headers', 'mid-body'] as const;
 
-describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', () => {
+describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', LIMIT, () => {
   it.each(PHASES)('a range read stalled %s', async (stall) => {
     stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { stall } : undefined);
     await timesOut(() => storage(TIMEOUT).getRange(GEN, 0, 4), 'download');
@@ -108,21 +123,26 @@ describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', () => 
     await timesOut(() => storage(TIMEOUT).getTail(GEN, 16), 'getProperties');
   });
 
-  it.each(PHASES)("a tail read's ranged download stalled %s", async (stall) => {
+  it.each(NO_BODY_YET_PHASES)("a tail read's ranged download stalled %s", async (stall) => {
     stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { stall } : undefined);
     await timesOut(() => storage(TIMEOUT).getTail(GEN, 16), 'download');
   });
 
-  it.each(PHASES)('a registry read stalled %s', async (stall) => {
+  it.each(NO_BODY_YET_PHASES)('a registry read stalled %s', async (stall) => {
     stub.plan = (r) => (r.method === 'GET' && isRegistryKey(r.name) ? { stall } : undefined);
     await timesOut(() => registry(TIMEOUT).get(REF), 'download');
   });
 
   it('times each request on its own: a tail read whose two requests each take most of the timeout finishes', async () => {
-    const held = Math.round(TIMEOUT * 0.6);
-    stub.plan = (r) => (r.name === DATA ? { delayMs: held } : undefined);
-    const tail = await backendWith(TIMEOUT).storage.getTail(GEN, 16);
+    // Each request well inside the timeout (0.9 s of headroom), and the two together past it. That a timed read gets a
+    // timer of its own per call is held on a fake clock in `timed-read.test.ts`; this holds that a tail read makes two.
+    const timeoutMs = 2_000;
+    stub.plan = (r) => (r.name === DATA ? { delayMs: 1_100 } : undefined);
+    const started = performance.now();
+    const tail = await backendWith(timeoutMs).storage.getTail(GEN, 16);
     expect(tail.size).toBe(size);
+    // The two together outlast one timeout, so one clock across both would have cut the download off.
+    expect(performance.now() - started).toBeGreaterThan(timeoutMs);
     expect(stub.requests.map((r) => r.method)).toEqual(['HEAD', 'GET']);
   });
 
@@ -156,13 +176,13 @@ describe('Azure Blob: a read that stalls is cut off after readTimeoutMs', () => 
 describe('Azure Blob: what the read timeout leaves alone', () => {
   it('fast reads return as before, well inside the timeout', async () => {
     const backend = backendWith(TIMEOUT);
-    const t0 = performance.now();
+    // No bound on how long they take: a read the timeout cut off would be a TransientError here, so each one returning
+    // is the proof, and an elapsed-time bound would only measure the machine.
     expect(await backend.storage.getRange(GEN, 0, 4)).toHaveLength(4);
     const tail = await backend.storage.getTail(GEN, 16);
     expect(tail).toMatchObject({ size });
     expect(tail.bytes).toHaveLength(Math.min(16, size));
     expect((await backend.registry.get(REF))?.currentGen).toBe(GEN.generation);
-    expect(performance.now() - t0).toBeLessThan(TIMEOUT * 4);
   });
 
   it('a read longer than nothing but shorter than the timeout finishes', async () => {
@@ -175,11 +195,19 @@ describe('Azure Blob: what the read timeout leaves alone', () => {
   it('0 turns it off: a read held past what any timeout here would allow finishes', async () => {
     stub.plan = (r) => (r.method !== 'PUT' ? { delayMs: TIMEOUT + 300 } : undefined);
     const backend = backendWith(0);
-    expect(await backend.storage.getRange(GEN, 0, 4)).toHaveLength(4);
-    expect((await backend.storage.getTail(GEN, 16)).size).toBe(size);
-    expect((await backend.registry.get(REF))?.currentGen).toBe(GEN.generation);
-    expect((await storage(0).getTail(GEN, 16)).size).toBe(size);
-    expect((await registry(0).get(REF))?.currentGen).toBe(GEN.generation);
+    // Together, so the test waits for one held read and not for five in turn.
+    const [range, tail, row, driverTail, driverRow] = await Promise.all([
+      backend.storage.getRange(GEN, 0, 4),
+      backend.storage.getTail(GEN, 16),
+      backend.registry.get(REF),
+      storage(0).getTail(GEN, 16),
+      registry(0).get(REF),
+    ]);
+    expect(range).toHaveLength(4);
+    expect(tail.size).toBe(size);
+    expect(row?.currentGen).toBe(GEN.generation);
+    expect(driverTail.size).toBe(size);
+    expect(driverRow?.currentGen).toBe(GEN.generation);
   });
 
   it('it is off by default: a read held for over two seconds finishes, through each half and the backend', async () => {
@@ -205,38 +233,57 @@ describe('Azure Blob: what the read timeout leaves alone', () => {
   }, 15_000);
 
   it('writes, deletes and listings slower than the timeout succeed', async () => {
-    const slow = TIMEOUT + 300;
-    stub.plan = (r) =>
-      r.method === 'PUT' || r.method === 'DELETE' || r.list ? { delayMs: slow } : undefined;
-    const backend = backendWith(TIMEOUT);
+    // A store of its own, with a timeout the reads here finish well inside however busy the machine is, and every
+    // write, delete and listing held past it. They are sent together, so the test waits for one held request.
+    const timeoutMs = 1_000;
+    const slow = timeoutMs + 300;
+    const backend = backendWith(timeoutMs);
     const s = backend.storage;
-    const g: GenKey = { segment: 's', generation: 2 };
-    await writeCrbmGeneration(s, g, [{ chunkKey: 0, bitmap: SafeBitmap.fromValues([7]) }]);
-    const listed: number[] = [];
-    for await (const k of s.list(REF)) listed.push(k.generation);
-    expect(listed.sort()).toEqual([1, 2]);
-    await s.delete(g);
-    expect(stub.blobs.has(storageObjectName(undefined, g))).toBe(false);
-
     const r = backend.registry;
-    const other = { segment: 'other' };
-    const { token } = await r.create(other, { currentGen: 0 });
-    const swapped = await r.compareAndSwap(other, token, { currentGen: 1 });
-    expect(swapped.token).not.toBe(token);
-    const rows: string[] = [];
-    for await (const row of r.list()) rows.push(row.segment);
-    expect(rows.sort()).toEqual(['other', 's']);
-    await r.delete(other);
-    expect(await r.get(other)).toBeNull();
-    // Every write, delete and listing was held past the timeout, and went through.
-    // The writes: the generation, the create and the swap; the deletes: the generation's, and the row's, which removes
-    // the row rather than writing a tombstone over it.
+    const written: GenKey = { segment: 's', generation: 2 };
+    const doomed: GenKey = { segment: 's', generation: 3 };
+    const swapped = { segment: 'swapped' };
+    const gone = { segment: 'gone' };
+    const created = { segment: 'created' };
+    // What the deletes and the swap act on, in place before anything is slow.
+    await writeCrbmGeneration(s, doomed, [{ chunkKey: 0, bitmap: SafeBitmap.fromValues([9]) }]);
+    const { token } = await r.create(swapped, { currentGen: 0 });
+    await r.create(gone, { currentGen: 0 });
+    stub.requests.length = 0;
+    stub.plan = (req) =>
+      req.method === 'PUT' || req.method === 'DELETE' || req.list ? { delayMs: slow } : undefined;
+
+    const listing = async <T>(items: AsyncIterable<T>): Promise<T[]> => {
+      const out: T[] = [];
+      for await (const item of items) out.push(item);
+      return out;
+    };
+    const [, generations, , swap, , rows] = await Promise.all([
+      writeCrbmGeneration(s, written, [{ chunkKey: 0, bitmap: SafeBitmap.fromValues([7]) }]),
+      listing(s.list(REF)),
+      s.delete(doomed),
+      r.compareAndSwap(swapped, token, { currentGen: 1 }),
+      r.delete(gone),
+      listing(r.list()),
+      r.create(created, { currentGen: 0 }),
+    ]);
+
+    // Listings race the writes beside them, so each is held only to what was there before it started.
+    expect(generations.map((k) => k.generation)).toContain(1);
+    expect(rows.map((row) => row.segment)).toEqual(expect.arrayContaining(['s', 'swapped']));
+    expect(swap.token).not.toBe(token);
+    expect(stub.blobs.has(storageObjectKey(undefined, written))).toBe(true);
+    expect(stub.blobs.has(storageObjectKey(undefined, doomed))).toBe(false);
+    expect(await r.get(gone)).toBeNull();
+    expect(await r.get(created)).not.toBeNull();
+    // The writes: the generation, the swap and the create; the deletes: the generation's, and the row's, which removes
+    // the row rather than writing a tombstone over it. Each was held past the timeout, and went through.
     expect(stub.count('PUT')).toBeGreaterThanOrEqual(3);
     expect(stub.count('DELETE')).toBe(2);
-  }, 15_000);
+  });
 });
 
-describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
+describe('Azure Blob: a read lets go of a response the SDK refuses', LIMIT, () => {
   // The SDK refuses a download answered with no ETag by throwing a `RangeError`, and leaves the body unread with the
   // socket open. The answer here never ends, so only the read's own abort closes that socket.
   it.each([
@@ -251,7 +298,7 @@ describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
     const watch = watchProcess();
     try {
       await expect(storage(readTimeoutMs).getRange(GEN, 0, 4)).rejects.toThrow(RangeError);
-      for (let i = 0; i < 100 && !stub.overridden.every((o) => o.closed); i++) await sleep(20);
+      for (let i = 0; i < 200 && !stub.overridden.every((o) => o.closed); i++) await sleep(20);
       expect(stub.overridden).toHaveLength(1);
       expect(stub.overridden[0]!.closed).toBe(true);
       await sleep(50);
@@ -262,49 +309,54 @@ describe('Azure Blob: a read lets go of a response the SDK refuses', () => {
   });
 });
 
-describe('Azure Blob: a storage read whose connection drops part-way is a TransientError', () => {
-  // The SDK fails such a body with an `AbortError`, which is also what aborting a read raises; only the read's own
-  // signal tells the two apart, and here it never fired.
-  it.each([
-    ['off', 0],
-    ['set', TIMEOUT],
-  ])('a range read and a tail read, with the timeout %s', async (_label, readTimeoutMs) => {
-    stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { drop: 'mid-body' } : undefined);
-    const watch = watchProcess();
-    try {
-      for (const read of [
-        () => storage(readTimeoutMs).getRange(GEN, 0, size),
-        () => storage(readTimeoutMs).getTail(GEN, size),
-      ]) {
-        const err = await read().then(
-          () => undefined,
-          (e: unknown) => e,
-        );
-        expect(err).toBeInstanceOf(TransientError);
-        expect((err as Error).message).toBe('transient Azure fault: ECONNRESET');
-        expect(((err as Error).cause as Error).message).toBe(
-          'Azure Blob read was cut off before the response completed',
-        );
+describe(
+  'Azure Blob: a storage read whose connection drops part-way is a TransientError',
+  LIMIT,
+  () => {
+    // The SDK fails such a body with an `AbortError`, which is also what aborting a read raises; only the read's own
+    // signal tells the two apart, and here it never fired.
+    it.each([
+      ['off', 0],
+      // Never fires: the drop is the only thing that can end these reads, however long a busy machine holds them.
+      ['set', 50 * TIMEOUT],
+    ])('a range read and a tail read, with the timeout %s', async (_label, readTimeoutMs) => {
+      stub.plan = (r) => (r.method === 'GET' && r.name === DATA ? { drop: 'mid-body' } : undefined);
+      const watch = watchProcess();
+      try {
+        for (const read of [
+          () => storage(readTimeoutMs).getRange(GEN, 0, size),
+          () => storage(readTimeoutMs).getTail(GEN, size),
+        ]) {
+          const err = await read().then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+          expect(err).toBeInstanceOf(TransientError);
+          expect((err as Error).message).toBe('transient Azure fault: ECONNRESET');
+          expect(((err as Error).cause as Error).message).toBe(
+            'Azure Blob read was cut off before the response completed',
+          );
+        }
+        await sleep(50);
+      } finally {
+        watch.stop();
       }
-      await sleep(50);
-    } finally {
-      watch.stop();
-    }
-    expect(watch.events).toEqual([]);
-  });
+      expect(watch.events).toEqual([]);
+    });
 
-  it('the store reads it again, and the read succeeds', async () => {
-    const store = new CloudRoaring({ storage: backendWith(0) });
-    let drops = 1;
-    stub.plan = (r) =>
-      r.method === 'GET' && r.name === DATA && drops-- > 0 ? { drop: 'mid-body' } : undefined;
+    it('the store reads it again, and the read succeeds', async () => {
+      const store = new CloudRoaring({ storage: backendWith(0) });
+      let drops = 1;
+      stub.plan = (r) =>
+        r.method === 'GET' && r.name === DATA && drops-- > 0 ? { drop: 'mid-body' } : undefined;
 
-    expect(await store.segment('s').has(2)).toBe(true);
-    expect(drops).toBeLessThan(0); // the drop was used, and only once
-  });
-});
+      expect(await store.segment('s').has(2)).toBe(true);
+      expect(drops).toBeLessThan(0); // the drop was used, and only once
+    });
+  },
+);
 
-describe('Azure Blob: a timed-out read is retried by the store', () => {
+describe('Azure Blob: a timed-out read is retried by the store', LIMIT, () => {
   it('a read that stalls once and then answers succeeds, on the retry', async () => {
     const backend = new AzureBlobStorage({
       containerClient: stub.client(),
@@ -332,7 +384,7 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
   // generation holds chunks 0, 3 and 6; the id 2 is in chunk 0. The erasure's GETs of it are, in order, the tail read's
   // download, the chunk it edits, then the two it carries through.
   const ERASE = { namespace: 'ns', segment: 'e' };
-  const ERASE_GEN0 = storageObjectName(undefined, { ...ERASE, generation: 0 });
+  const ERASE_GEN0 = storageObjectKey(undefined, { ...ERASE, generation: 0 });
 
   it.each([
     ['the tail read of the generation it rewrites', 1],
@@ -341,7 +393,9 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
   ] as const)(
     'an erasure whose read of %s stalls once still erases the id',
     async (_label, nth) => {
-      const store = new CloudRoaring({ storage: backendWith(TIMEOUT) });
+      // A store of its own with room for the reads that are not stalled: the stalled one is cut off at the timeout, and
+      // the erasure's others must finish inside it however busy the machine is.
+      const store = new CloudRoaring({ storage: backendWith(2_000) });
       await store.load(ERASE, [1, 2, 3, 200_000, 400_000]);
       let gets = 0;
       stub.plan = (r) =>
@@ -372,8 +426,8 @@ describe('Azure Blob: a timed-out read is retried by the store', () => {
     const backend = backendWith(TIMEOUT);
     const store = new CloudRoaring({ storage: backend });
     await store.load(ERASE, [1, 2, 3]);
-    // A row with a summary of its current generation is sized from it, and the object is not read. This is a row written
-    // before rows carried one, whose generation the guard has to open.
+    // A row with a summary of its current generation is sized from it, and the object is not read. This row has none,
+    // so the guard has to open its generation.
     const row = (await backend.registry.get(ERASE))!;
     await backend.registry.compareAndSwap(ERASE, row.token, { summary: undefined });
     let gets = 0;

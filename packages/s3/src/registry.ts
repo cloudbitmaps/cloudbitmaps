@@ -34,12 +34,14 @@
  */
 import {
   IntegrityError,
+  isIntegrityError,
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
-  TransientError,
   ValidationError,
   WriteConflictError,
   normalizeObjectPrefix,
+  requireBool,
+  toTransient,
 } from '@cloudbitmaps/core/driver-kit';
 import type { ObjectRegistryStore, ObjectRow } from '@cloudbitmaps/core/driver-kit';
 import {
@@ -50,12 +52,20 @@ import {
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
-import { isConditionalConflict, isNotFound, isTransient } from './s3-errors';
+import {
+  asMissingBucket,
+  isConditionalConflict,
+  isNotFound,
+  isTransient,
+  transientFaultMessage,
+} from './s3-errors';
 import { sendOnce } from './send-once';
-import { isAwsS3Host, probeClient } from './client-probe';
+import { destroyBody, readBounded } from './bounded-body';
+import { scrubCredentials } from './scrub-error';
+import { appliesDeleteIfMatch, probeClient } from './client-probe';
 import type { ClientFacts } from './client-probe';
 
-export interface S3RegistryDriverOptions {
+interface S3RegistryDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
   readonly client: S3Client;
   /** Target bucket (must already exist). */
@@ -79,8 +89,7 @@ export interface S3RegistryDriverOptions {
   readonly readTimeoutMs?: number;
   /**
    * Whether a delete removes a row for good, by a `DeleteObject` sent with `If-Match: <the ETag it read>`, rather than
-   * leaving a tombstone. Only a row born with an incarnation id is removed; a row a release before 0.12 wrote is
-   * always tombstoned.
+   * leaving a tombstone.
    *
    * Defaults to `true` when the host the client resolves is an AWS S3 host (`*.amazonaws.com`, `*.amazonaws.com.cn`: the
    * FIPS, dual-stack, access-point and VPC interface forms included), where `If-Match` on `DeleteObject` is documented
@@ -124,10 +133,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
    * vouched for the store.
    */
   get conditionalDelete(): boolean {
-    if (this.explicitConditionalDelete === false) return false;
-    const facts = this.facts;
-    if (this.explicitConditionalDelete === true) return facts?.sendsDeleteIfMatch !== false;
-    return facts !== undefined && facts.sendsDeleteIfMatch && isAwsS3Host(facts.host);
+    return appliesDeleteIfMatch(this.explicitConditionalDelete, this.facts);
   }
 
   /** Ask the client once what it does with the registry's requests; every caller waits for the same answer. */
@@ -163,7 +169,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
         );
       } catch (err) {
         if (isNotFound(err)) return null;
-        throw mapError(err);
+        throw mapError(err, this.bucket);
       }
       try {
         // Check the advertised length BEFORE allocating, so a hostile object cannot make us buffer it first.
@@ -175,16 +181,18 @@ export class S3RegistryStore implements ObjectRegistryStore {
         if (res.Body === undefined) {
           throw new IntegrityError(`registry object has an empty body: ${key}`);
         }
-        const bytes = await (
-          res.Body as { transformToByteArray(): Promise<Uint8Array> }
-        ).transformToByteArray();
+        const bytes = await readBounded(
+          res.Body,
+          MAX_ROW_BYTES,
+          () => new IntegrityError(`registry object exceeds cap ${MAX_ROW_BYTES}B`),
+        );
         return { bytes, version: res.ETag ?? '' };
       } catch (err) {
         // A row refused before its body is read would otherwise hold its connection open until the server gives up
         // on it; destroying the body closes the socket. On a body that already failed it changes nothing.
         destroyBody(res.Body);
         // A body cut off part-way is a dropped connection, and transient; a refused row is not.
-        throw err instanceof IntegrityError ? err : mapError(err);
+        throw isIntegrityError(err) ? err : mapError(err, this.bucket);
       }
     });
   }
@@ -214,7 +222,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
       if (isConditionalConflict(err)) {
         throw new WriteConflictError(`registry OCC conflict for ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -231,7 +239,7 @@ export class S3RegistryStore implements ObjectRegistryStore {
       if (isConditionalConflict(err) || isNotFound(err)) {
         throw new WriteConflictError(`registry OCC conflict deleting ${key}`);
       }
-      throw mapError(err);
+      throw mapError(err, this.bucket);
     }
   }
 
@@ -249,39 +257,34 @@ export class S3RegistryStore implements ObjectRegistryStore {
           }),
         );
       } catch (err) {
-        throw mapError(err);
+        throw mapError(err, this.bucket);
       }
       for (const obj of res.Contents ?? []) {
         if (obj.Key !== undefined) yield obj.Key;
+      }
+      // A page that says more follow and gives no way to ask for them would end the listing short, silently.
+      if (res.IsTruncated === true && res.NextContinuationToken === undefined) {
+        throw new IntegrityError('S3 listing says it is truncated but gives no continuation token');
+      }
+      // A page that hands back the token it was asked with would be asked for again, forever.
+      if (res.IsTruncated === true && res.NextContinuationToken === token) {
+        throw new IntegrityError('S3 listing returned the continuation token it was given');
       }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;
     } while (token !== undefined);
   }
 }
 
-/** Destroy a response body left unread, which releases its connection; a body with no `destroy` is left alone. */
-function destroyBody(body: unknown): void {
-  (body as { destroy?: () => void } | undefined)?.destroy?.();
-}
-
-/** Reclassify a transient S3 fault as a retryable {@link TransientError}; pass everything else through. */
-function mapError(err: unknown): unknown {
-  if (isTransient(err)) {
-    return new TransientError(
-      `transient S3 fault: ${(err as { name?: string } | null)?.name ?? 'unknown'}`,
-      { cause: err },
-    );
-  }
-  return err;
-}
-
-/** {@link S3RegistryDriverOptions.conditionalDelete}, checked: `undefined` leaves the decision to the client. */
-function checkConditionalDelete(value: unknown): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'boolean') {
-    throw new ValidationError(`conditionalDelete must be a boolean; got ${String(value)}`);
-  }
-  return value;
+/**
+ * Reclassify a transient S3 fault as a retryable {@link TransientError} and a missing bucket as a `ValidationError`;
+ * any other error is passed through.
+ */
+function mapError(err: unknown, bucket: string): unknown {
+  return toTransient(
+    asMissingBucket(scrubCredentials(err), bucket),
+    isTransient,
+    transientFaultMessage,
+  );
 }
 
 export class S3RegistryDriver extends ObjectStoreRegistry {
@@ -291,7 +294,7 @@ export class S3RegistryDriver extends ObjectStoreRegistry {
         options.client,
         options.bucket,
         resolveReadTimeoutMs(options.readTimeoutMs),
-        checkConditionalDelete(options.conditionalDelete),
+        requireBool('conditionalDelete', options.conditionalDelete),
       ),
       normalizeObjectPrefix(options.prefix),
       options.now ?? ((): number => Date.now()),

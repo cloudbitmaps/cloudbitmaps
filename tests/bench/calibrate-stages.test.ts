@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CloudRoaring } from '@/index';
+import { CloudRoaring, MemoryStorage } from '@/index';
 import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
 import { CountingObjectStore, counting } from '../helpers/counting';
 import { brandAsBackend } from '@/core/ports';
@@ -18,12 +18,22 @@ const require_ = createRequire(import.meta.url);
 type Bound = { put: number; get: number };
 type Plan = {
   loads: { segments: number; largeSegments: number; partsBound: number };
-  intersect: { reads: number; sharedChunks: number };
-  spread: { segments: number; reads: number; sharedChunks: number };
-  sweep: { segments: number; entries: { k: number; intersects: number }[] };
-  warm: { segments: number; sharedChunks: number };
+  intersect: { reads: number; sharedChunks: number; rangesPerOperand: number };
+  spread: { segments: number; reads: number; sharedChunks: number; rangesPerOperand: number };
+  sweep: {
+    segments: number;
+    entries: { k: number; intersects: number; rangesPerOperand: number }[];
+  };
+  warm: { segments: number; sharedChunks: number; rangesPerOperand: number };
   pointReads: { segments: number; sharedChunks: number };
-  andNot: { calls: number; excludes: number; includeChunks: number; sharedChunks: number };
+  andNot: {
+    calls: number;
+    excludes: number;
+    includeChunks: number;
+    sharedChunks: number;
+    ranges: number;
+  };
+  steadyLoad: { loads: number; keep: number };
   discards: { perRun: number; perStage: number };
   retryBound: number;
   fixedPuts: number;
@@ -38,7 +48,7 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   windowRounds: (keys: number, limit: number, start: number) => number;
   windowPeak: (keys: number, limit: number, start: number) => number;
   modelRounds: (k: number) => number;
-  coldIntersectGets: (k: number) => number;
+  coldIntersectGets: (ranges: number) => number;
   coldIntersectBound: (k: number) => number;
   projectStages: (w: Plan) => {
     stages: Record<string, Bound>;
@@ -50,6 +60,12 @@ const stages = require_(join(ROOT, 'bench', 'lib', 'calibrate-stages.cjs')) as {
   expectedReads: (w: Plan) => Record<string, number>;
   FIRST_LOAD: Bound;
   firstLoadRequests: (parts: number) => Bound;
+  STEADY_KEEP: number;
+  STEADY_LOADS: number;
+  LIST_CADENCE: number;
+  STEADY_LOAD_REQUESTS: Record<string, { put: number; get: number; free: number }>;
+  steadyKind: (generation: number, keep?: number) => string;
+  expectedSteady: (loads?: number, keep?: number) => { put: number; get: number; free: number };
 };
 type Layout = {
   shared: number;
@@ -116,17 +132,22 @@ function defaultPlan(): Plan {
   });
   return {
     loads: { segments: 20, largeSegments: 5, partsBound: 3 },
-    intersect: { reads: 40, sharedChunks: layout.sharedChunks },
-    spread: { segments: 10, reads: 40, sharedChunks: layout.sharedChunks },
-    sweep: { segments: 3, entries: stages.DEFAULT_SWEEP },
-    warm: { segments: 20, sharedChunks: layout.sharedChunks },
+    intersect: { reads: 40, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
+    spread: { segments: 10, reads: 40, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
+    sweep: {
+      segments: 3,
+      entries: stages.DEFAULT_SWEEP.map((e) => ({ ...e, rangesPerOperand: 1 })),
+    },
+    warm: { segments: 20, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
     pointReads: { segments: 10, sharedChunks: layout.sharedChunks },
     andNot: {
       calls: 10,
       excludes: 10,
       includeChunks: layout.chunksPerSegment,
       sharedChunks: layout.sharedChunks,
+      ranges: 11,
     },
+    steadyLoad: { loads: 18, keep: 12 },
     discards: { perRun: samples.DISCARDS_PER_RUN, perStage: samples.DISCARDS_PER_STAGE },
     retryBound: guards.RETRY_BOUND,
     fixedPuts: 16,
@@ -205,23 +226,27 @@ describe('the stage table', () => {
     expect(base).toEqual({ put: 0, get: 0 });
     const one = stages.projectStages({
       ...w,
-      sweep: { ...w.sweep, entries: [{ k: 1_000, intersects: 10 }] },
+      sweep: { ...w.sweep, entries: [{ k: 1_000, intersects: 10, rangesPerOperand: 1 }] },
     }).stages.sweep;
     const both = stages.projectStages(w).stages.sweep;
     // Every entry loads its own segments and reads its own pairs, so a second entry adds its own and only its own.
     const second = stages.projectStages({
       ...w,
-      sweep: { ...w.sweep, entries: [{ k: 2_000, intersects: 5 }] },
+      sweep: { ...w.sweep, entries: [{ k: 2_000, intersects: 5, rangesPerOperand: 1 }] },
     }).stages.sweep;
     expect(both?.get).toBe((one?.get ?? 0) + (second?.get ?? 0));
     expect(both?.put).toBe((one?.put ?? 0) + (second?.put ?? 0));
+    // The bound is a request for every shared chunk, which no coalescing read makes more than.
     expect(both?.get).toBeGreaterThanOrEqual(
-      10 * stages.coldIntersectGets(1_000) + 5 * stages.coldIntersectGets(2_000),
+      10 * stages.coldIntersectBound(1_000) + 5 * stages.coldIntersectBound(2_000),
     );
     // A further value of k raises the bound; it is not absorbed by the others.
     const three = stages.projectStages({
       ...w,
-      sweep: { ...w.sweep, entries: [...stages.DEFAULT_SWEEP, { k: 500, intersects: 4 }] },
+      sweep: {
+        ...w.sweep,
+        entries: [...w.sweep.entries, { k: 500, intersects: 4, rangesPerOperand: 1 }],
+      },
     }).stages.sweep;
     expect(three?.get).toBeGreaterThan(both?.get ?? 0);
   });
@@ -229,20 +254,21 @@ describe('the stage table', () => {
 
 describe('the depth the harness measures', () => {
   // The window is the engine's, so it is read out of the engine's source and not retyped.
-  it('models the engine: a pointer and a tail first, then a window that opens at 8 and widens to 32', () => {
+  it('models the engine: a pointer and a tail first, then a stream of ranges that opens 4 wide and widens to 32', () => {
     const src = readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', 'engine.ts'), 'utf8');
     const window = /const DEFAULT_INTERSECT_CONCURRENCY = (\d+);/.exec(src);
     expect(window, 'the engine no longer names its window this way').not.toBeNull();
     expect(stages.ENGINE_WINDOW).toBe(Number(window?.[1]));
-    const start = /const COMBINE_WINDOW_START = (\d+);/.exec(src);
+    const start = /const COMBINE_RANGE_START = (\d+);/.exec(src);
     expect(start, 'the engine no longer names its opening window this way').not.toBeNull();
     expect(stages.ENGINE_WINDOW_START).toBe(Number(start?.[1]));
-    // Stepped at an even latency: 8 keys at once, widening to 16 then 32 as keys are taken.
+    // Stepped at an even latency, in ranges: 4 at once, widening as ranges are taken. A calibration-shaped intersect
+    // is one range an operand, so it waits on a pointer, a tail and one range.
     expect(stages.modelRounds(1)).toBe(2 + 1);
-    expect(stages.modelRounds(8)).toBe(2 + 1);
-    expect(stages.modelRounds(100)).toBe(2 + 4);
-    expect(stages.modelRounds(1_000)).toBe(2 + 32);
-    expect(stages.modelRounds(2_000)).toBe(2 + 64);
+    expect(stages.modelRounds(4)).toBe(2 + 1);
+    expect(stages.modelRounds(5)).toBe(2 + 2);
+    expect(stages.modelRounds(100)).toBe(2 + 5);
+    expect(stages.modelRounds(1_000)).toBe(2 + 33);
   });
 
   it('steps a fixed window as ceil(k / window), and a widening one in fewer rounds', () => {
@@ -420,6 +446,13 @@ describe('the workload the stages need', () => {
     expect(() => guards.checkWorkload(all)).toThrow(/501 segments/);
     expect(() => guards.checkWorkload({ ...all, segments: 479 })).not.toThrow();
   });
+
+  // The steady segment can leave a generation, a pointer version and a delete marker a load, two versions a segment.
+  it("counts the steady stage's versions against the same listing", () => {
+    const all = { ...base, segments: 453, spreadSegments: 10, sweepSegments: 3, sweepEntries: 2 };
+    expect(() => guards.checkWorkload({ ...all, steadyLoads: 18 })).toThrow(/501 segments/);
+    expect(() => guards.checkWorkload({ ...all, segments: 452, steadyLoads: 18 })).not.toThrow();
+  });
 });
 
 describe('a stage that reads from memory', () => {
@@ -492,7 +525,7 @@ describe('a stage that reads from memory', () => {
 // here; the rehearsal then holds the harness to the same formulas on S3's request shape.
 describe('what the stages request, counted against the engine', () => {
   const stride = guards.DEFAULT_LAYOUT.stride;
-  const layout = guards.planLayout({ segments: 14, idsPerSegment: 20_000, overlap: 0.1, stride });
+  const layout = guards.planLayout({ segments: 14, idsPerSegment: 40_000, overlap: 0.1, stride });
   const calls: Record<string, number> = {};
   const pointer = new CountingObjectStore(0);
   const backend = brandAsBackend({
@@ -516,15 +549,18 @@ describe('what the stages request, counted against the engine', () => {
   };
   const plan = (): Plan => ({
     ...defaultPlan(),
-    intersect: { reads: 6, sharedChunks: layout.sharedChunks },
+    // The layouts here are small: each operand's shared chunks are one range, and so is each exclude's overlap with the
+    // include (counted against the engine below, which holds these numbers to what it makes).
+    intersect: { reads: 6, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
     // Six pairs, each a segment and the next: seven segments.
-    warm: { segments: 7, sharedChunks: layout.sharedChunks },
+    warm: { segments: 7, sharedChunks: layout.sharedChunks, rangesPerOperand: 1 },
     pointReads: { segments: 4, sharedChunks: layout.sharedChunks },
     andNot: {
       calls: 2,
       excludes: 3,
       includeChunks: layout.chunksPerSegment,
       sharedChunks: layout.sharedChunks,
+      ranges: 4,
     },
   });
   const loaded = (async () => {
@@ -535,12 +571,12 @@ describe('what the stages request, counted against the engine', () => {
   })();
   const expected = stages.expectedReads(plan());
 
-  it('a cold intersect makes 4 + 2k, and a first load makes its counted 2 PUT-class and 4 GET', async () => {
+  it('a cold intersect makes 4 + 2r for r ranges of each operand, and a first load makes its counted 2 PUT-class and 3 GET', async () => {
     await loaded;
-    expect(stages.FIRST_LOAD).toEqual({ put: 2, get: 4 });
-    expect(stages.firstLoadRequests(0)).toEqual({ put: 2, get: 4 });
+    expect(stages.FIRST_LOAD).toEqual({ put: 2, get: 3 });
+    expect(stages.firstLoadRequests(0)).toEqual({ put: 2, get: 3 });
     // A multipart object is a create, its parts and a complete in place of one PUT.
-    expect(stages.firstLoadRequests(2)).toEqual({ put: 5, get: 4 });
+    expect(stages.firstLoadRequests(2)).toEqual({ put: 5, get: 3 });
     let total = 0;
     for (let i = 0; i < 6; i += 1) {
       const store = new CloudRoaring({ storage: backend, ...guards.TIMED_STORE });
@@ -552,7 +588,9 @@ describe('what the stages request, counted against the engine', () => {
       });
     }
     expect(total).toBe(expected.intersect);
-    expect(stages.coldIntersectGets(layout.sharedChunks)).toBe(4 + 2 * layout.sharedChunks);
+    // One range an operand here: the shared chunks sit side by side. Each intersect is 6 requests, not 4 + 2k.
+    expect(stages.coldIntersectGets(1)).toBe(6);
+    expect(total).toBe(6 * 6);
   });
 
   it('a warm store reads each segment once and then nothing', async () => {
@@ -577,7 +615,7 @@ describe('what the stages request, counted against the engine', () => {
     let total = 0;
     for (const name of names) {
       const first = await countOf(async () => {
-        expect(await counted.segment(name).count()).toBe(20_000);
+        expect(await counted.segment(name).count()).toBe(40_000);
       });
       expect(first, 'a first count() is a pointer read').toBe(1);
       total += first;
@@ -660,11 +698,11 @@ describe('a segment is loaded once', () => {
     expect(helper.indexOf('claimFirstLoad(segment)')).toBeLessThan(helper.indexOf('loader.load('));
   });
 
-  it("a reload of a row with no summary whose number is taken and that loses four races makes more requests than a first load's bound, so a reload is not projected", async () => {
+  it("a reload, even of a row with no summary whose number is taken and that loses four races, makes no more requests than a first load's bound", async () => {
     /**
      * The GET-class requests of a segment's load number `nth` (from 2), when its publish loses `lost` races, and
-     * when `taken`, a crashed load's object sits under the number it checks. `legacy` leaves the row as one written
-     * before rows carried a summary of the current generation, which the load then has to open to size.
+     * when `taken`, a crashed load's object sits under the number it checks. `legacy` leaves the row with no summary
+     * of the current generation, which the load then has to open to size.
      */
     const reload = async (
       nth: number,
@@ -705,24 +743,24 @@ describe('a segment is loaded once', () => {
       chunksPerRead: 0,
       retryBound: guards.RETRY_BOUND,
     }).get;
-    expect(bound).toBe(15);
+    expect(bound).toBe(16);
     // Nothing racing and the number free: a reload sizes the current generation from its row's summary, so it is the
-    // counted three, a request fewer than a first load, and a load that collects makes five (it also checks that the
-    // current object is there). Four lost publishes, the last attempt winning, put them at eleven and thirteen, inside
-    // the bound.
-    expect(await reload(2, 0)).toEqual({ gets: 3, threw: false });
+    // counted two (its row, which its publish is written against, and the check of the next number), a request fewer
+    // than a first load, and a load that collects makes five (it also checks that the current object is there, and
+    // reads the row again before it deletes and after). Four lost publishes, the last attempt winning, each reading the
+    // row again, put them at six and nine, inside the bound.
+    expect(await reload(2, 0)).toEqual({ gets: 2, threw: false });
     expect(await reload(3, 0)).toEqual({ gets: 5, threw: false });
-    expect(await reload(2, 4)).toEqual({ gets: 11, threw: false });
-    expect(await reload(3, 4)).toEqual({ gets: 13, threw: false });
+    expect(await reload(2, 4)).toEqual({ gets: 6, threw: false });
+    expect(await reload(3, 4)).toEqual({ gets: 9, threw: false });
     // A reload whose check finds the number taken lists to collect as well, and reads the pointer around its listing
-    // and before each delete: seven with nothing racing, and with four lost publishes fifteen, as many as the bound.
+    // and before and after its delete: seven with nothing racing, and with four lost publishes eleven.
     expect(await reload(3, 0, true)).toEqual({ gets: 7, threw: false });
-    expect(await reload(3, 4, true)).toEqual({ gets: 15, threw: false });
-    expect((await reload(3, 4, true)).gets).toBeLessThanOrEqual(bound);
-    // The same reload of a row written before rows carried a summary reads the current generation's index as well:
-    // one more, past the bound, which only a segment's first load is held to.
-    expect(await reload(3, 4, true, true)).toEqual({ gets: 16, threw: false });
-    expect((await reload(3, 4, true, true)).gets).toBeGreaterThan(bound);
+    expect(await reload(3, 4, true)).toEqual({ gets: 11, threw: false });
+    // The same reload of a row with no summary reads the current generation's index as well:
+    // one more, which is still inside the bound.
+    expect(await reload(3, 4, true, true)).toEqual({ gets: 12, threw: false });
+    for (const gets of [11, 12]) expect(gets).toBeLessThanOrEqual(bound);
   });
 });
 
@@ -783,12 +821,17 @@ describe('the ceiling covers every stage', () => {
     const w = defaultPlan();
     const expected = stages.expectedReads(w);
     expect(expected).toEqual({
-      intersect: 8_160,
-      spread: 8_160,
-      sweep: 40_060,
-      warm: 2_040,
+      // A cold intersect is 4 + 2 requests, one range an operand, where each shared chunk was a request: 40 x 6.
+      intersect: 240,
+      spread: 240,
+      sweep: 90,
+      warm: 60,
+      // Point reads are one chunk each, per key: unchanged.
       pointReads: 4_020,
-      andNot: 30_210,
+      // An include and ten excludes: eleven operands' pointer and tail, and a range each.
+      andNot: 330,
+      // 18 loads of one segment: the first 3, twelve reloads of 2, four by name of 5 and a listing of 6.
+      steadyLoad: 53,
     });
     const single = stages.firstLoadRequests(0);
     const multi = stages.firstLoadRequests(2);
@@ -797,29 +840,34 @@ describe('the ceiling covers every stage', () => {
       put: 20 * single.put + 5 * multi.put,
       get: 20 * single.get + 5 * multi.get,
     };
-    expect(loads).toEqual({ put: 65, get: 100 });
+    expect(loads).toEqual({ put: 65, get: 75 });
     const setups = 10 + 3 * w.sweep.entries.length;
     const setup = { put: setups * single.put, get: setups * single.get };
-    expect(setup).toEqual({ put: 32, get: 64 });
+    expect(setup).toEqual({ put: 32, get: 48 });
     // The bucket's creation and, in a run with nothing left over, teardown's three listings: of uploads, of versions
     // while the objects are there, and of versions once they are gone. The probe and the ten round-trip samples are
     // GET-class.
     const fixed = { put: 1 + 3, get: 1 + 10 };
     const get =
       loads.get + setup.get + Object.values(expected).reduce((n, g) => n + g, 0) + fixed.get;
-    const put = loads.put + setup.put + fixed.put;
-    expect({ put, get }).toEqual({ put: 101, get: 92_825 });
+    const steady = stages.expectedSteady(18, 12);
+    expect(steady).toEqual({ put: 37, get: 53, free: 5 });
+    const put = loads.put + setup.put + fixed.put + steady.put;
+    expect({ put, get }).toEqual({ put: 138, get: 5_167 });
     const expectedUSD = meterLib.priceTally({ put, get }, pricing).totalUSD;
-    expect(expectedUSD).toBeCloseTo(0.037635, 6);
-    // The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
+    expect(expectedUSD).toBeCloseTo(0.0027568, 7);
+    // The bounds are unchanged by coalescing: each is what a request for every chunk would cost, which a read of
+    // ranges never exceeds, so they are far above what is expected now. The bound is above it, and under the ceiling: the stages' bounds, the fixed requests, and three discarded samples
     // at the costliest sample's bound, a cold intersect sharing 2,000 chunks.
     const projected = stages.projectStages(w);
     expect(projected.costliestSample).toBe(stages.coldIntersectBound(2_000));
     expect(projected.discards).toEqual({ put: 0, get: 3 * 4_006 });
-    // Each of the 41 loads the plan names, in the stages and their setups, is projected one GET-class request higher.
-    expect(projected.total).toEqual({ put: 364, get: 94_606 + 12_018 });
+    // Each of the 59 loads the plan names, in the stages and their setups, is projected at the load bound's 16 GET-class
+    // requests, the steady stage's 18 among them.
+    expect(projected.stages.steadyLoad).toEqual({ put: 18 * 9, get: 18 * 16 });
+    expect(projected.total).toEqual({ put: 567, get: 94_647 + 288 + 12_018 });
     const bound = meterLib.priceTally(projected.total, pricing).totalUSD;
-    expect(bound).toBeCloseTo(0.0444696, 7);
+    expect(bound).toBeCloseTo(0.0456162, 7);
     expect(bound).toBeGreaterThan(expectedUSD);
     expect(bound).toBeLessThan(0.05);
   });
@@ -842,6 +890,7 @@ describe('the ceiling covers every stage', () => {
       warm: p.stages.warm?.get,
       pointReads: 4,
       andNot: (p.stages.andNot?.get ?? 0) / w.andNot.calls,
+      steadyLoad: 0,
     });
     for (const name of stages.STAGES) {
       expect(each[name] ?? Infinity, name).toBeLessThanOrEqual(p.stages[name]?.get ?? 0);
@@ -883,5 +932,213 @@ describe('the ceiling covers every stage', () => {
     // Doubling a stage's work raises the projection by exactly that stage's bound.
     const bigger = stages.projectStages({ ...w, andNot: { ...w.andNot, calls: 20 } });
     expect(bigger.total.get - total.get).toBe(stages.projectStages(w).stages.andNot?.get);
+  });
+});
+
+// The steady-load stage: one segment loaded again and again at a `keep` that makes its loads collect by name. Its
+// expected requests are the engine's, counted here over the real registry protocol and storage calls, and its bound is
+// the load bound, so a load that loses races still fits.
+describe('the steady-load stage', () => {
+  const figuresLib = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
+    STORE_LOAD_REQUESTS: Record<string, Bound>;
+  };
+  const rangeCounts = require_(join(ROOT, 'bench', 'lib', 'range-counts.cjs')) as {
+    collectsByName: (engine: unknown, keep?: number) => Promise<boolean>;
+    readsRowAfterCollect: (engine: unknown, keep?: number) => Promise<boolean>;
+  };
+  const engineSrc = (rel: string): string =>
+    readFileSync(join(ROOT, 'packages', 'core', 'src', 'core', rel), 'utf8');
+
+  type Load = { put: number; get: number; free: number; list: number };
+  /** The store the harness loads through, over counting stores; `lost` conditional writes lose their race. */
+  const rig = () => {
+    const calls: Record<string, number> = {};
+    const pointer = new CountingObjectStore(0);
+    const store = new CloudRoaring({
+      storage: brandAsBackend({
+        storage: counting(new MemoryStorageDriver(), calls),
+        registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
+      }),
+      ...guards.TIMED_STORE,
+    });
+    const load = async (g: number, lost = 0): Promise<Load | 'conflict'> => {
+      for (const k of Object.keys(calls)) delete calls[k];
+      pointer.reads = 0;
+      pointer.writes = 0;
+      (pointer as unknown as { lostRaces: number }).lostRaces = lost;
+      const ids = Array.from({ length: 1_000 }, (_, j) => g * 1_000 + j);
+      try {
+        await store.load({ segment: 's' }, ids, { keep: stages.STEADY_KEEP });
+      } catch (err) {
+        if (!(err instanceof WriteConflictError)) throw err;
+        return 'conflict';
+      }
+      return {
+        put: (calls.putImmutable ?? 0) + (calls.list ?? 0) + pointer.writes,
+        get: pointer.reads + (calls.getTail ?? 0) + (calls.getRange ?? 0),
+        free: calls.delete ?? 0,
+        list: calls.list ?? 0,
+      };
+    };
+    return { load };
+  };
+
+  // Thirty-four loads reach the second listing, so a cadence that moved shows. Each kind's billed requests are the ones
+  // the figures module prices a load from.
+  it('makes the counted requests of each kind: a first load, a reload, a delete by name and a listing', async () => {
+    const { load } = rig();
+    const kinds = {} as Record<string, Load>;
+    for (let g = 0; g < 34; g += 1) {
+      const got = (await load(g)) as Load;
+      const kind = stages.steadyKind(g);
+      expect(
+        { put: got.put, get: got.get, free: got.free },
+        `generation ${g}, a ${kind} load`,
+      ).toEqual(stages.STEADY_LOAD_REQUESTS[kind]);
+      expect(got.list, `generation ${g}`).toBe(kind === 'listing' ? 1 : 0);
+      kinds[kind] = got;
+    }
+    expect(Object.keys(kinds).sort()).toEqual(['byName', 'first', 'listing', 'reload']);
+    const stored = figuresLib.STORE_LOAD_REQUESTS;
+    const billed = (kind: string): Bound => {
+      const k = kinds[kind];
+      if (k === undefined) throw new Error(`no ${kind} load`);
+      return { put: k.put, get: k.get };
+    };
+    expect(billed('first')).toEqual(stored.first);
+    expect(billed('reload')).toEqual(stored.reload);
+    expect(billed('byName')).toEqual(stored.collecting);
+    expect(billed('listing')).toEqual(stored.listing);
+    // The stage's 18 loads, summed.
+    expect(stages.expectedSteady(stages.STEADY_LOADS, stages.STEADY_KEEP)).toEqual({
+      put: 37,
+      get: 53,
+      free: 5,
+    });
+  });
+
+  it('stays inside the load bound for every kind of load, at every number of lost races it survives', async () => {
+    const bound = guards.projectOps({
+      loads: 1,
+      reads: 0,
+      chunksPerRead: 0,
+      retryBound: guards.RETRY_BOUND,
+    });
+    for (const generation of [1, 5, 13, 16, 17]) {
+      for (let lost = 0; lost <= guards.RETRY_BOUND; lost += 1) {
+        const { load } = rig();
+        for (let g = 0; g < generation; g += 1) await load(g);
+        const got = await load(generation, lost);
+        if (got === 'conflict') {
+          expect(lost, `generation ${generation}`).toBe(guards.RETRY_BOUND);
+          continue;
+        }
+        const at = `generation ${generation} (${stages.steadyKind(generation)}), ${lost} lost races`;
+        expect(got.put, at).toBeLessThanOrEqual(bound.put);
+        expect(got.get, at).toBeLessThanOrEqual(bound.get);
+      }
+    }
+    // The stage's bound is that bound for each of its loads, no more and no fewer.
+    expect(stages.projectStages(defaultPlan()).stages.steadyLoad).toEqual({
+      put: stages.STEADY_LOADS * bound.put,
+      get: stages.STEADY_LOADS * bound.get,
+    });
+  });
+
+  // The harness runs where the engine's source is not, so its constants are retyped; the engine's are read here.
+  it('keeps a window the engine records and loads far enough to list, from the engine source', () => {
+    const cadence = /export const LIST_COLLECTION_CADENCE = (\d+);/.exec(
+      engineSrc('generation-gc.ts'),
+    );
+    const maxKept = /export const MAX_KEPT_GENERATIONS = (\d+);/.exec(
+      engineSrc('known-generations.ts'),
+    );
+    expect(cadence).not.toBeNull();
+    expect(maxKept).not.toBeNull();
+    expect(stages.LIST_CADENCE).toBe(Number(cadence?.[1]));
+    expect(stages.STEADY_KEEP).toBeLessThanOrEqual(Number(maxKept?.[1]));
+    // Generations 0 to loads - 1: one is past the window and divisible by the cadence, and one by name follows it.
+    const listing = stages.STEADY_LOADS - 1;
+    const kinds = Array.from({ length: stages.STEADY_LOADS }, (_, g) => stages.steadyKind(g));
+    expect(kinds).toContain('listing');
+    expect(kinds.lastIndexOf('byName')).toBeGreaterThan(kinds.indexOf('listing'));
+    expect(listing).toBeGreaterThan(stages.STEADY_KEEP);
+  });
+
+  it('asks the installed engine whether it collects by name, and refuses one that lists every load', async () => {
+    const real = { CloudRoaring, MemoryStorage };
+    expect(await rangeCounts.collectsByName(real)).toBe(true);
+    // An engine that also lists the segment on every load, as one that records no list of kept generations does.
+    class ListsEveryLoad extends CloudRoaring {
+      private readonly drivers: { storage: { list: (r: unknown) => AsyncIterable<unknown> } };
+      constructor(options: ConstructorParameters<typeof CloudRoaring>[0]) {
+        super(options);
+        this.drivers = options.storage as never;
+      }
+      override async load(...args: Parameters<CloudRoaring['load']>) {
+        const done = await super.load(...args);
+        for await (const key of this.drivers.storage.list(args[0])) void key;
+        return done;
+      }
+    }
+    expect(await rangeCounts.collectsByName({ CloudRoaring: ListsEveryLoad, MemoryStorage })).toBe(
+      false,
+    );
+    // The harness asks before it creates a bucket or reads a layout, and refuses with the release that collects by name.
+    const at = (needle: string): number => harnessSrc.indexOf(needle);
+    expect(at('collectsByName(await import')).toBeGreaterThan(-1);
+    expect(at('collectsByName(await import')).toBeLessThan(at('layout = planLayout('));
+    expect(harnessSrc).toContain('0.17.0 is the first release that does');
+  });
+
+  it('asks the installed engine whether its load reads the row after its last delete, and records the answer', async () => {
+    const real = { CloudRoaring, MemoryStorage };
+    expect(await rangeCounts.readsRowAfterCollect(real)).toBe(true);
+    // An engine whose load ends at its collection's delete: here the read after it is served past the probe's count.
+    class EndsAtTheDelete extends CloudRoaring {
+      constructor(options: ConstructorParameters<typeof CloudRoaring>[0]) {
+        const { storage, registry } = options.storage as unknown as {
+          storage: { delete: (...a: unknown[]) => Promise<void> };
+          registry: { get: (...a: unknown[]) => Promise<unknown> };
+        };
+        const counted = { delete: storage.delete, get: registry.get };
+        const uncounted = (Object.getPrototypeOf(registry) as typeof registry).get;
+        let deleted = false;
+        storage.delete = (...a) => {
+          deleted = true;
+          return counted.delete(...a);
+        };
+        registry.get = (...a) => (deleted ? uncounted.apply(registry, a) : counted.get(...a));
+        super(options);
+      }
+    }
+    expect(
+      await rangeCounts.readsRowAfterCollect({ CloudRoaring: EndsAtTheDelete, MemoryStorage }),
+    ).toBe(false);
+    // One that deletes nothing there is not asked, since the harness refuses it first; the probe says why it cannot answer.
+    class KeepsEverything extends CloudRoaring {
+      override load(...[ref, ids, options]: Parameters<CloudRoaring['load']>) {
+        return super.load(ref, ids, { ...options, keep: 1_000 });
+      }
+    }
+    await expect(
+      rangeCounts.readsRowAfterCollect({ CloudRoaring: KeepsEverything, MemoryStorage }),
+    ).rejects.toThrow(/deleted nothing on its first load past a window of 12/);
+    // The harness asks before it creates anything, after the engine is known to collect by name, and records the answer
+    // where the figures read it.
+    const at = (needle: string): number => harnessSrc.indexOf(needle);
+    const asked = harnessSrc.search(
+      /readsRowAfterCollect\(\s*await import\('@cloudbitmaps\/roaring'\)/,
+    );
+    expect(asked).toBeGreaterThan(at('collectsByName(await import'));
+    expect(asked).toBeLessThan(at('layout = planLayout('));
+    expect(harnessSrc).toContain('{ readsRowAfterCollect: readsAfterCollect }');
+    expect(harnessSrc).toContain('steadyLoadRequestsOf(readsAfterCollect)[kind]');
+  });
+
+  it('claims the steady segment once, for its first load, and reloads it through the same helper', () => {
+    expect(harnessSrc.match(/loader\.load\(/g)?.length).toBe(1);
+    expect(harnessSrc).toContain('if (!reload) claimFirstLoad(segment);');
+    expect(harnessSrc).toContain('reload: g > 0');
   });
 });

@@ -12,9 +12,24 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { Aead, AeadSealed, IKeystore, WrappedDek } from '../core/crypto';
 import { IntegrityError, KeyUnavailableError, ValidationError } from '../core/errors';
 
+const UTF8 = new TextEncoder();
 const KEY_BYTES = 32; // AES-256
 const NONCE_BYTES = 12; // GCM standard nonce
 const TAG_BYTES = 16; // GCM tag
+
+/** A `Uint8Array`, a `Buffer` among them, from this realm or another. */
+const isBytes = (v: unknown): v is Uint8Array =>
+  Object.prototype.toString.call(v) === '[object Uint8Array]';
+
+/**
+ * A copy of key bytes in a buffer of their own. `Buffer.from` takes small buffers from a slab of Node's shared pool (8 KiB on Node 22,
+ * 64 KiB on recent Node 24), so a held key would pin the whole slab it came from for as long as it lives, and keep key bytes beside unrelated data.
+ */
+function ownKey(key: Uint8Array): Buffer {
+  const own = Buffer.alloc(key.length);
+  own.set(key);
+  return own;
+}
 
 /** AES-256-GCM AEAD bound to one 32-byte key. A fresh CSPRNG 96-bit nonce per `seal`; `aad` is authenticated,
  * never stored. Nonce-reuse safety: the random-96-bit birthday bound is ~q²/2⁹⁷, negligible below ~2³² seals
@@ -25,9 +40,11 @@ export class NodeAead implements Aead {
   private readonly key: Buffer;
 
   constructor(key: Uint8Array) {
+    if (!isBytes(key))
+      throw new ValidationError('AEAD key must be a Uint8Array of key bytes, not text');
     if (key.length !== KEY_BYTES)
       throw new ValidationError(`AEAD key must be ${KEY_BYTES} bytes, got ${key.length}`);
-    this.key = Buffer.from(key);
+    this.key = ownKey(key);
   }
 
   seal(plaintext: Uint8Array, aad: Uint8Array): AeadSealed {
@@ -58,7 +75,7 @@ export class NodeAead implements Aead {
 /** Wrap/unwrap a DEK under a KEK with AES-256-GCM, binding the wrapping to its `keyId` via AAD so a wrapping
  * can't be relabelled to another KEK. Stored blob = nonce ‖ ciphertext ‖ tag, base64. */
 function wrapKey(dek: Uint8Array, kek: Uint8Array, keyId: string): string {
-  const sealed = new NodeAead(kek).seal(dek, new TextEncoder().encode(keyId));
+  const sealed = new NodeAead(kek).seal(dek, UTF8.encode(keyId));
   return Buffer.concat([sealed.nonce, sealed.ciphertext, sealed.tag]).toString('base64');
 }
 
@@ -69,7 +86,7 @@ function unwrapKey(wrapped: string, kek: Uint8Array, keyId: string): Uint8Array 
   const nonce = blob.subarray(0, NONCE_BYTES);
   const tag = blob.subarray(blob.length - TAG_BYTES);
   const ciphertext = blob.subarray(NONCE_BYTES, blob.length - TAG_BYTES);
-  return new NodeAead(kek).open({ nonce, ciphertext, tag }, new TextEncoder().encode(keyId));
+  return new NodeAead(kek).open({ nonce, ciphertext, tag }, UTF8.encode(keyId));
 }
 
 /**
@@ -97,14 +114,19 @@ export class InProcessKeystore implements IKeystore {
     const entries = Object.entries(options.keys);
     if (entries.length === 0) throw new ValidationError('keystore needs at least one KEK');
     for (const [id, k] of entries) {
+      // Text of the right length would pass the length check and become a key of printable characters, with no key
+      // derivation: an environment variable passed as it is.
+      if (!isBytes(k))
+        throw new ValidationError(`KEK "${id}" must be a Uint8Array of key bytes, not text`);
       if (k.length !== KEY_BYTES)
         throw new ValidationError(`KEK "${id}" must be ${KEY_BYTES} bytes, got ${k.length}`);
     }
-    if (!(options.activeKeyId in options.keys))
-      throw new ValidationError(`activeKeyId "${options.activeKeyId}" is not in keys`);
-    if (options.recoveryKeyId !== undefined && !(options.recoveryKeyId in options.keys))
-      throw new ValidationError(`recoveryKeyId "${options.recoveryKeyId}" is not in keys`);
-    this.keys = new Map(entries.map(([id, k]) => [id, Buffer.from(k)]));
+    this.keys = new Map(entries.map(([id, k]) => [id, ownKey(k)]));
+    // Membership is against the keys given, not the names an object inherits (`constructor`, `toString`).
+    if (!this.keys.has(options.activeKeyId))
+      throw new ValidationError(`activeKeyId "${String(options.activeKeyId)}" is not in keys`);
+    if (options.recoveryKeyId !== undefined && !this.keys.has(options.recoveryKeyId))
+      throw new ValidationError(`recoveryKeyId "${String(options.recoveryKeyId)}" is not in keys`);
     this.activeKeyId = options.activeKeyId;
     this.recoveryKeyId =
       options.recoveryKeyId === options.activeKeyId ? undefined : options.recoveryKeyId;
@@ -144,10 +166,11 @@ export class InProcessKeystore implements IKeystore {
     // A KEK WAS held but every held wrapping failed to unwrap → the wrapping(s) are corrupt/tampered, not
     // missing. Surface that integrity failure in its original type rather than masking it as "no held KEK".
     if (anyKekHeld) throw lastUnwrapError;
-    const have = [...this.keys.keys()].join(', ') || '(none)';
+    // The ids the wrappings name, not the ids this keystore holds: the message reaches ledgers and logs, and the held
+    // keys are not the reader's to see.
     const need = wrapped.map((w) => w.keyId).join(', ') || '(none)';
     throw new KeyUnavailableError(
-      `no held KEK can unwrap this DEK — have [${have}], wrappings reference [${need}]. ` +
+      `no held KEK can unwrap this DEK — the wrappings reference [${need}]. ` +
         `Restore the missing KEK (or its recovery KEK), or rebuild the segment from source.`,
     );
   }

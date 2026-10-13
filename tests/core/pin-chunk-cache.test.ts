@@ -1,4 +1,8 @@
 import { gcOrphanGenerations } from '@/core/generation-gc';
+vi.mock('@/core/crbm/reader', async (original) =>
+  (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
+);
+
 import {
   MemoryStorage,
   CloudRoaring,
@@ -14,12 +18,15 @@ import { SegmentEngine } from '@/core/engine';
 import { destroySegment } from '@/core/erasure';
 import { segmentKey } from '@/core/keys';
 import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
+import { rowVersionOf } from '@/core/crbm-storage-source';
+import type { PinnedObject } from '@/core/crbm-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { setSegmentRetention } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
+import { withoutRangedReads } from '../helpers/no-ranged-reads';
 
 /**
  * A pinned handle must only ever be handed chunks of the generation it pinned.
@@ -47,6 +54,15 @@ import { brandAsBackend } from '@/core/ports';
  * Every case but the sweep ends with the same check: dropping the store's derived state (`invalidate`) leaves the
  * pin reading correctly, since the bytes in the bucket were never wrong — only the cache entry was.
  */
+/**
+ * Every case here but the last describe reads chunk by chunk: the library's own sources are made to answer as a source
+ * that cannot read a range does, since a chunk-by-chunk read can describe two generations and so is the one the pin must be kept
+ * from (a stream of coalesced ranges describes two in the same places, and the last describe holds it to the same). A custom source without `getChunks` is read this way.
+ */
+const perKey = withoutRangedReads();
+beforeEach(perKey.off);
+afterEach(perKey.restore);
+
 const REF: SegmentRef = { segment: 's' };
 const TTL = 10;
 const C = 65_536; // ids per chunk: `C + r` lives in chunk 1, `2 * C + r` in chunk 2
@@ -536,7 +552,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
       { registry: w.backend.registry },
       { expiresAt: Date.now() + 86_400_000 },
     );
-    const after = await store.segment('s').pin(); // the same generation and object, under a new row token
+    const after = await store.segment('s').pin(); // the same generation and object: the row's token moved, its pointerId did not
     expect(await collect(before.intersect([after]))).toEqual([1, 2, 3]);
     await w.reload([9]);
     const other = await store.segment('s').pin();
@@ -561,24 +577,91 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     expect(await dest.count()).toBe(0);
   });
 
-  it.each([
-    ['without a fingerprint', {}],
-    ['with a null one', { fingerprint: null }],
-  ])('reads through a pin built by hand %s, which checks no object', async (_how, extra) => {
-    const backend = new MemoryStorage();
-    const { storage, registry } = backend;
-    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
-    const crbm = new CrbmStorageChunkSource(storage, { registry });
-    // Typed without a `fingerprint`: if the field became required, this file would stop compiling.
-    const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF), ...extra };
-    const engine = new SegmentEngine({
-      storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
-      codec: roaringCodec,
-    });
-    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, GEN1, { registry });
+  describe('a pin built by hand without the version and fingerprint of its object is refused', () => {
+    /** A one-generation store whose storage and registry reads are counted from the call it returns. */
+    const counted = async (withRegistry: boolean) => {
+      const backend = new MemoryStorage();
+      const { storage, registry } = backend;
+      const opts = withRegistry ? { registry } : {};
+      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, opts);
+      const crbm = new CrbmStorageChunkSource(storage, opts);
+      const pin = (await crbm.pinGeneration(REF))!;
+      crbm.invalidate(REF);
+      const reads = { storage: 0, registry: 0, lease: 0 };
+      const tail = storage.getTail.bind(storage);
+      storage.getTail = (key, maxBytes) => {
+        reads.storage += 1;
+        return tail(key, maxBytes);
+      };
+      const range = storage.getRange.bind(storage);
+      storage.getRange = (...args: Parameters<typeof storage.getRange>) => {
+        reads.storage += 1;
+        return range(...args);
+      };
+      const get = registry.get.bind(registry);
+      registry.get = (ref) => {
+        reads.registry += 1;
+        return get(ref);
+      };
+      const lease = {
+        take: () => {
+          reads.lease += 1;
+          return Promise.resolve('moved' as const);
+        },
+      };
+      return { crbm, pin, reads, lease };
+    };
 
-    expect(await engine.count(REF)).toBe(GEN0.length);
-    expect(await collect(engine.iterate(REF))).toEqual(GEN0);
+    it.each([
+      ['no fingerprint', (v: string) => ({ generation: 0, version: v })],
+      ['a null fingerprint', (v: string) => ({ generation: 0, version: v, fingerprint: null })],
+      ['a non-string fingerprint', (v: string) => ({ generation: 0, version: v, fingerprint: 7 })],
+      ['no version', (_v: string, f: string) => ({ generation: 0, fingerprint: f })],
+      [
+        'a null version',
+        (_v: string, f: string) => ({ generation: 0, version: null, fingerprint: f }),
+      ],
+    ])('the PinnedStorageChunkSource constructor refuses %s', async (_how, make) => {
+      const { crbm, pin, reads } = await counted(true);
+      const bad = make(pin.version, pin.fingerprint) as unknown as PinnedAt;
+      expect(() => new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), bad]]))).toThrow(
+        ValidationError,
+      );
+      expect(reads).toEqual({ storage: 0, registry: 0, lease: 0 });
+    });
+
+    it.each([
+      ['no fingerprint', (v: string) => ({ version: v })],
+      ['a null fingerprint', (v: string) => ({ version: v, fingerprint: null })],
+      ['a non-string fingerprint', (v: string) => ({ version: v, fingerprint: 7 })],
+      ['no version', (_v: string, f: string) => ({ fingerprint: f })],
+      ['neither', () => ({})],
+    ])('a pinned read refuses a held object with %s, before any read', async (_how, make) => {
+      for (const withRegistry of [true, false]) {
+        const { crbm, pin, reads } = await counted(withRegistry);
+        const held = make(pin.version, pin.fingerprint) as unknown as PinnedObject;
+        await expect(crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, held)).rejects.toThrow(
+          ValidationError,
+        );
+        await expect(crbm.listChunkKeysAt(REF, 0, held)).rejects.toThrow(ValidationError);
+        await expect(crbm.cardinalitiesAt(REF, 0, held)).rejects.toThrow(ValidationError);
+        expect(reads).toEqual({ storage: 0, registry: 0, lease: 0 });
+      }
+    });
+
+    it.each([
+      ['no fingerprint', (g: number) => ({ generation: g })],
+      ['a null fingerprint', (g: number) => ({ generation: g, fingerprint: null })],
+      ['a non-string fingerprint', (g: number) => ({ generation: g, fingerprint: 7 })],
+      ['no pin at all', () => undefined],
+    ])('pinGenerationAt refuses %s before the row, the lease or the object', async (_how, make) => {
+      for (const withRegistry of [true, false]) {
+        const { crbm, reads, lease } = await counted(withRegistry);
+        const at = make(0) as unknown as { generation: number; fingerprint: string };
+        await expect(crbm.pinGenerationAt(REF, at, lease)).rejects.toThrow(ValidationError);
+        expect(reads).toEqual({ storage: 0, registry: 0, lease: 0 });
+      }
+    });
   });
 
   it("retries pin()'s own read of the row, as the store's reads are retried", async () => {
@@ -872,15 +955,20 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
     const crbm = new CrbmStorageChunkSource(storage, { registry });
-    const version = await crbm.currentVersion(REF);
-    expect(version).not.toBeNull();
+    const live = await crbm.currentVersion(REF);
+    expect(live).not.toBeNull();
+    const version = rowVersionOf(live!);
+    const fingerprint = '1:1'; // never compared: the row is gone
     await registry.delete(REF);
     // A bare read of a generation is a lookup, and one with no row reads empty. A pin's read of it fails, since a
     // pin that went empty part-way through a call would have torn it.
     expect(await crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0)).toBeNull();
     expect(await crbm.listChunkKeysAt(REF, 0)).toEqual([]);
     await expect(
-      crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, { version: version! }),
+      crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, {
+        version,
+        fingerprint,
+      }),
     ).rejects.toThrow(NotFoundError);
   });
 
@@ -1313,20 +1401,6 @@ describe('what a pin says when its object changes under it, and what pinning cos
     expect(await snap.has(C + 1)).toBe(true);
   });
 
-  it("cannot tell a replacement without a fingerprint, so a pin built by hand without one keeps the chunk's error", async () => {
-    const w = await purgeable(OLD);
-    const crbm = new CrbmStorageChunkSource(w.backend.storage, { registry: w.backend.registry });
-    const version = await crbm.currentVersion(REF);
-    const pin: PinnedAt = { generation: 0, version: version! };
-    const engine = new SegmentEngine({
-      storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
-      codec: roaringCodec,
-    });
-    expect(await engine.has(REF, 1)).toBe(true); // opens the old object, under the pin's version
-    await w.reload(NEW);
-    await expect(engine.has(REF, C + 1)).rejects.toThrow(IntegrityError);
-  });
-
   it('reads with the reader pin() opened, with no second tail read, on a store with no registry', async () => {
     const storage = new MemoryStorage().storage;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD);
@@ -1374,7 +1448,12 @@ describe('what a pin found out about its object, and how it forgets', () => {
   const NEW = [1, 2, C + 3, C + 4, 2 * C + 3];
   const NOT_PINNED = /no longer the object this handle pinned/;
 
-  /** A backend holding OLD as generation 0 of `s`, and a store on it: with its registry, or on its bare storage. */
+  /**
+   * A backend holding OLD as generation 0 of `s`, and a store on it: with its registry, or on its bare storage. The row
+   * carries no summary, so it names no object: a pin taken of it opens whatever is under the key, which is what these
+   * cases hold a pin's own bookkeeping to. Under a row whose summary names the object, a pin of another object under
+   * the number is refused (`tests/core/live-read-row-fingerprint.test.ts`).
+   */
   async function stored(withRegistry: boolean) {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
@@ -1384,6 +1463,10 @@ describe('what a pin found out about its object, and how it forgets', () => {
       OLD,
       withRegistry ? { registry } : undefined,
     );
+    if (withRegistry) {
+      const row = (await registry.get(REF))!;
+      await registry.compareAndSwap(REF, row.token, { summary: undefined });
+    }
     const store = new CloudRoaring({ storage: withRegistry ? backend : storage });
     return { storage, store, mine: await wholeOf(storage) };
   }
@@ -1478,27 +1561,6 @@ describe('what a pin found out about its object, and how it forgets', () => {
     store.invalidate(REF);
     const second = await store.segment('s').pin();
     expect([await second.count(), await collect(second.iterate())]).toEqual([NEW.length, NEW]);
-  });
-
-  it('applies nothing it found to a pin built by hand with no fingerprint, which reads what is under its key', async () => {
-    const backend = new MemoryStorage();
-    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
-      registry: backend.registry,
-    });
-    const crbm = new CrbmStorageChunkSource(backend.storage, { registry: backend.registry });
-    const pinned = await crbm.pinGeneration(REF);
-    await putObject(backend.storage, await objectOf(NEW));
-    crbm.invalidate(REF);
-    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, pinned!)).rejects.toThrow(NOT_PINNED);
-    const byHand = { version: pinned!.version };
-    expect(await crbm.cardinalitiesAt(REF, 0, byHand)).toEqual(
-      new Map([
-        [0, 2],
-        [1, 2],
-        [2, 1],
-      ]),
-    );
-    expect(await crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, byHand)).not.toBeNull();
   });
 
   it.each([
@@ -1656,12 +1718,17 @@ describe('what a pin found out about its object, and how it forgets', () => {
     await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
     expect(await snap.has(C + 1)).toBe(true);
   });
-  /** A backend holding OLD as generation 0 of `s` with its registry, and a store over it whose calls are recorded. */
+  /**
+   * A backend holding OLD as generation 0 of `s` with its registry, and a store over it whose calls are recorded. The
+   * row of `s` carries no summary, so it names no object, as in `stored`.
+   */
   async function recorded(cache?: CacheOptions) {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
       registry: backend.registry,
     });
+    const row = (await backend.registry.get(REF))!;
+    await backend.registry.compareAndSwap(REF, row.token, { summary: undefined });
     await bulkLoadCrbmGeneration(backend.storage, { segment: 'other', generation: 0 }, [7], {
       registry: backend.registry,
     });
@@ -1861,39 +1928,6 @@ describe('what a pin found out about its object, and how it forgets', () => {
     await expect(snap.has(2 * C + 1)).rejects.toThrow(NOT_PINNED);
   });
 
-  it('pays for no footer read for a pin built with no fingerprint, on a chunk read or on a reopen', async () => {
-    const backend = new MemoryStorage();
-    const { storage, registry } = backend;
-    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
-    const crbm = new CrbmStorageChunkSource(storage, { registry });
-    const pinned = await crbm.pinGeneration(REF);
-    const byHand = { version: pinned?.version ?? '' };
-    let tails = 0;
-    const tail = storage.getTail.bind(storage);
-    storage.getTail = (key, maxBytes) => {
-      tails += 1;
-      return tail(key, maxBytes);
-    };
-    storage.getRange = () => Promise.reject(new IntegrityError('bad bytes'));
-    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, byHand)).rejects.toThrow('bad bytes');
-    expect(tails).toBe(0);
-    crbm.invalidate(REF);
-    tails = 0;
-    let damaged = 1;
-    storage.getTail = async (key, maxBytes) => {
-      tails += 1;
-      const got = await tail(key, maxBytes);
-      if (damaged-- <= 0) return got;
-      const bytes = Uint8Array.from(got.bytes);
-      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; // the reopen reads a damaged footer
-      return { bytes, size: got.size };
-    };
-    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, byHand)).rejects.toThrow(
-      IntegrityError,
-    );
-    expect(tails).toBe(1); // the reopen's own tail read, and no check after it
-  });
-
   it.each(['NotFoundError', 'TransientError'] as const)(
     "makes no footer read when a reopen fails with another copy of core's %s",
     async (name) => {
@@ -1992,6 +2026,9 @@ describe('what a pin found out about its object, and how it forgets', () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    // A row with no summary names no object, so a pin opens whatever is under the key (see `stored`).
+    const row = (await registry.get(REF))!;
+    await registry.compareAndSwap(REF, row.token, { summary: undefined });
     const source = new CrbmStorageChunkSource(storage, { registry });
     const held = await source.pinGeneration(REF);
     if (held === null) throw new Error('no pin');
@@ -2071,5 +2108,200 @@ describe('what a pin found out about its object, and how it forgets', () => {
     calls.length = 0;
     expect(await next.has(C + 3)).toBe(true);
     expect(calls).toEqual(['storage.getRange']);
+  });
+});
+
+describe('a stream of coalesced ranges moves to the current generation where a read of one chunk would, and a pin is never handed its chunks', () => {
+  beforeEach(perKey.restore); // the library's own sources read ranges again
+
+  it('iterate: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) {
+        await w.publishGen1();
+        w.clock.advance(TTL);
+      }
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('iterate: a reader-cache eviction mid-read moves the rest of the read to generation 1 too', async () => {
+    const w = await world({ cache: { genTtlMs: 0, readerMax: 1 } });
+    await bulkLoadCrbmGeneration(w.storage, { segment: 'other', generation: 0 }, [7], {
+      registry: w.registry,
+    });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) {
+        await w.publishGen1();
+        expect(await w.store.segment('other').has(7)).toBe(true); // evicts this segment's reader
+      }
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it("iterate: the store's own load, which invalidates the segment mid-read, moves the rest of the read to generation 1", async () => {
+    const w = await world({ cache: { genTtlMs: 0 } });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) await w.store.load(REF, GEN1);
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('intersect: a publish and a TTL lapse mid-read move the rest of the read to generation 1', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    await bulkLoadCrbmGeneration(
+      w.storage,
+      { segment: 'other', generation: 0 },
+      [...GEN0, ...GEN1],
+      {
+        registry: w.registry,
+      },
+    );
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    for await (const id of w.store
+      .segment('s')
+      .intersect([w.store.segment('other')], { concurrency: 1 })) {
+      live.push(id);
+      if (live.length === 1) {
+        await w.publishGen1();
+        w.clock.advance(TTL);
+      }
+    }
+    // Chunk 1 was already taken by the read's window of one key when the publish landed, as in a read of it alone.
+    expect(live).toEqual([1, 2, 3, C + 10, C + 11, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('a live read that opens after the TTL lapses reads the new generation, and the pin still reads its own', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap = await w.store.segment('s').pin();
+    await w.publishGen1();
+    w.clock.advance(TTL);
+    expect(await collectIds(w.store.segment('s').iterate())).toEqual(GEN1);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('a read planned after the store learned of a publish reads and caches generation 1, and the pin keeps its own', async () => {
+    // The live resolve says generation 0; by the time the source answers the generation is 1. The newer chunks must
+    // not sit under the older version\'s key, where a pin of generation 0 would find them.
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap = await w.store.segment('s').pin();
+    const live = w.store.segment('s');
+    expect(await live.has(1)).toBe(true); // resolves generation 0 on this store
+    await w.publishGen1();
+    w.store.invalidate(REF); // a store that learned of the change; a read now plans under generation 1
+    expect(await collectIds(live.iterate())).toEqual(GEN1);
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
+  it('a generation swept after the stream has its range changes nothing for the read, and the pin fails rather than answer from the next', async () => {
+    const w = await world({ cache: { genTtlMs: TTL }, ...{} });
+    const snap = await w.store.segment('s').pin();
+    const live: number[] = [];
+    let swept = false;
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (!swept && live.length === 1) {
+        swept = true;
+        await w.publishGen1();
+        await gcOrphanGenerations(REF, { storage: w.storage, registry: w.registry }, { keep: 0 });
+      }
+    }
+    // The chunks are one range, already read: the stream finishes on generation 0 without needing the object again.
+    expect(live).toEqual(GEN0);
+    await expect(snap.has(2 * C + 30)).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+async function collectIds(stream: AsyncIterable<number>): Promise<number[]> {
+  const out: number[] = [];
+  for await (const id of stream) out.push(id);
+  return out;
+}
+
+describe('a read of a generation with no pin held', () => {
+  const OLD3 = [1, 2, 65_536 + 1, 65_536 + 2, 2 * 65_536 + 1];
+
+  it('pays for no footer read when its chunk or its reopen fails, and keeps its own error', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD3, { registry });
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0)).not.toBeNull(); // opens its reader
+    let tails = 0;
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      return tail(key, maxBytes);
+    };
+    const range = storage.getRange.bind(storage);
+    storage.getRange = () => Promise.reject(new IntegrityError('bad bytes'));
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0)).rejects.toThrow('bad bytes');
+    expect(tails).toBe(0);
+    storage.getRange = range;
+    crbm.invalidate(REF);
+    tails = 0;
+    let damaged = 1;
+    storage.getTail = async (key, maxBytes) => {
+      tails += 1;
+      const got = await tail(key, maxBytes);
+      if (damaged-- <= 0) return got;
+      const bytes = Uint8Array.from(got.bytes);
+      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; // the reopen reads a damaged footer
+      return { bytes, size: got.size };
+    };
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0)).rejects.toThrow(IntegrityError);
+    expect(tails).toBe(1); // the reopen's own tail read, and no check after it
+  });
+
+  it('pays for no footer read when a chunk of its stream fails, and keeps its own error', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD3, { registry });
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    expect(await crbm.listChunkKeysAt(REF, 0)).toEqual([0, 1, 2]); // opens its reader
+    let tails = 0;
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      return tail(key, maxBytes);
+    };
+    storage.getRange = () => Promise.reject(new IntegrityError('bad bytes'));
+    const read = async (): Promise<void> => {
+      for await (const chunk of crbm.getChunksAt(REF, 0, [0, 1, 2])) void chunk;
+    };
+    await expect(read()).rejects.toThrow('bad bytes');
+    expect(tails).toBe(0);
   });
 });

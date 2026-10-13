@@ -10,7 +10,9 @@ pnpm-lock.yaml
 # pre-commit hook would do without asking — would leave a file that is no longer the one the run wrote. The same holds
 # for the rehearsals the bench tests read, which a test holds to the harness's own formatting byte for byte.
 bench/calibration/*.json
+bench/calibration/large/*.json
 tests/bench/fixtures/calibration-rehearsal*.json
+tests/bench/fixtures/calibration-large-rehearsal.json
 
 # Markdown is hand-formatted (ASCII diagrams, alignment) — Prettier would mangle it.
 **/*.md

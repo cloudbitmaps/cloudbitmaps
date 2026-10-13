@@ -6,22 +6,92 @@
  * already exists — so a generation can never be silently overwritten (hard invariant 2), and a crash
  * leaves only an orphan temp file, never a torn object. Drivers do filesystem I/O and may use `node:crypto`; only `core/`
  * is bound by the determinism lint.
+ *
+ * **It has no conditional delete (`conditionalDelete: false`), and `delete` ignores `ifVersion`.** A filesystem offers
+ * no unlink conditioned on which file is under the path: a check by `stat` and then an `unlink` is two steps, and another
+ * writer can replace the file between them. Nor does `stat` name a file across a delete and a re-create: inode numbers
+ * are reused once a file is unlinked, and timestamps are coarser than two writes in a row, so a version built from them
+ * could match a file put under the path since. A lock in this process would close the gap between the two steps, but
+ * there would still be no identity to compare, so the driver does not claim the capability. `getTail` reports no version.
  */
 import { constants as FS } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { link, open, readdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { BlobSink } from '@/core/blob';
-import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
-import { storageObjectPath, parseGeneration, segmentsDir } from './paths';
-import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
+import {
+  IntegrityError,
+  NotFoundError,
+  TransientError,
+  ValidationError,
+  WriteConflictError,
+} from '@/core/errors';
+import { checkTailLength, type BlobSink } from '@/core/blob';
+import type {
+  StorageCaps,
+  GenKey,
+  IStorageDriver,
+  SegmentRef,
+  StorageDeleteOptions,
+  TailRead,
+} from '@/core/ports';
+import { requireInteger } from '@/core/check';
+import { assertStorageNamesFit, storageObjectPath, parseGeneration, segmentsDir } from './paths';
+import { ExactCase } from './exact-case';
+import {
+  FILE_MODE,
+  O_NOFOLLOW,
+  fsyncDir,
+  makeDirs,
+  sweepOrphanTemps,
+  tempPathFor,
+  isAbsent,
+  isCode,
+  mapFsError,
+  writeAll,
+} from './fs-util';
+
+/** Read exactly `length` bytes at `offset`, or throw: a short read is never returned zero-padded as real bytes. */
+async function readWhole(
+  handle: Awaited<ReturnType<typeof open>>,
+  key: GenKey,
+  length: number,
+  offset: number,
+): Promise<Uint8Array> {
+  const buf = new Uint8Array(length);
+  let filled = 0;
+  while (filled < length) {
+    const { bytesRead } = await handle.read(buf, filled, length - filled, offset + filled);
+    if (bytesRead === 0) {
+      throw new IntegrityError(
+        `short read of ${key.segment}.${key.generation}: wanted ${length}B at ${offset}, got ${filled}B`,
+      );
+    }
+    filled += bytesRead;
+  }
+  return buf;
+}
 
 export class LocalFsStorageDriver implements IStorageDriver {
-  constructor(private readonly root: string) {}
+  private readonly exactCase: ExactCase;
+
+  /**
+   * `options.privateRoot` is the directory this one lives under, from which down directories are created private; it
+   * defaults to `root`.
+   */
+  constructor(
+    private readonly root: string,
+    private readonly options: { readonly privateRoot?: string } = {},
+  ) {
+    this.exactCase = new ExactCase(root);
+  }
 
   capabilities(): StorageCaps {
-    return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: false };
+    return {
+      rangeRead: true,
+      maxObjectBytes: Number.MAX_SAFE_INTEGER,
+      conditionalPut: false,
+      conditionalDelete: false,
+    };
   }
 
   async putImmutable(
@@ -29,16 +99,23 @@ export class LocalFsStorageDriver implements IStorageDriver {
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
     const finalPath = storageObjectPath(this.root, key);
-    await mkdir(dirname(finalPath), { recursive: true });
+    assertStorageNamesFit(key);
+    await this.exactCase.refuseVariant(finalPath);
+    await makeDirs(dirname(finalPath), this.options.privateRoot ?? this.root);
+    void sweepOrphanTemps(dirname(finalPath));
 
-    const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
+    const tmpPath = tempPathFor(finalPath);
     // 'wx' = O_CREAT|O_EXCL|O_WRONLY; add O_NOFOLLOW so a pre-planted symlink can't redirect the write.
-    const handle = await open(tmpPath, FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW);
+    const handle = await open(
+      tmpPath,
+      FS.O_CREAT | FS.O_EXCL | FS.O_WRONLY | O_NOFOLLOW,
+      FILE_MODE,
+    );
     const hash = createHash('sha256');
     let size = 0;
     const sink: BlobSink = {
       async write(bytes) {
-        await handle.write(bytes);
+        await writeAll(handle, bytes);
         hash.update(bytes);
         size += bytes.length;
       },
@@ -59,6 +136,15 @@ export class LocalFsStorageDriver implements IStorageDriver {
       await link(tmpPath, finalPath);
     } catch (err) {
       await unlink(tmpPath).catch(() => {});
+      if (isCode(err, 'ENOENT')) {
+        // The temp file is gone: a sweep or an operator removed it while the write was open. Nothing was published.
+        throw new TransientError(
+          `the temporary file of ${key.segment}.${key.generation} was removed mid-write`,
+          {
+            cause: err,
+          },
+        );
+      }
       if (isCode(err, 'EEXIST')) {
         // A generation is write-once; a collision is a concurrency/state condition, not bad input.
         // Identify it by the logical key only — never leak the absolute filesystem path.
@@ -74,9 +160,8 @@ export class LocalFsStorageDriver implements IStorageDriver {
   }
 
   async getRange(key: GenKey, offset: number, length: number): Promise<Uint8Array> {
-    if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
-      throw new ValidationError(`invalid range offset=${offset} length=${length}`);
-    }
+    requireInteger(offset, { min: 0, what: 'range offset' });
+    requireInteger(length, { min: 0, what: 'range length' });
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();
@@ -85,41 +170,46 @@ export class LocalFsStorageDriver implements IStorageDriver {
           `range [${offset}, ${offset + length}) out of bounds for ${size}B`,
         );
       }
-      const buf = Buffer.alloc(length);
-      if (length > 0) await handle.read(buf, 0, length, offset);
-      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      return await readWhole(handle, key, length, offset);
     } finally {
       await handle.close();
     }
   }
 
-  async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
+  async getTail(key: GenKey, maxBytes: number): Promise<TailRead> {
+    checkTailLength(maxBytes);
     const handle = await this.openRead(key);
     try {
       const { size } = await handle.stat();
       const take = Math.min(Math.max(maxBytes, 0), size);
-      const buf = Buffer.alloc(take);
-      if (take > 0) await handle.read(buf, 0, take, size - take);
-      return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), size };
+      return { bytes: await readWhole(handle, key, take, size - take), size };
     } finally {
       await handle.close();
     }
   }
 
-  async delete(key: GenKey): Promise<void> {
+  /**
+   * Idempotent. Ignores `options.ifVersion`, as `conditionalDelete: false` says: see the note on the class for why it
+   * cannot apply one. The parameter is declared so that a wrapper of this driver can hand the port's options on.
+   */
+  async delete(key: GenKey, options?: StorageDeleteOptions): Promise<void> {
+    void options;
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
-    await unlink(storageObjectPath(this.root, key)).catch((err) => {
-      if (!isCode(err, 'ENOENT')) throw mapFsError(err);
+    const path = storageObjectPath(this.root, key);
+    if (await this.exactCase.differs(path)) return; // another case's object is not this one
+    await unlink(path).catch((err) => {
+      if (!isAbsent(err)) throw mapFsError(err);
     });
   }
 
   async *list(ref: SegmentRef): AsyncIterable<GenKey> {
     const dir = segmentsDir(this.root, ref);
+    if (await this.exactCase.differs(dir)) return; // another case's directory is not this one
     let names: string[];
     try {
       names = await readdir(dir);
     } catch (err) {
-      if (isCode(err, 'ENOENT')) return; // no generations yet
+      if (isAbsent(err)) return; // no generations yet
       throw mapFsError(err);
     }
     for (const name of names) {
@@ -131,10 +221,15 @@ export class LocalFsStorageDriver implements IStorageDriver {
   }
 
   private async openRead(key: GenKey): Promise<Awaited<ReturnType<typeof open>>> {
+    const path = storageObjectPath(this.root, key);
+    // Another case's object is not this one: absent, as if nothing were stored under this name.
+    if (await this.exactCase.differs(path)) {
+      throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
+    }
     try {
-      return await open(storageObjectPath(this.root, key), FS.O_RDONLY | O_NOFOLLOW);
+      return await open(path, FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
-      if (isCode(err, 'ENOENT')) {
+      if (isAbsent(err)) {
         throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);
       }
       // A symlink at the object path is rejected (ELOOP) — treat as not-found, don't follow it.

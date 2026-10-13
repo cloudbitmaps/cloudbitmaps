@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/core';
+import { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/tools';
 
 /**
  * A join on the instance type and the engine looks unique and is not. A node type has several products, and the
@@ -296,7 +296,7 @@ function priceCheck(
   };
   const modules: Record<string, unknown> = {
     'node:fs': fs,
-    '@cloudbitmaps/core': { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: catalogue },
+    '@cloudbitmaps/tools': { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: catalogue },
   };
   const lines: string[] = [];
   const log = (...a: unknown[]): void => {
