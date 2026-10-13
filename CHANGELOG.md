@@ -22,6 +22,18 @@ so, and so do the module headers in the code.
   from different CloudShell sessions are not comparable, so none is set against another's. Both READMEs, the
   benchmarks page, the roadmap, the guides and the site quote it.
 
+### Fixed
+
+- **The privacy notes list everything the registry and the object store hold.** `PRIVACY.md` now says that every
+  registry row carries the ledger of known generations in the clear, an encrypted row included (each generation's number
+  and its object's footer checksum); that a row's summary records the object's tail size; and that every generation
+  object an S3, GCS or Azure Blob driver writes carries the random write id `cbwid`, not only an Azure Blob object or a
+  large GCS upload. A data-protection inventory taken from the earlier text missed all three.
+- **The export guide's sample sink is flagged as unsafe for names you do not control.** It builds paths with
+  `encodeURIComponent`, which leaves `.`, `..` and Windows device names as they are, so a namespace named `..` would
+  write outside `dump`. The guide now says so and points to `encodeNameForPath`, which the `export-segments` command
+  uses.
+
 ## [0.21.0] — 2026-10-13
 
 ### Breaking
