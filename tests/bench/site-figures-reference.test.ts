@@ -147,14 +147,14 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
   it.each([
     [
       'a derived figure its arithmetic does not give',
-      '<td>$11.60</td>',
       '<td>$11.20</td>',
+      '<td>$11.30</td>',
       'table of what comes out, row 3, reads',
     ],
     [
       'an operand the figure beside it does not follow from',
-      '204 GETs × $0.40',
-      '205 GETs × $0.40',
+      '6 GETs × $0.40',
+      '7 GETs × $0.40',
       'table of what comes out, row 2, reads',
     ],
     [
@@ -183,8 +183,8 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ],
     [
       'a licence package.json does not have',
-      'CloudBitmaps · v0.14.0 · Apache-2.0',
-      'CloudBitmaps · v0.14.0 · MIT',
+      'CloudBitmaps · v0.21.0 · Apache-2.0',
+      'CloudBitmaps · v0.21.0 · MIT',
       'states the licence MIT',
     ],
     [
@@ -283,8 +283,8 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ],
     [
       "the previous release's version in the footer",
-      'CloudBitmaps · v0.14.0 · Apache-2.0',
-      'CloudBitmaps · v0.13.0 · Apache-2.0',
+      'CloudBitmaps · v0.21.0 · Apache-2.0',
+      'CloudBitmaps · v0.20.0 · Apache-2.0',
       'footer reads',
     ],
     [
@@ -452,7 +452,7 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
 
   it("does not read a check's element copied into the title, which no reader sees as markup", () => {
     const eyebrow =
-      '<p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.14.0</span></p>';
+      '<p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.21.0</span></p>';
     const r = siteFigures('site-next', {
       [PAGE]: html
         .replace(eyebrow, () => '<p class="label is-x">Distributed, cloud-native bitmaps</p>')
