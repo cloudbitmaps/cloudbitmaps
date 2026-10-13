@@ -1464,7 +1464,7 @@ function checkHome(ctx) {
   const hours = Number(/const HOURS_PER_MONTH = (\d+);/.exec(costSrc)?.[1] ?? NaN);
   if (!prices || !Number.isFinite(hours)) {
     fail(
-      'core/cost.ts no longer states the us-east-1 prices or HOURS_PER_MONTH in the form this check reads',
+      'tools/src/cost.ts no longer states the us-east-1 prices or HOURS_PER_MONTH in the form this check reads',
     );
     return;
   }
@@ -1488,7 +1488,7 @@ function checkHome(ctx) {
       [
         ['The reference set', 'chosen · at rest, no traffic', `${sizeGiB} GiB`],
         [
-          `GETs per cold A ∩ B, ${sb?.chunksPerOperand} chunks shared`,
+          `GETs per cold A ∩ B, ${sb?.chunksFetched} chunks shared`,
           `measured · the median of ${sb?.intersects} cold intersects on S3 in ${sb?.region}, from a client ` +
             `${sb?.remote ? 'outside' : 'inside'} it`,
           String(gets),
@@ -1672,10 +1672,9 @@ function checkHome(ctx) {
     ],
     [
       'Latency is one run on one client',
-      `A cold intersect sharing ${sb?.chunksPerOperand} chunks took ${latencyP50} ms at the median from ` +
+      `A cold intersect sharing ${sb?.chunksFetched} chunks took ${latencyP50} ms at the median from ` +
         `${sb?.remote ? 'outside' : 'inside'} ${sb?.region}, in the run of ${sb?.runId.slice(0, 10)} with a client of ` +
-        `${sbRun?.measured?.maxSockets} sockets. The client this release builds allows 128, and what that changes is ` +
-        `not measured. ${intersectMs} ms is the recorded run on the in-memory drivers, not a round trip to a bucket.`,
+        `${sbRun?.measured?.maxSockets} sockets. ${intersectMs} ms is the recorded run on the in-memory drivers, not a round trip to a bucket.`,
     ],
     [
       'The prices are AWS list prices, in us-east-1',

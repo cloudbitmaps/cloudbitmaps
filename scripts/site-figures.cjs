@@ -605,7 +605,10 @@ for (const page of PAGES) {
       const blocks = [
         ...withoutComments.matchAll(/<(p|li|tr|h[1-6]|figcaption)\b[^>]*>([\s\S]*?)<\/\1>/g),
       ].map((m) => homeFigures.scanText(m[2]).replace(/\s+/g, ' '));
-      for (const block of blocks.filter((b) => /\bcold\b/i.test(b) && /A ∩ B/.test(b))) {
+      // A sentence is the unit: a row that goes on to say what an andNot or an iterate makes states those counts
+      // beside a cold intersect's, and they are held by the expected-figures anchors, not by this check.
+      const sentences = blocks.flatMap((b) => b.split(/(?<=[.!?;])\s+(?=[A-Z])/));
+      for (const block of sentences.filter((b) => /\bcold\b/i.test(b) && /A ∩ B/.test(b))) {
         for (const m of block.matchAll(/(?<![\d.,$])(\d[\d,]*) ?GETs\b/g)) {
           if (!gets.has(`${m[1]} GETs`)) {
             fail(
@@ -1046,7 +1049,11 @@ const specAnchors = [];
       scale: JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8')),
       sb: singleBucket,
       sbRun: singleBucketRun,
-      sbFigure: singleBucketFigure,
+      // The load's per-million is the engine's expected figure, which the anchors list; the run's own are its measured ones.
+      sbFigure: (name) =>
+        name.startsWith('expected · ')
+          ? (anchors.find(([n]) => n === name)?.[1] ?? null)
+          : singleBucketFigure(name),
       MEASURED_1M,
       WRITE_1M,
       baselineTopology,
@@ -1082,11 +1089,17 @@ const specAnchors = [];
       ['Reserved RAM, standing', `$${results.redisBaselineUSD} /mo`],
       [`${results.atRest.sizeGiB} GiB at rest, no traffic`, `$${atRestShown} /mo`],
       [/^Share of (?:a Redis node|the Redis cluster)$/, `${results.atRest.pctOfRedis}%`],
-      [`1M cold A ∩ B, ${sb?.chunksPerOperand} chunks shared`, singleBucketFigure(MEASURED_1M)],
-      ['1M single-part loads · store.load(), pointer included', singleBucketFigure(WRITE_1M)],
+      [
+        `1M cold A ∩ B, ${sb?.chunksFetched} chunks shared · measured GETs, list price`,
+        singleBucketFigure(MEASURED_1M),
+      ],
+      [
+        "1M segments' first single-part loads · store.load(), pointer included · requests measured, list price",
+        anchors.find(([n]) => n === WRITE_1M)?.[1] ?? null,
+      ],
       ['Crossover, in GETs', `${results.readCrossoverPerSec.toFixed(2)} /s`],
       [
-        `…as cold A ∩ B, ${sb?.measuredGets} GETs each`,
+        `…as cold A ∩ B, ${sb?.measuredGets} GETs each · derived`,
         `${sb?.parity.intersectsPerSec.toFixed(1)} /s`,
       ],
     ];
