@@ -288,7 +288,7 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of at least 1 bytes, with
+- **A `CrbmStorageChunkSource` refuses a `maxIndexBytes` that is not a whole number of bytes above zero, with
   `ValidationError`.** A `NaN` (an unset variable passed through `Number()`) used to switch the cap on an index off
   without a word, and a fractional one made the cap compare oddly; now either is refused when the source is built, the
   way a bad `cache.genTtlMs` is. The sized tail read a cold open makes is held to the same bound, and a bound that

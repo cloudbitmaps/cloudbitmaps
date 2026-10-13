@@ -364,8 +364,8 @@ export async function openChecked(
  * The number came from a registry the library may not have written, so it only ever sizes a read: never below the
  * source's own tail, at most the object less its preamble (the size its fingerprint names), and at most the source's
  * `maxIndexBytes` (or the default) plus an extension block, its trailer and the footer, the most any open reads past
- * its own tail. A hint that is not a whole number of bytes above zero is ignored, and so is a result that is not one. A wrong hint is a longer read or one
- * more range read, never a different answer: the reader checks every byte it takes.
+ * its own tail. A hint that is not a whole number of bytes above zero is ignored, and so is a result that is not one. A
+ * wrong hint is a longer read or one more range read, never a different answer: the reader checks every byte it takes.
  */
 export function sizedTailBytes(
   summary: Pick<SummaryDescription, 'fingerprint' | 'tailBytes'> | undefined,

@@ -299,10 +299,10 @@ function canonicalOrNone(metadata: GenerationMetadata | undefined): string | und
 
 /**
  * Whether a summary's description of a generation is what its object holds: the same id count and the same metadata,
- * compared in canonical form, so key order never matters, and the same `tailBytes` when both say one (a cold open
- * sizes its tail read from the row's, so a number the object does not bear out is not believed again). A summary with metadata over an object with none, and the
- * reverse, disagree: whether an encrypted object's metadata block is present is not authenticated (stripping it needs
- * no key), so the row's sealed copy is what a missing block is held against.
+ * compared in canonical form, so key order never matters, and the same `tailBytes` when both say one (a cold open sizes
+ * its tail read from the row's, so a number the object does not bear out is not believed again). A summary with
+ * metadata over an object with none, and the reverse, disagree: whether an encrypted object's metadata block is present
+ * is not authenticated (stripping it needs no key), so the row's sealed copy is what a missing block is held against.
  */
 export function summaryAgrees(
   summary: GenerationDescription,

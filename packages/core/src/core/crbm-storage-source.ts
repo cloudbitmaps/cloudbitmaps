@@ -1592,8 +1592,9 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * generation whose index is longer than the default tail comes in the one read, with no range read for the index
    * after it. Only a summary this process still believes sizes a read ({@link trustedSummary}): one found to disagree
    * with its object is not used again, so a wrong number costs one extra read for the process, not for each open. An
-   * encrypted generation is not sized: its summary is sealed under the key, so sizing from it would send the tail
-   * read after the key, which the early read above avoids where no earlier step has already waited for the key (a cold `has()` has).
+   * encrypted generation is not sized: its summary is sealed under the key, so sizing from it would send the tail read
+   * after the key, which the early read above avoids where no earlier step has already waited for the key (a cold
+   * `has()` has).
    */
   private async openLive(ref: SegmentRef, live: Live): Promise<CrbmReader> {
     const wrapped = live.target.wrappedDeks;
