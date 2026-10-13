@@ -511,7 +511,8 @@ describe('a load collects around a lease', () => {
     await loadMany(w, 1, { keep: 1 });
     const row = (await w.registry.get(SEG))!;
     expect(await generations(w.memory)).toEqual([0, 2, 3]);
-    // The ledger holds the leased generation 0 beside the window, so it stays a rollback target while its lease lives.
+    // Main: [2]. The ledger holds the leased generation 0 beside the window, so it stays a rollback target while its lease
+    // lives.
     expect(windowOf(row)).toEqual([0, 2]);
   });
 

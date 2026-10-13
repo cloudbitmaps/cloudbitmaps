@@ -478,12 +478,19 @@ reads and one delete for collection at any `keep` up to 64, not a listing: on S3
 2 PUT-class requests, 5 GET-class and a delete, 8 requests, with the delete free ([what each term
 counts](cost.md#what-each-term-counts)). The window is drawn from the order in the ledger, so the generation the
 publish superseded, which was current, comes first, then the ones made current before it. A publish over a row that has
-no usable ledger (a registry repaired by hand, a row restored without its ledger, or one
-whose ledger names more than 64 generations below the pointer that no lease holds, as a `keep` above 64 leaves)
+no usable ledger (a registry repaired by hand, or a row restored without its ledger)
 starts a ledger from the bucket instead (the first publish of an incarnation, over no row or a row with no pointer, writes
 the new generation alone): the generations a count by `keep` keeps, with the live-leased ones beside them,
 which can include a number a refused or crashed load took, and the publishes after it carry that number until the
-window pushes it out ([below](#how-it-stays-correct)).
+window pushes it out ([below](#how-it-stays-correct)). A usable ledger is never started again, however wide: one that
+names more than 64 generations below the pointer that no lease holds (a `keep` above 64 leaves up to 127) keeps its
+order, the generations a live lease holds and the ones a rollback left above the new number, and the load that follows
+it with a `keep` of 64 or less collects by listing, counting the ledger's own names first, instead of by name. The
+leases a new ledger holds are read from the row once more just before it is written, one more row read; a lease taken
+after that read, before the write, keeps its generation in the bucket but is not named until the next publish, as one
+taken between a publish and its collection is not. With a `keep` of 127 or more, or when the generations the window and
+the leases hold already reach 128 entries, the entries a rollback left above a load's number are capped out of the
+ledger, and a later load that numbers past them collects them.
 A load lists the segment's objects instead in these cases:
 
 - every 16th generation, so what the by-name loads leave behind is gone within 16 generations: the object a crashed or
@@ -507,8 +514,8 @@ The row's window is a cache of what a listing would keep, and the listing repair
 the bucket after a lifecycle rule or a collection that was not a load's took the object; the window then holds fewer than
 `keep` real generations until the name ages out, at most `keep` loads, and nothing that should stay is deleted. A fleet
 that mixes `keep` values up to 64 with larger ones, or with writers that record no ledger, lists on the loads with the
-smaller `keep` whenever the larger one leaves a ledger too wide for it to extend (more than 64 generations below the
-pointer that no lease holds): set the same `keep` on every writer. Because each load collects with its
+smaller `keep` whenever the larger one leaves a ledger too wide for it to extend by name (more than 64 generations below
+the pointer that no lease holds): set the same `keep` on every writer. Because each load collects with its
 own `keep`, a load with a smaller `keep` can delete a generation that a wider load's list names; the list is a request to
 keep, not a promise that the object is there.
 

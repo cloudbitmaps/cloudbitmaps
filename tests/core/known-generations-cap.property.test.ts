@@ -174,7 +174,8 @@ describe.each(registries)('the ledger stays within its cap over %s', (_name, mak
 
 describe('the most a real writer leaves in a ledger', () => {
   // A publish keeps in the ledger what its window names (at most 65 entries for a `keep` of 64) and the generations a
-  // live lease names, beside the window: 64 leases take a keep-64 ledger to 64 + 64 + 1 entries, and no further.
+  // live lease names, beside the window: 64 leases take a keep-64 ledger to 64 + 64 + 1 entries, and no further. Main held
+  // no leased generation in the ledger and stopped at 65 entries (the bound was KNOWN_FILL, 128).
   it('64 live leases take a keep-64 ledger to its window and the leased generations, and no further', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();

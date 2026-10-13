@@ -245,18 +245,25 @@ so, and so do the module headers in the code.
   a load takes a number past it, unless the ledger would pass 128 entries. A pin taken on the restored generation reads it
   until a load collects it, unless the pin is leased. The window is chosen without looking at leases, so a live lease on
   the generation a load supersedes after a rollback holds a place in the window instead of being spared beside it. The
-  window is the newest `keep` by number only for a pass that has no ledger to go on, where the superseded generation's
-  object has gone from the bucket, or where the lower of the collection's two reads of the pointer, before and after
-  its listing, is not the load's own generation. A load makes the same requests as before
+  window is the newest `keep` by number alone only for a pass that has no usable ledger, or where the lower of the
+  collection's two reads of the pointer, before and after its listing, is not the load's own generation; where the
+  superseded generation's object has gone from the bucket, the pass counts the newest `keep` that are there. A load makes
+  the same requests as before
   ([what a load keeps after a rollback](docs/guide/loading.md#what-a-load-keeps-after-a-rollback)).
 - **A generation a live lease holds stays in the ledger, and a pass that keeps by a count goes by the ledger.** A
   publish keeps in `knownGens`, beside its window, every generation a live lease holds, so the "lease each generation as
   it lands" recipe leaves each leased generation a rollback target while its lease lives, whatever `keep` is, and the
-  first publish after the lease ends drops it from the ledger and deletes it by name. A ledger that names more than 64
-  generations below the pointer counts only the ones no lease holds when a load with a `keep` of 64 or less decides
-  whether to extend it or to seed a new one from the bucket. A load that keeps by a count (a `keep` above 64, or the
-  first load over a row with no usable ledger) keeps the ledger's own most recently current names first, then the newest
-  others by number, `keep` in all, and spares every name the row knows when it reads the row again before a delete.
+  first publish after the lease ends drops it from the ledger and deletes it by name. A ledger is started from the bucket
+  only over a row with a pointer and no ledger at all; a usable one is never started again, however wide. One that names
+  more than 64 generations below the pointer that no lease holds (a `keep` above 64 carries up to 127) keeps its order, its
+  leased entries and the entries a rollback left above the new number, and a load with a `keep` of 64 or less over it
+  collects by listing instead of by name. With a usable ledger, a pass that lists keeps the ledger's most recently current
+  names first and counts the newest others by number only to fill `keep`; by number alone only where there is no usable
+  ledger. The leases a new ledger holds are read from the row once more just before it is written; a lease taken after
+  that read is spared in the bucket but not named until the next publish. A rollback holds every generation its row's
+  lease entries name. With a `keep` of 127 or more, or when the generations the window and the leases hold reach 128
+  entries, the entries a rollback left above a load's number are capped out of the ledger, and a later load that numbers
+  past them collects them.
 - **An incarnation's first publish writes the new generation alone, and a protect pass counts when the superseded
   generation is gone.** A publish over no row, or a row with no pointer (one a retention write made), no longer seeds its
   ledger from the bucket: nothing below it was made current by it, and an object there is no load's. An object a crashed

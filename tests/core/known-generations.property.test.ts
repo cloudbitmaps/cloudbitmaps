@@ -18,6 +18,7 @@ import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { CountingObjectStore } from '../helpers/counting';
+import { FULL_STRENGTH } from '../helpers/strength';
 
 /**
  * The known-generations ledger against a model of what a publish writes and what a collection keeps, over every shipped
@@ -388,6 +389,8 @@ interface Floors {
   readonly rollbacks?: number;
   readonly unknownRollbacks?: number;
   readonly forwardRollbacks?: number;
+  /** The most live leases a history held at once. The 64-lease boundary has dedicated tests; this one runs below it. */
+  readonly maxLeases?: number;
 }
 const floors = (f: Floors): Floors => f;
 
@@ -410,6 +413,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
         rollbacks: 150,
         unknownRollbacks: 6,
         forwardRollbacks: 6,
+        maxLeases: 3,
       }),
     },
     {
@@ -431,6 +435,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
         rollbacks: 150,
         unknownRollbacks: 4,
         forwardRollbacks: 8,
+        maxLeases: 4,
       }),
     },
   ])('$name (property)', ({ keepsArb, stepArb, lengths, runs, floor }) => {
@@ -447,6 +452,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
         rollbacks: 0,
         unknownRollbacks: 0,
         forwardRollbacks: 0,
+        maxLeases: 0,
       };
       await fc.assert(
         fc.asyncProperty(
@@ -468,6 +474,10 @@ describe.each(registries)('the known-generations ledger against its model, over 
               return Array.from({ length: Math.max(have, 0) + 2 + extra }, (_, i) => i);
             };
             /** The generations a live lease holds, by the model's own reading of when one ends. */
+            const noteLeases = (): void => {
+              const live = [...model.leases.values()].filter((e) => t < e.until + LEASE_SKEW_MS);
+              counts.maxLeases = Math.max(counts.maxLeases, live.length);
+            };
             const leasedNow = (): Set<number> =>
               new Set(
                 [...model.leases.values()]
@@ -893,6 +903,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
                     });
                     if (taken !== 'moved' && taken !== 'full') {
                       model.leases.set(holder, { generation: row.currentGen, until: t + step.dur });
+                      noteLeases();
                     }
                     break;
                   }
@@ -911,6 +922,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
                     });
                     if (taken !== 'moved' && taken !== 'full') {
                       model.leases.set(holder, { generation: g, until: t + step.dur });
+                      noteLeases();
                     }
                     break;
                   }
@@ -946,12 +958,19 @@ describe.each(registries)('the known-generations ledger against its model, over 
         {
           numRuns:
             Math.max(3, Math.round(runs * reg.scale)) * Number(process.env.PROP_RUNS_FACTOR ?? 1),
+          // Seeded so the coverage floors below are deterministic: the same histories on every pull-request run. Set
+          // PROP_SEED to explore other ones. A full-strength run draws a random seed unless PROP_SEED is set, and does
+          // not assert the floors (the model check still runs, and fast-check prints the seed of a failure).
+          ...(FULL_STRENGTH && process.env.PROP_SEED === undefined
+            ? {}
+            : { seed: Number(process.env.PROP_SEED ?? 1) }),
         },
       );
       // Not vacuous: each kind of publish and rollback was checked against the model. The shipped registries other than
       // the in-memory one run a tenth of the histories, so they are held to publishing alone.
-      const full = reg.scale === 1;
+      const full = reg.scale === 1 && !(FULL_STRENGTH && process.env.PROP_SEED === undefined);
       const at = (n: number | undefined): number => (full ? (n ?? -1) : -1);
+      if (FULL_STRENGTH && process.env.PROP_SEED === undefined) return;
       expect(counts.published).toBeGreaterThan(Math.floor(floor.published * reg.scale));
       expect(counts.seeded).toBeGreaterThan(at(floor.seeded));
       expect(counts.byName).toBeGreaterThan(at(floor.byName));
@@ -963,6 +982,7 @@ describe.each(registries)('the known-generations ledger against its model, over 
       expect(counts.rollbacks).toBeGreaterThan(at(floor.rollbacks));
       expect(counts.unknownRollbacks).toBeGreaterThan(at(floor.unknownRollbacks));
       expect(counts.forwardRollbacks).toBeGreaterThan(at(floor.forwardRollbacks));
+      expect(counts.maxLeases).toBeGreaterThan(at(floor.maxLeases));
       // Thousands of loads a case: seconds on an idle machine, so the default 5 s limit fails it under full-suite load.
     }, 300_000);
   });

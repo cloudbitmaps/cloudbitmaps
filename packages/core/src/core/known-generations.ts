@@ -80,7 +80,7 @@ export function windowOf(record: RegistryRecord | null): readonly number[] | und
  * Whether the row's ledger is a window a load with a small `keep` can extend: usable, and naming no more than
  * {@link MAX_KEPT_GENERATIONS} generations below the pointer that no live lease holds. A ledger carried through
  * publishes with a larger `keep` (`*Into`, `materializeMany`) names up to 127, and a count by a small `keep` would keep
- * fewer than it names, so the next small-`keep` load seeds a window from the bucket instead of extending that one. A
+ * fewer than it names, so the next small-`keep` load collects by listing instead of by name, over the same ledger. A
  * generation held only for a lease is no part of the window and does not count toward the limit.
  */
 export function carriesWindow(record: RegistryRecord | null, leased: ReadonlySet<number>): boolean {

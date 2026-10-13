@@ -161,14 +161,15 @@ describe('a ledger that names more than 64 generations below the pointer counts 
     expect(await generations(w.storage)).toEqual(expected);
   });
 
-  it('with 30 of them leased, 70 are not and the ledger is no window: the load seeds from the bucket, which holds the leased ones beside the window', async () => {
+  it('with 30 of them leased, 70 are not and the ledger is too wide to extend by name: the load lists once to collect, over the ledger it has, with no seed', async () => {
     const w = world();
     await wide(w, (g) => g < 30);
     const calls: Record<string, number> = {};
     const storage = counting(w.storage, calls);
     const r = await loadSegment(SEG, [1, 2, 3], { ...w.deps, storage }, { keep: 1 });
     expect(r.generation).toBe(100);
-    expect(calls.list).toBeGreaterThanOrEqual(1);
+    // One listing, the collection's. Main started the ledger again from the bucket: a second listing, and the order lost.
+    expect(calls.list).toBe(1);
     const expected = [...Array.from({ length: 30 }, (_, i) => i), 99, 100];
     expect(names(await w.registry.get(SEG))).toEqual(expected);
     expect(await generations(w.storage)).toEqual(expected);

@@ -239,7 +239,7 @@ describe('what a load keeps after a rollback when the bucket or the row changes 
     });
     const r = await loadSegment(SEG, [7], { ...w.deps, registry }, { keep: 1 });
     expect(r).toMatchObject({ generation: 4, published: true });
-    // The second load's window names 1, which the first load superseded, so the collection spares it.
+    // Main: [4, 5]. The second load's window names 1, which the first load superseded, so the collection spares it.
     expect(await generations(w.storage)).toEqual([1, 4, 5]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(5);
   });
@@ -255,6 +255,7 @@ describe('what a load keeps after a rollback when the bucket or the row changes 
     });
     const r = await loadSegment(SEG, [7], { ...w.deps, storage }, { keep: 1 });
     expect(r).toMatchObject({ generation: 4, published: true });
+    // Main: [2, 3, 4], the newest below 3 by number. The load's own window, 1, is kept.
     expect(await generations(w.storage)).toEqual([1, 3, 4]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(3);
   });
@@ -289,7 +290,7 @@ describe('the guard on the superseded generation, at a window wider than one', (
     });
     const r = await loadSegment(SEG, [7], { ...w.deps, registry }, { keep: 2 });
     expect(r).toMatchObject({ generation: 4, published: true });
-    // The load's window, 3 and 1, and the second load's, which names 4 as well, are all spared.
+    // Main: [3, 4, 5]. The load's window, 3 and 1, and the second load's, which names 4 as well, are all spared.
     expect(await generations(w.storage)).toEqual([1, 3, 4, 5]);
   });
 
@@ -305,6 +306,7 @@ describe('the guard on the superseded generation, at a window wider than one', (
     const r = await loadSegment(SEG, [7], { ...w.deps, storage }, { keep: 2 });
     expect(r).toMatchObject({ generation: 5, published: true });
     expect((await w.registry.get(SEG))!.currentGen).toBe(4);
+    // Main: [2, 3, 4, 5], the newest two below 4 by number. The window the load's publish chose, 4 and 0, is kept.
     expect(await generations(w.storage)).toEqual([0, 4, 5]);
   });
 });
@@ -345,7 +347,8 @@ describe('a lease on the restored generation', () => {
     const next = await loadSegment(SEG, [7, 8], w.deps, { keep: 1 });
     expect(next).toMatchObject({ generation: 5, published: true, collected: [] });
     expect(await generations(storage)).toEqual([1, 4, 5]);
-    // The ledger holds the leased generation beside the window, so it stays a rollback target while its lease lives.
+    // Main: [4]. The ledger holds the leased generation beside the window, so it stays a rollback target while its lease
+    // lives.
     expect(windowOf(await registry.get(SEG))).toEqual([1, 4]);
   });
 });

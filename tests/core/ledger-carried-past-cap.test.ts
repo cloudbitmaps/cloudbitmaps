@@ -9,8 +9,8 @@ import { counting } from '../helpers/counting';
  * A ledger carried through many publishes whose `keep` is above what a row records (what `*Into` and `materializeMany`
  * publish with) names up to 128 generations by recency. A load with a small `keep` after it must not read those names as
  * the whole window: it would delete only them, and leave the older generations until a periodic listing. So a ledger
- * naming more than 64 generations below the pointer is a window that is not known, and the load seeds and collects by
- * count. A release before ledgers recorded no list after a `keep` above 64, so that load collects
+ * naming more than 64 generations below the pointer is not collected from by name: the load keeps the ledger as it is and
+ * collects by listing, counting its names first. A release before ledgers recorded no list after a `keep` above 64, so that load collects
  * everything beyond its keep: after 200 such publishes and one `keep: 1` load, two objects remain.
  */
 

@@ -61,7 +61,7 @@ function countingWrites(registry: IRegistryDriver, count: { writes: number }): I
   }) as IRegistryDriver;
 }
 
-describe('BF-5 by recency: the first load after a rollback keeps the restored generation', () => {
+describe('the first load after a rollback keeps the restored generation, by recency', () => {
   it.each([
     { keep: 1, bucket: [1, 4], ledger: [1, 4], collected: [3, 2, 0] },
     { keep: 2, bucket: [1, 3, 4], ledger: [3, 1, 4], collected: [2, 0] },
