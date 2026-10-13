@@ -273,6 +273,7 @@ const CALL_KEYS = {
     'namespace',
     'concurrency',
     'summaries',
+    'generations',
   ]),
   exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
 } as const;
@@ -324,7 +325,8 @@ export interface CloudRoaringOptions {
    * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
-   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
+   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id,
+   * and the footer reads of `checkConsistency({ generations: true })`.
    * This option does not govern writes, nor the calls that read the registry or list the bucket directly (`exists`,
    * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
    * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
@@ -2651,19 +2653,38 @@ export class CloudRoaring {
    * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
    * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
    *
+   * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
+   * included, against its object: one footer read each (104 bytes, no key, under the store's read retry), reporting
+   * `known-generation-mismatch` with the `generation` where the object under that number is not the one the row
+   * recorded. A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot
+   * be used is counted in `generationsUnchecked`, and none of its objects is read.
+   *
    * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
    * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
    * ceiling of its own: narrow the scan with `namespace`, or call `runConsistencyCheck` over the backend's
    * `storage` and `registry` with a higher `maxScanSegments`.
    */
   async checkConsistency(
-    options: { namespace?: string; concurrency?: number; summaries?: boolean } = {},
+    options: {
+      namespace?: string;
+      concurrency?: number;
+      summaries?: boolean;
+      generations?: boolean;
+    } = {},
   ): Promise<ConsistencyReport> {
-    checkOptions(options, 'checkConsistency', CALL_KEYS.checkConsistency, ['summaries']);
+    checkOptions(options, 'checkConsistency', CALL_KEYS.checkConsistency, [
+      'summaries',
+      'generations',
+    ]);
     options ??= {};
     const deps = this.lifecycleDeps('checkConsistency');
     return runConsistencyCheck(
-      { storage: deps.storage, registry: deps.registry, keystore: deps.keystore },
+      {
+        storage: deps.storage,
+        registry: deps.registry,
+        keystore: deps.keystore,
+        readRetry: deps.readRetry,
+      },
       options,
     );
   }

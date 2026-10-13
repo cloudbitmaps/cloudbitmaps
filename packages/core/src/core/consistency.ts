@@ -21,13 +21,20 @@
 import { requirePositiveInteger } from './check';
 import { mapWithConcurrency } from './concurrency';
 import { generationsOf } from './generation-list';
-import { ValidationError, isIntegrityError, isKeyUnavailableError } from './errors';
+import {
+  ValidationError,
+  isIntegrityError,
+  isKeyUnavailableError,
+  isNotFoundError,
+} from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
-import { openNamedGeneration } from './crbm-open';
+import { footerCrcUnder, openNamedGeneration } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
+import { usableKnownGens } from './known-generations';
+import { type ReadRetry, retryRead } from './retry';
 import { summaryAgrees, usableSummary } from './summary';
 import { validateUserNamespace } from './validate';
 
@@ -64,8 +71,16 @@ export interface ConsistencyIssue {
    * that opens the object refuses it; one whose count or metadata disagrees is answered from until a read opens the
    * object, which stops that store using it; one whose fingerprint names no object is not used, so every read opens the
    * object unchecked.
+   * `known-generation-mismatch` (only when asked for): the object under the number `generation` is not the one the row's
+   * ledger of known generations recorded for it: its footer checksum differs, or it is not a `.crbm` object at all. It
+   * says nothing of what a rollback does with that generation.
    */
-  readonly issue: 'missing-storage-generation' | 'summary-mismatch';
+  readonly issue: 'missing-storage-generation' | 'summary-mismatch' | 'known-generation-mismatch';
+  /**
+   * With `known-generation-mismatch` only: the generation whose object is not the one the row recorded. It is
+   * `currentGen` when the current object is the one that differs. Absent on every other issue.
+   */
+  readonly generation?: number;
 }
 
 /** A segment that could not be checked this pass (Storage/registry read fault) — not proof of a torn restore. */
@@ -93,12 +108,34 @@ export interface ConsistencyReport {
    * only when summaries were asked for.
    */
   readonly summariesUnchecked?: number;
+  /**
+   * With `generations: true`, the rows with a pointer whose ledger of known generations could not be used (absent, or
+   * failing the validation every reader of it applies): none of their known generations was held against its object.
+   * A count, not an issue. Present only when generations were asked for.
+   */
+  readonly generationsUnchecked?: number;
 }
 
 type Outcome =
   | { readonly kind: 'ok'; readonly unchecked?: boolean }
   | { readonly kind: 'issue'; readonly issue: ConsistencyIssue }
   | { readonly kind: 'error'; readonly error: ConsistencyErrorEntry };
+
+/** What one segment adds to the report: the issues found, a read that failed, and which counts it adds to. */
+interface SegmentResult {
+  readonly issues: readonly ConsistencyIssue[];
+  readonly error?: ConsistencyErrorEntry;
+  readonly summaryUnchecked?: boolean;
+  readonly generationsUnchecked?: boolean;
+}
+
+const NOTHING: SegmentResult = { issues: [] };
+
+const errorEntry = (rec: RegistryRecord, error: unknown): ConsistencyErrorEntry => ({
+  segment: rec.segment,
+  namespace: rec.namespace,
+  error: error instanceof Error ? error.message : String(error),
+});
 
 /**
  * Hold a row's summary against the object it describes. `found` is called once the open's first read of the object has
@@ -205,6 +242,87 @@ function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
 }
 
 /**
+ * Hold each generation the row's usable ledger names against its object, by the footer checksum the ledger records. One
+ * footer read each (the footer's bytes only, under `readRetry`), one after another, so a segment never has more than the
+ * one request in flight that the check's `concurrency` already allows it. The footer needs no key, whether the object is
+ * sealed or not. A generation whose object is not in the bucket is skipped: a lifecycle rule, a smaller `keep` or a
+ * restore leaves such entries, and they harm nothing. An object whose footer fails its own checks is not the one that was
+ * recorded, so it is reported as a mismatch. Any other failed read stops the segment's reads and is its error, with the
+ * mismatches found before it kept.
+ */
+async function checkKnownGenerations(
+  ref: SegmentRef,
+  currentGen: number,
+  known: readonly { readonly generation: number; readonly footerCrc: number }[],
+  deps: { readonly storage: IStorageDriver; readonly readRetry?: ReadRetry },
+): Promise<{ readonly issues: ConsistencyIssue[]; readonly failed?: unknown }> {
+  const issues: ConsistencyIssue[] = [];
+  for (const entry of known) {
+    let mismatch: boolean;
+    try {
+      const crc = await retryRead(
+        () => footerCrcUnder(deps.storage, { ...ref, generation: entry.generation }),
+        deps.readRetry,
+      );
+      mismatch = crc !== entry.footerCrc;
+    } catch (err) {
+      if (isNotFoundError(err)) continue;
+      if (!isIntegrityError(err)) return { issues, failed: err };
+      mismatch = true;
+    }
+    if (mismatch) {
+      issues.push({
+        segment: ref.segment,
+        namespace: ref.namespace,
+        currentGen,
+        issue: 'known-generation-mismatch',
+        generation: entry.generation,
+      });
+    }
+  }
+  return { issues };
+}
+
+/**
+ * Whether the row's current object is there and, with `summaries`, agrees with the row's summary. The row has a pointer
+ * and is active.
+ */
+async function checkCurrentObject(
+  ref: SegmentRef,
+  live: RegistryRecord,
+  deps: { readonly storage: IStorageDriver; readonly keystore?: IKeystore },
+  summaries: boolean,
+): Promise<Outcome> {
+  const currentGen = live.currentGen as number;
+  const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation: currentGen };
+  const missing: Outcome = {
+    kind: 'issue',
+    issue: {
+      segment: ref.segment,
+      namespace: ref.namespace,
+      currentGen,
+      issue: 'missing-storage-generation',
+    },
+  };
+  const checksSummary = summaries && live.summary !== undefined;
+  if (checksSummary && summaryOpensObject(ref, live)) {
+    let found = false;
+    try {
+      return await checkSummary(ref, live, deps, () => (found = true));
+    } catch (err) {
+      // Once the open's first read has found the object, a failure is an error of the segment, as it was when the
+      // listing had found it first: an object that goes mid-open is not reported torn. Before that, the listing
+      // decides, as it did, and its own error is the segment's.
+      if (found) throw err;
+      if (!(await listed(deps.storage, key))) return missing;
+      throw err;
+    }
+  }
+  if (!(await objectIsPresent(deps.storage, key))) return missing;
+  return checksSummary ? await checkSummary(ref, live, deps) : { kind: 'ok' };
+}
+
+/**
  * Verify every registered segment's `currentGen` `.crbm` actually exists in Storage. Enumerates the registry
  * (optionally one namespace) and, for each non-`destroyed` segment, asks the object store for that generation with a
  * zero-length tail read. Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
@@ -222,23 +340,36 @@ function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
  * before its first read answered, the listing decides, and once that read has answered a failure is an error of the
  * segment. A sealed summary needs `deps.keystore`; without it the segment is counted in `summariesUnchecked`. Off by
  * default, since the default check only looks for the object.
+ *
+ * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
+ * included, against its object: one footer read each (104 bytes, no key, under `deps.readRetry` when given), reporting
+ * `known-generation-mismatch` with the `generation` where the object's footer checksum is not the one the ledger records.
+ * A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot be used is
+ * counted in `generationsUnchecked` and none of its objects is read. The listing is not used: a read of a missing object
+ * answers `NotFoundError`, which is how an absent one is told. A segment whose current object is missing is reported as
+ * ever and its older generations are still checked. Off by default.
  */
 export async function runConsistencyCheck(
   deps: {
     readonly storage: IStorageDriver;
     readonly registry: IRegistryDriver;
     readonly keystore?: IKeystore;
+    readonly readRetry?: ReadRetry;
   },
   options: {
     namespace?: string;
     concurrency?: number;
     maxScanSegments?: number;
     summaries?: boolean;
+    generations?: boolean;
   } = {},
 ): Promise<ConsistencyReport> {
   if (options.namespace !== undefined) validateUserNamespace(options.namespace);
   if (options.summaries !== undefined && typeof options.summaries !== 'boolean') {
     throw new ValidationError(`summaries must be a boolean; got ${String(options.summaries)}`);
+  }
+  if (options.generations !== undefined && typeof options.generations !== 'boolean') {
+    throw new ValidationError(`generations must be a boolean; got ${String(options.generations)}`);
   }
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   // Fail fast before the (possibly huge) registry scan, not after.
@@ -257,73 +388,64 @@ export async function runConsistencyCheck(
       '`runConsistencyCheck({ storage: backend.storage, registry: backend.registry }, { maxScanSegments })` ' +
       'over the same backend instead)',
   });
-  const results = await mapWithConcurrency(recs, concurrency, async (rec): Promise<Outcome> => {
-    if (rec.status === 'destroyed') return { kind: 'ok' }; // Storage intentionally gone — not a torn restore
-    const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
-    try {
-      // Resolve the AUTHORITATIVE live pointer (strong read) — not the drained `rec.currentGen`, which the
-      // enumeration may have read eventually-consistently and can lag the live pointer. `rec` is used only to
-      // enumerate + skip destroyed segments.
-      const live = await deps.registry.get(ref);
-      if (!live || live.status === 'destroyed') return { kind: 'ok' }; // vanished/shredded — no live pointer
-      // A row with no Storage generation is *deliberately* Storage-less — a retention policy recorded before the first
-      // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing
-      // can be missing. Reporting it
-      // would make `missing-storage-generation` fire on the healthy steady state of every such segment, which is the
-      // opposite of what a DR triage needs: the one real signal drowned in expected noise.
-      if (live.currentGen === null) return { kind: 'ok' };
-      const key: GenKey = {
-        namespace: ref.namespace,
-        segment: ref.segment,
-        generation: live.currentGen,
-      };
-      const missing: Outcome = {
-        kind: 'issue',
-        issue: {
-          segment: rec.segment,
-          namespace: rec.namespace,
-          currentGen: live.currentGen,
-          issue: 'missing-storage-generation',
-        },
-      };
-      const checksSummary = options.summaries === true && live.summary !== undefined;
-      if (checksSummary && summaryOpensObject(ref, live)) {
-        let found = false;
-        try {
-          return await checkSummary(ref, live, deps, () => (found = true));
-        } catch (err) {
-          // Once the open's first read has found the object, a failure is an error of the segment, as it was when the
-          // listing had found it first: an object that goes mid-open is not reported torn. Before that, the listing
-          // decides, as it did, and its own error is the segment's.
-          if (found) throw err;
-          if (!(await listed(deps.storage, key))) return missing;
-          throw err;
-        }
+  const summaries = options.summaries === true;
+  const generations = options.generations === true;
+  const results = await mapWithConcurrency(
+    recs,
+    concurrency,
+    async (rec): Promise<SegmentResult> => {
+      if (rec.status === 'destroyed') return NOTHING; // Storage intentionally gone — not a torn restore
+      const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
+      let live: RegistryRecord | null;
+      let current: Outcome;
+      try {
+        // Resolve the AUTHORITATIVE live pointer (strong read) — not the drained `rec.currentGen`, which the
+        // enumeration may have read eventually-consistently and can lag the live pointer. `rec` is used only to
+        // enumerate + skip destroyed segments.
+        live = await deps.registry.get(ref);
+        if (!live || live.status === 'destroyed') return NOTHING; // vanished/shredded — no live pointer
+        // A row with no Storage generation is *deliberately* Storage-less — a retention policy recorded before the first
+        // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing
+        // can be missing. Reporting it
+        // would make `missing-storage-generation` fire on the healthy steady state of every such segment, which is the
+        // opposite of what a DR triage needs: the one real signal drowned in expected noise.
+        if (live.currentGen === null) return NOTHING;
+        current = await checkCurrentObject(ref, live, deps, summaries);
+      } catch (error) {
+        // Fault isolation: one unreadable segment (a partial/transient object store mid-restore) must not abort
+        // the whole triage. Record it and keep scanning the rest.
+        return { issues: [], error: errorEntry(rec, error) };
       }
-      if (!(await objectIsPresent(deps.storage, key))) return missing;
-      return checksSummary ? await checkSummary(ref, live, deps) : { kind: 'ok' };
-    } catch (error) {
-      // Fault isolation: one unreadable segment (a partial/transient object store mid-restore) must not abort
-      // the whole triage. Record it and keep scanning the rest.
+      const issues = current.kind === 'issue' ? [current.issue] : [];
+      const summaryUnchecked = current.kind === 'ok' && current.unchecked === true;
+      if (!generations) return { issues, summaryUnchecked };
+      // The ledger every reader of it uses: a ledger that is absent, or disagrees with its row, is not used, and the row is
+      // counted rather than read.
+      const known = usableKnownGens(live);
+      if (known === undefined) return { issues, summaryUnchecked, generationsUnchecked: true };
+      const held = await checkKnownGenerations(ref, live.currentGen, known, deps);
       return {
-        kind: 'error',
-        error: {
-          segment: rec.segment,
-          namespace: rec.namespace,
-          error: error instanceof Error ? error.message : String(error),
-        },
+        issues: [...issues, ...held.issues],
+        summaryUnchecked,
+        ...(held.failed === undefined ? {} : { error: errorEntry(rec, held.failed) }),
       };
-    }
-  });
+    },
+  );
   const inconsistent: ConsistencyIssue[] = [];
   const errored: ConsistencyErrorEntry[] = [];
   let summariesUnchecked = 0;
+  let generationsUnchecked = 0;
   for (const r of results) {
-    if (r.kind === 'issue') inconsistent.push(r.issue);
-    else if (r.kind === 'error') errored.push(r.error);
-    else if (r.unchecked === true) summariesUnchecked += 1;
+    inconsistent.push(...r.issues);
+    if (r.error !== undefined) errored.push(r.error);
+    if (r.summaryUnchecked === true) summariesUnchecked += 1;
+    if (r.generationsUnchecked === true) generationsUnchecked += 1;
   }
-  return options.summaries === true
-    ? { checked: recs.length, inconsistent, errored, summariesUnchecked }
-    : { checked: recs.length, inconsistent, errored };
+  return {
+    checked: recs.length,
+    inconsistent,
+    errored,
+    ...(summaries ? { summariesUnchecked } : {}),
+    ...(generations ? { generationsUnchecked } : {}),
+  };
 }

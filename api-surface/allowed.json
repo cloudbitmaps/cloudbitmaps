@@ -422,5 +422,21 @@
   {
     "entry": "@cloudbitmaps/roaring ClearRegistrySummary.tailBytes",
     "reason": "a clear summary records tailBytes, the bytes of the object's end one open reads, and is required: every summary a library writer makes carries one, and a registry schema 5 row without it is refused; agreed with the maintainer"
+  },
+  {
+    "entry": "@cloudbitmaps/core ConsistencyIssue.issue",
+    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the issue union gains 'known-generation-mismatch'"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring ConsistencyIssue.issue",
+    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the issue union gains 'known-generation-mismatch'"
+  },
+  {
+    "entry": "@cloudbitmaps/roaring CloudRoaring.checkConsistency",
+    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the options gain generations"
+  },
+  {
+    "entry": "@cloudbitmaps/core runConsistencyCheck",
+    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the options gain generations, and the deps gain an optional readRetry, so the footer reads run under the store's read retry"
   }
 ]
