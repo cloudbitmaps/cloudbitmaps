@@ -184,7 +184,8 @@ describe('generations an erasure deleted above the pointer', () => {
   // names none of the erased generations, so the window of the load at 16, which lists, names 0, 1, 3, 4 and 11 to 15,
   // every generation a load published that is still in the bucket. The two objects no load published go there: 10,
   // which a release before ledgers kept by its count of 12 (it left 0, 1, 3, 4, 10 and 11 to 16), and the stray at 5,
-  // which that release also took.
+  // which that release also took. Main's bucket after 16 is 0, 1, 3, 4, 5 and 11 to 16: its ledger still names the
+  // erased 5, so the stray under that number is spared.
   it('leave the ledger, so the load that lists collects only what no load published', async () => {
     const w = world();
     for (let g = 0; g <= 7; g++) {

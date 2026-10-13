@@ -407,7 +407,8 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     // publish puts every holder BELOW the new pointer, where the `keep: 0` collection takes them. The call takes
     // them out of the row's ledger first, and renews nothing: no load can publish a number below the pointer. What
     // is left in the bucket decides, exactly as it does when nothing raced. Generation 0, which the call found
-    // clean and the load's window names, stays as the load's grace generation.
+    // clean and the load's window names, stays as the load's grace generation. Main also answers `erased: true`, but
+    // its collection takes generation 0 as well, and its bucket is `[3]`.
     const w = world();
     await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 0
     await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 1

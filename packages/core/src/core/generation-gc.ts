@@ -345,14 +345,18 @@ export async function collectBelowPointer(
   ref: SegmentRef,
   deps: GenerationDeps,
   options: { keep?: number; skipKnown?: boolean } = {},
-): Promise<{ readonly deleted: number[]; readonly missing?: number }> {
+): Promise<{
+  readonly deleted: number[];
+  readonly missing?: number;
+  readonly knownSpared?: number[];
+}> {
   // Only the window and the known-name rule are passed on, whatever the caller's object carries: this pass never reads
   // a lease.
-  const { deleted, missing } = await listingPass(ref, deps, {
+  const { deleted, missing, knownSpared } = await listingPass(ref, deps, {
     keep: options.keep,
     skipKnown: options.skipKnown,
   });
-  return missing === undefined ? { deleted } : { deleted, missing };
+  return missing === undefined ? { deleted, knownSpared } : { deleted, missing, knownSpared };
 }
 
 /**
@@ -381,6 +385,7 @@ interface ListingResult {
    * quiet or not. The pass stops there, and its caller raises it.
    */
   readonly missing?: number;
+  readonly knownSpared?: number[];
 }
 
 /**
@@ -474,6 +479,7 @@ async function listingPass(
 
   // What the pass has deleted, in order, and the watch every read of the row after a delete is held to.
   const done: number[] = [];
+  const knownSpared: number[] = [];
   const watch = watchDeletes(deps, ref);
 
   /**
@@ -492,7 +498,7 @@ async function listingPass(
    */
   const stillCollectable = async (
     generation: number,
-  ): Promise<'delete' | 'skip' | 'stop' | { readonly missing: number }> => {
+  ): Promise<'delete' | 'skip' | 'skipKnown' | 'stop' | { readonly missing: number }> => {
     const still = await deps.registry.get(ref);
     const missing = await watch.check(after, still);
     if (missing !== undefined) return { missing };
@@ -525,7 +531,7 @@ async function listingPass(
       record.status !== 'destroyed' &&
       usableKnownGens(still)?.some((e) => e.generation === generation) === true
     ) {
-      return 'skip';
+      return 'skipKnown';
     }
     return 'delete';
   };
@@ -585,7 +591,8 @@ async function listingPass(
       return { deleted: done, missing: verdict.missing };
     }
     if (verdict === 'stop') return { deleted: done };
-    if (verdict === 'skip') {
+    if (verdict === 'skip' || verdict === 'skipKnown') {
+      if (verdict === 'skipKnown') knownSpared.push(generation);
       leasedSpared.add(generation);
       continue;
     }
@@ -597,9 +604,9 @@ async function listingPass(
   // tombstone, whose pointer no rollback moves.
   if (record.status !== 'destroyed') {
     const missing = await watch.settle(after);
-    if (missing !== undefined) return { deleted: done, missing };
+    if (missing !== undefined) return { deleted: done, missing, knownSpared };
   }
-  return { deleted: done };
+  return { deleted: done, knownSpared };
 }
 
 /**

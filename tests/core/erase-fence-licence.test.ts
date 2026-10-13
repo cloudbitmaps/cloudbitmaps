@@ -214,7 +214,7 @@ describe('a load lands first', () => {
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage });
     expect(res).toMatchObject({ erased: true, fromGeneration: 0 });
     expect(await holdersOf(w.storage, 999)).toEqual([]);
-    // Main deletes 1 as well, since the sweep's bound is the load's pointer.
+    // The sweep's bound is the load's pointer, and 1 is named by the load's window, so it stays.
     expect(await bucket(w)).toEqual([1, 2]);
     expect(await ledgerOf(w.registry)).toEqual([1, 2]);
   });
@@ -288,9 +288,16 @@ describe('a load lands first', () => {
       () => rollbackSegment(SEG, 2, w.load, { allowForward: true }),
     );
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage });
-    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+    // The pointer is on a holder now: the call takes the other one, which is below it, and leaves the one the pointer names.
+    expect(res).toMatchObject({
+      erased: false,
+      reason: 'superseded',
+      fromGeneration: 2,
+      collected: [1],
+    });
     expect((await w.registry.get(SEG))!.currentGen).toBe(2);
-    expect(await bucket(w)).toContain(2);
+    expect(await bucket(w)).toEqual([0, 2]);
+    expect(await ledgerOf(w.registry)).toEqual([0, 2]);
   });
 
   it('right after the fence’s write: erased: true, and the generation the call found clean is spared', async () => {
@@ -310,6 +317,276 @@ describe('a load lands first', () => {
     expect(await holdersOf(w.storage, 999)).toEqual([]);
     // The sweep reads the row, finds 1 named, and leaves it: it is the load's grace generation.
     expect(await bucket(w)).toEqual([1, 2]);
+  });
+});
+
+/** `base` that runs `hook` the first time an object is written (the erasure's rewrite, while it streams). */
+function onFirstPut(base: IStorageDriver, hook: () => Promise<unknown>): IStorageDriver {
+  let fired = false;
+  return {
+    capabilities: () => base.capabilities(),
+    getRange: (k, o, l) => base.getRange(k, o, l),
+    getTail: (k, m) => base.getTail(k, m),
+    delete: (k, o) => base.delete(k, o),
+    list: (r) => base.list(r),
+    putImmutable: async (k, b) => {
+      const out = await base.putImmutable(k, b);
+      if (!fired) {
+        fired = true;
+        await hook();
+      }
+      return out;
+    },
+  };
+}
+
+describe('one erasure rewrites the current generation, another only prunes older ones', () => {
+  const A = 501; // in the current generation
+  const B = 502; // only in an older generation the ledger names
+  async function shape(w: World, keepLast: number): Promise<void> {
+    await loadSegment(SEG, [1, B], w.load, { keep: 9 }); // 0 holds B
+    await loadSegment(SEG, [1, A], w.load, { keep: keepLast }); // 1 holds A, current
+  }
+  const both = async (w: World): Promise<void> => {
+    expect(await holdersOf(w.storage, A)).toEqual([]);
+    expect(await holdersOf(w.storage, B)).toEqual([]);
+  };
+
+  for (const keepLast of [1, 9]) {
+    it(`B lands during A's stream: both erased: true (keep ${keepLast})`, async () => {
+      const w = world();
+      await shape(w, keepLast);
+      let b: unknown;
+      const storage = onFirstPut(w.storage, async () => {
+        b = await eraseIdFromSegment(SEG, B, w.load);
+      });
+      const a = await eraseIdFromSegment(SEG, A, { ...w.load, storage });
+      expect(a).toMatchObject({ erased: true });
+      expect(b).toMatchObject({ erased: true });
+      await both(w);
+    });
+
+    it(`started together: both erased: true (keep ${keepLast})`, async () => {
+      const w = world();
+      await shape(w, keepLast);
+      const [a, b] = await Promise.all([
+        eraseIdFromSegment(SEG, A, w.load),
+        eraseIdFromSegment(SEG, B, w.load),
+      ]);
+      expect(a).toMatchObject({ erased: true });
+      expect(b).toMatchObject({ erased: true });
+      await both(w);
+    });
+
+    it(`started together, the pruning one first: both erased: true (keep ${keepLast})`, async () => {
+      const w = world();
+      await shape(w, keepLast);
+      const [b, a] = await Promise.all([
+        eraseIdFromSegment(SEG, B, w.load),
+        eraseIdFromSegment(SEG, A, w.load),
+      ]);
+      expect(a).toMatchObject({ erased: true });
+      expect(b).toMatchObject({ erased: true });
+      await both(w);
+    });
+  }
+
+  it('the pruning one lands right after the rewrite read the row: both erased: true', async () => {
+    const w = world();
+    await shape(w, 9);
+    let b: unknown;
+    let fired = false;
+    const c = counting(w.registry, {
+      afterGet: async (n) => {
+        if (n !== 1 || fired) return;
+        fired = true;
+        b = await eraseIdFromSegment(SEG, B, w.load);
+      },
+    });
+    const a = await eraseIdFromSegment(SEG, A, { ...w.load, registry: c.registry });
+    expect(fired).toBe(true);
+    expect(a).toMatchObject({ erased: true });
+    expect(b).toMatchObject({ erased: true });
+    await both(w);
+  });
+
+  it('eight segments, both erasures running over all of them: every one erased: true', async () => {
+    const w = world();
+    const segs = Array.from({ length: 8 }, (_, i) => ({ namespace: 'ns', segment: `s${i}` }));
+    for (const s of segs) {
+      await loadSegment(s, [1, B], w.load, { keep: 9 });
+      await loadSegment(s, [1, A], w.load, { keep: 1 });
+    }
+    const outs = await Promise.all(
+      segs.map((s) =>
+        Promise.all([eraseIdFromSegment(s, A, w.load), eraseIdFromSegment(s, B, w.load)]),
+      ),
+    );
+    for (const [a, b] of outs) {
+      expect(a).toMatchObject({ erased: true });
+      expect(b).toMatchObject({ erased: true });
+    }
+  });
+
+  it('a by-name erasure of a holder above the pointer landing during the stream still refuses the rewrite: superseded', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.load, { keep: 9 }); // 0
+    await loadSegment(SEG, [1, A], w.load, { keep: 9 }); // 1 holds A
+    await loadSegment(SEG, [1, A, B], w.load, { keep: 9 }); // 2 holds B and A
+    await rollbackSegment(SEG, 1, w.load); // 2 is above the pointer; A is current
+    let b: unknown;
+    const storage = onFirstPut(w.storage, async () => {
+      b = await eraseIdFromSegment(SEG, B, w.load);
+    });
+    const a = await eraseIdFromSegment(SEG, A, { ...w.load, storage });
+    // B's write renews the row's pointerId, which the rewrite's publish is fenced against.
+    expect(a).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(b).toMatchObject({ erased: true });
+  });
+});
+
+describe('the collection spared a generation the row named again', () => {
+  it('a rollback onto a holder below the pointer and a load, both after the fence: pruned again, erased: true', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 0 holds
+    await loadSegment(SEG, [1, 5], w.load, { keep: 9 }); // 1
+    await loadSegment(SEG, [1, 6], w.load, { keep: 9 }); // 2 current
+    let fired = false;
+    const c = counting(w.registry, {
+      afterCas: async () => {
+        if (fired) return;
+        fired = true;
+        await rollbackSegment(SEG, 0, w.load);
+        await loadSegment(SEG, [1, 7], w.load, { keep: 9 });
+      },
+    });
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+    expect(fired).toBe(true);
+    expect(res).toMatchObject({ erased: true });
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+    expect(await ledgerOf(w.registry)).not.toContain(0);
+  });
+
+  it('the rewrite path: a rollback onto the generation it replaced and a load, before its collection: erased: true', async () => {
+    const w = world();
+    await loadSegment(SEG, [1, 5], w.load, { keep: 9 }); // 0
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 1 holds, current: rewritten as 2
+    let fired = false;
+    const c = counting(w.registry, {
+      afterCas: async (n) => {
+        if (n !== 1 || fired) return;
+        fired = true;
+        await rollbackSegment(SEG, 1, w.load); // back onto the holder the rewrite replaced
+        await loadSegment(SEG, [1, 7], w.load, { keep: 9 });
+      },
+    });
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+    expect(fired).toBe(true);
+    expect(res).toMatchObject({ erased: true });
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+    expect(await ledgerOf(w.registry)).not.toContain(1);
+  });
+
+  it('a row with no usable ledger, the pointer moved past every holder, and a load that starts a ledger: erased: true', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.load, { keep: 9 }); // 0 clean
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 1 holds
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 2 holds
+    await loadSegment(SEG, [1, 3], w.load, { keep: 9 }); // 3 clean
+    await rollbackSegment(SEG, 0, w.load); // 1 and 2 are above the pointer
+    const row = (await w.registry.get(SEG))!;
+    await w.registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
+    let phase = 0;
+    const storage = onFirstOpen(
+      w.storage,
+      (g) => g === 3 && phase === 0,
+      async () => {
+        phase = 1;
+        await rollbackSegment(SEG, 3, w.load, { allowForward: true }); // a rollback starts no ledger
+      },
+    );
+    const c = counting(w.registry, {
+      // The fence reads the row (read 3), then the collection does: a load lands before that read.
+      beforeGet: async (n) => {
+        if (n === 4 && phase === 1) {
+          phase = 2;
+          await loadSegment(SEG, [1, 8], w.load, { keep: 9 }); // seeds a ledger that names 1 and 2
+        }
+      },
+    });
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage, registry: c.registry });
+    expect(phase).toBe(2);
+    expect(res).toMatchObject({ erased: true });
+    expect(await holdersOf(w.storage, 999)).toEqual([]);
+  });
+
+  it('a rollback onto an above-pointer holder and away again, between the fence and the delete: the holder stays and the call says superseded', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.load, { keep: 9 }); // 0
+    await loadSegment(SEG, [1, 5], w.load, { keep: 9 }); // 1 clean = from
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 2 holds
+    await rollbackSegment(SEG, 1, w.load);
+    let fired = false;
+    const c = counting(w.registry, {
+      afterCas: async (n) => {
+        if (n !== 1 || fired) return;
+        fired = true;
+        await rollbackSegment(SEG, 2, w.load, { allowForward: true });
+        await rollbackSegment(SEG, 1, w.load);
+      },
+    });
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+    expect(fired).toBe(true);
+    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+    // The row names it again, so it is a rollback target and is not deleted from under the row.
+    expect(await holdersOf(w.storage, 999)).toEqual([2]);
+    expect(await ledgerOf(w.registry)).toContain(2);
+  });
+});
+
+describe('a renewal that landed before the call listed the bucket', () => {
+  it('is no licence for a delete by name: the call renews the row itself, after its listing', async () => {
+    const w = world();
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // 0 current, clean
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [111, 999]); // a load in flight's object
+    let renewedBy: RegistryRecord | undefined;
+    let fired = false;
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      delete: (k, o) => w.storage.delete(k, o),
+      putImmutable: (k, b) => w.storage.putImmutable(k, b),
+      list: async function* (r) {
+        if (!fired) {
+          fired = true;
+          const row = (await w.registry.get(SEG))!;
+          await w.registry.compareAndSwap(SEG, row.token, renewPointer(row));
+          renewedBy = (await w.registry.get(SEG))!;
+        }
+        yield* w.storage.list(r);
+      },
+    };
+    const c = counting(w.registry);
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage, registry: c.registry });
+    expect(fired).toBe(true);
+    expect(res).toMatchObject({ erased: true });
+    expect(c.tally.landed).toBe(1);
+    expect((await w.registry.get(SEG))!.pointerId).not.toBe(renewedBy!.pointerId);
+  });
+
+  it('a holder above the pointer is deleted only after the call renews the row', async () => {
+    const w = world();
+    await loadSegment(SEG, [111], w.load, { keep: 9 }); // 0 current, clean
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [111, 999]);
+    const before = (await w.registry.get(SEG))!;
+    const c = counting(w.registry);
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+    expect(res).toMatchObject({ erased: true });
+    expect(c.tally.landed).toBe(1);
+    const after = (await w.registry.get(SEG))!;
+    expect(after.pointerId).not.toBe(before.pointerId);
+    expect(after.currentGen).toBe(before.currentGen);
   });
 });
 
@@ -346,12 +623,11 @@ describe('a row that is another incarnation of the name at the fence', () => {
         await loadSegment(SEG, [1, 7], w.load, { keep: 9 }); // a new incarnation, numbered above the objects left
       },
     });
-    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry }).catch(
-      (e: Error) => e,
-    );
-    // Whatever the call answers, it deleted nothing: the objects below the new row's pointer are not its to take.
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
+    // It deleted nothing: the objects below the new row's pointer are not its to take.
+    expect(res).toMatchObject({ erased: false, reason: 'superseded', collected: [] });
     expect(await holdersOf(w.storage, 999)).toEqual([0]);
-    expect(res).not.toMatchObject({ erased: true });
+    expect(await bucket(w)).toEqual([0, 1, 2]);
   });
 });
 
@@ -421,8 +697,8 @@ describe('the write is made only when the ledger names something to delete', () 
     return w;
   }
 
-  // Main makes five registry reads here and no write. The fence reads the row once before the sweep, and a row with no
-  // usable ledger is read once more after it, in case a load started a ledger meanwhile.
+  // The fence reads the row once before the sweep, and a row with no usable ledger is read once more after it, in case a
+  // load started a ledger meanwhile.
   it.each([
     ['nothing' as const, 6],
     ['unusable' as const, 7],
@@ -457,7 +733,9 @@ describe('the write is made only when the ledger names something to delete', () 
 });
 
 describe('what an erasure costs at the store an object-store registry is over', () => {
-  async function requests(shape: 'older' | 'unnamed' | 'rewrite'): Promise<[number, number]> {
+  async function requests(
+    shape: 'older' | 'unnamed' | 'no-ledger' | 'rewrite',
+  ): Promise<[number, number]> {
     const storage = new MemoryStorageDriver();
     const store = new CountingObjectStore(0, { conditionalDelete: true });
     let t = 1_000;
@@ -472,20 +750,26 @@ describe('what an erasure costs at the store an object-store registry is over', 
     } else {
       for (let i = 0; i < 3; i++) await loadSegment(SEG, [1], load, { keep: 0 });
       await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 999]); // an orphan the ledger does not name
+      if (shape === 'no-ledger') {
+        const row = (await registry.get(SEG))!;
+        await registry.compareAndSwap(SEG, row.token, { knownGens: undefined });
+      }
     }
     const [reads, writes] = [store.reads, store.writes];
     expect(await eraseIdFromSegment(SEG, 999, load)).toMatchObject({ erased: true });
     return [store.reads - reads, store.writes - writes];
   }
 
-  // Main: 5 reads and no write for both of the first two shapes.
   it('an id held only by an older generation the ledger names: 7 reads and 1 write', async () => {
     expect(await requests('older')).toEqual([7, 1]);
   });
-  it('an id held only by an older generation the ledger does not name: 6 reads and no write', async () => {
+  it('an id held only by an older generation, with a usable ledger that does not name it: 6 reads and no write', async () => {
     expect(await requests('unnamed')).toEqual([6, 0]);
   });
-  it('an id held by the current generation (a rewrite): 9 reads and 1 write, as before', async () => {
+  it('an id held only by an older generation, on a row with no usable ledger: 7 reads and no write', async () => {
+    expect(await requests('no-ledger')).toEqual([7, 0]);
+  });
+  it('an id held by the current generation (a rewrite): 9 reads and 1 write', async () => {
     expect(await requests('rewrite')).toEqual([9, 1]);
   });
 });
@@ -532,7 +816,7 @@ describe('a load publishing between the fence and the sweep', () => {
 });
 
 describe('a row with no usable ledger that a load starts between the fence and the sweep', () => {
-  it('is pruned again and swept again: erased: true, as before the ledger', async () => {
+  it('is pruned again and swept again: erased: true', async () => {
     const w = world();
     await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 0 holds
     await loadSegment(SEG, [1], w.load, { keep: 9 });
@@ -676,7 +960,7 @@ describe('holders above the pointer', () => {
     expect(b).toMatchObject({ erased: true });
   });
 
-  it('an erasure that a rollback, without allowForward, cannot undo even if a delete fails', async () => {
+  it('a holder whose delete fails is out of the ledger before the call throws', async () => {
     const w = world();
     await aboveBoth(w, false);
     const denied: IStorageDriver = {
@@ -804,9 +1088,12 @@ describe('after erased: true, no ledger entry names a generation that held the i
             } else {
               if ((await registry.get(SEG)) === null) continue;
               const held = await holdersOf(storage, s.id);
+              const namedBefore = ((await ledgerOf(registry)) ?? []).filter((g) =>
+                held.includes(g),
+              );
               const res = await eraseIdFromSegment(SEG, s.id, deps).catch(() => undefined);
               if (res === undefined || !res.erased) continue;
-              erased.count += 1;
+              if (namedBefore.length > 0) erased.count += 1;
               const named = (await ledgerOf(registry)) ?? [];
               expect(named.filter((g) => held.includes(g))).toEqual([]);
               expect(await holdersOf(storage, s.id)).toEqual([]);
@@ -815,7 +1102,7 @@ describe('after erased: true, no ledger entry names a generation that held the i
         }),
         { numRuns: reg.name === 'MemoryRegistryDriver' ? 60 : 20, seed: 7 },
       );
-      // Not vacuous: erasures that said erased: true were checked.
+      // Not vacuous: calls that said erased: true over a ledger that named a generation holding the id were checked.
       expect(erased.count).toBeGreaterThan(3);
     }, 120_000);
   });

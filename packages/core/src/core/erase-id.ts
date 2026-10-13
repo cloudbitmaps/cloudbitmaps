@@ -84,9 +84,9 @@
  * Before it deletes anything, a call that found a holder takes every generation it will delete out of the row's ledger
  * of known generations, in one write made after its search (the same write as the renewal where there is one). A
  * generation the ledger names is one a rollback can move onto and one a collection by a count spares, so the delete
- * comes after the name goes: a rollback that raced the write loses its swap, and one after it finds the generation
- * unknown. That write is made only when the ledger names something to delete, and it is the one case in which an
- * erasure of an id held only by an older generation writes the row.
+ * comes after the name goes: a rollback that raced the write loses its swap, and a collection that reads the row before
+ * a delete spares what the row names. That write is made only when the ledger names something to delete, and it is the
+ * one case in which an erasure of an id held only by an older generation writes the row.
  *
  * An object sealed under a key its row does not hold cannot be searched, and no read of the segment can open it: a
  * first load's on a row with no pointer, whose key that load has not published; on a segment with a key, a first
@@ -696,8 +696,7 @@ async function eraseOnce(
    *
    * **The prune.** A generation the row names is a rollback target the library vouches for, and a pass that keeps by a
    * count spares it. So a generation is taken out of the ledger first, and only then deleted: a rollback that read the
-   * row before the write loses its swap on the write's token, and one that reads the row after it finds the generation
-   * unknown. The generations are `byName`, the holders this call deletes one by one, and, when `sweeps` (a searched
+   * row before the write loses its swap on the write's token. The generations are `byName`, the holders this call deletes one by one, and, when `sweeps` (a searched
    * holder was found, so the collection below the pointer follows and deletes everything there), every entry of the
    * ledger numbered below the lower of `from` and the pointer the fence finds. That bound is `from` when a load has
    * since moved the pointer forward, so `from`, which this call found clean and which the load's window holds, stays
@@ -726,8 +725,9 @@ async function eraseOnce(
    * concurrent erasure's write is such a licence: two erasures of different ids on one segment that both prune the
    * same entries write once between them, the second going on under the first's write.
    *
-   * **A write that loses** to another writer is tried again from the row read after it, up to five losses in all, with
-   * the prune applied to that fresh row; the sixth outcome is `'superseded'`, with nothing deleted. A write of the row's
+   * **A write that loses** to another writer is tried again from the row read after it, with the
+   * prune applied to that fresh row. The fifth lost write across the call's fences ends the call with `'superseded'`;
+   * when it is the first write, nothing has been deleted. A write of the row's
    * leases alone that lands in between is waited out and costs no attempt, within the lease writers' bound. A row that is
    * another incarnation of the name, or one that no longer fits the premise of a call that renews (a pointer that moved,
    * a write of anything but leases, the ledger and the `pointerId`) gives its reason, as anywhere else in this function.
@@ -749,6 +749,8 @@ async function eraseOnce(
   const fence = async (plan: {
     readonly byName: readonly number[];
     readonly sweeps: boolean;
+    /** The generation the collection that follows deletes everything below, when it is not `from` (a rewrite's own). */
+    readonly below?: number;
   }): Promise<{
     readonly moved: ReturnType<typeof rowVerdict>;
     readonly sweep: boolean;
@@ -757,6 +759,8 @@ async function eraseOnce(
     readonly ledger: boolean;
     /** Whether it wrote a ledger that names fewer generations. */
     readonly pruned: boolean;
+    /** Whether the pointer had moved past every holder to delete by name, so the collection takes them. */
+    readonly past?: boolean;
   }> => {
     const renewal = rowRenewal(ref, deps);
     const churn = leaseChurn({ clock: deps.clock, rng: renewal.rng });
@@ -792,6 +796,7 @@ async function eraseOnce(
       const pointer = row.currentGen;
       let byName = plan.byName;
       let moved: ReturnType<typeof rowVerdict> = null;
+      let pastHolders = false;
       if (plan.byName.length > 0 && !held) {
         // A pointer moved forward past every holder to delete by name puts them below it, where the collection takes
         // them; no load in flight can publish a number below the pointer, so no renewal is owed.
@@ -804,11 +809,12 @@ async function eraseOnce(
         if (!below) return refuse(pointerless || pointer !== null ? 'superseded' : 'no-generation');
         byName = [];
         moved = 'superseded';
+        pastHolders = true;
       }
       const ledger = usableKnownGens(row);
       const doomed = new Set<number>(byName);
       if (plan.sweeps && ledger !== undefined && pointer !== null) {
-        const bound = Math.min(from, pointer);
+        const bound = Math.min(plan.below ?? from, pointer);
         for (const e of ledger) if (e.generation < bound) doomed.add(e.generation);
         if (byName.length === 0) for (const h of plan.byName) if (h < pointer) doomed.add(h);
       }
@@ -819,7 +825,14 @@ async function eraseOnce(
       if (!named && (!renew || renewedAfter)) {
         premise = row;
         premiseToken = row.token;
-        return { moved, sweep: plan.sweeps, byName, ledger: ledger !== undefined, pruned: false };
+        return {
+          moved,
+          sweep: plan.sweeps,
+          byName,
+          ledger: ledger !== undefined,
+          pruned: false,
+          past: pastHolders,
+        };
       }
       const written = await renewal.write(row, {
         ...(renew ? renewPointer(row) : {}),
@@ -828,7 +841,14 @@ async function eraseOnce(
       if ('row' in written) {
         premise = written.row;
         premiseToken = written.row.token;
-        return { moved, sweep: plan.sweeps, byName, ledger: ledger !== undefined, pruned: named };
+        return {
+          moved,
+          sweep: plan.sweeps,
+          byName,
+          ledger: ledger !== undefined,
+          pruned: named,
+          past: pastHolders,
+        };
       }
       const now = written.lost;
       const settled = await churn.settle(row, now, () => deps.registry.get(ref));
@@ -840,6 +860,43 @@ async function eraseOnce(
       if (fenceLost >= FENCE_ATTEMPTS) return refuse('superseded');
       row = now;
     }
+  };
+
+  /**
+   * The collection again, after one that spared a generation the row names, and after one made over a row that had no
+   * usable ledger at the fence. Either a rollback onto a holder, or a load that took the holder into its window, or a
+   * load that started a ledger from the bucket, made the row name what the collection meant to delete since the fence
+   * took it out. So the fence is made again (with `by` the holders the pointer moved past, and the collection's `below`
+   * bound when it is not `from`) and the collection runs again, until one spares nothing the row names. Each pass that
+   * writes counts against the bound on lost writes the fences share, and there are at most that many passes.
+   */
+  const collectAgain = async (
+    start: { readonly spared: readonly number[]; readonly ledgered: boolean },
+    plan: { readonly byName: readonly number[]; readonly below?: number },
+  ): Promise<{ deleted: number[]; missing?: number; moved: ReturnType<typeof rowVerdict> }> => {
+    const deleted: number[] = [];
+    let moved: ReturnType<typeof rowVerdict> = null;
+    let missing: number | undefined;
+    let spared = start.spared;
+    for (
+      let passes = 0;
+      passes < FENCE_ATTEMPTS &&
+      missing === undefined &&
+      ((!start.ledgered && passes === 0) || spared.length > 0);
+      passes++
+    ) {
+      const again = await fence({ byName: plan.byName, sweeps: true, below: plan.below });
+      if (again.moved !== null && again.past !== true) {
+        moved = again.moved;
+        break;
+      }
+      if (!again.pruned) break;
+      const more = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
+      deleted.push(...more.deleted);
+      missing = more.missing;
+      spared = more.knownSpared ?? [];
+    }
+    return missing === undefined ? { deleted, moved } : { deleted, moved, missing };
   };
 
   /**
@@ -879,6 +936,11 @@ async function eraseOnce(
       if (missing !== undefined) return { deleted, moved: 'superseded', missing };
       // Another erasure's fence (a renewal of the pointerId, a prune of the ledger) leaves the premise standing.
       moved = rowVerdict(row, ['pointerId', 'knownGens']);
+      // A holder the row names again (a rollback onto it, and away, since the fence took it out) is a rollback target
+      // and a window entry: it is not deleted from under the row.
+      if (moved === null && usableKnownGens(row)?.some((e) => e.generation === generation)) {
+        moved = 'superseded';
+      }
       if (moved !== null) break;
       try {
         await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
@@ -1116,35 +1178,28 @@ async function eraseOnce(
     let byName: readonly number[] = fenced;
     let sweep = sweeping;
     let ledgered = true;
+    let past = false;
     if (sweeping || fenced.length > 0) {
       const made = await fence({ byName: fenced, sweeps: sweeping });
       moved = made.moved;
       byName = made.byName;
       sweep = made.sweep;
       ledgered = made.ledger;
+      past = made.past === true;
     }
-    const swept: { deleted: number[]; missing?: number } = sweep
+    const swept: { deleted: number[]; missing?: number; knownSpared?: number[] } = sweep
       ? await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true })
       : { deleted: [] };
     const collected = [...swept.deleted];
     let missing = swept.missing;
-    // A row with no usable ledger names nothing to prune, but a load that lands before the sweep reads the row starts a
-    // ledger from the bucket, and that ledger names the holders the sweep then spares. So the row is read again once the
-    // sweep is done: what the ledger now names below the sweep's bound is pruned and swept again, within the same bound
-    // on lost writes.
-    for (
-      let again = sweep && !ledgered, passes = 0;
-      again && passes < FENCE_ATTEMPTS && missing === undefined && moved === null;
-      passes++
-    ) {
-      const recheck = await fence({ byName: [], sweeps: true });
-      if (recheck.moved !== null) moved = recheck.moved;
-      again = recheck.pruned && recheck.moved === null;
-      if (again) {
-        const more = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
-        collected.push(...more.deleted);
-        missing = more.missing;
-      }
+    if (sweep && missing === undefined && (moved === null || past)) {
+      const again = await collectAgain(
+        { spared: swept.knownSpared ?? [], ledgered },
+        { byName: past ? fenced : [] },
+      );
+      collected.push(...again.deleted);
+      missing = again.missing;
+      if (again.moved !== null) moved = again.moved;
     }
     // A collection that stopped on a rollback has moved the pointer off `from`, so nothing above it is deleted.
     if (byName.length > 0 && missing === undefined) {
@@ -1251,7 +1306,7 @@ async function eraseOnce(
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
       // correct; this only saves a round trip on the common race, which the catch reports either way.
       const beforeVerify = await deps.registry.get(ref);
-      const early = rowVerdict(beforeVerify);
+      const early = rowVerdict(beforeVerify, ['knownGens']);
       if (early !== null) return refused(early, written);
       await read(() =>
         verifyGeneration(deps.storage, key, { ...tally, metadata }, cryptoAt(generation)),
@@ -1410,6 +1465,7 @@ async function eraseOnce(
     expectToken: fromToken,
     // A lease written while the rewrite streams moves the token and nothing it derived from: it does not refuse it.
     expectRow: record,
+    expectRowIgnores: ['knownGens'],
     summary,
     // The row then records that no generation below the new pointer is kept, as the collection below leaves it: its
     // ledger is the rewrite alone, whose footer checksum is the one its summary describes.
@@ -1458,7 +1514,21 @@ async function eraseOnce(
   if (swept.missing !== undefined) {
     throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
   }
-  const collected = swept.deleted;
+  const collected = [...swept.deleted];
+  let missing: number | undefined;
+  // The collection spared a generation the row names, which a rollback onto it or a load's window made known after the
+  // rewrite's write left the ledger as the rewrite alone: it is taken out again and the collection runs again.
+  if (missing === undefined && (swept.knownSpared?.length ?? 0) > 0) {
+    const again = await collectAgain(
+      { spared: swept.knownSpared ?? [], ledgered: true },
+      { byName: [], below: generation },
+    );
+    collected.push(...again.deleted);
+    missing = again.missing;
+  }
+  if (missing !== undefined) {
+    throw pointerOnDeletedError(ref, { kind: 'erasure' }, missing);
+  }
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
@@ -1501,8 +1571,9 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
  * (`lost`; `null` for a row that is gone), for the caller to decide on. A write that gets no answer is settled by
  * reading the row. A row still as the write found it gets a fresh compare-and-swap from the row just read, a request of
  * its own carrying the same version, so at most one of the two lands, after a wait on the injected clock under 500 ms,
- * then 1 s, then 2 s (spread by the rng), at most three times across the step's writes, as a load's publish does;
- * then, or at once with no clock to wait on, or when the row cannot be read, the registry's `TransientError` is thrown.
+ * then 1 s, then 2 s (spread by the rng), at most three times across the writes of one such step, as a load's publish
+ * does (a call's fences are one step each, and a call makes up to six); then, or at once with no clock to wait on, or
+ * when the row cannot be read, the registry's `TransientError` is thrown.
  * Any other row is `lost`, the step's own write possibly among it: only the caller knows what may follow from it.
  */
 function rowRenewal(
