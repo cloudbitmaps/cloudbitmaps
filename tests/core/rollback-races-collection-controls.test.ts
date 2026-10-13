@@ -247,6 +247,8 @@ describe('an erasure whose collection below the pointer was raced stops before i
       storage: hookedDelete(w.storage, 0, { at }),
     });
     await stalledAt(at, erasure);
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 0, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
     const err = await settled(erasure);
@@ -328,6 +330,8 @@ describe('a segment destroyed between the read that allowed the delete and the d
       storage: hookedDelete(w.storage, 1, { at }),
     });
     await stalledAt(at, erasure);
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 1, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     await destroy(w);
     at.open();

@@ -334,8 +334,7 @@ below the pointer that its collection will delete. The current generation is nev
 is kept. Only then does it delete. So a rollback that read the row before the write loses its swap, and the collection,
 which spares every generation the row names when it reads the row before each delete, spares what a load or a rollback
 has made known since; a name that comes back that way, below the generation the call found current, is taken out of the
-ledger again before the call deletes it. The same write renews the row's `pointerId` when the call deletes by name. What the write
-does in a race. **A rollback without `allowUnknown` cannot bring an erased generation back, even when a delete fails** (an erasure that ends with an `error:` note because it could not remove a generation, or with `'superseded'`, or that crashes after the write): the generation is already out of the ledger, so the rollback is refused as unknown, above the pointer and below it. The two cases the pointer alone decides are the exception: a row with no usable `knownGens`, and a target below a full ledger's bound (its least recently current entry that no lease names), where a rollback below the pointer needs no flag. Re-run the erasure to delete what it could not. What the write does in a race:
+ledger again before the call deletes it. The same write renews the row's `pointerId` when the call deletes by name. **A rollback without `allowUnknown` cannot bring an erased generation back, even when a delete fails** (an erasure that ends with an `error:` note because it could not remove a generation, or with `'superseded'`, or that crashes after the write): the generation is already out of the ledger, so the rollback is refused as unknown, above the pointer and below it. The two cases the pointer alone decides are the exception: a row with no usable `knownGens`, and a target below a full ledger's bound (its least recently current entry that no lease names), where a rollback below the pointer needs no flag. Re-run the erasure to delete what it could not. What the write does in a race:
 
 - **No write when none is owed.** A ledger that names nothing to delete, and no renewal to make, costs no write. Neither
   does a call whose renewal another erasure's write already made after this call listed the bucket and whose names that
@@ -346,7 +345,8 @@ does in a race. **A rollback without `allowUnknown` cannot bring an erased gener
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has
   left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but one
   that still sits above it is `'superseded'` and deletes nothing by name. A rollback onto a holder (it needs `allowUnknown`, the
-  holder being out of the ledger) leaves that holder current, and the call reports `'superseded'` after it has taken the
+  holder being out of the ledger; on a row with no usable ledger nothing is taken out, and below the pointer the pointer
+  alone decides) leaves that holder current, and the call reports `'superseded'` after it has taken the
   holders below the pointer.
 - **A write that loses** to another writer is made again against the row read after it. The fifth lost write across the
   call's fences ends the call with `'superseded'` and no claim; when it is the first write, nothing was deleted. On a

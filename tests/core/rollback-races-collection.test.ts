@@ -1,6 +1,6 @@
 import { runConsistencyCheck } from '@cloudbitmaps/core';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { NotFoundError, TransientError, WriteConflictError } from '@/core/errors';
+import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { DELETE_SETTLE_WAITS_MS, gcOrphanGenerations, watchDeletes } from '@/core/generation-gc';
 import { loadSegment } from '@/core/load';
 import { rollbackSegment } from '@/core/rollback';
@@ -252,6 +252,8 @@ describe('a collection pass (the listing pass), raced by a rollback onto the gen
       { audit },
     );
     await stalledAt(at, erasure);
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 0, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
 
@@ -415,6 +417,8 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
       { audit },
     );
     await stalledAt(at, erasure);
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 1, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     at.open();
 
@@ -438,6 +442,8 @@ describe("an erasure's delete of a holder above the pointer, raced by a forward 
       { audit },
     );
     await stalledAt(at, erasure);
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 2, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await rollbackSegment(REF, 2, w.deps, { allowUnknown: true });
     at.open();
 

@@ -2084,7 +2084,7 @@ export class CloudRoaring {
    *
    * `{ allowUnknown: true }` moves onto a present object the row does not vouch for, or one whose checksum differs from
    * the recorded one, as long as it is the segment's kind of object, opens, and names the generation, and records it as
-   * known. On an encrypted segment, outside the two cases the pointer alone decides (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
+   * known (over a usable record; a row with none stays without one). On an encrypted segment, outside the two cases the pointer alone decides (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
    * one that does not unwrap it, it is refused with `KeyUnavailableError` before the target is read, since an object
    * sealed under a key no row holds passes every check that needs no key, and a key service that did not answer in
    * time is thrown as `TransientError`, to retry. Every move the row did not vouch for is audited with `unknown: true`.

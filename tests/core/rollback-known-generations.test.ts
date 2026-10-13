@@ -871,47 +871,65 @@ describe('a ledger padded to 128 by leased extras, and an *Into ledger with the 
   });
 });
 
-describe('what the ledger no longer names after a smaller keep (needs allowUnknown)', () => {
-  const KEEP_ALL = Number.MAX_SAFE_INTEGER;
-  it('a generation a lease spared, which the ledger had forgotten while full', async () => {
-    const w = world(false);
-    for (let i = 0; i < 140; i++) await loadSegment(SEG, [i % 50], w.deps, { keep: KEEP_ALL });
-    const row = await rowOf(w);
-    await takeLease(SEG, w.deps, {
-      holder: '00000000000000aa',
-      generation: 5,
-      until: T0 + 3_600_000,
-      row,
-      current: false,
+describe.each([
+  { name: 'cleartext', encrypted: false },
+  { name: 'encrypted', encrypted: true },
+])(
+  'what the ledger no longer names after a smaller keep (needs allowUnknown): $name',
+  ({ encrypted }) => {
+    const KEEP_ALL = Number.MAX_SAFE_INTEGER;
+    it('a generation a lease spared, which the ledger had forgotten while full', async () => {
+      const w = world(encrypted);
+      for (let i = 0; i < 140; i++) await loadSegment(SEG, [i % 50], w.deps, { keep: KEEP_ALL });
+      const row = await rowOf(w);
+      await takeLease(SEG, w.deps, {
+        holder: '00000000000000aa',
+        generation: 5,
+        until: T0 + 3_600_000,
+        row,
+        current: false,
+      });
+      await loadSegment(SEG, [7, 8], w.deps, { keep: 1 });
+      expect(await names(w)).toEqual([139, 140]);
+      expect(await generationsOf(w.memory, SEG)).toContain(5);
+      await expect(rollbackSegment(SEG, 5, w.rollbackDeps(false))).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      if (encrypted) {
+        // Nothing vouches for it and nothing opens it without the key: the flag does not widen that.
+        await expect(
+          rollbackSegment(SEG, 5, w.rollbackDeps(false), { allowUnknown: true }),
+        ).rejects.toBeInstanceOf(KeyUnavailableError);
+      }
+      await rollbackSegment(SEG, 5, w.rollbackDeps(), { allowUnknown: true });
+      expect((await rowOf(w)).currentGen).toBe(5);
     });
-    await loadSegment(SEG, [7, 8], w.deps, { keep: 1 });
-    expect(await names(w)).toEqual([139, 140]);
-    expect(await generationsOf(w.memory, SEG)).toContain(5);
-    await expect(rollbackSegment(SEG, 5, w.rollbackDeps(false))).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    await rollbackSegment(SEG, 5, w.rollbackDeps(), { allowUnknown: true });
-    expect((await rowOf(w)).currentGen).toBe(5);
-  });
 
-  it('a generation whose delete failed', async () => {
-    const w = world(false);
-    for (let i = 0; i < 140; i++) await loadSegment(SEG, [i % 50], w.deps, { keep: KEEP_ALL });
-    const storage = Object.create(w.memory) as IStorageDriver;
-    storage.delete = (key: GenKey, opts?: unknown) =>
-      key.generation === 100
-        ? Promise.reject(new Error('AccessDenied'))
-        : (w.memory.delete as (k: GenKey, o?: unknown) => Promise<void>)(key, opts);
-    await expect(loadSegment(SEG, [7, 8], { ...w.deps, storage }, { keep: 1 })).rejects.toThrow(
-      'AccessDenied',
-    );
-    expect(await generationsOf(w.memory, SEG)).toContain(100);
-    await expect(rollbackSegment(SEG, 100, w.rollbackDeps())).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    await rollbackSegment(SEG, 100, w.rollbackDeps(), { allowUnknown: true });
-  });
-});
+    it('a generation whose delete failed', async () => {
+      const w = world(encrypted);
+      for (let i = 0; i < 140; i++) await loadSegment(SEG, [i % 50], w.deps, { keep: KEEP_ALL });
+      const storage = Object.create(w.memory) as IStorageDriver;
+      storage.delete = (key: GenKey, opts?: unknown) =>
+        key.generation === 100
+          ? Promise.reject(new Error('AccessDenied'))
+          : (w.memory.delete as (k: GenKey, o?: unknown) => Promise<void>)(key, opts);
+      await expect(loadSegment(SEG, [7, 8], { ...w.deps, storage }, { keep: 1 })).rejects.toThrow(
+        'AccessDenied',
+      );
+      expect(await generationsOf(w.memory, SEG)).toContain(100);
+      await expect(rollbackSegment(SEG, 100, w.rollbackDeps())).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      if (encrypted) {
+        // Nothing vouches for it and nothing opens it without the key: the flag does not widen that.
+        await expect(
+          rollbackSegment(SEG, 100, w.rollbackDeps(false), { allowUnknown: true }),
+        ).rejects.toBeInstanceOf(KeyUnavailableError);
+      }
+      await rollbackSegment(SEG, 100, w.rollbackDeps(), { allowUnknown: true });
+    });
+  },
+);
 
 describe('every loop that deletes, against a rollback that checks the ledger', () => {
   it('a load’s eviction by name: the evicted generation is out of the ledger first, so a rollback onto it is refused', async () => {
@@ -1213,9 +1231,15 @@ describe.each([
           : w.memory.delete(key, options);
       await eraseIdFromSegment(SEG, 4, { ...w.deps, storage }).catch(() => undefined);
       expect(await generationsOf(w.memory, SEG)).toContain(1);
-      await expect(rollbackSegment(SEG, 1, w.rollbackDeps(false))).rejects.toBeInstanceOf(
-        ValidationError,
-      );
+      for (const withKey of [true, false]) {
+        await expect(rollbackSegment(SEG, 1, w.rollbackDeps(withKey))).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+      }
+      expect((await rowOf(w)).currentGen).toBe(2);
+      const audit = new RecordingAuditSink();
+      await rollbackSegment(SEG, 1, w.rollbackDeps(), { audit, allowUnknown: true });
+      expect(rolled(events(audit)[0]!)).toMatchObject({ generation: 1, unknown: true });
     });
   },
 );

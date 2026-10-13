@@ -599,8 +599,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
   `TransientError` (below). A load that evicts the target from the row's record between the rollback's read and its
-  swap is such a write. Every deleter takes what it will delete out of the record before it deletes, or never deletes what the row names, so
-  none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
+  swap is such a write. Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
+  the row names, so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
   its pass that keeps by count skips every generation the row names when it re-reads the row, an erasure's rewrite leaves
   only the rewrite in it, and an erasure that rewrites nothing removes each generation it will delete from it in a write
   made before its first delete. A rollback that read the row before such a write loses its swap with
@@ -616,7 +616,8 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 - **A generation the row does not know** throws `ValidationError` before any request to storage, naming the ones it
   does know. That covers an object a crashed load left, one a refused load kept, one sealed under a key no row holds (such
   as the one the loser of two concurrent first loads leaves) and a load published after the point a registry was restored
-  to. `allowUnknown: true` moves onto such an object anyway, and records it as known.
+  to. `allowUnknown: true` moves onto such an object anyway, and records it as known (over a usable record; a row with none
+  stays without one).
 - **A known generation whose object is not the one the row recorded** throws `IntegrityError` before the target is
   opened, with or without a keystore: another object was stored under the number, for example by a write that never
   published after the original was collected. It reports as another object, not as a failed decryption. What is compared

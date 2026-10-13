@@ -98,7 +98,7 @@ so, and so do the module headers in the code.
     load that takes a free number below it keeps it known, while the list holds fewer than 128 entries. So is one that a
     lease holds, as "Lease each generation as it lands" in the loading guide describes. A known target needs no key, on an
     encrypted segment too, forward or back: the checksum vouches for it.
-  - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known. On an
+  - `{ allowUnknown: true }` moves onto any present object that the row's keys can use, and records it as known (over a usable record; a row with none stays without one). On an
     encrypted segment, outside the two cases below that the pointer alone decides, it needs the key (`KeyUnavailableError` otherwise). Every move the row did not vouch for is audited:
     `segment.rollback` carries `unknown: true`.
   - **Two cases are decided by the pointer alone**: a target below the pointer needs no flag, no key and no checksum

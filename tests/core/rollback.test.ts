@@ -360,6 +360,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     expect(await holdersOf(w.storage, 999)).toEqual([]);
     expect(await generationsOf(w.deps)).toEqual([0]);
     for (const g of [1, 2]) {
+      await expect(rollbackSegment(SEG, g, w.deps)).rejects.toBeInstanceOf(ValidationError);
       await expect(rollbackSegment(SEG, g, w.deps, { allowUnknown: true })).rejects.toBeInstanceOf(
         NotFoundError,
       );
