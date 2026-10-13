@@ -19,6 +19,7 @@ import type {
 } from '@/core/ports';
 import { runConsistencyCheck } from '@/core/consistency';
 import { loadSegment } from '@/core/load';
+import { rollbackSegment } from '@/core/rollback';
 import { setSegmentRetention } from '@/core/retention';
 import { roaringCodec } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -161,6 +162,13 @@ async function loadMany(
 const numbers = (row: RegistryRecord | null): number[] =>
   (row?.knownGens ?? []).map((e) => e.generation);
 
+/**
+ * `calls` grouped by segment, each segment's own order kept. Segments are checked at once, and a registry lists them in
+ * its own order (a directory's, for local files), so the order across segments says nothing; the order within one does.
+ */
+const bySegment = (calls: readonly Call[]): Call[] =>
+  [...calls].sort((a, b) => (a.segment < b.segment ? -1 : a.segment > b.segment ? 1 : 0));
+
 const footerReads = (calls: readonly Call[]): Call[] =>
   calls.filter((c) => c.method === 'getTail' && c.bytes === FOOTER);
 
@@ -215,13 +223,54 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
     expect(report).toEqual({ checked: 1, inconsistent: [], errored: [], generationsUnchecked: 0 });
   });
 
-  it('an object that is not a .crbm under a known number is not the one recorded', async () => {
+  it.each([[400], [10]])(
+    'an object of %i bytes that is not a .crbm under a known number is not the one recorded',
+    async (size) => {
+      const w = world();
+      await loadMany(w.deps, SEG, 3);
+      await putOver(w.memory, { ...SEG, generation: 1 }, new Uint8Array(size).fill(7));
+      const report = await runConsistencyCheck(w.deps, { generations: true });
+      expect(report.inconsistent).toEqual([mismatch(1, 2)]);
+      expect(report.errored).toEqual([]);
+    },
+  );
+
+  it('an object under a number the ledger does not name is neither read nor reported', async () => {
     const w = world();
     await loadMany(w.deps, SEG, 3);
-    await putOver(w.memory, { ...SEG, generation: 1 }, new Uint8Array(400).fill(7));
+    expect(numbers(await w.registry.get(SEG))).toEqual([1, 2]);
+    // Generation 0 was collected, and generation 7 was never published: put other bytes under both.
+    const other = await bytesOf(w.memory, { ...SEG, generation: 2 });
+    await putOver(w.memory, { ...SEG, generation: 0 }, new Uint8Array(50).fill(3));
+    await putOver(w.memory, { ...SEG, generation: 7 }, other);
+    w.calls.length = 0;
     const report = await runConsistencyCheck(w.deps, { generations: true });
-    expect(report.inconsistent).toEqual([mismatch(1, 2)]);
-    expect(report.errored).toEqual([]);
+    expect(report).toEqual({ checked: 1, inconsistent: [], errored: [], generationsUnchecked: 0 });
+    expect(w.calls.filter((c) => c.generation === 0 || c.generation === 7)).toEqual([]);
+  });
+
+  it('after a rollback the entries above the pointer are read and held, and a swap of one is reported', async () => {
+    const w = world();
+    await loadMany(w.deps, SEG, 3, 10);
+    await rollbackSegment(SEG, 0, w.deps);
+    const row = (await w.registry.get(SEG))!;
+    expect(row.currentGen).toBe(0);
+    expect(numbers(row).sort()).toEqual([0, 1, 2]);
+    w.calls.length = 0;
+    const clean = await runConsistencyCheck(w.deps, { generations: true });
+    expect(clean).toEqual({ checked: 1, inconsistent: [], errored: [], generationsUnchecked: 0 });
+    expect(
+      footerReads(w.calls)
+        .map((c) => c.generation)
+        .sort(),
+    ).toEqual([0, 1, 2]);
+    await putOver(
+      w.memory,
+      { ...SEG, generation: 2 },
+      await bytesOf(w.memory, { ...SEG, generation: 1 }),
+    );
+    const report = await runConsistencyCheck(w.deps, { generations: true });
+    expect(report.inconsistent).toEqual([mismatch(2, 0)]);
   });
 
   it('the current generation swapped is reported, and with summaries both issues are in the report', async () => {
@@ -320,7 +369,7 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
     const report = await runConsistencyCheck(w.deps, { concurrency: 1 });
     expect(report).toEqual({ checked: 2, inconsistent: [], errored: [] });
     expect(report).not.toHaveProperty('generationsUnchecked');
-    expect(w.calls).toEqual([
+    expect(bySegment(w.calls)).toEqual([
       { method: 'getTail', segment: 's', generation: 2, bytes: 0 },
       { method: 'getTail', segment: 't', generation: 2, bytes: 0 },
     ]);
@@ -332,7 +381,7 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
     await loadMany(w.deps, { namespace: 'ns', segment: 't' }, 3);
     w.calls.length = 0;
     await runConsistencyCheck(w.deps, { generations: true, concurrency: 1 });
-    expect(w.calls).toEqual([
+    expect(bySegment(w.calls)).toEqual([
       { method: 'getTail', segment: 's', generation: 2, bytes: 0 },
       { method: 'getTail', segment: 's', generation: 1, bytes: FOOTER },
       { method: 'getTail', segment: 's', generation: 2, bytes: FOOTER },
@@ -442,15 +491,122 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
   });
 });
 
+describe.each(registries)(
+  'a ledger a registry of your own hands back, over %s',
+  (_name, makeRegistry) => {
+    const entry = (generation: unknown, footerCrc: unknown) => ({ generation, footerCrc });
+    // The row's own last entry, so only the entries before it make the ledger wrong.
+    const last = (r: RegistryRecord) => r.knownGens!.at(-1)!;
+    const bad: ReadonlyArray<readonly [string, (row: RegistryRecord) => unknown]> = [
+      ['null', () => null],
+      ['5', () => 5],
+      ['{}', () => ({})],
+      ['[null]', () => [null]],
+      ['[undefined]', () => [undefined]],
+      ['an entry that is an array', () => [[1, 2]]],
+      [
+        '5,000 entries',
+        (r) => [...Array.from({ length: 4999 }, (_, i) => entry(i + 100, 0)), last(r)],
+      ],
+      [
+        '385 entries',
+        (r) => [...Array.from({ length: 384 }, (_, i) => entry(i + 100, 0)), last(r)],
+      ],
+      ['a checksum of 2^33', (r) => [entry(1, 2 ** 33), last(r)]],
+      ['a checksum of -1', (r) => [entry(1, -1), last(r)]],
+      ['a checksum that is a string', (r) => [entry(1, '5'), last(r)]],
+      ['a checksum that is missing', (r) => [{ generation: 1 }, last(r)]],
+      ['a generation of -1', (r) => [entry(-1, 0), last(r)]],
+      ['a generation that is a fraction', (r) => [entry(1.5, 0), last(r)]],
+      ['an undeclared key', (r) => [{ ...entry(1, 0), extra: 1 }, last(r)]],
+      ['a repeated number', (r) => [entry(1, 0), entry(1, 0), last(r)]],
+    ];
+
+    it.each(bad)(
+      '%s is counted, nothing of it is read, and the other segments are checked',
+      async (_label, ledger) => {
+        const memory = new MemoryStorageDriver();
+        const registry = makeRegistry();
+        const calls: Call[] = [];
+        const storage = recording(memory, calls);
+        await loadMany({ storage, registry }, SEG, 3);
+        await loadMany({ storage, registry }, { namespace: 'ns', segment: 't' }, 3);
+        await putOver(
+          memory,
+          { namespace: 'ns', segment: 't', generation: 1 },
+          await bytesOf(memory, { namespace: 'ns', segment: 't', generation: 2 }),
+        );
+        const viewed = viewing(registry, (row) =>
+          row.segment === 's'
+            ? ({ ...row, knownGens: ledger(row) } as unknown as RegistryRecord)
+            : row,
+        );
+        calls.length = 0;
+        const report = await runConsistencyCheck(
+          { storage, registry: viewed },
+          { generations: true },
+        );
+        expect(report.errored).toEqual([]);
+        expect(report.generationsUnchecked).toBe(1);
+        expect(report.inconsistent).toEqual([{ ...mismatch(1, 2), segment: 't' }]);
+        expect(footerReads(calls).filter((c) => c.segment === 's')).toEqual([]);
+      },
+    );
+
+    it("a row that fails while its ledger is read is that segment's error, and the check goes on", async () => {
+      const memory = new MemoryStorageDriver();
+      const registry = makeRegistry();
+      await loadMany({ storage: memory, registry }, SEG, 3);
+      await loadMany({ storage: memory, registry }, { namespace: 'ns', segment: 't' }, 3);
+      await putOver(
+        memory,
+        { namespace: 'ns', segment: 't', generation: 1 },
+        await bytesOf(memory, { namespace: 'ns', segment: 't', generation: 2 }),
+      );
+      // A summary that is null makes the ledger's agreement test throw.
+      const viewed = viewing(registry, (row) =>
+        row.segment === 's' ? ({ ...row, summary: null } as unknown as RegistryRecord) : row,
+      );
+      const report = await runConsistencyCheck(
+        { storage: memory, registry: viewed },
+        { generations: true },
+      );
+      expect(report.errored.map((e) => e.segment)).toEqual(['s']);
+      expect(report.inconsistent).toEqual([{ ...mismatch(1, 2), segment: 't' }]);
+      expect(report.generationsUnchecked).toBe(0);
+    });
+
+    it('a size the driver answers that is not a byte count is an error of the segment, not a mismatch', async () => {
+      const memory = new MemoryStorageDriver();
+      const registry = makeRegistry();
+      await loadMany({ storage: memory, registry }, SEG, 3);
+      const lying: IStorageDriver = {
+        ...recording(memory, []),
+        getTail: async (key, maxBytes) => {
+          const tail = await memory.getTail(key, maxBytes);
+          return maxBytes === FOOTER ? { ...tail, size: 'big' as unknown as number } : tail;
+        },
+      };
+      const report = await runConsistencyCheck({ storage: lying, registry }, { generations: true });
+      expect(report.inconsistent).toEqual([]);
+      expect(report.errored).toHaveLength(1);
+      expect(report.errored[0]!.error).toMatch(/not a byte count/);
+    });
+  },
+);
+
 describe('the option', () => {
   it('is a boolean, in the core check and in the store', async () => {
     const backend = new MemoryStorage();
     const store = new CloudRoaring({ storage: backend, retry: false });
     await expect(
       runConsistencyCheck(backend, { generations: 'yes' as unknown as boolean }),
+    ).rejects.toThrow('generations must be a boolean; got yes');
+    await expect(
+      runConsistencyCheck(backend, { generations: 'yes' as unknown as boolean }),
     ).rejects.toBeInstanceOf(ValidationError);
     await expect(store.checkConsistency({ generations: 1 as unknown as boolean })).rejects.toThrow(
-      /generations/,
+      'checkConsistency: `generations` must be a boolean; got a number',
     );
   });
 

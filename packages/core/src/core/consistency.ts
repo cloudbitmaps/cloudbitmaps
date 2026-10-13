@@ -9,13 +9,17 @@
  *
  * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
  * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
- * `errored` (never aborts the scan). Each segment is checked against its **authoritative live pointer** — one
+ * `errored` (never aborts the scan). One segment can add several entries to `inconsistent` (its current object, and with
+ * `generations` one per known generation whose object is not the one recorded) and can also be in `errored`, when a
+ * read failed after those were found; with `generations` a segment costs up to one read per entry of its ledger.
+ * Each segment is checked against its **authoritative live pointer** — one
  * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which a driver may
  * serve eventually-consistently and so lag a recent in-place pointer advance: trusting it would both
  * miss a torn *live* generation and cry torn on a generation the pointer has already advanced past (GC'd during
- * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→read gap can still yield a
- * transient false positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run
- * to confirm a reported tear.
+ * the scan). Residual: a load's publish plus a GC landing in the per-segment gap between the pointer read and the
+ * object reads (one read, or with `generations` as many as the ledger names) can still yield a transient false
+ * positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run to confirm a
+ * reported tear.
  */
 
 import { requirePositiveInteger } from './check';
@@ -29,11 +33,13 @@ import {
 } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
-import { footerCrcUnder, openNamedGeneration } from './crbm-open';
+import type { BlobReader } from './blob';
+import { openNamedGeneration, storageBlobReader } from './crbm-open';
+import { readFooter } from './crbm/reader';
 import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
-import { usableKnownGens } from './known-generations';
+import { MAX_STORED_KNOWN_GENERATIONS, usableKnownGens } from './known-generations';
 import { summaryAgrees, usableSummary } from './summary';
 import { validateUserNamespace } from './validate';
 
@@ -59,7 +65,11 @@ const DEFAULT_CHECK_CONCURRENCY = 8;
 export interface ConsistencyIssue {
   readonly segment: string;
   readonly namespace?: string;
-  /** The registry's `currentGen` for the segment — the generation whose `.crbm` is missing from Storage. */
+  /**
+   * The registry's `currentGen` for the segment. For `missing-storage-generation` it is the generation whose `.crbm` is
+   * missing from Storage; for the other issues it is the segment's current generation, whichever generation the issue
+   * is about (see `generation`).
+   */
   readonly currentGen: number;
   /**
    * `missing-storage-generation`: `currentGen` references a Storage generation that is not present (torn restore).
@@ -71,8 +81,12 @@ export interface ConsistencyIssue {
    * object, which stops that store using it; one whose fingerprint names no object is not used, so every read opens the
    * object unchecked.
    * `known-generation-mismatch` (only when asked for): the object under the number `generation` is not the one the row's
-   * ledger of known generations recorded for it: its footer checksum differs, or it is not a `.crbm` object at all. It
-   * says nothing of what a rollback does with that generation.
+   * ledger of known generations recorded for it: its footer checksum differs, or its footer fails its own checks (it is
+   * not a `.crbm` object, or is cut short). It says nothing of what a rollback does with that generation.
+   * What it covers: each object's footer is held to the recorded checksum, so another object, or bytes that are not a
+   * `.crbm`, under a known number is found. It does not find damage inside an object whose footer is intact (a cut or a
+   * flipped byte in the body: a read of that generation reports it as `IntegrityError`), nor a metadata change that keeps
+   * the footer's bytes.
    */
   readonly issue: 'missing-storage-generation' | 'summary-mismatch' | 'known-generation-mismatch';
   /**
@@ -93,12 +107,17 @@ export interface ConsistencyErrorEntry {
 export interface ConsistencyReport {
   /** Registered segments scanned (a `destroyed` segment counts as scanned but is never an issue). */
   readonly checked: number;
-  /** Segments whose `currentGen` `.crbm` is absent — recover the object store (or restore to a coherent point). */
+  /**
+   * The issues found, one entry each: a segment whose `currentGen` `.crbm` is absent (recover the object store, or
+   * restore to a coherent point), and with the options asked for the other kinds. One segment can have several entries:
+   * at most one for its current object plus one per entry of its ledger, so at most 1 plus the ledger's length (384 at
+   * most). The ledger's length is bounded by the registry, and the report is not capped.
+   */
   readonly inconsistent: ConsistencyIssue[];
   /**
    * Segments that couldn't be read this pass (a transient/partial object store during a restore is exactly when
-   * this runs) — **triage these too**: an unread segment is neither proven-coherent nor proven-torn. Empty on a
-   * clean pass.
+   * this runs) — **triage these too**: an unread segment is neither proven-coherent nor proven-torn. A segment can be in
+   * this list and in `inconsistent` too: what was found before the read that failed is kept. Empty on a clean pass.
    */
   readonly errored: ConsistencyErrorEntry[];
   /**
@@ -109,16 +128,16 @@ export interface ConsistencyReport {
   readonly summariesUnchecked?: number;
   /**
    * With `generations: true`, the rows with a pointer whose ledger of known generations could not be used (absent, or
-   * failing the validation every reader of it applies): none of their known generations was held against its object.
-   * A count, not an issue. Present only when generations were asked for.
+   * failing the validation every reader of it applies, or not shaped as a ledger a registry of this library stores):
+   * none of their known generations was held against its object. A count, not an issue. Present only when generations
+   * were asked for.
    */
   readonly generationsUnchecked?: number;
 }
 
 type Outcome =
   | { readonly kind: 'ok'; readonly unchecked?: boolean }
-  | { readonly kind: 'issue'; readonly issue: ConsistencyIssue }
-  | { readonly kind: 'error'; readonly error: ConsistencyErrorEntry };
+  | { readonly kind: 'issue'; readonly issue: ConsistencyIssue };
 
 /** What one segment adds to the report: the issues found, a read that failed, and which counts it adds to. */
 interface SegmentResult {
@@ -241,13 +260,52 @@ function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
 }
 
 /**
+ * Whether `value` is a ledger as a registry of this library stores one: an array of at most
+ * {@link MAX_STORED_KNOWN_GENERATIONS} entries, each exactly `{ generation, footerCrc }`, the generation a non-negative
+ * safe integer and unique, the checksum an integer from 0 to 2^32 - 1. These are the rules the built-in registries hold a
+ * stored row to (and `undefined`, no ledger, passes: the usable-ledger rule then counts it). A registry of your own can
+ * hand back anything, so this is checked before a ledger is read or walked: the walk's reads are bounded by the cap, and
+ * a checksum that cannot be a footer's is never held against an object. The validator the registries apply is in the
+ * driver layer, which this module cannot import, so the rules are written here.
+ */
+function storedLedgerOk(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > MAX_STORED_KNOWN_GENERATIONS) return false;
+  const seen = new Set<number>();
+  for (const e of value as unknown[]) {
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) return false;
+    const entry = e as Record<string, unknown>;
+    if (Object.keys(entry).some((k) => k !== 'generation' && k !== 'footerCrc')) return false;
+    const { generation, footerCrc } = entry;
+    if (!Number.isSafeInteger(generation) || (generation as number) < 0) return false;
+    if (
+      !Number.isInteger(footerCrc) ||
+      (footerCrc as number) < 0 ||
+      (footerCrc as number) > 0xffff_ffff
+    ) {
+      return false;
+    }
+    if (seen.has(generation as number)) return false;
+    seen.add(generation as number);
+  }
+  return true;
+}
+
+/**
  * Hold each generation the row's usable ledger names against its object, by the footer checksum the ledger records. One
- * footer read each (the footer's bytes only, not retried, like the check's other reads), one after another, so a segment never has more than the
- * one request in flight that the check's `concurrency` already allows it. The footer needs no key, whether the object is
- * sealed or not. A generation whose object is not in the bucket is skipped: a lifecycle rule, a smaller `keep` or a
- * restore leaves such entries, and they harm nothing. An object whose footer fails its own checks is not the one that was
- * recorded, so it is reported as a mismatch. Any other failed read stops the segment's reads and is its error, with the
- * mismatches found before it kept.
+ * footer read each (the footer's bytes only; not retried, as the check's other reads are), one after another, so a
+ * segment never has more than the one request in flight that the check's `concurrency` already allows it. The footer
+ * needs no key, whether the object is sealed or not.
+ *
+ * How a footer read is classed:
+ * - the object is not in the bucket (`NotFoundError`): skipped. A lifecycle rule, a restore of the bucket from another
+ *   point than the registry, or an object removed by hand leaves such entries, and they harm nothing;
+ * - the footer's checksum is not the recorded one, or the footer fails its own checks (the bytes are not a `.crbm`, or
+ *   are cut short): `known-generation-mismatch`, since the object is not the one that was recorded;
+ * - the driver answers a size that is not a byte count its tail fits in: that is the driver's word, not the object's, so
+ *   it is an error of the segment, not a mismatch;
+ * - any other failed read (a transient fault included): stops the segment's reads and is its error, with the mismatches
+ *   found before it kept.
  */
 async function checkKnownGenerations(
   ref: SegmentRef,
@@ -259,8 +317,8 @@ async function checkKnownGenerations(
   for (const entry of known) {
     let mismatch: boolean;
     try {
-      const crc = await footerCrcUnder(deps.storage, { ...ref, generation: entry.generation });
-      mismatch = crc !== entry.footerCrc;
+      const { footerCrc } = await readFooter(footerReader(deps.storage, ref, entry.generation));
+      mismatch = footerCrc !== entry.footerCrc;
     } catch (err) {
       if (isNotFoundError(err)) continue;
       if (!isIntegrityError(err)) return { issues, failed: err };
@@ -277,6 +335,27 @@ async function checkKnownGenerations(
     }
   }
   return { issues };
+}
+
+/**
+ * The blob reader of one generation's object, which refuses a tail answer whose size is not a byte count, as a fault of
+ * the driver.
+ */
+function footerReader(storage: IStorageDriver, ref: SegmentRef, generation: number): BlobReader {
+  const blob = storageBlobReader(storage, { ...ref, generation });
+  return {
+    getRange: (offset, length) => blob.getRange(offset, length),
+    getTail: async (maxBytes) => {
+      const tail = await blob.getTail(maxBytes);
+      if (!Number.isSafeInteger(tail.size) || tail.size < tail.bytes.length) {
+        // A plain error, not an IntegrityError: the size is the driver's answer, so it says nothing of the object.
+        throw new Error(
+          `the storage driver answered a tail whose size is not a byte count its bytes fit in: ${String(tail.size)}`,
+        );
+      }
+      return tail;
+    },
+  };
 }
 
 /**
@@ -339,9 +418,13 @@ async function checkCurrentObject(
  *
  * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
  * included, against its object: one footer read each (104 bytes, no key, not retried), reporting
- * `known-generation-mismatch` with the `generation` where the object's footer checksum is not the one the ledger records.
- * A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot be used is
- * counted in `generationsUnchecked` and none of its objects is read. The listing is not used: a read of a missing object
+ * `known-generation-mismatch` with the `generation` where the object's footer checksum is not the one the ledger records
+ * or its footer fails its own checks. That finds another object, or bytes that are not a `.crbm`, under a known number;
+ * it does not find damage inside an object whose footer is intact (a read of it reports that as `IntegrityError`), nor a
+ * metadata change that keeps the footer's bytes. A segment adds at most 1 plus its ledger's length issues. A named
+ * generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot be used (absent, failing
+ * the validation every reader of it applies, or not shaped as a ledger a registry of this library stores) is counted in
+ * `generationsUnchecked` and none of its objects is read. The listing is not used: a read of a missing object
  * answers `NotFoundError`, which is how an absent one is told. A segment whose current object is missing is reported as
  * ever and its older generations are still checked. Off by default.
  */
@@ -414,16 +497,21 @@ export async function runConsistencyCheck(
       const issues = current.kind === 'issue' ? [current.issue] : [];
       const summaryUnchecked = current.kind === 'ok' && current.unchecked === true;
       if (!generations) return { issues, summaryUnchecked };
-      // The ledger every reader of it uses: a ledger that is absent, or disagrees with its row, is not used, and the row is
-      // counted rather than read.
-      const known = usableKnownGens(live);
-      if (known === undefined) return { issues, summaryUnchecked, generationsUnchecked: true };
-      const held = await checkKnownGenerations(ref, live.currentGen, known, deps);
-      return {
-        issues: [...issues, ...held.issues],
-        summaryUnchecked,
-        ...(held.failed === undefined ? {} : { error: errorEntry(rec, held.failed) }),
-      };
+      // The ledger every reader of it uses: one that is absent, disagrees with its row, or is not shaped as a registry
+      // stores it is not used, and the row is counted rather than read. A registry of your own can hand back anything,
+      // so the walk is inside the segment's fault isolation too: one bad row never aborts the check.
+      try {
+        const known = storedLedgerOk(live.knownGens) ? usableKnownGens(live) : undefined;
+        if (known === undefined) return { issues, summaryUnchecked, generationsUnchecked: true };
+        const held = await checkKnownGenerations(ref, live.currentGen, known, deps);
+        return {
+          issues: [...issues, ...held.issues],
+          summaryUnchecked,
+          ...(held.failed === undefined ? {} : { error: errorEntry(rec, held.failed) }),
+        };
+      } catch (error) {
+        return { issues, summaryUnchecked, error: errorEntry(rec, error) };
+      }
     },
   );
   const inconsistent: ConsistencyIssue[] = [];
