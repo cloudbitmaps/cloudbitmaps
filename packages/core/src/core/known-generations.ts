@@ -218,9 +218,13 @@ export function nextKnown(
   const byName = keep !== undefined && keep <= MAX_KEPT_GENERATIONS;
   if (options.seed !== undefined && !clears) {
     // The window a count keeps, read from the bucket: the ledger names it, and the publish collects by that count.
-    const seed = options.seed.filter((e) => e.generation < generation);
+    const seed = options.seed.filter((e) => e.generation !== generation);
     const protect = new Set([...seed.map((e) => e.generation), generation]);
-    return { known: capKnown([...seed, self], protect), list: undefined, evict: [] };
+    return {
+      known: capKnown([...seed, self], protect, options.leased ?? new Set<number>()),
+      list: undefined,
+      evict: [],
+    };
   }
   const found = usableKnownGens(prev);
   if (found === undefined && prev !== null && prev.currentGen !== null) {
@@ -244,7 +248,10 @@ export function nextKnown(
     new Set([...vouch, generation]),
     leased,
   );
-  if (!byName) return { known, list: undefined, evict: [] };
+  // A ledger too wide for a small `keep` to extend by name (a carried run of larger keeps) keeps its order and its entries
+  // as read; the load lists to collect, counting the ledger's names first and sparing every name the row knows.
+  const wide = !clears && found !== undefined && !carriesWindow(prev, leased);
+  if (!byName || wide) return { known, list: undefined, evict: [] };
   const named = new Set(known.map((e) => e.generation));
   return {
     known,
@@ -275,7 +282,7 @@ export function rollbackKnown(
   const moved = makeCurrent(found, target);
   const inserted = !found.some((e) => e.generation === target.generation);
   if (!inserted && moved.length <= MAX_KNOWN_GENERATIONS) return moved;
-  return capKnown(moved, new Set([target.generation, prev.currentGen!]));
+  return capKnown(moved, new Set([target.generation, prev.currentGen!]), leasedByRow(prev));
 }
 
 /**
@@ -289,5 +296,13 @@ export function describingKnown(
 ): readonly KnownGeneration[] | undefined {
   const found = usableKnownGens(record);
   if (found === undefined || found.length <= MAX_KNOWN_GENERATIONS) return found;
-  return capKnown(found, new Set([record.currentGen!, movedTo]));
+  return capKnown(found, new Set([record.currentGen!, movedTo]), leasedByRow(record));
+}
+
+/**
+ * Every generation the row's lease entries name, live or ended: a rollback has no clock to tell them apart, and this build
+ * writes at most 64 entries, so holding them all fits the writer's cap. An ended one leaves the ledger at the next publish.
+ */
+function leasedByRow(record: RegistryRecord): ReadonlySet<number> {
+  return new Set((record.leases ?? []).map((e) => e.generation));
 }

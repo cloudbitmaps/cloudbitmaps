@@ -20,34 +20,24 @@ import { ascending } from './order';
 import { footerCrcUnder } from './crbm-open';
 import { fingerprintParts } from './crbm/fingerprint';
 import { isIntegrityError, isNotFoundError } from './errors';
-import {
-  KNOWN_SPAN,
-  MAX_KEPT_GENERATIONS,
-  carriesWindow,
-  keptWindow,
-  usableKnownGens,
-} from './known-generations';
+import { KNOWN_SPAN, keptWindow, usableKnownGens } from './known-generations';
 import { type ReadRetry, retryRead } from './retry';
 import type { IStorageDriver, KnownGeneration, RegistryRecord, SegmentRef } from './ports';
 
 /** The most leased generations a seed names beside its window: the most live leases this build writes. */
 const SEED_LEASED = 64;
 
-/** Whether a publish of `generation` over `row` seeds its ledger. */
-export function wantsSeed(
-  row: RegistryRecord | null,
-  generation: number,
-  keep: number,
-  leased: ReadonlySet<number>,
-): boolean {
-  const small = keep <= MAX_KEPT_GENERATIONS;
+/**
+ * Whether a publish over `row` seeds its ledger: only at a birth, over an active row that has a pointer and no usable
+ * ledger. A usable ledger is never seeded again, however wide it is.
+ */
+export function wantsSeed(row: RegistryRecord | null): boolean {
   // An incarnation's first publish: no row, or a row with no pointer.
   // Nothing below an incarnation's first publish was made current by it, so a seed could only name objects no load of it
   // published, which a rollback would take for published ones: its ledger is the new generation alone.
   if (row === null || row.currentGen === null) return false;
   if (row.status !== 'active') return false;
-  if (usableKnownGens(row) === undefined) return true;
-  return small && keep < generation && !carriesWindow(row, leased);
+  return usableKnownGens(row) === undefined;
 }
 
 /** How many footer reads a seed has in flight at once. */
@@ -77,8 +67,9 @@ export async function readSeed(
   const below = present.filter((g) => g < generation);
   const { kept } = keptWindow(below, superseded, Math.min(keep, KNOWN_SPAN));
   const inWindow = new Set(kept);
-  const leasedOnly = below
-    .filter((g) => leased.has(g) && !inWindow.has(g))
+  // A generation a live lease holds is named wherever it is numbered, above the new generation too.
+  const leasedOnly = present
+    .filter((g) => g !== generation && leased.has(g) && !inWindow.has(g))
     .sort(ascending)
     .slice(-SEED_LEASED);
   const order = [

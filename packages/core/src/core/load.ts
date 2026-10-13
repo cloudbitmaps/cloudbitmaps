@@ -783,11 +783,16 @@ async function runLoad(
   // newer generation costs nothing it knew about.
   // A publish over a row with no usable ledger starts one with the window a count keeps, read from the bucket.
   const currentObjectGone = needsBefore && before === null;
-  const leased: ReadonlySet<number> =
-    leasesNow === undefined ? new Set() : heldGenerations(row, leasesNow());
   let seed: Awaited<ReturnType<typeof readSeed>> | undefined;
-  if (wantsSeed(row, generation, keep, leased)) {
+  if (wantsSeed(row)) {
     try {
+      // The leases the seed holds come from the row as it is now, one read at a birth: a lease taken while the object was
+      // written is on it, and the first read, before the write, would miss it. A lease taken after this read, before the
+      // publish's write, is not named, and stays in the bucket for its lease.
+      const leased: ReadonlySet<number> =
+        leasesNow === undefined
+          ? new Set()
+          : heldGenerations(await deps.registry.get(ref), leasesNow());
       seed = await readSeed(
         deps.storage,
         ref,

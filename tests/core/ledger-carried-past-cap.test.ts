@@ -34,8 +34,9 @@ describe.each([129, 200])(
       const left: number[] = [];
       for await (const k of memory.list(SEG)) left.push(k.generation);
       expect(left.sort((a, b) => a - b)).toEqual([n - 1, n]);
-      // Two listings (the seed's and the collection's) where a release before ledgers made one; the bucket is the same.
-      expect(calls.list).toBe(2);
+      // One listing, the collection's, as a release before ledgers made: the ledger is not seeded again (a seed would add a
+      // second listing, as the earlier build made); the bucket is the same.
+      expect(calls.list).toBe(1);
       // And the ledger it wrote is the window it kept.
       expect(windowOf((await registry.get(SEG))!)).toEqual([n - 1]);
     });

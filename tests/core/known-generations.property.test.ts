@@ -266,6 +266,8 @@ interface ModelState {
 }
 
 interface Published {
+  /** The ledger is wider than 64 below the pointer, counting no leased name, so a small keep collects by listing. */
+  readonly wide: boolean;
   readonly ledger: number[];
   readonly evict: number[];
   readonly seeded: boolean;
@@ -280,17 +282,14 @@ function modelPublish(
   presentBefore: readonly number[],
 ): Published {
   const { ledger, pointer } = state;
-  const wide =
-    ledger !== undefined &&
-    pointer !== undefined &&
-    ledger.filter((e) => e < pointer && !leased.has(e)).length > NAME_LIMIT;
-  const seeded =
-    (pointer !== undefined && ledger === undefined) || (wide && keep <= NAME_LIMIT && keep < g);
+  // Only a birth seeds: a row with a pointer and no ledger at all. A usable ledger is never seeded again, however wide.
+  const seeded = pointer !== undefined && ledger === undefined;
   if (seeded) {
     const below = presentBefore.filter((e) => e < g);
     const window = countedWindow(below, pointer, Math.min(keep, SPAN));
-    const leasedOnly = below
-      .filter((e) => leased.has(e) && !window.includes(e))
+    // A leased generation is named wherever it is numbered, above the new generation too.
+    const leasedOnly = presentBefore
+      .filter((e) => e !== g && leased.has(e) && !window.includes(e))
       .sort((a, b) => a - b)
       .slice(-NAME_LIMIT);
     const order = [
@@ -302,6 +301,7 @@ function modelPublish(
       ledger: modelCap([...order, g], new Set([...order, g]), leased),
       evict: [],
       seeded: true,
+      wide: false,
     };
   }
   const all = ledger ?? [];
@@ -316,6 +316,10 @@ function modelPublish(
     ledger: known,
     evict: below.filter((e) => !known.includes(e)).sort((a, b) => a - b),
     seeded: false,
+    wide:
+      pointer !== undefined &&
+      all.filter((e) => e < pointer && !leased.has(e)).length > NAME_LIMIT &&
+      keep <= NAME_LIMIT,
   };
 }
 
@@ -533,7 +537,12 @@ describe.each(registries)('the known-generations ledger against its model, over 
                   for (const e of expected.ledger.filter((x) => x < g && below.includes(x))) {
                     expect(after).toContain(e);
                   }
-                } else if (expected.seeded || keep > NAME_LIMIT || previous === undefined) {
+                } else if (
+                  expected.seeded ||
+                  expected.wide ||
+                  keep > NAME_LIMIT ||
+                  previous === undefined
+                ) {
                   // (An incarnation's first publish counts too: its guard read no current object, so the pass lists.)
                   const keepSet = ledgerCounted(below, expected.ledger, g, keep);
                   const want = below.filter((e) => keepSet.has(e) || protectedByLease(e));
