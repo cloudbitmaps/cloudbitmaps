@@ -111,7 +111,7 @@
       <section class="cb-stack is-hero">
         <div class="cb-grid12">
           <div class="cb-hero-copy">
-            <p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.14.0</span></p>
+            <p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.21.0</span></p>
             <h1>Big bitmaps on object storage.</h1>
             <p class="cb-standfirst">No daemon. No second service. One bucket.</p>
             <p class="cb-lede">
@@ -182,7 +182,7 @@
               <div class="cb-fig">
                 <p class="cb-figure-xl">329.15<span class="cb-unit">/s</span></p>
                 <p class="cb-note">
-                  cache-miss GETs a second, above which the flat cluster is cheaper; 1.6 a second as cold
+                  cache-miss GETs a second, above which the flat cluster is cheaper; 54.9 a second as cold
                   <span class="m">A&nbsp;∩&nbsp;B</span>
                 </p>
               </div>
@@ -253,7 +253,7 @@
           </div>
           <div class="cb-op">
             <div class="cb-op-head">
-              <p class="label is-ours">CloudBitmaps <span class="u">v0.14.0</span></p>
+              <p class="label is-ours">CloudBitmaps <span class="u">v0.21.0</span></p>
               <h3>Your bucket</h3>
             </div>
             <div class="cb-op-rows">
@@ -493,11 +493,11 @@
                 <tr><th scope="row">The reference set<span class="cb-note">chosen · at rest, no traffic</span></th><td>1.2 GiB</td></tr>
                 <tr>
                   <th scope="row">GETs per cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">measured · the median of 40 cold intersects on S3 in <span class="nw">us-east-1</span>, from a client inside it</span></th>
-                  <td>204</td>
+                  <td>6</td>
                 </tr>
                 <tr>
                   <th scope="row">Requests per first load<span class="cb-note">measured · a segment's first store.load() on S3, pointer included</span></th>
-                  <td>2 PUT + 4 GET</td>
+                  <td>2 PUT + 3 GET</td>
                 </tr>
                 <tr>
                   <th scope="row">S3 GET · PUT, per million<span class="cb-note">quoted · AWS <span class="nw">us-east-1</span> list price</span></th>
@@ -518,10 +518,10 @@
               </thead>
               <tbody>
                 <tr><th scope="row">At rest<span class="cb-note">1.2 GiB × $0.023</span></th><td>$0.03/mo</td></tr>
-                <tr><th scope="row">Cold <span class="m">A&nbsp;∩&nbsp;B</span>, per million<span class="cb-note">204 GETs × $0.40</span></th><td>$81.60</td></tr>
+                <tr><th scope="row">Cold <span class="m">A&nbsp;∩&nbsp;B</span>, per million<span class="cb-note">6 GETs × $0.40</span></th><td>$2.40</td></tr>
                 <tr>
-                  <th scope="row">A segment's first <span class="m">store.load()</span>, per million<span class="cb-note">2 PUT at $5.00 + 4 GET at $0.40</span></th>
-                  <td>$11.60</td>
+                  <th scope="row">A segment's first <span class="m">store.load()</span>, per million<span class="cb-note">2 PUT at $5.00 + 3 GET at $0.40</span></th>
+                  <td>$11.20</td>
                 </tr>
                 <tr><th scope="row">Against that line<span class="cb-note">$0.0276 ÷ $346</span></th><td>0.008%</td></tr>
                 <tr>
@@ -529,8 +529,8 @@
                   <td>329.15/s</td>
                 </tr>
                 <tr>
-                  <th scope="row">…as cold <span class="m">A&nbsp;∩&nbsp;B</span><span class="cb-note">$346 ÷ ($81.60 per million × 2,628,000 s a month)</span></th>
-                  <td>1.6/s</td>
+                  <th scope="row">…as cold <span class="m">A&nbsp;∩&nbsp;B</span><span class="cb-note">$346 ÷ ($2.40 per million × 2,628,000 s a month)</span></th>
+                  <td>54.9/s</td>
                 </tr>
               </tbody>
             </table>
@@ -636,7 +636,7 @@
           </div>
           <div class="cb-cell cb-caveat">
             <h3 class="label">Latency is one run on one client</h3>
-            <p>A cold intersect sharing 100 chunks took 290.06 ms at the median from inside us-east-1, in the run of 2026-10-04 with a client of 50 sockets. The client this release builds allows 128, and what that changes is not measured. 24.6 ms is the recorded run on the in-memory drivers, not a round trip to a bucket.</p>
+            <p>A cold intersect sharing 100 chunks took 99.80 ms at the median from inside us-east-1, in the run of 2026-10-06 with a client of 128 sockets. 24.6 ms is the recorded run on the in-memory drivers, not a round trip to a bucket.</p>
           </div>
           <div class="cb-cell cb-caveat">
             <h3 class="label">The prices are AWS list prices, in <span class="u">us-east-1</span></h3>
@@ -682,7 +682,7 @@
               <p class="cb-body">
                 Our cache tier is in-process RAM, but a miss is a ranged <code>GET</code> against object storage. A
                 sub-millisecond tail needs the whole set resident — that is a different machine — and an S3 read from
-                inside the region took about 26 ms at the median in the run of 2026-10-04.
+                inside the region took about 26 ms at the median in the run of 2026-10-06.
               </p>
             </div>
             <div class="cb-fit-item">
@@ -733,7 +733,7 @@
                   <p class="label">Install</p>
                   <p class="label">A codec and a storage</p>
                 </div>
-                <pre class="cb-pre"><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code><span class="c"># the memory and local-filesystem drivers ship in core</span><span class="c"># on GCS or Azure Blob, swap @cloudbitmaps/s3 for @cloudbitmaps/gcs or @cloudbitmaps/azure-blob</span></pre>
+                <pre class="cb-pre"><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code><span class="c"># the memory and local-filesystem drivers ship in core</span><span class="c"># on GCS or Azure Blob, swap @cloudbitmaps/s3 for @cloudbitmaps/gcs or @cloudbitmaps/azure-blob</span><span class="c"># to price a store: @cloudbitmaps/tools</span></pre>
               </div>
               <div class="cb-cell">
                 <p class="label">Six read calls</p>
@@ -750,7 +750,7 @@
 
     <footer class="foot">
       <div class="foot-inner">
-        <span>CloudBitmaps · v0.14.0 · Apache-2.0</span>
+        <span>CloudBitmaps · v0.21.0 · Apache-2.0</span>
         <a href="flavors.html">Flavors</a>
         <a href="architecture.html">Architecture</a>
         <a href="usage.html">Usage</a>
