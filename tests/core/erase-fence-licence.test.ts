@@ -490,8 +490,57 @@ describe('the collection spared a generation the row named again', () => {
     });
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, registry: c.registry });
     expect(fired).toBe(true);
+    expect(lost).toBe(FENCE_ATTEMPTS);
+    expect(c.tally.landed).toBe(1);
     expect(res).toMatchObject({ erased: false, reason: 'superseded' });
     expect(await holdersOf(w.storage, 999)).toEqual([0]);
+  });
+
+  it('a row gone before the second fence reads it leaves superseded, with the holder reported, never absent', async () => {
+    const w = world();
+    await loadSegment(SEG, [1], w.load, { keep: 9 }); // 0 clean
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 1 holds
+    await loadSegment(SEG, [1, 999], w.load, { keep: 9 }); // 2 holds
+    await rollbackSegment(SEG, 0, w.load); // holders 1 and 2 are above the pointer
+    let phase = 0;
+    let after = 0;
+    const loaded = onFirstOpen(
+      w.storage,
+      (g) => g === 2 && phase === 0,
+      async () => {
+        phase = 1;
+        await loadSegment(SEG, [1, 8], w.load, { keep: 9 }); // 3: the pointer moves past both holders
+      },
+    );
+    const storage: IStorageDriver = {
+      capabilities: () => loaded.capabilities(),
+      getRange: (k, o, l) => loaded.getRange(k, o, l),
+      getTail: (k, m) => loaded.getTail(k, m),
+      list: (r) => loaded.list(r),
+      putImmutable: (k, b) => loaded.putImmutable(k, b),
+      delete: async (k, o) => {
+        const out = await loaded.delete(k, o);
+        if (phase === 2 && k.generation === 1) phase = 3;
+        return out;
+      },
+    };
+    const c = counting(w.registry, {
+      beforeGet: async (n) => {
+        if (phase === 1 && n === 3) {
+          phase = 2;
+          await rollbackSegment(SEG, 2, w.load); // onto a holder, below the pointer 3
+          await loadSegment(SEG, [1, 9], w.load, { keep: 9 }); // 4: its window keeps 2
+        }
+        if (phase === 3 && ++after === 2) {
+          phase = 4;
+          await (w.registry as MemoryRegistryDriver).delete(SEG);
+        }
+      },
+    });
+    const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage, registry: c.registry });
+    expect(phase).toBe(4);
+    expect(res).toMatchObject({ erased: false, reason: 'superseded' });
+    expect(await holdersOf(w.storage, 999)).not.toEqual([]);
   });
 
   it('the rewrite path: a rollback onto the generation it replaced and a load, before its collection: erased: true', async () => {

@@ -123,12 +123,13 @@ so, and so do the module headers in the code.
   generation, or above the pointer, now writes the row once, after its search and before its first delete, to remove
   from `knownGens` each holder it will delete by name and every name below the pointer its collection will delete (the
   current generation stays). Its `keep: 0` collections then spare every generation the row names when they read the row
-  before a delete, so a generation a load or a rollback has made known since is not deleted. Documented behaviour that
+  before a delete, so they spare a generation a load or a rollback has made known since; the call takes such a name out
+  of the ledger again, below the generation it found current, before it deletes it. Documented behaviour that
   changes:
   - An erasure of an id held only by an older generation, on a row whose ledger names it, writes the row once where it
     wrote nothing, and reads it once more. At an object-store registry on the in-memory backend: 7 reads and 1 write
-    where it was 5 and none; 6 and none where it was 5 and none when a usable ledger names nothing to delete; 7 and none
-    on a row with no usable ledger. The write moves the row's token, so a
+    where it was 5 and none; 6 and none when a usable ledger names nothing to delete; 7 and none on a row with no usable
+    ledger (5 and none in each case on main). The write moves the row's token, so a
     load running on that segment at that moment is refused (`superseded`: load again), and it leaves a timing signal in
     the registry (see `PRIVACY.md`). An erasure that rewrites the current generation costs what it did.
   - A load that publishes while an erasure is searching and holds only older generations, below its pointer, no longer

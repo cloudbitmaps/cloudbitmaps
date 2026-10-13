@@ -1456,8 +1456,9 @@ collection is taking; above it, a rollback with `allowForward` onto an erasure's
 **An erasure takes what it will delete out of the row's ledger first.** Before its first delete, in one write after its
 search, it removes from the row's ledger of known generations each holder it will delete by name and every name below the
 pointer that its collection will delete ([what the write is, and its races](erasure.md#how-it-stays-correct)). Its
-collections then spare every generation the row names when they read the row before a delete, so they never delete what
-a load or a rollback has since made known, so a generation the call deletes is one the row no longer names.
+collections then spare every generation the row names when they read the row before a delete, so they spare what a load
+or a rollback has made known since; the call takes such a name out of the ledger again, below the generation it found
+current, before it deletes it, so a generation the call deletes is one the row no longer names.
 
 **Nothing can restore a deleted object, so the deleting call detects it.** Every read of the row it makes after a
 delete, and one more read after its last delete when nothing read the row since, is held to what it deleted. A row of

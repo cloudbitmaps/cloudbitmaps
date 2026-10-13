@@ -518,9 +518,14 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     }) as IRegistryDriver;
     const audit = new RecordingAuditSink();
 
-    await expect(
-      eraseIdFromSegment(SEG, 2, { ...w.deps, registry: flaky }, { audit }),
-    ).rejects.toBeInstanceOf(WriteConflictError);
+    const failure = await eraseIdFromSegment(
+      SEG,
+      2,
+      { ...w.deps, registry: flaky },
+      { audit },
+    ).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(WriteConflictError);
+    expect((failure as Error).message).toMatch(/could not remove generation 0/);
     expect(audit.snapshot()).toEqual([]);
 
     const rerun = await eraseIdFromSegment(SEG, 2, w.deps, { audit });

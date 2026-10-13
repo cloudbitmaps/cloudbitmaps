@@ -83,9 +83,9 @@
  *
  * Before it deletes anything, a call that found a holder takes every generation it will delete out of the row's ledger
  * of known generations, in one write made after its search (the same write as the renewal where there is one). A
- * generation the ledger names is one a rollback can move onto and one a collection by a count spares, so the delete
- * comes after the name goes: a rollback that raced the write loses its swap, and a collection that reads the row before
- * a delete spares what the row names. That write is made only when the ledger names something to delete, and it is the
+ * generation the ledger names is one a collection by a count spares, so the delete comes after the name goes: a
+ * rollback that raced the write loses its swap, and a collection that reads the row before a delete spares what the row
+ * names. That write is made only when the ledger names something to delete, and it is the
  * one case in which an erasure of an id held only by an older generation writes the row.
  *
  * An object sealed under a key its row does not hold cannot be searched, and no read of the segment can open it: a
@@ -694,8 +694,7 @@ async function eraseOnce(
    * generations (`knownGens`) every generation it is about to delete, and, where a load in flight may still publish
    * what it deletes, renews the row's `pointerId`.
    *
-   * **The prune.** A generation the row names is a rollback target the library vouches for, and a pass that keeps by a
-   * count spares it. So a generation is taken out of the ledger first, and only then deleted: a rollback that read the
+   * **The prune.** A generation the row names is one a pass that keeps by a count spares. So a generation is taken out of the ledger first, and only then deleted: a rollback that read the
    * row before the write loses its swap on the write's token. The generations are `byName`, the holders this call deletes one by one, and, when `sweeps` (a searched
    * holder was found, so the collection below the pointer follows and deletes everything there), every entry of the
    * ledger numbered below the lower of `from` and the pointer the fence finds. That bound is `from` when a load has
@@ -704,7 +703,7 @@ async function eraseOnce(
    * collection leaves current. The current generation is never removed. A row with no usable ledger names nothing, and
    * is not written for it.
    *
-   * **The renewal** is as before: only for the deletes by name (a holder above the pointer, one sealed under a key the
+   * **The renewal** is only for the deletes by name (a holder above the pointer, one sealed under a key the
    * row does not hold, any holder on a row with no pointer, where every object is a first load's), and the pointer is
    * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
    * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything in
@@ -936,8 +935,8 @@ async function eraseOnce(
       if (missing !== undefined) return { deleted, moved: 'superseded', missing };
       // Another erasure's fence (a renewal of the pointerId, a prune of the ledger) leaves the premise standing.
       moved = rowVerdict(row, ['pointerId', 'knownGens']);
-      // A holder the row names again (a rollback onto it, and away, since the fence took it out) is a rollback target
-      // and a window entry: it is not deleted from under the row.
+      // A holder the row names again (a rollback onto it, and away, since the fence took it out) is a window entry: it is
+      // not deleted from under the row.
       if (moved === null && usableKnownGens(row)?.some((e) => e.generation === generation)) {
         moved = 'superseded';
       }
@@ -1199,7 +1198,10 @@ async function eraseOnce(
       );
       collected.push(...again.deleted);
       missing = again.missing;
-      if (again.moved !== null) moved = again.moved;
+      // A row gone in the second fence leaves the reason the call already had: a holder may still be in the bucket.
+      if (again.moved !== null && again.moved !== 'absent' && again.moved !== 'no-generation') {
+        moved = again.moved;
+      }
     }
     // A collection that stopped on a rollback has moved the pointer off `from`, so nothing above it is deleted.
     if (byName.length > 0 && missing === undefined) {

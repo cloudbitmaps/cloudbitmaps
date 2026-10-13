@@ -327,14 +327,14 @@ fleet](#three-rules-while-you-erase)). A rewrite is numbered above everything, s
 older generation, above the pointer or below.
 
 **The row's ledger loses what the call will delete, before anything is deleted.** The row's ledger of known generations
-(`knownGens`) names the generations the library vouches for: the ones a rollback can move onto, and the ones a collection
-by a count spares. A rewrite publishes a ledger of itself alone, so every older generation is out of it before the
+(`knownGens`) names the generations a collection by a count spares, and the ones a rollback that checks the ledger will vouch for. A rewrite publishes a ledger of itself alone, so every older generation is out of it before the
 collection. A call that deletes without rewriting (the id is only in an older generation) writes the row once instead,
 after its search and before its first delete, to take out of the ledger each holder it will delete by name and every name
 below the pointer that its collection will delete. The current generation is never taken out, and the order of the rest
 is kept. Only then does it delete. So a rollback that read the row before the write loses its swap, and the collection,
-which spares every generation the row names when it reads the row before each delete, does not delete what a load or a
-rollback has made known since. The same write renews the row's `pointerId` when the call deletes by name. What the write
+which spares every generation the row names when it reads the row before each delete, spares what a load or a rollback
+has made known since; a name that comes back that way, below the generation the call found current, is taken out of the
+ledger again before the call deletes it. The same write renews the row's `pointerId` when the call deletes by name. What the write
 does in a race:
 
 - **No write when none is owed.** A ledger that names nothing to delete, and no renewal to make, costs no write. Neither
@@ -345,7 +345,7 @@ does in a race:
   generation it found clean, which the load's window names and the collection then spares as the load's grace
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has
   left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but one
-  that still sits above it is `'superseded'` and deleted nothing by name. A rollback onto a holder leaves that holder
+  that still sits above it is `'superseded'` and deletes nothing by name. A rollback onto a holder leaves that holder
   current, and the call reports `'superseded'` after it has taken the holders below the pointer.
 - **A write that loses** to another writer is made again against the row read after it. The fifth lost write across the
   call's fences ends the call with `'superseded'` and no claim; when it is the first write, nothing was deleted. On a
