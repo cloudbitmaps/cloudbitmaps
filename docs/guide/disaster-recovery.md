@@ -567,8 +567,8 @@ if (report.errored.length > 0) {
     present only when `generations` was asked for. A row with no pointer is skipped, as ever, and is not counted.
   - **It needs no key.** A footer is readable whether the object is sealed or not, and the ledger's checksum is the
     footer's, so the check fetches no key and a store with no keystore checks sealed rows too.
-  - **Each footer is one 104-byte read, under the store's read retry.** A transient fault on one is retried under
-    `retry`; a read that fails any other way (or past the retry) stops that segment's footer reads and lands the segment in
+  - **Each footer is one 104-byte read, and is not retried, as the check's other reads are.** A read that fails, a
+    transient fault included, stops that segment's footer reads and lands the segment in
     `errored`, with the mismatches found before it kept. A segment's footer reads run one after another, so the check
     never has more requests in flight than its `concurrency`; a segment with a wide ledger (up to 128 entries on a
     destination an `*Into` call wrote) is correspondingly slower than one with two. Its cost is in

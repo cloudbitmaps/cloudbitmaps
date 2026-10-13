@@ -325,8 +325,7 @@ export interface CloudRoaringOptions {
    * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}): `has`, `count`,
    * `iterate` and the combines, the `*Into` verbs' reads of their operands included, a pinned handle's reads and
    * `pin()` itself, and the reads a write makes along the way: a load's guard read of the current generation, and an
-   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id,
-   * and the footer reads of `checkConsistency({ generations: true })`.
+   * erasure's reads of the generation it rewrites, of the one it wrote and of any other that may still hold the id.
    * This option does not govern writes, nor the calls that read the registry or list the bucket directly (`exists`,
    * `segments`, `generations`, `getRetention`, and the registry scan `subjectReport`, `exportSegments` and
    * `checkConsistency` start from): they report a transient fault to their caller, because a conditional write that
@@ -2654,7 +2653,7 @@ export class CloudRoaring {
    * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
    *
    * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
-   * included, against its object: one footer read each (104 bytes, no key, under the store's read retry), reporting
+   * included, against its object: one footer read each (104 bytes, no key, not retried), reporting
    * `known-generation-mismatch` with the `generation` where the object under that number is not the one the row
    * recorded. A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot
    * be used is counted in `generationsUnchecked`, and none of its objects is read.
@@ -2679,12 +2678,7 @@ export class CloudRoaring {
     options ??= {};
     const deps = this.lifecycleDeps('checkConsistency');
     return runConsistencyCheck(
-      {
-        storage: deps.storage,
-        registry: deps.registry,
-        keystore: deps.keystore,
-        readRetry: deps.readRetry,
-      },
+      { storage: deps.storage, registry: deps.registry, keystore: deps.keystore },
       options,
     );
   }

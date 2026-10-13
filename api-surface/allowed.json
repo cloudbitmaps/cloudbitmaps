@@ -437,6 +437,6 @@
   },
   {
     "entry": "@cloudbitmaps/core runConsistencyCheck",
-    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the options gain generations, and the deps gain an optional readRetry, so the footer reads run under the store's read retry"
+    "reason": "the owner-agreed operator check of known generations: checkConsistency({ generations: true }) holds every generation a row's ledger names against its object; the options gain generations"
   }
 ]

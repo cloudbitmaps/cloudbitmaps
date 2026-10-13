@@ -765,7 +765,7 @@
     "@cloudbitmaps/core retireExpired": "function retireExpired(deps: DropDeps, options: RetireExpiredOptions): Promise<RetireExpiredResult>;",
     "@cloudbitmaps/core rollbackSegment": "function rollbackSegment(ref: SegmentRef, toGeneration: number, deps: GenerationListDeps, options?: { audit?: IAuditSink; allowForward?: boolean; }): Promise<RollbackResult>;",
     "@cloudbitmaps/core runCombineMany": "function runCombineMany<R>(compiled: CompiledCombineMany<R>, deps: CombineManyDeps): Promise<CombineManyRun<R>>;",
-    "@cloudbitmaps/core runConsistencyCheck": "function runConsistencyCheck(deps: { readonly storage: IStorageDriver; readonly registry: IRegistryDriver; readonly keystore?: IKeystore; readonly readRetry?: ReadRetry; }, options?: { namespace?: string; concurrency?: number; maxScanSegments?: number; summaries?: boolean; generations?: boolean; }): Promise<ConsistencyReport>;",
+    "@cloudbitmaps/core runConsistencyCheck": "function runConsistencyCheck(deps: { readonly storage: IStorageDriver; readonly registry: IRegistryDriver; readonly keystore?: IKeystore; }, options?: { namespace?: string; concurrency?: number; maxScanSegments?: number; summaries?: boolean; generations?: boolean; }): Promise<ConsistencyReport>;",
     "@cloudbitmaps/core runExport": "function runExport(reader: SegmentReader, registry: IRegistryDriver, sink: ExportSink, options?: ExportOptions): Promise<ExportManifest>;",
     "@cloudbitmaps/core safeMetrics": "function safeMetrics(sink: IMetricsSink): IMetricsSink;",
     "@cloudbitmaps/core segmentExists": "function segmentExists(ref: SegmentRef, registry: IRegistryDriver): Promise<boolean>;",

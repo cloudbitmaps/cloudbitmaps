@@ -91,9 +91,8 @@ so, and so do the module headers in the code.
   set; it means the object under that number is not the one the row recorded. A known generation missing from the bucket
   is not reported, and a row with a pointer whose ledger is absent or fails validation is counted in the new
   `ConsistencyReport.generationsUnchecked` and none of its objects is read. Each known generation present costs one
-  104-byte footer read, with no key and under the store's read retry: 2 per segment at `keep: 1`, and one request on S3 and
-  GCS, two on Azure Blob. Off by default, and the default check makes the requests it made. `runConsistencyCheck`'s deps
-  take an optional `readRetry` for those reads.
+  104-byte footer read, with no key and not retried (a failed one lands the segment in `errored`): 2 per segment at `keep: 1`, and one request on S3 and
+  GCS, two on Azure Blob. Off by default, and the default check makes the requests it made.
 - **`CrbmReader.tailBytes`** (`@cloudbitmaps/core`, re-exported by `@cloudbitmaps/roaring`): the bytes of the object
   after its chunk payloads, that is its extension block when it has metadata, its index and its footer. A tail read of
   that many bytes reaches all of them. It is the object's size less where its payloads end, known at open with no

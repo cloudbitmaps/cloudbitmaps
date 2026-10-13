@@ -34,7 +34,6 @@ import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
 import { usableKnownGens } from './known-generations';
-import { type ReadRetry, retryRead } from './retry';
 import { summaryAgrees, usableSummary } from './summary';
 import { validateUserNamespace } from './validate';
 
@@ -243,7 +242,7 @@ function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
 
 /**
  * Hold each generation the row's usable ledger names against its object, by the footer checksum the ledger records. One
- * footer read each (the footer's bytes only, under `readRetry`), one after another, so a segment never has more than the
+ * footer read each (the footer's bytes only, not retried, like the check's other reads), one after another, so a segment never has more than the
  * one request in flight that the check's `concurrency` already allows it. The footer needs no key, whether the object is
  * sealed or not. A generation whose object is not in the bucket is skipped: a lifecycle rule, a smaller `keep` or a
  * restore leaves such entries, and they harm nothing. An object whose footer fails its own checks is not the one that was
@@ -254,16 +253,13 @@ async function checkKnownGenerations(
   ref: SegmentRef,
   currentGen: number,
   known: readonly { readonly generation: number; readonly footerCrc: number }[],
-  deps: { readonly storage: IStorageDriver; readonly readRetry?: ReadRetry },
+  deps: { readonly storage: IStorageDriver },
 ): Promise<{ readonly issues: ConsistencyIssue[]; readonly failed?: unknown }> {
   const issues: ConsistencyIssue[] = [];
   for (const entry of known) {
     let mismatch: boolean;
     try {
-      const crc = await retryRead(
-        () => footerCrcUnder(deps.storage, { ...ref, generation: entry.generation }),
-        deps.readRetry,
-      );
+      const crc = await footerCrcUnder(deps.storage, { ...ref, generation: entry.generation });
       mismatch = crc !== entry.footerCrc;
     } catch (err) {
       if (isNotFoundError(err)) continue;
@@ -342,7 +338,7 @@ async function checkCurrentObject(
  * default, since the default check only looks for the object.
  *
  * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
- * included, against its object: one footer read each (104 bytes, no key, under `deps.readRetry` when given), reporting
+ * included, against its object: one footer read each (104 bytes, no key, not retried), reporting
  * `known-generation-mismatch` with the `generation` where the object's footer checksum is not the one the ledger records.
  * A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot be used is
  * counted in `generationsUnchecked` and none of its objects is read. The listing is not used: a read of a missing object
@@ -354,7 +350,6 @@ export async function runConsistencyCheck(
     readonly storage: IStorageDriver;
     readonly registry: IRegistryDriver;
     readonly keystore?: IKeystore;
-    readonly readRetry?: ReadRetry;
   },
   options: {
     namespace?: string;

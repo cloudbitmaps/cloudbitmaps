@@ -403,46 +403,22 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
     expect(peak).toBe(1);
   });
 
-  it('a footer read that fails transiently is retried under the read retry, and errors without one', async () => {
+  it('a footer read that fails transiently is the segment error, not retried, and keeps the mismatches before it', async () => {
     const memory = new MemoryStorageDriver();
     const registry = makeRegistry();
     await loadMany({ storage: memory, registry }, SEG, 3);
-    const calls: Call[] = [];
-    const flaky = recording(memory, calls, (c, attempt) =>
-      c.bytes === FOOTER && c.generation === 1 && attempt === 1
-        ? new TransientError('throttled')
-        : undefined,
-    );
-    const retry = {
-      clock: { now: () => 0, sleep: async () => {} },
-      rng: { next: () => 0 },
-      policy: {
-        maxAttempts: 3,
-        baseDelayMs: 0,
-        maxDelayMs: 0,
-        backoffFactor: 1,
-        jitter: 'none' as const,
-      },
-    };
-    const retried = await runConsistencyCheck(
-      { storage: flaky, registry, readRetry: retry },
-      { generations: true },
-    );
-    expect(retried).toEqual({ checked: 1, inconsistent: [], errored: [], generationsUnchecked: 0 });
-    expect(footerReads(calls).filter((c) => c.generation === 1)).toHaveLength(2);
-    // Without the retry the same fault is the segment's error, and it is the only one: the objects read before it count.
-    calls.length = 0;
-    const once = recording(memory, calls, (c) =>
-      c.bytes === FOOTER && c.generation === 2 ? new TransientError('throttled') : undefined,
-    );
     await putOver(
       memory,
       { ...SEG, generation: 1 },
       await bytesOf(memory, { ...SEG, generation: 2 }),
     );
-    const bare = await runConsistencyCheck({ storage: once, registry }, { generations: true });
-    expect(bare.inconsistent).toEqual([mismatch(1, 2)]);
-    expect(bare.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'throttled' }]);
+    const calls: Call[] = [];
+    const flaky = recording(memory, calls, (c) =>
+      c.bytes === FOOTER && c.generation === 2 ? new TransientError('throttled') : undefined,
+    );
+    const report = await runConsistencyCheck({ storage: flaky, registry }, { generations: true });
+    expect(report.inconsistent).toEqual([mismatch(1, 2)]);
+    expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'throttled' }]);
     expect(footerReads(calls).filter((c) => c.generation === 2)).toHaveLength(1);
   });
 
@@ -457,14 +433,7 @@ describe.each(registries)('checkConsistency with generations over %s', (_name, m
         ? new Error('access denied')
         : undefined,
     );
-    const retry = {
-      clock: { now: () => 0, sleep: async () => {} },
-      rng: { next: () => 0 },
-    };
-    const report = await runConsistencyCheck(
-      { storage: denied, registry, readRetry: retry },
-      { generations: true },
-    );
+    const report = await runConsistencyCheck({ storage: denied, registry }, { generations: true });
     expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'access denied' }]);
     expect(report.inconsistent).toEqual([]);
     expect(report.checked).toBe(2);
@@ -509,32 +478,27 @@ describe('the option', () => {
 });
 
 describe('the store', () => {
-  it('retries a footer read that fails transiently, under its own retry, and reports the fault past it', async () => {
+  it('a footer read that fails transiently is the segment error, whatever the store retries', async () => {
     const memory = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await loadMany({ storage: memory, registry }, SEG, 3);
-    let failures = 1;
+    await putOver(
+      memory,
+      { ...SEG, generation: 1 },
+      await bytesOf(memory, { ...SEG, generation: 2 }),
+    );
     const calls: Call[] = [];
     const flaky = recording(memory, calls, (c) =>
-      c.bytes === FOOTER && c.generation === 1 && failures-- > 0
-        ? new TransientError('throttled')
-        : undefined,
+      c.bytes === FOOTER && c.generation === 2 ? new TransientError('throttled') : undefined,
     );
     const store = new CloudRoaring({
       storage: brandAsBackend({ storage: flaky, registry }),
-      retry: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0, backoffFactor: 1, jitter: 'none' },
+      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, backoffFactor: 1, jitter: 'none' },
     });
-    expect(await store.checkConsistency({ generations: true })).toEqual({
-      checked: 1,
-      inconsistent: [],
-      errored: [],
-      generationsUnchecked: 0,
-    });
-    expect(footerReads(calls).filter((c) => c.generation === 1)).toHaveLength(2);
-    // Past the policy's attempts it is the segment's error.
-    failures = 5;
-    const past = await store.checkConsistency({ generations: true });
-    expect(past.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'throttled' }]);
+    const report = await store.checkConsistency({ generations: true });
+    expect(report.inconsistent).toEqual([mismatch(1, 2)]);
+    expect(report.errored).toEqual([{ segment: 's', namespace: 'ns', error: 'throttled' }]);
+    expect(footerReads(calls).filter((c) => c.generation === 2)).toHaveLength(1);
   });
 });
 
