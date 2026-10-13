@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { MemoryStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { WriteConflictError } from '@/core/errors';
 import { openGenerationReader } from '@/core/crbm-open';
-import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
+import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
@@ -412,26 +412,35 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
 
   it('a load that publishes mid-scan stops the above-pointer deletes, and the bucket decides the receipt', async () => {
     // The pointer moving is a reason to stop deleting above it, not by itself a reason to refuse: a forward
-    // publish puts every holder BELOW the new pointer, where the `keep: 0` collection takes them. What is left in
-    // the bucket decides, exactly as it does when nothing raced.
+    // publish puts every holder BELOW the new pointer, where the `keep: 0` collection takes them. The call takes
+    // them out of the row's ledger first, and renews nothing: no load can publish a number below the pointer. What
+    // is left in the bucket decides, exactly as it does when nothing raced. Generation 0, which the call found
+    // clean and the load's window names, stays as the load's grace generation. Main also answers `erased: true`, but
+    // its collection takes generation 0 as well, and its bucket is `[3]`.
     const w = world();
     await loadSegment(SEG, [111], w.load, { keep: 9 }); // gen 0
     await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 1
     await loadSegment(SEG, [111, 999], w.load, { keep: 9 }); // gen 2
     await rollbackSegment(SEG, 0, w.deps);
 
+    let loaded: RegistryRecord | undefined;
     const storage = onFirstOpenOf(
       w.storage,
       (g) => g > 0,
       async () => {
         await loadSegment(SEG, [111, 222], w.load, { keep: 9 }); // gen 3, published forward-only
+        loaded = (await w.registry.get(SEG))!;
       },
     );
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage: storage.driver });
     expect(storage.fired()).toBe(true);
     expect(res).toMatchObject({ erased: true, fromGeneration: 2 });
+    expect([...res.collected].sort((a, b) => a - b)).toEqual([1, 2]);
     expect(await holdersOf(w.storage, 999)).toEqual([]);
-    expect(await generationsOf(w.deps)).toEqual([3]);
+    expect(await generationsOf(w.deps)).toEqual([0, 3]);
+    const row = (await w.registry.get(SEG))!;
+    expect(row.knownGens!.map((e) => e.generation)).toEqual([0, 3]);
+    expect(row.pointerId).toBe(loaded!.pointerId); // the prune renewed nothing
   });
 
   it('a rewrite takes every older generation, the clean ones above the pointer included', async () => {

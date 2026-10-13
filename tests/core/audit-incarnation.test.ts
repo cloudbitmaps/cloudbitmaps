@@ -508,18 +508,24 @@ describe('audit: segment.collect (an erasure that rewrites nothing)', () => {
     await loadSegment(SEG, [1, 2, 3], w.deps); // gen 0 holds the id
     await loadSegment(SEG, [1, 3], w.deps); // gen 1 dropped it; `keep: 1` retains gen 0
     let reads = 0;
-    // The erasure's own first read sees the row; the collection's read then finds none, so it declines to delete.
+    // The erasure's own first read sees the row and the fence's second takes the holder out of the ledger; the
+    // collection's first read, the third, finds none, so it declines to delete. The holder is left, so the call throws.
     const flaky = new Proxy(w.registry, {
       get(t, p, rx) {
         if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
-        return async (ref: SegmentRef) => ((reads += 1) === 2 ? null : t.get(ref));
+        return async (ref: SegmentRef) => ((reads += 1) === 3 ? null : t.get(ref));
       },
     }) as IRegistryDriver;
     const audit = new RecordingAuditSink();
 
-    await expect(
-      eraseIdFromSegment(SEG, 2, { ...w.deps, registry: flaky }, { audit }),
-    ).rejects.toBeInstanceOf(WriteConflictError);
+    const failure = await eraseIdFromSegment(
+      SEG,
+      2,
+      { ...w.deps, registry: flaky },
+      { audit },
+    ).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(WriteConflictError);
+    expect((failure as Error).message).toMatch(/could not remove generation 0/);
     expect(audit.snapshot()).toEqual([]);
 
     const rerun = await eraseIdFromSegment(SEG, 2, w.deps, { audit });

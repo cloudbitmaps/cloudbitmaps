@@ -79,7 +79,14 @@
  * A load already in flight writes its object above the pointer before it publishes, or, as a first load onto a row with
  * no pointer, before there is a pointer at all. An erasure that finds the id in that object renews the row's `pointerId`
  * before deleting it, so the load's publish, fenced on the row it read, is refused (`published: false`) and the pointer
- * never names a missing object (see `fenceInFlight`). An erasure that finds no holder writes nothing.
+ * never names a missing object (see `fence`). An erasure that finds no holder writes nothing.
+ *
+ * Before it deletes anything, a call that found a holder takes every generation it will delete out of the row's ledger
+ * of known generations, in one write made after its search (the same write as the renewal where there is one). A
+ * generation the ledger names is one a collection by a count spares, so the delete comes after the name goes: a
+ * rollback that raced the write loses its swap, and a collection that reads the row before a delete spares what the row
+ * names. That write is made only when the ledger names something to delete, and it is the
+ * one case in which an erasure of an id held only by an older generation writes the row.
  *
  * An object sealed under a key its row does not hold cannot be searched, and no read of the segment can open it: a
  * first load's on a row with no pointer, whose key that load has not published; on a segment with a key, a first
@@ -93,7 +100,7 @@
  * the row's key does not open throws, as every read of the segment does.
  */
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
-import { incarnationField } from './token';
+import { incarnationField, sameIncarnation } from './token';
 import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
@@ -136,12 +143,14 @@ import {
   watchDeletes,
 } from './generation-gc';
 import { UNANSWERED_BASE_MS, UNANSWERED_RESENDS, leaseChurn, onlyLeasesDiffer } from './leases';
-import { renewPointer } from './pointer-id';
+import { renewPointer, renewsPointer } from './pointer-id';
+import { pruneKnown, usableKnownGens } from './known-generations';
 import { assertRegistryCanWrite } from './ports';
 import type {
   GenKey,
   IStorageDriver,
   IRegistryDriver,
+  RegistryPatch,
   RegistryRecord,
   RegistrySummary,
   SegmentRef,
@@ -164,6 +173,13 @@ const HOLDS_CONCURRENCY = 4;
  * renewal.
  */
 export const DISCARD_ATTEMPTS = 8;
+
+/**
+ * Writes a call's fence makes before it gives up on a row that keeps changing under it: each one lost to another writer
+ * (a load, a rollback, another erasure) that is not a write of the row's leases alone costs one. The call then reports
+ * `'superseded'` with nothing deleted.
+ */
+export const FENCE_ATTEMPTS = 5;
 
 /** What {@link eraseIdFromSegment} needs: the objects, the pointer, the codec, and the key material if encrypted. */
 export interface EraseIdDeps {
@@ -415,7 +431,7 @@ async function eraseOnce(
   const fromToken = record.token;
   /**
    * The row this call holds its premise against: `record`, until the call writes the row itself ({@link
-   * fenceInFlight}), after which it is the row it wrote, so its own write is not read as another writer's.
+   * fence}), after which it is the row it wrote, so its own write is not read as another writer's.
    */
   let premise: RegistryRecord = record;
   let premiseToken = fromToken;
@@ -470,12 +486,13 @@ async function eraseOnce(
    */
   const rowVerdict = (
     row: RegistryRecord | null,
+    alsoIgnore: readonly (keyof RegistryRecord)[] = [],
   ): 'superseded' | 'absent' | 'no-generation' | 'destroyed' | null => {
     if (row === null) return 'absent';
     if (row.status === 'destroyed') return 'destroyed';
     // A different row is a different lineage even at the same pointer value — see `fromToken`.
     // A write of the row's leases alone, which readers make, is not another writer's: the premise still holds.
-    const same = row.token === premiseToken || onlyLeasesDiffer(premise, row);
+    const same = row.token === premiseToken || onlyLeasesDiffer(premise, row, alsoIgnore);
     if (pointerless) return row.currentGen === null && same ? null : 'superseded';
     if (row.currentGen === null) return 'no-generation';
     return row.currentGen === from && same ? null : 'superseded';
@@ -669,65 +686,221 @@ async function eraseOnce(
       } and is still in the bucket; re-run`,
     );
 
+  /** Writes lost to other writers across every fence of this call: the bound is the call's, not each fence's. */
+  let fenceLost = 0;
+
   /**
-   * Renew the row's `pointerId` before deleting a holder that a load in flight may still publish, so that load is
-   * refused rather than landing on the object this call is about to delete: a holder above the pointer, or any holder
-   * on a row with no pointer, where every object is a first load's.
+   * The one write this call makes to the row before it deletes anything: it removes from the row's ledger of known
+   * generations (`knownGens`) every generation it is about to delete, and, where a load in flight may still publish
+   * what it deletes, renews the row's `pointerId`.
    *
-   * A load numbers its object above the pointer (above everything in the bucket, on a row with no pointer) and
-   * publishes it with a compare-and-swap fenced on the row it read, which a write of the row's leases alone does not
-   * refuse. Re-proving the row before each delete does not fence it: the load can publish at any time after the delete,
-   * and its row would then name an object that is not there. So this call writes the row first, naming the pointer at
-   * the value it has ({@link renewPointer}). That changes nothing a read resolves, and renews the row's `pointerId`,
-   * which the load's fence compares: the load sees another writer and is refused. If the load published first, this
-   * write loses and the row says why. A write of leases alone that lands in between is waited out and written over,
-   * within the lease writers' bound.
+   * **The prune.** A generation the row names is one a pass that keeps by a count spares. So a generation is taken out of the ledger first, and only then deleted: a rollback that read the
+   * row before the write loses its swap on the write's token. The generations are `byName`, the holders this call deletes one by one, and, when `sweeps` (a searched
+   * holder was found, so the collection below the pointer follows and deletes everything there), every entry of the
+   * ledger numbered below the lower of `from` and the pointer the fence finds. That bound is `from` when a load has
+   * since moved the pointer forward, so `from`, which this call found clean and which the load's window holds, stays
+   * known and is spared; and the pointer when a rollback has moved it down onto an older generation, which the
+   * collection leaves current. The current generation is never removed. A row with no usable ledger names nothing, and
+   * is not written for it.
    *
-   * The licence is a renewal that lands after this call listed the bucket. A load that wrote a holder the listing found
-   * read the row before it wrote, so before that renewal, and its fence refuses it. That is why the row this write is
-   * made against is read here, after the listing, and why a renewal that landed after that read, this call's or a
-   * concurrent erasure's, licenses the deletes alike, while one that landed before it does not: a load could have read
-   * that one and written a holder since.
+   * **The renewal** is only for the deletes by name (a holder above the pointer, one sealed under a key the
+   * row does not hold, any holder on a row with no pointer, where every object is a first load's), and the pointer is
+   * named at the value it has ({@link renewPointer}), which changes nothing a read resolves and renews the row's
+   * `pointerId`, the value the load's fence compares. A load numbers its object above the pointer (above everything in
+   * the bucket, on a row with no pointer) and publishes it with a compare-and-swap fenced on the row it read, which a
+   * write of the row's leases alone does not refuse. Re-proving the row before each delete does not fence it: the load can
+   * publish at any time after the delete, and its row would then name an object that is not there. If the load published
+   * first, this write loses and the row says why: a pointer that moved off `from` is `'superseded'` where a renewal is
+   * needed. The one exception is a pointer that moved forward past every holder to delete by name: they are below it now,
+   * where no load can publish and the collection takes them, so they are pruned and left to the collection and nothing
+   * is renewed. A pointer that moved forward is no obstacle to a prune alone, since the collection below the pointer is
+   * bounded by the pointer it reads.
    *
-   * A write that gets no answer is settled by reading the row, and nothing is deleted until it is. A row that is gone,
-   * a tombstone, or one another writer changed gives its reason, as anywhere else in this function; a renewal that
-   * landed after the row the write was made against goes on, as above. A row still as the write found it gets a fresh
-   * compare-and-swap from the row just read, a request of its own carrying the same version, so at most one of the two
-   * lands, after a wait on the injected clock under 500 ms, then 1 s, then 2 s (spread by the rng), at most three
-   * times, as a load's publish does; then, or at once with no clock to wait on, or when the row cannot be read, the
-   * registry's `TransientError` is thrown.
+   * **No write when none is owed.** The call goes on under the row it read when the ledger names nothing to remove and,
+   * where a renewal is needed, another writer's renewal landed after this call listed the bucket. A load that wrote a
+   * holder the listing found read the row before it wrote, so before that renewal, and its fence refuses it; one
+   * renewal that landed before the listing does not license a delete, since a load could have read that row and written a
+   * holder since. That is why the row is read here, after the listing, and compared with the row each later read finds. A
+   * concurrent erasure's write is such a licence: two erasures of different ids on one segment that both prune the
+   * same entries write once between them, the second going on under the first's write.
+   *
+   * **A write that loses** to another writer is tried again from the row read after it, with the
+   * prune applied to that fresh row. The fifth lost write across the call's fences ends the call with `'superseded'`;
+   * when it is the first write, nothing has been deleted. A write of the row's
+   * leases alone that lands in between is waited out and costs no attempt, within the lease writers' bound. A row that is
+   * another incarnation of the name, or one that no longer fits the premise of a call that renews (a pointer that moved,
+   * a write of anything but leases, the ledger and the `pointerId`) gives its reason, as anywhere else in this function.
+   * A row that is gone, a tombstone, or one with no pointer has no ledger to prune and nothing to renew: the deletes by
+   * name stop with the row's reason, and the collection runs and reads the row itself. On the path with nothing to delete
+   * by name no reason is reported, so a holder left in the bucket is never answered with `'absent'`; the call throws.
+   *
+   * **A row with no usable ledger** names nothing to prune when it is read, but a load that publishes before the
+   * collection reads the row starts a ledger from the bucket, which names the holders the collection then spares. So
+   * the caller reads the row again after the collection, and what the ledger then names below the bound is pruned and
+   * collected again, within the same five lost writes.
+   *
+   * A write that gets no answer is settled by reading the row, and nothing is deleted until it is: a landing is gone on
+   * under; a row still as the write found it gets a fresh compare-and-swap from the row just read, a request of its own
+   * carrying the same version, so at most one of the two lands, after a wait on the injected clock under 500 ms, then 1 s,
+   * then 2 s (spread by the rng), at most three times, as a load's publish does; then, or at once with no clock to wait on,
+   * or when the row cannot be read, the registry's `TransientError` is thrown.
    */
-  const fenceInFlight = async (): Promise<ReturnType<typeof rowVerdict>> => {
+  const fence = async (plan: {
+    readonly byName: readonly number[];
+    readonly sweeps: boolean;
+    /** The generation the collection that follows deletes everything below, when it is not `from` (a rewrite's own). */
+    readonly below?: number;
+  }): Promise<{
+    readonly moved: ReturnType<typeof rowVerdict>;
+    readonly sweep: boolean;
+    readonly byName: readonly number[];
+    /** Whether the row it acted on had a usable ledger. */
+    readonly ledger: boolean;
+    /** Whether it wrote a ledger that names fewer generations. */
+    readonly pruned: boolean;
+    /** Whether the pointer had moved past every holder to delete by name, so the collection takes them. */
+    readonly past?: boolean;
+  }> => {
     const renewal = rowRenewal(ref, deps);
     const churn = leaseChurn({ clock: deps.clock, rng: renewal.rng });
-    let row = await deps.registry.get(ref);
+    const first = await deps.registry.get(ref);
+    let row = first;
+    const refuse = (moved: ReturnType<typeof rowVerdict>) => ({
+      moved,
+      sweep: false,
+      byName: [],
+      ledger: true,
+      pruned: false,
+    });
     for (;;) {
-      const verdict = rowVerdict(row);
-      if (verdict !== null) return verdict;
-      const current = row!;
-      const renewed = await renewal.renew(current);
-      if ('row' in renewed) {
-        premise = renewed.row;
-        premiseToken = renewed.row.token;
-        return null;
+      // A row that is gone, a tombstone, or a hand-made row with no pointer has no ledger to prune and nothing to renew.
+      // The deletes by name stop with the row's reason; the collection still runs and reads the row itself (it declines
+      // on a gone row, and deletes every object under a tombstone). No reason is reported on the sweep-only path, so a
+      // holder left in the bucket is never answered with `'absent'`.
+      if (row === null || row.status === 'destroyed' || (!pointerless && row.currentGen === null)) {
+        if (row !== null && !sameIncarnation(record, row)) return refuse('superseded');
+        const reason =
+          row === null ? 'absent' : row.status === 'destroyed' ? 'destroyed' : 'no-generation';
+        return {
+          moved: plan.byName.length > 0 ? reason : null,
+          sweep: plan.sweeps,
+          byName: [],
+          ledger: true,
+          pruned: false,
+        };
       }
-      const now = renewed.lost;
-      if (now !== null && renewedSince(current, now)) {
-        premise = now;
-        premiseToken = now.token;
-        return null;
+      if (!sameIncarnation(record, row)) return refuse('superseded');
+      const held =
+        row.token === record.token || onlyLeasesDiffer(record, row, ['pointerId', 'knownGens']);
+      const pointer = row.currentGen;
+      let byName = plan.byName;
+      let moved: ReturnType<typeof rowVerdict> = null;
+      let pastHolders = false;
+      if (plan.byName.length > 0 && !held) {
+        // A pointer moved forward past every holder to delete by name puts them below it, where the collection takes
+        // them; no load in flight can publish a number below the pointer, so no renewal is owed.
+        const below =
+          plan.sweeps &&
+          !pointerless &&
+          pointer !== null &&
+          pointer > from &&
+          plan.byName.every((h) => h <= pointer);
+        if (!below) return refuse(pointerless || pointer !== null ? 'superseded' : 'no-generation');
+        byName = [];
+        moved = 'superseded';
+        pastHolders = true;
       }
-      // A write of leases alone is waited out, as every lease-aware writer waits it out; any other write is read for
-      // what it says, and one that leaves the premise standing past the wait's bound is reported as a race.
-      const settled = await churn.settle(current, now, () => deps.registry.get(ref));
-      if (settled === undefined) return rowVerdict(now) ?? 'superseded';
-      row = settled.row;
+      const ledger = usableKnownGens(row);
+      const doomed = new Set<number>(byName);
+      if (plan.sweeps && ledger !== undefined && pointer !== null) {
+        const bound = Math.min(plan.below ?? from, pointer);
+        for (const e of ledger) if (e.generation < bound) doomed.add(e.generation);
+        if (byName.length === 0) for (const h of plan.byName) if (h < pointer) doomed.add(h);
+      }
+      if (pointer !== null) doomed.delete(pointer);
+      const named = ledger !== undefined && ledger.some((e) => doomed.has(e.generation));
+      const renew = byName.length > 0;
+      const renewedAfter = held && row.pointerId !== first!.pointerId;
+      if (!named && (!renew || renewedAfter)) {
+        premise = row;
+        premiseToken = row.token;
+        return {
+          moved,
+          sweep: plan.sweeps,
+          byName,
+          ledger: ledger !== undefined,
+          pruned: false,
+          past: pastHolders,
+        };
+      }
+      const written = await renewal.write(row, {
+        ...(renew ? renewPointer(row) : {}),
+        ...(named ? { knownGens: pruneKnown(row, doomed) } : {}),
+      });
+      if ('row' in written) {
+        premise = written.row;
+        premiseToken = written.row.token;
+        return {
+          moved,
+          sweep: plan.sweeps,
+          byName,
+          ledger: ledger !== undefined,
+          pruned: named,
+          past: pastHolders,
+        };
+      }
+      const now = written.lost;
+      const settled = await churn.settle(row, now, () => deps.registry.get(ref));
+      if (settled !== undefined) {
+        row = settled.row;
+        continue;
+      }
+      fenceLost += 1;
+      if (fenceLost >= FENCE_ATTEMPTS) return refuse('superseded');
+      row = now;
     }
   };
 
   /**
-   * Delete `holders`, newest first, each after reading the row and finding it still the one {@link fenceInFlight}
-   * renewed (or that row with only its leases changed), and stop at the first that is not. Returns what was deleted, the
+   * The collection again, after one that spared a generation the row names, and after one made over a row that had no
+   * usable ledger at the fence. Either a rollback onto a holder, or a load that took the holder into its window, or a
+   * load that started a ledger from the bucket, made the row name what the collection meant to delete since the fence
+   * took it out. So the fence is made again (with `by` the holders the pointer moved past, and the collection's `below`
+   * bound when it is not `from`) and the collection runs again, until one spares nothing the row names. Each pass that
+   * writes counts against the bound on lost writes the fences share, and there are at most that many passes.
+   */
+  const collectAgain = async (
+    start: { readonly spared: readonly number[]; readonly ledgered: boolean },
+    plan: { readonly byName: readonly number[]; readonly below?: number },
+  ): Promise<{ deleted: number[]; missing?: number; moved: ReturnType<typeof rowVerdict> }> => {
+    const deleted: number[] = [];
+    let moved: ReturnType<typeof rowVerdict> = null;
+    let missing: number | undefined;
+    let spared = start.spared;
+    for (
+      let passes = 0;
+      passes < FENCE_ATTEMPTS &&
+      missing === undefined &&
+      ((!start.ledgered && passes === 0) || spared.length > 0);
+      passes++
+    ) {
+      const again = await fence({ byName: plan.byName, sweeps: true, below: plan.below });
+      if (again.moved !== null && again.past !== true) {
+        moved = again.moved;
+        break;
+      }
+      if (!again.pruned) break;
+      const more = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
+      deleted.push(...more.deleted);
+      missing = more.missing;
+      spared = more.knownSpared ?? [];
+    }
+    return missing === undefined ? { deleted, moved } : { deleted, moved, missing };
+  };
+
+  /**
+   * Delete `holders`, newest first, each after reading the row and finding it still the one {@link fence} made (or
+   * that row with only its leases changed), and stop at the first that is not. Returns what was deleted, the
    * row's reason when the deletes stopped, and, in `missing`, a generation it deleted that the row then named.
    *
    * One round trip remains between that read and its delete: a rollback that lands inside it onto the holder being
@@ -750,16 +923,23 @@ async function eraseOnce(
    */
   const deleteFenced = async (
     holders: readonly number[],
+    fenced: ReturnType<typeof rowVerdict>,
   ): Promise<{ deleted: number[]; moved: ReturnType<typeof rowVerdict>; missing?: number }> => {
     const deleted: number[] = [];
     const watch = watchDeletes(deps, ref);
-    let moved = await fenceInFlight();
+    let moved = fenced;
     for (const generation of holders) {
       if (moved !== null) break;
       const row = await deps.registry.get(ref);
       const missing = await watch.check(premise, row);
       if (missing !== undefined) return { deleted, moved: 'superseded', missing };
-      moved = rowVerdict(row);
+      // Another erasure's fence (a renewal of the pointerId, a prune of the ledger) leaves the premise standing.
+      moved = rowVerdict(row, ['pointerId', 'knownGens']);
+      // A holder the row names again (a rollback onto it, and away, since the fence took it out) is a window entry: it is
+      // not deleted from under the row.
+      if (moved === null && usableKnownGens(row)?.some((e) => e.generation === generation)) {
+        moved = 'superseded';
+      }
       if (moved !== null) break;
       try {
         await deps.storage.delete({ ...base, generation }, { ifVersion: versions.get(generation) });
@@ -823,7 +1003,7 @@ async function eraseOnce(
    * cannot search it, and, whatever id it is asked to erase, it treats it as one that may hold it.
    *
    * With no holder it writes nothing, and a first load in flight publishes as it would have. With one, it renews the
-   * row's `pointerId` ({@link fenceInFlight}) before it deletes any, so the load that wrote it, fenced on the row it read
+   * row's `pointerId` ({@link fence}) before it deletes any, so the load that wrote it, fenced on the row it read
    * (or on there being no row, once a row appeared), is refused at its publish and never names an object that is gone;
    * then it deletes each holder while the row is still the one it renewed. A load that read the row after the renewal
    * writes an object of its own, numbered above every holder, which this call never deletes.
@@ -847,7 +1027,8 @@ async function eraseOnce(
     // The newest object that was searched and held the id; a sealed one could not be searched.
     const newest = holders.find((generation) => !sealed.has(generation));
 
-    const { deleted, moved, missing } = await deleteFenced(holders);
+    const fenced = await fence({ byName: holders, sweeps: false });
+    const { deleted, moved, missing } = await deleteFenced(fenced.byName, fenced.moved);
     const collected = [...deleted].sort(ascending);
     const left = await holderLeft(clean);
     if (missing !== undefined) notePointerOnDeleted(missing);
@@ -989,14 +1170,42 @@ async function eraseOnce(
     const fenced = newest === undefined ? [...holdersAbove, ...sealedBelow] : holdersAbove;
     if (newest === undefined && fenced.length === 0) return notMember;
 
-    const swept =
-      newest === undefined ? { deleted: [] } : await collectBelowPointer(ref, deps, { keep: 0 });
-    const collected = [...swept.deleted];
+    // One write to the row before any delete: the generations about to go leave its ledger, and the deletes by name are
+    // fenced against a load in flight (see `fence`). A call it refuses deletes nothing.
+    const sweeping = newest !== undefined;
     let moved: ReturnType<typeof rowVerdict> = null;
+    let byName: readonly number[] = fenced;
+    let sweep = sweeping;
+    let ledgered = true;
+    let past = false;
+    if (sweeping || fenced.length > 0) {
+      const made = await fence({ byName: fenced, sweeps: sweeping });
+      moved = made.moved;
+      byName = made.byName;
+      sweep = made.sweep;
+      ledgered = made.ledger;
+      past = made.past === true;
+    }
+    const swept: { deleted: number[]; missing?: number; knownSpared?: number[] } = sweep
+      ? await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true })
+      : { deleted: [] };
+    const collected = [...swept.deleted];
     let missing = swept.missing;
+    if (sweep && missing === undefined && (moved === null || past)) {
+      const again = await collectAgain(
+        { spared: swept.knownSpared ?? [], ledgered },
+        { byName: past ? fenced : [] },
+      );
+      collected.push(...again.deleted);
+      missing = again.missing;
+      // A row gone in the second fence leaves the reason the call already had: a holder may still be in the bucket.
+      if (again.moved !== null && again.moved !== 'absent' && again.moved !== 'no-generation') {
+        moved = again.moved;
+      }
+    }
     // A collection that stopped on a rollback has moved the pointer off `from`, so nothing above it is deleted.
-    if (fenced.length > 0 && missing === undefined) {
-      const deleted = await deleteFenced(fenced);
+    if (byName.length > 0 && missing === undefined) {
+      const deleted = await deleteFenced(byName, moved);
       collected.push(...deleted.deleted);
       moved = deleted.moved;
       missing = deleted.missing;
@@ -1099,7 +1308,7 @@ async function eraseOnce(
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
       // correct; this only saves a round trip on the common race, which the catch reports either way.
       const beforeVerify = await deps.registry.get(ref);
-      const early = rowVerdict(beforeVerify);
+      const early = rowVerdict(beforeVerify, ['knownGens']);
       if (early !== null) return refused(early, written);
       await read(() =>
         verifyGeneration(deps.storage, key, { ...tally, metadata }, cryptoAt(generation)),
@@ -1258,6 +1467,7 @@ async function eraseOnce(
     expectToken: fromToken,
     // A lease written while the rewrite streams moves the token and nothing it derived from: it does not refuse it.
     expectRow: record,
+    expectRowIgnores: ['knownGens'],
     summary,
     // The row then records that no generation below the new pointer is kept, as the collection below leaves it: its
     // ledger is the rewrite alone, whose footer checksum is the one its summary describes.
@@ -1302,11 +1512,25 @@ async function eraseOnce(
   // rather than trusting the one this call read, and why the receipt below reads what is left rather than
   // assuming. A rollback that lands between a re-proof and its delete, and that the row still shows when read again, makes
   // the call throw `NotFoundError`, after the `segment.rewrite` event above: the collection stopped there.
-  const swept = await collectBelowPointer(ref, deps, { keep: 0 });
+  const swept = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
   if (swept.missing !== undefined) {
     throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
   }
-  const collected = swept.deleted;
+  const collected = [...swept.deleted];
+  let missing: number | undefined;
+  // The collection spared a generation the row names, which a rollback onto it or a load's window made known after the
+  // rewrite's write left the ledger as the rewrite alone: it is taken out again and the collection runs again.
+  if (missing === undefined && (swept.knownSpared?.length ?? 0) > 0) {
+    const again = await collectAgain(
+      { spared: swept.knownSpared ?? [], ledgered: true },
+      { byName: [], below: generation },
+    );
+    collected.push(...again.deleted);
+    missing = again.missing;
+  }
+  if (missing !== undefined) {
+    throw pointerOnDeletedError(ref, { kind: 'erasure' }, missing);
+  }
   const left = await holderLeft(new Set([generation]));
   if (left !== undefined) throw cannotRemove(left);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
@@ -1341,15 +1565,17 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * The renewals of one erasure step: a compare-and-swap of a row's `pointerId` ({@link renewPointer}) on the token of the
- * row it is given, which changes nothing a read resolves, and refuses every publish fenced on a row read before it.
+ * The writes of one erasure step to a row, on the token of the row it is given: a renewal of the row's `pointerId`
+ * ({@link renewPointer}), which changes nothing a read resolves and refuses every publish fenced on a row read before it,
+ * or any other patch, such as the fence's removal of generations from the row's ledger.
  *
- * `renew` answers with the row as its write left it, or, when the write did not land, with the row read after it
+ * `write` answers with the row as its write left it, or, when the write did not land, with the row read after it
  * (`lost`; `null` for a row that is gone), for the caller to decide on. A write that gets no answer is settled by
  * reading the row. A row still as the write found it gets a fresh compare-and-swap from the row just read, a request of
  * its own carrying the same version, so at most one of the two lands, after a wait on the injected clock under 500 ms,
- * then 1 s, then 2 s (spread by the rng), at most three times across the step's renewals, as a load's publish does;
- * then, or at once with no clock to wait on, or when the row cannot be read, the registry's `TransientError` is thrown.
+ * then 1 s, then 2 s (spread by the rng), at most three times across the writes of one such step, as a load's publish
+ * does (a call's fences are one step each, and a call makes up to six); then, or at once with no clock to wait on, or
+ * when the row cannot be read, the registry's `TransientError` is thrown.
  * Any other row is `lost`, the step's own write possibly among it: only the caller knows what may follow from it.
  */
 function rowRenewal(
@@ -1357,60 +1583,59 @@ function rowRenewal(
   deps: EraseIdDeps,
 ): {
   readonly rng: Rng | undefined;
+  write(
+    row: RegistryRecord,
+    patch: RegistryPatch,
+  ): Promise<{ readonly row: RegistryRecord } | { readonly lost: RegistryRecord | null }>;
   renew(
     row: RegistryRecord,
   ): Promise<{ readonly row: RegistryRecord } | { readonly lost: RegistryRecord | null }>;
 } {
   const rng = deps.rng ?? deps.readRetry?.rng;
   let resends = 0;
-  return {
-    rng,
-    async renew(row) {
-      let current = row;
-      for (;;) {
-        let failure: unknown;
-        try {
-          const { token } = await deps.registry.compareAndSwap(
-            ref,
-            current.token,
-            renewPointer(current),
-          );
-          // The row as this write left it: the same, its pointerId renewed to the token the write was given.
-          return { row: { ...current, token, pointerId: token } };
-        } catch (err) {
-          if (!isWriteConflictError(err) && !isTransientError(err)) throw err;
-          failure = err;
-        }
-        const unanswered = isTransientError(failure);
-        let now: RegistryRecord | null;
-        try {
-          now = await deps.registry.get(ref);
-        } catch (readErr) {
-          // A write that got no answer stays unsettled, and the registry's own error says so. A row that is not one the
-          // library wrote says more than that, and is thrown as it is.
-          if (!unanswered || isIntegrityError(readErr)) throw readErr;
-          throw failure;
-        }
-        if (!unanswered || now === null || now.token !== current.token) return { lost: now };
-        // Not landed, or still on its way: a fresh write from the row just read, a bounded number of times.
-        if (deps.clock?.sleep === undefined || resends >= UNANSWERED_RESENDS) throw failure;
-        const bound = UNANSWERED_BASE_MS * 2 ** resends;
-        resends += 1;
-        await jitteredWait(deps.clock, rng, bound);
-        current = now;
+  const write = async (
+    row: RegistryRecord,
+    patch: RegistryPatch,
+  ): Promise<{ readonly row: RegistryRecord } | { readonly lost: RegistryRecord | null }> => {
+    let current = row;
+    for (;;) {
+      let failure: unknown;
+      try {
+        const { token } = await deps.registry.compareAndSwap(ref, current.token, patch);
+        // The row as this write left it: its patch applied, and its pointerId the token the write was given when the
+        // patch names a field a read resolves through.
+        return {
+          row: {
+            ...current,
+            token,
+            pointerId: renewsPointer(patch) ? token : current.pointerId,
+            ...('knownGens' in patch ? { knownGens: patch.knownGens } : {}),
+          },
+        };
+      } catch (err) {
+        if (!isWriteConflictError(err) && !isTransientError(err)) throw err;
+        failure = err;
       }
-    },
+      const unanswered = isTransientError(failure);
+      let now: RegistryRecord | null;
+      try {
+        now = await deps.registry.get(ref);
+      } catch (readErr) {
+        // A write that got no answer stays unsettled, and the registry's own error says so. A row that is not one the
+        // library wrote says more than that, and is thrown as it is.
+        if (!unanswered || isIntegrityError(readErr)) throw readErr;
+        throw failure;
+      }
+      if (!unanswered || now === null || now.token !== current.token) return { lost: now };
+      // Not landed, or still on its way: a fresh write from the row just read, a bounded number of times.
+      if (deps.clock?.sleep === undefined || resends >= UNANSWERED_RESENDS) throw failure;
+      const bound = UNANSWERED_BASE_MS * 2 ** resends;
+      resends += 1;
+      await jitteredWait(deps.clock, rng, bound);
+      current = now;
+    }
   };
-}
-
-/**
- * Whether `now` is `held` with its `pointerId` renewed and nothing else changed but its leases: a write that names a
- * field a read resolves through at the value it had, as an erasure's fence does, landed after `held` was read.
- * The same incarnation is required ({@link onlyLeasesDiffer} checks it), so a row purged and made again is never taken
- * for one.
- */
-function renewedSince(held: RegistryRecord, now: RegistryRecord): boolean {
-  return now.pointerId !== held.pointerId && onlyLeasesDiffer(held, now, ['pointerId']);
+  return { rng, write, renew: (row) => write(row, renewPointer(row)) };
 }
 
 /** How many ranges the erasure rewrite keeps open or landed ahead of the writer. */

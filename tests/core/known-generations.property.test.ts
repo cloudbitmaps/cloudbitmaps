@@ -818,6 +818,15 @@ describe.each(registries)('the known-generations ledger against its model, over 
                         model.ledger = [erased.generation];
                         model.pointer = erased.generation;
                         model.leases.clear();
+                      } else if (erased.erased && model.ledger !== undefined) {
+                        // The id was in an older generation only: the call deleted every generation below the
+                        // pointer and each one above it that held the id, and took them out of the ledger first. On
+                        // main the ledger goes on naming the generations the call deleted.
+                        const after = await generations(storage);
+                        const heldAbove = present.filter((g) => g > current && !after.includes(g));
+                        model.ledger = model.ledger.filter(
+                          (g) => g >= current && !heldAbove.includes(g),
+                        );
                       }
                     }
                     break;
