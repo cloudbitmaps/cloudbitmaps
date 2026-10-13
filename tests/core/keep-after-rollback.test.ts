@@ -154,7 +154,7 @@ describe('the first load after a rollback keeps the generation it superseded', (
     const w = world();
     await loadEach(w, 5, { keep: 9 }); // generations 0 to 4
     await rollbackSegment(SEG, 1, w.deps);
-    await rollbackSegment(SEG, 3, w.deps, { allowForward: true });
+    await rollbackSegment(SEG, 3, w.deps);
     const r = await loadSegment(SEG, [7], w.deps, { keep: 1 });
     // 4 is taken, so the load numbers above everything.
     expect(r).toMatchObject({ generation: 5, published: true });
@@ -251,7 +251,8 @@ describe('what a load keeps after a rollback when the bucket or the row changes 
     // The load publishes 4 over 1; while its collection lists, an operator rolls back to 3. The pass now works below 3,
     // and keeps what the load's own publish chose to keep, 1, which the load superseded, as well as what the ledger names.
     const storage = duringSecondListing(w.storage, async () => {
-      await rollbackSegment(SEG, 3, w.deps);
+      // The load's publish dropped 3 from the ledger, which names 1 and 4 only.
+      await rollbackSegment(SEG, 3, w.deps, { allowUnknown: true });
     });
     const r = await loadSegment(SEG, [7], { ...w.deps, storage }, { keep: 1 });
     expect(r).toMatchObject({ generation: 4, published: true });
@@ -269,7 +270,7 @@ describe('what a load keeps after a rollback when the bucket or the row changes 
     // row no longer records a window, so the pass keeps one by count.
     const storage = duringSecondListing(w.storage, async () => {
       await rollbackSegment(SEG, 3, w.deps);
-      await rollbackSegment(SEG, 5, w.deps, { allowForward: true });
+      await rollbackSegment(SEG, 5, w.deps);
     });
     const r = await loadSegment(SEG, [7, 8, 9, 10, 11], { ...w.deps, storage }, { keep: 1 });
     expect(r).toMatchObject({ generation: 5, published: true });

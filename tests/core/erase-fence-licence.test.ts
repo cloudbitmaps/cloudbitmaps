@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fc from 'fast-check';
 import { eraseIdFromSegment, FENCE_ATTEMPTS } from '@/core/erase-id';
-import { TransientError, WriteConflictError } from '@/core/errors';
+import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import { openGenerationReader } from '@/core/crbm-open';
 import { loadSegment } from '@/core/load';
 import { pruneKnown } from '@/core/known-generations';
@@ -285,7 +285,7 @@ describe('a load lands first', () => {
     const storage = onFirstOpen(
       w.storage,
       (g) => g > 0,
-      () => rollbackSegment(SEG, 2, w.load, { allowForward: true }),
+      () => rollbackSegment(SEG, 2, w.load),
     );
     const res = await eraseIdFromSegment(SEG, 999, { ...w.load, storage });
     // The pointer is on a holder now: the call takes the other one, which is below it, and leaves the one the pointer names.
@@ -456,7 +456,9 @@ describe('the collection spared a generation the row named again', () => {
       afterCas: async () => {
         if (fired) return;
         fired = true;
-        await rollbackSegment(SEG, 0, w.load);
+        // Without the flag the same call is refused here: the row does not name the generation.
+        await expect(rollbackSegment(SEG, 0, w.load)).rejects.toBeInstanceOf(ValidationError);
+        await rollbackSegment(SEG, 0, w.load, { allowUnknown: true });
         await loadSegment(SEG, [1, 7], w.load, { keep: 9 });
       },
     });
@@ -484,7 +486,9 @@ describe('the collection spared a generation the row named again', () => {
       afterCas: async (n) => {
         if (n !== 1 || fired) return;
         fired = true;
-        await rollbackSegment(SEG, 0, w.load);
+        // Without the flag the same call is refused here: the row does not name the generation.
+        await expect(rollbackSegment(SEG, 0, w.load)).rejects.toBeInstanceOf(ValidationError);
+        await rollbackSegment(SEG, 0, w.load, { allowUnknown: true });
         await loadSegment(SEG, [1, 7], w.load, { keep: 9 });
       },
     });
@@ -528,7 +532,9 @@ describe('the collection spared a generation the row named again', () => {
       beforeGet: async (n) => {
         if (phase === 1 && n === 3) {
           phase = 2;
-          await rollbackSegment(SEG, 2, w.load); // onto a holder, below the pointer 3
+          // Without the flag the same call is refused here: the row does not name the generation.
+          await expect(rollbackSegment(SEG, 2, w.load)).rejects.toBeInstanceOf(ValidationError);
+          await rollbackSegment(SEG, 2, w.load, { allowUnknown: true }); // onto a holder, below the pointer 3
           await loadSegment(SEG, [1, 9], w.load, { keep: 9 }); // 4: its window keeps 2
         }
         if (phase === 3 && ++after === 2) {
@@ -552,7 +558,9 @@ describe('the collection spared a generation the row named again', () => {
       afterCas: async (n) => {
         if (n !== 1 || fired) return;
         fired = true;
-        await rollbackSegment(SEG, 1, w.load); // back onto the holder the rewrite replaced
+        // Without the flag the same call is refused here: the row does not name the generation.
+        await expect(rollbackSegment(SEG, 1, w.load)).rejects.toBeInstanceOf(ValidationError);
+        await rollbackSegment(SEG, 1, w.load, { allowUnknown: true }); // back onto the holder the rewrite replaced
         await loadSegment(SEG, [1, 7], w.load, { keep: 9 });
       },
     });
@@ -578,7 +586,9 @@ describe('the collection spared a generation the row named again', () => {
       (g) => g === 3 && phase === 0,
       async () => {
         phase = 1;
-        await rollbackSegment(SEG, 3, w.load, { allowForward: true }); // a rollback starts no ledger
+        // Without the flag the same call is refused here: the row does not name the generation.
+        await expect(rollbackSegment(SEG, 3, w.load)).rejects.toBeInstanceOf(ValidationError);
+        await rollbackSegment(SEG, 3, w.load, { allowUnknown: true }); // a rollback starts no ledger
       },
     );
     const c = counting(w.registry, {
@@ -607,7 +617,9 @@ describe('the collection spared a generation the row named again', () => {
       afterCas: async (n) => {
         if (n !== 1 || fired) return;
         fired = true;
-        await rollbackSegment(SEG, 2, w.load, { allowForward: true });
+        // Without the flag the same call is refused here: the row does not name the generation.
+        await expect(rollbackSegment(SEG, 2, w.load)).rejects.toBeInstanceOf(ValidationError);
+        await rollbackSegment(SEG, 2, w.load, { allowUnknown: true });
         await rollbackSegment(SEG, 1, w.load);
       },
     });
@@ -1158,7 +1170,7 @@ describe('after erased: true, no ledger entry names a generation that held the i
               const gens = await bucket({ storage, registry, load: deps });
               if (gens.length > 0) {
                 await rollbackSegment(SEG, gens[s.pick % gens.length]!, deps, {
-                  allowForward: true,
+                  allowUnknown: true, // widen: land on unknown numbers too
                 }).catch(() => undefined);
               }
             } else {

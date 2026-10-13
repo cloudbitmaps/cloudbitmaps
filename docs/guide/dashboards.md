@@ -186,9 +186,11 @@ await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'user
 **What lands in the log** — eight kinds, each `segment.*` one naming the segment's `incarnation` (the id of its
 registry row, kept by every write of it and new when the name is created again, so the records of two lives of one
 name are told apart). `segment.publish` (a loaded generation became current),
-`segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward — with
-`allowForward: true` to undo an earlier rollback, or onto a segment that had no current generation, when
-`fromGeneration` is `null`; the one event whose effect cannot be reconstructed from the
+`segment.rollback` (an operator moved the pointer to a generation they named: backwards, or forward onto a generation
+an earlier rollback left, or onto a segment that had no current generation, when `fromGeneration` is `null`; the event
+carries `unknown: true` when the segment's row did not vouch for the target, because `allowUnknown` was passed, the
+row has no usable record of the generations it published, or the target is older than that record reaches, which
+a dashboard of overrides filters on; the one event whose effect cannot be reconstructed from the
 objects in the bucket, which is why the [disaster-recovery guide](disaster-recovery.md) treats it as the receipt
 that matters, and emitted only on the sink passed to that `rollback` call),
 `segment.load-refused` (a load that did not publish, with its `reason` and the refused generation's

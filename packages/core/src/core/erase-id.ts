@@ -904,10 +904,12 @@ async function eraseOnce(
    * row's reason when the deletes stopped, and, in `missing`, a generation it deleted that the row then named.
    *
    * One round trip remains between that read and its delete: a rollback that lands inside it onto the holder being
-   * deleted leaves the pointer naming a missing object. Above the pointer, and on a row with no pointer, that is one
-   * with `allowForward` onto an object the rollback accepts (on a row with no key, a cleartext one: it refuses an
-   * encrypted target there); below it, an object sealed under a key the row does not hold, which only a rollback with
-   * no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
+   * deleted leaves the pointer naming a missing object. The row's ledger no longer names a generation this call deletes
+   * (it was taken out before), so a rollback needs `allowUnknown` to move onto one: above the pointer, and on a row with
+   * no pointer, onto an object the rollback accepts (on a row with no key, a cleartext one: it refuses an encrypted
+   * target there). Below the pointer the flag is not needed where the pointer alone decides (a row with no usable ledger,
+   * or a number below a full ledger's bound), and then it is an object sealed under a key the row does not hold, which
+   * only a rollback with no key at hand moves onto, since one with the key refuses an object it cannot open. The rollback's own
    * move-then-verify catches every such landing except one whose check runs before the delete, and a condition on the
    * object cannot close it, since the pointer then names the very object this call read. So it is detected instead:
    * every read of the row after a delete is held to what was deleted, and so is one more read after the last delete
@@ -1077,8 +1079,8 @@ async function eraseOnce(
    * population most likely to be asking, people who already left.
    *
    * And the generations **above** the pointer count too. After a rollback they include the ones it rolled back
-   * from, which `rollbackSegment` with `allowForward` makes current again, so a holder there is one ordinary
-   * operator action from being served. There can be several: every generation loaded after the one the pointer
+   * from, which `rollbackSegment` makes current again, with no flag while the row's ledger names them and with
+   * `allowUnknown` once this call has taken them out, so a holder there is one operator action from being served. There can be several: every generation loaded after the one the pointer
    * was rolled back to.
    *
    * So look, at all of them. A holder cannot be rewritten — a rewrite of a non-current generation would regress
@@ -1355,7 +1357,7 @@ async function eraseOnce(
    * `currentGen + 1` whenever no object holds that number, below this call's object. Either way the object is
    * above the winner's pointer, where no collection ever looks. The
    * object was derived from `from`, so when the winner was another erasure it still holds the id that erasure
-   * has just reported gone, one `rollback({ allowForward: true })` from being served, and the newest superseded
+   * has just reported gone, one `rollback({ allowUnknown: true })` from being served, and the newest superseded
    * generation once a later load raises the pointer past it, which is exactly what that load's `keep` retains.
    *
    * Under a tombstone it is deleted too, as a refused load deletes its own: every generation under one is garbage

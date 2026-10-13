@@ -248,7 +248,7 @@ const CALL_KEYS = {
   ]),
   rollback: keysOf<NonNullable<Parameters<CloudRoaring['rollback']>[2]>>()([
     'audit',
-    'allowForward',
+    'allowUnknown',
   ]),
   dropSegment: keysOf<Parameters<CloudRoaring['dropSegment']>[1]>()([
     'confirmSegment',
@@ -799,7 +799,7 @@ export interface MaterializeResult {
   /**
    * The generation written. Present even when refused: the refusal deleted that object, unless the destination's
    * row changed while it was writing, which leaves it in the bucket, an orphan a later load's collection takes; until
-   * then a rollback can name it.
+   * then a rollback onto it needs `allowUnknown`.
    */
   readonly generation: number;
   /**
@@ -1957,6 +1957,8 @@ export class CloudRoaring {
    * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
    * choose from, which is the reason to look at it. One registry read and one listing; it does not open the objects.
+   * Each entry says whether the row knows the generation (`known`): a known generation needs no `allowUnknown`; an unknown
+   * one does, except below a row's pointer when the row has no usable record or the target is older than a full one reaches.
    *
    * Needs a backend.
    */
@@ -2046,49 +2048,62 @@ export class CloudRoaring {
    * (`segment.rollback`), because every other pointer move can be reconstructed from "a load happened" and this
    * one cannot.
    *
-   * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * `NotFoundError` naming what *is* available, a crypto-shredded segment throws
-   * {@link ValidationError} because every generation of it is unreadable, and a target that is cleartext under an
-   * encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from one tail read of it,
-   * because every read would refuse it. Rolling to the generation already current is a no-op that reports itself, once
-   * one zero-byte read finds its object in the bucket; when the object is gone it throws `NotFoundError` naming what is.
+   * It refuses rather than guesses. The row records, in `knownGens`, the generations its loads and rollbacks made
+   * current, each with the footer checksum of its object, and a rollback moves only onto one of those: a generation the
+   * row does not know (a load that wrote its object and died before the publish, a refused load's object, an object
+   * sealed under a key no row holds, a load published after the point a registry was restored to) throws
+   * {@link ValidationError} before any request to storage, and a known one whose object carries another checksum than
+   * the recorded one throws {@link IntegrityError}, with or without a keystore, since the footer is in the clear. A
+   * generation not in the bucket (collected, or never written) throws `NotFoundError` naming what *is* available, a
+   * crypto-shredded segment throws {@link ValidationError} because every generation of it is unreadable, and a target
+   * that is cleartext under an encrypted segment, or encrypted under a cleartext one, throws {@link IntegrityError} from
+   * one tail read of it, because every read would refuse it. Rolling to the generation already current is a no-op that
+   * reports itself, once one footer read finds its object in the bucket (and the one the row recorded); when the object is
+   * gone it throws `NotFoundError` naming what is.
    *
    * The same tail read (and a range read when the target's index is longer than it) gives the target's id count and
    * metadata, which the rollback writes into the row with the pointer, so a reader that sees the target as current sees
    * what describes it. The store's keystore opens an encrypted target for this; without it, or when it cannot open the
    * key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out
-   * as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback to a generation below the pointer still
-   * happens, opening nothing, and the row carries no summary of the target. Any other failure of the keystore is
+   * as `AbortSignal.timeout()` and the AWS SDK report a timeout), a rollback onto a known generation still happens,
+   * opening nothing, and the row carries no summary of the target. Any other failure of the keystore is
    * thrown. A swap of the pointer that gets no answer is settled by reading the row: one that landed, the row being the
-   * one the swap leaves, is checked as any is, and otherwise its `TransientError` is thrown.
+   * one the swap leaves, is checked as any is, and otherwise its `TransientError` is thrown. After the swap the target's
+   * footer is read once more, and the pointer put back if the object is gone or is another.
    *
    * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
-   * and are then *above* `currentGen`, where collection never looks. They remain until loads pass them (the first
-   * load whose number one of them holds numbers above them all, and collection then keeps `keep` of what is below its
-   * pointer, the generation that load superseded first), {@link CloudRoaring.dropSegment}
+   * and are then *above* `currentGen`, where collection never looks, and still known to the row, so rolling forward onto
+   * one needs no flag. They remain until loads pass them (the first load whose
+   * number one of them holds numbers above them all, and collection then keeps `keep` of what is below its pointer, the
+   * generation that load superseded first), {@link CloudRoaring.dropSegment}
    * deletes them, or {@link CloudRoaring.eraseSubject} does: all of those present when it rewrites, and, when the
    * current generation does not hold the id, only those holding it and any no read of the segment can open, whatever
    * the id. An operator who has just undone a bad load should not have the
    * evidence collected out from under them, while a rollback target that still holds erased data would make the
    * erasure undoable.
    *
-   * A target **above** the pointer needs `{ allowForward: true }`, and is refused with {@link ValidationError}
-   * without it: that is also where objects live that were never published, such as a load that wrote its object
-   * and died before the publish. Undoing an earlier rollback is what the opt-in is for. On an encrypted segment it also
-   * needs the key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap it, it is
-   * refused with `KeyUnavailableError` before the target is read, since an object sealed under a key no row holds passes
-   * every check that needs no key, and a key service that did not answer in time is thrown as `TransientError`, to
-   * retry.
+   * `{ allowUnknown: true }` moves onto a present object the row does not vouch for, or one whose checksum differs from
+   * the recorded one, as long as it is the segment's kind of object, opens, and names the generation, and records it as
+   * known (over a usable record; a row with none stays without one). On an encrypted segment, outside the two cases the pointer alone decides (below), it also needs the key: with no keystore, or one that holds none of the key's KEKs or
+   * one that does not unwrap it, it is refused with `KeyUnavailableError` before the target is read, since an object
+   * sealed under a key no row holds passes every check that needs no key, and a key service that did not answer in
+   * time is thrown as `TransientError`, to retry. Every move the row did not vouch for is audited with `unknown: true`.
+   * Two cases are decided by the pointer alone: a target below it needs no flag, no key and no checksum check, and the
+   * move is audited the same way. They are a row with no usable `knownGens` (a registry that drops the field, or a pointer
+   * moved by hand), and a target numbered below the bound of a full record (128 entries or more, leased ones included),
+   * which is its least recently current entry that no lease names (an `*Into` destination keeps every generation in the
+   * bucket and names only the newest 128). A generation a publish with a smaller `keep` no longer names but that stays in
+   * the bucket (a lease spared it, or its delete failed) needs `allowUnknown` until a later listing collects it.
    *
    * Needs a backend.
    */
   async rollback(
     ref: SegmentRef,
     toGeneration: number,
-    options: { audit?: IAuditSink; allowForward?: boolean } = {},
+    options: { audit?: IAuditSink; allowUnknown?: boolean } = {},
   ): Promise<RollbackResult> {
     validateSegmentRef(ref);
-    checkOptions(options, 'rollback', CALL_KEYS.rollback, ['allowForward']);
+    checkOptions(options, 'rollback', CALL_KEYS.rollback, ['allowUnknown']);
     options ??= {};
     const deps = this.lifecycleDeps('rollback');
     try {
@@ -2156,8 +2171,8 @@ export class CloudRoaring {
    * deleting live data. A publish never adds the orphan to the row's list, and a load's listing deletes it once a
    * generation above it is current, unless the row's list names it; where the row records none (after a rollback, or
    * with a `keep` above 64), that listing's window can keep it and, at a `keep` up to 64, record it, and the publishes
-   * after carry it until the window pushes it out. Until it goes, a rollback can name it, and publishes what no load
-   * published.
+   * after carry it until the window pushes it out. Until it goes, a rollback onto it is refused unless `allowUnknown` is passed, since the list never names it (a list seeded
+   * over a row with none can); with the override it publishes what no load published.
    *
    * **Collection is by name at any `keep` up to 64.** The segment's row records the generations a load keeps, so a load
    * that found nothing above the pointer deletes the generations its publish pushed out of the window and lists

@@ -156,6 +156,37 @@ export function capKnown(
   return known.filter((e) => keep.has(e.generation));
 }
 
+/**
+ * `known`, held to the cap for a rollback's insert, in the same order. It keeps the entries numbered in `protect`, then the
+ * most recently current others that no lease holds while fewer than {@link KNOWN_FILL} unleased entries are kept, then
+ * the leased ones, most recently current first, up to {@link MAX_KNOWN_GENERATIONS}. A leased entry is an extra, as it is
+ * for a publish: an insert drops what the fill leaves out of the unleased entries, one entry for one inserted, and never a
+ * leased one while the cap has room.
+ */
+function capInsert(
+  known: readonly KnownGeneration[],
+  protect: ReadonlySet<number>,
+  leased: ReadonlySet<number>,
+): KnownGeneration[] {
+  const keep = new Set<number>();
+  let unleased = 0;
+  for (const e of known) {
+    if (!protect.has(e.generation)) continue;
+    keep.add(e.generation);
+    if (!leased.has(e.generation)) unleased += 1;
+  }
+  for (let i = known.length - 1; i >= 0 && unleased < KNOWN_FILL; i--) {
+    const g = known[i]!.generation;
+    if (keep.has(g) || leased.has(g)) continue;
+    keep.add(g);
+    unleased += 1;
+  }
+  for (let i = known.length - 1; i >= 0 && keep.size < MAX_KNOWN_GENERATIONS; i--) {
+    if (leased.has(known[i]!.generation)) keep.add(known[i]!.generation);
+  }
+  return known.filter((e) => keep.has(e.generation));
+}
+
 /** `known` with `entry` made the most recent: any entry for its generation removed, and the entry added last. */
 export function makeCurrent(
   known: readonly KnownGeneration[],
@@ -283,7 +314,7 @@ export function rollbackKnown(
   const moved = makeCurrent(found, target);
   const inserted = !found.some((e) => e.generation === target.generation);
   if (!inserted && moved.length <= MAX_KNOWN_GENERATIONS) return moved;
-  return capKnown(moved, new Set([target.generation, prev.currentGen!]), leasedByRow(prev));
+  return capInsert(moved, new Set([target.generation, prev.currentGen!]), leasedByRow(prev));
 }
 
 /**
@@ -316,6 +347,29 @@ export function describingKnown(
   const found = usableKnownGens(record);
   if (found === undefined || found.length <= MAX_KNOWN_GENERATIONS) return found;
   return capKnown(found, new Set([record.currentGen!, movedTo]), leasedByRow(record));
+}
+
+/**
+ * Whether the ledger is full: it names at least {@link KNOWN_FILL} generations, which is when a writer may have let an
+ * older one go (a publish vouches for at most {@link KNOWN_SPAN} below its own, and an inserting rollback drops an entry
+ * once 128 that no lease holds are named). Leased entries do not switch it off: a lease on an entry inside the span
+ * leaves the ledger as full as it was. Past the least recently current entry of a full ledger, a rollback can no longer
+ * tell a generation the row forgot from one it never knew, so it judges a target numbered below that entry as it did
+ * before the ledger existed.
+ */
+export function isFullLedger(known: readonly KnownGeneration[]): boolean {
+  return known.length >= KNOWN_FILL;
+}
+
+/**
+ * The number a target below the pointer is judged against on a full ledger: the least recently current entry that no
+ * lease entry of the row names (live or ended: a rollback has no clock). A leased entry stays in the ledger for its lease,
+ * however far the window has moved on since, so it does not mark where the ledger stopped remembering; the first entry no
+ * lease holds does. A ledger whose every entry is leased is judged against its first entry.
+ */
+export function fallbackBound(record: RegistryRecord, known: readonly KnownGeneration[]): number {
+  const leased = leasedByRow(record);
+  return (known.find((e) => !leased.has(e.generation)) ?? known[0]!).generation;
 }
 
 /**

@@ -519,16 +519,15 @@ describe('a lease write during a writer fenced on the row token does not starve 
         const v: unknown = Reflect.get(t, p, rx);
         if (typeof v !== 'function') return v;
         const fn = (v as (...a: unknown[]) => unknown).bind(t);
-        if (p !== 'list') return fn;
-        // The second listing is the verify of the target's object: it has been collected meanwhile.
-        return (...a: unknown[]) =>
-          (async function* () {
-            if (++lists === 2) {
-              phase = 'undo';
-              await t.delete({ ...SEG, generation: 1 });
-            }
-            yield* fn(...a) as AsyncIterable<unknown>;
-          })();
+        if (p !== 'getTail') return fn;
+        // The second tail read is the verify of the target's footer, after the swap: it has been collected meanwhile.
+        return async (...a: unknown[]) => {
+          if (++lists === 2) {
+            phase = 'undo';
+            await t.delete({ ...SEG, generation: 1 });
+          }
+          return fn(...a);
+        };
       },
     }) as IStorageDriver;
     // Lease writes ahead of the swap, and ahead of the undo, each in its own budget.
@@ -562,16 +561,15 @@ describe('a lease write during a writer fenced on the row token does not starve 
         const v: unknown = Reflect.get(t, p, rx);
         if (typeof v !== 'function') return v;
         const fn = (v as (...a: unknown[]) => unknown).bind(t);
-        if (p !== 'list') return fn;
-        // The second listing is the verify of the target's object: it has been collected meanwhile.
-        return (...a: unknown[]) =>
-          (async function* () {
-            if (++lists === 2) {
-              phase = 'undo';
-              await t.delete({ ...SEG, generation: 1 });
-            }
-            yield* fn(...a) as AsyncIterable<unknown>;
-          })();
+        if (p !== 'getTail') return fn;
+        // The second tail read is the verify of the target's footer, after the swap: it has been collected meanwhile.
+        return async (...a: unknown[]) => {
+          if (++lists === 2) {
+            phase = 'undo';
+            await t.delete({ ...SEG, generation: 1 });
+          }
+          return fn(...a);
+        };
       },
     }) as IStorageDriver;
     const racing = hooked(
@@ -599,15 +597,14 @@ describe('a lease write during a writer fenced on the row token does not starve 
         const v: unknown = Reflect.get(t, p, rx);
         if (typeof v !== 'function') return v;
         const fn = (v as (...a: unknown[]) => unknown).bind(t);
-        if (p !== 'list') return fn;
-        return (...a: unknown[]) =>
-          (async function* () {
-            if (++lists === 2) {
-              phase = 'undo';
-              await t.delete({ ...SEG, generation: 1 });
-            }
-            yield* fn(...a) as AsyncIterable<unknown>;
-          })();
+        if (p !== 'getTail') return fn;
+        return async (...a: unknown[]) => {
+          if (++lists === 2) {
+            phase = 'undo';
+            await t.delete({ ...SEG, generation: 1 });
+          }
+          return fn(...a);
+        };
       },
     }) as IStorageDriver;
     let renewedTo: string | undefined;

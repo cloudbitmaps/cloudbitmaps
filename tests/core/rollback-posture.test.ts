@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { rollbackSegment } from '@/core/rollback';
 import { aadFor } from '@/core/crypto';
-import { IntegrityError } from '@/core/errors';
+import { IntegrityError, ValidationError } from '@/core/errors';
 import { nextGeneration } from '@/core/generation-gc';
 import { InProcessKeystore, NodeAead } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
@@ -33,8 +33,15 @@ describe('rollback checks its target against the row', () => {
     const { storage, registry, load } = world(keystore);
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], {}); // never published
     const current = await load([7, 8]);
-    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(IntegrityError);
-    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(
+    // The row does not know 0, so it is refused for that before anything is read; `allowUnknown` reaches the kind check.
+    await expect(rollbackSegment(SEG, 0, { storage, registry, keystore })).rejects.toThrow(
+      ValidationError,
+    );
+    const deps = { storage, registry, keystore };
+    await expect(rollbackSegment(SEG, 0, deps, { allowUnknown: true })).rejects.toThrow(
+      IntegrityError,
+    );
+    await expect(rollbackSegment(SEG, 0, deps, { allowUnknown: true })).rejects.toThrow(
       /generation 0 of "s" is cleartext, but the segment is encrypted/,
     );
     expect((await registry.get(SEG))?.currentGen).toBe(current);
@@ -49,9 +56,10 @@ describe('rollback checks its target against the row', () => {
     });
     await storage.putImmutable({ ...SEG, generation: 0 }, async (out) => out.write(sealed));
     const current = await load([7, 8]);
-    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(
-      /generation 0 of "s" is encrypted, but the segment is cleartext/,
-    );
+    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toThrow(ValidationError);
+    await expect(
+      rollbackSegment(SEG, 0, { storage, registry }, { allowUnknown: true }),
+    ).rejects.toThrow(/generation 0 of "s" is encrypted, but the segment is cleartext/);
     expect((await registry.get(SEG))?.currentGen).toBe(current);
   });
 

@@ -42,8 +42,8 @@ refused.
 **A bound is judged after the write, before the publish.** The load writes the new generation's object first, unpublished,
 then judges it, and only then moves the pointer. A refused load has written its object and deletes it, one write and one
 delete, unless another write changed the segment's row meanwhile in more than its leases: then the object stays in the
-bucket, an orphan that a later load's collection takes, and until it goes a rollback can name it
-([why, and the exceptions](#how-it-stays-correct)). Nothing a reader sees changes. To judge the outputs of a `materializeMany` call without writing anything, use a
+bucket, an orphan that a later load's collection takes, and until it goes a rollback onto it is refused unless it passes
+`allowUnknown`, since the row never recorded it ([why, and the exceptions](#how-it-stays-correct)). Nothing a reader sees changes. To judge the outputs of a `materializeMany` call without writing anything, use a
 [dry run](#look-before-you-publish-a-dry-run).
 
 | `reason` | Means | What to do |
@@ -559,46 +559,102 @@ no longer be rolled back to 18:00. Two ways to hold a time window, both with wha
 ## Roll back a segment
 
 `store.generations(ref)` lists what the bucket holds for a segment, and
-`store.rollback(ref, toGeneration, { audit?, allowForward? })` moves the pointer to one of them. It is the one
+`store.rollback(ref, toGeneration, { audit?, allowUnknown? })` moves the pointer to one of them. It is the one
 pointer move no automatic path makes.
+
+A rollback moves only onto a generation the segment's row **knows**: one its loads and rollbacks made current, whose
+object is still the one the row recorded. The row keeps that record in `knownGens`, a list of generation numbers with the
+footer checksum of each object, in the order they were made current. It holds the current generation, the ones a load's
+`keep` keeps below it, every generation a live lease holds, and the ones a rollback left above the pointer until a load
+numbers above them. The checksum is in the object's footer, which is in the clear, so a rollback needs no key to check it.
+`generations` marks each generation `known` or not, so you can see which targets need no flag before you ask.
 
 ```ts
 import { RecordingAuditSink } from '@cloudbitmaps/roaring';
 
 const audit = new RecordingAuditSink();
 const ref = { segment: 'audience:active' };
-await store.generations(ref); // → [{ generation: 3, current: false }, { generation: 4, current: true }]
+await store.generations(ref);
+// → [{ generation: 3, current: false, known: true }, { generation: 4, current: true, known: true }]
 await store.rollback(ref, 3, { audit }); // → { fromGeneration: 4, generation: 3 }
 
-// Generation 4 is still in the bucket, above the pointer now, so undoing the rollback needs the opt-in
-// (and, on an encrypted segment, a store whose keystore opens the segment's key):
-await store.rollback(ref, 4, { audit, allowForward: true });
+// Generation 4 is still in the bucket and the row still knows it, so undoing the rollback needs no flag and,
+// on an encrypted segment, no key: its checksum vouches for it.
+await store.rollback(ref, 4, { audit });
+
+// An object no load of this row published (a load that died before its publish, a refused load's object, a load
+// published after a registry was restored to an older version) is in the bucket and not in the record:
+await store.generations(ref); // → [..., { generation: 7, current: false, known: false }]
+await store.rollback(ref, 7); // ValidationError, before any request to storage
+await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the audit event says `unknown: true`
 ```
 
-- `generations` is one registry read and one listing, and it does not open the objects. It lists the bucket whether or
-  not the segment has a registry row, so it also finds the objects a purged row left behind. It shows what the bucket
-  holds, not what the segment has ever been, since collection deletes superseded objects.
+- `generations` is one registry read and one listing, and it does not open the objects, so `known` is the row's word
+  and its checksum is not compared. It lists the bucket whether or not the segment has a registry row, so it also finds
+  the objects a purged row left behind. It shows what the bucket holds, not what the segment has ever been, since
+  collection deletes superseded objects. Every generation of a row with no usable `knownGens` is `known: false`; the
+  current generation of a row with one is always `known: true`.
 - A rollback deletes nothing, so a generation it rolled back from stays in the bucket until something collects it
   (see "What happens to the generations above the new pointer" below), and `seg.pinAt` can reopen it, with its
   fingerprint, once a later load has moved the pointer past it. It is fenced on the row it read, so a load that lands
   meanwhile is never undone: the rollback throws `WriteConflictError`, or, when its own swap got no answer, that
-  `TransientError` (below). A rollback to a generation a concurrent load is collecting can still lose that generation:
-  the collection proves the row before each delete, and a rollback landing between that proof and the delete is the
-  one window it cannot close. The collection detects it and the load throws `NotFoundError` when the pointer still
-  names the missing object after a wait, which is the time a rollback that found its target gone takes to put the
-  pointer back. Check `store.generations(ref)` before acting: while the pointer names a missing object, roll back to a
-  generation in the bucket ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
-- A generation that is not in the bucket throws `NotFoundError` naming the ones that are.
-- A target above the pointer throws `ValidationError` without `allowForward`, because that is also where objects live
-  that were never published, such as those of a load that died before its publish. Below the pointer they can live
-  too, and nothing refuses them: an object a refused or crashed load left there stays until a later load's collection
-  takes it, and a rollback onto it publishes what no load published
-  ([an orphan is collected later](#how-it-stays-correct)). On an encrypted segment it also
-  needs the segment's key: with no keystore, or one that holds none of the key's KEKs or one that does not unwrap the
-  key, it throws `KeyUnavailableError` before it reads the target, since an object sealed under a key no row holds,
-  such as the one the loser of two concurrent first loads leaves, passes every check that needs no key, and only
-  opening it with the segment's key tells it apart. A key service that throws `TransientError` or times out reaches
-  you as `TransientError` (a timeout as its `cause`), and nothing moves: run the rollback again once it answers.
+  `TransientError` (below). A load that evicts the target from the row's record between the rollback's read and its
+  swap is such a write. Every collection and the erasure takes what it will delete out of the record before it deletes, or never deletes what
+  the row names, so none of them races a rollback that is held to the record: a load removes what it evicts from the record in the publish,
+  its pass that keeps by count skips every generation the row names when it re-reads the row, an erasure's rewrite leaves
+  only the rewrite in it, and an erasure that rewrites nothing removes each generation it will delete from it in a write
+  made before its first delete. A rollback that read the row before such a write loses its swap with
+  `WriteConflictError`; one that reads it after is refused as unknown. What is left is a rollback that is not held to the
+  record (`allowUnknown`, or a target below the pointer on a row with no usable record or below a full record's bound),
+  which can still land on a generation a deleter is taking: the deleting call detects it, and the load throws
+  `NotFoundError` when the pointer still names the missing object after a wait, which is the time a rollback that found
+  its target gone takes to put the pointer back. Because an erasure takes a generation out of the record first, a
+  rollback without `allowUnknown` cannot bring an erased generation back even when a delete failed, except through those
+  two cases, until the erasure is re-run. Check
+  `store.generations(ref)` before acting: while the pointer names a missing object, roll back to a generation in the
+  bucket ([a rollback that races a collection](#a-rollback-that-races-a-collection)).
+- **A generation the row does not know** throws `ValidationError` before any request to storage, naming the ones it
+  does know. That covers an object a crashed load left, one a refused load kept, one sealed under a key no row holds (such
+  as the one the loser of two concurrent first loads leaves) and a load published after the point a registry was restored
+  to. `allowUnknown: true` moves onto such an object anyway, and records it as known (over a usable record; a row with none
+  stays without one).
+- **A known generation whose object is not the one the row recorded** throws `IntegrityError` before the target is
+  opened, with or without a keystore: another object was stored under the number, for example by a write that never
+  published after the original was collected. It reports as another object, not as a failed decryption. What is compared
+  is the footer's checksum: damage inside an object whose footer is intact, and a change of a cleartext object's metadata
+  that keeps the footer's bytes (the same ids, other metadata of the same length), are not seen by it, and a read of the
+  generation reports the first. `allowUnknown`
+  moves onto it, and the row then records its checksum.
+- **A generation that is not in the bucket** throws `NotFoundError` naming the ones that are, once the row knows it or
+  `allowUnknown` is passed; an unknown one is refused first.
+- **`allowUnknown` on an encrypted segment needs the segment's key**, outside the two cases below where the pointer alone
+  decides, and there it only widens the call: the call lands key-less with the flag as it does without it. Otherwise, with no
+  keystore, or one that holds none of the key's KEKs or one that does not unwrap the key, it throws `KeyUnavailableError`
+  before it reads the target, since nothing vouches for the object and only opening it with the segment's key shows that it
+  is not one sealed under another key. A key service that throws `TransientError` or times out reaches you as
+  `TransientError` (a timeout as its `cause`), and nothing moves: run the rollback again once it answers. A known target
+  needs no key. `allowUnknown` never overrides the checks that follow: a target of the wrong kind, a footer that names
+  another generation, or an index or metadata that does not open is still refused, so no read of the result can fail.
+- **Two cases are decided by the pointer alone**: a target below the pointer needs no flag and no checksum check, key-less
+  included, and the event carries `unknown: true`. A target above the pointer needs `allowUnknown` in both.
+  - **A row with no usable `knownGens`**: a registry of your own that drops the field, a row whose pointer you moved with
+    `backend.registry.compareAndSwap` as a repair (a patch that moves the pointer without naming the record drops it), or a
+    record that disagrees with its row. A rollback onto such a row writes no record, so it stays in this case until the next
+    load writes one.
+  - **A target below a full record's bound.** A record is full at 128 entries, leased ones included: a writer that lets an
+    older generation go always leaves at least that many. It names the 128 most recently current generations, and those a
+    live lease holds, while a destination that keeps every generation (an `*Into`, `materializeMany`) or a load with a `keep`
+    of 127 or more keeps more than that in the bucket. The bound is the record's least recently current entry that no lease
+    names (every lease entry counts, live or ended, since a rollback has no clock; a record whose every entry is leased is
+    judged against its first entry). A leased entry stays for its lease however far the window has moved, so it does not
+    mark where the record stopped remembering. Everything the record names is still checked. A rollback onto an old
+    generation that no lease names makes it the least recently current entry, so it becomes the bound until the next publish
+    drops it: the generations numbered between it and the rest need `allowUnknown` (and the key on an encrypted segment)
+    until then. At a `keep` of 128 or more that collects by listing, an object a crashed load left in a freed number below the
+    bound can be rolled onto with no check.
+  - **A residue.** A generation that a publish with a smaller `keep` no longer names but that stays in the bucket (a lease
+    spared it, or its delete failed), while the record is not full, needs `allowUnknown` (and the key on an encrypted
+    segment) until a later listing collects it.
 - A target that is not what the row says the segment is throws `IntegrityError` before the pointer moves: a cleartext
   object under an encrypted segment (a write that never published, from a store with no keystore, before the
   segment's first keyed load), or an encrypted one under a cleartext segment. Every read would refuse it. The check is
@@ -607,41 +663,48 @@ await store.rollback(ref, 4, { audit, allowForward: true });
   tail read, and a range read as well when the target's index is longer than the tail read). An encrypted target is
   opened with the store's keystore for that. A store with no keystore, or one whose keystore cannot open the segment's
   key (it holds none of the key's KEKs, one it holds does not unwrap it, or it throws `TransientError` or times out as
-  `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls the segment back to a generation below the
-  pointer and leaves the row with no summary of the target; the next load writes one. Such a rollback opens nothing,
-  so it checks only that the target is encrypted, and it can move onto an object sealed under a key no row holds, which
-  every read then refuses: one a first load wrote and never published, once later loads have numbered past it. Any
-  other failure of the keystore is thrown, and nothing moves: a keystore of your own should throw `TransientError` for
-  a fault worth riding out. A target whose index or metadata does not open is refused, since no read could use it
-  either. A target above
-  the pointer (`allowForward`) is read once more after the swap, and if it is no longer the object that was read (an
-  erasure deleted it and a load took its number meanwhile) the pointer and the old summary are put back and the
-  rollback throws `NotFoundError`.
+  `AbortSignal.timeout()` and the AWS SDK report a timeout), still rolls the segment onto a known generation, and below the
+  pointer in the two cases above, and leaves the row with no summary of the target; the next load writes one. Such a
+  rollback opens nothing, and for a known generation its checksum vouches for the object. Any other failure of the
+  keystore is thrown, and nothing moves: a keystore of your own should throw `TransientError` for a fault worth riding
+  out. A target whose index or metadata does not open is refused, since no read could use it either.
+- **After the swap, the rollback reads the target's footer once more**, whatever the target. If the object is gone (a
+  collection that is not fenced on the row took it, or an erasure deleted one above the pointer) or is another object
+  (a load took its number meanwhile), the pointer, the old summary and the old record are put back, the target
+  leaves the record, and the rollback throws `NotFoundError`. That read takes the place of a listing of the bucket.
 - A swap of the pointer that gets no answer (`TransientError`) is settled by reading the row. When the row is the one
-  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and the ledger it wrote (none, over a row with no usable ledger: a rollback starts no ledger, a
+  the swap leaves (the row the rollback read, with the target as its pointer, the summary the swap wrote and the record it wrote (none, over a row with no usable record: a rollback starts no record, a
   load seeds one, so a load's write differs there), and nothing else changed but its leases and its pointerId), the target is checked as after any swap, and the
   pointer put back if the target went meanwhile. Otherwise the rollback throws that `TransientError`, and the pointer
   may still move, since the write may yet land: run the rollback again, which finds the pointer where it is. A load or
   another writer that moved the row meanwhile is left standing, and the rollback throws that `TransientError` rather
   than `WriteConflictError`. Some writes leave the very row the swap would, and cannot be told from it. On a cleartext
   segment: another rollback onto the same target, whatever row it read, and a load that wrote, under the target's
-  number, the very object the rollback read and recorded the ledger the rollback would (a load that keeps every
-  generation, onto a row whose ledger the rollback carried). On an encrypted segment, the swap's sealed summary tells every other write
+  number, the very object the rollback read and recorded the record the rollback would (a load that keeps every
+  generation, onto a row whose record the rollback carried). On an encrypted segment, the swap's sealed summary tells every other write
   apart, except when the rollback had no key at hand and wrote no summary: then another such rollback onto the same
   target cannot be told apart. The pointer is then where the rollback asked for it, and the rollback reports the move as
   its own.
 - A load keeps one generation below the one it publishes by default (`keep: 1`), so there is one to roll back to. Pass
   a larger `keep` on the loads of a segment you may want to roll further back.
 - Each move emits `segment.rollback` to the `audit` sink you pass
-  ([the audit trail](observability.md#audit-trail-security--compliance-events)), and this store drops its cached view of
+  ([the audit trail](observability.md#audit-trail-security--compliance-events)), carrying `unknown: true` when the row
+  did not vouch for the target (`allowUnknown`, or one of the two cases above), and this store drops its cached view of
   the segment. A rollback whose swap got no answer and that takes another writer's identical move for its own (above)
   emits it too, so that one move is recorded twice.
+- **Requests** (measured, memory driver, cleartext segment, index within the tail read): a known target is **4**: the
+  row, the target's tail, the swap, and its footer once more. A target the row does not know is refused after **1**, the
+  row. The current generation is **2**, the row and its footer. A target that is not in the bucket, with `allowUnknown`,
+  is the row, the tail that finds it missing, and one listing to name what is there. An encrypted segment adds the keystore
+  call, and a target whose index is longer than the tail read adds one range read.
 
 **Why rollback is not forward-only.** Forward-only is right for a writer: a load whose ids came from upstream loses
 nothing by being out-raced, and regressing would let a slow loader silently undo a fast one. It is wrong for an
 operator who has looked at the segment and knows which generation they want. So rollback refuses rather than guesses.
 A crypto-shredded segment throws `ValidationError`, since every generation of it is unreadable, and rolling to the
-generation already current is a reported no-op once one zero-byte read finds its object in the bucket. When the object
+generation already current is a reported no-op once one footer read finds its object in the bucket, and, when the row
+knows it, with the checksum it recorded (another footer under the number throws `IntegrityError`, and so does a footer that fails its own checks: a no-op
+reports no segment as fine over a corrupt current footer). When the object
 is gone (a collection raced an earlier move), it throws `NotFoundError` naming the generations that are there, so
 re-running a rollback to the generation you want never reports a missing object as fine.
 
@@ -1299,7 +1362,7 @@ published under the number, or still will. Above the pointer an erasure deletes 
 and a load can take the freed number; below it a rollback can lower the pointer and let a load take the number again,
 and a generation another load published can sit in a window the row does not record.
 
-**An orphan is collected later, and a rollback can name it until then.** A publish never adds an orphan to the row's
+**An orphan is collected later, and a rollback refuses it until then.** A publish never adds an orphan to the row's
 list: what it adds is the generation it superseded, which was current. A load whose check meets it numbers above it by a
 listing and, once its own generation is current, that listing deletes the orphan, which is below the pointer, where the
 row's window does not name it. Where the row has no usable ledger, that listing keeps a window from what it finds, the
@@ -1308,12 +1371,16 @@ the ledger: the orphan can take a place in that window, and the publishes after 
 window pushes it out. A load with a `keep` above 64 counts the ledger's own most recently current names first and then
 the newest others by number, so an orphan takes a place only when the ledger names fewer than `keep`. An orphan stranded elsewhere below the pointer waits for the next
 listing, at most 16 generations on, unless a window holds it. Until it goes, [`rollbackSegment`](#roll-back-a-segment)
-can name it as a target: a rollback checks only that its target is stored, sealed to match the row, and opens, so a
-rollback onto an orphan publishes what no load published, an empty generation a guard refused among them. Nothing yet
+refuses it as a target unless the caller passes `allowUnknown`: the row never recorded it, so a rollback throws
+`ValidationError` before any request to storage, and with the override it publishes what no load published, an empty
+generation a guard refused among them. Two cases do not refuse it: the orphan is below the pointer and the row has no
+usable ledger or the orphan is numbered below a full ledger's bound, where the pointer alone decides, and the orphan is
+one a ledger seeded over a row with none recorded, which the row then knows.
+Nothing yet
 tells an orphan from a published generation under the same number: a number is taken again once its object is deleted
 (after a rollback below it, or an erasure's delete above the pointer), so a `segment.publish` audit event naming the
-number can belong to an earlier object under it ([the roadmap](../ROADMAP.md) plans a rollback that refuses a generation
-no load published). There is no half-loaded state a reader can observe: a read resolves one generation and reads whole,
+number can belong to an earlier object under it ([the roadmap](../ROADMAP.md) plans a ledger that tells a generation a load published from one a seed
+recorded). There is no half-loaded state a reader can observe: a read resolves one generation and reads whole,
 checksum-verified chunks from it.
 
 **A miss is a re-read, not a failure.** If the generation an unpinned read is on is swept, the storage driver throws
@@ -1436,22 +1503,31 @@ the lower of the two.
 
 ### A rollback that races a collection
 
-Every loop that deletes generations reads the segment's row just before each delete. Four of them can meet a rollback:
-a load's collection (by name or by listing), a refused load's delete of its own object, the erasure's collection below
-the pointer, and the erasure's deletes of holders above the pointer or of first loads' objects on a row with no pointer.
-One round trip remains between that read and the delete, and a rollback onto the very generation being deleted can land
-inside it:
+Every loop that deletes generations reads the segment's row just before each delete. A rollback that is held to the
+row's record of its generations (`knownGens`) is kept out of all of them:
+
+- a load's collection by name removes the generations it deletes from the record in its publish, before it deletes
+  anything, so a rollback onto one is refused as unknown, or, when it read the row before that publish, loses its swap
+  with `WriteConflictError`;
+- a load's pass that keeps by count never deletes a generation the row names when it re-reads the row;
+- a refused load's own object is in no record, so it is not a target;
+- an erasure's rewrite leaves only itself in the record, before it collects, and an erasure that rewrites nothing takes
+  each generation it will delete out of the record in a write made before its first delete.
+
+What is left is a rollback that is not held to the record: `allowUnknown`, or a target below the pointer on a row with no
+usable record or below a full record's bound. It can meet a deleter and land on the very generation being deleted, inside
+the round trip that remains between the read of the row and the delete:
 
 ```
 deleting call        reads the row: g may go ──────── round trip ──────────────────▶ deletes g
-rollbackSegment(g)              lists: g is there │ moves the pointer onto g │ lists: g is there
+rollbackSegment(g)         reads g's footer: g is there │ moves the pointer onto g │ reads g's footer: g is there
                                                                                         └▶ the row names g, and g is gone
 ```
 
-The rollback checks the bucket after it moves the pointer, so a delete that lands before that check is caught there:
-the rollback puts the pointer back and throws `NotFoundError`. A delete that lands after it is not, and the rollback
-reports success over an object that is gone. Below the pointer that is an ordinary rollback onto a generation a
-collection is taking; above it, a rollback with `allowForward` onto an erasure's holder or a refused load's own object.
+The rollback reads the target's footer after it moves the pointer, so a delete that lands before that check is caught
+there: the rollback puts the pointer back and throws `NotFoundError`. A delete that lands after it is not, and the
+rollback reports success over an object that is gone. Below the pointer that is a rollback onto a generation a
+collection is taking; above it, a rollback onto an erasure's holder or a refused load's own object.
 
 **An erasure takes what it will delete out of the row's ledger first.** Before its first delete, in one write after its
 search, it removes from the row's ledger of known generations each holder it will delete by name and every name below the
@@ -1478,14 +1554,14 @@ and the undo. A rollback client no nearer the store than the deleting call is al
 
 ```
 deleting call       reads: g may go → deletes g → reads: names g, g is gone → reads again: the pointer is back
-rollbackSegment(g)    moves the pointer onto g ──→ lists: g is gone ──────────→ puts the pointer back
+rollbackSegment(g)    moves the pointer onto g ──→ reads g's footer: g is gone ──→ puts the pointer back
 ```
 
 So a read that finds the pointer on a deleted generation with no object under it is not yet the answer. The call
 reads the row again at once and, on a store (which always has a clock), again after waits of 250, 500 and 1,000 ms,
 1.75 s in all, and it reports the state only when every one of those reads still names a deleted generation that is
-missing. A rollback's check is one listing of the segment's objects (one page below 1,000 generations) and one
-compare-and-swap, two or three round trips, so the waits cover a rollback client a few hundred milliseconds further
+missing. A rollback's check is one footer read and one
+compare-and-swap, two round trips, so the waits cover a rollback client a few hundred milliseconds further
 from the store than the deleting call. A caller of the core functions that passes no clock gets only the read at once.
 A rollback whose undo takes longer than that can still be reported while it is undoing, which is why the message says
 to look before acting. A rollback whose swap got no answer is one: it puts the pointer back only after its own request
@@ -1505,7 +1581,7 @@ generation, and `checkConsistency()` reports the segment as `missing-storage-gen
 missing object. Act only if the pointer still names one; a rollback that found its target gone has put the pointer back
 itself, and the segment needs nothing: a rollback then would undo a load that took effect. While the pointer does name
 a missing object, every read that opens the segment's current generation fails: roll back to a generation the bucket
-holds (`allowForward` for one above the pointer), or load the segment again, which moves the pointer onto the load's own
+holds (a target the row does not know needs `allowUnknown`), or load the segment again, which moves the pointer onto the load's own
 new generation. The erasure also needs a re-run, as its ledger entry says
 ([reading the ledger](erasure.md#reading-the-ledger)).
 

@@ -21,7 +21,8 @@
  * object, though not one with the same bytes: a re-created segment's load of the same cleartext ids writes those. Once
  * another write has otherwise changed the row, the object stays: its number may by then name another writer's object,
  * and a footer cannot tell that from this load's own when that writer loaded the same ids. It is an orphan until a
- * later load's collection takes it, and until then a rollback can name it.
+ * later load's collection takes it, and until then a rollback onto it is refused unless `allowUnknown` is passed, since the
+ * row never recorded it.
  */
 import { requireFiniteNumber, requireInteger } from './check';
 import { type IAuditSink, NOOP_AUDIT, checkedAuditSink, safeAudit } from './audit';
@@ -359,7 +360,7 @@ export type LoadRefusal =
    * writing: another load published, a retention change, a rollback or an erasure wrote the row, the row was
    * deleted, or a row appeared where the load found none. Once another write has changed the row, the object stays in
    * the bucket, still billed, until a later load's collection deletes it or the segment is dropped, because its
-   * generation number may by then name another writer's object; until it goes, a rollback can name it. Once the row is
+   * generation number may by then name another writer's object; until it goes, a rollback onto it needs `allowUnknown`, as onto any generation the row does not know. Once the row is
    * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object whose footer
    * matches what this load wrote (a re-created segment's load of the same cleartext ids writes a match), and so is a
    * cleartext one under a row with key material.
@@ -371,7 +372,7 @@ export interface LoadResult {
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
    * unchanged or `destroyed`, and, once one read of its footer matches what the load wrote, when the row is gone or,
    * for a cleartext object, has key material. Under any other row another write changed, the object stays in the
-   * bucket, an orphan a later load's collection takes, and until then a rollback can name it. A load that lost its
+   * bucket, an orphan a later load's collection takes, and until then a rollback onto it needs `allowUnknown`. A load that lost its
    * generation number to another wrote nothing, and reports `size: 0`.
    */
   readonly generation: number;

@@ -168,7 +168,7 @@ describe('a pointer on a deleted number with an object under it is not missing a
       }),
     });
     await stalledAt(at, load);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
     await expect(load).resolves.toMatchObject({ generation: 2, published: true, collected: [0] });
     expect(await generations(w.storage)).toEqual([0, 1, 2]);
@@ -194,7 +194,7 @@ describe('a refusal the publish raises as an error, after its reclaim left the p
         { audit },
       );
       await stalledAt(at, load);
-      await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+      await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
       at.open();
       const err = await settled(load);
       expect(err).toBeInstanceOf(NotFoundError);
@@ -224,7 +224,7 @@ describe('a load whose current object is gone, which collects by listing, raced 
       { keep: 1 },
     );
     await stalledAt(at, load);
-    await rollbackSegment(REF, 1, w.deps);
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     at.open();
     const err = await settled(load);
     expect(err).toBeInstanceOf(NotFoundError);
@@ -247,7 +247,9 @@ describe('an erasure whose collection below the pointer was raced stops before i
       storage: hookedDelete(w.storage, 0, { at }),
     });
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 0, w.deps);
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 0, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     at.open();
     const err = await settled(erasure);
     expect(err).toBeInstanceOf(NotFoundError);
@@ -298,7 +300,7 @@ describe('a segment destroyed between the read that allowed the delete and the d
     const at = gate();
     const load = loadSegment(REF, [3], { ...w.deps, storage: hookedDelete(w.storage, 0, { at }) });
     await stalledAt(at, load);
-    await rollbackSegment(REF, 0, w.deps);
+    await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
     await destroy(w);
     at.open();
     // Its publish had landed, and that is its answer.
@@ -311,7 +313,7 @@ describe('a segment destroyed between the read that allowed the delete and the d
     const at = gate();
     const load = loadSegment(REF, [], { ...w.deps, storage: hookedDelete(w.storage, 1, { at }) });
     await stalledAt(at, load);
-    await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     await destroy(w);
     at.open();
     await expect(load).resolves.toMatchObject({ generation: 1, published: false, reason: 'empty' });
@@ -328,7 +330,9 @@ describe('a segment destroyed between the read that allowed the delete and the d
       storage: hookedDelete(w.storage, 1, { at }),
     });
     await stalledAt(at, erasure);
-    await rollbackSegment(REF, 1, w.deps, { allowForward: true });
+    // Without the flag the same call is refused here: the row does not name the generation.
+    await expect(rollbackSegment(REF, 1, w.deps)).rejects.toBeInstanceOf(ValidationError);
+    await rollbackSegment(REF, 1, w.deps, { allowUnknown: true });
     await destroy(w);
     at.open();
     // No generation in the bucket holds the id, and no reader resolves a tombstone's generations.

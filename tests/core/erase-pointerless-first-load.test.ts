@@ -354,7 +354,7 @@ describe('an erasure and a first load onto a row with no pointer', () => {
       if (!rolled && isRenewalOfNoPointer(patch)) {
         rolled = true;
         // An operator rolls forward onto the object, reading the renewed row.
-        await rollbackSegment(REF, 0, w.deps, { allowForward: true });
+        await rollbackSegment(REF, 0, w.deps, { allowUnknown: true });
       }
       return out;
     };

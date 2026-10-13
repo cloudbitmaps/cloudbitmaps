@@ -147,6 +147,24 @@ describe('absent options still read as none', () => {
   });
 });
 
+describe('rollback takes allowUnknown, and the option it replaced is refused', () => {
+  it('allowForward is an unknown option, whatever its value, and nothing moves', async () => {
+    const { store } = await world();
+    await store.load({ segment: 'a' }, [1, 2, 3, 4]);
+    for (const value of [true, false]) {
+      await expect(
+        store.rollback({ segment: 'a' }, 0, { allowForward: value } as never),
+      ).rejects.toThrow('rollback: unknown option "allowForward"');
+    }
+    await expect(
+      store.rollback({ segment: 'a' }, 0, { allowUnknown: 'true' as never }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(await drain(store.segment('a').iterate())).toEqual([1, 2, 3, 4]);
+    await store.rollback({ segment: 'a' }, 0, { allowUnknown: false });
+    expect(await drain(store.segment('a').iterate())).toEqual([1, 2, 3]);
+  });
+});
+
 describe('an audit or metrics sink without onEvent is refused, where it would have received nothing', () => {
   it('a bare callback passed as audit is a ValidationError before anything is written', async () => {
     const { store } = await world();

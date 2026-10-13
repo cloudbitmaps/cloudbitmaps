@@ -113,7 +113,7 @@ describe('strays above a restored pointer', () => {
     expect([await load(w, 12), await load(w, 12)]).toEqual([3, 4]);
     const snapshot = (await w.registry.get(SEG))!;
     expect([await load(w, 5), await load(w, 5)]).toEqual([5, 6]);
-    await rollbackSegment(SEG, 0, w.deps, {});
+    await rollbackSegment(SEG, 0, w.deps, { allowUnknown: true });
     await restore(w, snapshot);
     expect(await load(w, 5)).toBe(7);
     // Main seeded the first publish over the crashed loads' objects at 0 and 2, so it left [0, 2, 3, 4, 7]; those objects
@@ -195,7 +195,7 @@ describe('generations an erasure deleted above the pointer', () => {
     await plant(w, 10);
     await rollbackSegment(SEG, 1, w.deps, {});
     await loadSegment(SEG, [1, 2, 3], w.deps, { keep: 12 });
-    await rollbackSegment(SEG, 0, w.deps, {});
+    await rollbackSegment(SEG, 0, w.deps);
     await eraseIdFromSegment(SEG, 7777, w.deps);
     await load(w, 12);
     await load(w, 12);

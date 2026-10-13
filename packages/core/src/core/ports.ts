@@ -296,6 +296,11 @@ export interface StorageDeleteOptions {
  *   `getRange` may answer empty without reaching the backend, so it proves neither that the object exists nor
  *   that the offset lies inside it: the cloud drivers answer it empty, the memory and local-filesystem drivers
  *   throw for a missing object or an offset past the end.)
+ * - **A deleted object is missing to the next read**: once `delete(key)` has resolved, `getTail` and a non-empty `getRange`
+ *   of that key throw {@link NotFoundError} (a zero-length `getRange` is the exemption above), with no stale answer from a
+ *   cache or a replica. A rollback reads its target's footer once
+ *   after moving the pointer, in place of listing the bucket, and takes a read that succeeds as proof that the object is
+ *   there.
  * - **An out-of-range read throws {@link ValidationError}**: a range that runs past the end of the object, or a
  *   negative or non-integer offset or length. Never a clamped, short or adjacent read. A pin whose object
  *   was purged and loaded again as a smaller one asks for a range past its end, and this error is what sends it
