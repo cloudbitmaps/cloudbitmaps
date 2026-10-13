@@ -37,7 +37,9 @@ honours S3's conditional writes; MinIO is the one the integration suite runs aga
 and Azure Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real
 rather than as an optional peer, and the local filesystem (`LocalFsStorage`, from `@cloudbitmaps/roaring`, for
 development); plus the in-memory `MemoryStorage`, also from `@cloudbitmaps/roaring`, for tests. Each of the three clouds hosts both the storage generations and the registry, so a
-deployment needs exactly one cloud account.
+deployment needs exactly one cloud account. The cost model is a sixth package, `@cloudbitmaps/tools`: `estimateCost`
+prices a store you plan, and `groundedReport` one you run, from the size a segment's `stat()` reports
+(`groundedReport({ storageBytes: (await seg.stat()).sizeBytes })`). It reads and writes no store.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
 carries both the generations and the currentGen pointer, from one bucket and one prefix. MemoryStorage
@@ -50,7 +52,7 @@ and LocalFsStorage come from the flavor's main entry; S3Storage, GcsStorage and 
 Only by loading a whole new generation. `store.load(ref, ids)` writes one immutable object, checks the result is
 plausible (an empty result over a non-empty segment is refused, reported as `published: false` with a `reason`),
 moves the pointer to it by a compare-and-swap fenced on the registry row it read, and collects what the move
-superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor. A backend
+superseded, keeping one generation below the new pointer. It takes an array, a Set or an async cursor, or a bitmap you already hold (`{ bitmap }`, or `{ serialized }` for portable bytes). A backend
 (MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both the generations and the pointer and is what
 `storage` normally takes; a hand-written `{ storage, registry }` object is refused. `storage` also accepts a
 bare `IStorageDriver` (a storage driver, not a backend), which has no registry, so the store is read-only and cleartext; or an already-built
@@ -61,12 +63,18 @@ Nothing mutates a stored bitmap, so a crash before the publish leaves the previo
 no per-id write. `intersectInto`/`unionInto`/`andNotInto` use the same protocol, publishing their result as a
 new generation of the destination segment — and check the result is plausible the same way `load` does: an empty
 or implausible combine over a non-empty destination is refused (`published: false` + `reason`) rather than
-wiping it, with `allowEmpty`/`guard` to override. Unlike `load` they collect nothing by default, so a rollback
-target survives a materialization.
+wiping it, with `allowEmpty`/`guard` to override. `guard` is `{ minCardinality, minRetained, maxGrowth }`, and a
+refusal's `reason` is `'empty'`, `'min-cardinality'`, `'min-retained'`, `'max-growth'` or, for a lost race on a load,
+`'superseded'`. Unlike `load` they collect nothing by default, so a rollback
+target survives a materialization. `store.materializeMany` publishes many such outputs (each an `and` / `or` / `andNot`
+expression over named operands) from one chunk-ordered pass that reads each operand once, instead of once per `*Into`
+call; its operands are stored segments, and sets you hold arrive as a feed of records in chunk-key order. It needs
+`keep`, reports `stats` on its result, and reports an `op` event and a `storage.get` per range request to the metrics
+sink; with `dryRun: true` it writes nothing and reports what each publish would do.
 
 Every chunk a read fetches is whole and checksum-verified, from one generation, resolved once before any
-fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, an eviction, a sweep,
-an invalidation), and `seg.pin()` holds one generation for as long as a job needs it. The reads: has (cache,
+fan-out; a long read can move to a newer generation part-way (a `cache.genTtlMs` refresh, a reader eviction on a store
+with no timed refresh or an eviction of the segment's resolution on one with, a sweep, an invalidation), and `seg.pin()` holds one generation for as long as a job needs it. The reads: has (cache,
 else one ranged GET once the segment's pointer and index are read), count (exact, from the registry row's summary,
 one request when cold, else summed from the .crbm index, with zero payload reads), iterate, and the composites — intersect and andNot, which skip every chunk that cannot
 contribute, and union, which reads every chunk of every operand — with `exclude` suppression folded into the
@@ -76,16 +84,17 @@ on every combine, yields only the ids in (after, through] and fetches only the c
 
 ## Measured, expected and modelled
 
-Benchmarked against real S3 in us-east-1 — not an emulator — with the request counts read off the AWS SDK layer.
-With the pointer in the same bucket as the data, the topology that ships: the median cold intersect of two
-500,000-id segments sharing 100 of their 1,999 chunks made 204 GETs as measured, $81.60 per million, requesting
-only the shared chunks, and took 290.06 ms at the median from inside the region (run of 2026-10-04, whose client had 50 sockets; the client this release builds allows 128, and its effect is not measured). Its rounds sit a fifth to a half above the engine's rounds model, which assumes no socket limit; the run did not vary its 50 sockets, so it does not say why. A segment's first store.load() is
-2 PUTs and 4 GETs, $11.60 per million. For comparison: an always-on
-Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at rest. The run was
-driven from AWS CloudShell inside the region. One crossover is published, in GETs: past 329.15
-sustained GETs a second, with every read missing the cache, metered GETs pass the standing cluster — a warmer
-cache moves that line up. For cold intersects of the shape above, at 204 GETs each, that line is 1.6 intersects
-a second.
+The cold intersect's count is measured in region; the other counts come from running the engine; prices are the default list prices. With the pointer in the same bucket as the
+data, the topology that ships. Measured against real S3 in us-east-1, with the request counts read off the AWS SDK
+layer: a cold intersect of two 500,000-id segments sharing 100 of their 1,999 chunks made 6 GETs, $2.40 per million,
+reading neighbouring chunks as ranges, in 99.80 ms at the median; on a spread layout it reads more bytes than it needs,
+which cross-region can cost more than the requests it saves. A segment's first store.load() made 2 PUTs and 3 GETs,
+$11.20 per million at the default prices, the requests measured on S3; a steady store.load() at keep 12 that deletes a generation by name makes 2 PUTs, 5 GETs and a free delete, $12.00 per million, counted by the engine's tests. A cold count() is one request at 27.19 ms (run of 2026-10-06 from AWS CloudShell inside the
+region, whose client had 128 sockets). For
+comparison: an always-on Redis-HA line of $346/month standing, and a modelled $0.03/month for 1.2 GiB of segments at
+rest. One crossover is published, in GETs: past 329.15 sustained GETs a second, with every read missing the cache,
+metered GETs pass the standing cluster — a warmer cache moves that line up. For cold intersects of the shape above, at
+their measured 6 GETs each, that line is 54.9 /s intersects a second.
 
 ## Coming from Redis bitmaps
 
@@ -115,9 +124,9 @@ for retirement, and retireExpired() is the sweep that acts on it, retiring each 
 dropSegment. The expiry is an absolute instant the writer sets, not a duration derived from anything observed,
 because every load rewrites the basis such a duration would use. The sweep is a function you schedule -- this
 library starts no timer, so the sweep behaves the same in a Lambda and in a long-running server. (An edge
-isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle can also
-carry its own deadline, store.segment(name, { expiresAt }), and reads empty past it with no I/O; that reclaims
-nothing and binds that handle alone. There is no per-id TTL: a bitmap stores ids, not timestamps, and a per-id
+isolate runs none of it: the roaring codec is a native addon, which no isolate can load.) A handle carries no
+deadline of its own; a reader that must stop serving a set on time checks the deadline where it reads. There is no
+per-id TTL: a bitmap stores ids, not timestamps, and a per-id
 timestamp costs more than the compression saves.
 
 ## No background process, and nothing to seed
@@ -129,7 +138,7 @@ store. The only scheduled work is the retention sweep above (a load collects the
 *Into does when given keep; neither touches the current generation). An operator can move a pointer back with
 store.rollback(ref, generation), to a generation still in the bucket (store.generations(ref) lists them); it
 deletes nothing. Compliance is built in: subjectReport (Art. 15) and eraseSubject (Art. 17 -- a generation
-rewrite that deletes the generation holding the bit, so for every segment its ledger reports `erased: true` the
+rewrite that deletes the generation holding the bit, and any other generation that holds it, so for every segment its ledger reports `erased: true` the
 bit is physically gone from the bucket when the call returns), both scoped by a `namespace` or
 `{ allNamespaces: true }`; dropSegment; checkConsistency; exportSegments -- eject every segment to portable roaring or ndjson,
 which is the exit path; and the crypto-shred free functions destroySegment and eraseNamespace, which take the
@@ -140,17 +149,19 @@ backend's registry rather than the store, so a store beside them is told with st
 If you need a sub-millisecond p99, use Redis. Our cache is in-process RAM, so on a hit there is nothing between
 us; the limit is the tail: a check that misses the cache costs a ranged GET against object storage, where an
 in-process RAM store costs a memory read. CloudBitmaps is for sets that are large, mostly read, and shouldn't
-cost $346/month to keep warm. The in-region run of 2026-10-04 measured a cold intersect of two segments at 290.06 ms and a cold count() at 27.82 ms.
+cost $346/month to keep warm. The in-region run of 2026-10-06 measured a cold count() at 27.19 ms.
 
 ## Status
 
-v0.14.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible in
+v0.21.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible in
 a minor bump until the .crbm format freezes at 1.0.
 
 ## Links
 
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
 - Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
+- Package (the cost model): https://www.npmjs.com/package/@cloudbitmaps/tools
+- Estimate your own cost: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/cost.md
 - Getting-started guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md
 - Before production (permissions, lifecycle rules, timeouts): https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md
 - Loading in depth: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/loading.md
