@@ -5,7 +5,7 @@ import {
   type Server as TcpServer,
   type Socket,
 } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { S3Storage, limitSockets } from '@/s3/backend';
 import { ValidationError } from '@/core/errors';
@@ -20,17 +20,24 @@ import { ValidationError } from '@/core/errors';
 const BURST = 200;
 const CREDENTIALS = { accessKeyId: 'a', secretAccessKey: 's' };
 
-let server: Server | TcpServer | undefined;
 let sockets = new Set<Socket>();
 let expects: (string | undefined)[] = [];
+// Every server a test parked, each with the sockets it accepted. A server stays bound until the whole file is done: an
+// aborted burst can leave its client opening one more connection to that port a moment after the test ends, and a
+// port freed in the meantime could be handed to the next test's server, which would then count the stray as its own.
+// Held, the port cannot be reused, and the stray lands in the old server's own set.
+const retained: { server: Server | TcpServer; sockets: Set<Socket> }[] = [];
 
-afterEach(async () => {
-  const s = server;
-  server = undefined;
-  if (s) {
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve) => s.close(() => resolve()));
-  }
+afterEach(() => {
+  for (const socket of sockets) socket.destroy();
+});
+
+afterAll(async () => {
+  const all = retained.splice(0);
+  for (const { sockets: accepted } of all) for (const socket of accepted) socket.destroy();
+  await Promise.all(
+    all.map(({ server }) => new Promise<void>((resolve) => server.close(() => resolve()))),
+  );
 });
 
 /** A TLS endpoint that accepts connections and never answers the handshake, so each https request holds one socket. */
@@ -40,7 +47,7 @@ async function parkTls(): Promise<string> {
   const parked = createTcpServer((socket) => {
     mine.add(socket);
   });
-  server = parked;
+  retained.push({ server: parked, sockets: mine });
   await new Promise<void>((resolve) =>
     parked.listen({ port: 0, host: '127.0.0.1', backlog: 1024 }, resolve),
   );
@@ -54,8 +61,8 @@ async function park(): Promise<string> {
   const parked = createServer((req) => {
     mineExpects.push(req.headers.expect);
   });
-  server = parked;
   const mine = sockets;
+  retained.push({ server: parked, sockets: mine });
   parked.on('connection', (socket) => mine.add(socket));
   // A request that asks for `100-continue` is answered by this event, not the request one: take it and answer nothing.
   parked.on('checkContinue', (req) => {
