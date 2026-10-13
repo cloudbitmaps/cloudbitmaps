@@ -210,7 +210,8 @@ export interface Workload {
    * key. An `andNot`, a union with an `exclude`, and an intersect of one segment read the exclude with the includes, as a
    * range request for each run of its chunks that sit together, like an include's. The model adds each operand's pointer and index reads itself (see
    * {@link Workload.operandsPerIntersect}), so count chunk requests only. One more GET per operand whose index
-   * outgrows the reader's tail read (256 KiB by default), which then reads the index whole, belongs here too, and so
+   * outgrows the reader's tail read (256 KiB by default) belongs here too, when the operand is an encrypted segment or
+   * its row has no summary the store can use (a cleartext segment's row sizes its tail read to take the index), and so
    * does a pointer re-read by an intersect slow enough to outlive {@link Workload.genTtlMs}.
    */
   readonly chunksPerIntersect?: number;

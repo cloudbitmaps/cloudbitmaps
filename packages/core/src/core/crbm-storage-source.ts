@@ -6,7 +6,7 @@
  * per-chunk payloads. The write path lives beside it, in `crbm-write.ts`, `publish.ts` and `bulk-load.ts`, and the
  * opening of a stored generation in `crbm-open.ts`.
  */
-import { requireFiniteNumber } from './check';
+import { requireFiniteNumber, requirePositiveInteger } from './check';
 import {
   DEFAULT_CURRENT_GEN_TTL_MS,
   DEFAULT_MAX_OPEN_INDEX_BYTES,
@@ -649,6 +649,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         what: 'cache.genTtlMs',
         note: 'milliseconds; 0 turns the timed refresh off',
       });
+    }
+    // The cap on an index an open accepts, and the bound a sized tail read is held to: a whole number of bytes, so a
+    // `NaN` from an unset variable is refused here rather than silently turning the cap off.
+    if (readerOptions.maxIndexBytes !== undefined) {
+      requirePositiveInteger(readerOptions.maxIndexBytes, 'maxIndexBytes');
     }
     // A kept chunk is never fetched, so a sweep of its generation is not met: only the timed pointer refresh moves the
     // reader on. A source without one (no registry or clock, or a zero TTL) keeps nothing, and heals as any read does.
@@ -1588,7 +1593,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * after it. Only a summary this process still believes sizes a read ({@link trustedSummary}): one found to disagree
    * with its object is not used again, so a wrong number costs one extra read for the process, not for each open. An
    * encrypted generation is not sized: its summary is sealed under the key, so sizing from it would send the tail
-   * read after the key, which is what the early read above avoids.
+   * read after the key, which the early read above avoids where no earlier step has already waited for the key (a cold `has()` has).
    */
   private async openLive(ref: SegmentRef, live: Live): Promise<CrbmReader> {
     const wrapped = live.target.wrappedDeks;

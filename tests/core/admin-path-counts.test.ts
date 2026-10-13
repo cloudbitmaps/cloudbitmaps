@@ -370,9 +370,13 @@ describe('checkConsistency reports the same in every fault case', () => {
     // On a cleartext row whose summary covers the index the open reads once (the next test), so the fault is placed on
     // an open whose hint is too small: the default tail size, which still passes the summary's bounds and is used, and
     // which leaves the index to a second read. That second read is the one that meets the deleted object.
-    const { report } = await deletedAfterFirstTail(256 * 1024);
+    const { report, seen } = await deletedAfterFirstTail(256 * 1024);
+    // The premise: the open did read twice, a tail and then the index, before it met the deleted object.
+    expect(seen).toEqual({ tails: 1, ranges: 1 });
     expect(report.inconsistent).toEqual([]);
-    expect(report.errored.map((e) => e.segment)).toEqual(['s']);
+    expect(report.errored).toEqual([
+      { segment: 's', namespace: 'ns', error: 'no such generation: s.0' },
+    ]);
   });
 
   it('an open sized by an honest summary reads the object once, so a deletion after that read is not met', async () => {

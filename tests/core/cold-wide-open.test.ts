@@ -18,6 +18,7 @@ import { CloudRoaring, CrbmStorageChunkSource, InProcessKeystore, MemoryStorage 
 import type { RegistryRecord, SegmentRef } from '@/index';
 import { PREAMBLE_BYTES } from '@/core/crbm/format';
 import { sizedTailBytes } from '@/core/crbm-open';
+import { ValidationError } from '@/core/errors';
 import { summaryAgrees, usableSummary } from '@/core/summary';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { collect, seedSegment } from '../helpers/loaded';
@@ -493,6 +494,29 @@ describe('a cold open sizes its tail read from the row summary', () => {
     await store.segment('wide').has(WIDE_IDS[11]!);
     expect(w.seen.tailSizes).toEqual([tailBytes]);
   });
+
+  it('a cleartext row with no usable summary opens a cold has() with the default tail and two range reads', async () => {
+    const w = await wideWorld(WIDE_IDS);
+    const row = (await w.registry.get(REF))!;
+    await w.registry.compareAndSwap(REF, row.token, { summary: undefined });
+    expect((await w.registry.get(REF))!.summary).toBeUndefined();
+    w.reset();
+    expect(await w.store().segment('wide').has(WIDE_IDS[3]!)).toBe(true);
+    expect(w.seen.tailSizes).toEqual([DEFAULT_TAIL]);
+    expect(w.seen.ranges).toBe(2);
+  });
+
+  it.each([Number.NaN, 400_000.5, 0, -1, Infinity])(
+    'a source refuses a maxIndexBytes of %s, and a sized read never takes it from sizedTailBytes',
+    async (maxIndexBytes) => {
+      const w = await wideWorld(spread(10, 3));
+      expect(() => w.source({ maxIndexBytes })).toThrow(ValidationError);
+      // Handed straight to the sizing, a bad bound is the source's own tail, never an invalid read.
+      expect(
+        sizedTailBytes({ fingerprint: '3000000:12345', tailBytes: 500_000 }, { maxIndexBytes }),
+      ).toBe(maxIndexBytes === Infinity ? 500_000 : DEFAULT_TAIL);
+    },
+  );
 
   it('summaryAgrees holds tailBytes to the object when both say one', () => {
     const base = { cardinality: 3 };
