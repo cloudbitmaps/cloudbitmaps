@@ -18,7 +18,7 @@ import type { KnownGeneration, RegistryRecord } from './ports';
 /**
  * The most generations a load that collects by name records as its window. A `keep` above it collects by listing.
  */
-export const MAX_KEPT_GENERATIONS = 64;
+const MAX_KEPT_GENERATIONS = 64;
 
 /**
  * A writer keeps entries that nothing protects and no lease holds only while the ledger holds fewer than this many.
