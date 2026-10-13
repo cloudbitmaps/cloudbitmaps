@@ -303,6 +303,13 @@ describe('the library is described as it is', () => {
     }
   });
 
+  it('reads a long run of spaces inside an unclosed array in linear time', () => {
+    const text = "['a'" + ' '.repeat(100_000) + 'x';
+    const start = performance.now();
+    expect(pastTense(text)).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it('reports a phrase split across an array join at the line it starts on', () => {
     const text = "const a = 1;\n\nconst m = [\n  'they used',\n  'to say',\n].join(' ');\n";
     expect(pastTense(text).map((h) => [h.line, h.found])).toEqual([[4, 'used to']]);
@@ -362,6 +369,9 @@ describe('the library is described as it is', () => {
       "[x, 'used', 'to'].join(' ')",
       "['a list of', 'used', 'to', 'say'].length",
       "['a used', 'b to'].join('')",
+      "row['they used'].join('') to take",
+      "x['used'].join(' to ')",
+      "['they used', `${x} to take`].join(' ')",
     ]) {
       expect(pastTense(text), text).toEqual([]);
     }

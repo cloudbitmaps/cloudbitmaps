@@ -94,7 +94,8 @@ function trackedFiles(): string[] {
 
 /**
  * Every earlier-release version in `text`, with the line it starts on; two patterns matching one version count
- * once. Two string literals joined by `+`, and an array of string literals joined by a string literal, are read as one, so a version split across them is still found.
+ * once. Two string literals joined by `+`, and an array of string literals joined by a string literal, are read as
+ * one, so a version split across them is still found.
  */
 export function earlierReleases(text: string): Array<{ line: number; version: string }> {
   const { flat, at } = unwrap(text, { joinsOnly: true });

@@ -22,9 +22,12 @@ const JOIN = String.raw`['"\x60][ \t]*\+[ \t]*\n[ \t]*['"\x60]`;
 const ITEM = String.raw`(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|\x60(?:[^\x60\\$]|\\.)*\x60)`;
 /**
  * An array holding only string literals, read as one string: `['a', 'b'].join(' ')` is `a b`. An array that is not
- * joined, is joined by something other than a string literal, or holds anything but string literals is not a phrase.
+ * joined, is joined by something other than a string literal, or holds anything but string literals is not a phrase;
+ * nor is an index (`row['a'].join(' ')`), which the look-behind refuses. Each literal is read as its source text, so
+ * an escape (`\'`, `\n`) stays two characters, as it does for a `+` join. The trailing comma sits in its own group, so
+ * a run of spaces before the `]` is matched one way only.
  */
-const ARRAY_JOIN = String.raw`\[\s*(?:${ITEM}\s*,\s*)*${ITEM}\s*,?\s*\]\s*\.join\(\s*${ITEM}\s*\)`;
+const ARRAY_JOIN = String.raw`(?<![\w$)\]])\[\s*(?:${ITEM}\s*,\s*)*${ITEM}(?:\s*,)?\s*\]\s*\.join\(\s*${ITEM}\s*\)`;
 const LITERALS = new RegExp(ITEM, 'g');
 /**
  * A line break with the comment or quote marker that starts the next line: `//`, `*` and `>`, and `#` in a language
