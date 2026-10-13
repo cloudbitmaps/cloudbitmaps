@@ -70,7 +70,7 @@ reproducers below. The nightly workflow caches `fuzz/corpus/` so coverage accret
 2. Copy the reproducer into `tests/core/crbm/fuzz-corpus/{safe-deserialize,crbm-index,crbm-ext,crbm-reader}/`. A
    reproducer written by hand, for a hostile shape the campaign has not reached, goes in the same place.
 3. Fix the bug. [`tests/core/crbm/fuzz-corpus.test.ts`](../tests/core/crbm/fuzz-corpus.test.ts) replays every
-   committed reproducer on **every PR** (the campaign itself is nightly-only), so the fix stays locked in.
+   committed reproducer on **every PR** (the campaign itself runs nightly and weekly, never per PR), so the fix stays locked in.
 
 The campaign itself never runs in the per-PR suite, so
 [`tests/scripts/fuzz-wiring.test.ts`](../tests/scripts/fuzz-wiring.test.ts) holds its wiring to itself there: each
@@ -78,5 +78,5 @@ The campaign itself never runs in the per-PR suite, so
 entry, and every name a target imports from the fuzz build is one its source exports. The seed generator refuses to
 write an extension-block seed the parser does not read back.
 
-CI: [`.github/workflows/fuzz-nightly.yml`](../.github/workflows/fuzz-nightly.yml) — nightly + on-demand;
+CI: [`.github/workflows/fuzz-nightly.yml`](../.github/workflows/fuzz-nightly.yml) — nightly (10 minutes a target) and weekly (a 60-minute deep soak), plus on demand;
 uploads any crash reproducers as an artifact and fails the job.

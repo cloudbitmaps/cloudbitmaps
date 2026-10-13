@@ -115,6 +115,7 @@ says what else differs.
 - [API reference](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md)
 - [Changelog](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md)
 - [Privacy and shared responsibility](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/PRIVACY.md)
+
 ## License
 
 Apache-2.0

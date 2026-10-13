@@ -44,7 +44,7 @@ that only parses is refused. On an encrypted object its content is sealed and au
 its presence is not: the minor, the block's trailer and its section types are covered by CRCs, which take no key, so
 whoever can write the object can remove the block, and the generation then reads as one without metadata. An object
 opened with an encrypted segment's key that is not itself encrypted is refused rather than read in the clear. This
-boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
+boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly and weekly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
 
 **Bytes a caller loads are untrusted the same way.** A load from `{ serialized }` portable Roaring bytes, or from a
@@ -91,8 +91,8 @@ smuggles in a breaking change.
 | forced | reached us via | note |
 | --- | --- | --- |
 | `undici >=6.28.0 <7` | `roaring` -> `node-gyp` (optional, install-time) | |
-| `brace-expansion >=5.0.9 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
-| `nanoid >=3.3.18 <4` | the vitest toolchain | |
+| `brace-expansion@5 >=5.0.12 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
+| `nanoid@3 >=3.3.18 <4` | the vitest toolchain | |
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
 | `esbuild >=0.28.2 <0.29` | a direct devDependency, and `vitest` -> `vite` | |
 | `source-map-js >=1.2.2 <2` | the vitest toolchain: `vite` -> `postcss` | |
@@ -167,7 +167,7 @@ produced the package they installed**. The controls:
   **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
   publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is
   bootstrapped by hand, from a laptop, which has no workflow identity and therefore no provenance. Those are
-  published under the `rc` dist-tag at a throwaway prerelease of the family version (for example `0.20.0-rc.0`). The registry can point `latest` at a name's first publish, so until the real release ships, a plain install of a new name may serve that prerelease. If you are checking signatures, expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none, and treat an
+  published under the `rc` dist-tag at a throwaway prerelease of the family version (for example `X.Y.Z-rc.0` for family version `X.Y.Z`). The registry can point `latest` at a name's first publish, so until the real release ships, a plain install of a new name may serve that prerelease. If you are checking signatures, expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none, and treat an
   unattested tarball at a **real** version as untrusted.
 - **Publish only a re-verified tree.** The release workflow re-runs the gate that governs the artifact
   (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
