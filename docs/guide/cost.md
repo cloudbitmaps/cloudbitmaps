@@ -279,7 +279,7 @@ segment that does not confirm costs a list request on top: $5.00 per million on 
 
 **`generations: true` adds one footer read, 104 bytes, per generation the row's ledger names, and no listing.** A
 ledger names the generations the row made current and has not decided to delete: 2 per segment at the default `keep: 1`
-(the one below the pointer and the current one), and up to 128 on a destination an `*Into` call wrote. A generation the
+(the one below the pointer and the current one), and up to 128 (up to 192 with leases) on a destination an `*Into` call wrote. A generation the
 ledger names whose object is gone costs the read that finds it so (a missing object is a billed request too), and a row
 whose ledger cannot be used costs none. A footer read is a tail read: one request on S3 and GCS, two on Azure Blob
 (`requestsPerSizedRead`). At the default prices, derived from the model's `getPerMillion` of $0.40, a million segments

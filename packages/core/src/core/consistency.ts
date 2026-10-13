@@ -35,11 +35,12 @@ import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
 import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import type { BlobReader } from './blob';
 import { openNamedGeneration, storageBlobReader } from './crbm-open';
-import { readFooter } from './crbm/reader';
+import { checkSize, readFooter } from './crbm/reader';
 import { fingerprintParts } from './crbm/fingerprint';
 import type { Aead, IKeystore, WrappedDek } from './crypto';
 import { aadFor } from './crypto';
 import { MAX_STORED_KNOWN_GENERATIONS, usableKnownGens } from './known-generations';
+import { knownGensShapeFault } from './known-generations-shape';
 import { summaryAgrees, usableSummary } from './summary';
 import { validateUserNamespace } from './validate';
 
@@ -260,38 +261,6 @@ function summaryOpensObject(ref: SegmentRef, live: RegistryRecord): boolean {
 }
 
 /**
- * Whether `value` is a ledger as a registry of this library stores one: an array of at most
- * {@link MAX_STORED_KNOWN_GENERATIONS} entries, each exactly `{ generation, footerCrc }`, the generation a non-negative
- * safe integer and unique, the checksum an integer from 0 to 2^32 - 1. These are the rules the built-in registries hold a
- * stored row to (and `undefined`, no ledger, passes: the usable-ledger rule then counts it). A registry of your own can
- * hand back anything, so this is checked before a ledger is read or walked: the walk's reads are bounded by the cap, and
- * a checksum that cannot be a footer's is never held against an object. The validator the registries apply is in the
- * driver layer, which this module cannot import, so the rules are written here.
- */
-function storedLedgerOk(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (!Array.isArray(value) || value.length > MAX_STORED_KNOWN_GENERATIONS) return false;
-  const seen = new Set<number>();
-  for (const e of value as unknown[]) {
-    if (typeof e !== 'object' || e === null || Array.isArray(e)) return false;
-    const entry = e as Record<string, unknown>;
-    if (Object.keys(entry).some((k) => k !== 'generation' && k !== 'footerCrc')) return false;
-    const { generation, footerCrc } = entry;
-    if (!Number.isSafeInteger(generation) || (generation as number) < 0) return false;
-    if (
-      !Number.isInteger(footerCrc) ||
-      (footerCrc as number) < 0 ||
-      (footerCrc as number) > 0xffff_ffff
-    ) {
-      return false;
-    }
-    if (seen.has(generation as number)) return false;
-    seen.add(generation as number);
-  }
-  return true;
-}
-
-/**
  * Hold each generation the row's usable ledger names against its object, by the footer checksum the ledger records. One
  * footer read each (the footer's bytes only; not retried, as the check's other reads are), one after another, so a
  * segment never has more than the one request in flight that the check's `concurrency` already allows it. The footer
@@ -347,10 +316,14 @@ function footerReader(storage: IStorageDriver, ref: SegmentRef, generation: numb
     getRange: (offset, length) => blob.getRange(offset, length),
     getTail: async (maxBytes) => {
       const tail = await blob.getTail(maxBytes);
-      if (!Number.isSafeInteger(tail.size) || tail.size < tail.bytes.length) {
-        // A plain error, not an IntegrityError: the size is the driver's answer, so it says nothing of the object.
-        throw new Error(
-          `the storage driver answered a tail whose size is not a byte count its bytes fit in: ${String(tail.size)}`,
+      try {
+        checkSize(tail.bytes, tail.size);
+      } catch (err) {
+        // The reader's check throws an IntegrityError, which the walk takes for a footer that is not the recorded one.
+        // The size is the driver's answer, not the object's, so it is a ValidationError here: an error of the segment.
+        throw new ValidationError(
+          `the storage driver answered a tail whose size is not a byte count its bytes fit in: ${String(tail.size)}` +
+            ` (${(err as Error).message})`,
         );
       }
       return tail;
@@ -501,7 +474,10 @@ export async function runConsistencyCheck(
       // stores it is not used, and the row is counted rather than read. A registry of your own can hand back anything,
       // so the walk is inside the segment's fault isolation too: one bad row never aborts the check.
       try {
-        const known = storedLedgerOk(live.knownGens) ? usableKnownGens(live) : undefined;
+        const known =
+          knownGensShapeFault(live.knownGens, MAX_STORED_KNOWN_GENERATIONS) === undefined
+            ? usableKnownGens(live)
+            : undefined;
         if (known === undefined) return { issues, summaryUnchecked, generationsUnchecked: true };
         const held = await checkKnownGenerations(ref, live.currentGen, known, deps);
         return {

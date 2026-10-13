@@ -145,7 +145,7 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
  * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that
  * is not would turn off every bounds check an open makes against it.
  */
-function checkSize(tail: Uint8Array, size: number): void {
+export function checkSize(tail: Uint8Array, size: number): void {
   if (!Number.isSafeInteger(size) || size < tail.length) {
     throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
   }

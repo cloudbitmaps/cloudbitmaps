@@ -556,7 +556,8 @@ if (report.errored.length > 0) {
   `known-generation-mismatch` in `inconsistent`, with the number in `generation` (it is `currentGen` when the current
   object is the one that differs). It means the object under that number is not the one the row recorded: another
   object put back under the key, or bytes that are not a `.crbm` object at all. It does not say what a rollback to
-  that generation does.
+  that generation does. With `summaries: true` as well, a swapped current object is in the report twice, once as
+  `summary-mismatch` and once with its `generation`.
   - **What it covers.** It holds each object's footer to the recorded checksum, so it finds another object, or bytes
     that are not a `.crbm`, under a known number. It does not find damage inside an object whose footer is intact (a
     cut or a flipped byte in the body: a read of that generation reports it as `IntegrityError`), nor a metadata change
@@ -568,20 +569,18 @@ if (report.errored.length > 0) {
     in `errored`, as does any other failed read.
   - **The bound.** A segment adds at most 1 plus its ledger's length entries to `inconsistent` (its current object,
     and one per ledger entry), and the ledger holds at most 384 entries (a library writer writes at most 192). The
-    report is not capped. With `summaries: true` as well, a swapped current object is in the report twice, once
-  as `summary-mismatch` and once with its `generation`.
+    report is not capped.
   - **A generation missing from the bucket is not reported.** A lifecycle rule, a restore of the bucket from another
     point than the registry, or an object removed by hand leaves ledger entries whose objects are gone, and they harm
-    nothing; reporting them would bury the
-    torn restore this check is for. The check does not list the segment: a read of an object that is not there
+    nothing; reporting them would bury the torn restore this check is for. The check does not list the segment: a read of an object that is not there
     answers `NotFoundError`, which is how an absent one is told. A current object that is missing is still
     `missing-storage-generation`, and the older generations of that row are still held.
   - **A ledger it cannot use is counted, not read.** A row with a pointer whose ledger is absent, or fails the
     validation every reader of it applies (it does not end at the pointer, or its last checksum is not the one the
     row's clear summary carries), or is not shaped as a registry of this library stores it (an array of at most 384
     entries, each exactly a non-negative whole `generation` and a `footerCrc` from 0 to 2^32 - 1, no number twice; a
-    registry of your own can hand back anything), is counted in `generationsUnchecked` and none of its objects is read. The count is
-    present only when `generations` was asked for. A row with no pointer is skipped, as ever, and is not counted.
+    registry of your own can hand back anything), is counted in
+    `generationsUnchecked` and none of its objects is read. The count is present only when `generations` was asked for. A row with no pointer is skipped, as ever, and is not counted.
   - **It needs no key.** A footer is readable whether the object is sealed or not, and the ledger's checksum is the
     footer's, so the check fetches no key and a store with no keystore checks sealed rows too.
   - **Each footer is one 104-byte read, and is not retried, as the check's other reads are.** A read that fails, a
