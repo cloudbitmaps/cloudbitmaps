@@ -14,6 +14,7 @@ import { INCARNATION_TOKEN, incarnationOf } from '@/core/token';
 import { renewsPointer } from '@/core/pointer-id';
 import { MAX_SUMMARY_CARDINALITY, tailBytesFit } from '@/core/summary';
 import { MAX_LEASES_PER_SEGMENT, MAX_STORED_LEASES } from '@/core/leases';
+import { knownGensShapeFault } from '@/core/known-generations-shape';
 import {
   MAX_KNOWN_GENERATIONS,
   MAX_STORED_KNOWN_GENERATIONS,
@@ -332,8 +333,6 @@ function validateSummaryKeys(
   }
 }
 
-const KNOWN_ENTRY_KEYS: readonly string[] = ['generation', 'footerCrc'];
-
 /**
  * Validate a {@link RegistryRecord.knownGens} list's shape at the write or read boundary: an array of at most `max`
  * entries (192 written, 384 read), each exactly `{ generation, footerCrc }`, the generation a non-negative safe integer
@@ -356,37 +355,15 @@ function validateKnownGens(
       ? new IntegrityError(`registry record knownGens: ${msg}${where}`)
       : new ValidationError(`knownGens: ${msg}`);
   };
-  if (!Array.isArray(value)) fail('must be an array');
-  const list = value as unknown[];
   const max = origin === 'stored' ? MAX_STORED_KNOWN_GENERATIONS : MAX_KNOWN_GENERATIONS;
-  if (list.length > max) fail(`has ${list.length} entries, cap ${max}`);
-  const seen = new Set<number>();
+  const fault = knownGensShapeFault(value, max, shown);
+  if (fault !== undefined) fail(fault);
   const out: KnownGeneration[] = [];
-  for (const e of list) {
-    if (typeof e !== 'object' || e === null || Array.isArray(e)) fail('an entry must be an object');
-    const entry = e as Record<string, unknown>;
-    const extra = Object.keys(entry).filter((k) => !KNOWN_ENTRY_KEYS.includes(k));
-    if (extra.length > 0) fail(`an entry carries an undeclared field (${shown(extra.join(', '))})`);
-    const { generation, footerCrc } = entry;
-    if (!Number.isSafeInteger(generation) || (generation as number) < 0) {
-      fail(`a generation must be a non-negative safe integer (got ${shown(generation)})`);
-    }
-    if (
-      !Number.isInteger(footerCrc) ||
-      (footerCrc as number) < 0 ||
-      (footerCrc as number) > 0xffff_ffff
-    ) {
-      fail(`a footerCrc must be an integer from 0 to 2^32 - 1 (got ${shown(footerCrc)})`);
-    }
-    if (seen.has(generation as number)) fail(`generation ${String(generation)} is repeated`);
-    seen.add(generation as number);
+  for (const entry of value as readonly KnownGeneration[]) {
     out.push(
       origin === 'stored'
-        ? (entry as unknown as KnownGeneration)
-        : Object.freeze({
-            generation: generation as number,
-            footerCrc: footerCrc as number,
-          }),
+        ? entry
+        : Object.freeze({ generation: entry.generation, footerCrc: entry.footerCrc }),
     );
   }
   return origin === 'stored' ? out : Object.freeze(out);

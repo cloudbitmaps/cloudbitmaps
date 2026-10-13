@@ -277,6 +277,17 @@ the open $0.80 (two). The open's tail read is sized from the summary, so a wide 
 range read. Each listing of a
 segment that does not confirm costs a list request on top: $5.00 per million on S3. The registry reads are separate: the scan reads every row, and each segment's row once more.
 
+**`generations: true` adds one footer read, 104 bytes, per generation the row's ledger names, and no listing.** A
+ledger names the generations the row made current and has not decided to delete: 2 per segment at the default `keep: 1`
+(the one below the pointer and the current one), and up to 128 (up to 192 with leases) on a destination an `*Into` call wrote. A generation the
+ledger names whose object is gone costs the read that finds it so (a missing object is a billed request too), and a row
+whose ledger cannot be used costs none. A footer read is a tail read: one request on S3 and GCS, two on Azure Blob
+(`requestsPerSizedRead`). At the default prices, derived from the model's `getPerMillion` of $0.40, a million segments
+at `keep: 1` cost $0.80 on S3 and GCS and $1.60 on Azure Blob for these reads, on top of the default check's $0.40 on
+each (so $1.20 and $2.00 in all); a million segments of 128 known generations each would cost $51.20 on S3 and GCS and
+$102.40 on Azure Blob for the footer reads, on top of the same $0.40. The reads are counted by a test: 2 footer reads and
+one zero-length read per segment at `keep: 1`, and 128 and one for a ledger of 128.
+
 One result differs from a check that listed every segment: a store that answers reads but refuses listings (an identity
 without list permission, or a listing-only outage) reports each object that is there as present, where every segment
 was reported errored.

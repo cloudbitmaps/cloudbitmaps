@@ -273,6 +273,7 @@ const CALL_KEYS = {
     'namespace',
     'concurrency',
     'summaries',
+    'generations',
   ]),
   exportSegments: keysOf<ExportOptions>()(['format', 'codec', 'namespace', 'ndjsonBatchBytes']),
 } as const;
@@ -2651,15 +2652,29 @@ export class CloudRoaring {
    * restore of the registry from another point than the bucket leaves a count to answer. A sealed summary is held
    * against its object when this store has the key, and counted in `summariesUnchecked` when it does not.
    *
+   * With `generations: true` it also holds every generation a row's ledger of known generations names, the current one
+   * included, against its object: one footer read each (104 bytes, no key, not retried), reporting
+   * `known-generation-mismatch` with the `generation` where the object under that number is not the one the row
+   * recorded. A named generation that is not in the bucket is not reported. A row with a pointer whose ledger cannot
+   * be used is counted in `generationsUnchecked`, and none of its objects is read.
+   *
    * It holds the registry rows it enumerates resident, at most 250,000 of them, and throws
    * `BudgetExceededError` past that rather than report a partial scan as a whole one. This method takes no
    * ceiling of its own: narrow the scan with `namespace`, or call `runConsistencyCheck` over the backend's
    * `storage` and `registry` with a higher `maxScanSegments`.
    */
   async checkConsistency(
-    options: { namespace?: string; concurrency?: number; summaries?: boolean } = {},
+    options: {
+      namespace?: string;
+      concurrency?: number;
+      summaries?: boolean;
+      generations?: boolean;
+    } = {},
   ): Promise<ConsistencyReport> {
-    checkOptions(options, 'checkConsistency', CALL_KEYS.checkConsistency, ['summaries']);
+    checkOptions(options, 'checkConsistency', CALL_KEYS.checkConsistency, [
+      'summaries',
+      'generations',
+    ]);
     options ??= {};
     const deps = this.lifecycleDeps('checkConsistency');
     return runConsistencyCheck(

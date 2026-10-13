@@ -84,6 +84,18 @@ so, and so do the module headers in the code.
 
 ### Added
 
+- **`checkConsistency({ generations: true })`** (`@cloudbitmaps/core` and `@cloudbitmaps/roaring`, as `runConsistencyCheck`
+  and `store.checkConsistency`): holds every generation a row's ledger of known generations (`knownGens`) names, the
+  current one included, and the bucket has, to the footer checksum the ledger records. A generation whose object is not
+  the one recorded is reported as the new issue `known-generation-mismatch`, with the new `ConsistencyIssue.generation`
+  set; it means the object under that number is not the one the row recorded. It holds each object's footer to the
+  recorded checksum, so it finds another object, or bytes that are not a `.crbm`, under a known number; it does not find
+  damage inside an object whose footer is intact (a read of that generation reports it as `IntegrityError`), nor a
+  metadata change that keeps the footer's bytes. A segment adds at most 1 plus its ledger's length issues. A known
+  generation missing from the bucket is not reported, and a row with a pointer whose ledger is absent or fails
+  validation is counted in the new `ConsistencyReport.generationsUnchecked` and none of its objects is read. Each
+  generation the ledger names costs one 104-byte footer read, with no key and not retried (a failed one lands the
+  segment in `errored`): 2 per segment at `keep: 1`, and one request on S3 and GCS, two on Azure Blob. Off by default, and the default check makes the requests it made.
 - **`CrbmReader.tailBytes`** (`@cloudbitmaps/core`, re-exported by `@cloudbitmaps/roaring`): the bytes of the object
   after its chunk payloads, that is its extension block when it has metadata, its index and its footer. A tail read of
   that many bytes reaches all of them. It is the object's size less where its payloads end, known at open with no

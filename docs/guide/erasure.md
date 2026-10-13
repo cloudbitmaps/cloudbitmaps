@@ -168,7 +168,8 @@ from, as the first rule says, and re-run the loads an erasure refused.
 
 **After a registry restore, look before you erase.** Run `checkConsistency({ summaries: true })`: it reports a row
 whose pointer names a missing object, or another object than the row's summary names ([disaster
-recovery](disaster-recovery.md#restore-procedure)). It does not look in the bucket of a row with no generation, so
+recovery](disaster-recovery.md#restore-procedure)); `generations: true` also holds the older generations the row
+knows to the footer checksum it recorded for each. It does not look in the bucket of a row with no generation, so
 also list `store.generations(ref)` for each row whose `currentGen` is `null`. Objects there are a first load's in
 flight, or what is left of a state of the row the restore went back past: an erasure treats them all as a first
 load's, and deletes each that holds the id, and every one it cannot open (on a row with no key, every encrypted one),
