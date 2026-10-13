@@ -533,7 +533,8 @@ if (report.errored.length > 0) {
     meant is stale, not torn, wherever the generations it names are still in the bucket, and reads serve a correct
     older view;
   - **another object under the number** — an object put back under the generation's key that is not the one the row
-    names; use `summaries: true`, below, which holds it to the summary's fingerprint;
+    names; use `summaries: true`, below, which holds the current one to the summary's fingerprint, and
+    `generations: true`, which holds every generation the row's ledger names to the footer checksum it recorded;
   - **objects above the pointer** — loads that published after the registry's restore point. Reads through a
     backend never see them (a store on a bare `IStorageDriver` serves the newest of them; see
     [readers still on an old generation](#readers-still-on-an-old-generation)); see
@@ -546,6 +547,32 @@ if (report.errored.length > 0) {
   a clear summary whose fingerprint names no object, which no read uses. A sealed summary needs the store's keystore;
   a segment whose summary it cannot open is counted in `summariesUnchecked`, neither checked nor found wrong. A row
   with no summary has nothing to check.
+- **`generations: true` also checks the older generations the row knows.** A row's ledger of known generations
+  (`knownGens`) records, for each generation it made current and has not decided to delete, the footer checksum of
+  its object. With the option the check reads the footer of every generation the usable ledger names, the current one
+  included, and compares its checksum with the entry. A generation whose object is not the one recorded is reported as
+  `known-generation-mismatch` in `inconsistent`, with the number in `generation` (it is `currentGen` when the current
+  object is the one that differs). It means the object under that number is not the one the row recorded: another
+  object put back under the key, or bytes that are not a `.crbm` object at all. It does not say what a rollback to
+  that generation does. With `summaries: true` as well, a swapped current object is in the report twice, once
+  as `summary-mismatch` and once with its `generation`.
+  - **A generation missing from the bucket is not reported.** A lifecycle rule, a load with a smaller `keep` or a
+    restore leaves ledger entries whose objects are gone, and they harm nothing; reporting them would bury the
+    torn restore this check is for. The check does not list the segment: a read of an object that is not there
+    answers `NotFoundError`, which is how an absent one is told. A current object that is missing is still
+    `missing-storage-generation`, and the older generations of that row are still held.
+  - **A ledger it cannot use is counted, not read.** A row with a pointer whose ledger is absent, or fails the
+    validation every reader of it applies (it does not end at the pointer, or its last checksum is not the one the
+    row's clear summary carries), is counted in `generationsUnchecked` and none of its objects is read. The count is
+    present only when `generations` was asked for. A row with no pointer is skipped, as ever, and is not counted.
+  - **It needs no key.** A footer is readable whether the object is sealed or not, and the ledger's checksum is the
+    footer's, so the check fetches no key and a store with no keystore checks sealed rows too.
+  - **Each footer is one 104-byte read, under the store's read retry.** A transient fault on one is retried under
+    `retry`; a read that fails any other way (or past the retry) stops that segment's footer reads and lands the segment in
+    `errored`, with the mismatches found before it kept. A segment's footer reads run one after another, so the check
+    never has more requests in flight than its `concurrency`; a segment with a wide ledger (up to 128 entries on a
+    destination an `*Into` call wrote) is correspondingly slower than one with two. Its cost is in
+    [what a consistency check costs](cost.md).
 - **A store that answers reads but refuses listings does not make every segment errored.** An identity without list
   permission, or a listing-only outage, leaves the zero-length read to answer, so each object that is there is
   reported present. A segment whose object that read does not find is settled by the listing, and its error, if it
