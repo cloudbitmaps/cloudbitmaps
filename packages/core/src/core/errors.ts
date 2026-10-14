@@ -127,7 +127,8 @@ export class CapabilityError extends CloudRoaringError {}
  * (hard invariant 6). Default-on but generous (normal ops never hit it); tune it
  * per store (`budget`) or per op, or disable with `budget: false`. Deterministic (never retried): the op is too
  * big by policy, not by luck. Each request's bytes are separately capped (the safe-deserialize ceiling), so
- * bounding the request count transitively bounds bytes. Carries the projected count + the limit, never data.
+ * bounding the request count transitively bounds bytes. Its message states the limit and, when known before the
+ * fan-out, the projected count; it has no fields for either. Carries no data.
  */
 export class BudgetExceededError extends CloudRoaringError {}
 

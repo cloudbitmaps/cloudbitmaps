@@ -1,12 +1,3 @@
-/**
- * `AzureBlobStorage` — the Azure Blob backend as one object: generations and pointer, one container, stated once.
- *
- * See {@link StorageBackend} for why the two halves are configured together rather than separately.
- *
- * Azure's shape differs from S3's and GCS's in one way worth knowing: the unit both halves share is a
- * **container client**, not an account client plus a container name, because a `ContainerClient` is already
- * scoped. Supply `containerClient` directly, or give a `connectionString` + `container` and one is built.
- */
 import {
   STORAGE_BACKEND,
   ValidationError,
@@ -23,6 +14,10 @@ import { defined } from './defined';
 import { AzureBlobStorageDriver } from './storage';
 import { AzureBlobRegistryDriver } from './registry';
 
+/**
+ * What {@link AzureBlobStorage} takes: a `containerClient`, or a `connectionString` and a `container` to build one,
+ * never both.
+ */
 export interface AzureBlobStorageOptions {
   /** A container-scoped client. Supply this, or `connectionString` + `container`. */
   readonly containerClient?: ContainerClient;
@@ -76,6 +71,15 @@ export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
   'conditionalDelete',
 ] as const;
 
+/**
+ * `AzureBlobStorage` — the Azure Blob backend as one object: generations and pointer, one container, stated once.
+ *
+ * See {@link StorageBackend} for why the two halves are configured together rather than separately.
+ *
+ * Azure's shape differs from S3's and GCS's in one way worth knowing: the unit both halves share is a
+ * **container client**, not an account client plus a container name, because a `ContainerClient` is already
+ * scoped. Supply `containerClient` directly, or give a `connectionString` + `container` and one is built.
+ */
 export class AzureBlobStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;

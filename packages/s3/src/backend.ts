@@ -1,18 +1,3 @@
-/**
- * `S3Storage` — the S3 backend as one object: the generations and the pointer, in one bucket, stated once.
- *
- * Replaces two constructor calls that each repeated `client`, `bucket` and `prefix`. Repeating them is how
- * they come apart: point the registry at one prefix and the objects at another and the store answers *empty*
- * rather than *misconfigured*, which is the hardest kind of wrong answer to debug. Here the location is written
- * once and shared, so the mismatch cannot be expressed.
- *
- * **It will build a client for you**, which is the common case — `new S3Storage({ bucket })` picks up the
- * ambient credential chain and region exactly as the SDK would. Pass `client` instead when you need a
- * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
- * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
- * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
- * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
- */
 import {
   STORAGE_BACKEND,
   ValidationError,
@@ -32,6 +17,10 @@ import { S3RegistryDriver } from './registry';
 import { SocketAdvisory, type PooledHandler } from './socket-advisory';
 import type { IMetricsSink } from '@cloudbitmaps/core/driver-kit';
 
+/**
+ * What {@link S3Storage} takes: a `bucket`, and either a `client` or the five settings that build one (`region`,
+ * `endpoint`, `pathStyle`, `credentials`, `maxSockets`), never both.
+ */
 export interface S3StorageOptions {
   /** Target bucket (must already exist). */
   readonly bucket: string;
@@ -182,6 +171,21 @@ export function limitSockets(client: S3Client, maxSockets: number): void {
   };
 }
 
+/**
+ * `S3Storage` — the S3 backend as one object: the generations and the pointer, in one bucket, stated once.
+ *
+ * Replaces two constructor calls that each repeated `client`, `bucket` and `prefix`. Repeating them is how
+ * they come apart: point the registry at one prefix and the objects at another and the store answers *empty*
+ * rather than *misconfigured*, which is the hardest kind of wrong answer to debug. Here the location is written
+ * once and shared, so the mismatch cannot be expressed.
+ *
+ * **It will build a client for you**, which is the common case — `new S3Storage({ bucket })` picks up the
+ * ambient credential chain and region exactly as the SDK would. Pass `client` instead when you need a
+ * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
+ * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
+ * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
+ * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
+ */
 export class S3Storage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;

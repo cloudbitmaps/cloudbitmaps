@@ -862,6 +862,13 @@ const NOT_A_GROUP: Readonly<Record<string, string>> = {
   String: 'a boxed string',
 };
 
+/**
+ * The store: Roaring bitmap segments kept as write-once `.crbm` generations in the storage you give it, read through
+ * a bounded in-memory cache. Build one per process from a backend,
+ * `new CloudRoaring({ storage: new S3Storage({ bucket }) })`; building does no I/O. `store.segment(name)` is a handle
+ * for `has`, `count`, `iterate` and the combines, and `store.load(ref, ids)` replaces a segment's contents with a new
+ * generation.
+ */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;

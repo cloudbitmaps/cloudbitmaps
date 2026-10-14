@@ -184,12 +184,20 @@ export function checkedGuard(guard: LoadGuard | undefined, where: string): LoadG
   });
 }
 
+/**
+ * Options of `store.load` and {@link loadSegment}: what a load may publish (`allowEmpty`, `guard`), what it keeps
+ * (`keep`) and what it records (`metadata`, `audit`).
+ */
 export interface LoadOptions {
   /**
    * Publish an empty generation over a non-empty one. Off by default: an empty result is far more often an
    * upstream failure than an intent, and the failure is indistinguishable from success once it lands.
    */
   readonly allowEmpty?: boolean;
+  /**
+   * Bounds a plausible result must meet, judged before the pointer moves; a load outside them is refused
+   * (`published: false`), not thrown. See {@link LoadGuard}.
+   */
   readonly guard?: LoadGuard;
   /**
    * Generations to keep below the new pointer as a grace window (default 1). A non-negative integer: anything
@@ -206,10 +214,10 @@ export interface LoadOptions {
    * load superseded comes first. After a rollback that is the one the rollback restored, and it stays in the window of
    * every load after it, ahead of the generations the rollback moved away from, for as many loads as `keep` says.
    *
-   * The segment's row records the generations a load keeps, up to 64, so a load whose number one existence check found
-   * free collects without listing: it deletes the generations its publish pushed out of the window, and lists the
-   * segment's objects on every sixteenth generation to take whatever that pass leaves, such as an object a crashed load
-   * left below the pointer. A `keep` above 64 collects by listing on every load, and so does the first load of a row with
+   * The segment's row records the generations a load keeps, up to 127, so at a `keep` of up to 64 a load whose
+   * number one existence check found free collects without listing: it deletes the generations its publish pushed out
+   * of the window, and lists the segment's objects on every sixteenth generation to take whatever that pass leaves,
+   * such as an object a crashed load left below the pointer. A `keep` above 64 collects by listing on every load, and so does the first load of a row with
    * no usable ledger, which starts one from the bucket; so does a load whose check found the current generation's object
    * gone: the guard's read of it, or, when the guard took the size from the row's summary, one zero-byte read made
    * before a `keep` of 1 or more takes a name. A `keep` at least the generation published collects nothing and asks
@@ -228,6 +236,7 @@ export interface LoadOptions {
    * over as it is. Sealed under the segment's key when the segment is encrypted.
    */
   readonly metadata?: GenerationMetadata;
+  /** Audit sink for this load: it receives `segment.publish`, or `segment.load-refused` when the load is refused. */
   readonly audit?: IAuditSink;
 }
 
@@ -367,6 +376,10 @@ export type LoadRefusal =
    */
   | 'superseded';
 
+/**
+ * What a load did: the generation it wrote, whether that is now current (`published`, and `reason` when not), the
+ * object it wrote and what it collected.
+ */
 export interface LoadResult {
   /**
    * The generation written. Present even when refused: a refusal deletes that object while the segment's row is
@@ -380,8 +393,14 @@ export interface LoadResult {
   readonly published: boolean;
   /** Set only when `published` is false. */
   readonly reason?: LoadRefusal;
+  /** Bytes of the generation's object as stored. */
   readonly size: number;
+  /**
+   * SHA-256 of the object as stored, or `''` when another load took the generation number first. The library neither
+   * keeps nor checks it; reads are checked with CRC32C.
+   */
   readonly sha256: string;
+  /** Non-empty chunks in the generation written (at most 65,536). */
   readonly chunkCount: number;
   /** Distinct ids in the generation that was written, post-dedup. */
   readonly cardinality: number;
