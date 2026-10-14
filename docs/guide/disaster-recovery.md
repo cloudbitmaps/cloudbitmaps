@@ -76,16 +76,28 @@ are not kept: a `load` collects, by default, the generations below its new point
 one below its rewrite (`keep: 0`); and `dropSegment` deletes them all. Two loads after the registry's point are enough
 to delete the generation the restored registry names.
 
-**The summary a row carries.** A row also holds a summary of its current generation, its id count, its metadata and its
-object's fingerprint, written
-by the same compare-and-swap that moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records, which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the count alone does not show the tear. An object that is there but is not the one the row's summary names by its fingerprint (a registry restored from another point than its bucket, with a number re-taken since) is refused whenever a read opens it, with `NotFoundError`, as a missing object is, and `checkConsistency({ summaries: true })` reports it; a summary whose count or metadata disagree with the object it names stops that store using the summary. A load
-sizes the current generation from it for its guard and opens no object. That changes what a repair load meets in a torn
-restore: the row names a generation whose object is gone, and the summary still says how many ids it held, so a repair
-smaller than `guard.minRetained` allows, or larger than `guard.maxGrowth` allows, is refused. Repair without either (`allowEmpty: true` lifts neither), and the
-load publishes a new generation and a new summary. The load also keeps the older
-generation a listing keeps, which is the one you can still roll back to: before it takes a generation by name it looks
-for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does not unwrap the key, or a keystore that throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK report a timeout) rolls back onto a generation the row knows all the same, opening nothing, and leaves the row with none (a generation the row does not know needs `allowUnknown`, and then the key, so it throws `KeyUnavailableError`, or `TransientError` when the key service did not answer in time, a timeout as its `cause`); and a rollback whose target was replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it
-could not open the key, is read from the object, and its object is checked against nothing. A summary that names another
+**The summary a row carries.** A row also holds a summary of its current generation, its id count, its metadata, its
+object's fingerprint and the `tailBytes` a cold open sizes its tail read from, written by the same compare-and-swap that
+moves the pointer, so a row describes the generation it names as of the moment it was written, and a restored one as of
+the restore. A cold `count()` answers from that summary, so over a torn restore it answers the number the row records,
+which is true of the generation the row names, while a `has`, an `iterate` or a combine throws `NotFoundError`; the
+count alone does not show the tear. An object that is there but is not the one the row's summary names by its
+fingerprint (a registry restored from another point than its bucket, with a number re-taken since) is refused whenever a
+read opens it, with `NotFoundError`, as a missing object is, and `checkConsistency({ summaries: true })` reports it; a
+summary whose count, metadata or `tailBytes` disagree with the object it names stops that store using the summary. A
+load sizes the current generation from it for its guard and opens no object. That changes what a repair load meets in a
+torn restore: the row names a generation whose object is gone, and the summary still says how many ids it held, so a
+repair smaller than `guard.minRetained` allows, or larger than `guard.maxGrowth` allows, is refused. Repair without
+either (`allowEmpty: true` lifts neither), and the load publishes a new generation and a new summary. The load also
+keeps the older generation a listing keeps, which is the one you can still roll back to: before it takes a generation by
+name it looks for the current object with one zero-byte read, finds it gone, and lists. A rollback writes the target's
+own summary with the pointer; a store that cannot open the segment's key (no keystore, a KEK it lacks or one that does
+not unwrap the key, or a keystore that throws `TransientError` or times out as `AbortSignal.timeout()` and the AWS SDK
+report a timeout) rolls back onto a generation the row knows all the same, opening nothing, and leaves the row with none
+(a generation the row does not know needs `allowUnknown`, and then the key, so it throws `KeyUnavailableError`, or
+`TransientError` when the key service did not answer in time, a timeout as its `cause`); and a rollback whose target was
+replaced after it was read puts the pointer back. A row with no summary, such as one a rollback left when it could not
+open the key, is read from the object, and its object is checked against nothing. A summary that names another
 generation, a sealed one that does not open, and a clear one whose fingerprint names no object are not used.
 
 ## The hard requirement: one restore point for both stores
@@ -360,7 +372,8 @@ drop. The drop finds the tombstone, reports it dropped, and the sweep stamps it.
 `segment.erase` and a `segment.dispose`, as a sweep's own retirement of an encrypted segment does; only the actors
 your sinks stamp on the two tell them apart.
 
-**Why nothing tells you.** The purge path reads the stamp and, finding none, does a bare `continue`:
+**Why nothing tells you.** The purge path reads the stamp and, finding none, returns without a ledger entry
+(pseudocode):
 
 ```ts
 const retiredAt = retirementStamp(rec.retention);
@@ -880,5 +893,5 @@ the keystore's KEK) would take a
 it would be a new section in the extension block, with a footer flag bit of its own, since every reader must
 understand it. It
 would also change the crypto-shred model, since shredding would then have to delete the storage objects too, not
-just the key. The capability is listed on the [roadmap](../ROADMAP.md). **Back up the registry and keystore** —
+just the key. It is not built. **Back up the registry and keystore** —
 they are not reconstructable from storage alone.

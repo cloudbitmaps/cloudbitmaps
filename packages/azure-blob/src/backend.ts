@@ -33,7 +33,7 @@ export interface AzureBlobStorageOptions {
   /** Optional blob-name prefix under which everything lives — generations and the registry alike. */
   readonly prefix?: string;
   /**
-   * Largest blob the backend will write and advertise. Default = `blockBytes × 50,000` (≈ 400 GiB at the default
+   * Largest blob the backend will write and advertise. Default = `blockBytes × 50,000` (≈ 390 GiB at the default
    * 8 MiB block) — the honest ceiling reachable within Azure's 50,000-block limit. Set it higher and
    * `blockBytes` auto-grows so 50,000 blocks still cover it (raising peak write memory to ~one block).
    * Must be a positive safe integer.

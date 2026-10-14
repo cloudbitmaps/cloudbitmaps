@@ -25,8 +25,10 @@ throws at `import`. Put this in your `package.json`:
 { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
 ```
 
-npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the
-engine underneath; it arrives on its own and you never install or import it.
+npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. `@cloudbitmaps/roaring` is
+the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on its own and you never install
+or import it. Install one copy of `@cloudbitmaps/roaring` in a process: `materializeMany` refuses a segment from any
+other copy, and the other combines refuse one whose segment brand differs from this copy's.
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
 Node versions: [CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) has the details.
@@ -266,9 +268,10 @@ keys of encrypted segments all live there. There is no second service to run.
 - **The credentials need five S3 actions**, `s3:ListBucket` among them: [Permissions](production.md#permissions) lists them, and which resource each one goes on.
 - **S3 needs a service that honors conditional writes** (`If-None-Match: *` and `If-Match`): AWS S3, and MinIO,
   which the test suite runs against. Another S3-compatible service must honor both headers, or a write-once
-  generation can be overwritten without an error. It must also answer a read of an object as missing as soon as its
-  delete returns (read-after-delete): a rollback reads the target's footer once after moving the pointer and takes a
-  read that succeeds as proof the object is there. Check yours.
+  generation can be overwritten without an error. It must also be strongly consistent: a read or a listing made after
+  a write or a delete returns sees it. A rollback reads the target's footer once after moving the pointer and takes a
+  read that succeeds as proof the object is there, and an erasure's check that no generation still holds the id, a
+  drop's `generationsRemaining` and the retention sweep prove a delete by listing. Check yours.
 - **If you pass your own `client`, use `@aws-sdk/client-s3` 3.700.0 or later.** Older versions drop a conditional
   header they do not model, without an error: they overwrite an existing object, which loses a published generation,
   or send the registry's compare-and-swap unconditionally. If your own code imports the SDK, to build that `client`, add it to your own `package.json` too: pnpm does not let your code import a dependency of a dependency. `S3Storage` builds its own client from the usual credential chain when you do not pass one.

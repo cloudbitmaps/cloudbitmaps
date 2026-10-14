@@ -20,12 +20,24 @@ import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ExportSink } from '@cloudbitmaps/roaring';
 
+// One path component per name: `encodeURIComponent` escapes `/` and `\`, a leading `_` is escaped so no namespace
+// lands in `_default`, and `.`, `..` and the empty name, which would leave `dump`, are refused, as is a name Windows
+// keeps for a device.
+const DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+function part(name: string): string {
+  const p = encodeURIComponent(name).replace(/^_/, '%5F');
+  if (p === '' || p === '.' || p === '..' || DEVICE.test(p)) {
+    throw new Error(`no file for the name ${JSON.stringify(name)}`);
+  }
+  return p;
+}
+
 const sink: ExportSink = {
   async open(ref, ext) {
-    const dir = join('dump', encodeURIComponent(ref.namespace ?? '_default'));
-    const path = join(dir, `${encodeURIComponent(ref.segment)}${ext}`);
+    const dir = join('dump', ref.namespace === undefined ? '_default' : part(ref.namespace));
+    const path = join(dir, `${part(ref.segment)}${ext}`);
     await mkdir(dir, { recursive: true });
-    const file = await open(path, 'w');
+    const file = await open(path, 'wx'); // never over another segment's file: a clash lands in `failed`
     return {
       write: (bytes) => file.appendFile(bytes), // writes every byte; file.write() may write fewer
       close: () => file.close(), // commit: called once, only when every byte was written
@@ -47,7 +59,14 @@ const manifest = await store.exportSegments(sink, {
 //             skipped:  [{ segment, namespace?, reason: 'destroyed' }] } // tombstones: nothing to export
 ```
 
-Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives bytes, `close` commits a
+A name may be any non-empty string, so the sink refuses a name that would step out of `dump` (`.`, `..`) or that
+Windows keeps for a device (`con`, `nul`, `com1`), and writes each file with `wx`: a second segment that maps to the
+same file, by letter case on a filesystem that ignores it or by a trailing dot Windows drops from a directory name, is
+recorded in `failed` rather than written over the first. Export to a fresh directory: `wx` also refuses a file an
+earlier run left.
+
+Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives a `Uint8Array` (for
+`ndjson`, a plain one, not a Node `Buffer`: decode text with `new TextDecoder().decode(bytes)`), `close` commits a
 segment, and `abort` (optional) discards a partial one.
 
 ## Export from the command line (local filesystem only)
@@ -128,8 +147,15 @@ And a store loads one straight back, with no per-id work:
   and the registry row that records its destruction stays in the prefix you export from, so keep your own record of it.
   A file also holds what the segment held when it was read, so run again every erasure processed since the export
   began.
-- **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
-  disappeared.** Export to a fresh directory for a clean dump.
+- **Moving a store to a release that reads a newer registry schema.** A store refuses a row stamped with an older schema
+  with `UnsupportedError`, naming its key; there is no upgrade in place. Export every segment with the release that
+  wrote the rows, load the files into a new prefix with the new release and the same `encryption` options, restore each
+  row's `retention` and `residency` as above, re-run every erasure processed since the export began, move every reader
+  and writer to the new prefix, and then delete the old prefix, with its noncurrent versions, delete markers and
+  soft-deleted objects where the storage keeps them. The release's changelog entry on the registry schema has the full
+  steps.
+- **A re-run of the command overwrites the segments it re-exports but does not prune files for segments that have
+  since disappeared.** Export to a fresh directory for a clean dump; the sample sink above needs one every time.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds
   already there passes when an earlier run left it (yours and owner-only). A symlink, a path that is not a directory, a
   directory of another user, or one open to group or others in its place is refused with a `ValidationError`. The check

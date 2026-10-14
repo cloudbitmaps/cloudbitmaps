@@ -106,19 +106,20 @@ Pre-`1.0`, a breaking change is a **minor** bump. Choose the bump for the family
 A pushed `v*.*.*` tag starts one job in the `release` environment. It waits for the approval before any step
 runs, and then, in order (a run started by hand skips some of these; see [A manual run](#a-manual-run)):
 
-- **Re-runs the gate that governs the artifact** against the exact commit being published — `lint ·
-  lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`. A green `main` is necessary but not
-  sufficient; the tagged commit is re-verified from scratch on a clean runner with `--frozen-lockfile`.
-  It is not literally every check CI runs. The `build & test` job's checks of the site and the benchmark pages
-  against their sources (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`,
-  `site-links.py`, `bench:sizing:check`, `bench:check`), its tracked-tree `leak-scan` and its fuzz lockfile check
-  stay in CI, because they guard the site, the docs and the tracked tree rather than what goes in the tarball.
-  CI's other jobs do guard the artifact — integration against the emulators, the smoke test on the Node floor,
-  the Lambda smoke, the RSS ceiling and the native addon on three operating systems — and they are not re-run
-  here either: the tag goes on a `main` commit whose CI run is green, which is why the TL;DR tags the merge
-  commit and waits for that run. The tarball's own `leak-scan` DOES run here. The **dependency audit** is repeated
-  here rather than trusted from CI because it is the one gate whose verdict changes with *no commit at all*: an
-  advisory published after `main` went green makes the same tree newly vulnerable.
+- **Re-runs the gate that governs the artifact** against the exact commit being published — `lint · lint:arch ·
+  format:check · typecheck · test · audit · build · api:surface:check · smoke`. A green `main` is necessary but not
+  sufficient; the tagged commit is re-verified from scratch on a clean runner with `--frozen-lockfile`. It is not
+  literally every check CI runs. The `build & test` job's checks of the site and the benchmark pages against their
+  sources (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`,
+  `bench:sizing:check`, `bench:range-counts:check`, `bench:materialize-many-counts:check`,
+  `bench:expected-figures:check`, `bench:event-loop:check`, `bench:load-input:check`, `bench:check`), its tracked-tree
+  `leak-scan` and its fuzz lockfile check stay in CI, because they guard the site, the docs and the tracked tree rather
+  than what goes in the tarball. CI's other jobs do guard the artifact — integration against the emulators, the smoke
+  test on the Node floor, the Lambda smoke, the RSS ceiling and the native addon on three operating systems — and they
+  are not re-run here either: the tag goes on a `main` commit whose CI run is green, which is why the TL;DR tags the
+  merge commit and waits for that run. The tarball's own `leak-scan` DOES run here. The **dependency audit** is repeated
+  here rather than trusted from CI because it is the one gate whose verdict changes with *no commit at all*: an advisory
+  published after `main` went green makes the same tree newly vulnerable.
 - **Refuses a mistagged release** — every publishable package's `version` must equal the tag, or the run fails.
 - **Refuses a still-private package.** `pnpm publish` *silently skips* a package with `"private": true` and
   exits 0, so a real publish attempt would otherwise produce a fully green run that published nothing. No
@@ -318,7 +319,7 @@ needle list, as the workflow's secret does, for the scan's strict mode.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm smoke
+pnpm lint && pnpm lint:arch && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm api:surface:check && pnpm smoke
 node scripts/audit.cjs                                      # the dependency audit
 node -e 'for (const d of require("fs").readdirSync("packages")) { const m = require(`./packages/${d}/package.json`);
   if (m.version !== process.argv[1] || m.private) throw new Error(`${m.name}@${m.version}`); }' <version>

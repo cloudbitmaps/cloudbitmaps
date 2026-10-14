@@ -1,9 +1,5 @@
 # Reading in depth
 
-> **These docs describe `main`.** The library is pre-1.0 and the API can still change. [The changelog](../../CHANGELOG.md#unreleased)
-> lists what `main` has that the latest release does not, and the docs for each release are at its tag, on the
-> [releases page](https://github.com/cloudbitmaps/cloudbitmaps/releases).
-
 [Getting started](getting-started.md#read-it) shows the read verbs. This page covers what each one reads and costs,
 how soon a reader sees a new load, how to read one fixed point in time, and how to page through a segment. Every
 option of every verb is in the [segment verbs table](api-reference.md#the-segment-verbs-the-90-of-daily-use).

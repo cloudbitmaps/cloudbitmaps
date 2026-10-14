@@ -91,7 +91,7 @@ export interface AzureBlobStorageDriverOptions {
   /** Optional blob-name prefix under which all objects live (e.g. `cloudbitmaps/`). */
   readonly prefix?: string;
   /**
-   * Largest blob this driver will write/advertise. Default = `blockBytes × 50,000` (≈ 400 GiB at the default
+   * Largest blob this driver will write/advertise. Default = `blockBytes × 50,000` (≈ 390 GiB at the default
    * 8 MiB block) — the honest ceiling reachable within Azure's 50,000-block limit. Set it higher and
    * `blockBytes` auto-grows so 50,000 blocks still cover it (raising peak write memory to ~one block).
    */

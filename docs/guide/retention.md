@@ -62,12 +62,13 @@ record the segment, not on every load. It is idempotent, so re-running is harmle
   moves it.
 - **A value that looks like epoch seconds is rejected.** `Date.now() / 1000 + 30 * 86400` is a natural thing to type
   and lands in 1970, already expired. Without the check it would not be an error, it would be a deletion on the next
-  sweep.
+  sweep. The floor is `MIN_EXPIRES_AT_MS`.
 - **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto segments that already
   exist is a normal migration.
-- **A crypto-shredded segment is refused**, and the result's `indexed` says whether the due-index pointer was written.
-  `indexed: false` is a degradation, not a failure: the fleet scan still retires the segment. The seconds check is a
-  floor, `MIN_EXPIRES_AT_MS`.
+- **A tombstone is refused.** A crypto-shredded, dropped or retired segment throws `ValidationError`: there is nothing
+  left to retire, so use a new segment name.
+- **`indexed` says whether the due-index pointer was written.** `indexed: false` is a degradation, not a failure: the
+  policy is committed, and the fleet scan still retires the segment.
 - **It works before the first load.** A segment with no registry row yet gets one (the result says
   `createdRow: true`) with no storage generation (`currentGen: null`). The policy is recorded ahead of the data, the
   sweep can already see the segment, and the first load publishes onto that row. A load already running when
@@ -194,12 +195,13 @@ it is charged to `limit`, and the purges go on.
 
 **Two bounds to set deliberately.**
 
-- `limit` (default 100). Retirements are sequential, with several round trips each, so the default is comfortably
-  inside a Lambda. `limit` is a time knob as much as a safety one. Raising it by orders of magnitude after a backlog
-  will time out mid-sweep, harmlessly: re-run.
-- `maxScanSegments` (default 250,000) caps how many registry rows one sweep holds resident. Past it the call throws
-  `BudgetExceededError` instead of half-sweeping, because a scan that cannot fit is not a partial result to be mistaken
-  for a complete one. Narrow with `namespace` before raising it.
+- `limit` (default 100; a whole number of at least 1, and `Number.MAX_SAFE_INTEGER` for no practical cap). Retirements
+  are sequential, with several round trips each, so the default is comfortably inside a Lambda. `limit` is a time knob
+  as much as a safety one. Raising it by orders of magnitude after a backlog will time out mid-sweep, harmlessly:
+  re-run.
+- `maxScanSegments` (default 250,000; a whole number of at least 1) caps how many registry rows one sweep holds
+  resident. Past it the call throws `BudgetExceededError` instead of half-sweeping, because a scan that cannot fit is
+  not a partial result to be mistaken for a complete one. Narrow with `namespace` before raising it.
 
 **Every `skipped` reason is worth an alert, for a different reason:**
 

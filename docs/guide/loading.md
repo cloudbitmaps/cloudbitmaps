@@ -854,11 +854,14 @@ To write many results over the same operands, see [many outputs from one pass](#
 
 A refresh that writes hundreds of segments, each a different `and` / `or` / `andNot` over the same stored operands,
 costs a lot as `*Into` calls: each one reads its operands again, and a nested expression needs a scratch segment per
-inner group, a published generation each. `store.materializeMany` computes the outputs together. It reads each
-operand's chunks once per group of outputs, for every output of the group that uses them (one group when the outputs fit the
-memory budget, more when they do not), evaluates every output chunk by chunk, and publishes each as the
-`*Into` it replaces would, to a `dest` of its own. An operand is a name: one segment given under two names is read
-twice, so name each segment once and use that name in every output.
+inner group, a published generation each. `store.materializeMany` computes the outputs together. It reads each operand's
+chunks once per group of outputs, for every output of the group that uses them (one group when the outputs fit the
+memory budget, more when they do not), evaluates every output chunk by chunk, and publishes each as the `*Into` it
+replaces would, to a `dest` of its own. An operand is a name: one segment given under two names is read twice, so name
+each segment once and use that name in every output. Every operand and every `dest` must be a segment made by this copy
+of `@cloudbitmaps/roaring`: unlike `intersect`, `union`, `andNot` and the `*Into` verbs, which also take a segment of
+another installed copy that carries the same versioned brand, `materializeMany` refuses one with a `ValidationError`
+before any request. Install one version.
 
 ```ts
 const run = await store.materializeMany({

@@ -33,7 +33,8 @@ Read these first. They are the traps.
 ## Turn it on
 
 Each segment gets its own random **DEK**, wrapped under your KEK and stored in the registry. The chunks and the index
-are AES-256-GCM-encrypted with the DEK, under data bound to `(segment, generation)`.
+are AES-256-GCM-encrypted with the DEK, under associated data that binds each blob to its namespace, segment,
+generation and purpose (a chunk and its key, the index, the metadata or the summary).
 
 ```ts
 import { CloudRoaring, InProcessKeystore, LocalFsStorage } from '@cloudbitmaps/roaring';
@@ -144,17 +145,19 @@ again after a failed one overlaps like the others.
 ## What is sealed where
 
 Each piece of a segment is stored in one place, in the clear or sealed under the segment's key (AES-256-GCM, with the
-segment's name, the generation and what the blob is for bound into the authenticated data, so a blob cannot be moved
-to another segment, another generation or another purpose):
+segment's namespace and name, the generation, the blob's purpose and, for a chunk, its key bound into the
+authenticated data, so a blob cannot be moved to another segment, another generation or another purpose):
 
 | What | Where | Encrypted segment |
 |---|---|---|
 | the ids: each chunk's payload | the generation's object | sealed |
 | the chunk index, and with it the id count and chunk count | the generation's object | sealed. The footer's count fields are zero |
-| your metadata for the generation | the object's extension block | sealed under its own scope |
-| the current generation's id count and metadata | the registry row's summary | sealed: the count as a fixed-width 64-bit integer, then the metadata, so the length reveals only the metadata's size, never how many digits the count has |
+| your metadata for the generation | the object's extension block | sealed, bound to its own purpose |
+| the current generation's id count, object size, footer checksum, tail size and metadata | the registry row's summary | sealed: fixed-width numbers, then the metadata, so the length reveals only the metadata's size, never how many digits the count has |
 | the data key | the registry row, wrapped under each KEK | wrapped; removed by a crypto-shred |
-| the pointer, status, retention policy, timestamps and token | the registry row | clear |
+| the namespace and segment name | the object's key and the registry row | clear |
+| the random write id (`cbwid`) | each generation object's metadata, and an Azure Blob registry row's | clear |
+| the pointer, status, retention and residency policy, timestamps, token and `pointerId`, any key id, leases, and the ledger of known generations (each generation's number and its object's footer checksum) | the registry row | clear |
 | the object's footer (format version, flags, generation, index offset and length, checksum) | the generation's object | clear |
 
 On a **cleartext** segment the object's metadata and the row's summary are in the clear, like everything else in that

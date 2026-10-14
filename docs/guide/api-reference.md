@@ -104,7 +104,7 @@ is built:
 | `GcsStorage` | `maxObjectBytes` | 5 TiB, GCS's per-object maximum | the largest object the backend will write and advertise; set it lower to fail fast on a runaway write; a positive safe integer |
 | `GcsStorage` | `readTimeoutMs` | `0`: no timeout | how long one read (a tail with its metadata fallback, a range, a registry row) may take, every attempt and the body included, before it throws `TransientError` for the store's read retry; see [`@cloudbitmaps/gcs`](#cloudbitmapsgcs); a non-negative safe integer no larger than 2,147,483,647 |
 | `AzureBlobStorage` | `blockBytes` | 8 MiB | staged block size, and so the peak write memory; a positive safe integer |
-| `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 400 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
+| `AzureBlobStorage` | `maxObjectBytes` | `blockBytes` × 50,000 (about 390 GiB at the default) | the largest blob the backend will write and advertise; raise it and `blockBytes` grows so the 50,000-block limit still covers it; a positive safe integer |
 | `AzureBlobStorage` | `readTimeoutMs` | `0`: no timeout | how long each read request (a range read, a tail read's properties and its download, each on its own, a registry row's read) may take, the response body included, before it is aborted and throws `TransientError` for the store's read retry; an integer from 0 to 2,147,483,647 |
 
 **Each cloud backend says whether its registry removes a deleted row for good: `conditionalDelete`.** On, a row the
@@ -212,7 +212,7 @@ that, ahead of the generations the rollback moved away from
 ([what a load keeps after a rollback](loading.md#what-a-load-keeps-after-a-rollback)). The `*Into` verbs take
 the same `keep`, validated the same way. Returns a
 `LoadResult` — `{ generation, published, reason?, size, sha256, chunkCount, cardinality, cardinalityBefore,
-collected }`. The segment's row records the generations a load keeps (up to 64), so at any `keep` up to 64 a load that
+collected }`. The segment's row records the generations a load keeps (up to 127), so at any `keep` up to 64 a load that
 found nothing above its pointer deletes by name the generations its publish pushed out of the window, and lists the
 segment only on every 16th generation; with a `keep` above 64, on a row with no usable ledger, or when its check of its
 generation number met an object or its check of the current generation's object found it gone, it lists
@@ -429,6 +429,9 @@ Batch combine types: `Expr` is an expression over a call's operands; `Materializ
 
 `ExportSink` · `ExportWriter` · `ExportFormat` · `ExportOptions` · `ExportedSegment` · `ExportFailure` ·
 `ExportSkipped` · `ExportManifest`
+
+`ExportWriter.write` receives each NDJSON chunk as a plain `Uint8Array`, not a Node `Buffer`: a writer that wants text
+decodes it with `new TextDecoder().decode(bytes)`.
 
 ### Observability
 
@@ -672,9 +675,9 @@ to build against, makes the consumer's copy the only one:
 }
 ```
 
-**On correctness, be aware of what you cannot yet run.** The conformance suite the in-repo drivers are held
+**On correctness, know what you cannot run.** The conformance suite the in-repo drivers are held
 to (`packages/roaring/src/testing/conformance.ts`) is *not* exported as a public subpath, so a third-party
-driver cannot execute it today. Until it is, the load-bearing behaviours to reproduce by hand are: a
+driver cannot execute it. The load-bearing behaviours to reproduce by hand are: a
 conditional create that **refuses** rather than overwrites (hard invariant 2 — this is the one that silently
 loses data if you get it wrong), ranged reads that return exactly the requested bytes, a compare-and-swap on
 the pointer row that reports a lost race rather than clobbering, a delete that removes a row only while it is
@@ -1046,8 +1049,8 @@ values, at most 1 KiB as canonical JSON) · `GenerationSummary` (`{ generation, 
 ## Errors (typed — you `catch` these)
 
 Every error the library's API throws extends `CloudRoaringError`, and each one tells you which of three things to
-do: **fix your call**, **retry**, or **investigate the data**. The one exception is the `export-segments` CLI, which
-reports a missing or invalid environment variable with a plain `Error` and exits non-zero.
+do: **fix your call**, **retry**, or **investigate the data**. That includes the `export-segments` CLI, which reports a
+missing or invalid environment variable with a `ValidationError` naming the variable and exits non-zero.
 
 | Error | Fires when | What to do | Retry? |
 |---|---|---|---|
@@ -1055,7 +1058,7 @@ reports a missing or invalid environment variable with a plain `Error` and exits
 | `WriteConflictError` | a write-once generation number was claimed twice, a registry compare-and-swap lost every retry, or generation collection found the segment re-created underneath it (the name now belongs to a different segment) | re-read the pointer and re-derive: re-run the operation (a load takes a fresh generation number) | no — but the *operation* is safe to re-run |
 | `IntegrityError` | bytes from storage are corrupt, oversized, fail a checksum, or fail AEAD authentication; or a registry row is not one the library wrote — not valid JSON, an envelope or record field it does not declare, no `schemaVersion`, a `status` other than `active` or `destroyed`, a token or a `pointerId` in no form a shipped registry writes (or a `pointerId` of another incarnation than the row's token, or written after it), a summary without the fingerprint of its object or its `tailBytes`, a malformed `knownGens`, or a segment or namespace other than the one whose key or file it sits under (a row copied to another name) | **investigate** — this says "this data is corrupt", not "try again". It names the chunk, or the row's key. Re-loading the segment from source repairs a generation. A bad row fails its own `get` **and every `list()` that reaches it** — its namespace's, and every unscoped one — so it stops `segments()`, the sweeps, the subject scans and `checkConsistency` across the fleet until the object is restored to a valid row or deleted | no |
 | `NotFoundError` | an object or row the caller named does not exist. Every backend, the in-memory one included, throws it for a generation object that is not there; a registry `get` of a missing row returns `null` instead. A read also throws it for an object under the generation's number that is another object than the row's summary names: it is refused as a missing one is, and not served | usually the library handles it internally (a swept generation, or a number taken again, heals forward). Reaching you means the pointer names an object that is *permanently* absent, or one the row does not name — a torn restore. `checkConsistency({ summaries: true })` finds both. See [disaster recovery](disaster-recovery.md). A load, an erasure or a collection also raises it when another writer, a rollback as a rule, moved the pointer onto a generation the call had just deleted, and the row still named it, with no object under it, when the call read it again after a wait: the message names the generation. Check `store.generations(ref)` or `checkConsistency()` first: a rollback that found its target gone puts the pointer back itself, and only while the pointer still names a missing object is a rollback to a generation still in the bucket the fix ([a rollback that races a collection](loading.md#a-rollback-that-races-a-collection)) | no |
-| `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version, or a registry row with a `schemaVersion` other than 5 (a row stamped 1 to 4 was written by a release before 0.21, which this one does not read); or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a backend, or a registry of your own that returns rows without a `pointerId` | wire the store with what the operation needs, or upgrade the library; for a row of an earlier schema, move the bucket's segments to a new prefix as the [CHANGELOG](../../CHANGELOG.md) says | no |
+| `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version, or a registry row with a `schemaVersion` other than 5 (a row stamped 1 to 4 is refused, as one stamped above 5 is); or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a backend, or a registry of your own that returns rows without a `pointerId` | wire the store with what the operation needs, or upgrade the library; for a row of an earlier schema, move the bucket's segments to a new prefix as the [CHANGELOG](../../CHANGELOG.md) says | no |
 | `StaleOperandError` | an operand a `materializeMany` call relied on changed while it ran: an operand an output subtracts changed before the publishes: its row or its object is no longer the pinned one (another generation, the name deleted and created again, or the number taken again by other bytes), `reason: 'moved'`; or an erasure ran in the store after a call with a feed began, `reason: 'erased'`. Carries `code: 'stale-operand'`, `operand` (its name in the call) and `reason` | run the call again against the current operand, or, for `'erased'`, with a feed read after the erasure | no — deterministic; the outputs that excluded it, or that were fed, were not published |
 | `CapabilityError` | the storage you passed cannot meet a capability the store requires — a storage without range reads (one of your own; the five backends all serve them), or a keystore or `encryption.required: true` on a store built on a bare `IStorageDriver` instead of a backend, which has no registry. Raised **fail-fast at construction**, never mid-operation | pass a backend, or a storage that supports range reads | no |
 | `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out. Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |

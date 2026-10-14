@@ -22,6 +22,22 @@ so, and so do the module headers in the code.
   from different CloudShell sessions are not comparable, so none is set against another's. Both READMEs, the
   benchmarks page, the roadmap, the guides and the site quote it.
 
+### Fixed
+
+- **The privacy notes list everything the registry and the object store hold.** `PRIVACY.md` now says that a registry
+  row carries the ledger of known generations in the clear, an encrypted segment's included (each generation's number
+  and its object's footer checksum); that a row's summary records the object's tail size; that every generation object
+  an S3, GCS or Azure Blob driver writes carries the random write id `cbwid`, not only an Azure Blob object or a large
+  GCS upload; and that a write that fails or is killed part way can leave uploaded bytes that no listing shows, so no
+  erasure or drop reaches them, or, on `LocalFsStorage`, a copy of a registry row with its wrapped keys. A
+  data-protection inventory taken from the earlier text missed all four. The encryption guide's table of what is sealed
+  and what is in the clear names the segment's names, the write id, the ledger, the leases, the residency policy,
+  `pointerId` and any key id as clear, and the summary's object size, footer checksum and tail size as sealed.
+- **The export guide's sample sink refuses `.`, `..` and Windows device names and never writes over another segment's
+  file.** Its
+  `encodeURIComponent` paths let a namespace named `..` write outside `dump`, and a namespace named `_default`, or two
+  names that differ only in letter case, overwrite another segment's file while the manifest reported both.
+
 ## [0.21.0] — 2026-10-13
 
 ### Breaking

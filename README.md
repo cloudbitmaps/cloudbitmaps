@@ -37,7 +37,9 @@ npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs n
 
 You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
 package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it. The family is six packages, released together at one version:
+arrives on its own and you never install it. Install one copy of `@cloudbitmaps/roaring` in a process: `materializeMany`
+refuses a segment from any other copy, and the other combines refuse one whose segment brand differs from this copy's.
+The family is six packages, released together at one version:
 
 | Package | What it is | Install it |
 |---|---|---|
@@ -95,7 +97,7 @@ You pass one **backend** as `storage`. It decides where generations and pointers
 |---|---|---|
 | `MemoryStorage` | `@cloudbitmaps/roaring` | Tests and a first look. Gone when the process exits. |
 | `LocalFsStorage` | `@cloudbitmaps/roaring` | One process on one folder: a laptop or a CI job. |
-| `S3Storage` | `@cloudbitmaps/s3` | Production. The validated one, on AWS S3. It also runs against MinIO, which the tests use, and any S3-compatible service that honors conditional writes. |
+| `S3Storage` | `@cloudbitmaps/s3` | Production. The validated one, on AWS S3. It also runs against MinIO, which the tests use, and any S3-compatible service that honors conditional writes and is strongly consistent: a read or a listing made after a write or a delete returns sees it. |
 | `GcsStorage` | `@cloudbitmaps/gcs` | Google Cloud Storage. Passes the conformance suites; outside the validated envelope. |
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | Azure Blob Storage. Passes the conformance suites; outside the validated envelope. |
 

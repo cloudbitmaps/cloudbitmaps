@@ -236,7 +236,7 @@ constants and the source text:
   one of a row with none that also lists to collect also opens the current generation's index, and makes at most eleven. The harness claims each name before it loads (`firstLoads`) and
   refuses a repeat before sending anything. The steady-load stage claims its one segment for its first load and loads it
   again through the same helper, each later load bounded as a load is.
-- **The steady-load stage needs an engine that collects by name.** At `keep: 12` a 0.17.0 load collects by name, and an
+- **The steady-load stage needs an engine that collects by name.** At `keep: 12` a load collects by name, and an
   engine that lists on every load makes other requests, so a run on it would spend its bill and then fail its own
   evidence. Before anything is created the harness loads 17 generations over the in-memory backend
   (`collectsByName`, `lib/range-counts.cjs`) and refuses, exit code 2, an installed library that does not delete by name
@@ -358,13 +358,13 @@ The workload's client has 128 sockets, as the library's built client does; `CR_C
 limit, and the script echoes the one asked for before it installs anything.
 
 Before it installs anything the script refuses three things: a `CR_CALIBRATE_REHEARSE` that is not unset, empty, `0` or
-`1` (any other value would take the run that spends money); a shell with no `AWS_REGION`, which CloudShell exports; and a
-`CR_CALIBRATE_REGION` that is not that region, since a floor under 30 ms cannot tell a neighbouring region from this one.
-The shell's region is recorded with the results as `network.clientRegion`. The release measured is the one this clone's
-`packages/roaring/package.json` names, which its expected counts were written for; `CR_CALIBRATE_PACKAGE_VERSION`
-overrides it, and the script prints the version before it installs. Run it from a clone at the 0.17.0 release or later:
-the steady-load stage is held to the counts of an engine that collects by name, and the harness refuses an installed
-library that does not, before it creates anything.
+`1` (any other value would take the run that spends money); a shell with no `AWS_REGION`, which CloudShell exports; and
+a `CR_CALIBRATE_REGION` that is not that region, since a floor under 30 ms cannot tell a neighbouring region from this
+one. The shell's region is recorded with the results as `network.clientRegion`. The release measured is the one this
+clone's `packages/roaring/package.json` names, which its expected counts were written for;
+`CR_CALIBRATE_PACKAGE_VERSION` overrides it, and the script prints the version before it installs. Run it from a clone
+of the release you are measuring: the steady-load stage is held to the counts of an engine that collects by name, and
+the harness refuses an installed library that does not, before it creates anything.
 
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, with `@cloudbitmaps/tools` of the same release for the prices the run is

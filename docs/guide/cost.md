@@ -80,14 +80,15 @@ segments together, sum their sizes into one report, checking each for `null` fir
 a sum would hide a segment that was not measured. If your store sets `cache.genTtlMs`, pass the same value as
 `workload.genTtlMs`: the model prices the pointer refresh at the store's default, 2 s, unless you do.
 
-Rates are a pluggable `PricingProfile` — `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth },
-redis }`, default `AWS_US_EAST_1_ONDEMAND` (`aws-us-east-1-ondemand`) from the fact-checked published pricing; override it for your
-region/cloud. [What it compares against](#what-it-compares-against) covers `redis`. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
-lists the model's simplifications (same-region egress free; request cost from your supplied workload rates —
-deriving it from live metrics is a later refinement; how many GETs each intersection was priced at; and, when you
-leave `loadsPerMonth` or `hotSegments` unset, that **loads** or **the pointer refresh are not modeled** — disclosed
-rather than silently under-counted; what a retirement and a purge were priced at, when you set `retirementsPerMonth` or
-`purgesPerMonth`; and, last, which Redis it compared with and how it priced it).
+Rates are a pluggable `PricingProfile` — `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth,
+requestsPerPointerRead?, requestsPerSizedRead? }, redis }`, default `AWS_US_EAST_1_ONDEMAND` (`aws-us-east-1-ondemand`)
+from the fact-checked published pricing; override it for your region/cloud. [What it compares
+against](#what-it-compares-against) covers `redis`. The report is honest: `verdict` always includes the lose-zone, and
+`assumptions.notes` lists the model's simplifications (same-region egress free; request cost from your supplied workload
+rates, not derived from live metrics; how many GETs each intersection was priced at; and, when you leave `loadsPerMonth`
+or `hotSegments` unset, that **loads** or **the pointer refresh are not modeled** — disclosed rather than silently
+under-counted; what a retirement and a purge were priced at, when you set `retirementsPerMonth` or `purgesPerMonth`;
+and, last, which Redis it compared with and how it priced it).
 
 ### What it compares against
 
@@ -252,8 +253,13 @@ no read of the segment can open) renews the segment's registry row before it del
 each such delete, and once more after the last: on a segment with no generation yet, `4 + n` registry reads and 1
 write for `n` objects, where an erasure that deletes nothing reads the row once (counted at the registry the S3, GCS
 and Azure Blob drivers share). The collection an erasure runs below the pointer reads the row once more after its last
-delete too.
-That is paid once per affected segment, since the next run finds nothing to delete. A renewal that gets no answer
+delete too. An erasure that finds the id only in generations below the pointer, on a row whose ledger of known
+generations names what it deletes, writes the row once before its first delete, to take those names out of the ledger:
+7 registry reads and 1 write, 6 reads and no write when the ledger names nothing it deletes, and 7 reads and no write on
+a row with no usable ledger (counted at the registry the S3, GCS and Azure Blob drivers share, over an in-memory
+store, for a segment with one older generation that holds the id). Each of these is paid once per affected segment,
+since the next run finds nothing to delete. The ledger write moves the row's token, so a load running on that segment
+at that moment is refused (`superseded`). A renewal that gets no answer
 waits up to 3.5 s in all before it gives up, within one segment, and `eraseSubject` erases 8 segments at once by
 default. A renewal on a segment with a generation moves its `pointerId`, so each store reading it opens its current
 generation again once, at its next refresh: one tail read where the generation is cleartext and its row has a summary (which sizes the read to take the index), and a
