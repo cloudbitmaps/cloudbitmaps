@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Added
+
+- **`export-segments --help` prints the command's settings.** `--help` or `-h` prints the usage to stdout and exits 0:
+  `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
+  optional. Any other argument, which the command used to ignore, prints "takes no arguments; it reads its settings
+  from the environment" and the usage to stderr and exits 2. A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` now names
+  both required variables and ends "run export-segments --help". The export guide and the API reference say the same.
+
 ### Changed
 
 - **A steady `store.load()` at `keep: 12` is measured on `0.21.0`.** A run from AWS CloudShell in `us-east-1` on

@@ -70,6 +70,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      # `pnpm test` runs before the build, so the spawned-bin tests skip there; here they run against the built bin
+      # and fail if it is missing.
+      - run: pnpm exec vitest run tests/bin/export-segments-cli.test.ts
+        env:
+          CB_REQUIRE_BUILT_BIN: '1'
       # Every public type signature, read from the declarations the build just emitted, against the committed snapshot
       # in api-surface/. `tests/docs/api-reference-sync.test.ts` guards the names an entry point exports; this guards
       # what each name accepts and returns, so a changed parameter type or a removed overload cannot merge unseen.

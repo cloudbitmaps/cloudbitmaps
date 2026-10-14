@@ -374,7 +374,7 @@ that holds one can run it. Every other verb is a store method; the standalone fo
 
 | Binary | Does |
 |---|---|
-| `export-segments` | eject all registered segments from a local-filesystem store to a directory. Env: `CR_EXPORT_ROOT` (holds `storage/` + `registry/`), `CR_EXPORT_OUT`, `CR_EXPORT_FORMAT` (`roaring` \| `ndjson`, `roaring` when unset or empty), `CR_EXPORT_NAMESPACE`. It wires no keystore, so an encrypted segment is recorded in the manifest's `failed[]`: export an encrypted store with `store.exportSegments` from a store built with its keystore |
+| `export-segments` | eject all registered segments from a local-filesystem store to a directory. `--help` (or `-h`) prints the settings and exits 0; any other argument exits 2. Env: `CR_EXPORT_ROOT` (required; holds `storage/` + `registry/`), `CR_EXPORT_OUT` (required), `CR_EXPORT_FORMAT` (`roaring` \| `ndjson`, `roaring` when unset or empty), `CR_EXPORT_NAMESPACE` (optional). It wires no keystore, so an encrypted segment is recorded in the manifest's `failed[]`: export an encrypted store with `store.exportSegments` from a store built with its keystore |
 
 ---
 
