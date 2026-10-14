@@ -7,7 +7,7 @@ import { KeyUnavailableError, ValidationError } from './errors';
 import { yieldEvery } from './cooperative';
 import type { Clock } from './determinism';
 import { incarnationField } from './token';
-import { MAX_REMAINDER, splitId } from './bit-route';
+import { MAX_REMAINDER, isBadIdError, splitId } from './bit-route';
 import { aadFor, sameKeys } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import type {
@@ -94,6 +94,9 @@ async function bucketIds(
   // cost is dominated by per-array and Map overhead across tens of thousands of small arrays.
   const pendingByChunk = new Map<number, number[]>();
   let pending = 0;
+  // Ids already flushed, so an id that is refused is named by its position without a counter of its own per id: it
+  // is the flushed ids plus the ones pending, since a refused id is never counted in either.
+  let flushed = 0;
   // Yield periodically, NOT per chunk — see {@link yieldEvery} for why per-unit async is a 7x regression here.
   const tickChunk = yieldEvery(clock);
   const tickId = yieldEvery(clock, YIELD_EVERY_IDS);
@@ -118,6 +121,7 @@ async function bucketIds(
       const pause = tickChunk();
       if (pause !== null) await pause;
     }
+    flushed += pending;
     pending = 0;
   };
   /** Bucket one id. Returns true when the pending buffer is full and must be flushed. */
@@ -140,18 +144,24 @@ async function bucketIds(
   //
   // Note that `for await` yields nothing to the event loop either way: a microtask per id still drains before
   // the loop turns a phase. Both paths therefore need the same explicit yield.
-  if (Symbol.asyncIterator in ids) {
-    for await (const id of ids as AsyncIterable<number>) {
-      if (ingest(id)) await flushPending();
-      const pause = tickId();
-      if (pause !== null) await pause;
+  try {
+    if (Symbol.asyncIterator in ids) {
+      for await (const id of ids as AsyncIterable<number>) {
+        if (ingest(id)) await flushPending();
+        const pause = tickId();
+        if (pause !== null) await pause;
+      }
+    } else {
+      for (const id of ids as Iterable<number>) {
+        if (ingest(id)) await flushPending();
+        const pause = tickId();
+        if (pause !== null) await pause;
+      }
     }
-  } else {
-    for (const id of ids as Iterable<number>) {
-      if (ingest(id)) await flushPending();
-      const pause = tickId();
-      if (pause !== null) await pause;
-    }
+  } catch (err) {
+    // The position of the id in what the caller passed; the id itself is never repeated.
+    if (isBadIdError(err)) throw new ValidationError(`ids[${flushed + pending}]: ${err.message}`);
+    throw err;
   }
   await flushPending();
 

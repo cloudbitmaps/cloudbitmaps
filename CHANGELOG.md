@@ -21,6 +21,12 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **A bad segment ref or id says what is wrong with it, and where.** A ref that is a string, `null` or `undefined`
+  (`store.load('shoppers', ids)`) is refused with a `ValidationError`, "a segment ref is an object such as { segment:
+  'name' }; store.segment() takes the bare name". A `null` or `undefined` ref used to throw a raw `TypeError`, so a
+  `catch` that tested `isValidationError` now catches it. `store.segment()` given an object says to pass `ref.segment`.
+  A refused id says which kind it is (not a number, negative, with a fraction, `NaN` or an infinity, or above
+  4294967295), and a load names the position, `ids[1]: ...`. A message never repeats the id or the segment's name.
 - **Common error messages say what to do next.** A contention `WriteConflictError` from a load's publish, `setRetention`,
   `clearRetention` and a lease take or release ends "another writer changed the segment's row while this call ran.
   Re-run the call: it reads the row afresh". A rollback that loses its race to another writer throws a

@@ -66,6 +66,28 @@ describe('an error message never carries an id', () => {
     expect(messages[0]).toMatch(/an id must be an integer from 0 to 4294967295/);
   });
 
+  it('a load names the position of a refused id, never its value', async () => {
+    const w = await batchWorld({ s: [1, 2, 3] });
+    const message = await messageOf(() => w.store.load({ segment: 's' }, [1, 5_000_000_000]));
+    expect(message).toBe(
+      'ids[1]: an id must be an integer from 0 to 4294967295; got a number above 4294967295 (ids are 32-bit)',
+    );
+    expect(message).not.toContain('5000000000');
+    // From an async source, and past a flush of the pending buffer (it holds 2^20 ids).
+    async function* feed(): AsyncGenerator<number> {
+      yield 7;
+      yield -1;
+    }
+    expect(await messageOf(() => w.store.load({ segment: 's' }, feed()))).toMatch(
+      /^ids\[1\]: .*negative number$/,
+    );
+    const many = Array.from({ length: (1 << 20) + 10 }, (_, i) => i);
+    many.push(1.5);
+    expect(await messageOf(() => w.store.load({ segment: 's' }, many))).toMatch(
+      /^ids\[1048586\]: .*number with a fraction$/,
+    );
+  });
+
   it('a refused feed says what is wrong without an id', async () => {
     const w = await batchWorld({ a: [1, 2, 3] });
     const seg = w.store.segment('a');

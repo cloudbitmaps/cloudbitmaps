@@ -1051,6 +1051,11 @@ export class CloudRoaring {
    * spread of options keeps working.
    */
   segment(name: string, options?: SegmentOptions): Segment {
+    if (typeof name === 'object' && name !== null) {
+      throw new ValidationError(
+        "segment: the name is a string, store.segment('name'), not an object: pass ref.segment",
+      );
+    }
     if (options !== undefined && options !== null) {
       if (typeof options !== 'object' || Array.isArray(options)) {
         throw new ValidationError('segment: options must be an object such as { namespace }');
