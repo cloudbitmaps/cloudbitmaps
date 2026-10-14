@@ -16,6 +16,7 @@
  * and the injected clock and rng: no I/O, time or randomness of its own.
  */
 import {
+  CONTENTION_NEXT_STEP,
   LeaseLimitError,
   NotFoundError,
   WriteConflictError,
@@ -304,7 +305,9 @@ export async function takeLease(
     }
   }
   if (unanswered !== undefined) throw unanswered;
-  throw new WriteConflictError(`lease: contention taking a lease on segment "${ref.segment}"`);
+  throw new WriteConflictError(
+    `lease: contention taking a lease on segment "${ref.segment}"${CONTENTION_NEXT_STEP}`,
+  );
 }
 
 /**
@@ -348,5 +351,7 @@ export async function releaseLease(
     }
   }
   if (unanswered !== undefined) throw unanswered;
-  throw new WriteConflictError(`lease: contention releasing a lease on segment "${ref.segment}"`);
+  throw new WriteConflictError(
+    `lease: contention releasing a lease on segment "${ref.segment}"${CONTENTION_NEXT_STEP}`,
+  );
 }

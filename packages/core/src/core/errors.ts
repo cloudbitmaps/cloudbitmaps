@@ -48,6 +48,10 @@ export class CloudRoaringError extends Error {
  */
 export class ValidationError extends CloudRoaringError {}
 
+/** What a contention {@link WriteConflictError} ends with: the call is safe to run again. */
+export const CONTENTION_NEXT_STEP =
+  "; another writer changed the segment's row while this call ran. Re-run the call: it reads the row afresh";
+
 /** An OCC conditional write/delete lost the race — the row changed since it was read. */
 export class WriteConflictError extends CloudRoaringError {}
 

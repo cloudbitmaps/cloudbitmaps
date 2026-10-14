@@ -21,6 +21,13 @@ so, and so do the module headers in the code.
 
 ### Changed
 
+- **Common error messages say what to do next.** A contention `WriteConflictError` from a load's publish, `setRetention`,
+  `clearRetention` and a lease take or release ends "another writer changed the segment's row while this call ran.
+  Re-run the call: it reads the row afresh". A rollback that loses its race to another writer throws a
+  `WriteConflictError` that says the pointer was not moved and to check `store.generations(ref)` and run it again, with
+  the driver's error as its `cause`. An unsupported `.crbm` major version says which version the build reads and to
+  upgrade `@cloudbitmaps/core`, and every `IntegrityError` from reading a `.crbm` object ends "re-load from source or
+  roll back". No message gains a stored value, and the driver messages the conformance suite shares are unchanged.
 - **A steady `store.load()` at `keep: 12` is measured on `0.21.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-13 (run `2026-10-13-b329d`), against the published `0.21.0`, loaded one segment 18 times. A load that deletes
   by name made 2 PUT-class + 5 GET-class and a delete, $12.00 per million at the default prices, and the load at

@@ -149,7 +149,7 @@ describe('the requests and errors of a rollback, by target', () => {
     await w.load([2]);
     expect(await traced(w, 0, { allowUnknown: true })).toMatchInlineSnapshot(`
       {
-        "outcome": "IntegrityError: .crbm end magic mismatch",
+        "outcome": "IntegrityError: .crbm end magic mismatch; re-load from source or roll back",
         "trace": [
           "getTail g0 262144",
         ],

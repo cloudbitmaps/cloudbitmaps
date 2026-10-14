@@ -7,7 +7,7 @@
  * accepts unsigned integers in `[0, 0xffffffff]` and rejects anything wider as a programming error.
  */
 import { U32_MAX } from '../bit-route';
-import { IntegrityError } from '../errors';
+import { crbmIntegrity } from './integrity';
 
 const U32_CEIL = U32_MAX + 1;
 
@@ -41,13 +41,13 @@ export function readVarint(bytes: Uint8Array, offset: number): VarintRead {
   let pos = offset;
   for (let i = 0; i < 5; i++) {
     if (pos >= bytes.length) {
-      throw new IntegrityError('varint truncated past end of buffer');
+      throw crbmIntegrity('varint truncated past end of buffer');
     }
     const byte = bytes[pos]!;
     pos += 1;
     // The 5th byte may contribute at most 4 bits (32 total); reject wider.
     if (i === 4 && byte > 0x0f) {
-      throw new IntegrityError('varint exceeds u32 range');
+      throw crbmIntegrity('varint exceeds u32 range');
     }
     // Integer arithmetic: the value stays a small integer where it fits, rather than a heap-boxed double.
     result = (result | ((byte & 0x7f) << shift)) >>> 0;
@@ -56,5 +56,5 @@ export function readVarint(bytes: Uint8Array, offset: number): VarintRead {
     }
     shift += 7;
   }
-  throw new IntegrityError('varint exceeds u32 range');
+  throw crbmIntegrity('varint exceeds u32 range');
 }

@@ -28,7 +28,12 @@
  * `currentGen: null`: the row exists so the segment is *enumerable*, and it claims no Storage generation, so every
  * read answers empty until the first load publishes onto it.
  */
-import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
+import {
+  CONTENTION_NEXT_STEP,
+  ValidationError,
+  WriteConflictError,
+  isWriteConflictError,
+} from './errors';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
 import { casRetry } from './cas-retry';
 import type { ChurnDeps } from './leases';
@@ -253,7 +258,7 @@ export async function setSegmentRetention(
       attempts: RETENTION_CAS_ATTEMPTS,
       contention: () =>
         new WriteConflictError(
-          `setRetention: contention writing the retention policy for segment "${ref.segment}"`,
+          `setRetention: contention writing the retention policy for segment "${ref.segment}"${CONTENTION_NEXT_STEP}`,
         ),
     },
     async (record) => {
@@ -308,7 +313,7 @@ export async function clearSegmentRetention(
       attempts: RETENTION_CAS_ATTEMPTS,
       contention: () =>
         new WriteConflictError(
-          `clearRetention: contention clearing the retention policy for segment "${ref.segment}"`,
+          `clearRetention: contention clearing the retention policy for segment "${ref.segment}"${CONTENTION_NEXT_STEP}`,
         ),
     },
     async (record) => {
