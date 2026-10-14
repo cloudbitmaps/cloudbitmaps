@@ -23,14 +23,19 @@ Three words appear everywhere:
 
 ## Install & entry points
 
+On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
+script to fetch its native binary. Allow it first, in your `package.json`:
+`{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but
+warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
+
 ```bash
 pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
-On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package
-throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`.
-npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra.
+Installed before allowing it? The install exited 0 and the package throws at `import`. Add the setting, then run
+`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped
+([Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
 [CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
@@ -272,8 +277,11 @@ bitmap of up to 65,536 ids, and it is the unit of storage and transfer: you neve
 
 **Intersection.** To find the ids in both of two huge segments, CloudBitmaps reads the two small chunk indexes,
 aligns their keys, and fetches only the chunks present in both. Two 100 MB segments overlapping in 5% of chunks
-transfer about 10 MB of chunks, not 200 MB (arithmetic, for chunks of equal size). An `exclude` list is read only at
-the keys that survived.
+need about 10 MB of chunks, not 200 MB (arithmetic, for chunks of equal size). When those chunks lie together, that is
+about what is read. When they are spread over the objects, the reads merge chunks within 256 KiB of each other (up to
+1 MiB a request), so they make far fewer requests but fetch most of each object: free inside the bucket's region on S3
+Standard, billed across regions ([the overlap tables](docs/guide/sizing.md#how-much-the-overlap-matters)). An `exclude`
+list is read only at the keys that survived.
 
 More: [Loading in depth](docs/guide/loading.md), [Reading in depth](docs/guide/reading.md) and [Before production](docs/guide/production.md).
 
