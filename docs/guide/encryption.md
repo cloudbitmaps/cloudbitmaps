@@ -155,6 +155,8 @@ authenticated data, so a blob cannot be moved to another segment, another genera
 | your metadata for the generation | the object's extension block | sealed, bound to its own purpose |
 | the current generation's id count, object size, footer checksum, tail size and metadata | the registry row's summary | sealed: fixed-width numbers, then the metadata, so the length reveals only the metadata's size, never how many digits the count has |
 | the data key | the registry row, wrapped under each KEK | wrapped; removed by a crypto-shred |
+| the namespace and segment name | the object's key and the registry row | clear |
+| the random write id (`cbwid`) | each generation object's metadata, and an Azure Blob registry row's | clear |
 | the pointer, status, retention and residency policy, timestamps, token and `pointerId`, any key id, leases, and the ledger of known generations (each generation's number and its object's footer checksum) | the registry row | clear |
 | the object's footer (format version, flags, generation, index offset and length, checksum) | the generation's object | clear |
 

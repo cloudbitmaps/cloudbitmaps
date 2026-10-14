@@ -33,7 +33,8 @@ Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring 
 same two). `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the storage interfaces) is a
 dependency of both and is never installed directly; it contains no cloud SDK at all. Four storage backends: S3
 (`@cloudbitmaps/s3`, which also serves an S3-compatible store such as R2 or MinIO, given its endpoint, if it
-honours S3's conditional writes; MinIO is the one the integration suite runs against), GCS (`@cloudbitmaps/gcs`)
+honours S3's conditional writes and is strongly consistent, so that a read or a listing made after a write or a
+delete sees it; MinIO is the one the integration suite runs against), GCS (`@cloudbitmaps/gcs`)
 and Azure Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real
 rather than as an optional peer, and the local filesystem (`LocalFsStorage`, from `@cloudbitmaps/roaring`, for
 development); plus the in-memory `MemoryStorage`, also from `@cloudbitmaps/roaring`, for tests. Each of the three clouds hosts both the storage generations and the registry, so a

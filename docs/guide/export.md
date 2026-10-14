@@ -21,10 +21,14 @@ import { join } from 'node:path';
 import type { ExportSink } from '@cloudbitmaps/roaring';
 
 // One path component per name: `encodeURIComponent` escapes `/` and `\`, a leading `_` is escaped so no namespace
-// lands in `_default`, and `.`, `..` and the empty name, which would leave `dump`, are refused.
+// lands in `_default`, and `.`, `..` and the empty name, which would leave `dump`, are refused, as is a name Windows
+// keeps for a device.
+const DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 function part(name: string): string {
   const p = encodeURIComponent(name).replace(/^_/, '%5F');
-  if (p === '' || p === '.' || p === '..') throw new Error(`no file for the name ${JSON.stringify(name)}`);
+  if (p === '' || p === '.' || p === '..' || DEVICE.test(p)) {
+    throw new Error(`no file for the name ${JSON.stringify(name)}`);
+  }
   return p;
 }
 
@@ -55,10 +59,11 @@ const manifest = await store.exportSegments(sink, {
 //             skipped:  [{ segment, namespace?, reason: 'destroyed' }] } // tombstones: nothing to export
 ```
 
-A name may be any non-empty string, so the sink refuses a name that would step out of `dump` (`.`, `..`) and writes
-each file with `wx`: a second segment that maps to the same file, by letter case on a filesystem that ignores it, or a
-Windows device name such as `con` or a trailing dot, is recorded in `failed` rather than written over the first. Export
-to a fresh directory: `wx` also refuses a file an earlier run left.
+A name may be any non-empty string, so the sink refuses a name that would step out of `dump` (`.`, `..`) or that
+Windows keeps for a device (`con`, `nul`, `com1`), and writes each file with `wx`: a second segment that maps to the
+same file, by letter case on a filesystem that ignores it or by a trailing dot Windows drops from a directory name, is
+recorded in `failed` rather than written over the first. Export to a fresh directory: `wx` also refuses a file an
+earlier run left.
 
 Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives a `Uint8Array` (for
 `ndjson`, a plain one, not a Node `Buffer`: decode text with `new TextDecoder().decode(bytes)`), `close` commits a
@@ -149,8 +154,8 @@ And a store loads one straight back, with no per-id work:
   and writer to the new prefix, and then delete the old prefix, with its noncurrent versions, delete markers and
   soft-deleted objects where the storage keeps them. The release's changelog entry on the registry schema has the full
   steps.
-- **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
-  disappeared.** Export to a fresh directory for a clean dump.
+- **A re-run of the command overwrites the segments it re-exports but does not prune files for segments that have
+  since disappeared.** Export to a fresh directory for a clean dump; the sample sink above needs one every time.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds
   already there passes when an earlier run left it (yours and owner-only). A symlink, a path that is not a directory, a
   directory of another user, or one open to group or others in its place is refused with a `ValidationError`. The check

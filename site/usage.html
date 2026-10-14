@@ -618,8 +618,9 @@ npm audit signatures</code></pre>
             <strong>Memory</strong> drivers ship in the main entry too and need nothing — they are what the
             quickstart uses. An <strong>S3-compatible</strong> store (R2, MinIO) works through the S3 driver,
             given its <span class="m">endpoint</span> — most also need <span class="m">pathStyle</span> and
-            <span class="m">credentials</span> — if it honours S3's conditional writes: the write-once put
-            and the pointer's compare-and-swap are built on them. MinIO is the one the integration suite runs
+            <span class="m">credentials</span> — if it honours S3's conditional writes and is strongly
+            consistent: the write-once put and the pointer's compare-and-swap are built on the first, and the
+            erasure, drop and rollback checks on the second. MinIO is the one the integration suite runs
             against. Deletes decided from a read are conditional (<span class="m">If-Match</span> or
             <span class="m">ifGenerationMatch</span>) where the backend reports
             <span class="m">conditionalDelete</span>: on by default for S3 on an AWS host and for Azure Blob, off by
