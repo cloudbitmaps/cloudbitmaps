@@ -174,6 +174,11 @@ Three things follow:
 - **A crypto-shred removes the summary with the key.** It could not be opened again, and a clear copy would outlive the
   segment on its tombstone, so the shred clears both.
 
+**An error message can name what the seal hides.** An `IntegrityError` names the chunk it refused, by its key (the high
+16 bits of the ids it holds), and a count mismatch gives the two counts, on an encrypted segment as on a cleartext one.
+Such an error is raised only after the bytes have authenticated, so only a writer holding the segment's key can cause
+it.
+
 ## How it stays correct
 
 **How many seals one key takes.** Each chunk is sealed with a fresh random 96-bit nonce, and two seals under one key
