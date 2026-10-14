@@ -316,5 +316,5 @@ operating manual (`CLAUDE.md` is a symlink to it).
 
 ## License
 
-**Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish, and the CloudBitmaps name is trademarked
-at the public launch.
+**Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish. The license does not grant permission to use
+the CloudBitmaps name ([section 6](LICENSE)).
