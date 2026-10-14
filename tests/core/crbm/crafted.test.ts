@@ -644,4 +644,16 @@ describe('payload cap matches the decode cap', () => {
       expect(over.reader.ranges).toBeLessThanOrEqual(1);
     },
   );
+
+  it('refuses an entry over the default with an IntegrityError, and opens it once maxPayloadBytes is raised', async () => {
+    const length = DEFAULT_MAX_BITMAP_BYTES + 1;
+    const bytes = object(length, false);
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toBeInstanceOf(IntegrityError);
+    const raised = await CrbmReader.open(new BufferReader(bytes), { maxPayloadBytes: length });
+    expect(raised.chunkKeys()).toEqual([7]);
+    // One byte short of the entry still refuses it.
+    await expect(
+      CrbmReader.open(new BufferReader(bytes), { maxPayloadBytes: length - 1 }),
+    ).rejects.toThrow(/chunk 7 length 1048577 invalid/);
+  });
 });
