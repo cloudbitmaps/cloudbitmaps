@@ -306,6 +306,13 @@ jobs:
       - run: node scripts/verify-roaring-prebuilt.cjs --strict # the addon's checksum, per platform
       - run: pnpm build
       - run: node scripts/smoke.cjs # loads the addon + round-trips under ESM + CJS on this OS
+      # The default macOS volume is case-insensitive, which is what LocalFs's exact-case checks are for. The variable
+      # makes the test fail, not skip, if this runner's temp root is case-sensitive.
+      - name: LocalFs exact-case checks on a case-insensitive filesystem
+        if: runner.os == 'macOS'
+        run: pnpm exec vitest run tests/drivers/localfs/exact-case.test.ts
+        env:
+          CB_EXPECT_CASE_INSENSITIVE: '1'
 
   lambda-layer:
     name: prebuilt Lambda layer (Amazon Linux 2023)
