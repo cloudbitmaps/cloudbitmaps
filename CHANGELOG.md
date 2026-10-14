@@ -37,6 +37,21 @@ so, and so do the module headers in the code.
   file.** Its
   `encodeURIComponent` paths let a namespace named `..` write outside `dump`, and a namespace named `_default`, or two
   names that differ only in letter case, overwrite another segment's file while the manifest reported both.
+- **The reference, the install guides and the hover docs state what the code does.** The reference and the Azure Blob
+  README give the ceilings that refuse a setting at construction: an S3 `partBytes` above 5 GiB, an S3 or GCS
+  `maxObjectBytes` above 5 TiB, an Azure `blockBytes` above 4,000 MiB and an Azure `maxObjectBytes` above 50,000
+  blocks of 4,000 MiB. `BudgetExceededError` is documented as it is: its message states the limit and, when known
+  before the fan-out, the projected count, and it has no fields for either. The `retry` row lists all five policy
+  fields and every rule the store checks when it is built, the `budget` row its range and default, and the call table
+  the defaults of `concurrency`, `publishConcurrency`, the retention sweep and the export. The README and the
+  getting-started guide give the install settings before the install commands, with the `rebuild` step for an install
+  made first; the guide says what a TypeScript project needs, names a Node major-version change as a third cause of
+  `Cannot find module './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says
+  that intersection reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy
+  notes say that error messages name the segment, the namespace and a cloud registry's object key, and the encryption
+  guide that an `IntegrityError` names a chunk key and counts the seal hides. Hover docs now cover the store, the three
+  backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the in-process
+  backends' options, and a load's row records up to 127 generations.
 
 ## [0.21.0] — 2026-10-13
 
