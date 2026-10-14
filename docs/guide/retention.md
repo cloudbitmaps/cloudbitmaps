@@ -195,12 +195,13 @@ it is charged to `limit`, and the purges go on.
 
 **Two bounds to set deliberately.**
 
-- `limit` (default 100; a whole number of at least 1, and `Number.MAX_SAFE_INTEGER` for no practical cap). Retirements are sequential, with several round trips each, so the default is comfortably
-  inside a Lambda. `limit` is a time knob as much as a safety one. Raising it by orders of magnitude after a backlog
-  will time out mid-sweep, harmlessly: re-run.
-- `maxScanSegments` (default 250,000; a whole number of at least 1) caps how many registry rows one sweep holds resident. Past it the call throws
-  `BudgetExceededError` instead of half-sweeping, because a scan that cannot fit is not a partial result to be mistaken
-  for a complete one. Narrow with `namespace` before raising it.
+- `limit` (default 100; a whole number of at least 1, and `Number.MAX_SAFE_INTEGER` for no practical cap). Retirements
+  are sequential, with several round trips each, so the default is comfortably inside a Lambda. `limit` is a time knob
+  as much as a safety one. Raising it by orders of magnitude after a backlog will time out mid-sweep, harmlessly:
+  re-run.
+- `maxScanSegments` (default 250,000; a whole number of at least 1) caps how many registry rows one sweep holds
+  resident. Past it the call throws `BudgetExceededError` instead of half-sweeping, because a scan that cannot fit is
+  not a partial result to be mistaken for a complete one. Narrow with `namespace` before raising it.
 
 **Every `skipped` reason is worth an alert, for a different reason:**
 

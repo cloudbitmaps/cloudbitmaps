@@ -50,7 +50,8 @@ It builds its own client from your usual AWS credentials. Any other key is refus
 
 - **The bucket must honor conditional writes**: `If-None-Match: *` for a write-once generation and `If-Match` for the
   pointer. AWS S3 does, and the test suite runs against MinIO. Another S3-compatible service that ignores the headers
-  turns write-once into overwrite, so check yours before you depend on it.
+  turns write-once into overwrite, so check yours before you depend on it. It must also be strongly consistent: a read
+  or a listing made after a write or a delete returns sees it. AWS S3 is.
 - **Use `@aws-sdk/client-s3` 3.700.0 or later** if you pin the SDK or pass your own `client`. This floor is a
   correctness floor, not a preference. An SDK sends only the conditional headers it models, and drops one it does
   not, without an error. `If-None-Match`, which write-once is built on, is modelled from 3.641.0: measured against

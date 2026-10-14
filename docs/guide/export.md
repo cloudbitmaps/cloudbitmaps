@@ -20,12 +20,20 @@ import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ExportSink } from '@cloudbitmaps/roaring';
 
+// One path component per name: `encodeURIComponent` escapes `/` and `\`, a leading `_` is escaped so no namespace
+// lands in `_default`, and `.`, `..` and the empty name, which would leave `dump`, are refused.
+function part(name: string): string {
+  const p = encodeURIComponent(name).replace(/^_/, '%5F');
+  if (p === '' || p === '.' || p === '..') throw new Error(`no file for the name ${JSON.stringify(name)}`);
+  return p;
+}
+
 const sink: ExportSink = {
   async open(ref, ext) {
-    const dir = join('dump', encodeURIComponent(ref.namespace ?? '_default'));
-    const path = join(dir, `${encodeURIComponent(ref.segment)}${ext}`);
+    const dir = join('dump', ref.namespace === undefined ? '_default' : part(ref.namespace));
+    const path = join(dir, `${part(ref.segment)}${ext}`);
     await mkdir(dir, { recursive: true });
-    const file = await open(path, 'w');
+    const file = await open(path, 'wx'); // never over another segment's file: a clash lands in `failed`
     return {
       write: (bytes) => file.appendFile(bytes), // writes every byte; file.write() may write fewer
       close: () => file.close(), // commit: called once, only when every byte was written
@@ -47,14 +55,14 @@ const manifest = await store.exportSegments(sink, {
 //             skipped:  [{ segment, namespace?, reason: 'destroyed' }] } // tombstones: nothing to export
 ```
 
-`encodeURIComponent` leaves `.`, `..` and Windows device names such as `con` as they are, and a name may be any
-non-empty string, so a namespace named `..` would write outside `dump`. A sink for names you do not control should
-refuse those, or use `encodeNameForPath` from `@cloudbitmaps/core/driver-kit` (add `@cloudbitmaps/core` to your own
-`package.json` to import it), which is what the `export-segments` command uses.
+A name may be any non-empty string, so the sink refuses a name that would step out of `dump` (`.`, `..`) and writes
+each file with `wx`: a second segment that maps to the same file, by letter case on a filesystem that ignores it, or a
+Windows device name such as `con` or a trailing dot, is recorded in `failed` rather than written over the first. Export
+to a fresh directory: `wx` also refuses a file an earlier run left.
 
-Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives a `Uint8Array` (not a Node
-`Buffer`; decode text with `new TextDecoder().decode(bytes)`), `close` commits a segment, and `abort` (optional)
-discards a partial one.
+Your sink can write anywhere: a file, an S3 upload, stdout, a test buffer. `write` receives a `Uint8Array` (for
+`ndjson`, a plain one, not a Node `Buffer`: decode text with `new TextDecoder().decode(bytes)`), `close` commits a
+segment, and `abort` (optional) discards a partial one.
 
 ## Export from the command line (local filesystem only)
 
@@ -136,9 +144,11 @@ And a store loads one straight back, with no per-id work:
   began.
 - **Moving a store to a release that reads a newer registry schema.** A store refuses a row stamped with an older schema
   with `UnsupportedError`, naming its key; there is no upgrade in place. Export every segment with the release that
-  wrote the rows, load the files into a new prefix with the new release, restore each row's `retention` and `residency`
-  as above, re-run every erasure processed since the export began, move every reader and writer to the new prefix, and
-  then delete the old prefix. The release's changelog entry on the registry schema has the full steps.
+  wrote the rows, load the files into a new prefix with the new release and the same `encryption` options, restore each
+  row's `retention` and `residency` as above, re-run every erasure processed since the export began, move every reader
+  and writer to the new prefix, and then delete the old prefix, with its noncurrent versions, delete markers and
+  soft-deleted objects where the storage keeps them. The release's changelog entry on the registry schema has the full
+  steps.
 - **Re-running overwrites the segments it re-exports but does not prune files for segments that have since
   disappeared.** Export to a fresh directory for a clean dump.
 - **It checks the namespace directories it writes into, not the output directory itself.** A namespace directory it finds

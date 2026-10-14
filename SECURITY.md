@@ -151,24 +151,25 @@ produced the package they installed**. The controls:
   source on every pull request, on every push to `main` and weekly, and reports findings as code-scanning alerts. It
   covers the packages, the scripts and bench harnesses that CI runs, and the site; it leaves out the test suite and
   the fuzz harnesses, which ship nowhere. Its action versions are pinned to commits like every other workflow's.
-- **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
-  `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A
-  manifest's `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or*
-  the environment, so every non-CI publish — the bootstrap and the break-glass path both — would abort with
-  `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the
-  guarantee without the trap.) npm records a **signed,
-  publicly-verifiable attestation** linking the tarball to the exact GitHub Actions workflow, repository, and
-  commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted runner with
-  `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
-  read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's
-  release workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to
-  be public and the package published under a real version — both true of every release, so every tarball
-  **published by the release workflow** carries an attestation you can check yourself.
-  **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
-  publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is
-  bootstrapped by hand, from a laptop, which has no workflow identity and therefore no provenance. Those are
-  published under the `rc` dist-tag at a throwaway prerelease of the family version (for example `X.Y.Z-rc.0` for family version `X.Y.Z`). The registry can point `latest` at a name's first publish, so until the real release ships, a plain install of a new name may serve that prerelease. If you are checking signatures, expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none, and treat an
-  unattested tarball at a **real** version as untrusted.
+- **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with `--provenance` and
+  `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A manifest's
+  `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or* the environment, so
+  every non-CI publish — the bootstrap and the break-glass path both — would abort with
+  `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the guarantee
+  without the trap.) npm records a **signed, publicly-verifiable attestation** linking the tarball to the exact GitHub
+  Actions workflow, repository, and commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted
+  runner with `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
+  read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's release
+  workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to be
+  public and the package published under a real version — both true of every release, so every tarball **published by
+  the release workflow** carries an attestation you can check yourself. **One deliberate exception, and it is visible on
+  the registry.** Creating a package name needs a first publish, and npm's Trusted Publisher cannot be bound to a name
+  that does not yet exist — so a new name is bootstrapped by hand, from a laptop, which has no workflow identity and
+  therefore no provenance. Those are published under the `rc` dist-tag at a throwaway prerelease of the family version
+  (for example `X.Y.Z-rc.0` for family version `X.Y.Z`). The registry can point `latest` at a name's first publish, so
+  until the real release ships, a plain install of a new name may serve that prerelease. If you are checking signatures,
+  expect exactly those prerelease versions, and the `0.0.0-stage` stub npm creates beside a first publish, to have none,
+  and treat an unattested tarball at a **real** version as untrusted.
 - **Publish only a re-verified tree.** The release workflow re-runs the gate that governs the artifact
   (`lint · lint:arch · format:check · typecheck · test · audit · build · api:surface:check · smoke`, plus a `leak-scan` of the
   packed tarball) against the exact commit being published before the tarball is created — a green `main` is

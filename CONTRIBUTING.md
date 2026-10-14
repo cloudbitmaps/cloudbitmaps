@@ -59,10 +59,11 @@ Every change must pass these locally, and CI runs each of them on every pull req
 
 CI runs more than these. Its `build & test` job also holds the site and the benchmark pages to their sources
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
-`bench:range-counts:check`, `bench:materialize-many-counts:check`, `bench:expected-figures:check`, `bench:check`, `bench:event-loop:check`, `bench:load-input:check`, `api:surface:check`), scans the tracked tree and the packed tarballs for leaks, and checks the fuzz lockfile; separate
-jobs run the dependency audit, the smoke test on the declared Node floor, the Lambda deployability smoke, the hard
-RSS ceiling and the native addon on Linux, Windows and macOS. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-says why each one is there.
+`bench:range-counts:check`, `bench:materialize-many-counts:check`, `bench:expected-figures:check`, `bench:check`,
+`bench:event-loop:check`, `bench:load-input:check`, `api:surface:check`), scans the tracked tree and the packed tarballs
+for leaks, and checks the fuzz lockfile; separate jobs run the dependency audit, the smoke test on the declared Node
+floor, the Lambda deployability smoke, the hard RSS ceiling and the native addon on Linux, Windows and macOS.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) says why each one is there.
 
 `pnpm test` runs a few heavy tests at a reduced size, so a push stays cheap. A scheduled run keeps the coverage:
 [`.github/workflows/full-nightly.yml`](.github/workflows/full-nightly.yml) runs the whole unit suite (`pnpm test`) at full strength on

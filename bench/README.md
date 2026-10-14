@@ -358,13 +358,13 @@ The workload's client has 128 sockets, as the library's built client does; `CR_C
 limit, and the script echoes the one asked for before it installs anything.
 
 Before it installs anything the script refuses three things: a `CR_CALIBRATE_REHEARSE` that is not unset, empty, `0` or
-`1` (any other value would take the run that spends money); a shell with no `AWS_REGION`, which CloudShell exports; and a
-`CR_CALIBRATE_REGION` that is not that region, since a floor under 30 ms cannot tell a neighbouring region from this one.
-The shell's region is recorded with the results as `network.clientRegion`. The release measured is the one this clone's
-`packages/roaring/package.json` names, which its expected counts were written for; `CR_CALIBRATE_PACKAGE_VERSION`
-overrides it, and the script prints the version before it installs. Run it from a clone of the release you are measuring:
-the steady-load stage is held to the counts of an engine that collects by name, and the harness refuses an installed
-library that does not, before it creates anything.
+`1` (any other value would take the run that spends money); a shell with no `AWS_REGION`, which CloudShell exports; and
+a `CR_CALIBRATE_REGION` that is not that region, since a floor under 30 ms cannot tell a neighbouring region from this
+one. The shell's region is recorded with the results as `network.clientRegion`. The release measured is the one this
+clone's `packages/roaring/package.json` names, which its expected counts were written for;
+`CR_CALIBRATE_PACKAGE_VERSION` overrides it, and the script prints the version before it installs. Run it from a clone
+of the release you are measuring: the steady-load stage is held to the counts of an engine that collects by name, and
+the harness refuses an installed library that does not, before it creates anything.
 
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, with `@cloudbitmaps/tools` of the same release for the prices the run is
