@@ -217,11 +217,11 @@ export interface LoadOptions {
    * The segment's row records the generations a load keeps, up to 127, so at a `keep` of up to 64 a load whose
    * number one existence check found free collects without listing: it deletes the generations its publish pushed out
    * of the window, and lists the segment's objects on every sixteenth generation to take whatever that pass leaves,
-   * such as an object a crashed load left below the pointer. A `keep` above 64 collects by listing on every load, and so does the first load of a row with
-   * no usable ledger, which starts one from the bucket; so does a load whose check found the current generation's object
-   * gone: the guard's read of it, or, when the guard took the size from the row's summary, one zero-byte read made
-   * before a `keep` of 1 or more takes a name. A `keep` at least the generation published collects nothing and asks
-   * for nothing.
+   * such as an object a crashed load left below the pointer. A `keep` above 64 collects by listing on every load, and
+   * so does the first load of a row with no usable ledger, which starts one from the bucket; so does a load whose check
+   * found the current generation's object gone: the guard's read of it, or, when the guard took the size from the row's
+   * summary, one zero-byte read made before a `keep` of 1 or more takes a name. A `keep` at least the generation
+   * published collects nothing and asks for nothing.
    */
   readonly keep?: number;
   /**
