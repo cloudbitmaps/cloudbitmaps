@@ -451,6 +451,28 @@ describe('calibration reports are held to their evidence', () => {
     );
   });
 
+  it('refuses a model without a listing cadence for a run with a steady-load stage, by name', () => {
+    const rel = EVIDENCE.find(
+      (ev) =>
+        (JSON.parse(read(ev)) as { phases?: { steadyLoad?: unknown } }).phases?.steadyLoad !==
+        undefined,
+    );
+    if (rel === undefined) throw new Error('no committed run has a steady-load stage');
+    const run: unknown = JSON.parse(read(rel));
+    const withCadence = (listCadence: unknown): Model =>
+      ({ ...COLLECT_WITHOUT_ROW_REREAD_MODEL, listCadence }) as Model;
+    expect(() => figures.derive(run, REGISTRY_WRITE_ON_HELD_ROW_MODEL)).toThrow(
+      /needs the model's listCadence .* not undefined/,
+    );
+    for (const bad of [0, -16, 1.5, Number.NaN, '16']) {
+      expect(() => figures.derive(run, withCadence(bad))).toThrow(
+        new RegExp(`needs the model's listCadence .* not ${String(bad)}`),
+      );
+    }
+    expect(figures.derive(run, withCadence(1)).steadyLoad).not.toBeNull();
+    expect(figures.derive(run, COLLECT_WITHOUT_ROW_REREAD_MODEL).steadyLoad).not.toBeNull();
+  });
+
   it('finds the committed runs, and every report has its evidence', () => {
     expect(EVIDENCE.length).toBeGreaterThanOrEqual(1);
     const reports = readdirSync(join(ROOT, DIR)).filter(

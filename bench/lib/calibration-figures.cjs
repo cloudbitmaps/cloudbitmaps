@@ -762,6 +762,13 @@ function derive(run, src) {
       };
     }
     const c = src.listCadence;
+    // A model recorded without the cadence would price the cycle as NaN, so it is refused by name.
+    if (!Number.isSafeInteger(c) || c < 1) {
+      throw new Error(
+        `calibration evidence ${run.runId}: its steady-load stage needs the model's listCadence (loads in a steady ` +
+          `cycle, one of which lists), a whole number of at least 1, not ${String(c)}`,
+      );
+    }
     return {
       keep: run.phases.steadyLoad.keep,
       loads: steadyRecords.length,
