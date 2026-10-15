@@ -1836,13 +1836,13 @@ describe('no document claims behaviour this library does not have', () => {
       // times over, and a reading is the least of its six, so a pause or a spell of load reaches both lengths alike and
       // one slow run does not decide it. The growth counts against a shape only when it is over 16 and the
       // full-length reading is over 20 ms, a floor that keeps load noise on a reading of a few milliseconds from
-      // failing it. Measured over twelve runs, with other work on the machine for some, a single scan grew 6.5 to 8.6
-      // times (a quarter of the length, the first design, measured 3.8 to 4.7 and failed at 6.3 once under load), and a
-      // scan per unit on the bracket shape, planted, grew 26 to 28 times, so 16 sits about twice from each. A fixed
-      // cost per call hides part of a quadratic growth at this length, so a shape that scans a part of the line twice
-      // shows well under the full sixty-four. What the test catches is a scan that goes quadratic or worse. Several
-      // shapes read in a few milliseconds even at full length, and a regression that leaves one of them under the
-      // floor is not seen.
+      // failing it. Measured, a single scan grows 6.5 to 8.6 times, so 16 leaves about twice that for load. Planted
+      // scans per unit (a retry from each bracket, star, doc-comment link, quote or run of blanks) grew 20 to 54
+      // times, at least 1.25 times the limit. A fixed cost per call hides part of a quadratic growth at this length,
+      // so a shape that scans a part of the line twice shows well under the full sixty-four. What the test catches is
+      // a scan that goes quadratic or worse and adds, at full length, more than about one and a half times the shape's
+      // linear reading; a smaller quadratic term on top of a heavy shape's linear time is not seen. Several shapes read in a few milliseconds
+      // even at full length, and a regression that leaves one of them under the floor is not seen.
       const FULL = 40_960;
       const expectLinear = (what: string, build: (length: number) => string): void => {
         const eighth = build(FULL / 8);
