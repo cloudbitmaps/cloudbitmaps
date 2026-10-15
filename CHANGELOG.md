@@ -61,6 +61,12 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **The install docs allowed `roaring`'s install script in a place pnpm 11 and 12 do not read.** With pnpm 11 or 12 the
+  `package.json` block `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`
+  changes nothing: `pnpm add @cloudbitmaps/roaring` stops with `ERR_PNPM_IGNORED_BUILDS` and the first `import` throws
+  `Cannot find module './build/Release/roaring.node'`. The README, the getting-started guide and every package README now
+  say that pnpm 11 and later read the allowance from `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml`
+  beside the `package.json`; npm 12 and pnpm 10 still read the `package.json` block.
 - **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment of
   the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs
   on, so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`
