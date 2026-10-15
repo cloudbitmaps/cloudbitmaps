@@ -367,6 +367,70 @@ interface Pass {
   missing?: NotFoundError;
 }
 
+/** What the row says about a call's premise: `null` while it holds, otherwise the reason to report. */
+type Verdict = 'superseded' | 'absent' | 'no-generation' | 'destroyed' | null;
+
+/**
+ * What one pass of {@link eraseIdFromSegment} works from, passed to every phase of it. The first group is fixed once the
+ * row is read; the second is what the phases change as they go, and each field says who changes it.
+ */
+interface EraseCall {
+  readonly ref: SegmentRef;
+  readonly deps: EraseIdDeps;
+  /** What the pass records for the caller. */
+  readonly seen: Pass;
+  readonly audit: IAuditSink;
+  /** The id's chunk and its remainder within it. */
+  readonly chunkKey: number;
+  readonly remainder: number;
+  readonly codec: CodecInterface;
+  readonly maxBytes: number;
+  /** The segment's name, as every key and result of this call carries it. */
+  readonly base: { readonly segment: string; readonly namespace: string | undefined };
+  /** The row this call read first. */
+  readonly record: RegistryRecord;
+  /** Whether that row was a tombstone, and whether it was a row with no pointer. */
+  readonly tombstoned: boolean;
+  readonly pointerless: boolean;
+  /** The generation the pointer named, or `-1` on a row with no pointer. */
+  readonly from: number;
+  /**
+   * The row this rewrite derives its content from, not just the number it points at. `nextGeneration` restarts
+   * at `0` once a row is purged and the bucket emptied, so a retired-and-re-created name presents a *different*
+   * segment at the *same* `currentGen` — which `expectFrom` alone matched, republishing one incarnation's
+   * content over another's and reporting `erased: true`. A token is not reused across incarnations, but for a collision of probability 2^-128 per pair.
+   */
+  readonly fromToken: Token;
+  /** The segment's DEK, when its row holds one. */
+  readonly aead: Aead | undefined;
+  readonly fromKey: GenKey;
+  /** A read this call makes, under the store's read retry when it was given one. */
+  readonly read: <T>(op: () => Promise<T>) => Promise<T>;
+  /**
+   * Generations `holds` could not search and counts as holders: objects sealed under a key the row does not hold. On a
+   * row with no pointer, a first load's whose key that load has not published; on a row with a key, one whose index
+   * does not open under it, which no read of the segment can open either.
+   */
+  readonly sealed: Set<number>;
+  /**
+   * The version of the object `holds` last met under each generation, as the driver reported it on the read that
+   * decided what the object is: the open of one it searched, the footer read that found one encrypted under a row with
+   * no key, or the open whose index failed its authentication under the row's key. It is what a delete of that
+   * generation as a holder is conditioned on, so it removes that object and not one stored under the number since.
+   */
+  readonly versions: Map<number, string | undefined>;
+  /**
+   * The row this call holds its premise against: `record`, until the call writes the row itself ({@link
+   * fence}), after which it is the row it wrote, so its own write is not read as another writer's.
+   */
+  premise: RegistryRecord;
+  premiseToken: Token;
+  /** Writes lost to other writers across every fence of this call: the bound is the call's, not each fence's. */
+  fenceLost: number;
+  /** The object this call's rewrite wrote, once it exists: its number, and its fingerprint, which tells it apart. */
+  rewrote: { readonly generation: number; readonly fingerprint: string } | undefined;
+}
+
 /**
  * Emit `segment.collect` for a call that finished by deleting the holders and rewriting none, from the report the call
  * returns, so the event and the ledger entry carry the same generations: the whole call's, both passes included. It
@@ -411,7 +475,6 @@ async function eraseOnce(
   const maxBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
   const base = { segment: ref.segment, namespace: ref.namespace };
   const audit = safeAudit(options.audit ?? NOOP_AUDIT);
-  /** A read this call makes, under the store's read retry when it was given one. */
   const read = <T>(op: () => Promise<T>): Promise<T> => retryRead(op, deps.readRetry);
 
   const record = await deps.registry.get(ref);
@@ -422,19 +485,7 @@ async function eraseOnce(
   seen.tombstoned = tombstoned;
   const pointerless = !tombstoned && record.currentGen === null;
   const from = record.currentGen ?? -1;
-  /**
-   * The row this rewrite derives its content from, not just the number it points at. `nextGeneration` restarts
-   * at `0` once a row is purged and the bucket emptied, so a retired-and-re-created name presents a *different*
-   * segment at the *same* `currentGen` — which `expectFrom` alone matched, republishing one incarnation's
-   * content over another's and reporting `erased: true`. A token is not reused across incarnations, but for a collision of probability 2^-128 per pair.
-   */
   const fromToken = record.token;
-  /**
-   * The row this call holds its premise against: `record`, until the call writes the row itself ({@link
-   * fence}), after which it is the row it wrote, so its own write is not read as another writer's.
-   */
-  let premise: RegistryRecord = record;
-  let premiseToken = fromToken;
 
   // The segment's DEK, reused across generations. Resolved before any object I/O so a slow keystore/KMS call
   // sits outside the read-write window; an encrypted row with no keystore is a lost key, not a cleartext segment.
@@ -459,6 +510,32 @@ async function eraseOnce(
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
 
   const fromKey: GenKey = { ...base, generation: from };
+  const c: EraseCall = {
+    ref,
+    deps,
+    seen,
+    audit,
+    chunkKey,
+    remainder,
+    codec,
+    maxBytes,
+    base,
+    record,
+    tombstoned,
+    pointerless,
+    from,
+    fromToken,
+    aead,
+    fromKey,
+    read,
+    sealed: new Set(),
+    versions: new Map(),
+    premise: record,
+    premiseToken: fromToken,
+    fenceLost: 0,
+    rewrote: undefined,
+  };
+  const { sealed, versions } = c;
   const refused = (
     reason: 'superseded' | 'absent' | 'no-generation' | 'destroyed',
     generation?: number,
@@ -492,25 +569,12 @@ async function eraseOnce(
     if (row.status === 'destroyed') return 'destroyed';
     // A different row is a different lineage even at the same pointer value — see `fromToken`.
     // A write of the row's leases alone, which readers make, is not another writer's: the premise still holds.
-    const same = row.token === premiseToken || onlyLeasesDiffer(premise, row, alsoIgnore);
+    const same = row.token === c.premiseToken || onlyLeasesDiffer(c.premise, row, alsoIgnore);
     if (pointerless) return row.currentGen === null && same ? null : 'superseded';
     if (row.currentGen === null) return 'no-generation';
     return row.currentGen === from && same ? null : 'superseded';
   };
 
-  /**
-   * Generations `holds` could not search and counts as holders: objects sealed under a key the row does not hold. On a
-   * row with no pointer, a first load's whose key that load has not published; on a row with a key, one whose index
-   * does not open under it, which no read of the segment can open either.
-   */
-  const sealed = new Set<number>();
-  /**
-   * The version of the object `holds` last met under each generation, as the driver reported it on the read that
-   * decided what the object is: the open of one it searched, the footer read that found one encrypted under a row with
-   * no key, or the open whose index failed its authentication under the row's key. It is what a delete of that
-   * generation as a holder is conditioned on, so it removes that object and not one stored under the number since.
-   */
-  const versions = new Map<number, string | undefined>();
   /**
    * Whether `generation` still holds the id: its index is opened, and the id's chunk is fetched only if the index
    * lists it. `null` when the object is gone — a concurrent collector took it, which is not a failure of this call
@@ -686,9 +750,6 @@ async function eraseOnce(
       } and is still in the bucket; re-run`,
     );
 
-  /** Writes lost to other writers across every fence of this call: the bound is the call's, not each fence's. */
-  let fenceLost = 0;
-
   /**
    * The one write this call makes to the row before it deletes anything: it removes from the row's ledger of known
    * generations (`knownGens`) every generation it is about to delete, and, where a load in flight may still publish
@@ -751,7 +812,7 @@ async function eraseOnce(
     /** The generation the collection that follows deletes everything below, when it is not `from` (a rewrite's own). */
     readonly below?: number;
   }): Promise<{
-    readonly moved: ReturnType<typeof rowVerdict>;
+    readonly moved: Verdict;
     readonly sweep: boolean;
     readonly byName: readonly number[];
     /** Whether the row it acted on had a usable ledger. */
@@ -765,7 +826,7 @@ async function eraseOnce(
     const churn = leaseChurn({ clock: deps.clock, rng: renewal.rng });
     const first = await deps.registry.get(ref);
     let row = first;
-    const refuse = (moved: ReturnType<typeof rowVerdict>) => ({
+    const refuse = (moved: Verdict) => ({
       moved,
       sweep: false,
       byName: [],
@@ -794,7 +855,7 @@ async function eraseOnce(
         row.token === record.token || onlyLeasesDiffer(record, row, ['pointerId', 'knownGens']);
       const pointer = row.currentGen;
       let byName = plan.byName;
-      let moved: ReturnType<typeof rowVerdict> = null;
+      let moved: Verdict = null;
       let pastHolders = false;
       if (plan.byName.length > 0 && !held) {
         // A pointer moved forward past every holder to delete by name puts them below it, where the collection takes
@@ -822,8 +883,8 @@ async function eraseOnce(
       const renew = byName.length > 0;
       const renewedAfter = held && row.pointerId !== first!.pointerId;
       if (!named && (!renew || renewedAfter)) {
-        premise = row;
-        premiseToken = row.token;
+        c.premise = row;
+        c.premiseToken = row.token;
         return {
           moved,
           sweep: plan.sweeps,
@@ -838,8 +899,8 @@ async function eraseOnce(
         ...(named ? { knownGens: pruneKnown(row, doomed) } : {}),
       });
       if ('row' in written) {
-        premise = written.row;
-        premiseToken = written.row.token;
+        c.premise = written.row;
+        c.premiseToken = written.row.token;
         return {
           moved,
           sweep: plan.sweeps,
@@ -855,8 +916,8 @@ async function eraseOnce(
         row = settled.row;
         continue;
       }
-      fenceLost += 1;
-      if (fenceLost >= FENCE_ATTEMPTS) return refuse('superseded');
+      c.fenceLost += 1;
+      if (c.fenceLost >= FENCE_ATTEMPTS) return refuse('superseded');
       row = now;
     }
   };
@@ -872,9 +933,9 @@ async function eraseOnce(
   const collectAgain = async (
     start: { readonly spared: readonly number[]; readonly ledgered: boolean },
     plan: { readonly byName: readonly number[]; readonly below?: number },
-  ): Promise<{ deleted: number[]; missing?: number; moved: ReturnType<typeof rowVerdict> }> => {
+  ): Promise<{ deleted: number[]; missing?: number; moved: Verdict }> => {
     const deleted: number[] = [];
-    let moved: ReturnType<typeof rowVerdict> = null;
+    let moved: Verdict = null;
     let missing: number | undefined;
     let spared = start.spared;
     for (
@@ -925,15 +986,15 @@ async function eraseOnce(
    */
   const deleteFenced = async (
     holders: readonly number[],
-    fenced: ReturnType<typeof rowVerdict>,
-  ): Promise<{ deleted: number[]; moved: ReturnType<typeof rowVerdict>; missing?: number }> => {
+    fenced: Verdict,
+  ): Promise<{ deleted: number[]; moved: Verdict; missing?: number }> => {
     const deleted: number[] = [];
     const watch = watchDeletes(deps, ref);
     let moved = fenced;
     for (const generation of holders) {
       if (moved !== null) break;
       const row = await deps.registry.get(ref);
-      const missing = await watch.check(premise, row);
+      const missing = await watch.check(c.premise, row);
       if (missing !== undefined) return { deleted, moved: 'superseded', missing };
       // Another erasure's fence (a renewal of the pointerId, a prune of the ledger) leaves the premise standing.
       moved = rowVerdict(row, ['pointerId', 'knownGens']);
@@ -956,7 +1017,7 @@ async function eraseOnce(
       watch.deleted(generation);
     }
     // No read follows the last delete, so a rollback onto it would go unseen: one read of the row covers it.
-    const missing = await watch.settle(premise);
+    const missing = await watch.settle(c.premise);
     if (missing !== undefined) return { deleted, moved: 'superseded', missing };
     return { deleted, moved };
   };
@@ -1175,7 +1236,7 @@ async function eraseOnce(
     // One write to the row before any delete: the generations about to go leave its ledger, and the deletes by name are
     // fenced against a load in flight (see `fence`). A call it refuses deletes nothing.
     const sweeping = newest !== undefined;
-    let moved: ReturnType<typeof rowVerdict> = null;
+    let moved: Verdict = null;
     let byName: readonly number[] = fenced;
     let sweep = sweeping;
     let ledgered = true;
@@ -1230,9 +1291,6 @@ async function eraseOnce(
     }
     throw cannotRemove(left);
   };
-
-  /** The object this call's rewrite wrote, once it exists: its number, and its fingerprint, which tells it apart. */
-  let rewrote: { readonly generation: number; readonly fingerprint: string } | undefined;
 
   /**
    * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
@@ -1306,7 +1364,7 @@ async function eraseOnce(
         { crypto: cryptoAt(generation), clock: deps.clock, metadata },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
-      rewrote = { generation, fingerprint: tally.fingerprint };
+      c.rewrote = { generation, fingerprint: tally.fingerprint };
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
       // correct; this only saves a round trip on the common race, which the catch reports either way.
       const beforeVerify = await deps.registry.get(ref);
@@ -1444,8 +1502,8 @@ async function eraseOnce(
   if (pointerless) return await unpublished();
   const staged = await stage();
   if ('erased' in staged) {
-    if (!staged.erased && staged.generation !== undefined && rewrote !== undefined) {
-      await discardRefused(rewrote);
+    if (!staged.erased && staged.generation !== undefined && c.rewrote !== undefined) {
+      await discardRefused(c.rewrote);
     }
     return staged;
   }
