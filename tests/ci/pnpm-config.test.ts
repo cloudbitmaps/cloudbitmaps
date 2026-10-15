@@ -3,11 +3,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseAllDocuments } from 'yaml';
 
-// The workspace is pinned to pnpm 10 on purpose. pnpm 11 and later write `pnpm-lock.yaml` as two YAML documents
-// (an environment document first, then the dependency graph), and GitHub's dependency graph and Dependabot read
-// only the first, so they would see no dependencies. pnpm 11 and later also stop reading the `pnpm` block of
-// `package.json`, where the overrides, the audit triage and the install-script allowance live. A contributor who
-// runs a newer pnpm by mistake is caught here, before Dependabot is.
+// The workspace is pinned to pnpm 10 on purpose. pnpm 11 and later refuse to run against the pin unless told to ignore
+// it; run that way, they stop reading the `pnpm` block of `package.json`, where the overrides, the audit triage and the
+// install-script allowance live, and when they manage their own version they write `pnpm-lock.yaml` as two YAML
+// documents (an environment document first, then the dependency graph), of which GitHub's dependency graph and
+// Dependabot read only the first, so they would see no dependencies. A change to the pin, or a lockfile of that
+// shape, is caught here, before Dependabot is.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 interface Manifest {

@@ -305,7 +305,9 @@ and `1.0`.
 
 ## Building & contributing
 
-You need **Node ≥ 22.12** and **pnpm 10** (the version `packageManager` pins; pnpm 11 and later write a lockfile GitHub's dependency graph and Dependabot cannot read); Docker is needed only for the integration tests.
+You need **Node ≥ 22.12** and **pnpm 10**, the version `packageManager` pins (Dependabot supports pnpm up to 10, and
+pnpm 11 and later can write a lockfile GitHub's dependency graph reads as empty); Docker is needed only for the
+integration tests.
 
 ```bash
 pnpm install
