@@ -12,6 +12,7 @@ import {
   FOOTER_BYTES,
   FOOTER_CRC_COVERAGE,
   PAYLOAD_START,
+  VERSION_MAJOR,
 } from '@/core/crbm/format';
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import { aadFor } from '@/core/crypto';
@@ -197,6 +198,8 @@ describe('version & feature gating', () => {
   });
 
   it('tells a reader of an unknown major version to upgrade core', async () => {
+    // The older-version advice below must be reworded when the major version moves.
+    expect(VERSION_MAJOR).toBe(1);
     const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
       footer[FOOTER.versionMajor] = 2;
     });

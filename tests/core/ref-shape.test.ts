@@ -1,4 +1,5 @@
 import { ValidationError } from '@/index';
+import type { CloudRoaring } from '@/index';
 import { validateSegmentRef, validateUserRef } from '@/core/validate';
 import { batchWorld } from '../helpers/batch-world';
 
@@ -60,7 +61,29 @@ describe('a segment ref that is not an object', () => {
   });
 
   it("the namespace option the advice names addresses the ref's namespace", async () => {
+    const w = await batchWorld({});
+    const tenant = { segment: 's', namespace: 'tenant-7' };
+    await w.store.load(tenant, [2, 3]);
+    await w.store.load({ segment: 's' }, [1]);
+    expect(await w.store.segment(tenant.segment, { namespace: tenant.namespace }).count()).toBe(2);
+    expect(await w.store.segment('s').count()).toBe(1);
+  });
+
+  it.each([
+    ['generations', (s: CloudRoaring, r: never) => s.generations(r)],
+    ['exists', (s: CloudRoaring, r: never) => s.exists(r)],
+    ['rollback', (s: CloudRoaring, r: never) => s.rollback(r, 1)],
+    ['dropSegment', (s: CloudRoaring, r: never) => s.dropSegment(r, { confirmSegment: 's' })],
+    ['setRetention', (s: CloudRoaring, r: never) => s.setRetention(r, { expiresAt: 1 })],
+    ['getRetention', (s: CloudRoaring, r: never) => s.getRetention(r)],
+    ['clearRetention', (s: CloudRoaring, r: never) => s.clearRetention(r)],
+    ['invalidate', async (s: CloudRoaring, r: never) => s.invalidate(r)],
+  ])('%s refuses a ref that is not an object with the facade hint', async (_name, call) => {
     const w = await batchWorld({ s: [1] });
-    expect(() => w.store.segment('s', { namespace: 'tenant-7' })).not.toThrow();
+    for (const bad of ['shoppers', null, undefined]) {
+      const err = await call(w.store, bad as never).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as Error).message).toBe(USER_SHAPE);
+    }
   });
 });
