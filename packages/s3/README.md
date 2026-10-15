@@ -88,6 +88,11 @@ It builds its own client from your usual AWS credentials. Any other key is refus
   For the writes and listings, give your client a timeout of its own.
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, with a sample IAM policy, and the ones every backend shares: a request timeout on your client for the requests the library does not time, backups of the data and the registry, and a schedule for your loads.
+- **An error the driver throws carries no credential.** The AWS SDK keeps the response it got on the error
+  (`$response`), and through its socket the request it sent, with the signed `Authorization` header and
+  `x-amz-security-token`. An SDK error the driver throws, or keeps as a `cause`, is a copy without them that keeps its
+  prototype, name, message, stack, status, code and request id, so classification is unchanged, and a credential header
+  or header line left in its plain data is redacted. The live error is never changed.
 
 ## Documentation
 
