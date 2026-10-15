@@ -19,19 +19,24 @@
  *        the baseline has to follow it down, or lose the entry once the function is at or under the limit;
  *     4. a baseline entry names a function that no longer exists, so a rename or a delete is recorded too.
  *   `--update` rewrites the baseline for case 3 and 4 only. It never records a growth or a new offender: those
- *   are fixed in the code, not in the baseline.
+ *   are fixed in the code, not in the baseline. The one exception is a rename you name yourself:
+ *   `--update --rename <oldKey> <newKey>` moves a stale entry to the function it became, when that function is
+ *   a new offender in the same file and is not longer than the entry recorded. Repeat `--rename` for more pairs.
  *
  * HOW A FUNCTION IS IDENTIFIED
  *   `<file>::<outer> > <inner> > ...`, each part naming one enclosing function or class: a declaration's name, a
- *   method's or property's name, the variable an arrow is assigned to, or, for a callback, the call it is passed
- *   to with that call's leading string argument (`describe('reads') callback`). The line number is not part of
+ *   method's or property's name (`#p` for a private one, `get p` and `set p` for accessors, and `x > render` for
+ *   a method of the object literal bound to `x`, `this.x` or a property), the variable an arrow is assigned to,
+ *   or, for a callback, the call it is passed to with that call's leading string argument
+ *   (`describe('reads') callback`). The line number is not part of
  *   the identity, so moving a function, or adding code above it, changes nothing. Two functions with the same
  *   identity under the same parent get `#2`, `#3`, ... in source order.
  *
  * KNOWN LIMITS
- *   - Renaming a baselined function (or the string a callback's call is given, or its enclosing function) changes
- *     its identity: the gate then reports a missing baseline entry and a new offender, and the fix is to rename
- *     the entry too (`--update` removes the stale one; the renamed function must be shrunk or re-added by hand).
+ *   - Renaming a baselined function (or the string a callback's call is given, or its enclosing function, or the
+ *     variable an object literal's method sits in) changes its identity: the gate then reports a stale baseline
+ *     entry and a new offender. Run `--update --rename <oldKey> <newKey>` with the two keys as printed (keys
+ *     contain spaces and `>`, so quote them). A plain `--update` drops the stale entry but refuses the new offender.
  *   - Adding or removing an earlier anonymous callback with the same identity under the same parent renumbers the
  *     later ones (`#2` becomes `#1`).
  *   - Only `packages/*` `/src` is checked: not `tests/`, `scripts/`, `bench/` or `fuzz/`.
@@ -43,12 +48,13 @@
  * Usage:
  *   node scripts/function-length.cjs             check (what `pnpm lint` runs)
  *   node scripts/function-length.cjs --update    lower or drop baseline entries that went down or away
+ *   node scripts/function-length.cjs --update --rename <oldKey> <newKey>    also move a stale entry to its renamed function
  *   node scripts/function-length.cjs --list      print every function over the limit, as the baseline records it
  */
 const { readFileSync, writeFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { ESLint } = require('eslint');
-const tsParser = require('@typescript-eslint/parser');
+const tsParser = require('typescript-eslint').parser;
 
 const ROOT = resolve(__dirname, '..');
 const LIMIT = 100;
@@ -75,13 +81,47 @@ function dottedName(node) {
 
 function propertyName(key, computed) {
   if (computed) return '[computed]';
-  if (key.type === 'Identifier' || key.type === 'PrivateIdentifier') return key.name;
+  if (key.type === 'PrivateIdentifier') return `#${key.name}`;
+  if (key.type === 'Identifier') return key.name;
   if (key.type === 'Literal') return String(key.value);
   return '[computed]';
 }
 
 function truncate(text) {
   return text.length > 40 ? `${text.slice(0, 37)}...` : text;
+}
+
+/** The name an object literal is bound to (`x`, `this.x`, `x.y` for a nested literal), or null when it has none. */
+function objectBinding(object) {
+  let node = object;
+  while (
+    node.parent &&
+    (node.parent.type === 'TSAsExpression' ||
+      node.parent.type === 'TSSatisfiesExpression' ||
+      node.parent.type === 'TSNonNullExpression')
+  )
+    node = node.parent;
+  const parent = node.parent;
+  if (!parent) return null;
+  if (
+    parent.type === 'VariableDeclarator' &&
+    parent.init === node &&
+    parent.id.type === 'Identifier'
+  )
+    return parent.id.name;
+  if (parent.type === 'AssignmentExpression' && parent.right === node)
+    return dottedName(parent.left);
+  if (parent.type === 'PropertyDefinition' && parent.value === node)
+    return propertyName(parent.key, parent.computed);
+  if (
+    parent.type === 'Property' &&
+    parent.value === node &&
+    parent.parent.type === 'ObjectExpression'
+  ) {
+    const outer = objectBinding(parent.parent);
+    return outer === null ? null : `${outer}.${propertyName(parent.key, parent.computed)}`;
+  }
+  return null;
 }
 
 /** The name one function or class goes by inside its parent, before any `#n` suffix. */
@@ -97,7 +137,16 @@ function ownLabel(node) {
     parent.type === 'MethodDefinition' ||
     parent.type === 'PropertyDefinition'
   ) {
-    if (parent.value === node) return propertyName(parent.key, parent.computed);
+    if (parent.value === node) {
+      const name = propertyName(parent.key, parent.computed);
+      const accessor =
+        parent.kind === 'get' || parent.kind === 'set' ? `${parent.kind} ${name}` : name;
+      if (parent.type === 'Property' && parent.parent.type === 'ObjectExpression') {
+        const binding = objectBinding(parent.parent);
+        if (binding !== null) return `${binding} > ${accessor}`;
+      }
+      return accessor;
+    }
   }
   if (parent.type === 'AssignmentExpression' && parent.right === node)
     return dottedName(parent.left) ?? '<assigned>';
@@ -213,14 +262,21 @@ async function scan({ root = ROOT, globs = GLOBS, limit = LIMIT } = {}) {
  * went down or away), valid to write only when every problem is a case it fixes.
  */
 function compare(found, baseline, limit = LIMIT) {
+  const fileOf = (key) => key.slice(0, key.indexOf('::'));
+  const staleKeys = Object.keys(baseline).filter((key) => !found.has(key));
   const problems = [];
   const fixable = [];
   const lowered = {};
   for (const [key, lines] of found) {
     const recorded = baseline[key];
     if (recorded === undefined) {
+      const stale = staleKeys.filter((old) => fileOf(old) === fileOf(key));
+      const hint =
+        stale.length > 0
+          ? ` If it is a baselined function that was renamed or moved, run: pnpm lint:fn-length --update --rename '${stale[0]}' '${key}'`
+          : '';
       problems.push(
-        `${key}: ${lines} lines, over the ${limit}-line limit and not in the baseline. Split it.`,
+        `${key}: ${lines} lines, over the ${limit}-line limit and not in the baseline. Split it.${hint}`,
       );
     } else if (lines > recorded) {
       problems.push(
@@ -238,10 +294,42 @@ function compare(found, baseline, limit = LIMIT) {
   for (const [key, recorded] of Object.entries(baseline)) {
     if (found.has(key)) continue;
     fixable.push(
-      `${key}: baselined at ${recorded} lines but now at or under ${limit}, or renamed or gone; remove its baseline entry (pnpm lint:fn-length --update).`,
+      `${key}: baselined at ${recorded} lines but now at or under ${limit}, or renamed or gone; remove its baseline entry (pnpm lint:fn-length --update); if it was renamed or moved, use --update --rename <oldKey> <newKey> instead.`,
     );
   }
   return { problems, fixable, lowered };
+}
+
+/**
+ * Apply `--rename` pairs (`[[oldKey, newKey], ...]`) to the baseline. Each pair must name a baseline entry whose
+ * function is gone, and a function that is over the limit now, not in the baseline, in the same file, and not
+ * longer than the entry recorded. Returns `{baseline, errors}`; the baseline is the input when there are errors.
+ */
+function applyRenames(found, baseline, pairs) {
+  const errors = [];
+  const next = { ...baseline };
+  for (const [oldKey, newKey] of pairs) {
+    const recorded = baseline[oldKey];
+    const lines = found.get(newKey);
+    if (recorded === undefined) errors.push(`--rename: ${oldKey} is not in the baseline.`);
+    else if (found.has(oldKey))
+      errors.push(`--rename: ${oldKey} still exists; only a stale entry can be renamed.`);
+    else if (lines === undefined)
+      errors.push(`--rename: ${newKey} is not a function over the limit.`);
+    else if (baseline[newKey] !== undefined)
+      errors.push(`--rename: ${newKey} is already in the baseline.`);
+    else if (oldKey.slice(0, oldKey.indexOf('::')) !== newKey.slice(0, newKey.indexOf('::')))
+      errors.push(`--rename: ${oldKey} and ${newKey} are in different files.`);
+    else if (lines > recorded)
+      errors.push(
+        `--rename: ${newKey} is ${lines} lines, longer than the ${recorded} recorded for ${oldKey}.`,
+      );
+    else {
+      delete next[oldKey];
+      next[newKey] = recorded;
+    }
+  }
+  return { baseline: errors.length > 0 ? baseline : next, errors };
 }
 
 function readBaseline(path = BASELINE_PATH) {
@@ -263,7 +351,28 @@ async function main(argv) {
     process.stdout.write(render(Object.fromEntries(found)));
     return 0;
   }
-  const baseline = readBaseline();
+  let baseline = readBaseline();
+  const pairs = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--rename') {
+      pairs.push([argv[i + 1], argv[i + 2]]);
+      i += 2;
+    }
+  }
+  if (pairs.length > 0) {
+    const bad = !argv.includes('--update')
+      ? ['--rename only works together with --update.']
+      : pairs.some(([a, b]) => a === undefined || b === undefined)
+        ? ['--rename takes two keys: --rename <oldKey> <newKey>.']
+        : [];
+    const applied =
+      bad.length > 0 ? { baseline, errors: bad } : applyRenames(found, baseline, pairs);
+    if (applied.errors.length > 0) {
+      process.stderr.write(`${applied.errors.join('\n')}\n`);
+      return 1;
+    }
+    baseline = applied.baseline;
+  }
   const { problems, fixable, lowered } = compare(found, baseline);
   if (argv.includes('--update')) {
     if (problems.length > 0) {
@@ -291,7 +400,7 @@ async function main(argv) {
   return 0;
 }
 
-module.exports = { scan, compare, render, LIMIT };
+module.exports = { scan, compare, applyRenames, render, LIMIT };
 
 if (require.main === module) {
   main(process.argv.slice(2)).then(
