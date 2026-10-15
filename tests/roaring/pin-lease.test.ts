@@ -310,7 +310,8 @@ describe('every read site of a leased handle', () => {
       expect(err).toBeInstanceOf(LeaseExpiredError);
       expect((err as LeaseExpiredError).reason).toBe('expired');
       expect((err as LeaseExpiredError).until).toBe(T0 + HOUR);
-      expect(h.storageCalls.getRange ?? 0).toBe(0);
+      expect(h.storageCalls).toEqual({});
+      expect(h.registryCalls).toEqual({});
     },
   );
 

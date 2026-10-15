@@ -761,8 +761,8 @@ let viewOf: (segment: Segment) => HandleView;
 /** The store that made a segment: one reference compare per handle per call. Set by the `Segment` class. */
 let originOf: (segment: Segment) => object;
 
-/** What a refused handle was in the call, as the message names it. */
-type HandleRole = 'an operand' | 'an exclude' | 'the destination';
+/** What a refused handle was in the call: its role, or where it sits in a `materializeMany` call. */
+type HandleRole = string;
 
 /**
  * Refuse, with a {@link ValidationError} and before any request, a handle that the store `origin` did not make: a
@@ -1423,7 +1423,7 @@ export class CloudRoaring {
     const handles = new Map<string, Segment>();
     for (const name of names) {
       const handle = (operandsIn as Record<string, unknown>)[name];
-      assertOneStore('materializeMany', 'an operand', handle, this.origin);
+      assertOneStore('materializeMany', `operands["${name}"]`, handle, this.origin);
       handles.set(name, handle);
     }
     // `mayBeEmpty` names fed operands, which the feed checks; without a feed it can name nothing.
@@ -1463,7 +1463,7 @@ export class CloudRoaring {
       }
       const spec = raw as MaterializeManyOutput;
       const dest: unknown = spec.dest;
-      assertOneStore('materializeMany', 'the destination', dest, this.origin);
+      assertOneStore('materializeMany', `outputs[${i}].dest`, dest, this.origin);
       if (operandKeys.has(dest.key())) {
         throw new ValidationError(
           `outputs[${i}].dest is also an operand of the call: one call is one pass over operands that do not change under it, so chain two calls`,
@@ -3303,9 +3303,7 @@ export class Segment {
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
-   * {@link CloudRoaring.invalidate} is called on this store. A combine on another store that takes the pin as an
-   * operand reads it through that store's reader and chunk cache, which only that store's own writes and its
-   * `invalidate` reach. Where the
+   * {@link CloudRoaring.invalidate} is called on this store. A combine on another store refuses the pin. Where the
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
    * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
    *
@@ -3514,9 +3512,9 @@ export class Segment {
   }
 
   /**
-   * Refuse an `*Into` whose handles cannot be read, before any object is written: anything that is not a segment
-   * ({@link ValidationError}), and a handle (this one, `dest` or an operand) whose lease has ended or was released
-   * ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
+   * Refuse an `*Into` whose handles cannot be used, before any request: anything that is not a segment or is a
+   * segment of another store ({@link ValidationError}), and a handle (this one, `dest`, an operand or an exclude) whose
+   * lease has ended or was released ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
    * a synchronous throw out of a promise-returning method escapes a caller who attached `.catch()` instead of
@@ -3529,9 +3527,9 @@ export class Segment {
     excludes: readonly Segment[],
   ): void {
     this.assertSegments(verb, 'the destination', [dest]);
-    this.assertSegments(verb, 'an operand', operands);
+    this.assertSegments(verb, verb.startsWith('andNot') ? 'an exclude' : 'an operand', operands);
     this.assertSegments(verb, 'an exclude', excludes);
-    this.assertLeases([this, dest, ...operands]);
+    this.assertLeases([this, dest, ...operands, ...excludes]);
   }
 
   /** `result` as is, or, when a handle of the call holds a lease, checking that lease each time it reads a chunk. */
@@ -3856,7 +3854,7 @@ export class Segment {
       exclude = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
       const others = segmentList(operands, operandsLabel(verb));
       handles = [this, ...others, ...exclude];
-      this.assertSegments(verb, 'an operand', others);
+      this.assertSegments(verb, verb === 'andNot' ? 'an exclude' : 'an operand', others);
       this.assertSegments(verb, 'an exclude', exclude);
       this.assertLeases(handles);
     } catch (err) {
