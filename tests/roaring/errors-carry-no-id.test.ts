@@ -73,6 +73,11 @@ describe('an error message never carries an id', () => {
       'ids[1]: an id must be an integer from 0 to 4294967295; got a number above 4294967295 (ids are 32-bit)',
     );
     expect(message).not.toContain('5000000000');
+    // The error the id check raised stays as the cause.
+    const err = await w.store.load({ segment: 's' }, [1, 5_000_000_000]).catch((e: unknown) => e);
+    expect(((err as Error).cause as Error).message).toBe(
+      'an id must be an integer from 0 to 4294967295; got a number above 4294967295 (ids are 32-bit)',
+    );
     // From an async source, and past a flush of the pending buffer (it holds 2^20 ids).
     async function* feed(): AsyncGenerator<number> {
       yield 7;

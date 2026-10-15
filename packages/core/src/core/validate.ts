@@ -100,11 +100,9 @@ function validatePart(value: string, field: string): void {
 }
 
 /** A ref is an object: a string, null or undefined is the common slip, and says what a ref looks like. */
-function requireRefObject(ref: unknown): void {
+function requireRefObject(ref: unknown, hint = ''): void {
   if (typeof ref !== 'object' || ref === null) {
-    throw new ValidationError(
-      "a segment ref is an object such as { segment: 'name' }; store.segment() takes the bare name",
-    );
+    throw new ValidationError(`a segment ref is an object such as { segment: 'name' }${hint}`);
   }
 }
 
@@ -153,7 +151,7 @@ export function validateUserNamespace(namespace: string): void {
 
 /** Validate a segment ref an application hands in: the name rules, and a namespace outside the reserved prefix. */
 export function validateUserRef(ref: SegmentRef): void {
-  requireRefObject(ref);
+  requireRefObject(ref, '; store.segment() takes the bare name');
   validatePart(ref.segment, 'segment');
   if (ref.namespace !== undefined) validateUserNamespace(ref.namespace);
 }

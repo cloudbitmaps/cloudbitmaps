@@ -160,7 +160,11 @@ async function bucketIds(
     }
   } catch (err) {
     // The position of the id in what the caller passed; the id itself is never repeated.
-    if (isBadIdError(err)) throw new ValidationError(`ids[${flushed + pending}]: ${err.message}`);
+    if (isBadIdError(err)) {
+      const positioned = new ValidationError(`ids[${flushed + pending}]: ${err.message}`);
+      positioned.cause = err;
+      throw positioned;
+    }
     throw err;
   }
   await flushPending();

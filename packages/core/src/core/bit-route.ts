@@ -26,7 +26,10 @@ export function isBadIdError(err: unknown): err is ValidationError {
 /** The error for an id that is not a u32. It names what is wrong with the id and never repeats its value. */
 function badId(id: unknown): ValidationError {
   let got: string;
-  if (typeof id !== 'number') got = `a ${typeof id}`;
+  if (id === null) got = 'null';
+  else if (id === undefined) got = 'undefined';
+  else if (typeof id === 'object') got = 'an object';
+  else if (typeof id !== 'number') got = `${/^[aeiou]/.test(typeof id) ? 'an' : 'a'} ${typeof id}`;
   else if (!Number.isFinite(id)) got = 'NaN or an infinity';
   else if (id < 0) got = 'a negative number';
   else if (!Number.isInteger(id)) got = 'a number with a fraction';
