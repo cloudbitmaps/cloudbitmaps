@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
+import { brandAsBackend } from '@/core/ports';
+import type { IRegistryDriver, IStorageDriver } from '@/core/ports';
+import { counting } from '../helpers/counting';
 
 type Seg = ReturnType<CloudRoaring['segment']>;
 
@@ -14,15 +17,47 @@ const drain = async (it: AsyncIterable<number>): Promise<number[]> => {
   return out;
 };
 
+/** A memory backend whose every storage and registry driver call is counted. */
+function counted() {
+  const memory = new MemoryStorage();
+  const storage: Record<string, number> = {};
+  const registry: Record<string, number> = {};
+  const backend = brandAsBackend({
+    storage: counting<IStorageDriver>(memory.storage, storage),
+    registry: counting<IRegistryDriver>(memory.registry, registry),
+  });
+  return {
+    backend,
+    calls: () => ({ storage: { ...storage }, registry: { ...registry } }),
+    reset: () => {
+      for (const c of [storage, registry]) for (const k of Object.keys(c)) delete c[k];
+    },
+  };
+}
+type Counted = ReturnType<typeof counted>;
+
+const NO_CALLS = { storage: {}, registry: {} };
+/** A refusal makes no request on any backend of the call. */
+const expectNoRequests = (...backends: Counted[]): void => {
+  for (const b of backends) expect(b.calls()).toEqual(NO_CALLS);
+};
+
 async function world() {
-  const a = new CloudRoaring({ storage: new MemoryStorage() });
-  const b = new CloudRoaring({ storage: new MemoryStorage() });
+  const A = counted();
+  const B = counted();
+  const a = new CloudRoaring({ storage: A.backend });
+  const b = new CloudRoaring({ storage: B.backend });
   await a.load({ segment: 'x' }, [1, 2, 3]);
   await a.load({ segment: 'dest' }, [9]);
   await b.load({ segment: 'x' }, [3, 4]);
   await b.load({ segment: 'dest' }, [8]);
-  return { a, b };
+  A.reset();
+  B.reset();
+  return { a, b, A, B };
 }
+
+/** The role a verb's positional list has in a refusal: `andNot` takes excludes there, the others operands. */
+const roleOf = (verb: string): string => (verb.startsWith('andNot') ? 'an exclude' : 'an operand');
 
 const generationsOf = async (s: CloudRoaring, name: string) =>
   (await s.generations({ segment: name })).map((g) => g.generation);
@@ -52,38 +87,45 @@ const DEST_CALLS: readonly Call[] = [
 
 describe('a combine takes only segments of its own store', () => {
   it.each(OPERAND_CALLS)('%s refuses an operand of another store', async (verb, call) => {
-    const { a, b } = await world();
+    const { a, b, A, B } = await world();
     const before = await generationsOf(a, 'dest');
+    A.reset();
     const err = await call(a.segment('x'), b.segment('x'), a.segment('dest')).catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as Error).message).toBe(
-      `${verb}: an operand belongs to another store; combine segments of one store: open each with this store's segment()`,
+      `${verb}: ${roleOf(verb)} belongs to another store; combine segments of one store: open each with this store's segment()`,
     );
+    expectNoRequests(A, B);
     expect(await generationsOf(a, 'dest')).toEqual(before);
     expect(await drain(a.segment('dest').iterate())).toEqual([9]);
     expect(await drain(a.segment('x').iterate())).toEqual([1, 2, 3]);
   });
 
   it.each(EXCLUDE_CALLS)('%s refuses an exclude of another store', async (verb, call) => {
-    const { a, b } = await world();
+    const { a, b, A, B } = await world();
     const before = await generationsOf(a, 'dest');
+    A.reset();
     const err = await call(a.segment('x'), b.segment('x'), a.segment('dest')).catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as Error).message).toMatch(
       new RegExp(`^${verb}: an exclude belongs to another store; `),
     );
+    expectNoRequests(A, B);
     expect(await generationsOf(a, 'dest')).toEqual(before);
   });
 
   it.each(DEST_CALLS)('%s refuses a destination of another store', async (verb, call) => {
-    const { a, b } = await world();
+    const { a, b, A, B } = await world();
     const beforeA = await generationsOf(a, 'dest');
     const beforeB = await generationsOf(b, 'dest');
+    A.reset();
+    B.reset();
     const err = await call(a.segment('x'), b.segment('dest'), a.segment('dest')).catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as Error).message).toMatch(
       new RegExp(`^${verb}: the destination belongs to another store; `),
     );
+    expectNoRequests(A, B);
     expect(await generationsOf(a, 'dest')).toEqual(beforeA);
     expect(await generationsOf(b, 'dest')).toEqual(beforeB);
     expect(await drain(b.segment('dest').iterate())).toEqual([8]);
@@ -98,12 +140,13 @@ describe('a combine takes only segments of its own store', () => {
   });
 
   it('refuses two store objects over one shared storage', async () => {
-    const storage = new MemoryStorage();
-    const a = new CloudRoaring({ storage });
-    const c = new CloudRoaring({ storage });
+    const A = counted();
+    const a = new CloudRoaring({ storage: A.backend });
+    const c = new CloudRoaring({ storage: A.backend });
     await a.load({ segment: 'x' }, [1, 2, 3]);
     await a.load({ segment: 'dest' }, [9]);
     const before = await generationsOf(a, 'dest');
+    A.reset();
     for (const [, call] of [...OPERAND_CALLS, ...EXCLUDE_CALLS]) {
       await expect(call(a.segment('x'), c.segment('x'), a.segment('dest'))).rejects.toThrow(
         /belongs to another store/,
@@ -112,6 +155,7 @@ describe('a combine takes only segments of its own store', () => {
     await expect(a.segment('x').intersectInto(c.segment('dest'), [a.segment('x')])).rejects.toThrow(
       /the destination belongs to another store/,
     );
+    expectNoRequests(A);
     expect(await generationsOf(a, 'dest')).toEqual(before);
   });
 
@@ -181,8 +225,9 @@ describe('a combine takes only segments of its own store', () => {
 
 describe('materializeMany takes only segments of its own store', () => {
   it('refuses an operand of another store and publishes nothing', async () => {
-    const { a, b } = await world();
+    const { a, b, A, B } = await world();
     const before = await generationsOf(a, 'dest');
+    A.reset();
     const err = await a
       .materializeMany({
         operands: { ax: a.segment('x'), bx: b.segment('x') },
@@ -192,16 +237,19 @@ describe('materializeMany takes only segments of its own store', () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as Error).message).toBe(
-      "materializeMany: an operand belongs to another store; combine segments of one store: open each with this store's segment()",
+      `materializeMany: operands["bx"] belongs to another store; combine segments of one store: open each with this store's segment()`,
     );
+    expectNoRequests(A, B);
     expect(await generationsOf(a, 'dest')).toEqual(before);
     expect(await drain(a.segment('dest').iterate())).toEqual([9]);
   });
 
   it('refuses a destination of another store and publishes nothing', async () => {
-    const { a, b } = await world();
+    const { a, b, A, B } = await world();
     const beforeA = await generationsOf(a, 'dest');
     const beforeB = await generationsOf(b, 'dest');
+    A.reset();
+    B.reset();
     const err = await a
       .materializeMany({
         operands: { ax: a.segment('x') },
@@ -213,9 +261,10 @@ describe('materializeMany takes only segments of its own store', () => {
       })
       .catch((e) => e);
     expect(err).toBeInstanceOf(ValidationError);
-    expect((err as Error).message).toMatch(
-      /^materializeMany: the destination belongs to another store/,
+    expect((err as Error).message).toBe(
+      `materializeMany: outputs[1].dest belongs to another store; combine segments of one store: open each with this store's segment()`,
     );
+    expectNoRequests(A, B);
     expect(await generationsOf(a, 'dest')).toEqual(beforeA);
     expect(await generationsOf(b, 'dest')).toEqual(beforeB);
   });

@@ -57,15 +57,17 @@ describe.each([
       expect(h).not.toBeInstanceOf(Object.getPrototypeOf(a).constructor);
       await expect(drain(a.intersect([h]))).rejects.toThrow(COPY_MESSAGE);
       await expect(drain(a.union([h]))).rejects.toThrow(COPY_MESSAGE);
-      await expect(drain(a.andNot([h]))).rejects.toThrow(COPY_MESSAGE);
+      await expect(drain(a.andNot([h]))).rejects.toThrow(/^andNot: an exclude comes from another/);
       await expect(drain(a.intersect([a], { exclude: [h] }))).rejects.toThrow(
-        /an exclude comes from another installed copy/,
+        /^intersect: an exclude comes from another installed copy/,
       );
       await expect(a.intersectInto(d, [h])).rejects.toThrow(COPY_MESSAGE);
       await expect(a.unionInto(d, [h])).rejects.toThrow(COPY_MESSAGE);
-      await expect(a.andNotInto(d, [h])).rejects.toThrow(COPY_MESSAGE);
+      await expect(a.andNotInto(d, [h])).rejects.toThrow(
+        /^andNotInto: an exclude comes from another/,
+      );
       await expect(a.intersectInto(h, [a])).rejects.toThrow(
-        /the destination comes from another installed copy/,
+        /^intersectInto: the destination comes from another installed copy/,
       );
       await expect(
         store.materializeMany({
@@ -80,7 +82,7 @@ describe.each([
           outputs: [{ dest: h, expr: 'p' }],
           keep: 1,
         }),
-      ).rejects.toThrow(/the destination comes from another installed copy/);
+      ).rejects.toThrow(/^materializeMany: outputs\[0\]\.dest comes from another installed copy/);
       await expect(drain(a.intersect([h])).catch((e: Error) => e)).resolves.toBeInstanceOf(
         ValidationError,
       );
@@ -111,8 +113,37 @@ describe('a segment-shaped object is not a segment of another copy', () => {
     } as unknown as Seg;
     for (const fake of [hollow, shaped]) {
       await expect(drain(store.segment('a').intersect([fake]))).rejects.toThrow(
-        /must be a segment from this store's segment\(\)/,
+        /^intersect: an operand must be a segment from this store's segment\(\)$/,
       );
+    }
+  });
+});
+
+describe('the copy refusal names no segment, namespace or key', () => {
+  it.each([true, false])('over a shared storage: %s', async (shared) => {
+    const specifier = '../../packages/roaring/src/index.ts?another-copy';
+    const other = (await import(/* @vite-ignore */ specifier)) as typeof import('@/index');
+    const storage = new MemoryStorage();
+    const store = new CloudRoaring({ storage });
+    const otherStore = new other.CloudRoaring({
+      storage: shared ? storage : new other.MemoryStorage(),
+    });
+    await store.load({ segment: 'a' }, [1]);
+    await otherStore.load({ segment: 'secret-seg', namespace: 'secret-ns' }, [1]);
+    const foreign = otherStore.segment('secret-seg', { namespace: 'secret-ns' }) as unknown as Seg;
+    const errs = await Promise.all([
+      drain(store.segment('a').intersect([foreign])).catch((e: Error) => e),
+      store
+        .materializeMany({
+          operands: { p: foreign },
+          outputs: [{ dest: store.segment('o'), expr: 'p' }],
+          keep: 1,
+        })
+        .catch((e: Error) => e),
+    ]);
+    for (const e of errs) {
+      expect((e as Error).message).toMatch(COPY_MESSAGE);
+      expect((e as Error).message).not.toMatch(/secret/);
     }
   });
 });

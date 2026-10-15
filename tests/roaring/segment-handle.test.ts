@@ -149,7 +149,8 @@ describe('an operand list holds segments only', () => {
     { leaseError: () => undefined },
     { ref: { segment: 'a' }, leaseHold: undefined, leaseError: () => undefined },
   ];
-  const message = "must be a segment from this store's segment()";
+  const refusal = (verb: string, role: string) =>
+    new RegExp(`^${verb}: ${role} must be a segment from this store's segment\\(\\)$`);
 
   it('every combine and *Into refuses a value that is not a segment, before reading anything', async () => {
     const backend = new MemoryStorage();
@@ -163,15 +164,23 @@ describe('an operand list holds segments only', () => {
       const drain = async (it: AsyncIterable<number>) => {
         for await (const _ of it) void _;
       };
-      await expect(drain(a.intersect([x]))).rejects.toThrow(message);
-      await expect(drain(a.union([x]))).rejects.toThrow(message);
-      await expect(drain(a.andNot([x]))).rejects.toThrow(message);
-      await expect(drain(a.intersect([a], { exclude: [x] }))).rejects.toThrow(message);
-      await expect(drain(a.union([a], { exclude: [x] }))).rejects.toThrow(message);
-      await expect(a.intersectInto(dest, [x])).rejects.toThrow(message);
-      await expect(a.unionInto(dest, [x])).rejects.toThrow(message);
-      await expect(a.andNotInto(dest, [x])).rejects.toThrow(message);
-      await expect(a.intersectInto(x, [a])).rejects.toThrow(message);
+      await expect(drain(a.intersect([x]))).rejects.toThrow(refusal('intersect', 'an operand'));
+      await expect(drain(a.union([x]))).rejects.toThrow(refusal('union', 'an operand'));
+      await expect(drain(a.andNot([x]))).rejects.toThrow(refusal('andNot', 'an exclude'));
+      await expect(drain(a.intersect([a], { exclude: [x] }))).rejects.toThrow(
+        refusal('intersect', 'an exclude'),
+      );
+      await expect(drain(a.union([a], { exclude: [x] }))).rejects.toThrow(
+        refusal('union', 'an exclude'),
+      );
+      await expect(a.intersectInto(dest, [x])).rejects.toThrow(
+        refusal('intersectInto', 'an operand'),
+      );
+      await expect(a.unionInto(dest, [x])).rejects.toThrow(refusal('unionInto', 'an operand'));
+      await expect(a.andNotInto(dest, [x])).rejects.toThrow(refusal('andNotInto', 'an exclude'));
+      await expect(a.intersectInto(x, [a])).rejects.toThrow(
+        refusal('intersectInto', 'the destination'),
+      );
       await expect(a.intersectInto(dest, [x])).rejects.toBeInstanceOf(ValidationError);
     }
     // No refused call wrote the destination.
