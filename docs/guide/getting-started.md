@@ -30,9 +30,8 @@ If you installed before adding the keys, the install exited 0 and the package th
 `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped.
 
 `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on
-its own and you never install or import it. Install one copy of `@cloudbitmaps/roaring` in a process:
-`materializeMany` refuses a segment from any other copy, and the other combines refuse one whose segment brand differs
-from this copy's.
+its own and you never install or import it. Install one copy of `@cloudbitmaps/roaring` in a process; a combine
+refuses a segment of another store, and a segment of another copy always belongs to another store.
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
 Node versions: [CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) has the details.

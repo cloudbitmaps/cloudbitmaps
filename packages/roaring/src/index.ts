@@ -760,15 +760,48 @@ interface HandleView {
 
 /**
  * Marks a segment so one from another copy of this package is recognised; `Symbol.for` is the same symbol in every
- * copy. A combine reads these members of a segment from another copy: `ref`, `pinnedAt`, `leaseHold`, `key()` and
- * `leaseError()`. The number at the end of the key is raised whenever one of them changes meaning, is renamed or is
- * removed, or a combine starts to read another member of another copy's segment, so a copy at another number is
- * refused instead of read through members it does not have.
+ * copy. The mark is read only to name the refusal: a store belongs to one copy, so a segment of another copy always
+ * comes from another store and is refused with a message that says so. The number at the end of the key is raised
+ * if the mark changes meaning.
  */
 const SEGMENT_BRAND: unique symbol = Symbol.for('cloudbitmaps.roaring.segment/1');
 
 /** Set by the `Segment` class, whose private state it reads. */
 let viewOf: (segment: Segment) => HandleView;
+/** The store that made a segment: one reference compare per handle per call. Set by the `Segment` class. */
+let originOf: (segment: Segment) => object;
+
+/** What a refused handle was in the call: its role, or where it sits in a `materializeMany` call. */
+type HandleRole = string;
+
+/**
+ * Refuse, with a {@link ValidationError} and before any request, a handle that the store `origin` did not make: a
+ * value that is not a segment, a segment of another store, or a segment of another installed copy of this package.
+ * The messages never name the segment, the namespace or a key.
+ */
+function assertOneStore(
+  verb: string,
+  role: HandleRole,
+  h: unknown,
+  origin: object,
+): asserts h is Segment {
+  if (h instanceof Segment) {
+    if (originOf(h) === origin) return;
+    throw new ValidationError(
+      `${verb}: ${role} belongs to another store; combine segments of one store: open each with this store's segment()`,
+    );
+  }
+  if (
+    typeof h === 'object' &&
+    h !== null &&
+    (h as Record<symbol, unknown>)[SEGMENT_BRAND] === true
+  ) {
+    throw new ValidationError(
+      `${verb}: ${role} comes from another installed copy of @cloudbitmaps/roaring, so it belongs to another store; install one copy and combine segments of one store`,
+    );
+  }
+  throw new ValidationError(`${verb}: ${role} must be a segment from this store's segment()`);
+}
 
 const MATERIALIZE_MANY_KEYS = [
   'operands',
@@ -881,6 +914,8 @@ const NOT_A_GROUP: Readonly<Record<string, string>> = {
  */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
+  /** This store's identity: every handle it makes carries this object, and a combine compares it by reference. */
+  private readonly origin: object = Object.freeze({});
   private readonly cache: BoundedLru<string, CodecBitmap>;
   /** The store's retry options, for a pinned engine to read through as the store's own does; undefined when off. */
   private readonly retryOptions: RetryingOptions | undefined;
@@ -1101,6 +1136,7 @@ export class CloudRoaring {
     refuseReservedNamespace(ref.namespace);
     return makeSegment({
       engine: this.engine,
+      origin: this.origin,
       ref,
       clock: this.clock,
       metrics: this.metrics,
@@ -1411,11 +1447,7 @@ export class CloudRoaring {
     const handles = new Map<string, Segment>();
     for (const name of names) {
       const handle = (operandsIn as Record<string, unknown>)[name];
-      if (!(handle instanceof Segment)) {
-        throw new ValidationError(
-          `materializeMany: operands["${name}"] must be a segment from store.segment()`,
-        );
-      }
+      assertOneStore('materializeMany', `operands["${name}"]`, handle, this.origin);
       handles.set(name, handle);
     }
     // `mayBeEmpty` names fed operands, which the feed checks; without a feed it can name nothing.
@@ -1455,9 +1487,7 @@ export class CloudRoaring {
       }
       const spec = raw as MaterializeManyOutput;
       const dest: unknown = spec.dest;
-      if (!(dest instanceof Segment)) {
-        throw new ValidationError(`outputs[${i}].dest must be a segment from store.segment()`);
-      }
+      assertOneStore('materializeMany', `outputs[${i}].dest`, dest, this.origin);
       if (operandKeys.has(dest.key())) {
         throw new ValidationError(
           `outputs[${i}].dest is also an operand of the call: one call is one pass over operands that do not change under it, so chain two calls`,
@@ -2568,6 +2598,7 @@ export class CloudRoaring {
     const pins = new Map([[segmentKey(ref), pinnedAt]]);
     return makeSegment({
       engine: this.engineWithPins(pins),
+      origin: this.origin,
       ref,
       clock: this.clock,
       metrics: this.metrics,
@@ -3062,6 +3093,8 @@ type Materialize = (
 /** What a {@link Segment} is built from: the store's own wiring, which is why a handle is not constructible. */
 interface SegmentParts {
   engine: SegmentEngine;
+  /** The store's identity token, shared by every handle the store makes. */
+  origin: object;
   ref: SegmentRef;
   clock: Clock;
   metrics: IMetricsSink;
@@ -3169,6 +3202,8 @@ let minting = false;
 export class Segment {
   private readonly metricsOn: boolean;
   private readonly engine: SegmentEngine;
+  /** The store that made this handle, by reference; a combine takes only handles of its own store. */
+  private readonly origin: object;
   private readonly ref: SegmentRef;
   private readonly clock: Clock;
   private readonly metrics: IMetricsSink;
@@ -3203,6 +3238,7 @@ export class Segment {
       pinnedAt: segment.pinnedAt,
       leaseError: () => segment.leaseError(),
     });
+    originOf = (segment) => segment.origin;
   }
 
   /**
@@ -3216,6 +3252,7 @@ export class Segment {
       );
     }
     this.engine = parts.engine;
+    this.origin = parts.origin;
     this.ref = parts.ref;
     this.clock = parts.clock;
     this.metrics = parts.metrics;
@@ -3290,9 +3327,7 @@ export class Segment {
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
-   * {@link CloudRoaring.invalidate} is called on this store. A combine on another store that takes the pin as an
-   * operand reads it through that store's reader and chunk cache, which only that store's own writes and its
-   * `invalidate` reach. Where the
+   * {@link CloudRoaring.invalidate} is called on this store. A combine on another store refuses the pin. Where the
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
    * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
    *
@@ -3411,25 +3446,12 @@ export class Segment {
   }
 
   /**
-   * Refuse with a {@link ValidationError} anything among `handles` that is not a segment, a value a JavaScript caller
-   * passed. It runs first in every combine, before the lease check reads the handles.
+   * Refuse with a {@link ValidationError} any of `handles` that this store did not make: a value that is not a segment,
+   * a segment of another store (even one over the same backend) and a segment of another installed copy of the
+   * package. It runs first in every combine, before the lease check reads the handles and before any request.
    */
-  private assertSegments(handles: readonly unknown[]): void {
-    for (const h of handles) {
-      // A segment of another copy of this package (a second install) is not an instance of this one's class, so it
-      // is recognised by the versioned `Symbol.for` brand every segment carries.
-      if (
-        h instanceof Segment ||
-        (typeof h === 'object' &&
-          h !== null &&
-          (h as Record<symbol, unknown>)[SEGMENT_BRAND] === true)
-      ) {
-        continue;
-      }
-      throw new ValidationError(
-        'an operand must be a segment from `store.segment()` of a compatible copy of @cloudbitmaps/roaring; install one version of it',
-      );
-    }
+  private assertSegments(verb: string, role: HandleRole, handles: readonly unknown[]): void {
+    for (const h of handles) assertOneStore(verb, role, h, this.origin);
   }
 
   /**
@@ -3514,17 +3536,24 @@ export class Segment {
   }
 
   /**
-   * Refuse an `*Into` whose handles cannot be read, before any object is written: anything that is not a segment
-   * ({@link ValidationError}), and a handle (this one, `dest` or an operand) whose lease has ended or was released
-   * ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
+   * Refuse an `*Into` whose handles cannot be used, before any request: anything that is not a segment or is a
+   * segment of another store ({@link ValidationError}), and a handle (this one, `dest`, an operand or an exclude) whose
+   * lease has ended or was released ({@link LeaseExpiredError}). Called by the three `*Into` verbs only.
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
    * a synchronous throw out of a promise-returning method escapes a caller who attached `.catch()` instead of
    * awaiting.
    */
-  private assertIntoHandles(dest: Segment, operands: readonly Segment[]): void {
-    this.assertSegments([dest, ...operands]);
-    this.assertLeases([this, dest, ...operands]);
+  private assertIntoHandles(
+    verb: `${CombineVerb}Into`,
+    dest: Segment,
+    operands: readonly Segment[],
+    excludes: readonly Segment[],
+  ): void {
+    this.assertSegments(verb, 'the destination', [dest]);
+    this.assertSegments(verb, verb === 'andNotInto' ? 'an exclude' : 'an operand', operands);
+    this.assertSegments(verb, 'an exclude', excludes);
+    this.assertLeases([this, dest, ...operands, ...excludes]);
   }
 
   /** `result` as is, or, when a handle of the call holds a lease, checking that lease each time it reads a chunk. */
@@ -3847,8 +3876,10 @@ export class Segment {
     let handles: readonly Segment[];
     try {
       exclude = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
-      handles = [this, ...segmentList(operands, operandsLabel(verb)), ...exclude];
-      this.assertSegments(handles);
+      const others = segmentList(operands, operandsLabel(verb));
+      handles = [this, ...others, ...exclude];
+      this.assertSegments(verb, verb === 'andNot' ? 'an exclude' : 'an operand', others);
+      this.assertSegments(verb, 'an exclude', exclude);
       this.assertLeases(handles);
     } catch (err) {
       return out.failing(err);
@@ -3881,11 +3912,13 @@ export class Segment {
     options: MaterializeOptions | undefined,
   ): Promise<MaterializeResult> {
     const verb = name.slice(0, -'Into'.length) as CombineVerb;
-    const all =
-      verb === 'andNot'
-        ? segmentList(operands, `${name}: \`excludes\``)
-        : [...segmentList(operands, `${name}: \`others\``), ...this.excludesOf(options)];
-    this.assertIntoHandles(dest, all);
+    const listed = segmentList(
+      operands,
+      verb === 'andNot' ? `${name}: \`excludes\`` : `${name}: \`others\``,
+    );
+    const excludes = verb === 'andNot' ? NO_SEGMENTS : this.excludesOf(options);
+    const all = excludes.length > 0 ? [...listed, ...excludes] : listed;
+    this.assertIntoHandles(name, dest, listed, excludes);
     // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
     // broken destination would otherwise answer first, and hide the refusal behind its own error.
     this.combineEngine([this, ...all]);

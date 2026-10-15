@@ -31,11 +31,18 @@ which is right. As an operand, a mistyped name or a missing `namespace` would co
 and as an `exclude` it would suppress nobody and return the whole audience. Pass `allowAbsentOperands: true` when an
 operand may legitimately not exist yet. A segment that was dropped, retired by its retention policy or crypto-shredded
 is refused the same way, since it holds nothing. A segment loaded with no ids, or one that only has a retention policy,
-counts as existing. A combine also refuses a segment of an installed copy of `@cloudbitmaps/roaring` that is not a
-compatible copy: one whose segments carry the same versioned segment brand as this copy's, as every copy of the same
-release does. The refusal is a `ValidationError` that says to install one version. A combine lists its operands' chunk
-keys at most 16 operands at a time, then asks the registry once about each operand that holds no chunk, also at most 16
-at a time; an operand that holds data costs no such request.
+counts as existing.
+
+A combine lists its operands' chunk keys at most 16 operands at a time, then asks the registry once about each operand
+that holds no chunk, also at most 16 at a time; an operand that holds data costs no such request.
+
+**Every operand, `exclude` and destination must come from the store the call runs on.** A combine resolves each
+operand by name in its own store, so a handle of another store would be read as the receiver's segment of that name.
+It refuses one instead, with a `ValidationError` before any request: a segment opened on another store, a second store
+object over the same backend (the store object is the identity, not its storage), and a segment of another installed
+copy of `@cloudbitmaps/roaring`, which always belongs to another store. A pin and a lease taken from this store are its
+own. The message names the verb and whether an operand, an exclude or the destination was refused, and never the
+segment, its namespace or a key. Open every operand with the `segment()` of the store that runs the call.
 
 **To keep a result, use the `*Into` verbs.** `intersectInto`, `unionInto` and `andNotInto` write the result as a new
 generation of another segment. See [Loading in depth](loading.md#write-a-result-into-another-segment-the-into-verbs); to write many results from one pass, see [`materializeMany`](loading.md#many-outputs-from-one-pass-materializemany).
@@ -501,8 +508,7 @@ leased generation in the bucket until the lease has ended. It is a hold on one n
   reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or until
   `store.invalidate(ref)` is called on its store. Where the object it reads has been deleted, a chunk it has not cached
   fails at once, unless its reader kept the generation's chunks, which it serves until the reader is evicted. A
-  combine on another store that takes the pin as an operand reads it through that store's reader and chunk cache,
-  which only that store's own writes and its `invalidate` reach.
+  combine on another store refuses the pin.
 - **It needs a `.crbm` reader**: a backend does, and so does a bare `IStorageDriver` or a pre-built
   `CrbmStorageChunkSource`. Any other pre-built `StorageChunkSource` throws `UnsupportedError`.
 
