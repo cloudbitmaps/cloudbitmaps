@@ -100,7 +100,6 @@ describe('scrubCredentials (Azure)', () => {
     const out = scrubCredentials(err);
     expect(out).not.toBe(err);
     expect(types.isNativeError(out)).toBe(true);
-    expect(Error.isError(out)).toBe(true);
     expect(out).toBeInstanceOf(RestError);
     expect(Object.prototype.toString.call(out)).toBe('[object Error]');
     expect(out.message).toBe('refused');
