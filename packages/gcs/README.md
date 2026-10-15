@@ -109,6 +109,12 @@ It builds its own client from Application Default Credentials. Any other key is 
   store's clock).
 
 The [production checklist](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/production.md) covers each item, and the ones every backend shares: backups of the data and the registry, and a schedule for your loads.
+- **An error the driver throws carries no credential.** The SDK keeps the request it sent on the error
+  (`response.request`, `config.headers`), bearer token included, and through it the HTTP agent it shares with other
+  calls. An SDK error the driver throws, or keeps as a `cause`, is a copy without the request, agent, socket and config,
+  with `response` reduced to its status; it keeps its prototype, name, message, stack, code, status and other plain
+  data, so classification is unchanged, and a credential header or header line in it is redacted. The live error is
+  never changed.
 
 ## Documentation
 
