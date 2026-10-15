@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,10 +134,11 @@ describe('function-length baseline comparison', () => {
     expect(problems[0]).toContain('f.ts::new');
   });
 
-  it('fails when a baselined function grows by one line', () => {
-    const { problems } = compare(new Map([['f.ts::big', 151]]), baseline);
+  it('fails when a baselined function grows by one line, and never offers the growth as a lowered entry', () => {
+    const { problems, lowered } = compare(new Map([['f.ts::big', 151]]), baseline);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('grew from 150 to 151');
+    expect(lowered).toEqual({});
   });
 
   it('fails when a baselined function shrinks and the entry stays, and says the entry can be lowered', () => {
@@ -169,5 +171,223 @@ describe('function-length baseline comparison', () => {
     );
     expect(problems).toHaveLength(1);
     expect(fixable).toHaveLength(1);
+  });
+});
+
+describe('function-length identities of object-literal members', () => {
+  const big = (open: string, close: string, indent = '  '): string[] => [
+    open,
+    ...Array.from({ length: 101 }, (_, i) => `${indent}  step(${i});`),
+    close,
+  ];
+
+  it('keys a method by the object it sits in, so two objects with the same method do not swap on reorder', async () => {
+    const a = ['const alpha = {', ...big('  render() {', '  },'), '};'];
+    const b = ['const beta = {', ...big('  render() {', '  },'), '};'];
+    const first = await scanSource([...a, ...b].join('\n'));
+    const swapped = await scanSource([...b, ...a].join('\n'));
+    expect([...first.keys()].sort()).toEqual([`${KEY}alpha > render`, `${KEY}beta > render`]);
+    expect(swapped).toEqual(first);
+  });
+
+  it('keys a method of an object assigned to a property, or wrapped in as const, by that binding', async () => {
+    const source = [
+      'api.handlers = {',
+      ...big('  run() {', '  },'),
+      '};',
+      'const typed = {',
+      ...big('  go() {', '  },'),
+      '} as const;',
+    ].join('\n');
+    expect([...(await scanSource(source)).keys()]).toEqual([
+      `${KEY}api.handlers > run`,
+      `${KEY}typed > go`,
+    ]);
+  });
+
+  it('leaves an object literal with no binding keyed by the member name alone', async () => {
+    const source = ['export default {', ...big('  main() {', '  },'), '};'].join('\n');
+    expect([...(await scanSource(source)).keys()]).toEqual([`${KEY}main`]);
+  });
+
+  it('tells a private member from a public one, and a getter from a setter', async () => {
+    const source = [
+      'class C {',
+      ...big('  #p() {', '  }'),
+      ...big('  p() {', '  }'),
+      ...big('  get q() {', '  }'),
+      ...big('  set q(v) {', '  }'),
+      '}',
+    ].join('\n');
+    expect([...(await scanSource(source)).keys()]).toEqual([
+      `${KEY}class C > #p`,
+      `${KEY}class C > p`,
+      `${KEY}class C > get q`,
+      `${KEY}class C > set q`,
+    ]);
+  });
+});
+
+describe('function-length rename pairing', () => {
+  const { applyRenames } = createRequire(import.meta.url)(
+    join(ROOT, 'scripts', 'function-length.cjs'),
+  ) as {
+    applyRenames: (
+      found: Map<string, number>,
+      baseline: Record<string, number>,
+      pairs: [string, string][],
+    ) => { baseline: Record<string, number>; errors: string[] };
+  };
+  const baseline = { 'f.ts::old': 150 };
+
+  it('re-keys a stale entry to a new offender in the same file of the same or smaller size', () => {
+    const { baseline: next, errors } = applyRenames(new Map([['f.ts::new', 140]]), baseline, [
+      ['f.ts::old', 'f.ts::new'],
+    ]);
+    expect(errors).toEqual([]);
+    expect(next).toEqual({ 'f.ts::new': 150 });
+  });
+
+  it.each([
+    ['grew', new Map([['f.ts::new', 151]]), ['f.ts::old', 'f.ts::new']],
+    ['another file', new Map([['g.ts::new', 140]]), ['f.ts::old', 'g.ts::new']],
+    [
+      'the old function still exists',
+      new Map([
+        ['f.ts::old', 150],
+        ['f.ts::new', 140],
+      ]),
+      ['f.ts::old', 'f.ts::new'],
+    ],
+    ['the new one is not an offender', new Map(), ['f.ts::old', 'f.ts::new']],
+    [
+      'the old key is not in the baseline',
+      new Map([['f.ts::new', 140]]),
+      ['f.ts::nope', 'f.ts::new'],
+    ],
+  ] as [string, Map<string, number>, [string, string]][])('refuses when %s', (_, found, pair) => {
+    const { baseline: next, errors } = applyRenames(found, baseline, [pair]);
+    expect(errors).toHaveLength(1);
+    expect(next).toEqual(baseline);
+  });
+
+  it('puts the exact --rename command in the message for a new offender next to a stale entry', () => {
+    const { problems } = compare(new Map([['f.ts::new', 140]]), baseline);
+    expect(problems[0]).toContain("--update --rename 'f.ts::old' 'f.ts::new'");
+  });
+});
+
+describe('function-length CLI', () => {
+  const script = join(ROOT, 'scripts', 'function-length.cjs');
+  let root = '';
+
+  /** A temp root holding a copy of the script, a baseline and `packages/p/src/a.ts` with the given functions. */
+  function setup(
+    functions: Record<string, number>,
+    baseline: Record<string, number>,
+    limit = 100,
+  ): void {
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+    copyFileSync(script, join(root, 'scripts', 'function-length.cjs'));
+    writeFileSync(
+      join(root, 'scripts', 'function-length-baseline.json'),
+      `${JSON.stringify({ limit, functions: baseline }, null, 2)}\n`,
+    );
+    writeFileSync(
+      join(root, 'packages', 'p', 'src', 'a.ts'),
+      Object.entries(functions)
+        .map(([name, lines]) => fn(name, lines))
+        .join('\n'),
+    );
+  }
+
+  const run = (...args: string[]): { code: number | null; out: string } => {
+    const result = spawnSync(
+      process.execPath,
+      [join(root, 'scripts', 'function-length.cjs'), ...args],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, NODE_PATH: join(ROOT, 'node_modules') },
+      },
+    );
+    return { code: result.status, out: `${result.stdout}${result.stderr}` };
+  };
+  const baselineOf = (): Record<string, number> =>
+    (
+      JSON.parse(readFileSync(join(root, 'scripts', 'function-length-baseline.json'), 'utf8')) as {
+        functions: Record<string, number>;
+      }
+    ).functions;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'function-length-cli-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('exits 0 when the baseline matches', () => {
+    setup({ big: 120 }, { [`${KEY}big`]: 120 });
+    expect(run().code).toBe(0);
+  });
+
+  it('exits non-zero on a new offender', () => {
+    setup({ big: 120, extra: 105 }, { [`${KEY}big`]: 120 });
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(out).toContain('extra');
+  });
+
+  it('exits non-zero on a baselined function that shrank, until --update lowers the entry', () => {
+    setup({ big: 110 }, { [`${KEY}big`]: 120 });
+    expect(run().code).toBe(1);
+    expect(run('--update').code).toBe(0);
+    expect(baselineOf()).toEqual({ [`${KEY}big`]: 110 });
+    expect(run().code).toBe(0);
+  });
+
+  it('--update refuses a growth and leaves the baseline alone', () => {
+    setup({ big: 130 }, { [`${KEY}big`]: 120 });
+    expect(run('--update').code).toBe(1);
+    expect(baselineOf()).toEqual({ [`${KEY}big`]: 120 });
+  });
+
+  it('--update refuses a new offender and leaves the baseline alone', () => {
+    setup({ big: 120, extra: 105 }, { [`${KEY}big`]: 120 });
+    expect(run('--update').code).toBe(1);
+    expect(baselineOf()).toEqual({ [`${KEY}big`]: 120 });
+  });
+
+  it('--update does not turn a stale entry plus an unrelated new offender into a rename', () => {
+    setup({ extra: 105 }, { [`${KEY}gone`]: 120 });
+    expect(run('--update').code).toBe(1);
+    expect(baselineOf()).toEqual({ [`${KEY}gone`]: 120 });
+  });
+
+  it('a renamed baselined function: the check fails, and --update --rename re-keys the entry', () => {
+    setup({ renamed: 112 }, { [`${KEY}oldname`]: 120 });
+    const check = run();
+    expect(check.code).toBe(1);
+    expect(check.out).toContain(`--update --rename '${KEY}oldname' '${KEY}renamed'`);
+    expect(run('--update').code).toBe(1);
+    expect(run('--update', '--rename', `${KEY}oldname`, `${KEY}renamed`).code).toBe(0);
+    expect(baselineOf()).toEqual({ [`${KEY}renamed`]: 112 });
+    expect(run().code).toBe(0);
+  });
+
+  it('--rename refuses a renamed function that is longer than the entry, and works only with --update', () => {
+    setup({ renamed: 125 }, { [`${KEY}oldname`]: 120 });
+    expect(run('--update', '--rename', `${KEY}oldname`, `${KEY}renamed`).code).toBe(1);
+    expect(run('--rename', `${KEY}oldname`, `${KEY}renamed`).code).toBe(1);
+    expect(baselineOf()).toEqual({ [`${KEY}oldname`]: 120 });
+  });
+
+  it('rejects a baseline whose limit is not 100', () => {
+    setup({ big: 120 }, { [`${KEY}big`]: 120 }, 80);
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(out).toContain('"limit" must be 100');
   });
 });
