@@ -21,7 +21,7 @@ const { findNodeFloorClaims, findPinnedNodeVersions, satisfiesFloor, compareVers
 
 describe('a prose Node floor is detected however it is phrased', () => {
   it.each([
-    ['the shape the README uses', 'You need **Node ≥ 22.12** and pnpm 9.'],
+    ['the shape the README uses', 'You need **Node ≥ 22.12** and pnpm 12.'],
     ['ascii operator', 'Requires Node >= 22.12.'],
     ['no space', 'Requires Node ≥22.12.'],
     ['greater-than', 'Requires Node >22.12.'],

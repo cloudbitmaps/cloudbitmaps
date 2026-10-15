@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 
 /**
- * Every `pnpm.overrides` entry binds to something, and SECURITY.md describes exactly the entries that exist.
+ * Every `overrides` entry in `pnpm-workspace.yaml` binds to something, and SECURITY.md describes exactly the entries that exist.
  *
  * WHY THIS EXISTS. An override is a security claim: *this forced version still works, and it is protecting
  * something*. Both halves rot silently. When the dependency an override was pinned for leaves the tree, the
- * override stays in the manifest, because nothing fails; and its SECURITY.md row goes on attributing it to a
+ * override stays in the file, because nothing fails; and its SECURITY.md row goes on attributing it to a
  * toolchain that does not pull it in (a tool run through `pnpm dlx`, whose graph never enters this lockfile),
  * or on pinning a major that is not in the tree.
  *
@@ -22,13 +23,13 @@ import { join } from 'node:path';
 
 const ROOT = join(__dirname, '..', '..');
 
-const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
-  pnpm?: { overrides?: Record<string, string> };
+const workspace = parse(readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8')) as {
+  overrides?: Record<string, string>;
 };
 const lockfile = readFileSync(join(ROOT, 'pnpm-lock.yaml'), 'utf8');
 const security = readFileSync(join(ROOT, 'SECURITY.md'), 'utf8');
 
-const OVERRIDES = Object.keys(manifest.pnpm?.overrides ?? {});
+const OVERRIDES = Object.keys(workspace.overrides ?? {});
 
 /** `nanoid@3` is an override KEY carrying a major selector; the package it binds to is `nanoid`. */
 const packageOf = (override: string): string => override.replace(/@\d+$/, '');
@@ -68,7 +69,7 @@ describe('pnpm overrides are live, and SECURITY.md matches them', () => {
   it.each(OVERRIDES)('%s overrides a package that is actually installed', (override) => {
     expect(
       RESOLVED.has(packageOf(override)),
-      `pnpm.overrides pins "${override}", but no package by that name resolves in pnpm-lock.yaml. ` +
+      `overrides in pnpm-workspace.yaml pins "${override}", but no package by that name resolves in pnpm-lock.yaml. ` +
         'An override that binds to nothing protects nothing and cannot be tested — remove it, or, if it is ' +
         'deliberately preventive, say so in SECURITY.md and add it to the exemption here with a reason.',
     ).toBe(true);
@@ -81,17 +82,17 @@ describe('pnpm overrides are live, and SECURITY.md matches them', () => {
     // different questions and only the second one is worth asking.
     expect(
       TABLE_ROWS.has(packageOf(override)),
-      `pnpm.overrides pins "${override}" but no SECURITY.md table row starts with it. The table is the only ` +
+      `overrides in pnpm-workspace.yaml pins "${override}" but no SECURITY.md table row starts with it. The table is the only ` +
         'place the reason for an override is written down; an unlisted pin is one nobody can review.',
     ).toBe(true);
   });
 
-  it('SECURITY.md lists no override the manifest has dropped', () => {
+  it('SECURITY.md lists no override the workspace file has dropped', () => {
     const pinned = new Set(OVERRIDES.map(packageOf));
     const orphans = [...TABLE_ROWS].filter((name) => !pinned.has(name));
     expect(
       orphans,
-      'SECURITY.md describes overrides that package.json no longer has. A removed pin must leave the table ' +
+      'SECURITY.md describes overrides that pnpm-workspace.yaml no longer has. A removed pin must leave the table ' +
         'in the same change, or the document becomes an inventory of protections that are not in force.',
     ).toEqual([]);
   });

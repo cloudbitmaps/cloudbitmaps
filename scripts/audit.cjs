@@ -3,19 +3,22 @@
  * Dependency-audit gate.
  *
  * Wraps `pnpm audit --prod --json` and fails ONLY on a non-triaged advisory at or above the threshold
- * (default: high). Advisories the project has explicitly triaged live in `package.json` →
- * `pnpm.auditConfig.ignoreGhsas` (a single source of truth, with the rationale documented in SECURITY.md).
+ * (default: high). Advisories the project has explicitly triaged live in `pnpm-workspace.yaml` →
+ * `auditConfig.ignoreGhsas` (a single source of truth, with the rationale documented in SECURITY.md).
  * This gives a real blocking gate — a brand-new advisory in a prod dependency breaks CI — while known,
  * build-time-only advisories don't perpetually red the pipeline.
  *
- * pnpm 9's `pnpm audit` CLI does not filter by `package.json` > `pnpm.auditConfig.ignoreGhsas` and offers no
- * per-advisory ignore flag (verified: `pnpm audit --prod --audit-level high` still exits non-zero on the
- * triaged advisories), so we do the filtering here. No extra dependency: pnpm + Node only. `--prod` scopes to
+ * The gate does its own filtering, so its verdict never depends on how a given pnpm release treats the
+ * ignore list. No extra dependency: pnpm + Node only. `--prod` scopes to
  * runtime dependencies (dev-tool advisories are out of scope for what ships). Run it via `node scripts/audit.cjs`
  * (NOT `pnpm audit`, which is pnpm's built-in command, not this script). Bar: `AUDIT_LEVEL=critical|high|moderate|low`.
  */
 const { execSync } = require('node:child_process');
-const pkg = require('../package.json');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { parse } = require('yaml');
+
+const workspace = parse(readFileSync(join(__dirname, '..', 'pnpm-workspace.yaml'), 'utf8')) || {};
 
 const LEVELS = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 };
 const levelName = process.env.AUDIT_LEVEL || 'high';
@@ -26,7 +29,7 @@ if (threshold === undefined) {
   );
   process.exit(2);
 }
-const allow = new Set((pkg.pnpm && pkg.pnpm.auditConfig && pkg.pnpm.auditConfig.ignoreGhsas) || []);
+const allow = new Set(workspace.auditConfig?.ignoreGhsas || []);
 
 let raw;
 try {
@@ -70,7 +73,7 @@ const offending = atOrAbove.filter((a) => !allow.has(id(a)));
 
 if (triaged.length) {
   console.log(
-    `audit: ${triaged.length} triaged advisory(ies) ignored per pnpm.auditConfig.ignoreGhsas ` +
+    `audit: ${triaged.length} triaged advisory(ies) ignored per auditConfig.ignoreGhsas ` +
       `(see SECURITY.md): ${triaged.map(id).join(', ')}`,
   );
 }
@@ -80,7 +83,7 @@ if (offending.length) {
     const path = a.findings?.[0]?.paths?.[0] || a.module_name;
     console.error(`  ${a.severity}\t${id(a)}\t${a.module_name}\t${path}`);
     console.error(
-      `      Triage it (fix/upgrade, or add its GHSA to pnpm.auditConfig.ignoreGhsas + SECURITY.md).`,
+      `      Triage it (fix/upgrade, or add its GHSA to auditConfig.ignoreGhsas in pnpm-workspace.yaml + SECURITY.md).`,
     );
   }
   process.exit(1);

@@ -76,8 +76,10 @@ them and their sizes.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
 **no manual setup** (Node ≥22.12, the floor the packages declare — `.nvmrc` pins the major, 22, and the dev tools
-want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 9; Docker only
-for `test:integration`).
+want a current 22: lint-staged, which the pre-commit hook runs, declares 22.22.1 or later — and pnpm 12, which `package.json` pins in `packageManager`; Docker only
+for `test:integration`). pnpm 12 reads its settings (`overrides`, `allowBuilds`, `auditConfig`) from
+`pnpm-workspace.yaml` and ignores a `pnpm` block in `package.json`, and it runs a dependency's install script only
+where `allowBuilds` says so: `roaring` builds its native addon, `esbuild` does not need to.
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all six packages.
 
 ## Repo layout (a pnpm workspace of six packages)
