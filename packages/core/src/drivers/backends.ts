@@ -19,6 +19,7 @@ import { ValidationError } from '@/core/errors';
 
 const CLOCK_OPTION_KEYS = ['now'] as const;
 
+/** Options of {@link MemoryStorage}: only `now`, the clock for the registry's timestamps. */
 export interface MemoryStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;
@@ -45,6 +46,7 @@ export class MemoryStorage implements StorageBackend {
   }
 }
 
+/** Options of {@link LocalFsStorage}: only `now`, the clock for the registry's timestamps. */
 export interface LocalFsStorageOptions {
   /** Injected clock for the registry's `createdAt`/`updatedAt`; defaults to `Date.now`. */
   readonly now?: () => number;

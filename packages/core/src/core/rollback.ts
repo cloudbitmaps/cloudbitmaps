@@ -154,6 +154,7 @@ async function currentDescription(
     : { cardinality: usable.cardinality, metadata: Object.freeze({ ...metadata }) };
 }
 
+/** What a rollback moved: the generation the pointer named before, and the one it names now. */
 export interface RollbackResult {
   /** The generation the pointer named before the rollback. `null` when the segment had no current generation. */
   readonly fromGeneration: number | null;
