@@ -23,20 +23,27 @@ Three words appear everywhere:
 
 ## Install & entry points
 
-On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
-script to fetch its native binary. Allow it first: add these two top-level keys to your `package.json` (create one with
-`pnpm init` or `npm init -y` if you have none):
-`{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. pnpm 11 and later ignore
-the `pnpm` key: put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside it instead. npm 11 runs the
-script but warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
+`roaring` needs its one install script to fetch its native binary, and newer clients run a dependency's script only if
+you allow it. Allow it first (create a `package.json` with `pnpm init` or `npm init -y` if you have none):
+
+- **npm 12:** add `{ "allowScripts": { "roaring": true } }` to your `package.json`. Without it the install exits 0 and
+  the package throws at `import`. npm 11 runs the script but warns until you allow it the same way.
+- **pnpm 11 and later:** put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside your `package.json`.
+  Those versions no longer read the `package.json` `pnpm` key. Without it the install exits 1 with
+  `ERR_PNPM_IGNORED_BUILDS`.
+- **pnpm 10:** add `{ "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` to your `package.json`. Without it the
+  install exits 0 and the package throws at `import`.
+- **pnpm 9:** nothing extra.
+
+Then install:
 
 ```bash
 pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
-Installed before allowing it? The install exited 0 and the package throws at `import`. Add the setting, then run
-`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
+Installed before allowing it? The package throws at `import` (the install exited 0, or 1 on pnpm 11 and later). Add the
+setting, then run `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
 [Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see

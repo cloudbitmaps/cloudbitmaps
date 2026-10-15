@@ -11,29 +11,39 @@ New to the words? [The words these docs use](#the-words-these-docs-use) is at th
 
 ## Install
 
-In a new folder, run `pnpm init` (or `npm init -y`). On npm 12 and pnpm 10 and later, a dependency's install script
-runs only if you allow it, and `roaring` needs its one script to fetch its native binary, so add these two keys to that
-`package.json` before you install:
+In a new folder, run `pnpm init` (or `npm init -y`). Newer clients run a dependency's install script only if you allow
+it, and `roaring` needs its one script to fetch its native binary, so allow it before you install:
 
-```json
-{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-```
+- **npm 12:** add this to `package.json`. npm 11 runs the script but warns until you allow it the same way.
 
-pnpm 11 and later ignore the `pnpm` key; there, put the allowance in a `pnpm-workspace.yaml` beside the `package.json`:
+  ```json
+  { "allowScripts": { "roaring": true } }
+  ```
 
-```yaml
-allowBuilds:
-  roaring: true
-```
+- **pnpm 11 and later:** put this in a `pnpm-workspace.yaml` beside the `package.json`. Those versions no longer read
+  the `package.json` `pnpm` key (they warn about it on every command), so leave it out.
 
-npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. Then:
+  ```yaml
+  allowBuilds:
+    roaring: true
+  ```
+
+- **pnpm 10:** add this to `package.json`.
+
+  ```json
+  { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+  ```
+
+- **pnpm 9:** nothing extra.
+
+Then:
 
 ```bash
 pnpm add @cloudbitmaps/roaring              # the store; includes in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3                   # only when you move to S3 (or /gcs, or /azure-blob)
 ```
 
-If you installed before adding the keys, the install exited 0 and the package throws at `import`: add them, then run
+If you installed before allowing it, the package throws at `import` (the install exited 0, or 1 on pnpm 11 and later): allow it, then run
 `pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped.
 
 `@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on
@@ -315,18 +325,19 @@ one row per item, each linking to the detail.
 
 ### `Cannot find module './build/Release/roaring.node'` after a successful install
 
-The install **exits 0** and the package is then unusable at runtime. Three ways to get here. Two skip `roaring`'s
-install script, and on **pnpm 10 the plain install is one of them**, with no flag of your own:
+The package is unusable at runtime, and on npm 12 and pnpm 10 the install still exits 0. Three ways to get here. Two skip
+`roaring`'s install script, and on **pnpm 10 and later the plain install is one of them**, with no flag of your own:
 
 ```
 $ npm i @cloudbitmaps/roaring             # npm 12+: warns that roaring's install script was blocked, exits 0
-$ pnpm add @cloudbitmaps/roaring          # pnpm 10+: warns "Ignored build scripts: roaring", exits 0
+$ pnpm add @cloudbitmaps/roaring          # pnpm 10: warns "Ignored build scripts: roaring", exits 0
+$ pnpm add @cloudbitmaps/roaring          # pnpm 11+: fails with ERR_PNPM_IGNORED_BUILDS, exits 1
 $ npm i --ignore-scripts @cloudbitmaps/roaring    # any client, when you opt out of scripts
 $ node -e "require('@cloudbitmaps/roaring')"
 Error: Cannot find module './build/Release/roaring.node'
 ```
 
-**npm 12 and pnpm 10 do not run a dependency's install script unless you allow it** — a deliberate supply-chain
+**npm 12 and pnpm 10 and later do not run a dependency's install script unless you allow it** — a deliberate supply-chain
 default, not a bug — so on them the *documented* install command needs a second step. npm 11 runs it and warns
 that `allowScripts` does not cover it yet; pnpm 9 runs it; every client skips it under `--ignore-scripts`.
 
@@ -345,15 +356,16 @@ be in place for the rebuild to run.
 **Fixes, in order of preference:**
 
 1. **Allow the install script for that one package** — narrow the exception rather than re-enabling scripts
-   globally. Put it in your own `package.json` so CI and teammates inherit it; the first key is npm's, the second
-   pnpm 10's:
+   globally. Put it in a file your project commits so CI and teammates inherit it. npm 12 and pnpm 10 read your
+   `package.json`:
 
    ```json
    { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
    ```
 
-   pnpm 11 and later ignore the `pnpm` key: the install still stops with `ERR_PNPM_IGNORED_BUILDS`, and the package
-   still throws at `import`. There the allowance goes in a `pnpm-workspace.yaml` beside the `package.json`:
+   (the first key is npm's, the second pnpm 10's). pnpm 11 and later do not read the `pnpm` key: they stop with
+   `ERR_PNPM_IGNORED_BUILDS`, and the package throws at `import`. There the allowance goes in a `pnpm-workspace.yaml`
+   beside the `package.json`, and the `pnpm` key can stay out of `package.json`:
 
    ```yaml
    allowBuilds:
@@ -363,14 +375,14 @@ be in place for the rebuild to run.
    `npm install-scripts approve roaring` (npm 12) and `pnpm approve-builds` do the same interactively; npm's
    records the approval pinned to the installed `roaring` version.
 2. **Then re-run the skipped step** — `npm rebuild roaring` or `pnpm rebuild roaring`. The allowance above has
-   to be in place **first**: without it, both exit 0 and leave the package just as broken, because rebuilding
-   still runs an install script the client still will not run. npm 12 at least warns that it blocked one; pnpm's
-   `pnpm rebuild roaring` is a **silent no-op**. An approval made with `npm install-scripts approve roaring` runs
+   to be in place **first**: without it the rebuild still runs an install script the client will not run, and leaves
+   the package just as broken. npm 12 exits 0 but warns that it blocked one; `pnpm rebuild roaring` is a **silent
+   no-op** on pnpm 10 and 11, and fails with `ERR_PNPM_IGNORED_BUILDS` (exit 1) on pnpm 12. An approval made with `npm install-scripts approve roaring` runs
    nothing by itself, so the rebuild is what fetches the binary.
 3. **Build from source** — `npm_config_build_from_source=true npm i` with a C/C++ toolchain present. Also the
    route on **Alpine/musl**, where no prebuilt binary is published at all.
 
-**Check it at install time, not at 3am.** Because no client's exit code tells you about this, add a startup or CI
+**Check it at install time, not at 3am.** Because npm 12 and pnpm 10 exit 0 on this, add a startup or CI
 assertion that the addon actually loads — `node -e "require('@cloudbitmaps/roaring')"` — so a broken install
 fails your pipeline instead of your first request.
 
