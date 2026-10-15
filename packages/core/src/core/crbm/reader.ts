@@ -352,9 +352,12 @@ export class CrbmReader {
     const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
     const versionMajor = footer[FOOTER.versionMajor]!;
     if (versionMajor !== VERSION_MAJOR) {
+      const next =
+        versionMajor > VERSION_MAJOR
+          ? 'upgrade @cloudbitmaps/core'
+          : 'no release writes that version, so this library did not write the object';
       throw new UnsupportedError(
-        `.crbm major version ${versionMajor} not supported; this build reads major version ${VERSION_MAJOR}: ` +
-          'upgrade @cloudbitmaps/core',
+        `.crbm major version ${versionMajor} not supported; this build reads major version ${VERSION_MAJOR}: ${next}`,
       );
     }
     const flags = fview.getUint32(FOOTER.flags, true);

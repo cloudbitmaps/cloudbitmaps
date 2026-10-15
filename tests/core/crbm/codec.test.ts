@@ -205,6 +205,16 @@ describe('version & feature gating', () => {
     );
   });
 
+  it('says no release writes a major version below the one this build reads', async () => {
+    const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
+      footer[FOOTER.versionMajor] = 0;
+    });
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toThrow(
+      '.crbm major version 0 not supported; this build reads major version 1: ' +
+        'no release writes that version, so this library did not write the object',
+    );
+  });
+
   it('tolerates an unknown minor version, and finds the extension block by its flag', async () => {
     const sink = new BufferSink();
     const writer = new CrbmWriter(sink, { generation: 1, metadata: { def: 'v9' } });

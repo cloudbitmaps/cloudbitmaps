@@ -12,7 +12,7 @@
  * and the read stays at most {@link MAX_COALESCED_READ_BYTES}. A chunk that is larger than that bound by itself is
  * read alone, since a chunk is never split.
  */
-import { IntegrityError } from '../errors';
+import { crbmIntegrity } from './integrity';
 import { DEFAULT_MAX_BITMAP_BYTES } from './format';
 
 /**
@@ -66,7 +66,7 @@ export interface ChunkRegion {
  * covers an extent that was not checked; a plan taken to its end has checked them all. The reads are exactly the ones
  * a plan made all at once would hold, in the same order.
  *
- * Throws {@link IntegrityError} for an extent that is not a pair of safe integers, or is outside `region`, or out of
+ * Throws an `IntegrityError` for an extent that is not a pair of safe integers, or is outside `region`, or out of
  * order, or overlapping the one before it:
  * the index a plan is made from is untrusted bytes, and a read is never planned outside the chunk region.
  */
@@ -88,7 +88,7 @@ export function* planChunkReads(
       extent.offset >= previousEnd &&
       extentEnd <= region.end
     )) {
-      throw new IntegrityError(`chunk ${extent.key} is not inside the chunk region, in order`);
+      throw crbmIntegrity(`chunk ${extent.key} is not inside the chunk region, in order`);
     }
     previousEnd = extentEnd;
     if (
