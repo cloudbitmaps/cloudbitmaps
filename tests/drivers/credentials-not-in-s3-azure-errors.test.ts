@@ -11,6 +11,10 @@ import { S3StorageDriver } from '@/s3/storage';
 /**
  * The S3 and Azure drivers leave no credential in the errors they raise, `cause` chain included: the same check as the
  * GCS driver's, against the SDKs' own clients over a loopback server that refuses every request.
+ *
+ * This file checks what a logger prints: the error as `util.inspect` and `JSON.stringify` show it. What code can reach
+ * on an Azure error (`err.request`, `err.response.request`, every object and `cause` below it) is checked in
+ * `azure/credentials-reachable.test.ts`.
  */
 const ACCESS_KEY = 'STANDINACCESSKEYID';
 const SECRET = 'placeholder-secret-access-key-0123456789';

@@ -55,6 +55,7 @@ import {
 } from './azure-errors';
 import { collect, destroyBody } from './body';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
+import { scrubCredentials } from './scrub-error';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
 interface AzureBlobRegistryDriverOptions {
@@ -243,7 +244,11 @@ async function readRow(
  * `ValidationError`; any other error is passed through.
  */
 function mapError(err: unknown, container: string): unknown {
-  return toTransient(asMissingContainer(err, container), isTransient, transientFaultMessage);
+  return toTransient(
+    asMissingContainer(scrubCredentials(err), container),
+    isTransient,
+    transientFaultMessage,
+  );
 }
 
 export class AzureBlobRegistryDriver extends ObjectStoreRegistry {

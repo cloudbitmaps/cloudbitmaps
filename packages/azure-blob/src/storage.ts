@@ -67,6 +67,7 @@ import {
 } from './azure-errors';
 import { collect } from './body';
 import { resolveReadTimeoutMs, timedRead } from './read-timeout';
+import { scrubCredentials } from './scrub-error';
 import { newWriteId, storedWriteId, writeIdMetadata } from './write-id';
 
 /** Flush threshold for staged uploads: the sink buffers until `pending` reaches this, then stages it as one
@@ -380,7 +381,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
    */
   private mapError(err: unknown): unknown {
     return toTransient(
-      asMissingContainer(err, this.container.containerName),
+      asMissingContainer(scrubCredentials(err), this.container.containerName),
       isTransient,
       transientFaultMessage,
     );
