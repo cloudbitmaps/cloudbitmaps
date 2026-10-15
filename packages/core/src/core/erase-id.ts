@@ -460,7 +460,23 @@ function recordCollect(
   return result;
 }
 
-/** One pass of {@link eraseIdFromSegment}. It records in `seen` what {@link Pass} says. */
+/**
+ * One pass of {@link eraseIdFromSegment}. It records in `seen` what {@link Pass} says.
+ *
+ * It reads the row, resolves the key, builds the {@link EraseCall} every phase is passed, and picks the phase by what
+ * the row is:
+ *
+ *   row ─┬─ tombstone ─────▶ underTombstone   search every object; one holder: collect them all
+ *        ├─ no pointer ────▶ unpublished      search each first load's object; fence; delete the holders
+ *        └─ pointer ───────▶ stage ─┬─ id in the current generation ─▶ finishRewrite (publish, collect, prove)
+ *                                   ├─ id elsewhere or nowhere ──────▶ notInCurrent  (fence, collect, delete)
+ *                                   └─ the row moved on ─────────────▶ discardRefused, then the reason
+ *
+ * Every phase that deletes keeps one order: search (`holds`, `holdsEach`), then one write to the row (`fence`) that takes
+ * what is about to go out of its ledger, then the deletes (`deleteFenced`, or a collection below the pointer that
+ * `collectAgain` runs again while it spares a name the row has taken back), and last `holderLeft`, the one place that
+ * decides `erased: true`.
+ */
 async function eraseOnce(
   ref: SegmentRef,
   id: number,
