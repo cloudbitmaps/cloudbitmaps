@@ -26,6 +26,14 @@ so, and so do the module headers in the code.
   copy. A store belongs to one copy, so another copy's segment always comes from another store. Install one copy of the
   package in a process.
 
+### Added
+
+- **A format reference, [`docs/format.md`](docs/format.md).** Every byte of a `.crbm` object (the preamble, the chunk
+  payloads, the extension block, the index, the 104-byte footer, the checksums and the sealing), the identity rules, and
+  the registry row at schema 5, with how each cloud registry stores it, what a reader refuses and with which error, what
+  the pre-1.0 policy and the 1.0 freeze mean for versions, and the golden corpus with a hand decode. It is written from
+  the code, and every file in `tests/golden/` decodes as it describes.
+
 ### Changed
 
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
