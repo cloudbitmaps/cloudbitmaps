@@ -15,6 +15,7 @@ const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as
 const workspace = parse(readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8')) as {
   allowBuilds?: Record<string, boolean>;
   onlyBuiltDependencies?: unknown;
+  provenance?: unknown;
 };
 
 describe('pnpm settings live where the pinned pnpm reads them', () => {
@@ -30,5 +31,11 @@ describe('pnpm settings live where the pinned pnpm reads them', () => {
   it('lets roaring build its native addon, and uses allowBuilds rather than onlyBuiltDependencies', () => {
     expect(workspace.allowBuilds?.roaring).toBe(true);
     expect(workspace.onlyBuiltDependencies).toBeUndefined();
+  });
+
+  it('sets no `provenance` here: it would make the hand-run bootstrap and break-glass publishes fail', () => {
+    // pnpm 12 reads `provenance` from this file, so a `true` here asks every laptop publish for an attestation
+    // it cannot mint (ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER). The release workflow passes `--provenance`.
+    expect(Object.prototype.hasOwnProperty.call(workspace, 'provenance')).toBe(false);
   });
 });

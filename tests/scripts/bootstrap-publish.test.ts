@@ -233,7 +233,7 @@ describe('bootstrap-publish', () => {
   });
 
   it('waits out read-replica lag instead of calling a good publish failed', () => {
-    // The registry can ACK with `PUT 200` and then 404 on `npm view` for minutes. Reporting that as
+    // The registry can report the publish done and then 404 on `npm view` for minutes. Reporting that as
     // "not found after publish" is the worst wrong answer available directly after an irreversible step.
     const { status, out } = runScript(['--confirm'], { distTagsLagCalls: 1 });
     expect(out).toMatch(/not on the read path yet — waiting for propagation/);

@@ -119,6 +119,15 @@ describe('release workflow shape', () => {
       expect(step?.env).not.toHaveProperty('NPM_CONFIG_PROVENANCE');
       expect(step?.env?.PNPM_CONFIG_PROVENANCE).toBe(true);
     }
+    // The dry-run step must stay a dry run, and the real step must not change the dist-tag: only `--tag` does
+    // (pnpm 12 ignores npm config), so an added one would publish under another tag.
+    expect(dry?.run).toMatch(/--dry-run/);
+    expect(real?.run).not.toMatch(/--dry-run|--tag\b/);
+    // The dry run still does the Trusted Publishing exchange per package and only warns when it is skipped, so
+    // the step must fail on that text, with pipefail so a failed publish still fails the step.
+    expect(dry?.run).toMatch(/set -o pipefail/);
+    expect(dry?.run).toMatch(/grep -q 'Skipped OIDC'/);
+    expect(dry?.run).toMatch(/exit 1/);
     // Guards that a dispatch cannot publish while dryRun is still true.
     expect(String((real as unknown as { if: string }).if)).toContain("github.event_name == 'push'");
     expect(String((real as unknown as { if: string }).if)).toContain('!inputs.dryRun');
@@ -210,12 +219,13 @@ describe('release workflow shape', () => {
     expect((step as unknown as { if?: string }).if).toBeUndefined();
   });
 
-  it('pins the npm upgrade to a floor instead of tracking @latest', () => {
+  it('pins the npm upgrade for the registry probes to a floor instead of tracking @latest', () => {
     // `npm@latest` makes every release depend on whatever npm shipped that morning: a regression upstream
     // becomes a broken release with nothing in our diff to point at.
-    const step = job('publish').steps.find((s) => s.name === 'Upgrade npm for Trusted Publishing');
+    const step = job('publish').steps.find((s) => s.name === 'Upgrade npm for the registry probes');
     expect(step?.run).not.toMatch(/npm@latest/);
-    // Still at or above the version Trusted Publishing (OIDC) requires.
+    // pnpm publish does its own OIDC exchange; npm only serves the `npm view` probes, and the floor keeps them on
+    // an npm 11 that has the fixes.
     expect(step?.run).toMatch(/npm@\^11\.(?:[6-9]|5\.[1-9])/);
   });
 

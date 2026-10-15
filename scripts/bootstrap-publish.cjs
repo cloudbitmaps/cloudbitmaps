@@ -18,8 +18,9 @@
  * So: every precondition is checked BEFORE anything is sent, and a real publish needs an explicit --confirm.
  * Without it this is a dry run that verifies the whole path and publishes nothing.
  *
- * The trap that motivated the --tag handling: `npm publish` defaults --tag to `latest` unconditionally and is
- * NOT semver-aware (`npm config get tag` -> latest). "Prereleases aren't installed by default" is a property of
+ * The trap that motivated the --tag handling: `pnpm publish` defaults --tag to `latest` unconditionally (npm does
+ * too) and is NOT semver-aware; pnpm 12 takes the tag only from `--tag`, never from npm config. "Prereleases
+ * aren't installed by default" is a property of
  * range resolution and only holds while `latest` points elsewhere. On a FIRST publish there is nothing else for
  * it to point at, so an untagged 0.10.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
  * dist-tag is therefore derived from the prerelease identifier (0.10.0-rc.0 -> `rc`) rather than left to default.
@@ -263,13 +264,12 @@ console.log(`bootstrap-publish: publishing under --tag ${effectiveTag} (expect a
 // `--no-git-checks`: the tree state is already verified above, and pnpm's own check rejects a detached HEAD
 // that is otherwise fine here. Interactive stdio so the 2FA prompt actually reaches the terminal.
 //
-// No `--no-provenance` here, deliberately: pnpm does not forward that flag to npm, so it reads as a fix while
-// doing nothing. Provenance is opt-IN at the call site instead — the release workflow passes `--provenance`
-// explicitly — because `publishConfig.provenance: true` in a manifest makes every manual publish impossible:
-// npm honours it, looks for a CI provider to mint the attestation from, finds none on a laptop, and aborts
-// with `EUSAGE: Automatic provenance generation not supported for provider: null`. Neither the CLI flag nor
-// `NPM_CONFIG_PROVENANCE=false` overrides the manifest. A bootstrap publish is unattested by design (see
-// RELEASING.md), and keeping provenance out of the manifests is what lets it run.
+// Provenance is opt-IN at the call site: the release workflow passes `--provenance`, and this publish does not.
+// pnpm 12 never reads `publishConfig.provenance` from a manifest, but it does read a `provenance` setting from
+// `pnpm-workspace.yaml` or `PNPM_CONFIG_PROVENANCE` in the shell. Either one makes this publish ask a laptop for
+// an attestation it cannot mint, and it then fails with `ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER`. A bootstrap
+// publish is unattested by design (see RELEASING.md), so keep that setting out of the workspace file and the
+// shell. `--no-provenance` is accepted by pnpm 12 and would override it for a single run.
 //
 // This stays `pnpm publish` rather than a per-package `npm publish`: every other package depends on core via
 // `workspace:^`, and pnpm is what rewrites that to a real version range on the way out. npm would publish the
@@ -376,7 +376,7 @@ try {
 console.log('\nbootstrap-publish: verifying the registry…');
 
 // npm ACKs a publish on the write path, but `npm view` reads a replica that lags — measured at ~7 minutes for
-// a brand-new package, with the write already returned `PUT 200`. Probing once and calling it a failure would
+// a brand-new package, with the write already reported as `Published package`. Probing once and calling it a failure would
 // tell the operator the publish had failed while the packages are live and correct, which is the worst
 // possible wrong answer directly after an irreversible step. `--prefer-online` defeats npm's own cache (which
 // has just cached the pre-publish 404 from the precondition probe); the wait defeats the replica.
@@ -408,7 +408,7 @@ for (const p of missing) {
     console.error(
       `  ✗ ${p.json.name}: still not on the read path after ` +
         `${Math.round((PROPAGATION_TRIES * PROPAGATION_GAP_MS) / 60000)} min. If the publish log shows ` +
-        `\`PUT 200\`, it succeeded and this is replica lag — confirm with \`npm access get status ${p.json.name}\`, ` +
+        `\`Published package\`, it succeeded and this is replica lag — confirm with \`npm access get status ${p.json.name}\`, ` +
         `which reads the authoritative API, before assuming anything failed.`,
     );
     bad++;

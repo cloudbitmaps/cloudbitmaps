@@ -154,9 +154,11 @@ produced the package they installed**. The controls:
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with `--provenance` and
   `PNPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. pnpm 12 publishes natively and does
   not read `NPM_CONFIG_PROVENANCE`; with the flag given, a failed OIDC or signing step fails the publish rather than
-  publishing without the attestation. (A manifest's `publishConfig.provenance: true` would be worse: a publish from a
-  machine that is not a CI workflow, the bootstrap and the break-glass path both, would be asked for an attestation it
-  cannot mint. Opting in where provenance is actually achievable keeps the guarantee without the trap.) The registry
+  publishing without the attestation. (pnpm 12 ignores `publishConfig.provenance` in a manifest. The trap is a
+  `provenance` setting in `pnpm-workspace.yaml`, or `PNPM_CONFIG_PROVENANCE=true` in a maintainer's shell: either
+  would make the hand-run bootstrap and break-glass publishes, which run outside a CI workflow, fail with
+  `ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER`, so a test pins the workspace file free of it. Opting in where provenance
+  is actually achievable keeps the guarantee without the trap.) The registry
   records a **signed, publicly-verifiable attestation** linking the tarball to the exact GitHub
   Actions workflow, repository, and commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted
   runner with `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or

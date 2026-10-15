@@ -159,9 +159,9 @@ free; cancelling a release part-way through leaves npm holding a half-published 
 packages up, the rest not — that cannot be taken back.
 
 Every `uses:` is pinned to a full commit SHA, so a moved tag can't inject code. Dependabot bumps the SHA and
-the human-readable version comment together, monthly. The npm upgrade the OIDC publish needs is pinned to a
-**floor** (`npm@^11.5.1`), not `@latest`, so a regression in a same-morning npm release can't break a release
-with nothing in our diff to point at.
+the human-readable version comment together, monthly. The npm upgrade that serves the workflow's `npm view` registry probes (`pnpm publish` does its own
+Trusted Publishing exchange and does not call npm) is pinned to a **floor** (`npm@^11.5.1`), not `@latest`, so a
+regression in a same-morning npm release can't break a release with nothing in our diff to point at.
 
 ## A manual run
 
@@ -173,6 +173,8 @@ which defaults to `true`. It waits for the same approval as a tag push.
   version is already on the registry, so on a ref whose manifests carry the released version it packs nothing and
   still exits 0: it exercises the publish step only on a version not yet released, such as `main` after the
   version-bump pull request merges and before the tag. It skips the still-private check and the registry probes.
+  It also performs the Trusted Publishing exchange for each package and fails the step if any is skipped (`Skipped OIDC` in
+  the log), so run it on the bumped `main` before tagging: it checks all six Trusted Publisher bindings.
 - **`dryRun: false` publishes for real.** It runs the gate, the still-private check, the registry probes and the
   tarball leak scan, then publishes whatever version the manifests carry.
 - **On a branch ref, either one skips the tag check and the release-notes check**, because both key on a tag
@@ -259,8 +261,9 @@ because `pnpm publish` would otherwise **silently skip** the package and exit 0 
 next version.
 
 > [!IMPORTANT]
-> **`--tag rc` is not optional, and it is also not sufficient.** `npm publish` defaults `--tag` to `latest`
-> *unconditionally* — check `npm config get tag` — and it is **not** semver-aware. "Prereleases aren't installed
+> **`--tag rc` is not optional, and it is also not sufficient.** `pnpm publish` defaults the dist-tag to `latest`
+> *unconditionally*, and it is **not** semver-aware. Only `--tag` (or a `tag` in the manifest) decides it: pnpm 12 does
+> not read npm's config, so `npm config get tag` and `NPM_CONFIG_TAG` change nothing. "Prereleases aren't installed
 > by default" is a property of *range resolution*, and it only holds while `latest` points somewhere else. On a
 > package's **first** publish there is nothing else for it to point at.
 >
@@ -290,7 +293,7 @@ packages' `repository`/`homepage` links resolve and provenance has a public sour
 
    It reports each name it created, and verifies the dist-tag landed. Confirm with
    `npm access get status <name>` rather than `npm view` — `npm view` reads a replica that lags for minutes
-   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way. If the verification fails with `rc is (unset)` after a `PUT 200`, that is
+   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way. If the verification fails with `rc is (unset)` after pnpm printed `Published package <name>@<version>`, that is
    replica lag, not a failed publish (see the troubleshooting table).
 
    A first publish through npm's browser-approval flow also creates a `0.0.0-stage` version on the name: a stub with
@@ -308,8 +311,8 @@ Outside this procedure the manual path is never used, except as
 
 ## Manual / break-glass release
 
-Only if the pipeline is down and a release genuinely cannot wait. Requires npm ≥ 11.5.1 and your **interactive
-npm 2FA** — automation tokens are disallowed by design, so there is no unattended fallback, deliberately.
+Only if the pipeline is down and a release genuinely cannot wait. Needs your **interactive
+npm 2FA** (`npm login`; pnpm 12 reads the token that writes to `~/.npmrc`) — automation tokens are disallowed by design, so there is no unattended fallback, deliberately.
 
 Run it on the `main` commit the version bump made — the [TL;DR](#tldr--cutting-a-release)'s steps 1–4 still
 apply. This path runs only what you type, so it types the checks the workflow runs around the publish: the
@@ -346,18 +349,18 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | `tag vX.Y.Z does not match <pkg> version …` | A package version and the tag disagree. Every package releases in lockstep, so all six must equal the tag. Fix the manifests through a pull request, delete the tag (`git push origin --delete vX.Y.Z && git tag -d vX.Y.Z`), and tag the merge commit. |
 | `… still has "private": true` | Someone added `private` to a package manifest. Only the workspace root is private; every package under `packages/` publishes. |
 | Publish rejected: token not permitted | Something re-introduced token auth. The packages disallow tokens; the workflow must authenticate via OIDC. |
-| `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing, its repo/workflow/environment don't match exactly, or its "Allow npm publish" box is unticked: check with `npm trust list <name>`, which must show `permissions: publish, stage publish`. |
+| `[WARN] Skipped OIDC: …` followed by `ERR_PNPM_FAILED_TO_PUBLISH` on a fresh package | pnpm could not exchange the workflow's OIDC token and fell back to a placeholder credential, which npm rejects. The Trusted Publisher binding is missing, its repo/workflow/environment don't match exactly, or its "Allow npm publish" box is unticked: check with `npm trust list <name>`, which must show `permissions: publish, stage publish`. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
-| Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
+| `ERR_PNPM_ID_TOKEN_GITHUB_WORKFLOW_INCORRECT_PERMISSIONS` | `id-token: write` was dropped from the job. With `--provenance` the first package fails and nothing is published unattested. Provenance also needs a GitHub-hosted runner's OIDC identity: a self-hosted runner would sign under a different builder identity, so keep `runs-on` on `ubuntu-latest`. |
 | A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because those packages' version now exists. Nor can the stragglers ship alone at the next patch: the workflow refuses a tag any manifest disagrees with, and the `fixed` group moves all six together. Recovery is a **patch release of the whole family**: fix what failed first (the log names the package), then a patch changeset and the [TL;DR](#tldr--cutting-a-release) at `X.Y.Z+1`, with a changelog section that says why. Every package publishes at the new version, and the partial one stays on the registry beside it. Expensive and untidy; not fatal. |
 | `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
 | `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^X.Y.Z` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^X.Y.Z` — a version the registry does not have until the real release, when the bootstrap runs after the version bump. (When core's version is already on the registry, the rc tarballs resolve.) The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
-| `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
-| `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and would make every manual publish impossible. |
+| `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (the publish defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
+| `ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER` | Something is asking for provenance outside CI: the bootstrap or a break-glass publish ran with `provenance: true` in `pnpm-workspace.yaml` or `PNPM_CONFIG_PROVENANCE=true` in the shell. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only). pnpm 12 ignores `publishConfig.provenance`; remove the setting (a test keeps it out of `pnpm-workspace.yaml`) or add `--no-provenance` for one run. |
 | `bootstrap-publish: every package already exists on the registry` | Working as intended — there is nothing to create. Ship the version by tag through the pipeline instead. |
 | `<pkg> does not exist on the registry` during a release | A package was added to the workspace without bootstrapping its name. The tokenless pipeline cannot create a name. Run `pnpm release:bootstrap`, bind the Trusted Publisher, then re-tag. The guard fired *before* anything was published, which is the point. |
 | `<pkg>@<version> is already on the registry` during a release | That version was published before — most likely by hand. pnpm would skip it silently and the run would go green having published nothing for it. Bump the version. |
-| A publish logs `PUT 200` but `npm view` 404s for minutes | npm ACKs on the write path and serves reads from a replica that lags — **measured at ~7 minutes** for a brand-new package. The publish succeeded. Confirm with `npm access get status <pkg>`, which reads the authoritative API; `npm view --prefer-online` only defeats npm's *local* cache, not the replica. The bootstrap waits this out rather than reporting a failure. |
+| pnpm logs `Published package <name>@<version>` but `npm view` 404s for minutes | npm ACKs on the write path and serves reads from a replica that lags — **measured at ~7 minutes** for a brand-new package. The publish succeeded. Confirm with `npm access get status <pkg>`, which reads the authoritative API; `npm view --prefer-online` only defeats npm's *local* cache, not the replica. The bootstrap waits this out rather than reporting a failure. |
 | The run publishes some packages, then fails to publish one that has a Trusted Publisher | That name's Trusted Publisher has "Allow npm publish" unticked (npm's form always allows `npm stage publish`; publish is a separate checkbox). Tick it, check with `npm trust list <name>` (fresh 2FA; must show `permissions: publish, stage publish`), then follow the part-way recovery row above: the packages already published cannot be re-published. |
-| `pnpm release:bootstrap` ends with `✗ <name>: rc is (unset), expected …` after a successful publish | The registry's read replica lags the write: it knows the name but not yet the dist-tag, so the verification fails although `PUT 200` was returned. Confirm the name exists with `npm access get status <name>`, and re-check the tag with `npm view <name> dist-tags --prefer-online` a few minutes later. Do not publish again: the version is already there. |
+| `pnpm release:bootstrap` ends with `✗ <name>: rc is (unset), expected …` after a successful publish | The registry's read replica lags the write: it knows the name but not yet the dist-tag, so the verification fails although pnpm reported `Published package`. Confirm the name exists with `npm access get status <name>`, and re-check the tag with `npm view <name> dist-tags --prefer-online` a few minutes later. Do not publish again: the version is already there. |
 | `npm view <name> versions` lists `0.0.0-stage` | npm's placeholder for staged publishing, created by a first publish through the browser-approval flow: a stub with `"stub": true` and no code. Harmless; leave it. |
