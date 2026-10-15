@@ -273,7 +273,7 @@ function compare(found, baseline, limit = LIMIT) {
       const stale = staleKeys.filter((old) => fileOf(old) === fileOf(key));
       const hint =
         stale.length > 0
-          ? ` If it is a baselined function that was renamed or moved, run: pnpm lint:fn-length --update --rename '${stale[0]}' '${key}'`
+          ? ` If this is a baselined function under a new name or place, run: pnpm lint:fn-length --update --rename '${stale[0]}' '${key}'`
           : '';
       problems.push(
         `${key}: ${lines} lines, over the ${limit}-line limit and not in the baseline. Split it.${hint}`,
@@ -294,7 +294,7 @@ function compare(found, baseline, limit = LIMIT) {
   for (const [key, recorded] of Object.entries(baseline)) {
     if (found.has(key)) continue;
     fixable.push(
-      `${key}: baselined at ${recorded} lines but now at or under ${limit}, or renamed or gone; remove its baseline entry (pnpm lint:fn-length --update); if it was renamed or moved, use --update --rename <oldKey> <newKey> instead.`,
+      `${key}: baselined at ${recorded} lines but now at or under ${limit}, or gone; remove its baseline entry (pnpm lint:fn-length --update); if the function now has a new name or place, use --update --rename <oldKey> <newKey> instead.`,
     );
   }
   return { problems, fixable, lowered };
