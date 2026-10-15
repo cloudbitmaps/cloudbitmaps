@@ -37,8 +37,7 @@ npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs n
 
 You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
 package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it. Install one copy of `@cloudbitmaps/roaring` in a process: `materializeMany`
-refuses a segment from any other copy, and the other combines refuse one whose segment brand differs from this copy's.
+arrives on its own and you never install it. Install one copy of `@cloudbitmaps/roaring` in a process; a combine refuses a segment of another store, and a segment of another copy always belongs to another store.
 The family is six packages, released together at one version:
 
 | Package | What it is | Install it |

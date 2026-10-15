@@ -11,6 +11,14 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A segment of another installed copy of `@cloudbitmaps/roaring` is no longer accepted by a combine.** `intersect`,
+  `union`, `andNot` and the `*Into` verbs used to take a segment of another copy that carried the same versioned
+  brand; they refuse it, as `materializeMany` did, with a `ValidationError` that says it comes from another installed
+  copy. A store belongs to one copy, so another copy's segment always comes from another store. Install one copy of the
+  package in a process.
+
 ### Changed
 
 - **A steady `store.load()` at `keep: 12` is measured on `0.21.0`.** A run from AWS CloudShell in `us-east-1` on
@@ -24,6 +32,16 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A combine took another store's segment and answered from the receiving store's segment of the same name, or
+  published that answer.** A combine keeps each operand's name and resolves it in the store it runs on, so
+  `a.segment('x').intersect([b.segment('x')])` over two stores answered from `a`'s own `x` alone, `union` and `andNot`
+  likewise, and `intersectInto`, `unionInto`, `andNotInto` and `materializeMany` published that answer; a handle whose
+  name the receiver lacked failed with an operand that "names a segment that does not exist". Every operand, every
+  `exclude` and every destination of a combine, an `*Into` verb and `materializeMany` (every operand and every
+  `dest`) must now come from the store the call runs on. A segment of another store, of a second store object over the
+  same backend, or of another installed copy is refused with a `ValidationError` before any request: no read, no
+  write, no publish. The message names the verb and the role (an operand, an exclude, the destination), never the
+  segment, its namespace or a key.
 - **The privacy notes list everything the registry and the object store hold.** `PRIVACY.md` now says that a registry
   row carries the ledger of known generations in the clear, an encrypted segment's included (each generation's number
   and its object's footer checksum); that a row's summary records the object's tail size; that every generation object
