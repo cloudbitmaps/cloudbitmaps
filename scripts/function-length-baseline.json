@@ -1,0 +1,29 @@
+{
+  "limit": 100,
+  "functions": {
+    "packages/azure-blob/src/scrub-error.ts::copyOf": 111,
+    "packages/core/src/core/bulk-load.ts::bulkLoadAhead": 119,
+    "packages/core/src/core/combine-many.ts::class Run > pass": 225,
+    "packages/core/src/core/combine-many.ts::class Run > publishWave": 119,
+    "packages/core/src/core/crbm/reader.ts::class CrbmReader > open": 196,
+    "packages/core/src/core/erase-id.ts::eraseOnce": 639,
+    "packages/core/src/core/erase-id.ts::eraseOnce > fence": 105,
+    "packages/core/src/core/erasure.ts::dropSegmentFor": 109,
+    "packages/core/src/core/generation-gc.ts::listingPass": 120,
+    "packages/core/src/core/load.ts::runLoad": 222,
+    "packages/core/src/core/publish.ts::publishGenerationKept": 216,
+    "packages/core/src/core/rollback.ts::rollbackSegment": 222,
+    "packages/core/src/export/index.ts::runExport": 129,
+    "packages/roaring/src/index.ts::class CloudRoaring > materializeMany": 261,
+    "packages/roaring/src/testing/conformance.ts::registryConcurrency": 110,
+    "packages/roaring/src/testing/conformance.ts::registryConcurrency > describe callback": 105,
+    "packages/roaring/src/testing/conformance.ts::registryConformance": 986,
+    "packages/roaring/src/testing/conformance.ts::registryConformance > describe callback": 976,
+    "packages/roaring/src/testing/conformance.ts::registryDeleteConformance": 133,
+    "packages/roaring/src/testing/conformance.ts::registryDeleteConformance > describe callback": 131,
+    "packages/roaring/src/testing/conformance.ts::storageDriverConformance": 264,
+    "packages/roaring/src/testing/conformance.ts::storageDriverConformance > describe callback": 246,
+    "packages/roaring/src/wire-store.ts::resolveStorageSource": 113,
+    "packages/tools/src/cost.ts::buildReport": 266
+  }
+}

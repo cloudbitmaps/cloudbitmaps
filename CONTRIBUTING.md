@@ -18,6 +18,13 @@ Every change must pass these locally, and CI runs each of them on every pull req
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm api:surface:check` · `pnpm smoke`
+- `pnpm lint` also runs the function-length gate (`pnpm lint:fn-length`, `scripts/function-length.cjs`): no function in
+  `packages/*/src` may be over 100 code lines (blank lines and comment-only lines are not counted), and the 24 that
+  already were are listed with their sizes in `scripts/function-length-baseline.json`, a ratchet that can only go
+  down. It fails on a new function over the limit, on a baselined one that grew, and on one that shrank while its
+  entry stayed: after you shorten one, run `pnpm lint:fn-length --update` to lower or drop its entry and commit the
+  result. It never records growth. The script's header states what it cannot see (a rename changes a function's
+  identity, lines are counted rather than complexity, `tests/` and `scripts/` are not checked).
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
   Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
   (`docker compose up -d`, as [`tests/README.md`](tests/README.md) says), and a change that touches a driver runs it
