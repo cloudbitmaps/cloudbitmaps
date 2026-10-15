@@ -24,6 +24,15 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An Azure Blob error carries no credential.** The driver threw the `@azure/storage-blob` error as it came, and the
+  SDK keeps the request it sent on `err.request` and on `err.response.request`: with a shared-key client its
+  `Authorization: SharedKey <account>:<signature>` header, with a SAS client its URL, `sig=` included. The SDK hides
+  both from `util.inspect` and `JSON.stringify`, so a logger never printed them, but code that reads the property, or
+  walks the error and its `cause` chain, got the credential. Every error the driver throws, or keeps as a `cause`, is
+  now a copy without the request and the response; it keeps its class, name, message, stack, `code`, `statusCode` and
+  `details`, so a 403, 404, 409, 412 or 503 is classified as before. An `Authorization` value or a `sig=` value left in
+  the message, the stack or `details` is replaced by `[redacted]`. The S3 and GCS drivers already did this.
+
 - **The privacy notes list everything the registry and the object store hold.** `PRIVACY.md` now says that a registry
   row carries the ledger of known generations in the clear, an encrypted segment's included (each generation's number
   and its object's footer checksum); that a row's summary records the object's tail size; that every generation object
