@@ -487,23 +487,7 @@ async function eraseOnce(
   const from = record.currentGen ?? -1;
   const fromToken = record.token;
 
-  // The segment's DEK, reused across generations. Resolved before any object I/O so a slow keystore/KMS call
-  // sits outside the read-write window; an encrypted row with no keystore is a lost key, not a cleartext segment.
-  // Under a tombstone no key is held: its objects are searched in the clear, and one sealed under its key is skipped.
-  let aead: Aead | undefined;
-  if (tombstoned) {
-    // nothing to resolve
-  } else if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
-    if (deps.keystore === undefined) {
-      throw new KeyUnavailableError(
-        `segment "${ref.segment}" is encrypted but eraseIdFromSegment has no keystore`,
-      );
-    }
-    aead = await deps.keystore.openDek(record.wrappedDeks);
-  } else if (!pointerless && deps.requireEncryption === true) {
-    // A row with no pointer holds no key because it holds no data yet, so it is not a cleartext segment.
-    throw new ValidationError(`requireEncryption: segment "${ref.segment}" is cleartext`);
-  }
+  const aead = await resolveDek(ref, deps, record, { tombstoned, pointerless });
 
   const fromKey: GenKey = { ...base, generation: from };
   const c: EraseCall = {
@@ -532,310 +516,16 @@ async function eraseOnce(
     rewrote: undefined,
   };
 
-  /**
-   * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
-   * still at `from`. Returns a staged generation, or the result to report if the premise stopped holding.
-   *
-   * **Every object this phase touches can be deleted underneath it, by a concurrent call of this very
-   * function.** An erasure collects with `keep: 0`, which takes every generation below its new pointer — so a
-   * racing erasure deletes `from` while we are still streaming it, and deletes *the object we just wrote* too,
-   * since ours is below its pointer and can never become current. There are three separate round trips exposed:
-   * the reader open, every chunk of the rewrite (a whole-segment read — by far the longest window), and the
-   * verify.
-   *
-   * The documented answer to that race is `reason: 'superseded'` — *this call did not erase it; re-run against
-   * the new generation* — and it is what the publish already reports when its `expectFrom` fence fails. A bare
-   * `NotFoundError` instead is the same event wearing a different, unactionable face; through `eraseSubject` it
-   * becomes a note the facade documents as ambiguous about which side of the publish it landed on, so an
-   * Art. 17 operator is told *triage this* where the truth is *re-run*.
-   *
-   * **A `NotFoundError` is translated only after re-reading the row, and the row decides which answer.** The
-   * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
-   * `missing-storage-generation` state a failed publish leaves behind — or is another object than the row's summary
-   * names by its fingerprint, and that **throws**, because it is an integrity problem rather than a race and no
-   * re-run fixes it. A pointer that moved is `'superseded'`. The
-   * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
-   * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
-   * `'no-generation'` — the same answers this function gives when it reads either state up front, so a caller
-   * branching on `reason` never has to special-case where in the call it was discovered.
-   *
-   * `generation` is set only once the object is **durable**. Reporting it from `nextGeneration` was wrong in a
-   * way worth naming: if the row is gone by then, `nextGeneration` finds no row and no objects and restarts at
-   * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
-   * the one written *without* it, for an object that was never written.
-   */
-  const stage = async (): Promise<
-    | EraseIdResult
-    | { generation: number; key: GenKey; fingerprint: string; summary: RegistrySummary }
-  > => {
-    /** Set only once the object exists in the bucket — see the note above. */
-    let written: number | undefined;
-    // The row's summary of `from`, when it has one this call can use: the rewrite reads only the object it names, as a
-    // live read does, so an object put under the number from outside the library is never published as the rewrite.
-    const described = usableSummary(ref, record, aead);
-    try {
-      const reader = await read(() =>
-        openGenerationReader(deps.storage, fromKey, cryptoAt(c, from), {}, described?.fingerprint),
-      );
-      const bytes = await read(() => reader.getChunk(chunkKey));
-      // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
-      // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
-      if (bytes === null) return await notInCurrent(c);
-      const target = codec.safeDeserialize(bytes, maxBytes);
-      assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
-      if (!target.has(remainder)) return await notInCurrent(c);
-      target.remove(remainder);
-
-      // The rewrite is written before its row is: refuse here, not after, on a registry that cannot write one.
-      assertRegistryCanWrite(deps.registry, 'eraseIdFromSegment');
-      const generation = await nextGeneration(ref, deps);
-      const key: GenKey = { ...base, generation };
-      // The generation's metadata is part of it: the rewrite is the same generation without one id, so the new object
-      // carries the source's metadata as it is, and the row's summary of it says so. An erasure does not scan the
-      // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
-      // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
-      // authenticated and the summary is, so a stripped block is not made permanent by the rewrite. Such a source gets
-      // here only past a fingerprint forged to match the row's, since stripping the block changes the object's size.
-      const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
-      const tally = await writeCrbmGenerationStream(
-        deps.storage,
-        key,
-        rewrite(reader, chunkKey, target, codec, maxBytes, read),
-        { crypto: cryptoAt(c, generation), clock: deps.clock, metadata },
-      );
-      written = generation; // `putImmutable` commits atomically, so the object exists exactly now
-      c.rewrote = { generation, fingerprint: tally.fingerprint };
-      // Re-check the pointer before spending the verification read. The fence below is what makes the publish
-      // correct; this only saves a round trip on the common race, which the catch reports either way.
-      const beforeVerify = await deps.registry.get(ref);
-      const early = rowVerdict(c, beforeVerify, ['knownGens']);
-      if (early !== null) return refusedResult(c, early, written);
-      await read(() =>
-        verifyGeneration(deps.storage, key, { ...tally, metadata }, cryptoAt(c, generation)),
-      );
-      // The row's summary is built from what was written, never copied from the row it replaces: whatever that one
-      // held, a cached count or metadata that disagreed with the object it described goes with it.
-      const summary = ownSummary(
-        ref,
-        generation,
-        {
-          cardinality: tally.cardinality,
-          metadata,
-          fingerprint: tally.fingerprint,
-          tailBytes: tally.tailBytes,
-        },
-        aead,
-      );
-      return { generation, key, fingerprint: tally.fingerprint, summary };
-    } catch (err) {
-      if (!isNotFoundError(err)) throw err;
-      // The row decides which answer this is — but only if it can be read. A re-read that faults must not
-      // replace the `NotFoundError`: that error is the ONLY signal of the integrity state below, and swapping
-      // it for a transient-looking registry fault loses the one thing an operator needs to see.
-      let now: RegistryRecord | null;
-      try {
-        now = await deps.registry.get(ref);
-      } catch {
-        throw err;
-      }
-      const verdict = rowVerdict(c, now);
-      if (verdict !== null) return refusedResult(c, verdict, written);
-      // The pointer still names the object, and it is missing or is another object than the row's summary names:
-      // neither is a race, and nothing was published from it.
-      throw err;
-    }
-  };
-
-  /**
-   * Delete the object a refused rewrite wrote, when it would otherwise outlive the winner above its pointer.
-   *
-   * Only one position needs it: the pointer moved forward past `from` and stopped **below** `written`. Two winners
-   * leave it there: one whose object was already in the bucket when this call took its number (`nextGeneration`
-   * numbers above everything present), and a load that numbered after it from its own row, which takes
-   * `currentGen + 1` whenever no object holds that number, below this call's object. Either way the object is
-   * above the winner's pointer, where no collection ever looks. The
-   * object was derived from `from`, so when the winner was another erasure it still holds the id that erasure
-   * has just reported gone, one `rollback({ allowUnknown: true })` from being served, and the newest superseded
-   * generation once a later load raises the pointer past it, which is exactly what that load's `keep` retains.
-   *
-   * Under a tombstone it is deleted too, as a refused load deletes its own: every generation under one is garbage
-   * (invariant 4's one exception), and a drop that landed while this rewrite streamed usually finished its sweep
-   * before the object committed, so nothing else would take it. It is a copy of the dropped segment less one id.
-   *
-   * Everywhere else the object is left alone, as a refused load leaves its own once the row has changed. At or
-   * above `written` the pointer either names it or belongs to a writer that numbered after it and whose
-   * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone or without a pointer
-   * is not one this call can reason about. The position is read from a fresh row.
-   *
-   * Above the winner's pointer the number can be taken again: another erasure, of an id this object still holds,
-   * deletes it as a holder, and a load numbers `currentGen + 1`, which can be `written`. A cleartext load of the ids
-   * this object holds writes its very bytes, and a footer names an object by its bytes, not by its writer. So the object
-   * is first matched to this rewrite's fingerprint by one read of its footer (one that is gone, is another object, or
-   * cannot be read is kept), and then the row the position was read from is renewed ({@link rowRenewal}) before the
-   * delete. Whoever wrote the object that read matched read its row before writing it, so before the renewal, and its
-   * publish, fenced on that row, is refused. A publish that landed after this call read the row makes the renewal lose,
-   * and the call reads the row and decides again. One that landed before it left the pointer on the number or above it,
-   * and the object is kept, unless a rollback has since moved the pointer below it: then the object is a generation a
-   * load published with this rewrite's very bytes, and it is deleted as if it were the rewrite, so a pinned handle of it
-   * fails with `NotFoundError` for any chunk it has yet to read, a lease of it in the row names a missing generation, and
-   * a rollback to it finds it gone. A renewal lost to a write of leases
-   * alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; the object
-   * is kept after {@link DISCARD_ATTEMPTS} renewals lost to other writes. Only this call's own renewal licenses the
-   * delete: another erasure's, landing between this call's read of the row and its footer read, lets a load read the
-   * renewed row and take the number before the footer read. A name purged and re-created is decided the same way, on
-   * its own row.
-   *
-   * The delete passes the version the footer read reported, so on a storage driver that reports `conditionalDelete` it
-   * removes that object and no other: an object put under the number after the renewal, by a load that read the renewed
-   * row once another erasure had deleted this one, stays, and that refusal is swallowed, since the object this call
-   * wrote is gone. That one round trip stays open where the driver ignores the condition, or derives its versions from
-   * the bytes and the load wrote the same ones: there the delete removes the load's generation. A rollback onto the
-   * object inside it leaves the pointer on a missing object too, and nothing reports it. Any other fault of the discard,
-   * the renewal's `TransientError` included, is thrown in place of the refusal, unlike a refused load's reclaim, which
-   * swallows every fault: the object this call would leave above the pointer can hold an id that another erasure has
-   * reported gone. Under a tombstone the delete is by number, with no read and no renewal: every writer refuses a
-   * `destroyed` row until it is purged, so no load takes the number again.
-   *
-   * Returns the row it read last, so a refused publish reports what that row says.
-   */
-  const discardRefused = async (own: {
-    readonly generation: number;
-    readonly fingerprint: string;
-  }): Promise<RegistryRecord | null> => {
-    const key: GenKey = { ...base, generation: own.generation };
-    const renewal = rowRenewal(ref, deps);
-    const churn = leaseChurn({ clock: deps.clock, rng: renewal.rng });
-    let row = await deps.registry.get(ref);
-    for (let attempts = 1; ; attempts++) {
-      if (row !== null && row.status === 'destroyed') {
-        await deps.storage.delete(key);
-        return row;
-      }
-      if (row === null || row.status !== 'active' || row.currentGen === null) return row;
-      if (row.currentGen <= from || row.currentGen >= own.generation) return row;
-      const proven = await provenObject(deps.storage, key, own.fingerprint);
-      if (proven === null) return row;
-      // The proof reads bytes, not who wrote them: a load of the same ids can have taken the number again. Renewing the
-      // row this decision read refuses every publish fenced on a row read before the proof; a renewal that loses means
-      // another write landed since, so the decision is made again from the row read after it.
-      const renewed = await renewal.renew(row);
-      if ('row' in renewed) {
-        try {
-          await deps.storage.delete(key, { ifVersion: proven.version });
-        } catch (err) {
-          if (!isWriteConflictError(err)) throw err;
-        }
-        return row;
-      }
-      // A row changed only in its leases, or renewed by another erasure, is waited out and costs no attempt: losing to
-      // the other losers of one race must not leave an object holding the id the winner reported erased.
-      const settled = await churn.settle(row, renewed.lost, () => deps.registry.get(ref), [
-        'pointerId',
-      ]);
-      if (settled === undefined && attempts >= DISCARD_ATTEMPTS) return renewed.lost;
-      if (settled !== undefined) attempts -= 1;
-      row = settled === undefined ? renewed.lost : settled.row;
-    }
-  };
-
   if (tombstoned) return await underTombstone(c);
   if (pointerless) return await unpublished(c);
-  const staged = await stage();
+  const staged = await stage(c);
   if ('erased' in staged) {
     if (!staged.erased && staged.generation !== undefined && c.rewrote !== undefined) {
-      await discardRefused(c.rewrote);
+      await discardRefused(c, c.rewrote);
     }
     return staged;
   }
-  const { generation, key, fingerprint, summary } = staged;
-
-  // Read-modify-write, not merely forward-only, and the distinction is the whole correctness of this function.
-  //
-  // The new generation's content is `from` minus one bit, so it is only a valid successor to `from`. Publishing
-  // it forward-only would land it over ANY newer generation, because `nextGeneration` deliberately picks a number
-  // above everything in the bucket — including an object a concurrent writer just published. Two ways that goes
-  // wrong: a load that published between our read and our publish would have its whole set discarded and its
-  // object collected; and of two concurrent erasures, the second one's generation would put the FIRST one's id
-  // back, deleting the generation that evidenced its removal, while both returned `erased: true` with a
-  // `segment.rewrite` event. A false Art. 17 receipt is the worst output this module can produce.
-  //
-  // `expectFrom` makes the publish land only while the pointer is still exactly `from`.
-  //
-  // Reported, not thrown — the caller re-runs against the new generation, which may or may not still hold the id.
-  const published = await publishGeneration(deps.registry, key, {
-    expectFrom: from,
-    expectToken: fromToken,
-    // A lease written while the rewrite streams moves the token and nothing it derived from: it does not refuse it.
-    expectRow: record,
-    expectRowIgnores: ['knownGens'],
-    summary,
-    // The row then records that no generation below the new pointer is kept, as the collection below leaves it: its
-    // ledger is the rewrite alone, whose footer checksum is the one its summary describes.
-    footerCrc: footerCrcOf(fingerprint),
-    keep: 0,
-    // Every generation below the new pointer is deleted whatever a lease says, so the row drops its leases.
-    clearLeases: true,
-    // A write that ends without an answer is settled by reading the row: a registry that reports its writes' tokens
-    // settles it by the row's `pointerId`; any other takes a pointer at this number for this rewrite's only over an
-    // object whose footer matches what it wrote, so one of other bytes cannot pass for it, and one of the same bytes
-    // holds the rewrite's content.
-    holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
-    clock: deps.clock,
-    rng: deps.rng ?? deps.readRetry?.rng,
-  });
-  if (!published) {
-    // The publish refuses on the row's token before it looks at the row's status, so the row read here says why:
-    // a concurrent `dropSegment` is `'destroyed'`, not a race a re-run would win.
-    const now = await discardRefused({ generation, fingerprint });
-    return {
-      ...base,
-      erased: false,
-      reason: rowVerdict(c, now) ?? 'superseded',
-      fromGeneration: from,
-      generation,
-      collected: [],
-    };
-  }
-  audit.onEvent({
-    kind: 'segment.rewrite',
-    namespace: ref.namespace,
-    segment: ref.segment,
-    ...incarnationField(fromToken),
-    fromGeneration: from,
-    generation,
-  });
-  // `keep: 0`: the whole point is that the generation holding the bit does not survive this call. Every
-  // generation below the new pointer is safe to take: the CAS succeeded while the pointer was still at `from`, so
-  // nothing in `(from, generation)` had been published before us, and no read that resolves the pointer can reach
-  // any of them. Deleting them is the strongest form of the "physically gone on return" claim rather than a risk to
-  // a load still in flight. The pointer can still move DOWN onto one of them — an operator's `rollbackSegment`,
-  // or a purge-and-recreate (invariant 1) — which is why the collector re-proves the row before every delete
-  // rather than trusting the one this call read, and why the receipt below reads what is left rather than
-  // assuming. A rollback that lands between a re-proof and its delete, and that the row still shows when read again, makes
-  // the call throw `NotFoundError`, after the `segment.rewrite` event above: the collection stopped there.
-  const swept = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
-  if (swept.missing !== undefined) {
-    throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
-  }
-  const collected = [...swept.deleted];
-  let missing: number | undefined;
-  // The collection spared a generation the row names, which a rollback onto it or a load's window made known after the
-  // rewrite's write left the ledger as the rewrite alone: it is taken out again and the collection runs again.
-  if (missing === undefined && (swept.knownSpared?.length ?? 0) > 0) {
-    const again = await collectAgain(
-      c,
-      { spared: swept.knownSpared ?? [], ledgered: true },
-      { byName: [], below: generation },
-    );
-    collected.push(...again.deleted);
-    missing = again.missing;
-  }
-  if (missing !== undefined) {
-    throw pointerOnDeletedError(ref, { kind: 'erasure' }, missing);
-  }
-  const left = await holderLeft(c, new Set([generation]));
-  if (left !== undefined) throw cannotRemove(c, left);
-  return { ...base, erased: true, fromGeneration: from, generation, collected };
+  return await finishRewrite(c, staged);
 }
 
 /**
@@ -1652,6 +1342,356 @@ async function notInCurrent(c: EraseCall): Promise<EraseIdResult> {
     };
   }
   throw cannotRemove(c, left);
+}
+
+/** A rewrite that exists and is verified, ready to publish. */
+interface Staged {
+  readonly generation: number;
+  readonly key: GenKey;
+  readonly fingerprint: string;
+  readonly summary: RegistrySummary;
+}
+
+/**
+ * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
+ * still at `from`. Returns a staged generation, or the result to report if the premise stopped holding.
+ *
+ * **Every object this phase touches can be deleted underneath it, by a concurrent call of this very
+ * function.** An erasure collects with `keep: 0`, which takes every generation below its new pointer — so a
+ * racing erasure deletes `from` while we are still streaming it, and deletes *the object we just wrote* too,
+ * since ours is below its pointer and can never become current. There are three separate round trips exposed:
+ * the reader open, every chunk of the rewrite (a whole-segment read — by far the longest window), and the
+ * verify.
+ *
+ * The documented answer to that race is `reason: 'superseded'` — *this call did not erase it; re-run against
+ * the new generation* — and it is what the publish already reports when its `expectFrom` fence fails. A bare
+ * `NotFoundError` instead is the same event wearing a different, unactionable face; through `eraseSubject` it
+ * becomes a note the facade documents as ambiguous about which side of the publish it landed on, so an
+ * Art. 17 operator is told *triage this* where the truth is *re-run*.
+ *
+ * **A `NotFoundError` is translated only after re-reading the row, and the row decides which answer.** The
+ * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
+ * `missing-storage-generation` state a failed publish leaves behind — or is another object than the row's summary
+ * names by its fingerprint, and that **throws**, because it is an integrity problem rather than a race and no
+ * re-run fixes it. A pointer that moved is `'superseded'`. The
+ * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
+ * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
+ * `'no-generation'` — the same answers this function gives when it reads either state up front, so a caller
+ * branching on `reason` never has to special-case where in the call it was discovered.
+ *
+ * `generation` is set only once the object is **durable**. Reporting it from `nextGeneration` was wrong in a
+ * way worth naming: if the row is gone by then, `nextGeneration` finds no row and no objects and restarts at
+ * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
+ * the one written *without* it, for an object that was never written.
+ */
+async function stage(c: EraseCall): Promise<EraseIdResult | Staged> {
+  const {
+    ref,
+    deps,
+    chunkKey,
+    remainder,
+    codec,
+    maxBytes,
+    base,
+    record,
+    from,
+    aead,
+    fromKey,
+    read,
+  } = c;
+  /** Set only once the object exists in the bucket — see the note above. */
+  let written: number | undefined;
+  // The row's summary of `from`, when it has one this call can use: the rewrite reads only the object it names, as a
+  // live read does, so an object put under the number from outside the library is never published as the rewrite.
+  const described = usableSummary(ref, record, aead);
+  try {
+    const reader = await read(() =>
+      openGenerationReader(deps.storage, fromKey, cryptoAt(c, from), {}, described?.fingerprint),
+    );
+    const bytes = await read(() => reader.getChunk(chunkKey));
+    // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
+    // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
+    if (bytes === null) return await notInCurrent(c);
+    const target = codec.safeDeserialize(bytes, maxBytes);
+    assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
+    if (!target.has(remainder)) return await notInCurrent(c);
+    target.remove(remainder);
+
+    // The rewrite is written before its row is: refuse here, not after, on a registry that cannot write one.
+    assertRegistryCanWrite(deps.registry, 'eraseIdFromSegment');
+    const generation = await nextGeneration(ref, deps);
+    const key: GenKey = { ...base, generation };
+    // The generation's metadata is part of it: the rewrite is the same generation without one id, so the new object
+    // carries the source's metadata as it is, and the row's summary of it says so. An erasure does not scan the
+    // metadata; it is the caller's to keep free of ids. On an encrypted segment a source with no metadata block, whose
+    // row's sealed summary of this generation has metadata, is carried with the row's: the block's presence is not
+    // authenticated and the summary is, so a stripped block is not made permanent by the rewrite. Such a source gets
+    // here only past a fingerprint forged to match the row's, since stripping the block changes the object's size.
+    const metadata = metadataToCarry(reader.metadata, aead === undefined ? undefined : described);
+    const tally = await writeCrbmGenerationStream(
+      deps.storage,
+      key,
+      rewrite(reader, chunkKey, target, codec, maxBytes, read),
+      { crypto: cryptoAt(c, generation), clock: deps.clock, metadata },
+    );
+    written = generation; // `putImmutable` commits atomically, so the object exists exactly now
+    c.rewrote = { generation, fingerprint: tally.fingerprint };
+    // Re-check the pointer before spending the verification read. The fence below is what makes the publish
+    // correct; this only saves a round trip on the common race, which the catch reports either way.
+    const beforeVerify = await deps.registry.get(ref);
+    const early = rowVerdict(c, beforeVerify, ['knownGens']);
+    if (early !== null) return refusedResult(c, early, written);
+    await read(() =>
+      verifyGeneration(deps.storage, key, { ...tally, metadata }, cryptoAt(c, generation)),
+    );
+    // The row's summary is built from what was written, never copied from the row it replaces: whatever that one
+    // held, a cached count or metadata that disagreed with the object it described goes with it.
+    const summary = ownSummary(
+      ref,
+      generation,
+      {
+        cardinality: tally.cardinality,
+        metadata,
+        fingerprint: tally.fingerprint,
+        tailBytes: tally.tailBytes,
+      },
+      aead,
+    );
+    return { generation, key, fingerprint: tally.fingerprint, summary };
+  } catch (err) {
+    if (!isNotFoundError(err)) throw err;
+    // The row decides which answer this is — but only if it can be read. A re-read that faults must not
+    // replace the `NotFoundError`: that error is the ONLY signal of the integrity state below, and swapping
+    // it for a transient-looking registry fault loses the one thing an operator needs to see.
+    let now: RegistryRecord | null;
+    try {
+      now = await deps.registry.get(ref);
+    } catch {
+      throw err;
+    }
+    const verdict = rowVerdict(c, now);
+    if (verdict !== null) return refusedResult(c, verdict, written);
+    // The pointer still names the object, and it is missing or is another object than the row's summary names:
+    // neither is a race, and nothing was published from it.
+    throw err;
+  }
+}
+
+/**
+ * Delete the object a refused rewrite wrote, when it would otherwise outlive the winner above its pointer.
+ *
+ * Only one position needs it: the pointer moved forward past `from` and stopped **below** `written`. Two winners
+ * leave it there: one whose object was already in the bucket when this call took its number (`nextGeneration`
+ * numbers above everything present), and a load that numbered after it from its own row, which takes
+ * `currentGen + 1` whenever no object holds that number, below this call's object. Either way the object is
+ * above the winner's pointer, where no collection ever looks. The
+ * object was derived from `from`, so when the winner was another erasure it still holds the id that erasure
+ * has just reported gone, one `rollback({ allowUnknown: true })` from being served, and the newest superseded
+ * generation once a later load raises the pointer past it, which is exactly what that load's `keep` retains.
+ *
+ * Under a tombstone it is deleted too, as a refused load deletes its own: every generation under one is garbage
+ * (invariant 4's one exception), and a drop that landed while this rewrite streamed usually finished its sweep
+ * before the object committed, so nothing else would take it. It is a copy of the dropped segment less one id.
+ *
+ * Everywhere else the object is left alone, as a refused load leaves its own once the row has changed. At or
+ * above `written` the pointer either names it or belongs to a writer that numbered after it and whose
+ * collection takes it; at or below `from` nothing replaced `from`; and a row that is gone or without a pointer
+ * is not one this call can reason about. The position is read from a fresh row.
+ *
+ * Above the winner's pointer the number can be taken again: another erasure, of an id this object still holds,
+ * deletes it as a holder, and a load numbers `currentGen + 1`, which can be `written`. A cleartext load of the ids
+ * this object holds writes its very bytes, and a footer names an object by its bytes, not by its writer. So the object
+ * is first matched to this rewrite's fingerprint by one read of its footer (one that is gone, is another object, or
+ * cannot be read is kept), and then the row the position was read from is renewed ({@link rowRenewal}) before the
+ * delete. Whoever wrote the object that read matched read its row before writing it, so before the renewal, and its
+ * publish, fenced on that row, is refused. A publish that landed after this call read the row makes the renewal lose,
+ * and the call reads the row and decides again. One that landed before it left the pointer on the number or above it,
+ * and the object is kept, unless a rollback has since moved the pointer below it: then the object is a generation a
+ * load published with this rewrite's very bytes, and it is deleted as if it were the rewrite, so a pinned handle of it
+ * fails with `NotFoundError` for any chunk it has yet to read, a lease of it in the row names a missing generation, and
+ * a rollback to it finds it gone. A renewal lost to a write of leases
+ * alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; the object
+ * is kept after {@link DISCARD_ATTEMPTS} renewals lost to other writes. Only this call's own renewal licenses the
+ * delete: another erasure's, landing between this call's read of the row and its footer read, lets a load read the
+ * renewed row and take the number before the footer read. A name purged and re-created is decided the same way, on
+ * its own row.
+ *
+ * The delete passes the version the footer read reported, so on a storage driver that reports `conditionalDelete` it
+ * removes that object and no other: an object put under the number after the renewal, by a load that read the renewed
+ * row once another erasure had deleted this one, stays, and that refusal is swallowed, since the object this call
+ * wrote is gone. That one round trip stays open where the driver ignores the condition, or derives its versions from
+ * the bytes and the load wrote the same ones: there the delete removes the load's generation. A rollback onto the
+ * object inside it leaves the pointer on a missing object too, and nothing reports it. Any other fault of the discard,
+ * the renewal's `TransientError` included, is thrown in place of the refusal, unlike a refused load's reclaim, which
+ * swallows every fault: the object this call would leave above the pointer can hold an id that another erasure has
+ * reported gone. Under a tombstone the delete is by number, with no read and no renewal: every writer refuses a
+ * `destroyed` row until it is purged, so no load takes the number again.
+ *
+ * Returns the row it read last, so a refused publish reports what that row says.
+ */
+async function discardRefused(
+  c: EraseCall,
+  own: { readonly generation: number; readonly fingerprint: string },
+): Promise<RegistryRecord | null> {
+  const { ref, deps, base, from } = c;
+  const key: GenKey = { ...base, generation: own.generation };
+  const renewal = rowRenewal(ref, deps);
+  const churn = leaseChurn({ clock: deps.clock, rng: renewal.rng });
+  let row = await deps.registry.get(ref);
+  for (let attempts = 1; ; attempts++) {
+    if (row !== null && row.status === 'destroyed') {
+      await deps.storage.delete(key);
+      return row;
+    }
+    if (row === null || row.status !== 'active' || row.currentGen === null) return row;
+    if (row.currentGen <= from || row.currentGen >= own.generation) return row;
+    const proven = await provenObject(deps.storage, key, own.fingerprint);
+    if (proven === null) return row;
+    // The proof reads bytes, not who wrote them: a load of the same ids can have taken the number again. Renewing the
+    // row this decision read refuses every publish fenced on a row read before the proof; a renewal that loses means
+    // another write landed since, so the decision is made again from the row read after it.
+    const renewed = await renewal.renew(row);
+    if ('row' in renewed) {
+      try {
+        await deps.storage.delete(key, { ifVersion: proven.version });
+      } catch (err) {
+        if (!isWriteConflictError(err)) throw err;
+      }
+      return row;
+    }
+    // A row changed only in its leases, or renewed by another erasure, is waited out and costs no attempt: losing to
+    // the other losers of one race must not leave an object holding the id the winner reported erased.
+    const settled = await churn.settle(row, renewed.lost, () => deps.registry.get(ref), [
+      'pointerId',
+    ]);
+    if (settled === undefined && attempts >= DISCARD_ATTEMPTS) return renewed.lost;
+    if (settled !== undefined) attempts -= 1;
+    row = settled === undefined ? renewed.lost : settled.row;
+  }
+}
+
+/**
+ * Publish the rewrite fenced on the row it was derived from, and, once it is authoritative, delete every generation
+ * below it and prove none holds the id.
+ */
+async function finishRewrite(c: EraseCall, staged: Staged): Promise<EraseIdResult> {
+  const { ref, deps, audit, base, record, from, fromToken } = c;
+  const { generation, key, fingerprint, summary } = staged;
+
+  // Read-modify-write, not merely forward-only, and the distinction is the whole correctness of this function.
+  //
+  // The new generation's content is `from` minus one bit, so it is only a valid successor to `from`. Publishing
+  // it forward-only would land it over ANY newer generation, because `nextGeneration` deliberately picks a number
+  // above everything in the bucket — including an object a concurrent writer just published. Two ways that goes
+  // wrong: a load that published between our read and our publish would have its whole set discarded and its
+  // object collected; and of two concurrent erasures, the second one's generation would put the FIRST one's id
+  // back, deleting the generation that evidenced its removal, while both returned `erased: true` with a
+  // `segment.rewrite` event. A false Art. 17 receipt is the worst output this module can produce.
+  //
+  // `expectFrom` makes the publish land only while the pointer is still exactly `from`.
+  //
+  // Reported, not thrown — the caller re-runs against the new generation, which may or may not still hold the id.
+  const published = await publishGeneration(deps.registry, key, {
+    expectFrom: from,
+    expectToken: fromToken,
+    // A lease written while the rewrite streams moves the token and nothing it derived from: it does not refuse it.
+    expectRow: record,
+    expectRowIgnores: ['knownGens'],
+    summary,
+    // The row then records that no generation below the new pointer is kept, as the collection below leaves it: its
+    // ledger is the rewrite alone, whose footer checksum is the one its summary describes.
+    footerCrc: footerCrcOf(fingerprint),
+    keep: 0,
+    // Every generation below the new pointer is deleted whatever a lease says, so the row drops its leases.
+    clearLeases: true,
+    // A write that ends without an answer is settled by reading the row: a registry that reports its writes' tokens
+    // settles it by the row's `pointerId`; any other takes a pointer at this number for this rewrite's only over an
+    // object whose footer matches what it wrote, so one of other bytes cannot pass for it, and one of the same bytes
+    // holds the rewrite's content.
+    holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
+    clock: deps.clock,
+    rng: deps.rng ?? deps.readRetry?.rng,
+  });
+  if (!published) {
+    // The publish refuses on the row's token before it looks at the row's status, so the row read here says why:
+    // a concurrent `dropSegment` is `'destroyed'`, not a race a re-run would win.
+    const now = await discardRefused(c, { generation, fingerprint });
+    return {
+      ...base,
+      erased: false,
+      reason: rowVerdict(c, now) ?? 'superseded',
+      fromGeneration: from,
+      generation,
+      collected: [],
+    };
+  }
+  audit.onEvent({
+    kind: 'segment.rewrite',
+    namespace: ref.namespace,
+    segment: ref.segment,
+    ...incarnationField(fromToken),
+    fromGeneration: from,
+    generation,
+  });
+  // `keep: 0`: the whole point is that the generation holding the bit does not survive this call. Every
+  // generation below the new pointer is safe to take: the CAS succeeded while the pointer was still at `from`, so
+  // nothing in `(from, generation)` had been published before us, and no read that resolves the pointer can reach
+  // any of them. Deleting them is the strongest form of the "physically gone on return" claim rather than a risk to
+  // a load still in flight. The pointer can still move DOWN onto one of them — an operator's `rollbackSegment`,
+  // or a purge-and-recreate (invariant 1) — which is why the collector re-proves the row before every delete
+  // rather than trusting the one this call read, and why the receipt below reads what is left rather than
+  // assuming. A rollback that lands between a re-proof and its delete, and that the row still shows when read again, makes
+  // the call throw `NotFoundError`, after the `segment.rewrite` event above: the collection stopped there.
+  const swept = await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true });
+  if (swept.missing !== undefined) {
+    throw pointerOnDeletedError(ref, { kind: 'erasure' }, swept.missing);
+  }
+  const collected = [...swept.deleted];
+  let missing: number | undefined;
+  // The collection spared a generation the row names, which a rollback onto it or a load's window made known after the
+  // rewrite's write left the ledger as the rewrite alone: it is taken out again and the collection runs again.
+  if (missing === undefined && (swept.knownSpared?.length ?? 0) > 0) {
+    const again = await collectAgain(
+      c,
+      { spared: swept.knownSpared ?? [], ledgered: true },
+      { byName: [], below: generation },
+    );
+    collected.push(...again.deleted);
+    missing = again.missing;
+  }
+  if (missing !== undefined) {
+    throw pointerOnDeletedError(ref, { kind: 'erasure' }, missing);
+  }
+  const left = await holderLeft(c, new Set([generation]));
+  if (left !== undefined) throw cannotRemove(c, left);
+  return { ...base, erased: true, fromGeneration: from, generation, collected };
+}
+
+/**
+ * The segment's DEK, reused across generations. Resolved before any object I/O so a slow keystore/KMS call
+ * sits outside the read-write window; an encrypted row with no keystore is a lost key, not a cleartext segment.
+ * Under a tombstone no key is held: its objects are searched in the clear, and one sealed under its key is skipped.
+ */
+async function resolveDek(
+  ref: SegmentRef,
+  deps: EraseIdDeps,
+  record: RegistryRecord,
+  row: { readonly tombstoned: boolean; readonly pointerless: boolean },
+): Promise<Aead | undefined> {
+  if (row.tombstoned) return undefined;
+  if (record.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
+    if (deps.keystore === undefined) {
+      throw new KeyUnavailableError(
+        `segment "${ref.segment}" is encrypted but eraseIdFromSegment has no keystore`,
+      );
+    }
+    return await deps.keystore.openDek(record.wrappedDeks);
+  }
+  // A row with no pointer holds no key because it holds no data yet, so it is not a cleartext segment.
+  if (!row.pointerless && deps.requireEncryption === true) {
+    throw new ValidationError(`requireEncryption: segment "${ref.segment}" is cleartext`);
+  }
+  return undefined;
 }
 
 /**
