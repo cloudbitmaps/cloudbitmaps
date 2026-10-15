@@ -17,10 +17,10 @@
  * ABOVE `currentGen`, where generation collection deliberately never looks (it deletes strictly below the
  * pointer), so a refused load deletes its own object before returning, while the segment's row is unchanged (or
  * differs only in its leases), gone or `destroyed`, or has key material when the load wrote cleartext. Under a row
- * that is gone or keyed, one read of the object's footer must match what the load wrote first, which keeps another
- * object, though not one with the same bytes: a re-created segment's load of the same cleartext ids writes those. Once
- * another write has otherwise changed the row, the object stays: its number may by then name another writer's object,
- * and a footer cannot tell that from this load's own when that writer loaded the same ids. It is an orphan until a
+ * that is gone or keyed, one read of the object's footer must match what the load wrote first: the footer carries the
+ * write identity this load drew, so it keeps another writer's object, a re-created segment's load of the same cleartext
+ * ids included. Once another write has otherwise changed the row, the object stays: its number may by then name another
+ * writer's object, and the decision there comes from the row. It is an orphan until a
  * later load's collection takes it, and until then a rollback onto it is refused unless `allowUnknown` is passed, since the
  * row never recorded it.
  */
@@ -33,7 +33,7 @@ import { provenObject, openGenerationReader, provesOwnObject } from './crbm-open
 import { readSeed, wantsSeed } from './ledger-seed';
 import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept, type PublishResult } from './publish';
-import type { Clock, Rng } from './determinism';
+import type { Clock, Entropy, Rng } from './determinism';
 import { heldGenerations, onlyLeasesDiffer } from './leases';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -79,6 +79,13 @@ export interface LoadDeps {
    * bound). Absent, the read retry's source is used if it has one, and otherwise each wait is its bound.
    */
   readonly rng?: Rng;
+  /**
+   * The source of the write's identity: 12 random bytes the new generation's footer carries (for a cleartext generation;
+   * an encrypted one carries its index's AEAD nonce), so two loads of the same ids at the same number are two objects
+   * and every check that a footer is "mine" names this write. Required in practice: a load without one is refused with
+   * {@link ValidationError} before it reads an id. `@cloudbitmaps/roaring` supplies Web Crypto's by default.
+   */
+  readonly entropy?: Entropy;
   /**
    * The store's read retry, for the read the guard makes of the current generation: a transient fault there is run
    * again under it rather than failing the load. Absent, the read is made once. It does not govern the write: a
@@ -374,8 +381,8 @@ export type LoadRefusal =
    * the bucket, still billed, until a later load's collection deletes it or the segment is dropped, because its
    * generation number may by then name another writer's object; until it goes, a rollback onto it needs `allowUnknown`, as onto any generation the row does not know. Once the row is
    * `destroyed` (dropped or crypto-shredded), the object is deleted; once the row is gone, so is an object whose footer
-   * matches what this load wrote (a re-created segment's load of the same cleartext ids writes a match), and so is a
-   * cleartext one under a row with key material.
+   * matches what this load wrote (another load's object of the same ids is not a match: the footer carries each write's
+   * own identity), and so is a cleartext one under a row with key material.
    */
   | 'superseded';
 
@@ -510,7 +517,8 @@ async function currentCardinality(
  *
  * `input` is ids, or a whole bitmap as `{ serialized }` portable Roaring bytes or a `{ bitmap }` with
  * `serialize('portable')` ({@link LoadInput}). A bitmap input is checked, decoded and serialized before the first
- * request, and is written from its own chunks; the generation is byte for byte the one its ids would write.
+ * request, and is written from its own chunks; the generation holds chunk for chunk what its ids would write, and carries its own write
+ * identity in the footer like any other.
  *
  * Returns what was written and whether it became current. A refusal is **not** an exception: `published: false`
  * with a `reason` is a normal outcome a caller branches on, in the same shape as a successful load, because the
@@ -645,6 +653,7 @@ async function runLoad(
         requireEncryption: deps.requireEncryption,
         codec: deps.codec,
         clock: deps.clock,
+        entropy: deps.entropy,
         metadata,
         row,
       },
@@ -704,12 +713,12 @@ async function runLoad(
    *   that is gone, does not match, or cannot be read is kept. The delete passes the version that read reported, so on
    *   a storage driver that reports `conditionalDelete` it removes that object and no other: a number taken again
    *   between the read and the delete keeps the object put under it since, and the refused delete is a fault of the
-   *   cleanup, which the refusal swallows. The proof is of bytes: under no row, a re-created name's load of the same
-   *   cleartext ids writes the same ones, so a refusal that straddles a purge can delete that load's generation, which
-   *   nothing after it reports; the grace before a tombstone is purged keeps a purge out of a load's run.
-   * - Any other row: the object stays, an orphan a later load's collection takes. The footer names the object's bytes,
-   *   not the load that wrote them, and a load of the same ids writes the same bytes, so a read of it cannot tell this
-   *   load's object from a generation another load published under the number, or still will.
+   *   cleanup, which the refusal swallows. The fingerprint names one write, since the footer's checksum covers the write
+   *   identity this load drew: under no row, a re-created name's load of the same cleartext ids writes the same chunks
+   *   under another identity, so a refusal that straddles a purge keeps that load's generation.
+   * - Any other row: the object stays, an orphan a later load's collection takes. Another write has
+   *   changed the row, and the row does not say whether that write took this number: the object under it may be a
+   *   generation another load published or still will, and keeping an orphan is the cheaper failure.
    *
    * The first two delete by number, with no condition: the decision comes from the row, and the object is this
    * load's own write, of which the write reports no version.

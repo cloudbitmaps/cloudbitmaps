@@ -106,7 +106,7 @@ export interface CodecBitmap {
   /**
    * This set as storage chunks: ascending by chunk key, empty chunks left out, each payload exactly the bytes that
    * {@link CodecInterface.fromValues} of that chunk's low 16 bits, then {@link optimize}, then {@link serialize}
-   * would give. So a generation written from these is byte for byte the one the same ids write. It may re-encode
+   * would give. So a generation written from these holds chunk for chunk what the same ids write. It may re-encode
    * this bitmap in place first, as `optimize()` does; membership is untouched.
    *
    * **Flavor-author surface, and optional.** A load from a bitmap or from serialized bytes writes these, never

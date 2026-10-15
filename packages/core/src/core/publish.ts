@@ -275,10 +275,10 @@ interface PublishOptions {
  *   write is the caller's own: the write is taken to have landed, and the publish returns `true`. A registry that
  *   reports each write's token ({@link IRegistryDriver.reportsWriteTokens}) settles it by the row's `pointerId`, which
  *   names the writer of the write that last set the pointer: the write is the call's own when that is the token of a
- *   write this call sent. One that does not is settled by `holdsOwnObject` finding the caller's bytes under the number:
- *   only the writer of a write-once object publishes its number, but a number is taken again once its object is
- *   deleted, and a load of the same cleartext ids writes the same bytes, so another writer's identical object under
- *   the number passes for the caller's;
+ *   write this call sent. One that does not is settled by `holdsOwnObject` finding the caller's object under the number
+ *   by its footer, which carries the write identity the caller drew: a number is taken again once its object is
+ *   deleted, but another writer's object under it, of the same ids or not, is another write and does not pass for the
+ *   caller's;
  * - the row is still the one the write was made against (the same token, or still no row): the write may land yet. The
  *   publish then waits, on the injected clock, and sends a **new** write from the row it just read: a request of its
  *   own, not a replay of the driver's, carrying the same version, so under the registry's fence at most one of the two

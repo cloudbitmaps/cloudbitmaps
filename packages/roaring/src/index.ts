@@ -81,6 +81,7 @@ import type {
   LoadResult,
   RollbackResult,
   Clock,
+  Entropy,
   CodecBitmap,
   CodecInterface,
   StorageChunkSource,
@@ -125,6 +126,7 @@ import type {
 import { refuseReservedNamespace } from './reserved-namespace';
 import { bitmapAsLoadInput, deserializePortable, roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
+import { systemEntropy } from './system-entropy';
 import { OPTION_KEYS, type OptionGroup } from './option-keys';
 import { guardIdIterable, guardIds, guardItems } from './lease-guards';
 import { wireStore } from './wire-store';
@@ -477,6 +479,13 @@ export interface SeamOptions {
   readonly clock?: Clock;
   /** Defaults to `Math.random`-backed. Drives transient-retry jitter. */
   readonly rng?: Rng;
+  /**
+   * Defaults to the platform's Web Crypto. The source of every written generation's identity: 12 bytes a cleartext
+   * generation's footer carries (an encrypted one carries its index's AEAD nonce), so two loads of the same ids are
+   * two objects. Inject a deterministic one to replay a run or pin bytes in a test; never inject a constant in
+   * production, since a source that repeats makes the objects it writes alike again.
+   */
+  readonly entropy?: Entropy;
 }
 
 /**
@@ -889,6 +898,8 @@ interface LifecycleDeps {
   readonly clock: Clock;
   /** The store's random source, which spreads a publish's waits between fresh writes whether or not reads retry. */
   readonly rng: Rng;
+  /** The source of each written generation's identity. */
+  readonly entropy: Entropy;
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
   readonly readRetry?: RetryingOptions;
@@ -922,6 +933,7 @@ export class CloudRoaring {
   private readonly crbmSource: CrbmStorageChunkSource | undefined;
   private readonly clock: Clock;
   private readonly rng: Rng;
+  private readonly entropy: Entropy;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
   // you re-pass deps. `storageDriver` is set only when `storage` was a raw IStorageDriver (a pre-built StorageChunkSource has
@@ -1004,6 +1016,12 @@ export class CloudRoaring {
       [options.seams?.rng, 'seams.rng', ['next']],
       [options.encryption?.keystore, 'encryption.keystore', ['createDek', 'openDek']],
     ];
+    const entropy: unknown = options.seams?.entropy;
+    if (entropy !== undefined && typeof entropy !== 'function') {
+      throw new ValidationError(
+        "CloudRoaring's `seams.entropy` must be a function `(length) => Uint8Array` returning that many random bytes",
+      );
+    }
     for (const [seam, name, needs] of seams) {
       if (seam === undefined || seam === null) continue;
       const has = (m: string): boolean =>
@@ -1021,6 +1039,7 @@ export class CloudRoaring {
     CloudRoaring.rejectHollowSeams(options);
     const clock = options.seams?.clock ?? new SystemClock();
     const rng = options.seams?.rng ?? new SystemRng();
+    const entropy = options.seams?.entropy ?? systemEntropy;
     // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).
     const metrics = safeMetrics(options.metrics ?? NOOP_METRICS);
     const cache = new BoundedLru<string, CodecBitmap>({
@@ -1049,6 +1068,7 @@ export class CloudRoaring {
     this.crbmSource = wired.source instanceof CrbmStorageChunkSource ? wired.source : undefined;
     this.clock = clock;
     this.rng = rng;
+    this.entropy = entropy;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood — except for
@@ -1087,6 +1107,7 @@ export class CloudRoaring {
       registry: this.registry,
       clock: this.clock,
       rng: this.rng,
+      entropy: this.entropy,
       codec: roaringCodec, // facade injects the flagship codec
       keystore: this.keystore,
       requireEncryption: this.requireEncryption,
@@ -2178,7 +2199,7 @@ export class CloudRoaring {
    * `input` is ids (any sync or async iterable of integers in `[0, 2^32)`), or a whole bitmap: `{ bitmap }`, anything
    * with `serialize('portable')` such as `roaring`'s `RoaringBitmap32`, or `{ serialized }`, portable Roaring bytes.
    * A bitmap is checked (size cap, structure, safe deserializer) before the first request, written from its own
-   * containers with no per-id work, and gives the generation byte for byte the one its ids would. A bare
+   * containers with no per-id work, and gives the generation chunk for chunk what its ids would. A bare
    * `RoaringBitmap32` passed as ids loads as `{ bitmap }`. A `Uint8Array` or `Buffer` passed as ids is refused with
    * `ValidationError`, since each byte would load as an id: pass bytes as `{ serialized }`.
    *
@@ -4019,6 +4040,7 @@ export type {
   ClearRegistrySummary,
   DropResult,
   EncodedChunk,
+  Entropy,
   EraseDeps,
   ExportFailure,
   ExportFormat,

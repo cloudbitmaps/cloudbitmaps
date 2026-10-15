@@ -5,7 +5,7 @@
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { KeyUnavailableError, ValidationError } from './errors';
 import { yieldEvery } from './cooperative';
-import type { Clock } from './determinism';
+import type { Clock, Entropy } from './determinism';
 import { incarnationField } from './token';
 import { MAX_REMAINDER, isBadIdError, splitId } from './bit-route';
 import { aadFor, sameKeys } from './crypto';
@@ -23,7 +23,7 @@ import type { CodecBitmap, CodecInterface, EncodedChunk } from './codec';
 import { requireCodec } from './codec';
 import { ChunkLoadInput, DecodedLoadInput } from './load-input';
 import { ownSummary } from './summary';
-import { encodeEach, writeEncodedChunks } from './crbm-write';
+import { encodeEach, requireEntropy, writeEncodedChunks } from './crbm-write';
 import { provesOwnObject } from './crbm-open';
 import { footerCrcOf } from './crbm/fingerprint';
 import { publishGenerationKept } from './publish';
@@ -262,6 +262,12 @@ export function bulkLoadCrbmGeneration(
      */
     clock?: Clock;
     /**
+     * The source of the write's identity: a cleartext generation's footer carries 12 bytes drawn from it, so two loads
+     * of the same ids at the same number are not the same object. Optional in the type, as `codec` is, because a flavor
+     * package binds it; a write without one is refused with {@link ValidationError} before it reads an id.
+     */
+    entropy?: Entropy;
+    /**
      * Write the object but do **not** advance the pointer (default: publish when a `registry` is wired).
      *
      * For a caller that has to inspect what it wrote before deciding whether it should become current — a
@@ -341,6 +347,7 @@ export async function bulkLoadAhead(
     throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
   }
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
+  const entropy = requireEntropy(options.entropy, 'a load');
   // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
   // encode its own chunks, are bucketed per chunk instead; both give the same bytes.
   let chunks: Iterable<EncodedChunk>;
@@ -435,6 +442,7 @@ export async function bulkLoadAhead(
       crypto,
       clock: options.clock,
       metadata: options.metadata,
+      entropy,
     });
   const summary = ownSummary(
     key,

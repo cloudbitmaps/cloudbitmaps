@@ -13,9 +13,14 @@
  * **Metadata (opt-in via `metadata`).** A generation given metadata carries an extension block between the last payload
  * and the index, flagged in the footer (`FLAG_EXTENSION`), holding the metadata's canonical JSON, sealed like the index
  * when the generation is encrypted. Without metadata the bytes are exactly those of an object written before the
- * block existed.
+ * block existed, apart from the footer's write identity.
+ *
+ * **Write identity.** Every generation's footer `indexNonce` is random per write: for an encrypted one it is the index's
+ * AEAD nonce, for a cleartext one it is 12 bytes drawn from the injected `entropy`. The footer CRC covers it, so an
+ * object's fingerprint names one write, never just a set of ids.
  */
 import { ValidationError } from '../errors';
+import type { Entropy } from '../determinism';
 import type { AeadSealed, CrbmCrypto } from '../crypto';
 import { metadataBytes } from '../metadata';
 import type { GenerationMetadata } from '../ports';
@@ -24,6 +29,7 @@ import { crc32c } from './crc32c';
 import { writeVarint } from './varint';
 import type { BlobSink } from '../blob';
 import {
+  AEAD_NONCE_BYTES,
   DEFAULT_MAX_BITMAP_BYTES,
   CONTAINER_CODEC_NONE,
   ELEMENT_WIDTH_32,
@@ -59,6 +65,14 @@ export interface CrbmWriterOptions {
   readonly elementWidth?: number;
   /** When set, payloads + index are AES-256-GCM-encrypted, bound to `(segment, generation, scope)` via AAD. */
   readonly crypto?: CrbmCrypto;
+  /**
+   * Where the write's identity comes from: a cleartext generation draws 12 bytes from it, once, when it is finished,
+   * and stores them in the footer's `indexNonce` slot, so two writes of the same ids at the same number are not the
+   * same object. An encrypted generation draws nothing here: the slot already holds the index's AEAD nonce, which
+   * `crypto` drew for that seal. Required, so a writer cannot be built that leaves the slot zero: a zero slot names
+   * no write, and the reader still accepts one.
+   */
+  readonly entropy: Entropy;
   /**
    * The generation's metadata, checked against the metadata rules and copied as its canonical JSON when the writer
    * is constructed, so a later change to the caller's object never reaches the object. A value that breaks a rule
@@ -170,6 +184,10 @@ export class CrbmWriter {
       indexRegion = sealed.ciphertext;
       indexNonce = sealed.nonce;
       indexTag = sealed.tag;
+    } else {
+      // A cleartext generation's slot is its write identity: footer CRC covers it, so the object's fingerprint, and
+      // every proof that compares one, names this write and not just these ids.
+      indexNonce = this.drawWriteIdentity();
     }
     const indexOffset = this.offset;
     await this.sink.write(indexRegion);
@@ -202,6 +220,17 @@ export class CrbmWriter {
       footerCrc: this.footerCrc32c,
       tailBytes: this.written - this.payloadEnd,
     };
+  }
+
+  /** The write's identity: 12 fresh bytes from the injected source, copied so a source that reuses its buffer cannot alias. */
+  private drawWriteIdentity(): Uint8Array {
+    const drawn = this.options.entropy(AEAD_NONCE_BYTES);
+    if (!(drawn instanceof Uint8Array) || drawn.length !== AEAD_NONCE_BYTES) {
+      throw new ValidationError(
+        `the entropy source must return exactly ${AEAD_NONCE_BYTES} bytes for a write's identity`,
+      );
+    }
+    return Uint8Array.from(drawn);
   }
 
   private async ensurePreamble(): Promise<void> {
@@ -285,8 +314,9 @@ export class CrbmWriter {
     footer[FOOTER.containerCodec] = CONTAINER_CODEC_NONE;
     footer[FOOTER.versionMajor] = VERSION_MAJOR;
     footer[FOOTER.versionMinor] = VERSION_MINOR;
-    // When encrypted, the index's AEAD nonce/tag live in these reserved slots; key_id stays zero (the wrapped
-    // DEKs live in the registry, not the object). Unencrypted: all crypto fields stay zero.
+    // `indexNonce` is always set: encrypted, it is the index's AEAD nonce (its tag goes beside it); cleartext, it is
+    // the write's random identity and `indexTag` stays zero. key_id stays zero (the wrapped DEKs live in the
+    // registry, not the object).
     if (indexNonce !== undefined) footer.set(indexNonce, FOOTER.indexNonce);
     if (indexTag !== undefined) footer.set(indexTag, FOOTER.indexTag);
     view.setBigUint64(FOOTER.generation, BigInt(this.options.generation), true);

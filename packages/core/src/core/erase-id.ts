@@ -105,7 +105,7 @@ import { MAX_REMAINDER, splitId } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 import type { Yielder } from './cooperative';
-import type { Rng } from './determinism';
+import type { Entropy, Rng } from './determinism';
 import {
   objectIsEncrypted,
   objectVersionOf,
@@ -117,7 +117,7 @@ import {
   verifyGeneration,
 } from './crbm-open';
 import { publishGeneration } from './publish';
-import { writeCrbmGenerationStream } from './crbm-write';
+import { requireEntropy, writeCrbmGenerationStream } from './crbm-write';
 import { DEFAULT_MAX_BITMAP_BYTES } from './crbm/format';
 import { footerCrcOf } from './crbm/fingerprint';
 import type { CrbmReader } from './crbm/reader';
@@ -209,6 +209,12 @@ export interface EraseIdDeps {
    * renewal. Absent, the read retry's source is used if it has one, and otherwise each wait is its bound.
    */
   readonly rng?: Rng;
+  /**
+   * The source of the rewrite's identity: 12 random bytes its footer carries when the segment is cleartext (an encrypted
+   * rewrite carries its index's AEAD nonce), so the rewrite is not the same object as a load of the same ids at its
+   * number. A rewrite without one is refused with {@link ValidationError} when it comes to write (an erasure that finds nothing to remove writes nothing, and needs none).
+   */
+  readonly entropy?: Entropy;
   /** Per-chunk decode ceiling (invariant 5); defaults to 1 MiB. The `.crbm` reader refuses an entry above its own `maxPayloadBytes` (1 MiB, plus 28 bytes when encrypted) at open, so raise that on the chunk source too. */
   readonly maxBitmapBytes?: number;
   /**
@@ -1303,7 +1309,12 @@ async function eraseOnce(
         deps.storage,
         key,
         rewrite(reader, chunkKey, target, codec, maxBytes, read),
-        { crypto: cryptoAt(generation), clock: deps.clock, metadata },
+        {
+          crypto: cryptoAt(generation),
+          clock: deps.clock,
+          metadata,
+          entropy: requireEntropy(deps.entropy, 'an erasure rewrite'),
+        },
       );
       written = generation; // `putImmutable` commits atomically, so the object exists exactly now
       rewrote = { generation, fingerprint: tally.fingerprint };
@@ -1370,17 +1381,16 @@ async function eraseOnce(
    * is not one this call can reason about. The position is read from a fresh row.
    *
    * Above the winner's pointer the number can be taken again: another erasure, of an id this object still holds,
-   * deletes it as a holder, and a load numbers `currentGen + 1`, which can be `written`. A cleartext load of the ids
-   * this object holds writes its very bytes, and a footer names an object by its bytes, not by its writer. So the object
-   * is first matched to this rewrite's fingerprint by one read of its footer (one that is gone, is another object, or
-   * cannot be read is kept), and then the row the position was read from is renewed ({@link rowRenewal}) before the
-   * delete. Whoever wrote the object that read matched read its row before writing it, so before the renewal, and its
-   * publish, fenced on that row, is refused. A publish that landed after this call read the row makes the renewal lose,
-   * and the call reads the row and decides again. One that landed before it left the pointer on the number or above it,
-   * and the object is kept, unless a rollback has since moved the pointer below it: then the object is a generation a
-   * load published with this rewrite's very bytes, and it is deleted as if it were the rewrite, so a pinned handle of it
-   * fails with `NotFoundError` for any chunk it has yet to read, a lease of it in the row names a missing generation, and
-   * a rollback to it finds it gone. A renewal lost to a write of leases
+   * deletes it as a holder, and a load numbers `currentGen + 1`, which can be `written`. A footer names a write, not just
+   * a set of ids: its checksum covers the write identity the writer drew, so a load of the ids this object holds writes
+   * another footer. So the object is first matched to this rewrite's fingerprint by one read of its footer (one that is
+   * gone, is another object, or cannot be read is kept, a load's object of the same ids included), and then the row the
+   * position was read from is renewed ({@link rowRenewal}) before the delete. Whoever wrote the object that read
+   * matched read its row before writing it, so before the renewal, and its publish, fenced on that row, is refused.
+   * A publish that landed after this call read the row makes the renewal lose, and the call reads the row and decides
+   * again. One that landed before it left the pointer on the number or above it, and the object is kept. Since the match
+   * names this rewrite's write, a generation a load published and a rollback then moved the pointer below is kept too,
+   * where the same bytes would have had it deleted as if it were the rewrite. A renewal lost to a write of leases
    * alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; the object
    * is kept after {@link DISCARD_ATTEMPTS} renewals lost to other writes. Only this call's own renewal licenses the
    * delete: another erasure's, landing between this call's read of the row and its footer read, lets a load read the
@@ -1390,8 +1400,9 @@ async function eraseOnce(
    * The delete passes the version the footer read reported, so on a storage driver that reports `conditionalDelete` it
    * removes that object and no other: an object put under the number after the renewal, by a load that read the renewed
    * row once another erasure had deleted this one, stays, and that refusal is swallowed, since the object this call
-   * wrote is gone. That one round trip stays open where the driver ignores the condition, or derives its versions from
-   * the bytes and the load wrote the same ones: there the delete removes the load's generation. A rollback onto the
+   * wrote is gone. That one round trip stays open where the driver ignores the condition: there the delete removes
+   * the load's generation. A driver that derives its versions from the bytes is covered, since another write's bytes
+   * differ by the write identity. A rollback onto the
    * object inside it leaves the pointer on a missing object too, and nothing reports it. Any other fault of the discard,
    * the renewal's `TransientError` included, is thrown in place of the refusal, unlike a refused load's reclaim, which
    * swallows every fault: the object this call would leave above the pointer can hold an id that another erasure has
@@ -1479,8 +1490,8 @@ async function eraseOnce(
     clearLeases: true,
     // A write that ends without an answer is settled by reading the row: a registry that reports its writes' tokens
     // settles it by the row's `pointerId`; any other takes a pointer at this number for this rewrite's only over an
-    // object whose footer matches what it wrote, so one of other bytes cannot pass for it, and one of the same bytes
-    // holds the rewrite's content.
+    // object whose footer matches what it wrote, which carries this rewrite's own write identity, so another write's
+    // object cannot pass for it.
     holdsOwnObject: () => provesOwnObject(deps.storage, key, fingerprint),
     clock: deps.clock,
     rng: deps.rng ?? deps.readRetry?.rng,

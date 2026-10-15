@@ -79,8 +79,8 @@ export function ownedTail(tail: TailRead): TailRead {
 /**
  * The object under `key`, when one read of its footer matches `fingerprint` ({@link CrbmReader.fingerprint}), with the
  * version the driver reported on that read (`undefined` from a driver that reports none). `null` when it is another
- * object, when it is gone, and when the read fails in any way. A fingerprint names the object's bytes, not the writer:
- * an object another writer stored under the number with the same bytes matches too. A caller that deletes what this
+ * object, when it is gone, and when the read fails in any way. A fingerprint names the object's bytes, the write identity in its footer included, so
+ * another writer's object under the number matches only when it carries the same identity (an all-zero one does). A caller that deletes what this
  * matches passes the version as the delete's `ifVersion`, so a number taken again between the read and the delete keeps
  * the object put under it since.
  */
