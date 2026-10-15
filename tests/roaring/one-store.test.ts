@@ -51,6 +51,9 @@ async function world() {
   await a.load({ segment: 'dest' }, [9]);
   await b.load({ segment: 'x' }, [3, 4]);
   await b.load({ segment: 'dest' }, [8]);
+  // The counters see the loads, so an empty count after a refusal means no request, not a counter that sees nothing.
+  expect(A.calls().registry).not.toEqual({});
+  expect(B.calls().storage).not.toEqual({});
   A.reset();
   B.reset();
   return { a, b, A, B };
@@ -179,10 +182,12 @@ describe('a combine takes only segments of its own store', () => {
   });
 
   it('refuses a pin of another store', async () => {
-    const { a, b } = await world();
+    const { a, b, A, B } = await world();
     const pinned = await b.segment('x').pin();
     const leased = await b.segment('x').pin({ leaseUntil: Date.now() + 600_000 });
     const before = await generationsOf(a, 'dest');
+    A.reset();
+    B.reset();
     for (const h of [pinned, leased]) {
       await expect(drain(a.segment('x').intersect([h]))).rejects.toThrow(
         /belongs to another store/,
@@ -194,6 +199,7 @@ describe('a combine takes only segments of its own store', () => {
         /belongs to another store/,
       );
     }
+    expectNoRequests(A, B);
     expect(await generationsOf(a, 'dest')).toEqual(before);
     await leased.release();
   });

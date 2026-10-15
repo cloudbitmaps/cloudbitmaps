@@ -3521,13 +3521,13 @@ export class Segment {
    * awaiting.
    */
   private assertIntoHandles(
-    verb: string,
+    verb: `${CombineVerb}Into`,
     dest: Segment,
     operands: readonly Segment[],
     excludes: readonly Segment[],
   ): void {
     this.assertSegments(verb, 'the destination', [dest]);
-    this.assertSegments(verb, verb.startsWith('andNot') ? 'an exclude' : 'an operand', operands);
+    this.assertSegments(verb, verb === 'andNotInto' ? 'an exclude' : 'an operand', operands);
     this.assertSegments(verb, 'an exclude', excludes);
     this.assertLeases([this, dest, ...operands, ...excludes]);
   }

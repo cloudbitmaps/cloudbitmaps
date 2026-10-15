@@ -35,9 +35,9 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **A combine took a segment of a store over different storage and answered from the receiving store's segment of the
-  same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs on,
-  so `a.segment('x').intersect([b.segment('x')])` over two stores over different storage answered from `a`'s own `x`
+- **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment
+  of the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs on,
+  so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`
   alone, `union` and `andNot` likewise, and `intersectInto`, `unionInto`, `andNotInto` and `materializeMany` published
   that answer; a handle whose name the receiver lacked failed with an operand that "names a segment that does not
   exist". Every operand, every `exclude` and every destination of a combine, an `*Into` verb and `materializeMany`

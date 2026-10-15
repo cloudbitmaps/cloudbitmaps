@@ -485,7 +485,8 @@ Saying no is part of the design:
 
 - **Combining segments of two stores.** Not supported: a combine resolves each operand by name in its own store, so a
   handle of another store would be read as the receiver's segment of that name. It is refused, never bridged. Load
-  both segments into one store, or read each store and combine the ids upstream.
+  both segments into one store, or read each store and combine the ids upstream; for two store objects over one
+  backend, open both with one store's `segment()`.
 - **A per-call write API.** `add`/`remove` over a mutable tier is not built beside the loaded store: two write
   paths with different consistency stories would double the surface every invariant has to hold across, and every
   roaring-based engine that needs freshness micro-batches anyway. Compute the set upstream and load it; if a
