@@ -61,7 +61,9 @@ CI runs more than these. Its `build & test` job also holds the site and the benc
 (`site:replay:check`, `bench:scale:check`, `site:figures`, `site-classes.py`, `site-links.py`, `bench:sizing:check`,
 `bench:range-counts:check`, `bench:materialize-many-counts:check`, `bench:expected-figures:check`, `bench:check`,
 `bench:event-loop:check`, `bench:load-input:check`, `api:surface:check`), scans the tracked tree and the packed tarballs
-for leaks, and checks the fuzz lockfile; separate jobs run the dependency audit, the smoke test on the declared Node
+for leaks, runs the spawned `export-segments` tests against the built bin
+(`CB_REQUIRE_BUILT_BIN=1 pnpm exec vitest run tests/bin/export-segments-cli.test.ts`, after `pnpm build`), and checks
+the fuzz lockfile; separate jobs run the dependency audit, the smoke test on the declared Node
 floor, the Lambda deployability smoke, the hard RSS ceiling and the native addon on Linux, Windows and macOS.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) says why each one is there.
 

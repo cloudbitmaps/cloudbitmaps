@@ -15,10 +15,34 @@ interface BitRoute {
   readonly remainder: number;
 }
 
+/** Errors `splitId` threw, so a caller that adds the id's position can tell them from another ValidationError. */
+const idErrors = new WeakSet<ValidationError>();
+
+/** Was `err` thrown by {@link splitId} for an id outside the u32 range? */
+export function isBadIdError(err: unknown): err is ValidationError {
+  return err instanceof ValidationError && idErrors.has(err);
+}
+
+/** The error for an id that is not a u32. It names what is wrong with the id and never repeats its value. */
+function badId(id: unknown): ValidationError {
+  let got: string;
+  if (id === null) got = 'null';
+  else if (id === undefined) got = 'undefined';
+  else if (typeof id === 'object') got = 'an object';
+  else if (typeof id !== 'number') got = `${/^[aeiou]/.test(typeof id) ? 'an' : 'a'} ${typeof id}`;
+  else if (!Number.isFinite(id)) got = 'NaN or an infinity';
+  else if (id < 0) got = 'a negative number';
+  else if (!Number.isInteger(id)) got = 'a number with a fraction';
+  else got = `a number above ${U32_MAX} (ids are 32-bit)`;
+  const err = new ValidationError(`an id must be an integer from 0 to ${U32_MAX}; got ${got}`);
+  idErrors.add(err);
+  return err;
+}
+
 /** Split a u32 id into `{ chunkKey, remainder }`. Throws `ValidationError` for non-u32 input. */
 export function splitId(id: number): BitRoute {
   if (!Number.isInteger(id) || id < 0 || id > U32_MAX) {
-    throw new ValidationError(`an id must be an integer from 0 to ${U32_MAX}`);
+    throw badId(id);
   }
   return { chunkKey: id >>> 16, remainder: id & LOW_16 };
 }

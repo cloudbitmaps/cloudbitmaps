@@ -1,4 +1,4 @@
-import { IntegrityError } from '@/core/errors';
+import { crbmIntegrity } from '@/core/crbm/integrity';
 import { MAX_COALESCED_READ_BYTES, MAX_COALESCE_GAP_BYTES } from '@/core/crbm/plan-reads';
 import type { ChunkExtent, ChunkRegion, PlannedRead } from '@/core/crbm/plan-reads';
 
@@ -28,7 +28,7 @@ export function planAllAtOnce(
       extent.offset >= previousEnd &&
       extentEnd <= region.end
     )) {
-      throw new IntegrityError(`chunk ${extent.key} is not inside the chunk region, in order`);
+      throw crbmIntegrity(`chunk ${extent.key} is not inside the chunk region, in order`);
     }
     previousEnd = extentEnd;
     if (

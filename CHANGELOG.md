@@ -11,8 +11,37 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`export-segments` refuses an argument, and a `null` or `undefined` segment ref is a `ValidationError`.** The command
+  exits 2 on any argument but `--help` or `-h` (after a leading `--`, which `pnpm run` forwards), where it ignored one.
+  A `null` or `undefined` ref passed to a store call or to `validateSegmentRef` of `@cloudbitmaps/core/driver-kit`
+  throws a `ValidationError`, not a `TypeError`.
+
 ### Changed
 
+- **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
+  `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
+  optional. A leading `--`, which pnpm forwards, is dropped. Any other argument prints "takes no arguments; it reads its
+  settings from the environment" and the usage to stderr and exits 2. A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` says
+  what the variable is, names the other one and ends "run export-segments --help". The export guide and the API
+  reference say the same.
+- **A bad segment ref or id says what is wrong with it, and where.** A ref that is a string, `null` or `undefined`
+  (`store.load('shoppers', ids)`) is refused with a `ValidationError`, "a segment ref is an object such as { segment:
+  'name' }; store.segment() takes the bare name". `store.segment()` given a ref says to call
+  `store.segment(ref.segment, { namespace: ref.namespace })`, and given an array says the name is a string. A refused
+  id says which kind it is (not a number, `null`, negative, with a fraction, `NaN` or an infinity, or above 4294967295),
+  and a load names the position, `ids[1]: ...`, with the id error as the `cause`. A bad-ref or bad-id message never
+  repeats the id or the segment's name.
+- **Common error messages say what to do next.** A contention `WriteConflictError` from a load's publish, `setRetention`,
+  `clearRetention` and a lease take or release ends "another writer changed the segment's row while this call ran.
+  Re-run the call: it reads the row afresh". A rollback that loses its race to another writer throws a
+  `WriteConflictError` that says the pointer was not moved and to check `store.generations(ref)` and run it again, with
+  the driver's error as its `cause`. An unsupported `.crbm` major version says which version the build reads, and
+  advises `upgrade @cloudbitmaps/core` only for a newer one; for an older one it says no release writes that version.
+  Every `IntegrityError` the `.crbm` reader raises for bytes that fail its own checks ends "re-load from source or
+  roll back"; one from decrypting the index or a chunk keeps the cipher's message, since a re-load does not repair a
+  wrong key. No message gains a stored value, and the driver messages the conformance suite shares are unchanged.
 - **A steady `store.load()` at `keep: 12` is measured on `0.21.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-13 (run `2026-10-13-b329d`), against the published `0.21.0`, loaded one segment 18 times. A load that deletes
   by name made 2 PUT-class + 5 GET-class and a delete, $12.00 per million at the default prices, and the load at

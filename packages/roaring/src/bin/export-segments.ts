@@ -2,7 +2,7 @@
 /**
  * `export-segments` — the standalone **eject / data-export** CLI (the exit path; see the README's "Your data
  * stays yours"). Dumps every registered segment's current generation to a portable file, so your data is
- * readable **without CloudRoaring**. A thin filesystem wrapper over `CloudRoaring.exportSegments`.
+ * readable **without CloudBitmaps**. A thin filesystem wrapper over `CloudRoaring.exportSegments`.
  *
  * Two formats:
  *   - `roaring` (default) — one portable RoaringBitmap32 per segment (`<segment>.roaring`), loadable by any
@@ -54,15 +54,55 @@ export interface ExportConfig {
   readonly namespace?: string;
 }
 
+/** What `export-segments --help` prints. */
+export const USAGE = `Usage: export-segments [--help]
+
+Exports every registered segment's current generation from a local-filesystem store to a directory.
+Settings come from the environment:
+
+  CR_EXPORT_ROOT       (required) the LocalFsStorage root, holding storage/ and registry/
+  CR_EXPORT_OUT        (required) the output directory for the dump
+  CR_EXPORT_FORMAT     roaring | ndjson (default: roaring)
+  CR_EXPORT_NAMESPACE  (optional) scope the export to one namespace
+
+Example:
+  CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump export-segments
+`;
+
+/** How the command line is answered before any export starts: a `--help` request, a stray argument, or neither. */
+export function answerArgs(
+  args: readonly string[],
+):
+  | { readonly stream: 'stdout' | 'stderr'; readonly text: string; readonly code: 0 | 2 }
+  | undefined {
+  // pnpm forwards the `--` of `pnpm run x -- --help`, so one leading `--` is dropped.
+  const rest = args[0] === '--' ? args.slice(1) : args;
+  if (rest.length === 0) return undefined;
+  if (rest.length === 1 && (rest[0] === '--help' || rest[0] === '-h')) {
+    return { stream: 'stdout', text: USAGE, code: 0 };
+  }
+  return {
+    stream: 'stderr',
+    text: `export-segments takes no arguments; it reads its settings from the environment\n\n${USAGE}`,
+    code: 2,
+  };
+}
+
 /** Parse + validate config from an environment map. Throws a {@link ValidationError} on misconfiguration. */
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
-    throw new ValidationError('CR_EXPORT_ROOT is required (the local-filesystem storage root)');
+    throw new ValidationError(
+      "CR_EXPORT_ROOT is not set: the directory that holds the store's storage/ and registry/. " +
+        'export-segments also needs CR_EXPORT_OUT; run export-segments --help',
+    );
   }
   const out = env.CR_EXPORT_OUT;
   if (out === undefined || out === '') {
-    throw new ValidationError('CR_EXPORT_OUT is required (the output directory for the dump)');
+    throw new ValidationError(
+      'CR_EXPORT_OUT is not set: the directory to write the dump to. ' +
+        'export-segments also needs CR_EXPORT_ROOT; run export-segments --help',
+    );
   }
   const format = env.CR_EXPORT_FORMAT || 'roaring'; // '' (an unset shell var) is the default, as the namespace's is
   if (format !== 'roaring' && format !== 'ndjson') {
@@ -291,6 +331,16 @@ function invokedAsCli(): boolean {
 }
 
 if (invokedAsCli()) {
+  const answer = answerArgs(process.argv.slice(2));
+  if (answer !== undefined) {
+    process[answer.stream].write(answer.text);
+    process.exitCode = answer.code;
+  } else {
+    runCli();
+  }
+}
+
+function runCli(): void {
   main()
     .then((manifest) => {
       if (manifest.failed.length > 0) {
