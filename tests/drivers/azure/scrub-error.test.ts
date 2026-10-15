@@ -249,6 +249,11 @@ describe('scrubCredentials (Azure)', () => {
         'SIGSIGSIGSIG',
       ],
       [
+        'a SharedKey value inside a line',
+        ['the request had Shared', 'Key acct:', 'K'.repeat(43), '= in it'].join(''),
+        'KKKKKKKKKKKKKKKK',
+      ],
+      [
         'lowercase bearer',
         ['x=', 'bear', 'er STANDINTOKENVALUE0123456789'].join(''),
         'STANDINTOKENVALUE',
@@ -270,6 +275,17 @@ describe('scrubCredentials (Azure)', () => {
     function restErrorWith(text: string): Error {
       return Object.assign(restError(), { message: text });
     }
+
+    it('replaces a text too large for its patterns whole, and still classifies', () => {
+      const huge = ['Bear', 'er '].join('') + 'a'.repeat(6 * 2 ** 20);
+      const err = new RestError(huge, { statusCode: 503, code: 'ServerBusy' });
+      Object.defineProperty(err, 'request', { value: { url: URL_WITH_SIG }, enumerable: false });
+      const out = scrubCredentials(err);
+      expect(out.message).toBe('[redacted]');
+      expect(out).toBeInstanceOf(RestError);
+      expect(out.statusCode).toBe(503);
+      expect(out.code).toBe('ServerBusy');
+    });
 
     it.each(forms)('redacts %s', (_name, text, secret) => {
       const out = through(text);

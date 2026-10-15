@@ -58,13 +58,21 @@ const isPlain = (value: object): boolean => {
 
 const isError = (value: object): boolean => value instanceof Error || types.isNativeError(value);
 
-/** `text` with every credential it shows replaced. */
+/**
+ * `text` with every credential it shows replaced. A text the patterns cannot finish matching (one of several MiB that
+ * exhausts the regular expression engine's stack) is replaced whole, so a hostile body neither leaks nor changes the
+ * error the driver throws.
+ */
 function redactText(text: string): string {
-  return text
-    .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
-    .replace(SAS_SIGNATURE, `$1${REDACTED}`)
-    .replace(AUTH_SCHEME, `$1$2${REDACTED}`)
-    .replace(MAC_ECHO, `$1${REDACTED}`);
+  try {
+    return text
+      .replace(CREDENTIAL_LINES, `$1: ${REDACTED}`)
+      .replace(SAS_SIGNATURE, `$1${REDACTED}`)
+      .replace(AUTH_SCHEME, `$1$2${REDACTED}`)
+      .replace(MAC_ECHO, `$1${REDACTED}`);
+  } catch {
+    return REDACTED;
+  }
 }
 
 /** The copies made so far, and whether any differs from its original. */
