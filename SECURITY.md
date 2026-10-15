@@ -77,15 +77,15 @@ advisory in a runtime dependency breaks the build. The **release workflow re-run
 being published rather than trusting CI's result, because this is the one gate whose verdict changes with no
 commit at all: an advisory disclosed after `main` went green makes that unchanged tree newly vulnerable. (It is invoked as `node scripts/audit.cjs`, not bare
 `pnpm audit`, which is pnpm's own built-in command.) Advisories that have been triaged as not-applicable are listed in
-`package.json` → `pnpm.auditConfig.ignoreGhsas`, each with its rationale below, and are the **only** ones the
+`pnpm-workspace.yaml` → `auditConfig.ignoreGhsas`, each with its rationale below, and are the **only** ones the
 gate ignores.
 
-### Forced transitive versions (`pnpm.overrides`)
+### Forced transitive versions (`overrides`)
 
 Every advisory we have had sat in **development-only** transitive dependencies, so the blocking gate above —
 scoped to production dependencies — correctly ignored them and CI was green. They still generated alerts, and
-"correctly ignored" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
-`pnpm.overrides` forces each to a patched version, pinned inside its current major so an override never
+"correctly ignored" is not the same as "fine", so they are **fixed rather than accepted**: `pnpm-workspace.yaml` →
+`overrides` forces each to a patched version, pinned inside its current major so an override never
 smuggles in a breaking change.
 
 | forced | reached us via | note |
@@ -109,7 +109,7 @@ it is the only one on a path the unit suite never exercises.
 `uuid` is deliberately pinned to `^11.1.1` rather than left open: the advisory is fixed at 11.1.1, and an
 unbounded range resolved to 14.x, which is three majors of blast radius for no security benefit.
 
-**None of these overrides reach consumers.** A `pnpm.overrides` entry applies to *this workspace's* install
+**None of these overrides reach consumers.** An `overrides` entry in `pnpm-workspace.yaml` applies to *this workspace's* install
 tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
 ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
 `@cloudbitmaps/core` and none for `@cloudbitmaps/tools`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
@@ -152,11 +152,12 @@ produced the package they installed**. The controls:
   covers the packages, the scripts and bench harnesses that CI runs, and the site; it leaves out the test suite and
   the fuzz harnesses, which ship nowhere. Its action versions are pinned to commits like every other workflow's.
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with `--provenance` and
-  `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (A manifest's
-  `publishConfig.provenance: true` would be strictly worse: it cannot be overridden by the CLI *or* the environment, so
-  every non-CI publish — the bootstrap and the break-glass path both — would abort with
-  `EUSAGE: … not supported for provider: null`. Opting in where provenance is actually achievable keeps the guarantee
-  without the trap.) npm records a **signed, publicly-verifiable attestation** linking the tarball to the exact GitHub
+  `PNPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. pnpm 12 publishes natively and does
+  not read `NPM_CONFIG_PROVENANCE`; with the flag given, a failed OIDC or signing step fails the publish rather than
+  publishing without the attestation. (A manifest's `publishConfig.provenance: true` would be worse: a publish from a
+  machine that is not a CI workflow, the bootstrap and the break-glass path both, would be asked for an attestation it
+  cannot mint. Opting in where provenance is actually achievable keeps the guarantee without the trap.) The registry
+  records a **signed, publicly-verifiable attestation** linking the tarball to the exact GitHub
   Actions workflow, repository, and commit that built it, minted via GitHub **OIDC** (the job runs on a GitHub-hosted
   runner with `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
   read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's release

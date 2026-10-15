@@ -5,7 +5,7 @@ import { parse } from 'yaml';
 
 // Guards the SHAPE of the release workflow, which is a safety property and not a style preference.
 //
-// The shape can break with every other check green. `NPM_CONFIG_PROVENANCE: true` appears TWICE in the file,
+// The shape can break with every other check green. `PNPM_CONFIG_PROVENANCE: true` appears TWICE in the file,
 // once under the dry-run step and once under the real one, so an edit anchored on it can land a job
 // (`github-release`, say) BETWEEN the two publish steps, and YAML then re-parents `Publish (real)` into it.
 //
@@ -110,6 +110,15 @@ describe('release workflow shape', () => {
   it('gates the real publish on a tag push or an explicit non-dry-run dispatch', () => {
     const real = job('publish').steps.find((s) => s.name === 'Publish (real)');
     expect(real?.run).toMatch(/--provenance/);
+    // pnpm 12 publishes natively and does not read NPM_CONFIG_PROVENANCE, so the flag is what requests the
+    // attestation; the dry run carries it too, so a rehearsal exercises the same request.
+    const dry = job('publish').steps.find((s) => s.name === 'Publish (dry-run)');
+    expect(dry?.run).toMatch(/--provenance/);
+    for (const step of [dry, real]) {
+      expect(step?.run).not.toMatch(/--no-provenance|--provenance[= ]false/);
+      expect(step?.env).not.toHaveProperty('NPM_CONFIG_PROVENANCE');
+      expect(step?.env?.PNPM_CONFIG_PROVENANCE).toBe(true);
+    }
     // Guards that a dispatch cannot publish while dryRun is still true.
     expect(String((real as unknown as { if: string }).if)).toContain("github.event_name == 'push'");
     expect(String((real as unknown as { if: string }).if)).toContain('!inputs.dryRun');

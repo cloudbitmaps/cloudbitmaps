@@ -11,8 +11,11 @@
 #     token auth and that hardening are mutually exclusive. Trusted Publishing is not a token, so it passes.
 #   - **Human gate**: the publish job runs in the protected `release` environment, whose required reviewer is
 #     the approval prompt. Nothing reaches npm without a person clicking approve.
-#   - **Provenance**: `NPM_CONFIG_PROVENANCE=true` records a signed, verifiable link from the published tarball
-#     back to THIS workflow + commit (SLSA build provenance via GitHub OIDC). Requires `id-token: write` and a
+#   - **Provenance**: the `--provenance` flag on `pnpm publish` records a signed, verifiable link from the published
+#     tarball back to THIS workflow + commit (SLSA build provenance via GitHub OIDC). pnpm 12 publishes natively
+#     rather than through the npm CLI and does not read `NPM_CONFIG_PROVENANCE`; with the flag given, a failure to
+#     fetch the OIDC token or sign the statement fails the publish instead of publishing without the attestation.
+#     Requires `id-token: write` and a
 #     GitHub-hosted runner, so `runs-on` is pinned to `ubuntu-latest`. A self-hosted runner has no OIDC
 #     identity to attest to and would silently cost the attestation.
 #   - **Frozen, reproducible install**: `pnpm install --frozen-lockfile` (fails if the lockfile is stale).
@@ -111,7 +114,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older. A FLOOR, not
+      # npm stays on a floor for the registry probes below and for any tool that shells out to it; `pnpm publish`
+      # does its own Trusted Publishing (OIDC) exchange and does not call npm. A FLOOR, not
       # `@latest`: `@latest` silently makes every release depend on whatever npm shipped that morning, so a
       # regression in a brand-new npm becomes a broken release with no change on our side and nothing in the
       # diff to point at. `^11.5.1` still takes the fixes inside npm 11 while making a major bump a deliberate,
@@ -285,8 +289,8 @@ jobs:
         run: node scripts/leak-scan-tarballs.cjs
 
       # Dry-run on manual dispatch (default): packs + validates only — mints no attestation, needs no auth token.
-      # `publishConfig.access=public` lives in package.json. Provenance is opted into here, by `--provenance` and
-      # NPM_CONFIG_PROVENANCE, and not in the manifests, where it would block the hand-run bootstrap publish
+      # `publishConfig.access=public` lives in package.json. Provenance is opted into here, by `--provenance` (the
+      # form pnpm 12 honours; PNPM_CONFIG_PROVENANCE says the same thing), and not in the manifests, where it would block the hand-run bootstrap publish
       # (see scripts/bootstrap-publish.cjs).
       # `pnpm -r publish` walks the workspace in topological order (core before the flavor that depends on it)
       # and rewrites each `workspace:^` range to the real version. `--no-git-checks` because the tag/branch state
@@ -295,7 +299,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.dryRun
         run: pnpm -r --filter './packages/**' publish --provenance --access public --dry-run --no-git-checks
         env:
-          NPM_CONFIG_PROVENANCE: true
+          PNPM_CONFIG_PROVENANCE: true
       # Real, provenance-signed publish — ONLY a pushed vX.Y.Z tag, or an explicit dispatch with dryRun=false.
       # The tag arm is scoped to `push` so that dispatching a run *from* a tag ref (where github.ref is
       # refs/tags/v…) can NOT publish for real while dryRun is still true — that would break the dry-run-default
@@ -308,7 +312,7 @@ jobs:
           # No NODE_AUTH_TOKEN. npm authenticates from this workflow's OIDC identity (Trusted Publishing);
           # adding a token here would introduce a long-lived secret AND be rejected outright by the packages'
           # "require 2FA and disallow tokens" setting.
-          NPM_CONFIG_PROVENANCE: true
+          PNPM_CONFIG_PROVENANCE: true
 
   # Cut the GitHub Release from the same tag, with notes lifted verbatim from CHANGELOG.md.
   #
