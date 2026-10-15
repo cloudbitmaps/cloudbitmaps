@@ -305,7 +305,7 @@ and `1.0`.
 
 ## Building & contributing
 
-You need **Node ≥ 22.12** and **pnpm 9**; Docker is needed only for the integration tests.
+You need **Node ≥ 22.12** and **pnpm 12**; Docker is needed only for the integration tests.
 
 ```bash
 pnpm install
