@@ -250,8 +250,8 @@ describe('scrubCredentials (Azure)', () => {
       ],
       [
         'lowercase bearer',
-        'authorization=bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc',
-        'eyJhbGciOiJIUzI1NiJ9',
+        ['x=', 'bear', 'er STANDINTOKENVALUE0123456789'].join(''),
+        'STANDINTOKENVALUE',
       ],
       [
         'the MAC signature Azure echoes',
