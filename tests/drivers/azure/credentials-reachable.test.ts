@@ -1,10 +1,15 @@
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { NotFoundError, TransientError, WriteConflictError } from '@cloudbitmaps/core/driver-kit';
+import {
+  NotFoundError,
+  TransientError,
+  ValidationError,
+  WriteConflictError,
+} from '@cloudbitmaps/core/driver-kit';
 import { AnonymousCredential, ContainerClient, RestError } from '@azure/storage-blob';
 import { StorageSharedKeyCredential } from '@azure/storage-blob';
-import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
+import { AzureBlobRegistryDriver, AzureBlobRegistryStore } from '@/azure-blob/registry';
 import { AzureBlobStorageDriver } from '@/azure-blob/storage';
 
 /**
@@ -19,25 +24,34 @@ const SAS_SIGNATURE = 'SECRETSIGNATUREVALUE0123456789';
 const GEN = { segment: 's', generation: 1 };
 const LIMIT = { timeout: 30_000 };
 /** The code Azure sends with a status that has a specific one. */
-const CODES: Record<number, string> = { 409: 'BlobAlreadyExists', 412: 'ConditionNotMet' };
+const CODES: Record<number, string> = {
+  404: 'BlobNotFound',
+  409: 'BlobAlreadyExists',
+  412: 'ConditionNotMet',
+};
 
 /** Anything that shows a credential: a SharedKey header, an account key, or a `sig=` that is not redacted. */
 const LEAK = new RegExp(
   `SharedKey\\s|${ACCOUNT_KEY.replace(/[+/=]/g, '\\$&')}|${SAS_SIGNATURE}|sig=(?!\\[redacted\\])`,
 );
 
+/** The signatures the requests carried, as the server saw them: the SharedKey MAC and the SAS `sig`, both encodings. */
+const seen = { signatures: new Set<string>() };
+const signaturesIn = (text: string): string[] =>
+  [...seen.signatures].filter((signature) => text.includes(signature));
+
 /** Every string reachable from `root`, keys included, with a guard against cycles. */
 function reachableStrings(root: unknown): string[] {
   const strings: string[] = [];
-  const seen = new Set<unknown>();
+  const visited = new Set<unknown>();
   const visit = (value: unknown): void => {
     if (typeof value === 'string') {
       strings.push(value);
       return;
     }
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
-    if (seen.has(value)) return;
-    seen.add(value);
+    if (visited.has(value)) return;
+    visited.add(value);
     if (value instanceof Map) {
       for (const [k, v] of value) {
         visit(k);
@@ -87,6 +101,12 @@ interface Case {
   /** The status the server answers a write with, and a HEAD or GET with (the same when absent). */
   status: number;
   head?: number;
+  /** The `x-ms-error-code` the server sends; the status's usual one when absent. */
+  code?: string;
+  /** The 403 body quotes the request's own signature, as Azure does for a signature it could not verify. */
+  echo?: boolean;
+  /** The error's `cause` is the SDK's error: the driver raised its own class around it. */
+  cause?: boolean;
   run: (c: ContainerClient) => Promise<unknown>;
   /** The class the driver raises; the SDK's own `RestError` when it passes it on. */
   expected: abstract new (...args: never[]) => Error;
@@ -184,22 +204,218 @@ const cases: Case[] = [
   },
 ];
 
+const put = (c: ContainerClient): Promise<unknown> =>
+  new AzureBlobStorageDriver({ containerClient: c }).putImmutable(GEN, async (sink) => {
+    await sink.write(new Uint8Array([1, 2, 3]));
+  });
+const registry = (c: ContainerClient): AzureBlobRegistryDriver =>
+  new AzureBlobRegistryDriver({ containerClient: c });
+/** The registry's own calls, under the driver that adds the row layer. */
+const store = (c: ContainerClient): AzureBlobRegistryStore =>
+  new AzureBlobRegistryStore(c, 0, true);
+const drain = async (items: AsyncIterable<unknown>): Promise<void> => {
+  for await (const item of items) void item;
+};
+
+const more: Case[] = [
+  {
+    name: 'storage read, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => new AzureBlobStorageDriver({ containerClient: c }).getRange(GEN, 0, 8),
+    expected: RestError,
+  },
+  {
+    name: 'storage write, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: put,
+    expected: RestError,
+  },
+  {
+    name: 'registry read, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => registry(c).get({ segment: 's' }),
+    expected: RestError,
+  },
+  {
+    name: 'storage read, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: (c) => new AzureBlobStorageDriver({ containerClient: c }).getRange(GEN, 0, 8),
+    expected: ValidationError,
+  },
+  {
+    name: 'storage tail, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: (c) => new AzureBlobStorageDriver({ containerClient: c }).getTail(GEN, 8),
+    expected: ValidationError,
+  },
+  {
+    name: 'storage write, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: put,
+    expected: ValidationError,
+  },
+  {
+    name: 'registry read, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: (c) => registry(c).get({ segment: 's' }),
+    expected: ValidationError,
+  },
+  {
+    name: 'storage delete, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => new AzureBlobStorageDriver({ containerClient: c }).delete(GEN),
+    expected: RestError,
+  },
+  {
+    name: 'storage delete, 503',
+    status: 503,
+    run: (c) => new AzureBlobStorageDriver({ containerClient: c }).delete(GEN),
+    expected: TransientError,
+  },
+  {
+    name: 'storage delete, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: (c) => new AzureBlobStorageDriver({ containerClient: c }).delete(GEN),
+    expected: ValidationError,
+  },
+  {
+    name: 'storage delete under a version, 403',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) =>
+      new AzureBlobStorageDriver({ containerClient: c }).delete(GEN, { ifVersion: '"v"' }),
+    expected: RestError,
+  },
+  {
+    name: 'storage list, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => drain(new AzureBlobStorageDriver({ containerClient: c }).list({ segment: 's' })),
+    expected: RestError,
+  },
+  {
+    name: 'storage list, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: (c) => drain(new AzureBlobStorageDriver({ containerClient: c }).list({ segment: 's' })),
+    expected: ValidationError,
+  },
+  {
+    name: 'registry delete, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => store(c).delete('k', { version: '"v"' }),
+    expected: RestError,
+  },
+  {
+    name: 'registry delete, 503',
+    status: 503,
+    run: (c) => store(c).delete('k', { version: '"v"' }),
+    expected: TransientError,
+  },
+  {
+    name: 'registry listKeys, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => drain(store(c).listKeys('p')),
+    expected: RestError,
+  },
+  {
+    name: 'registry listKeys, ContainerNotFound',
+    status: 404,
+    code: 'ContainerNotFound',
+    cause: true,
+    run: (c) => drain(store(c).listKeys('p')),
+    expected: ValidationError,
+  },
+  {
+    name: 'registry compare-and-swap write, 403 echoing the request signature',
+    status: 403,
+    code: 'AuthenticationFailed',
+    echo: true,
+    run: (c) => store(c).write('k', new Uint8Array([1]), { version: '"v"' }),
+    expected: RestError,
+  },
+  {
+    name: 'registry compare-and-swap write, 412',
+    status: 412,
+    head: 404,
+    run: (c) => store(c).write('k', new Uint8Array([1]), { version: '"v"' }),
+    expected: WriteConflictError,
+  },
+  {
+    name: 'registry compare-and-swap write, 503',
+    status: 503,
+    run: (c) => store(c).write('k', new Uint8Array([1]), { version: '"v"' }),
+    expected: TransientError,
+  },
+];
+cases.push(...more);
+
 describe('Azure: no credential is reachable from an error the driver throws', LIMIT, () => {
   let server: Server;
   let url: string;
-  let answer: { status: number; head: number };
+  let answer: { status: number; head: number; code?: string; echo?: boolean };
 
   beforeEach(async () => {
     answer = { status: 503, head: 503 };
+    seen.signatures.clear();
     server = createServer((req, res) => {
       req.resume();
-      res.writeHead(req.method === 'HEAD' || req.method === 'GET' ? answer.head : answer.status, {
+      const code = answer.code ?? CODES[answer.status] ?? 'Refused';
+      const headers: Record<string, string> = {
         'content-type': 'application/xml',
-      });
+        'x-ms-error-code': code,
+      };
+      res.writeHead(
+        req.method === 'HEAD' || req.method === 'GET' ? answer.head : answer.status,
+        headers,
+      );
+      if (req.method === 'HEAD') return void res.end();
+      let message = 'refused';
+      let detail = '';
+      if (answer.echo) {
+        // What Azure quotes back: the request's own MAC signature, and (here, as a proxy page would) its URL, encoded.
+        const mac = /^SharedKey [^:]+:(.+)$/.exec(String(req.headers.authorization ?? ''))?.[1];
+        const sas = /[?&]sig=([^&]+)/.exec(req.url ?? '')?.[1];
+        if (mac !== undefined) {
+          seen.signatures.add(mac);
+          detail = `The MAC signature found in the HTTP request '${mac}' is not the same as any computed signature.`;
+        }
+        if (sas !== undefined) {
+          seen.signatures.add(sas);
+          message = `refused https://x/c?sv=1%26sig%3D${encodeURIComponent(sas)}%26se=2 and ?sv=1&sig=${sas}`;
+        }
+      }
       res.end(
-        req.method === 'HEAD'
-          ? undefined
-          : `<Error><Code>${CODES[answer.status] ?? 'Refused'}</Code><Message>refused</Message></Error>`,
+        `<Error><Code>${code}</Code><Message>${message}</Message>` +
+          (detail === ''
+            ? ''
+            : `<AuthenticationErrorDetail>${detail}</AuthenticationErrorDetail>`) +
+          '</Error>',
       );
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -222,10 +438,20 @@ describe('Azure: no credential is reachable from an error the driver throws', LI
         );
 
   describe.each<Client>(['sharedkey', 'sas'])('%s client', (kind) => {
-    it.each(cases)('$name', async ({ status, head, run, expected }) => {
-      answer = { status, head: head ?? status };
+    it.each(cases)('$name', async ({ status, head, code, echo, cause, run, expected }) => {
+      answer = { status, head: head ?? status, code, echo };
       const err = await outcome(() => run(client(kind)));
       expect(err).toBeInstanceOf(expected);
+      if (echo) expect(seen.signatures.size).toBeGreaterThan(0);
+      if (cause) {
+        const inner = (err as { cause?: unknown }).cause as RestError;
+        expect(inner).toBeInstanceOf(RestError);
+        expect(inner.statusCode).toBe(404);
+        // A HEAD has no body, so its code reaches `details.errorCode` from the header alone.
+        expect(inner.code ?? (inner.details as { errorCode?: string }).errorCode).toBe(
+          'ContainerNotFound',
+        );
+      }
       for (const e of chain(err)) {
         const { request, response } = e as {
           request?: { headers?: { get?: (n: string) => unknown }; url?: string };
@@ -234,7 +460,10 @@ describe('Azure: no credential is reachable from an error the driver throws', LI
         expect(request?.headers?.get?.('authorization')).toBeUndefined();
         expect(request?.url ?? '').not.toMatch(LEAK);
         expect(response?.request).toBeUndefined();
-        for (const text of reachableStrings(e)) expect(text).not.toMatch(LEAK);
+        for (const text of reachableStrings(e)) {
+          expect(text).not.toMatch(LEAK);
+          expect(signaturesIn(text)).toEqual([]);
+        }
       }
     });
   });
