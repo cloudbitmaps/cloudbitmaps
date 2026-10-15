@@ -28,10 +28,17 @@ so, and so do the module headers in the code.
   SDK keeps the request it sent on `err.request` and on `err.response.request`: with a shared-key client its
   `Authorization: SharedKey <account>:<signature>` header, with a SAS client its URL, `sig=` included. The SDK hides
   both from `util.inspect` and `JSON.stringify`, so a logger never printed them, but code that reads the property, or
-  walks the error and its `cause` chain, got the credential. Every error the driver throws, or keeps as a `cause`, is
-  now a copy without the request and the response; it keeps its class, name, message, stack, `code`, `statusCode` and
-  `details`, so a 403, 404, 409, 412 or 503 is classified as before. An `Authorization` value or a `sig=` value left in
-  the message, the stack or `details` is replaced by `[redacted]`. The S3 and GCS drivers already did this.
+  walks the error and its `cause` chain, got the credential. An SDK error that carries its transport, and every error
+  in its `cause` chain (an `AggregateError`'s `errors` too), is now thrown as a deep copy of its plain data: a native
+  error with the same prototype (`instanceof RestError` still holds), name, message, stack, `code`, `statusCode` and
+  `details`, so a 403, 404, 409, 412 or 503 is classified as before. The copy has no request, no response, no function
+  or accessor property and nothing nested deeper than ten levels, and the live error is never changed. An error with no
+  transport and no credential in its text (the driver's own typed errors) is thrown as it is. In the copy's text, an
+  `Authorization` header line, a `SharedKey` or `Bearer` value, a `sig=` value (also percent-encoded, JSON-escaped or
+  quoted) and the signature Azure quotes in a 403 body (`The MAC signature found in the HTTP request '...'`) are
+  replaced by `[redacted]`, as is the value under a credential key (`authorization`, `cookie`, `signature`,
+  `x-ms-encryption-key`, `x-identity-header` and the like). A credential in any other form is not recognised. The S3
+  and GCS drivers already scrubbed theirs.
 
 - **The privacy notes list everything the registry and the object store hold.** `PRIVACY.md` now says that a registry
   row carries the ledger of known generations in the clear, an encrypted segment's included (each generation's number
