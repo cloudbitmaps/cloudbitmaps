@@ -85,7 +85,8 @@ CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 
 `pnpm exec export-segments --help` (or `-h`) prints these settings and exits 0. The command takes no other argument: one
 prints the usage on stderr and exits 2, and a missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` exits 1 with a message that
-says what the variable is, names the other one and points at `--help`. A leading `--`, which `pnpm run` forwards, is ignored.
+says what the variable is, names the other one and points at `--help`. A leading `--`, which `pnpm run` forwards, is
+ignored.
 
 Each file is written to a unique `.part` temp file and then renamed atomically, and artifacts are owner-only (`0o600`).
 The command writes a self-describing `manifest.json` last, also atomically, so a directory with a `manifest.json`
