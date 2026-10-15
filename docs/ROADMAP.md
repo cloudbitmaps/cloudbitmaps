@@ -156,6 +156,9 @@ cost model, is an optional sixth package that needs neither a flavor nor a drive
 - **Id-range reads for keyset paging** —
   `iterate`, and every combine, take `after` / `through` and yield only the ids in `(after, through]`, fetching
   only the chunks the range overlaps, on a live or a pinned handle.
+- **One store per combine.** A combine, an `*Into` verb and `materializeMany` take only segments made by the store
+  the call runs on, and refuse a segment of another store, of a second store object over the same backend or of
+  another installed copy of the package with a `ValidationError` before any request.
 - **Composable set reads** — `union`, `andNot`, and an `exclude` option on `intersect` that folds suppression
   into the same chunk-aligned pass, so `(a ∩ b) \ suppression` needs no intermediate segment. Each operation is
   honest about what it can skip: `intersect` prunes any key missing from an operand, `andNot` reads the
@@ -428,11 +431,6 @@ move it up.
   cannot tell a generation a load published from a same-bytes object another write stored under its number
   ([an orphan is collected later](guide/loading.md#how-it-stays-correct)). Telling them apart takes an identity each
   write carries.
-- **Segment handles across stores.** A combine, an `*Into` verb and `materializeMany` take only segments made by the
-  store the call runs on, and refuse a segment of another store, of a second store object over the same backend or of
-  another installed copy of the package with a `ValidationError` before any request. A handle carries a versioned
-  brand only so that the refusal of another copy's segment can say so. Combining segments of two stores is not
-  supported.
 - **One generation from parts built in several processes.** Several workers, each owning a disjoint range of the id
   space, publishing one generation together without re-encoding. The format already allows it (a chunk's checksum
   and its encryption are bound to the chunk, not its position); what it needs is a server-side compose on every
@@ -485,6 +483,9 @@ move it up.
 
 Saying no is part of the design:
 
+- **Combining segments of two stores.** Not supported: a combine resolves each operand by name in its own store, so a
+  handle of another store would be read as the receiver's segment of that name. It is refused, never bridged. Load
+  both segments into one store, or read each store and combine the ids upstream.
 - **A per-call write API.** `add`/`remove` over a mutable tier is not built beside the loaded store: two write
   paths with different consistency stories would double the surface every invariant has to hold across, and every
   roaring-based engine that needs freshness micro-batches anyway. Compute the set upstream and load it; if a
