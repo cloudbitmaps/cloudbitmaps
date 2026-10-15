@@ -19,7 +19,7 @@ runs only if you allow it, and `roaring` needs its one script to fetch its nativ
 { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
 ```
 
-pnpm 11 and later ignores the `pnpm` key; there, put the allowance in a `pnpm-workspace.yaml` beside the `package.json`:
+pnpm 11 and later ignore the `pnpm` key; there, put the allowance in a `pnpm-workspace.yaml` beside the `package.json`:
 
 ```yaml
 allowBuilds:
@@ -352,7 +352,7 @@ be in place for the rebuild to run.
    { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
    ```
 
-   pnpm 11 and later ignores the `pnpm` key: the install still stops with `ERR_PNPM_IGNORED_BUILDS`, and the package
+   pnpm 11 and later ignore the `pnpm` key: the install still stops with `ERR_PNPM_IGNORED_BUILDS`, and the package
    still throws at `import`. There the allowance goes in a `pnpm-workspace.yaml` beside the `package.json`:
 
    ```yaml
