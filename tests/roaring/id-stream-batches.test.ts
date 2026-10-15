@@ -94,6 +94,8 @@ async function bothWays(
   };
 }
 
+type Operands = { b: Segment; c: Segment };
+
 describe('batches() flattens to exactly the per-id stream', () => {
   const verbs: Array<[string, (s: { a: Segment; b: Segment; c: Segment }, r: object) => IdStream]> =
     [
@@ -131,15 +133,19 @@ describe('batches() flattens to exactly the per-id stream', () => {
         const fresh = new CloudRoaring({ storage: w.backend, cache: { genTtlMs: 0 } });
         const pa = await fresh.segment('a').pin();
         await w.load('a', [7]);
+        // A combine takes the operands of its own handle's store, so each handle gets its store's.
         for (const read of [
           (s: Segment) => s.iterate(r),
-          (s: Segment) => s.union([w.b], r),
-          (s: Segment) => s.andNot([w.b, w.c], r),
-          (s: Segment) => s.intersect([w.b], r),
+          (s: Segment, o: Operands) => s.union([o.b], r),
+          (s: Segment, o: Operands) => s.andNot([o.b, o.c], r),
+          (s: Segment, o: Operands) => s.intersect([o.b], r),
         ]) {
-          for (const handle of [pinned, pa]) {
-            const batches = await batchesOf(read(handle));
-            expect(flatten(batches)).toEqual(await collect(read(handle)));
+          for (const [handle, o] of [
+            [pinned, w],
+            [pa, { b: fresh.segment('b'), c: fresh.segment('c') }],
+          ] as const) {
+            const batches = await batchesOf(read(handle, o));
+            expect(flatten(batches)).toEqual(await collect(read(handle, o)));
             expectWellFormed(batches);
           }
         }
