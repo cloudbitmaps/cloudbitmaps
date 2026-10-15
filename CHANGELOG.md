@@ -61,17 +61,33 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
-- **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment
-  of the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs on,
-  so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`
+- **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment of
+  the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs
+  on, so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`
   alone, `union` and `andNot` likewise, and `intersectInto`, `unionInto`, `andNotInto` and `materializeMany` published
   that answer; a handle whose name the receiver lacked failed with an operand that "names a segment that does not
   exist". Every operand, every `exclude` and every destination of a combine, an `*Into` verb and `materializeMany`
   (every operand and every `dest`) must now come from the store the call runs on. A segment of another store, of a
-  second store object over the same backend, or of another installed copy is refused with a `ValidationError` before
-  any request: no read, no write, no publish. The message names the verb and the role (an operand, an exclude, the
+  second store object over the same backend, or of another installed copy is refused with a `ValidationError` before any
+  request: no read, no write, no publish. The message names the verb and the role (an operand, an exclude, the
   destination) or, in `materializeMany`, where the handle sits (`operands["name"]`, `outputs[i].dest`), never the
   segment, its namespace or a key.
+- **An Azure Blob error carries no credential.** The driver threw the `@azure/storage-blob` error as it came, and the
+  SDK keeps the request it sent on `err.request` and on `err.response.request`: with a shared-key client its
+  `Authorization: SharedKey <account>:<signature>` header, with a SAS client its URL, `sig=` included. The SDK hides
+  both from `util.inspect` and `JSON.stringify`, so a logger never printed them, but code that reads the property, or
+  walks the error and its `cause` chain, got the credential. An SDK error that carries its transport, and every error in
+  its `cause` chain (an `AggregateError`'s `errors` too), is now thrown as a deep copy of its plain data: a native error
+  with the same prototype (`instanceof RestError` still holds), name, message, stack, `code`, `statusCode` and
+  `details`, so a 403, 404, 409, 412 or 503 is classified as before. The copy has no request, no response, no function
+  or accessor property and nothing nested deeper than ten levels, and the live error is never changed. An error with no
+  transport and no credential in its text (the driver's own typed errors) is thrown as it is. In the copy's text, an
+  `Authorization` header line, a `SharedKey` or `Bearer` value, a `sig=` value (also percent-encoded, JSON-escaped or
+  quoted) and the signature Azure quotes in a 403 body (`The MAC signature found in the HTTP request '...'`) are
+  replaced by `[redacted]`, as is the value under a credential key (`authorization`, `cookie`, `signature`,
+  `x-ms-encryption-key`, `x-identity-header` and the like). A credential in any other form is not recognised, and a text
+  too large for these patterns is replaced whole. The S3 and GCS drivers already scrubbed theirs.
+
 - **The privacy notes list everything the registry and the object store hold.** `PRIVACY.md` now says that a registry
   row carries the ledger of known generations in the clear, an encrypted segment's included (each generation's number
   and its object's footer checksum); that a row's summary records the object's tail size; that every generation object
@@ -97,16 +113,15 @@ so, and so do the module headers in the code.
   './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says that intersection
   reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy notes say that error
   messages name the segment, the namespace, chunk keys, id counts, metadata keys, key ids, the bucket or container name,
-  or the account host, and an object's key, that an S3 or GCS driver removes the credentials from an SDK error while an
-  Azure Blob error keeps its request, with its `Authorization` header or SAS signature, hidden from `JSON.stringify` and
-  `console.log` but not removed, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal
-  hides, and that a changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the
-  store, the three backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the
-  in-process backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license
-  paragraph says the license grants no permission to use the name beyond describing where the work comes from and
-  reproducing the content of the `NOTICE` file. `MaterializeOptions` documents `metadata?`, the cost model's `Workload`
-  documents the range of `cacheHitRate`, `operandsPerIntersect` and `readerProcesses`, and the admin calls'
-  `concurrency` defaults are stated, `checkConsistency`'s 8 included.
+  or the account host, and an object's key, that the S3, GCS and Azure Blob drivers remove the credentials from an SDK
+  error, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal hides, and that a
+  changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the store, the three
+  backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the in-process
+  backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license paragraph says the
+  license grants no permission to use the name beyond describing where the work comes from and reproducing the content
+  of the `NOTICE` file. `MaterializeOptions` documents `metadata?`, the cost model's `Workload` documents the range of
+  `cacheHitRate`, `operandsPerIntersect` and `readerProcesses`, and the admin calls' `concurrency` defaults are stated,
+  `checkConsistency`'s 8 included.
 
 ## [0.21.0] — 2026-10-13
 
