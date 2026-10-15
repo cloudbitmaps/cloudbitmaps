@@ -190,6 +190,23 @@ describe('function-length identities of object-literal members', () => {
     expect(swapped).toEqual(first);
   });
 
+  it('sees through satisfies and a non-null assertion, and keys a nested literal by its path', async () => {
+    const source = [
+      'const checked = {',
+      ...big('  run() {', '  },'),
+      '} satisfies Handlers;',
+      'const outer = {',
+      '  inner: {',
+      ...big('    render() {', '    },', '    '),
+      '  },',
+      '};',
+    ].join('\n');
+    expect([...(await scanSource(source)).keys()]).toEqual([
+      `${KEY}checked > run`,
+      `${KEY}outer.inner > render`,
+    ]);
+  });
+
   it('keys a method of an object assigned to a property, or wrapped in as const, by that binding', async () => {
     const source = [
       'api.handlers = {',
@@ -246,6 +263,47 @@ describe('function-length rename pairing', () => {
     ]);
     expect(errors).toEqual([]);
     expect(next).toEqual({ 'f.ts::new': 150 });
+  });
+
+  it('accepts a function exactly as long as the entry recorded', () => {
+    const { baseline: next, errors } = applyRenames(new Map([['f.ts::new', 150]]), baseline, [
+      ['f.ts::old', 'f.ts::new'],
+    ]);
+    expect(errors).toEqual([]);
+    expect(next).toEqual({ 'f.ts::new': 150 });
+  });
+
+  it('refuses a target that is already in the baseline', () => {
+    const { errors } = applyRenames(
+      new Map([['f.ts::new', 140]]),
+      { ...baseline, 'f.ts::new': 140 },
+      [['f.ts::old', 'f.ts::new']],
+    );
+    expect(errors).toEqual(['--rename: f.ts::new is already in the baseline.']);
+  });
+
+  it('refuses two pairs onto one new key, and two pairs from one old key, naming the key', () => {
+    const two = { 'f.ts::a': 150, 'f.ts::b': 150 };
+    const found = new Map([['f.ts::new', 140]]);
+    const sameNew = applyRenames(found, two, [
+      ['f.ts::a', 'f.ts::new'],
+      ['f.ts::b', 'f.ts::new'],
+    ]);
+    expect(sameNew.errors).toEqual(['--rename: f.ts::new is the target of more than one pair.']);
+    expect(sameNew.baseline).toEqual(two);
+    const sameOld = applyRenames(
+      new Map([
+        ['f.ts::x', 140],
+        ['f.ts::y', 140],
+      ]),
+      two,
+      [
+        ['f.ts::a', 'f.ts::x'],
+        ['f.ts::a', 'f.ts::y'],
+      ],
+    );
+    expect(sameOld.errors).toEqual(['--rename: f.ts::a is named more than once.']);
+    expect(sameOld.baseline).toEqual(two);
   });
 
   it.each([
@@ -375,6 +433,29 @@ describe('function-length CLI', () => {
     expect(run('--update', '--rename', `${KEY}oldname`, `${KEY}renamed`).code).toBe(0);
     expect(baselineOf()).toEqual({ [`${KEY}renamed`]: 112 });
     expect(run().code).toBe(0);
+  });
+
+  it('--update --rename prints each re-key it applied, old to new and old size to new size', () => {
+    setup({ renamed: 112 }, { [`${KEY}oldname`]: 120 });
+    const { code, out } = run('--update', '--rename', `${KEY}oldname`, `${KEY}renamed`);
+    expect(code).toBe(0);
+    expect(out).toContain(`re-keyed ${KEY}oldname -> ${KEY}renamed (recorded 120, now 112 lines)`);
+  });
+
+  it('--rename without --update changes nothing and says why, even for a pair that would fit', () => {
+    setup({ renamed: 112 }, { [`${KEY}oldname`]: 120 });
+    const { code, out } = run('--rename', `${KEY}oldname`, `${KEY}renamed`);
+    expect(code).toBe(1);
+    expect(out).toContain('--rename only works together with --update');
+    expect(baselineOf()).toEqual({ [`${KEY}oldname`]: 120 });
+  });
+
+  it('--rename with one key says it takes two', () => {
+    setup({ renamed: 112 }, { [`${KEY}oldname`]: 120 });
+    const { code, out } = run('--update', '--rename', `${KEY}oldname`);
+    expect(code).toBe(1);
+    expect(out).toContain('--rename takes two keys');
+    expect(baselineOf()).toEqual({ [`${KEY}oldname`]: 120 });
   });
 
   it('--rename refuses a renamed function that is longer than the entry, and works only with --update', () => {

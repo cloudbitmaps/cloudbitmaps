@@ -21,7 +21,11 @@
  *   `--update` rewrites the baseline for case 3 and 4 only. It never records a growth or a new offender: those
  *   are fixed in the code, not in the baseline. The one exception is a rename you name yourself:
  *   `--update --rename <oldKey> <newKey>` moves a stale entry to the function it became, when that function is
- *   a new offender in the same file and is not longer than the entry recorded. Repeat `--rename` for more pairs.
+ *   a new offender in the same file and is not longer than the entry recorded. Repeat `--rename` for more pairs
+ *   (each old key and each new key at most once). `--rename` trusts the person running it: the script cannot tell a
+ *   function that changed its name from a new long function put under a stale entry's size. So a re-keyed entry
+ *   is reviewed like code, in the pull request's diff of `scripts/function-length-baseline.json`, and every
+ *   re-key is printed to the terminal when it is applied.
  *
  * HOW A FUNCTION IS IDENTIFIED
  *   `<file>::<outer> > <inner> > ...`, each part naming one enclosing function or class: a declaration's name, a
@@ -37,6 +41,10 @@
  *     variable an object literal's method sits in) changes its identity: the gate then reports a stale baseline
  *     entry and a new offender. Run `--update --rename <oldKey> <newKey>` with the two keys as printed (keys
  *     contain spaces and `>`, so quote them). A plain `--update` drops the stale entry but refuses the new offender.
+ *   - A method of an object literal with no binding (one in a `return`, a call argument, a spread or
+ *     `export default {}`) is keyed by its own name alone, under the enclosing function. Two such literals in one
+ *     function get `render` and `render #2` in source order, and moving a bound literal (`const x = {...}`) into
+ *     one of those positions, or the reverse, changes its key. The fix is the same `--update --rename` above.
  *   - Adding or removing an earlier anonymous callback with the same identity under the same parent renumbers the
  *     later ones (`#2` becomes `#1`).
  *   - Only `packages/*` `/src` is checked: not `tests/`, `scripts/`, `bench/` or `fuzz/`.
@@ -303,11 +311,21 @@ function compare(found, baseline, limit = LIMIT) {
 /**
  * Apply `--rename` pairs (`[[oldKey, newKey], ...]`) to the baseline. Each pair must name a baseline entry whose
  * function is gone, and a function that is over the limit now, not in the baseline, in the same file, and not
- * longer than the entry recorded. Returns `{baseline, errors}`; the baseline is the input when there are errors.
+ * longer than the entry recorded. Returns `{baseline, errors, applied}`; the baseline is the input when there are errors.
  */
 function applyRenames(found, baseline, pairs) {
   const errors = [];
   const next = { ...baseline };
+  const applied = [];
+  const olds = new Set();
+  const news = new Set();
+  for (const [oldKey, newKey] of pairs) {
+    if (olds.has(oldKey)) errors.push(`--rename: ${oldKey} is named more than once.`);
+    if (news.has(newKey)) errors.push(`--rename: ${newKey} is the target of more than one pair.`);
+    olds.add(oldKey);
+    news.add(newKey);
+  }
+  if (errors.length > 0) return { baseline, errors, applied };
   for (const [oldKey, newKey] of pairs) {
     const recorded = baseline[oldKey];
     const lines = found.get(newKey);
@@ -327,9 +345,10 @@ function applyRenames(found, baseline, pairs) {
     else {
       delete next[oldKey];
       next[newKey] = recorded;
+      applied.push(`${oldKey} -> ${newKey} (recorded ${recorded}, now ${lines} lines)`);
     }
   }
-  return { baseline: errors.length > 0 ? baseline : next, errors };
+  return { baseline: errors.length > 0 ? baseline : next, errors, applied };
 }
 
 function readBaseline(path = BASELINE_PATH) {
@@ -366,12 +385,15 @@ async function main(argv) {
         ? ['--rename takes two keys: --rename <oldKey> <newKey>.']
         : [];
     const applied =
-      bad.length > 0 ? { baseline, errors: bad } : applyRenames(found, baseline, pairs);
+      bad.length > 0
+        ? { baseline, errors: bad, applied: [] }
+        : applyRenames(found, baseline, pairs);
     if (applied.errors.length > 0) {
       process.stderr.write(`${applied.errors.join('\n')}\n`);
       return 1;
     }
     baseline = applied.baseline;
+    for (const line of applied.applied) process.stdout.write(`function-length: re-keyed ${line}\n`);
   }
   const { problems, fixable, lowered } = compare(found, baseline);
   if (argv.includes('--update')) {

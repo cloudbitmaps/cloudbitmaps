@@ -23,7 +23,7 @@ Every change must pass these locally, and CI runs each of them on every pull req
   already were are listed with their sizes in `scripts/function-length-baseline.json`, a ratchet that can only go
   down. It fails on a new function over the limit, on a baselined one that grew, and on one that shrank while its
   entry stayed: after you shorten one, run `pnpm lint:fn-length --update` to lower or drop its entry and commit the
-  result. It never records growth. The script's header states what it cannot see (a rename changes a function's
+  result. It never records growth. A function that has a new name or place is re-keyed with `pnpm lint:fn-length --update --rename '<oldKey>' '<newKey>'` (the failure message prints the command); that step trusts whoever runs it, so review a changed key in `scripts/function-length-baseline.json` like code, and the command prints each re-key it makes. The script's header states what it cannot see (a rename changes a function's
   identity, lines are counted rather than complexity, `tests/` and `scripts/` are not checked).
 - `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
   Azurite) — no real cloud account needed. Locally it needs Docker with the backends started first
