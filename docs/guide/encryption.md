@@ -179,7 +179,8 @@ high 16 bits of the ids it holds), and a count mismatch gives the two counts, on
 one. The key comes from the index, which opens only under the segment's key, but a chunk's stored bytes are checked
 against their CRC32C before they are authenticated, so anyone who can change the object, or a storage fault, can make a
 read raise an error that names a sealed chunk key. A count mismatch is raised only after both counts authenticated. A
-short read of a range, which names offsets and lengths the sealed index holds, is raised before authentication. Treat these messages as carrying what the seal hides.
+short read of a range, which names offsets and lengths the sealed index holds, is raised before authentication.
+Treat these messages as carrying what the seal hides.
 
 ## How it stays correct
 
