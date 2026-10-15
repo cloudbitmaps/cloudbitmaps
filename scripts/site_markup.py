@@ -76,8 +76,55 @@ def inline_styles(html: str) -> list[str]:
     ]
 
 
+def _css_without_comments(css: str) -> str:
+    """A stylesheet with its comments out, where the browser reads comments: not inside a string or an unquoted url()."""
+    out, i, n = [], 0, len(css)
+    while i < n:
+        c = css[i]
+        if c == "/" and css.startswith("/*", i):
+            end = css.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            out.append(" ")
+        elif c in "\"'":
+            j = i + 1
+            while j < n and css[j] not in (c, "\n"):
+                j += 2 if css[j] == "\\" else 1
+            out.append(css[i : j + 1])
+            i = j + 1
+        elif c == "\\":
+            out.append(css[i : i + 2])
+            i += 2
+        elif _UNQUOTED_URL.match(css, i) and not (i > 0 and re.match(r"[\w-]", css[i - 1])):
+            end = css.find(")", i)
+            end = n if end == -1 else end + 1
+            out.append(css[i:end])
+            i = end
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+_UNQUOTED_URL = re.compile(r"url\(\s*[^'\"\s)]", re.I)
+
+
+def _code_point(hex_digits: str) -> str:
+    n = int(hex_digits, 16)
+    return chr(n) if 0 < n <= 0x10FFFF and not 0xD800 <= n <= 0xDFFF else chr(0xFFFD)
+
+
+def _unescape(m: re.Match) -> str:
+    if m.group(1):
+        return _code_point(m.group(1))
+    return "" if m.group(2) else m.group(3)
+
+
 def css_code(css: str) -> str:
-    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    """A stylesheet as the browser reads it: line breaks normalised, comments out, and escapes decoded in one pass, so
+    `\\68ttps:` reads as `https:`, an escaped line break is nothing, and only a space, tab or line feed ends a hex
+    escape."""
+    css = _css_without_comments(re.sub(r"\r\n?|\f", "\n", css))
+    return re.sub(r"\\(?:([0-9a-fA-F]{1,6})[ \t\n]?|(\n)|(.))", _unescape, css, flags=re.S)
 
 
 def site_scripts(root: str, pages: list[str]) -> list[tuple[str, str]]:
