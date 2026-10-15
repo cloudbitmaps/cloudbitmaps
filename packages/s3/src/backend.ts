@@ -182,9 +182,9 @@ export function limitSockets(client: S3Client, maxSockets: number): void {
  * **It will build a client for you**, which is the common case — `new S3Storage({ bucket })` picks up the
  * ambient credential chain and region exactly as the SDK would. Pass `client` instead when you need a
  * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
- * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
- * `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
- * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make.
+ * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage`
+ * and `.registry` for anyone wiring something the facade does not cover. `maxObjectBytes` and `partBytes` size the
+ * multipart upload, and `readTimeoutMs`, when set, bounds each read both halves make (listings are not timed).
  */
 export class S3Storage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */

@@ -48,10 +48,14 @@ so, and so do the module headers in the code.
   made first; the guide says what a TypeScript project needs, names a Node major-version change as a third cause of
   `Cannot find module './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says
   that intersection reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy
-  notes say that error messages name the segment, the namespace and a cloud registry's object key, and the encryption
-  guide that an `IntegrityError` names a chunk key and counts the seal hides. Hover docs now cover the store, the three
-  backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the in-process
-  backends' options, and a load's row records up to 127 generations.
+  notes say that error messages name the segment, the namespace, chunk keys, id counts, key ids, the bucket or account
+  host and an object's key, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal
+  hides, and that a changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the
+  store, the three backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the
+  in-process backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license
+  paragraph says the license grants no permission to use the name beyond describing where the work comes from.
+  `MaterializeOptions` documents `metadata?`, the cost model's `Workload` documents the range of each field, and the
+  admin calls' `concurrency` defaults are stated.
 
 ## [0.21.0] — 2026-10-13
 

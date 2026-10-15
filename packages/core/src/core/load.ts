@@ -214,14 +214,16 @@ export interface LoadOptions {
    * load superseded comes first. After a rollback that is the one the rollback restored, and it stays in the window of
    * every load after it, ahead of the generations the rollback moved away from, for as many loads as `keep` says.
    *
-   * The segment's row records the generations a load keeps, up to 127, so at a `keep` of up to 64 a load whose
-   * number one existence check found free collects without listing: it deletes the generations its publish pushed out
-   * of the window, and lists the segment's objects on every sixteenth generation to take whatever that pass leaves,
-   * such as an object a crashed load left below the pointer. A `keep` above 64 collects by listing on every load, and
-   * so does the first load of a row with no usable ledger, which starts one from the bucket; so does a load whose check
-   * found the current generation's object gone: the guard's read of it, or, when the guard took the size from the row's
-   * summary, one zero-byte read made before a `keep` of 1 or more takes a name. A `keep` at least the generation
-   * published collects nothing and asks for nothing.
+   * The segment's row records the generations a load keeps, up to 127.
+   *
+   * With a `keep` of at most 64, a load whose number one existence check found free deletes by name the generations
+   * its publish pushed out of the window, and lists the segment's objects on every sixteenth generation to take
+   * whatever that pass leaves, such as an object a crashed load left below the pointer.
+   *
+   * A load lists instead on every load when `keep` is above 64, when the row has no usable record (the first load of
+   * a row starts one from the bucket), when the row's record names more than 64 generations below the pointer that no
+   * lease holds (as after a `keep` above 64, or `materializeMany`), or when the check found the current generation's
+   * object missing. A `keep` at least the generation published collects nothing and asks for nothing.
    */
   readonly keep?: number;
   /**
@@ -393,7 +395,10 @@ export interface LoadResult {
   readonly published: boolean;
   /** Set only when `published` is false. */
   readonly reason?: LoadRefusal;
-  /** Bytes of the generation's object as stored. */
+  /**
+   * Bytes of the generation's object as stored, or 0 when another load took the generation number first and
+   * nothing was written.
+   */
   readonly size: number;
   /**
    * SHA-256 of the object as stored, or `''` when another load took the generation number first. The library neither

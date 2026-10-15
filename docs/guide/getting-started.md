@@ -332,9 +332,9 @@ success because the *install* did succeed — only the post-install step was ski
 **The third: you changed Node's major version.** `roaring` downloads one binary per Node ABI, into
 `native/roaring-node-v<ABI>-<platform>-<arch>-<libc>`, and when the one for the running Node is missing it falls back to
 `./build/Release/roaring.node` and reports that path. An install made under Node 24 and run under Node 22 (after
-`nvm use 22`, a new CI image, a new Lambda runtime) fails with this same message, and allowing the script changes
-nothing. Run `pnpm rebuild roaring` (or `npm rebuild roaring`) under the Node you now use, with the allowance below in
-place.
+`nvm use 22`, a new CI image, a new Lambda runtime) fails with this same message. Allowing the script does not fix this
+by itself. Run `pnpm rebuild roaring` (or `npm rebuild roaring`) under the Node you now use; the allowance below must
+be in place for the rebuild to run.
 
 **Fixes, in order of preference:**
 
@@ -410,8 +410,9 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
   when it is an ES module: `"type": "module"` in `package.json` (which `pnpm init` and `npm init -y` do not set) or the
   `.mts` extension; otherwise TypeScript reports `TS1309`. A `tsconfig.json` that typechecks them, with `@types/node`
   installed: `{ "compilerOptions": { "strict": true, "module": "nodenext", "target": "es2022", "types": ["node"] } }`.
-  `roaring`'s own types use `Symbol.dispose`, which `@types/node` declares; without it, add
-  `"lib": ["es2022", "esnext.disposable"]` or set `"skipLibCheck": true`, or `roaring`'s `index.d.ts` reports `TS2550`.
+  `roaring`'s own types use `Symbol.dispose`, which `@types/node` declares. Without `@types/node`, take one of two
+  setups instead, or `roaring`'s `index.d.ts` reports `TS2550`: set `"skipLibCheck": true`, or set `"lib"` to
+  `["es2022", "esnext.disposable", "dom"]` (an explicit `lib` replaces the default, so keep `dom` for `console`).
   A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`; `node16` and `node18` report `TS1479`
   on the import. A project on `moduleResolution: bundler` is unaffected.
 - On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first

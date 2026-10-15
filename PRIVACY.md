@@ -432,9 +432,13 @@ in your own logs, error reporting, and metric/trace tags — hash or redact them
 segment names for sensitive segments (keeping the human label in your own classified registry). The name rules are deliberately permissive — any non-empty string — so a name can carry an email
 address, free text, or anything else an upstream system hands you. That makes this advice stronger rather than
 weaker: the library will store what you name, and will not sanitise it for you.
-The library's own error messages name the segment and namespace a call was
-about, and an error from a cloud registry names the row's object key: the bucket prefix, the namespace and the encoded
-segment name. Treat an error message as carrying those names wherever you report it.
+
+The library's own error messages name the segment and namespace; some messages also give a chunk key (the high 16 bits
+of the ids in that chunk), id counts, metadata keys, a key id, the bucket or account host, and an object's key (the
+store's `prefix`, the namespace and the encoded segment name); an error the cloud SDK raised reaches you as the SDK
+wrote it, with credentials removed; and `eraseSubject` copies each message into its ledger's `note`. Treat an error
+message, and the ledger, as carrying those names wherever you report or keep them.
+
 
 ## Shared-responsibility matrix
 

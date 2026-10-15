@@ -24,7 +24,8 @@ Three words appear everywhere:
 ## Install & entry points
 
 On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
-script to fetch its native binary. Allow it first, in your `package.json`:
+script to fetch its native binary. Allow it first: run `pnpm init` (or `npm init -y`), then add these two top-level keys
+to your `package.json`:
 `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but
 warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
 
@@ -34,8 +35,8 @@ pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, 
 ```
 
 Installed before allowing it? The install exited 0 and the package throws at `import`. Add the setting, then run
-`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped
-([Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
+`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
+[Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
 [CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
@@ -317,4 +318,4 @@ operating manual (`CLAUDE.md` is a symlink to it).
 ## License
 
 **Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish. The license does not grant permission to use
-the CloudBitmaps name ([section 6](LICENSE)).
+the CloudBitmaps name beyond describing where the work comes from ([section 6](LICENSE)).
