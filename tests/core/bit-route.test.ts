@@ -31,4 +31,35 @@ describe('BitRouteSplitter', () => {
       expect(() => splitId(bad)).toThrow(ValidationError);
     }
   });
+
+  it('classifies a refused id without repeating it', () => {
+    const cases: Array<[unknown, string]> = [
+      ['14155551234', 'a string'],
+      [14155551234n, 'a bigint'],
+      [undefined, 'undefined'],
+      [null, 'null'],
+      [{}, 'an object'],
+      [[1], 'an object'],
+      [true, 'a boolean'],
+      [() => 1, 'a function'],
+      [Symbol('x'), 'a symbol'],
+      [-14155551234, 'a negative number'],
+      [-0.5, 'a negative number'],
+      [1.5, 'a number with a fraction'],
+      [Number.NaN, 'NaN or an infinity'],
+      [Infinity, 'NaN or an infinity'],
+      [-Infinity, 'NaN or an infinity'],
+      [U32_MAX + 1, 'a number above 4294967295 (ids are 32-bit)'],
+      [5_000_000_000, 'a number above 4294967295 (ids are 32-bit)'],
+    ];
+    for (const [bad, got] of cases) {
+      let message = '';
+      try {
+        splitId(bad as number);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toBe(`an id must be an integer from 0 to 4294967295; got ${got}`);
+    }
+  });
 });

@@ -17,7 +17,8 @@
  * checks its trailer, its CRC32C, its sections and the metadata in them before anything trusts them, and holds payloads
  * to the bytes before it. An object without the flag has no block, and is read exactly as before.
  */
-import { IntegrityError, isIntegrityError, UnsupportedError, ValidationError } from '../errors';
+import { isIntegrityError, UnsupportedError, ValidationError } from '../errors';
+import { crbmIntegrity } from './integrity';
 import type { BlobReader } from '../blob';
 import type { CrbmCrypto } from '../crypto';
 import { MAX_METADATA_BYTES, metadataFromBytes } from '../metadata';
@@ -147,7 +148,7 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
  */
 export function checkSize(tail: Uint8Array, size: number): void {
   if (!Number.isSafeInteger(size) || size < tail.length) {
-    throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
+    throw crbmIntegrity(`.crbm size is not a byte count its tail fits in: ${size}`);
   }
 }
 
@@ -158,16 +159,16 @@ function checkedFooter(
 ): { footer: Uint8Array; fview: DataView; storedFooterCrc: number } {
   checkSize(tail, size);
   if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
-    throw new IntegrityError(`.crbm too small: ${size}B`);
+    throw crbmIntegrity(`.crbm too small: ${size}B`);
   }
   const footer = tail.subarray(tail.length - FOOTER_BYTES);
   if (!magicMatches(footer, FOOTER.endMagic)) {
-    throw new IntegrityError('.crbm end magic mismatch');
+    throw crbmIntegrity('.crbm end magic mismatch');
   }
   const fview = new DataView(footer.buffer, footer.byteOffset, footer.byteLength);
   const storedFooterCrc = fview.getUint32(FOOTER.footerCrc32c, true);
   if (crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)) !== storedFooterCrc) {
-    throw new IntegrityError('.crbm footer CRC mismatch');
+    throw crbmIntegrity('.crbm footer CRC mismatch');
   }
   return { footer, fview, storedFooterCrc };
 }
@@ -202,7 +203,7 @@ export async function footerSaysEncrypted(blob: BlobReader): Promise<boolean> {
 function readU64(view: DataView, offset: number, field: string): number {
   const big = view.getBigUint64(offset, true);
   if (big > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new IntegrityError(`.crbm ${field} ${big} exceeds safe-integer range`);
+    throw crbmIntegrity(`.crbm ${field} ${big} exceeds safe-integer range`);
   }
   return Number(big);
 }
@@ -351,7 +352,13 @@ export class CrbmReader {
     const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
     const versionMajor = footer[FOOTER.versionMajor]!;
     if (versionMajor !== VERSION_MAJOR) {
-      throw new UnsupportedError(`.crbm major version ${versionMajor} not supported`);
+      const next =
+        versionMajor > VERSION_MAJOR
+          ? 'upgrade @cloudbitmaps/core'
+          : 'no release writes that version, so this library did not write the object';
+      throw new UnsupportedError(
+        `.crbm major version ${versionMajor} not supported; this build reads major version ${VERSION_MAJOR}: ${next}`,
+      );
     }
     const flags = fview.getUint32(FOOTER.flags, true);
     const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
@@ -407,7 +414,7 @@ export class CrbmReader {
     // one. So it is forged, corrupt, a cleartext write that never published, or one an earlier release published
     // while racing the segment's first keyed load, and its index and metadata are not believed.
     if (!encrypted && options.crypto !== undefined) {
-      throw new IntegrityError(
+      throw crbmIntegrity(
         `.crbm generation ${generation} is not encrypted, but it was opened with a key: a cleartext object where an ` +
           'encrypted one belongs is forged, corrupt, or a write that never published (a crash, before the ' +
           "segment's key was made); a load's collection, dropSegment or deleting the object removes it",
@@ -418,19 +425,17 @@ export class CrbmReader {
 
     // Bounds + size cap on the index region before trusting/fetching it.
     if (indexOffset < PAYLOAD_START || indexOffset + indexLength > size - FOOTER_BYTES) {
-      throw new IntegrityError(
-        `.crbm index region [${indexOffset}, +${indexLength}) out of bounds`,
-      );
+      throw crbmIntegrity(`.crbm index region [${indexOffset}, +${indexLength}) out of bounds`);
     }
     if (indexLength > maxIndexBytes) {
-      throw new IntegrityError(`.crbm index ${indexLength}B exceeds cap ${maxIndexBytes}B`);
+      throw crbmIntegrity(`.crbm index ${indexLength}B exceeds cap ${maxIndexBytes}B`);
     }
 
     // Validate the front preamble too, but only when this GET already covers it (no extra request).
     const tailCoversFrom = size - tail.length;
     if (tailCoversFrom === 0) {
       if (!magicMatches(tail, 0) || tail[4] !== versionMajor || tail[5] !== versionMinor) {
-        throw new IntegrityError('.crbm preamble magic/version mismatch with footer');
+        throw crbmIntegrity('.crbm preamble magic/version mismatch with footer');
       }
     }
 
@@ -457,7 +462,7 @@ export class CrbmReader {
       indexOffset - regionStart + indexLength,
     );
     if (crc32c(indexBytes) !== indexCrc) {
-      throw new IntegrityError('.crbm index CRC mismatch');
+      throw crbmIntegrity('.crbm index CRC mismatch');
     }
 
     // Decrypt the index (nonce/tag from the footer) before parsing; AAD binds it to this (segment, generation).
@@ -481,7 +486,7 @@ export class CrbmReader {
     if (hasExtension) {
       const trailerStart = indexOffset - EXT_TRAILER_BYTES;
       if (trailerStart < PAYLOAD_START) {
-        throw new IntegrityError('.crbm flags an extension block, but has no room for one');
+        throw crbmIntegrity('.crbm flags an extension block, but has no room for one');
       }
       // The block's bytes come from what is already fetched, or, when the tail ends inside the block, from one read.
       let window = { bytes: region, start: regionStart };
@@ -492,17 +497,17 @@ export class CrbmReader {
       const trailer = within(window.bytes, window.start, trailerStart, indexOffset);
       const tview = new DataView(trailer.buffer, trailer.byteOffset, trailer.byteLength);
       if (!EXT_MAGIC.every((b, i) => trailer[8 + i] === b)) {
-        throw new IntegrityError('.crbm extension block trailer magic mismatch');
+        throw crbmIntegrity('.crbm extension block trailer magic mismatch');
       }
       const sectionsLength = tview.getUint32(0, true);
       if (sectionsLength > MAX_EXT_BYTES) {
-        throw new IntegrityError(
+        throw crbmIntegrity(
           `.crbm extension block ${sectionsLength}B exceeds cap ${MAX_EXT_BYTES}B`,
         );
       }
       const extStart = trailerStart - sectionsLength;
       if (extStart < PAYLOAD_START) {
-        throw new IntegrityError(`.crbm extension block of ${sectionsLength}B out of bounds`);
+        throw crbmIntegrity(`.crbm extension block of ${sectionsLength}B out of bounds`);
       }
       // The CRC covers the sections and the length field after them.
       let covered: Uint8Array;
@@ -512,11 +517,11 @@ export class CrbmReader {
         covered = await blob.getRange(extStart, sectionsLength + 4);
         servedFromTail = false;
         if (covered.length !== sectionsLength + 4) {
-          throw new IntegrityError('.crbm extension block read short');
+          throw crbmIntegrity('.crbm extension block read short');
         }
       }
       if (crc32c(covered) !== tview.getUint32(4, true)) {
-        throw new IntegrityError('.crbm extension block CRC mismatch');
+        throw crbmIntegrity('.crbm extension block CRC mismatch');
       }
       ({ metadata, metadataLength } = extensionContents(
         covered.subarray(0, sectionsLength),
@@ -537,19 +542,17 @@ export class CrbmReader {
       // Footer count/cardinality are zeroed on an encrypted object; the decrypted index is authoritative (and
       // already AEAD-authenticated, AAD-bound to this object), so derive the total from it.
       if (chunkCount !== 0 || totalCardinality !== 0) {
-        throw new IntegrityError(
-          '.crbm encrypted footer must zero chunk_count + total_cardinality',
-        );
+        throw crbmIntegrity('.crbm encrypted footer must zero chunk_count + total_cardinality');
       }
     } else {
       // Cleartext: the footer total + count must match the index — don't trust the footer blindly.
       if (index.keys.length !== chunkCount) {
-        throw new IntegrityError(
+        throw crbmIntegrity(
           `.crbm chunk_count ${chunkCount} != ${index.keys.length} index entries`,
         );
       }
       if (index.cardinalitySum !== totalCardinality) {
-        throw new IntegrityError(
+        throw crbmIntegrity(
           `.crbm total_cardinality ${totalCardinality} != Σ index cardinality ${index.cardinalitySum}`,
         );
       }
@@ -665,7 +668,7 @@ export class CrbmReader {
     const length = this.index.lengths[slot]!;
     // Re-validate bounds at read time (defense in depth — a buggy caller or future mutable index path).
     if (offset < PAYLOAD_START || offset + length > this.objectSize - FOOTER_BYTES) {
-      throw new IntegrityError(`chunk ${chunkKey} payload out of bounds`);
+      throw crbmIntegrity(`chunk ${chunkKey} payload out of bounds`);
     }
     const held = this.keptRange(offset, length);
     return this.openChunk(slot, chunkKey, held ?? (await this.blob.getRange(offset, length)));
@@ -698,13 +701,13 @@ export class CrbmReader {
    */
   private openChunk(slot: number, chunkKey: number, bytes: Uint8Array): Uint8Array {
     if (crc32c(bytes) !== this.index.crcs[slot]) {
-      throw new IntegrityError(`chunk ${chunkKey} payload CRC mismatch`);
+      throw crbmIntegrity(`chunk ${chunkKey} payload CRC mismatch`);
     }
     if (this.crypto === undefined) return bytes;
     // Encrypted: on-disk frame is nonce ‖ ciphertext ‖ tag. Decrypt (AAD-bound to this chunkKey) after the CRC
     // passes — a wrong key / tamper / relocated chunk fails as an IntegrityError, never a wrong payload.
     if (bytes.length < AEAD_NONCE_BYTES + AEAD_TAG_BYTES) {
-      throw new IntegrityError(`chunk ${chunkKey} encrypted payload too short`);
+      throw crbmIntegrity(`chunk ${chunkKey} encrypted payload too short`);
     }
     return this.crypto.aead.open(
       {
@@ -838,7 +841,7 @@ export class CrbmReader {
           });
           moved = bytes.length;
           if (bytes.length !== read.length) {
-            throw new IntegrityError(
+            throw crbmIntegrity(
               `.crbm range [${read.offset}, +${read.length}) answered ${bytes.length} bytes, not the ${read.length} asked for`,
             );
           }
@@ -916,13 +919,13 @@ class StreamClosed extends Error {
 /** `bytes[from, to)` of a buffer that starts at object offset `start`, or an IntegrityError when it holds less. */
 function within(bytes: Uint8Array, start: number, from: number, to: number): Uint8Array {
   if (from < start || to > start + bytes.length) {
-    throw new IntegrityError('.crbm extension block read short');
+    throw crbmIntegrity('.crbm extension block read short');
   }
   return bytes.subarray(from - start, to - start);
 }
 
 function extensionCorrupt(message: string): never {
-  throw new IntegrityError(`.crbm extension block: ${message}`);
+  throw crbmIntegrity(`.crbm extension block: ${message}`);
 }
 
 /**
@@ -1058,7 +1061,7 @@ export function parseIndex(
     const card = cardRead.value;
     pos = cardRead.next;
     if (pos + CRC32C_BYTES > indexBytes.length) {
-      throw new IntegrityError('.crbm index truncated (missing payload CRC)');
+      throw crbmIntegrity('.crbm index truncated (missing payload CRC)');
     }
     const crc =
       (indexBytes[pos]! |
@@ -1072,20 +1075,20 @@ export function parseIndex(
     const offset = prevEnd + offDelta;
     // Unsigned deltas mean keys can only stay flat or rise; a 0 delta after the first is a duplicate.
     if (i > 0 && keyDelta === 0) {
-      throw new IntegrityError(`.crbm index has a duplicate chunkKey ${chunkKey}`);
+      throw crbmIntegrity(`.crbm index has a duplicate chunkKey ${chunkKey}`);
     }
-    if (chunkKey > 0xffff) throw new IntegrityError(`.crbm chunkKey ${chunkKey} out of range`);
+    if (chunkKey > 0xffff) throw crbmIntegrity(`.crbm chunkKey ${chunkKey} out of range`);
     if (len < minPayloadBytes || len > maxPayloadBytes) {
-      throw new IntegrityError(
+      throw crbmIntegrity(
         `.crbm chunk ${chunkKey} length ${len} invalid (most is ${maxPayloadBytes})`,
       );
     }
     if (card < 1 || card > MAX_CHUNK_CARDINALITY) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} cardinality ${card} invalid`);
+      throw crbmIntegrity(`.crbm chunk ${chunkKey} cardinality ${card} invalid`);
     }
     // `offset` cannot start below the preamble: it is the previous payload's end plus an unsigned gap.
     if (offset + len > payloadEnd) {
-      throw new IntegrityError(`.crbm chunk ${chunkKey} payload out of bounds`);
+      throw crbmIntegrity(`.crbm chunk ${chunkKey} payload out of bounds`);
     }
 
     keys[count] = chunkKey;

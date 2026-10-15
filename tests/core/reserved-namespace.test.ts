@@ -9,7 +9,8 @@ import { retireExpired } from '@/core/retention-sweep';
 import { runConsistencyCheck } from '@/core/consistency';
 import { runExport } from '@/export/index';
 import { validateSegmentRef } from '@/driver-kit';
-import { isDueIndexRow, dueNamespace } from '@/core/due-index';
+import { isDueIndexRow, dueNamespace, dueIndexRef, dueBucket } from '@/core/due-index';
+import { excludingReservedRows } from '@/core/registry-scan';
 import {
   RESERVED_NAMESPACE_PREFIX,
   isReservedNamespace,
@@ -309,5 +310,24 @@ describe('the library’s own bookkeeping still works', () => {
 
     const res = await store.retireExpired({ scan: 'index', now: Date.now() });
     expect(res).toMatchObject({ scanned: 0, retired: 0, entries: [] });
+  });
+});
+
+describe('excludingReservedRows', () => {
+  it('drops a due-index row and keeps an application row', async () => {
+    const { registry } = world();
+    const app = { namespace: 'eu', segment: 'shoppers' };
+    const expiresAt = Date.now() + DAY;
+    await registry.create(app, { currentGen: null, retention: { expiresAt } });
+    const pointer = dueIndexRef(dueBucket(expiresAt), app);
+    await registry.create(pointer, { currentGen: null });
+
+    const listed: Array<{ namespace?: string; segment: string }> = [];
+    for await (const row of registry.list()) listed.push(row);
+    expect(listed.map((r) => r.namespace)).toContain(pointer.namespace); // the listing carries the pointer row
+
+    const kept: Array<{ namespace?: string; segment: string }> = [];
+    for await (const row of excludingReservedRows(registry.list())) kept.push(row);
+    expect(kept.map((r) => `${r.namespace}/${r.segment}`)).toEqual(['eu/shoppers']);
   });
 });

@@ -1,13 +1,3 @@
-/**
- * `GcsStorage` — the Google Cloud Storage backend as one object: generations and pointer, one bucket, stated once.
- *
- * See {@link StorageBackend} for why the two halves are configured together rather than separately.
- *
- * **A note on the word.** `@google-cloud/storage` names its own client class `Storage`, so the driver option
- * that takes it is also called `storage` — which, since this library calls its durable tier storage too, reads
- * as the same word meaning two things. That is why this class builds the client itself: `new GcsStorage({ bucket })`
- * never makes you write `{ storage: storage }`. Supply `client` when you need your own.
- */
 import {
   STORAGE_BACKEND,
   ValidationError,
@@ -25,6 +15,10 @@ import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
 import { downloadClient } from './read-client';
 
+/**
+ * What {@link GcsStorage} takes: a `bucket`, and either a `client` or the two settings that build one (`projectId`,
+ * `apiEndpoint`), never both.
+ */
 export interface GcsStorageOptions {
   /** Target bucket (must already exist). */
   readonly bucket: string;
@@ -107,6 +101,16 @@ export const GCS_STORAGE_OPTION_KEYS = [
 /** The settings that build a client, which a supplied `client` already carries and so cannot be given beside. */
 const CLIENT_SETTINGS = ['projectId', 'apiEndpoint'] as const;
 
+/**
+ * `GcsStorage` — the Google Cloud Storage backend as one object: generations and pointer, one bucket, stated once.
+ *
+ * See {@link StorageBackend} for why the two halves are configured together rather than separately.
+ *
+ * **A note on the word.** `@google-cloud/storage` names its own client class `Storage`, so the driver option
+ * that takes it is also called `storage` — which, since this library calls its durable tier storage too, reads
+ * as the same word meaning two things. That is why this class builds the client itself: `new GcsStorage({ bucket })`
+ * never makes you write `{ storage: storage }`. Supply `client` when you need your own.
+ */
 export class GcsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;

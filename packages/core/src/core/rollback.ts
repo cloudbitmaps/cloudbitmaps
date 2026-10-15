@@ -36,6 +36,7 @@ import {
   NotFoundError,
   TransientError,
   ValidationError,
+  WriteConflictError,
   isIntegrityError,
   isKeyUnavailableError,
   isNotFoundError,
@@ -154,6 +155,7 @@ async function currentDescription(
     : { cardinality: usable.cardinality, metadata: Object.freeze({ ...metadata }) };
 }
 
+/** What a rollback moved: the generation the pointer named before, and the one it names now. */
 export interface RollbackResult {
   /** The generation the pointer named before the rollback. `null` when the segment had no current generation. */
   readonly fromGeneration: number | null;
@@ -404,7 +406,15 @@ export async function rollbackSegment(
       const settled = await churn.settle(record, seen, () => deps.registry.get(ref));
       const now = settled?.row ?? null;
       // The row after the wait is the one the swap goes on against, if it is still the one read with only leases changed.
-      if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) throw err;
+      if (settled === undefined || now === null || !onlyLeasesDiffer(record, now)) {
+        // The driver's error stays as the cause; the message says what the caller can do about it.
+        const lost = new WriteConflictError(
+          "rollback: the segment's row changed while the rollback ran and the pointer was not moved; check " +
+            'store.generations(ref) and run it again',
+        );
+        lost.cause = err;
+        throw lost;
+      }
       against = now.token;
     }
   }

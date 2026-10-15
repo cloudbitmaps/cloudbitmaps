@@ -51,6 +51,15 @@ const TITLE = INSENSITIVE
   ? 'LocalFs on a case-insensitive filesystem'
   : 'LocalFs on a case-insensitive filesystem (skipped here: this temp root is case-sensitive, so no two names alias)';
 
+// CI's macOS job sets CB_EXPECT_CASE_INSENSITIVE=1: a runner image whose temp root turns out case-sensitive fails here
+// rather than skipping the suite below and going green having tested nothing.
+it.runIf(process.env.CB_EXPECT_CASE_INSENSITIVE === '1')(
+  'the temp root is case-insensitive, as this run expects',
+  () => {
+    expect(INSENSITIVE).toBe(true);
+  },
+);
+
 describe.skipIf(!INSENSITIVE)(TITLE, () => {
   let root: string;
   let store: CloudRoaring;

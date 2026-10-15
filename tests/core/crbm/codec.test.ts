@@ -3,6 +3,7 @@ import { CrbmWriter } from '@/core/crbm/writer';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 import { crc32c } from '@/core/crbm/crc32c';
+import { readVarint } from '@/core/crbm/varint';
 import {
   FLAG_ENCRYPTED,
   FLAG_EXTENSION,
@@ -11,6 +12,7 @@ import {
   FOOTER_BYTES,
   FOOTER_CRC_COVERAGE,
   PAYLOAD_START,
+  VERSION_MAJOR,
 } from '@/core/crbm/format';
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
 import { aadFor } from '@/core/crypto';
@@ -98,6 +100,39 @@ describe('writer input validation', () => {
 });
 
 describe('untrusted bytes', () => {
+  const NEXT_STEP = '; re-load from source or roll back';
+
+  it('ends each integrity message with the next step', async () => {
+    const payload = await build(SAMPLE);
+    payload[PAYLOAD_START] = payload[PAYLOAD_START]! ^ 0xff;
+    const reader = await CrbmReader.open(new BufferReader(payload));
+    await expect(reader.getChunk(0)).rejects.toThrow(
+      new RegExp(`payload CRC mismatch${NEXT_STEP}$`),
+    );
+
+    const footer = await build(SAMPLE);
+    footer[footer.length - 1] = footer[footer.length - 1]! ^ 0xff;
+    await expect(CrbmReader.open(new BufferReader(footer))).rejects.toThrow(
+      new RegExp(`end magic mismatch${NEXT_STEP}$`),
+    );
+
+    const index = await build(SAMPLE);
+    const indexOffset = Number(
+      new DataView(index.buffer, index.byteOffset).getBigUint64(
+        index.length - FOOTER_BYTES + FOOTER.indexOffset,
+        true,
+      ),
+    );
+    index[indexOffset] = index[indexOffset]! ^ 0xff;
+    await expect(CrbmReader.open(new BufferReader(index))).rejects.toThrow(
+      new RegExp(`${NEXT_STEP}$`),
+    );
+
+    expect(() => readVarint(Uint8Array.of(0x80), 0)).toThrow(
+      new RegExp(`varint truncated past end of buffer${NEXT_STEP}$`),
+    );
+  });
+
   it('catches a flipped payload byte by CRC before returning it', async () => {
     const bytes = await build(SAMPLE);
     bytes[PAYLOAD_START] = bytes[PAYLOAD_START]! ^ 0xff; // corrupt the first payload byte
@@ -160,6 +195,27 @@ describe('version & feature gating', () => {
       footer[FOOTER.versionMajor] = 2;
     });
     await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toBeInstanceOf(UnsupportedError);
+  });
+
+  it('tells a reader of an unknown major version to upgrade core', async () => {
+    // The older-version advice below must be reworded when the major version moves.
+    expect(VERSION_MAJOR).toBe(1);
+    const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
+      footer[FOOTER.versionMajor] = 2;
+    });
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toThrow(
+      '.crbm major version 2 not supported; this build reads major version 1: upgrade @cloudbitmaps/core',
+    );
+  });
+
+  it('says no release writes a major version below the one this build reads', async () => {
+    const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
+      footer[FOOTER.versionMajor] = 0;
+    });
+    await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toThrow(
+      '.crbm major version 0 not supported; this build reads major version 1: ' +
+        'no release writes that version, so this library did not write the object',
+    );
   });
 
   it('tolerates an unknown minor version, and finds the extension block by its flag', async () => {
