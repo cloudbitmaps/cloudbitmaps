@@ -22,8 +22,16 @@ describe('export-segments CLI', () => {
     });
     it('refuses a misconfiguration with a ValidationError that keeps its message', () => {
       const cases: ReadonlyArray<[Record<string, string>, string]> = [
-        [{}, 'CR_EXPORT_ROOT is required (the local-filesystem storage root)'],
-        [{ CR_EXPORT_ROOT: '/x' }, 'CR_EXPORT_OUT is required (the output directory for the dump)'],
+        [
+          {},
+          "CR_EXPORT_ROOT is not set: the directory that holds the store's storage/ and registry/. " +
+            'export-segments also needs CR_EXPORT_OUT; run export-segments --help',
+        ],
+        [
+          { CR_EXPORT_ROOT: '/x' },
+          'CR_EXPORT_OUT is not set: the directory to write the dump to. ' +
+            'export-segments also needs CR_EXPORT_ROOT; run export-segments --help',
+        ],
         [
           { CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: 'csv' },
           'CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got csv',

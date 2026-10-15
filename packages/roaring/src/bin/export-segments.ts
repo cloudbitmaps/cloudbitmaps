@@ -54,9 +54,6 @@ export interface ExportConfig {
   readonly namespace?: string;
 }
 
-const REQUIRED_NOTE =
-  'CR_EXPORT_ROOT and CR_EXPORT_OUT are both required; run export-segments --help';
-
 /** What `export-segments --help` prints. */
 export const USAGE = `Usage: export-segments [--help]
 
@@ -78,8 +75,10 @@ export function answerArgs(
 ):
   | { readonly stream: 'stdout' | 'stderr'; readonly text: string; readonly code: 0 | 2 }
   | undefined {
-  if (args.length === 0) return undefined;
-  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
+  // pnpm forwards the `--` of `pnpm run x -- --help`, so one leading `--` is dropped.
+  const rest = args[0] === '--' ? args.slice(1) : args;
+  if (rest.length === 0) return undefined;
+  if (rest.length === 1 && (rest[0] === '--help' || rest[0] === '-h')) {
     return { stream: 'stdout', text: USAGE, code: 0 };
   }
   return {
@@ -94,13 +93,15 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
     throw new ValidationError(
-      `CR_EXPORT_ROOT is required (the local-filesystem storage root); ${REQUIRED_NOTE}`,
+      "CR_EXPORT_ROOT is not set: the directory that holds the store's storage/ and registry/. " +
+        'export-segments also needs CR_EXPORT_OUT; run export-segments --help',
     );
   }
   const out = env.CR_EXPORT_OUT;
   if (out === undefined || out === '') {
     throw new ValidationError(
-      `CR_EXPORT_OUT is required (the output directory for the dump); ${REQUIRED_NOTE}`,
+      'CR_EXPORT_OUT is not set: the directory to write the dump to. ' +
+        'export-segments also needs CR_EXPORT_ROOT; run export-segments --help',
     );
   }
   const format = env.CR_EXPORT_FORMAT || 'roaring'; // '' (an unset shell var) is the default, as the namespace's is

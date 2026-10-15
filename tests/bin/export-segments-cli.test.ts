@@ -7,8 +7,8 @@ const BIN = fileURLToPath(
   new URL('../../packages/roaring/dist/bin/export-segments.js', import.meta.url),
 );
 
-// The spawned tests run the built bin. CI runs the tests before the build, so there the file is absent and they are
-// skipped; the step that follows the build sets CB_REQUIRE_BUILT_BIN=1, which makes a missing bin a failure.
+// The spawned tests run the built bin, so they run only when CB_REQUIRE_BUILT_BIN=1: a dist left over from an older
+// build can never turn `pnpm test` red. CI sets it in the step that follows the build, where a missing bin fails.
 const required = process.env.CB_REQUIRE_BUILT_BIN === '1';
 
 const run = (args: string[], env: Record<string, string> = {}) =>
@@ -24,6 +24,17 @@ describe('export-segments command line', () => {
     });
     it.each([['--help'], ['-h']])('answers %s with the usage on stdout and code 0', (flag) => {
       expect(answerArgs([flag])).toEqual({ stream: 'stdout', text: USAGE, code: 0 });
+    });
+    it.each([
+      ['--', '--help'],
+      ['--', '-h'],
+    ])('drops a leading -- that pnpm forwards: %j', (...args) => {
+      expect(answerArgs(args)).toEqual({ stream: 'stdout', text: USAGE, code: 0 });
+    });
+    it('lets a lone -- proceed, and refuses an argument after it', () => {
+      expect(answerArgs(['--'])).toBeUndefined();
+      expect(answerArgs(['--', './dump'])?.code).toBe(2);
+      expect(answerArgs(['--', '--', '--help'])?.code).toBe(2);
     });
     it.each([[['./dump']], [['--help', 'extra']], [['--version']]])(
       'refuses %j on stderr with code 2',
@@ -53,23 +64,31 @@ describe('export-segments command line', () => {
   });
 
   describe('a missing required variable', () => {
-    it.each([[{}], [{ CR_EXPORT_ROOT: '/x' }]])(
-      'names both required variables and the help for %j',
-      (env) => {
-        let message = '';
-        try {
-          parseConfig(env);
-        } catch (err) {
-          message = (err as Error).message;
-        }
-        expect(message).toContain('CR_EXPORT_ROOT');
-        expect(message).toContain('CR_EXPORT_OUT');
-        expect(message.endsWith('run export-segments --help')).toBe(true);
-      },
-    );
+    const messageOf = (env: Record<string, string>): string => {
+      try {
+        parseConfig(env);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return '';
+    };
+    it('says what CR_EXPORT_ROOT is, names the other variable and points at --help', () => {
+      for (const env of [{}, { CR_EXPORT_OUT: '/o' }] as Array<Record<string, string>>) {
+        expect(messageOf(env)).toBe(
+          "CR_EXPORT_ROOT is not set: the directory that holds the store's storage/ and registry/. " +
+            'export-segments also needs CR_EXPORT_OUT; run export-segments --help',
+        );
+      }
+    });
+    it('says what CR_EXPORT_OUT is, names the other variable and points at --help', () => {
+      expect(messageOf({ CR_EXPORT_ROOT: '/x' })).toBe(
+        'CR_EXPORT_OUT is not set: the directory to write the dump to. ' +
+          'export-segments also needs CR_EXPORT_ROOT; run export-segments --help',
+      );
+    });
   });
 
-  describe.skipIf(!required && !existsSync(BIN))('the built bin', () => {
+  describe.runIf(required)('the built bin', () => {
     it('is present', () => {
       expect(existsSync(BIN)).toBe(true);
     });
@@ -78,6 +97,11 @@ describe('export-segments command line', () => {
       expect(r.status).toBe(0);
       expect(r.stdout).toBe(USAGE);
       expect(r.stderr).toBe('');
+    });
+    it('prints the usage and exits 0 for the -- that pnpm forwards before --help', () => {
+      const r = run(['--', '--help']);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe(USAGE);
     });
     it('exits 2 with the usage on stderr for a stray argument', () => {
       const r = run(['./dump'], { CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o' });
