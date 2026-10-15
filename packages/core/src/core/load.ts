@@ -223,8 +223,8 @@ export interface LoadOptions {
    * A load lists instead on every load when `keep` is above 64, when the row has a pointer and no usable record (the
    * load starts one from the bucket), when the row's record names more than 64 generations below the pointer that no
    * lease holds (as after a `keep` above 64, or `materializeMany`), or when the guard's read, or the zero-byte read
-   * before a delete by name, finds the current generation's object missing. A publish settled by reading the row lists
-   * too. A `keep` at least the generation published collects nothing and asks for nothing.
+   * before a delete by name, finds the current generation's object missing. A publish that a read of the row settles
+   * after its last attempt lists too. A `keep` at least the generation published collects nothing and asks for nothing.
    */
   readonly keep?: number;
   /**

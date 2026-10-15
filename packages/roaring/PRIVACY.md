@@ -441,9 +441,10 @@ The library's own error messages name the segment and namespace; some messages a
 of the ids in that chunk), id counts, metadata keys, key ids, the bucket or container name, or the account host, and an
 object's key (the store's `prefix`, the namespace and the encoded segment name); an error the cloud SDK raised reaches
 you as the SDK wrote it: the S3 and GCS drivers first remove its credentials, while an Azure Blob error keeps the
-request it sent, with its `Authorization` header or SAS signature, on its `request` property, which the Azure SDK
-hides from `JSON.stringify` and `console.log` but does not remove; and `eraseSubject` copies each message into its
-ledger's `note`. Treat an error message, and the ledger, as carrying those names wherever you report or keep them.
+request it sent, with its `Authorization` header or SAS signature, on its `request` property (on the `cause` when the
+driver wraps it in a `TransientError` or a `ValidationError`), which the Azure SDK hides from `JSON.stringify` and
+`console.log` but does not remove; and `eraseSubject` copies each message into its ledger's `note`. Treat an error
+message, and the ledger, as carrying those names wherever you report or keep them.
 
 
 ## Shared-responsibility matrix

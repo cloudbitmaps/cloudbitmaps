@@ -48,17 +48,17 @@ so, and so do the module headers in the code.
   what a TypeScript project needs, names a Node major-version change as a third cause of `Cannot find module
   './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says that intersection
   reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy notes say that error
-  messages name the segment, the namespace, chunk keys, id counts, key ids, the bucket or container name, or the account
-  host, and an object's key, that an S3 or GCS driver removes the credentials from an SDK error while an Azure Blob
-  error keeps its request, with its `Authorization` header or SAS signature, hidden from `JSON.stringify` and
+  messages name the segment, the namespace, chunk keys, id counts, metadata keys, key ids, the bucket or container name,
+  or the account host, and an object's key, that an S3 or GCS driver removes the credentials from an SDK error while an
+  Azure Blob error keeps its request, with its `Authorization` header or SAS signature, hidden from `JSON.stringify` and
   `console.log` but not removed, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal
   hides, and that a changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the
   store, the three backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the
   in-process backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license
-  paragraph says the license grants no permission to use the name beyond describing where the work comes from.
-  `MaterializeOptions` documents `metadata?`, the cost model's `Workload` documents the range of `cacheHitRate`,
-  `operandsPerIntersect` and `readerProcesses`, and the admin calls' `concurrency` defaults are stated,
-  `checkConsistency`'s 8 included.
+  paragraph says the license grants no permission to use the name beyond describing where the work comes from and
+  reproducing the content of the `NOTICE` file. `MaterializeOptions` documents `metadata?`, the cost model's `Workload`
+  documents the range of `cacheHitRate`, `operandsPerIntersect` and `readerProcesses`, and the admin calls'
+  `concurrency` defaults are stated, `checkConsistency`'s 8 included.
 
 ## [0.21.0] — 2026-10-13
 
