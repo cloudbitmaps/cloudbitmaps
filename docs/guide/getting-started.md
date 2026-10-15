@@ -19,6 +19,13 @@ runs only if you allow it, and `roaring` needs its one script to fetch its nativ
 { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
 ```
 
+pnpm 11 and later ignores the `pnpm` key; there, put the allowance in a `pnpm-workspace.yaml` beside the `package.json`:
+
+```yaml
+allowBuilds:
+  roaring: true
+```
+
 npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. Then:
 
 ```bash
@@ -339,10 +346,18 @@ be in place for the rebuild to run.
 
 1. **Allow the install script for that one package** — narrow the exception rather than re-enabling scripts
    globally. Put it in your own `package.json` so CI and teammates inherit it; the first key is npm's, the second
-   pnpm's:
+   pnpm 10's:
 
    ```json
    { "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+   ```
+
+   pnpm 11 and later ignores the `pnpm` key: the install still stops with `ERR_PNPM_IGNORED_BUILDS`, and the package
+   still throws at `import`. There the allowance goes in a `pnpm-workspace.yaml` beside the `package.json`:
+
+   ```yaml
+   allowBuilds:
+     roaring: true
    ```
 
    `npm install-scripts approve roaring` (npm 12) and `pnpm approve-builds` do the same interactively; npm's

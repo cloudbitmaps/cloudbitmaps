@@ -26,7 +26,7 @@ Three words appear everywhere:
 On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
 script to fetch its native binary. Allow it first: add these two top-level keys to your `package.json` (create one with
 `pnpm init` or `npm init -y` if you have none):
-`{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but
+`{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. pnpm 11 and later ignores the `pnpm` key: put `allowBuilds: { roaring: true }` in a `pnpm-workspace.yaml` beside it instead. npm 11 runs the script but
 warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
 
 ```bash
@@ -305,7 +305,7 @@ and `1.0`.
 
 ## Building & contributing
 
-You need **Node ≥ 22.12** and **pnpm 9**; Docker is needed only for the integration tests.
+You need **Node ≥ 22.12** and **pnpm 12**; Docker is needed only for the integration tests.
 
 ```bash
 pnpm install
