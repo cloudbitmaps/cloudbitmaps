@@ -531,246 +531,6 @@ async function eraseOnce(
     fenceLost: 0,
     rewrote: undefined,
   };
-  const { sealed } = c;
-
-  /**
-   * The row names no generation, so nothing has been published, but a first load's object can be in the bucket: its
-   * load still running, or one that wrote and never published (a crash, or a registry write that got no answer, after
-   * which the object is kept by design). Each object is searched, and each one that holds the id is a holder. So is each
-   * one sealed under a key no row holds yet, a first load's of an encrypted segment: this call holds no key for it, so it
-   * cannot search it, and, whatever id it is asked to erase, it treats it as one that may hold it.
-   *
-   * With no holder it writes nothing, and a first load in flight publishes as it would have. With one, it renews the
-   * row's `pointerId` ({@link fence}) before it deletes any, so the load that wrote it, fenced on the row it read
-   * (or on there being no row, once a row appeared), is refused at its publish and never names an object that is gone;
-   * then it deletes each holder while the row is still the one it renewed. A load that read the row after the renewal
-   * writes an object of its own, numbered above every holder, which this call never deletes.
-   *
-   * `erased: true` only when a searched object held the id, as anywhere else. With only sealed holders the answer is
-   * `'no-generation'`, with the generations it deleted in `collected`: the id was never found, and those objects can no
-   * longer be published. Then {@link holderLeft} decides, as it does above the pointer: a holder written after the
-   * listing, by a load that read the row before the renewal, is left, and that throws for a re-run, which renews again
-   * and deletes it.
-   */
-  const unpublished = async (): Promise<EraseIdResult> => {
-    const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
-    const holders: number[] = []; // newest first
-    const clean = new Set<number>();
-    for (const { generation, held } of await holdsEach(c, newestFirst, { stopAtHolder: false })) {
-      if (held === true) holders.push(generation);
-      else if (held === false) clean.add(generation);
-    }
-    const none: EraseIdResult = { ...base, erased: false, reason: 'no-generation', collected: [] };
-    if (holders.length === 0) return none;
-    // The newest object that was searched and held the id; a sealed one could not be searched.
-    const newest = holders.find((generation) => !sealed.has(generation));
-
-    const fenced = await fence(c, { byName: holders, sweeps: false });
-    const { deleted, moved, missing } = await deleteFenced(c, fenced.byName, fenced.moved);
-    const collected = [...deleted].sort(ascending);
-    const left = await holderLeft(c, clean);
-    if (missing !== undefined) notePointerOnDeleted(c, missing);
-    if (left === undefined) {
-      return newest === undefined
-        ? sealedOnly(c, none, collected)
-        : collectedAll(c, newest, collected);
-    }
-    if (moved !== null) {
-      return {
-        ...base,
-        erased: false,
-        reason: moved,
-        ...(newest === undefined ? {} : { fromGeneration: newest }),
-        collected,
-      };
-    }
-    throw cannotRemove(c, left);
-  };
-
-  /**
-   * The row is a tombstone, so no generation is the segment's any more and every object left is garbage (invariant 4's
-   * one exception). A crypto-shred leaves objects no key opens, but a cleartext destroy, a drop whose sweep left
-   * something, or a write that landed after it leaves objects anyone can read. Each is searched; when one holds the id,
-   * the collection's tombstone pass deletes them all, re-proving the row's token before each delete, and what is left
-   * is read again. One listing for a tombstone with nothing left.
-   */
-  const underTombstone = async (): Promise<EraseIdResult> => {
-    const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
-    const holder = (await holdsEach(c, newestFirst, { stopAtHolder: true })).find(
-      (h) => h.held === true,
-    );
-    if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
-    const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
-    const left = await holderLeft(c, new Set());
-    if (left !== undefined) throw cannotRemove(c, left);
-    return collectedAll(c, holder.generation, collected);
-  };
-
-  /**
-   * The id is not in the current generation — which is **not** the same as not being in the bucket.
-   *
-   * A re-seed that simply stops including someone leaves their bit in the generation it dropped them from, and
-   * the collection a load runs after it publishes (default `keep: 1`) *retains* exactly that
-   * generation as the reader grace window. So the ordinary lifecycle of a rotating audience leaves an ex-member's
-   * bit sitting in a retained object. Answering `'not-member'` there would filter the segment out of the
-   * `eraseSubject` ledger entirely: a clean Art. 17 receipt over bytes still in the bucket, for the one
-   * population most likely to be asking, people who already left.
-   *
-   * And the generations **above** the pointer count too. After a rollback they include the ones it rolled back
-   * from, which `rollbackSegment` makes current again, with no flag while the row's ledger names them and with
-   * `allowUnknown` once this call has taken them out, so a holder there is one operator action from being served. There can be several: every generation loaded after the one the pointer
-   * was rolled back to.
-   *
-   * So look, at all of them. A holder cannot be rewritten — a rewrite of a non-current generation would regress
-   * the pointer — so the only remedy is to delete it:
-   *
-   *  - **Below the pointer**, `gcOrphanGenerations` with `keep: 0` takes every generation at once, re-proving the
-   *    row before each delete. It costs the segment its grace window and its older rollback targets, which is
-   *    proportionate: only a segment that genuinely held the subject pays it.
-   *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders (an
-   *    object no read of the segment can open is one, whatever the id): a
-   *    generation up there without the id is still an operator's rollback target and stays. This is the one place
-   *    the library deletes an above-pointer object that it did not write, and it costs `rollbackSegment` a
-   *    target, deliberately: a rollback point that still contains data we were required to erase is not a
-   *    rollback point, and keeping it would make the erasure undoable by an ordinary operator action. Each delete
-   *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
-   *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
-   *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
-   *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}): a rollback that
-   *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
-   *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
-   *    the object cannot close that one, since the pointer then names the very object this call read, so the call
-   *    detects it, as collection does, and throws `NotFoundError`: after its `segment.collect` event when nothing left
-   *    in the bucket holds the id, at once when something does.
-   *    What the condition does close is another object under the number: in that round trip another erasure can
-   *    delete the holder and a load take its number, write and publish. Each delete passes the version of the read
-   *    that made the object a holder (`versions`), so a driver that reports `conditionalDelete` refuses it for any
-   *    other object, and the deletes stop as they do for a moved row. On a driver that does not, the delete removes
-   *    whatever is under the number.
-   *
-   * An object sealed under a key the row does not hold is a holder this call cannot search ({@link holds}). Beside a
-   * generation that was searched and held the id, it goes as any holder does: above the pointer by name, below it with
-   * the collection. With no such generation, nothing proves the segment held the subject, so the collection does not
-   * run: each of those objects is deleted by name, above the pointer or below it, under the same renewal of the row and
-   * read before each delete, and the generations below the pointer that were searched and found clean stay.
-   *
-   * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
-   * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection
-   * takes them. If something still holds it and the pointer moved, the row says why, as it does everywhere else in
-   * this function. If something holds it and the pointer did not move, the delete that should have taken it did
-   * not, and that throws.
-   *
-   * **The cost is paid only where it is owed.** The cheap filter comes first: one `list`, and if the segment has no
-   * other generations at all — true of any store that collects with `keep: 0`, and of a segment loaded once —
-   * nothing else is read. Then per generation, the index is opened and the chunk is fetched only if the index
-   * says that chunk exists: every generation above the pointer, since each holder there must be found; and below
-   * it only until the first holder, since `keep: 0` takes the rest regardless (a few reads already in flight when it
-   * is found may land past it, fewer than the scan's bound) — and not at all once a holder was found above. `eraseSubject` fans this out across every registered segment, so the filter is what keeps a
-   * fleet-wide subject scan from doubling its reads on segments that never held the id.
-   */
-  const notInCurrent = async (): Promise<EraseIdResult> => {
-    const notMember: EraseIdResult = {
-      ...base,
-      erased: false,
-      reason: 'not-member',
-      fromGeneration: from,
-      collected: [],
-    };
-    const newestFirst = (await generationsOf(deps.storage, ref))
-      .filter((g) => g !== from)
-      .reverse();
-    if (newestFirst.length === 0) return notMember;
-
-    const clean = new Set<number>([from]);
-    const holdersAbove: number[] = []; // newest first, those that could not be searched included
-    for (const { generation, held } of await holdsEach(
-      c,
-      newestFirst.filter((g) => g > from),
-      { stopAtHolder: false },
-    )) {
-      if (held === true) holdersAbove.push(generation);
-      else if (held === false) clean.add(generation);
-    }
-    const foundAbove = holdersAbove.find((generation) => !sealed.has(generation));
-    let holderBelow: number | undefined;
-    const sealedBelow: number[] = [];
-    if (foundAbove === undefined) {
-      for (const { generation, held } of await holdsEach(
-        c,
-        newestFirst.filter((g) => g < from),
-        { stopAtHolder: true },
-      )) {
-        if (found(c, generation, held)) holderBelow = generation;
-        else if (held === true) sealedBelow.push(generation);
-        else if (held === false) clean.add(generation);
-      }
-    }
-    const newest = foundAbove ?? holderBelow;
-    // Where a searched generation held the id, the collection takes every generation below the pointer, those that
-    // could not be searched with them. Where none did, those are deleted one by one, under the fence, and the
-    // generations below the pointer that were searched and found clean stay.
-    const fenced = newest === undefined ? [...holdersAbove, ...sealedBelow] : holdersAbove;
-    if (newest === undefined && fenced.length === 0) return notMember;
-
-    // One write to the row before any delete: the generations about to go leave its ledger, and the deletes by name are
-    // fenced against a load in flight (see `fence`). A call it refuses deletes nothing.
-    const sweeping = newest !== undefined;
-    let moved: Verdict = null;
-    let byName: readonly number[] = fenced;
-    let sweep = sweeping;
-    let ledgered = true;
-    let past = false;
-    if (sweeping || fenced.length > 0) {
-      const made = await fence(c, { byName: fenced, sweeps: sweeping });
-      moved = made.moved;
-      byName = made.byName;
-      sweep = made.sweep;
-      ledgered = made.ledger;
-      past = made.past === true;
-    }
-    const swept: { deleted: number[]; missing?: number; knownSpared?: number[] } = sweep
-      ? await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true })
-      : { deleted: [] };
-    const collected = [...swept.deleted];
-    let missing = swept.missing;
-    if (sweep && missing === undefined && (moved === null || past)) {
-      const again = await collectAgain(
-        c,
-        { spared: swept.knownSpared ?? [], ledgered },
-        { byName: past ? fenced : [] },
-      );
-      collected.push(...again.deleted);
-      missing = again.missing;
-      // A row gone in the second fence leaves the reason the call already had: a holder may still be in the bucket.
-      if (again.moved !== null && again.moved !== 'absent' && again.moved !== 'no-generation') {
-        moved = again.moved;
-      }
-    }
-    // A collection that stopped on a rollback has moved the pointer off `from`, so nothing above it is deleted.
-    if (byName.length > 0 && missing === undefined) {
-      const deleted = await deleteFenced(c, byName, moved);
-      collected.push(...deleted.deleted);
-      moved = deleted.moved;
-      missing = deleted.missing;
-    }
-
-    const left = await holderLeft(c, clean);
-    if (missing !== undefined) notePointerOnDeleted(c, missing);
-    if (left === undefined) {
-      if (newest !== undefined) return collectedAll(c, newest, collected);
-      return sealedOnly(c, notMember, collected);
-    }
-    if (moved !== null || missing !== undefined) {
-      return {
-        ...base,
-        erased: false,
-        reason: moved ?? 'superseded',
-        fromGeneration: newest ?? from,
-        collected,
-      };
-    }
-    throw cannotRemove(c, left);
-  };
 
   /**
    * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
@@ -820,10 +580,10 @@ async function eraseOnce(
       const bytes = await read(() => reader.getChunk(chunkKey));
       // `return await`, not `return`: the sweep's rejection must land in the `catch` below, which is where a
       // `NotFoundError` is translated by re-reading the row. A bare `return` of the promise hands it past the `try`.
-      if (bytes === null) return await notInCurrent();
+      if (bytes === null) return await notInCurrent(c);
       const target = codec.safeDeserialize(bytes, maxBytes);
       assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
-      if (!target.has(remainder)) return await notInCurrent();
+      if (!target.has(remainder)) return await notInCurrent(c);
       target.remove(remainder);
 
       // The rewrite is written before its row is: refuse here, not after, on a registry that cannot write one.
@@ -978,8 +738,8 @@ async function eraseOnce(
     }
   };
 
-  if (tombstoned) return await underTombstone();
-  if (pointerless) return await unpublished();
+  if (tombstoned) return await underTombstone(c);
+  if (pointerless) return await unpublished(c);
   const staged = await stage();
   if ('erased' in staged) {
     if (!staged.erased && staged.generation !== undefined && c.rewrote !== undefined) {
@@ -1652,6 +1412,246 @@ function sealedOnly(
   const { seen, record } = c;
   if (collected.length > 0) seen.collectedOn = record.token;
   return { ...answer, collected: [...collected].sort(ascending) };
+}
+
+/**
+ * The row names no generation, so nothing has been published, but a first load's object can be in the bucket: its
+ * load still running, or one that wrote and never published (a crash, or a registry write that got no answer, after
+ * which the object is kept by design). Each object is searched, and each one that holds the id is a holder. So is each
+ * one sealed under a key no row holds yet, a first load's of an encrypted segment: this call holds no key for it, so it
+ * cannot search it, and, whatever id it is asked to erase, it treats it as one that may hold it.
+ *
+ * With no holder it writes nothing, and a first load in flight publishes as it would have. With one, it renews the
+ * row's `pointerId` ({@link fence}) before it deletes any, so the load that wrote it, fenced on the row it read
+ * (or on there being no row, once a row appeared), is refused at its publish and never names an object that is gone;
+ * then it deletes each holder while the row is still the one it renewed. A load that read the row after the renewal
+ * writes an object of its own, numbered above every holder, which this call never deletes.
+ *
+ * `erased: true` only when a searched object held the id, as anywhere else. With only sealed holders the answer is
+ * `'no-generation'`, with the generations it deleted in `collected`: the id was never found, and those objects can no
+ * longer be published. Then {@link holderLeft} decides, as it does above the pointer: a holder written after the
+ * listing, by a load that read the row before the renewal, is left, and that throws for a re-run, which renews again
+ * and deletes it.
+ */
+async function unpublished(c: EraseCall): Promise<EraseIdResult> {
+  const { ref, deps, base, sealed } = c;
+  const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
+  const holders: number[] = []; // newest first
+  const clean = new Set<number>();
+  for (const { generation, held } of await holdsEach(c, newestFirst, { stopAtHolder: false })) {
+    if (held === true) holders.push(generation);
+    else if (held === false) clean.add(generation);
+  }
+  const none: EraseIdResult = { ...base, erased: false, reason: 'no-generation', collected: [] };
+  if (holders.length === 0) return none;
+  // The newest object that was searched and held the id; a sealed one could not be searched.
+  const newest = holders.find((generation) => !sealed.has(generation));
+
+  const fenced = await fence(c, { byName: holders, sweeps: false });
+  const { deleted, moved, missing } = await deleteFenced(c, fenced.byName, fenced.moved);
+  const collected = [...deleted].sort(ascending);
+  const left = await holderLeft(c, clean);
+  if (missing !== undefined) notePointerOnDeleted(c, missing);
+  if (left === undefined) {
+    return newest === undefined
+      ? sealedOnly(c, none, collected)
+      : collectedAll(c, newest, collected);
+  }
+  if (moved !== null) {
+    return {
+      ...base,
+      erased: false,
+      reason: moved,
+      ...(newest === undefined ? {} : { fromGeneration: newest }),
+      collected,
+    };
+  }
+  throw cannotRemove(c, left);
+}
+
+/**
+ * The row is a tombstone, so no generation is the segment's any more and every object left is garbage (invariant 4's
+ * one exception). A crypto-shred leaves objects no key opens, but a cleartext destroy, a drop whose sweep left
+ * something, or a write that landed after it leaves objects anyone can read. Each is searched; when one holds the id,
+ * the collection's tombstone pass deletes them all, re-proving the row's token before each delete, and what is left
+ * is read again. One listing for a tombstone with nothing left.
+ */
+async function underTombstone(c: EraseCall): Promise<EraseIdResult> {
+  const { ref, deps, base } = c;
+  const newestFirst = (await generationsOf(deps.storage, ref)).reverse();
+  const holder = (await holdsEach(c, newestFirst, { stopAtHolder: true })).find(
+    (h) => h.held === true,
+  );
+  if (holder === undefined) return { ...base, erased: false, reason: 'destroyed', collected: [] };
+  const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+  const left = await holderLeft(c, new Set());
+  if (left !== undefined) throw cannotRemove(c, left);
+  return collectedAll(c, holder.generation, collected);
+}
+
+/**
+ * The id is not in the current generation — which is **not** the same as not being in the bucket.
+ *
+ * A re-seed that simply stops including someone leaves their bit in the generation it dropped them from, and
+ * the collection a load runs after it publishes (default `keep: 1`) *retains* exactly that
+ * generation as the reader grace window. So the ordinary lifecycle of a rotating audience leaves an ex-member's
+ * bit sitting in a retained object. Answering `'not-member'` there would filter the segment out of the
+ * `eraseSubject` ledger entirely: a clean Art. 17 receipt over bytes still in the bucket, for the one
+ * population most likely to be asking, people who already left.
+ *
+ * And the generations **above** the pointer count too. After a rollback they include the ones it rolled back
+ * from, which `rollbackSegment` makes current again, with no flag while the row's ledger names them and with
+ * `allowUnknown` once this call has taken them out, so a holder there is one operator action from being served. There can be several: every generation loaded after the one the pointer
+ * was rolled back to.
+ *
+ * So look, at all of them. A holder cannot be rewritten — a rewrite of a non-current generation would regress
+ * the pointer — so the only remedy is to delete it:
+ *
+ *  - **Below the pointer**, `gcOrphanGenerations` with `keep: 0` takes every generation at once, re-proving the
+ *    row before each delete. It costs the segment its grace window and its older rollback targets, which is
+ *    proportionate: only a segment that genuinely held the subject pays it.
+ *  - **Above the pointer**, collection never looks, so each holder is deleted here, and only the holders (an
+ *    object no read of the segment can open is one, whatever the id): a
+ *    generation up there without the id is still an operator's rollback target and stays. This is the one place
+ *    the library deletes an above-pointer object that it did not write, and it costs `rollbackSegment` a
+ *    target, deliberately: a rollback point that still contains data we were required to erase is not a
+ *    rollback point, and keeping it would make the erasure undoable by an ordinary operator action. Each delete
+ *    is re-proved against the row first, as collection's are, because the danger is the same one: a rollback
+ *    that lands on a generation this call has queued, which would leave the pointer naming a missing object.
+ *    If the pointer has moved at all, the deletes stop. One round trip remains between that read and the delete,
+ *    exactly as in collection's own loop, and on a row with no pointer too ({@link deleteFenced}): a rollback that
+ *    lands inside it onto the generation being deleted leaves the pointer naming a missing object. The rollback's
+ *    own move-then-verify catches every such landing except one whose check runs before the delete. A condition on
+ *    the object cannot close that one, since the pointer then names the very object this call read, so the call
+ *    detects it, as collection does, and throws `NotFoundError`: after its `segment.collect` event when nothing left
+ *    in the bucket holds the id, at once when something does.
+ *    What the condition does close is another object under the number: in that round trip another erasure can
+ *    delete the holder and a load take its number, write and publish. Each delete passes the version of the read
+ *    that made the object a holder (`versions`), so a driver that reports `conditionalDelete` refuses it for any
+ *    other object, and the deletes stop as they do for a moved row. On a driver that does not, the delete removes
+ *    whatever is under the number.
+ *
+ * An object sealed under a key the row does not hold is a holder this call cannot search ({@link holds}). Beside a
+ * generation that was searched and held the id, it goes as any holder does: above the pointer by name, below it with
+ * the collection. With no such generation, nothing proves the segment held the subject, so the collection does not
+ * run: each of those objects is deleted by name, above the pointer or below it, under the same renewal of the row and
+ * read before each delete, and the generations below the pointer that were searched and found clean stay.
+ *
+ * Then {@link holderLeft} decides. If nothing in the bucket holds the id, the claim is true however the pointer
+ * moved meanwhile: a load that published mid-call puts every holder below its pointer, where the collection
+ * takes them. If something still holds it and the pointer moved, the row says why, as it does everywhere else in
+ * this function. If something holds it and the pointer did not move, the delete that should have taken it did
+ * not, and that throws.
+ *
+ * **The cost is paid only where it is owed.** The cheap filter comes first: one `list`, and if the segment has no
+ * other generations at all — true of any store that collects with `keep: 0`, and of a segment loaded once —
+ * nothing else is read. Then per generation, the index is opened and the chunk is fetched only if the index
+ * says that chunk exists: every generation above the pointer, since each holder there must be found; and below
+ * it only until the first holder, since `keep: 0` takes the rest regardless (a few reads already in flight when it
+ * is found may land past it, fewer than the scan's bound) — and not at all once a holder was found above. `eraseSubject` fans this out across every registered segment, so the filter is what keeps a
+ * fleet-wide subject scan from doubling its reads on segments that never held the id.
+ */
+async function notInCurrent(c: EraseCall): Promise<EraseIdResult> {
+  const { ref, deps, base, from, sealed } = c;
+  const notMember: EraseIdResult = {
+    ...base,
+    erased: false,
+    reason: 'not-member',
+    fromGeneration: from,
+    collected: [],
+  };
+  const newestFirst = (await generationsOf(deps.storage, ref)).filter((g) => g !== from).reverse();
+  if (newestFirst.length === 0) return notMember;
+
+  const clean = new Set<number>([from]);
+  const holdersAbove: number[] = []; // newest first, those that could not be searched included
+  for (const { generation, held } of await holdsEach(
+    c,
+    newestFirst.filter((g) => g > from),
+    { stopAtHolder: false },
+  )) {
+    if (held === true) holdersAbove.push(generation);
+    else if (held === false) clean.add(generation);
+  }
+  const foundAbove = holdersAbove.find((generation) => !sealed.has(generation));
+  let holderBelow: number | undefined;
+  const sealedBelow: number[] = [];
+  if (foundAbove === undefined) {
+    for (const { generation, held } of await holdsEach(
+      c,
+      newestFirst.filter((g) => g < from),
+      { stopAtHolder: true },
+    )) {
+      if (found(c, generation, held)) holderBelow = generation;
+      else if (held === true) sealedBelow.push(generation);
+      else if (held === false) clean.add(generation);
+    }
+  }
+  const newest = foundAbove ?? holderBelow;
+  // Where a searched generation held the id, the collection takes every generation below the pointer, those that
+  // could not be searched with them. Where none did, those are deleted one by one, under the fence, and the
+  // generations below the pointer that were searched and found clean stay.
+  const fenced = newest === undefined ? [...holdersAbove, ...sealedBelow] : holdersAbove;
+  if (newest === undefined && fenced.length === 0) return notMember;
+
+  // One write to the row before any delete: the generations about to go leave its ledger, and the deletes by name are
+  // fenced against a load in flight (see `fence`). A call it refuses deletes nothing.
+  const sweeping = newest !== undefined;
+  let moved: Verdict = null;
+  let byName: readonly number[] = fenced;
+  let sweep = sweeping;
+  let ledgered = true;
+  let past = false;
+  if (sweeping || fenced.length > 0) {
+    const made = await fence(c, { byName: fenced, sweeps: sweeping });
+    moved = made.moved;
+    byName = made.byName;
+    sweep = made.sweep;
+    ledgered = made.ledger;
+    past = made.past === true;
+  }
+  const swept: { deleted: number[]; missing?: number; knownSpared?: number[] } = sweep
+    ? await collectBelowPointer(ref, deps, { keep: 0, skipKnown: true })
+    : { deleted: [] };
+  const collected = [...swept.deleted];
+  let missing = swept.missing;
+  if (sweep && missing === undefined && (moved === null || past)) {
+    const again = await collectAgain(
+      c,
+      { spared: swept.knownSpared ?? [], ledgered },
+      { byName: past ? fenced : [] },
+    );
+    collected.push(...again.deleted);
+    missing = again.missing;
+    // A row gone in the second fence leaves the reason the call already had: a holder may still be in the bucket.
+    if (again.moved !== null && again.moved !== 'absent' && again.moved !== 'no-generation') {
+      moved = again.moved;
+    }
+  }
+  // A collection that stopped on a rollback has moved the pointer off `from`, so nothing above it is deleted.
+  if (byName.length > 0 && missing === undefined) {
+    const deleted = await deleteFenced(c, byName, moved);
+    collected.push(...deleted.deleted);
+    moved = deleted.moved;
+    missing = deleted.missing;
+  }
+
+  const left = await holderLeft(c, clean);
+  if (missing !== undefined) notePointerOnDeleted(c, missing);
+  if (left === undefined) {
+    if (newest !== undefined) return collectedAll(c, newest, collected);
+    return sealedOnly(c, notMember, collected);
+  }
+  if (moved !== null || missing !== undefined) {
+    return {
+      ...base,
+      erased: false,
+      reason: moved ?? 'superseded',
+      fromGeneration: newest ?? from,
+      collected,
+    };
+  }
+  throw cannotRemove(c, left);
 }
 
 /**
