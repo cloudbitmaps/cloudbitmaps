@@ -24,8 +24,8 @@ Three words appear everywhere:
 ## Install & entry points
 
 On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
-script to fetch its native binary. Allow it first: run `pnpm init` (or `npm init -y`), then add these two top-level keys
-to your `package.json`:
+script to fetch its native binary. Allow it first: add these two top-level keys to your `package.json` (create one with
+`pnpm init` or `npm init -y` if you have none):
 `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but
 warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
 
@@ -318,4 +318,5 @@ operating manual (`CLAUDE.md` is a symlink to it).
 ## License
 
 **Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish. The license does not grant permission to use
-the CloudBitmaps name beyond describing where the work comes from ([section 6](LICENSE)).
+the CloudBitmaps name beyond describing where the work comes from and reproducing the content of the
+[`NOTICE`](NOTICE) file ([section 6](LICENSE)).

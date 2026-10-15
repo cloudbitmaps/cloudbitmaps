@@ -220,10 +220,11 @@ export interface LoadOptions {
    * its publish pushed out of the window, and lists the segment's objects on every sixteenth generation to take
    * whatever that pass leaves, such as an object a crashed load left below the pointer.
    *
-   * A load lists instead on every load when `keep` is above 64, when the row has no usable record (the first load of
-   * a row starts one from the bucket), when the row's record names more than 64 generations below the pointer that no
-   * lease holds (as after a `keep` above 64, or `materializeMany`), or when the check found the current generation's
-   * object missing. A `keep` at least the generation published collects nothing and asks for nothing.
+   * A load lists instead on every load when `keep` is above 64, when the row has a pointer and no usable record (the
+   * load starts one from the bucket), when the row's record names more than 64 generations below the pointer that no
+   * lease holds (as after a `keep` above 64, or `materializeMany`), or when the guard's read, or the zero-byte read
+   * before a delete by name, finds the current generation's object missing. A publish settled by reading the row lists
+   * too. A `keep` at least the generation published collects nothing and asks for nothing.
    */
   readonly keep?: number;
   /**
@@ -405,9 +406,9 @@ export interface LoadResult {
    * keeps nor checks it; reads are checked with CRC32C.
    */
   readonly sha256: string;
-  /** Non-empty chunks in the generation written (at most 65,536). */
+  /** Non-empty chunks in the generation written (at most 65,536), or 0 when nothing was written. */
   readonly chunkCount: number;
-  /** Distinct ids in the generation that was written, post-dedup. */
+  /** Distinct ids in the generation that was written, post-dedup, or 0 when nothing was written. */
   readonly cardinality: number;
   /**
    * What the segment held when the guard judged it — `null` when there was no current generation, or when no

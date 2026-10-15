@@ -414,7 +414,8 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
   setups instead, or `roaring`'s `index.d.ts` reports `TS2550`: set `"skipLibCheck": true`, or set `"lib"` to
   `["es2022", "esnext.disposable", "dom"]` (an explicit `lib` replaces the default, so keep `dom` for `console`).
   A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`; `node16` and `node18` report `TS1479`
-  on the import. A project on `moduleResolution: bundler` is unaffected.
+  on the import. A project on `moduleResolution: bundler` is unaffected. Code that reads `process.env`, as the Azure
+  Blob snippet does, still needs `@types/node`.
 - On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first
   (`apk add --no-cache build-base python3`) or use a glibc image such as `node:22-slim`.
 
