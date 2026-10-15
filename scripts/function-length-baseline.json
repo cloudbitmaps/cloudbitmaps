@@ -15,14 +15,6 @@
     "packages/core/src/core/rollback.ts::rollbackSegment": 222,
     "packages/core/src/export/index.ts::runExport": 129,
     "packages/roaring/src/index.ts::class CloudRoaring > materializeMany": 261,
-    "packages/roaring/src/testing/conformance.ts::registryConcurrency": 110,
-    "packages/roaring/src/testing/conformance.ts::registryConcurrency > describe callback": 105,
-    "packages/roaring/src/testing/conformance.ts::registryConformance": 986,
-    "packages/roaring/src/testing/conformance.ts::registryConformance > describe callback": 976,
-    "packages/roaring/src/testing/conformance.ts::registryDeleteConformance": 133,
-    "packages/roaring/src/testing/conformance.ts::registryDeleteConformance > describe callback": 131,
-    "packages/roaring/src/testing/conformance.ts::storageDriverConformance": 264,
-    "packages/roaring/src/testing/conformance.ts::storageDriverConformance > describe callback": 246,
     "packages/roaring/src/wire-store.ts::resolveStorageSource": 113,
     "packages/tools/src/cost.ts::buildReport": 266
   }
