@@ -653,17 +653,19 @@ async function drainRecords(it: AsyncIterable<RegistryRecord>): Promise<Registry
   return out;
 }
 
-const clearSummary: RegistrySummary = {
+// Shared by every driver the suites run against, so frozen: a driver that mutates its input cannot leak state
+// into the next suite.
+const clearSummary: RegistrySummary = Object.freeze({
   generation: 3,
   cardinality: 12_000_000,
   fingerprint: '1572864:2864434397',
   tailBytes: 6_000,
-  metadata: { def: 'v41', landedAt: 1_790_000_000_000 },
-};
-const sealedSummary: RegistrySummary = {
+  metadata: Object.freeze({ def: 'v41', landedAt: 1_790_000_000_000 }),
+});
+const sealedSummary: RegistrySummary = Object.freeze({
   generation: 4,
   sealed: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMw==',
-};
+});
 
 const crc = (g: number): number => 1000 + g;
 const ledger = (...gens: number[]): { generation: number; footerCrc: number }[] =>
