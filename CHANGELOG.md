@@ -11,8 +11,45 @@ so, and so do the module headers in the code.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`export-segments` refuses an argument, and a `null` or `undefined` segment ref is a `ValidationError`.** The command
+  exits 2 on any argument but `--help` or `-h` (after a leading `--`, which `pnpm run` forwards), where it ignored one.
+  A `null` or `undefined` ref passed to a store call or to `validateSegmentRef` of `@cloudbitmaps/core/driver-kit`
+  throws a `ValidationError`, not a `TypeError`.
+- **A combine, an `*Into` verb and `materializeMany` refuse a segment opened on another store object, even one over
+  the same backend, with a `ValidationError`.** Open every operand, exclude and destination with the `segment()` of the
+  store that runs the call.
+- **A segment of another installed copy of `@cloudbitmaps/roaring` is no longer accepted by a combine.** `intersect`,
+  `union`, `andNot` and the `*Into` verbs used to take a segment of another copy that carried the same versioned
+  brand; they refuse it, as `materializeMany` did, with a `ValidationError` that says it comes from another installed
+  copy. A store belongs to one copy, so another copy's segment always comes from another store. Install one copy of the
+  package in a process.
+
 ### Changed
 
+- **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
+  `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
+  optional. A leading `--`, which pnpm forwards, is dropped. Any other argument prints "takes no arguments; it reads its
+  settings from the environment" and the usage to stderr and exits 2. A missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` says
+  what the variable is, names the other one and ends "run export-segments --help". The export guide and the API
+  reference say the same.
+- **A bad segment ref or id says what is wrong with it, and where.** A ref that is a string, `null` or `undefined`
+  (`store.load('shoppers', ids)`) is refused with a `ValidationError`, "a segment ref is an object such as { segment:
+  'name' }; store.segment() takes the bare name". `store.segment()` given a ref says to call
+  `store.segment(ref.segment, { namespace: ref.namespace })`, and given an array says the name is a string. A refused
+  id says which kind it is (not a number, `null`, negative, with a fraction, `NaN` or an infinity, or above 4294967295),
+  and a load names the position, `ids[1]: ...`, with the id error as the `cause`. A bad-ref or bad-id message never
+  repeats the id or the segment's name.
+- **Common error messages say what to do next.** A contention `WriteConflictError` from a load's publish, `setRetention`,
+  `clearRetention` and a lease take or release ends "another writer changed the segment's row while this call ran.
+  Re-run the call: it reads the row afresh". A rollback that loses its race to another writer throws a
+  `WriteConflictError` that says the pointer was not moved and to check `store.generations(ref)` and run it again, with
+  the driver's error as its `cause`. An unsupported `.crbm` major version says which version the build reads, and
+  advises `upgrade @cloudbitmaps/core` only for a newer one; for an older one it says no release writes that version.
+  Every `IntegrityError` the `.crbm` reader raises for bytes that fail its own checks ends "re-load from source or
+  roll back"; one from decrypting the index or a chunk keeps the cipher's message, since a re-load does not repair a
+  wrong key. No message gains a stored value, and the driver messages the conformance suite shares are unchanged.
 - **A steady `store.load()` at `keep: 12` is measured on `0.21.0`.** A run from AWS CloudShell in `us-east-1` on
   2026-10-13 (run `2026-10-13-b329d`), against the published `0.21.0`, loaded one segment 18 times. A load that deletes
   by name made 2 PUT-class + 5 GET-class and a delete, $12.00 per million at the default prices, and the load at
@@ -24,6 +61,17 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment of
+  the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs
+  on, so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`
+  alone, `union` and `andNot` likewise, and `intersectInto`, `unionInto`, `andNotInto` and `materializeMany` published
+  that answer; a handle whose name the receiver lacked failed with an operand that "names a segment that does not
+  exist". Every operand, every `exclude` and every destination of a combine, an `*Into` verb and `materializeMany`
+  (every operand and every `dest`) must now come from the store the call runs on. A segment of another store, of a
+  second store object over the same backend, or of another installed copy is refused with a `ValidationError` before any
+  request: no read, no write, no publish. The message names the verb and the role (an operand, an exclude, the
+  destination) or, in `materializeMany`, where the handle sits (`operands["name"]`, `outputs[i].dest`), never the
+  segment, its namespace or a key.
 - **An Azure Blob error carries no credential.** The driver threw the `@azure/storage-blob` error as it came, and the
   SDK keeps the request it sent on `err.request` and on `err.response.request`: with a shared-key client its
   `Authorization: SharedKey <account>:<signature>` header, with a SAS client its URL, `sig=` included. The SDK hides
@@ -53,6 +101,27 @@ so, and so do the module headers in the code.
   file.** Its
   `encodeURIComponent` paths let a namespace named `..` write outside `dump`, and a namespace named `_default`, or two
   names that differ only in letter case, overwrite another segment's file while the manifest reported both.
+- **The reference, the install guides and the hover docs state what the code does.** The reference and the Azure Blob
+  README give the ceilings that refuse a setting at construction: an S3 `partBytes` above 5 GiB, an S3 or GCS
+  `maxObjectBytes` above 5 TiB, an Azure `blockBytes` above 4,000 MiB and an Azure `maxObjectBytes` above 50,000 blocks
+  of 4,000 MiB. `BudgetExceededError` is documented as it is: its message states the limit and, when known before the
+  fan-out, the projected count, and it has no fields for either. The `retry` row lists all five policy fields and every
+  rule the store checks when it is built, the `budget` row its range and default, and the call table the defaults of
+  `concurrency`, `publishConcurrency`, the retention sweep and the export. The README and the getting-started guide give
+  the install settings before the install commands, with the `rebuild` step for an install made first; the guide says
+  what a TypeScript project needs, names a Node major-version change as a third cause of `Cannot find module
+  './build/Release/roaring.node'`, and says `store.segments()` is an async iterable. The README says that intersection
+  reads merge chunks within 256 KiB, so spread-out overlaps fetch most of each object. The privacy notes say that error
+  messages name the segment, the namespace, chunk keys, id counts, metadata keys, key ids, the bucket or container name,
+  or the account host, and an object's key, that the S3, GCS and Azure Blob drivers remove the credentials from an SDK
+  error, and the encryption guide that an `IntegrityError` names a chunk key and counts the seal hides, and that a
+  changed object can make a read raise one that names a sealed chunk key. Hover docs now cover the store, the three
+  backends and their option types, `LoadOptions`, `LoadResult`, `RetryPolicy`, `RollbackResult` and the in-process
+  backends' options, and a load keeps up to 127 generations in its row's ledger. The README's license paragraph says the
+  license grants no permission to use the name beyond describing where the work comes from and reproducing the content
+  of the `NOTICE` file. `MaterializeOptions` documents `metadata?`, the cost model's `Workload` documents the range of
+  `cacheHitRate`, `operandsPerIntersect` and `readerProcesses`, and the admin calls' `concurrency` defaults are stated,
+  `checkConsistency`'s 8 included.
 
 ## [0.21.0] — 2026-10-13
 

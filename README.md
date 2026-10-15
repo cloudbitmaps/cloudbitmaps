@@ -23,22 +23,28 @@ Three words appear everywhere:
 
 ## Install & entry points
 
+On npm 12 and pnpm 10 and later, a dependency's install script runs only if you allow it, and `roaring` needs its one
+script to fetch its native binary. Allow it first: add these two top-level keys to your `package.json` (create one with
+`pnpm init` or `npm init -y` if you have none):
+`{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`. npm 11 runs the script but
+warns until you allow it the same way; pnpm 9 needs nothing extra. Then install:
+
 ```bash
 pnpm add @cloudbitmaps/roaring    # the store, with in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3         # the storage you have: or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
-On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package
-throws at `import`. Put this in your `package.json`: `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }`.
-npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra.
+Installed before allowing it? The install exited 0 and the package throws at `import`. Add the setting, then run
+`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped (see
+[Troubleshooting](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install)).
 
 **ESM-only, Node ≥ 22.12.** For CommonJS, Jest and TypeScript details, see
 [CommonJS, Jest and TypeScript](docs/guide/getting-started.md#commonjs-jest-and-typescript).
 
 You install two packages: `@cloudbitmaps/roaring` (the store) and one storage package for your cloud. Each storage
 package depends on its cloud SDK, so installing it is the whole step. `@cloudbitmaps/core`, the engine underneath,
-arrives on its own and you never install it. Install one copy of `@cloudbitmaps/roaring` in a process: `materializeMany`
-refuses a segment from any other copy, and the other combines refuse one whose segment brand differs from this copy's.
+arrives on its own and you never install it. Install one copy of `@cloudbitmaps/roaring` in a process; a combine
+refuses a segment of another store, and a segment of another copy always belongs to another store.
 The family is six packages, released together at one version:
 
 | Package | What it is | Install it |
@@ -272,8 +278,11 @@ bitmap of up to 65,536 ids, and it is the unit of storage and transfer: you neve
 
 **Intersection.** To find the ids in both of two huge segments, CloudBitmaps reads the two small chunk indexes,
 aligns their keys, and fetches only the chunks present in both. Two 100 MB segments overlapping in 5% of chunks
-transfer about 10 MB of chunks, not 200 MB (arithmetic, for chunks of equal size). An `exclude` list is read only at
-the keys that survived.
+need about 10 MB of chunks, not 200 MB (arithmetic, for chunks of equal size). When those chunks lie together, that is
+about what is read. When they are spread over the objects, the reads merge chunks within 256 KiB of each other (up to
+1 MiB a request), so they make far fewer requests but fetch most of each object: free inside the bucket's region on S3
+Standard, billed across regions ([the overlap tables](docs/guide/sizing.md#how-much-the-overlap-matters)). An `exclude`
+list is read only at the keys that survived.
 
 More: [Loading in depth](docs/guide/loading.md), [Reading in depth](docs/guide/reading.md) and [Before production](docs/guide/production.md).
 
@@ -308,5 +317,6 @@ operating manual (`CLAUDE.md` is a symlink to it).
 
 ## License
 
-**Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish, and the CloudBitmaps name is trademarked
-at the public launch.
+**Apache-2.0.** The `@cloudbitmaps` scope is where the packages publish. The license does not grant permission to use
+the CloudBitmaps name beyond reasonable and customary use in describing where the work comes from and reproducing the
+content of the [`NOTICE`](NOTICE) file ([section 6](LICENSE)).

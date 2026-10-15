@@ -858,10 +858,10 @@ inner group, a published generation each. `store.materializeMany` computes the o
 chunks once per group of outputs, for every output of the group that uses them (one group when the outputs fit the
 memory budget, more when they do not), evaluates every output chunk by chunk, and publishes each as the `*Into` it
 replaces would, to a `dest` of its own. An operand is a name: one segment given under two names is read twice, so name
-each segment once and use that name in every output. Every operand and every `dest` must be a segment made by this copy
-of `@cloudbitmaps/roaring`: unlike `intersect`, `union`, `andNot` and the `*Into` verbs, which also take a segment of
-another installed copy that carries the same versioned brand, `materializeMany` refuses one with a `ValidationError`
-before any request. Install one version.
+each segment once and use that name in every output. Every operand and every `dest` must be a segment made by the
+store the call runs on, as for `intersect`, `union`, `andNot` and the `*Into` verbs: a segment of another store, of a
+second store object over the same backend, or of another installed copy of `@cloudbitmaps/roaring` is refused with a
+`ValidationError` before any request. Open each with this store's `segment()`.
 
 ```ts
 const run = await store.materializeMany({

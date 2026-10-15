@@ -1,12 +1,18 @@
 import {
+  BudgetExceededError,
+  CapabilityError,
   CloudRoaringError,
   IntegrityError,
+  KeyUnavailableError,
   NotFoundError,
   TransientError,
   ValidationError,
   WriteConflictError,
+  isBudgetExceededError,
+  isCapabilityError,
   isCloudRoaringError,
   isIntegrityError,
+  isKeyUnavailableError,
   isNotFoundError,
   isTransientError,
   isValidationError,
@@ -92,4 +98,46 @@ describe('error predicates', () => {
     // A plain object merely NAMED like our error is not branded → not misclassified.
     expect(isWriteConflictError({ name: 'WriteConflictError' })).toBe(false);
   });
+});
+
+describe('the capability, budget and key predicates', () => {
+  const brand = Symbol.for('cloudbitmaps.error');
+  /** A plain object a foreign copy of the package could throw: branded, with the class's name. */
+  const branded = (name: string): Error =>
+    Object.defineProperty(Object.assign(new Error('x'), { name }), brand, { value: true });
+  const every: Array<[string, (e: unknown) => boolean, new (m: string) => Error]> = [
+    ['CapabilityError', isCapabilityError, CapabilityError],
+    ['BudgetExceededError', isBudgetExceededError, BudgetExceededError],
+    ['KeyUnavailableError', isKeyUnavailableError, KeyUnavailableError],
+  ];
+  const others: Error[] = [
+    new CloudRoaringError('x'),
+    new ValidationError('x'),
+    new TransientError('x'),
+    new WriteConflictError('x'),
+    new NotFoundError('x'),
+    new IntegrityError('x'),
+    ...every.map(([, , Class]) => new Class('x')),
+  ];
+
+  it.each(every)('%s is matched for its own class and for no other', (name, predicate, Class) => {
+    for (const err of others) expect(predicate(err)).toBe(err instanceof Class);
+  });
+
+  it.each(every)(
+    '%s is matched for a branded object with its name, across a bundle',
+    (name, predicate) => {
+      expect(predicate(branded(name))).toBe(true);
+      expect(predicate(branded('SomethingElse'))).toBe(false);
+    },
+  );
+
+  it.each(every)(
+    '%s is not matched for an unbranded error with its name, or a non-error',
+    (name, predicate) => {
+      expect(predicate(Object.assign(new Error('x'), { name }))).toBe(false);
+      expect(predicate({ name })).toBe(false);
+      for (const value of [null, undefined, 'x', 1]) expect(predicate(value)).toBe(false);
+    },
+  );
 });

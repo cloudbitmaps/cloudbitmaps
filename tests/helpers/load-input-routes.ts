@@ -137,6 +137,7 @@ export const ROUTED: readonly string[] = [
   'tests/roaring/pin-lease.races.test.ts',
   'tests/roaring/pin-lease.test.ts',
   'tests/roaring/segment-handle.test.ts',
+  'tests/roaring/one-store.test.ts',
   'tests/roaring/segment-other-copy.test.ts',
   'tests/roaring/store-load-binding.test.ts',
   'tests/roaring/warm-has.test.ts',
@@ -144,6 +145,12 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/core/contention-next-step.test.ts':
+    'its loads only seed a row for a conflicting registry to refuse; the message of the refusal is what it tests, and the ' +
+    'input form is not',
+  'tests/core/ref-shape.test.ts':
+    'its loads pass a ref that is not an object, which is refused before any input is read, and one valid load that only ' +
+    'shows a ref object still works; the input form is not what it tests',
   'tests/roaring/lease-guards.test.ts':
     'its one load only seeds a segment to read through a leased handle; the shape of the stream is what it tests, and the input form is not',
   'tests/roaring/call-options.test.ts':

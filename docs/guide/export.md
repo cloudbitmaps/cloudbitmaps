@@ -78,9 +78,15 @@ those, call `store.exportSegments(sink)` in code, as above.
 ```bash
 CR_EXPORT_ROOT=./.cloudbitmaps CR_EXPORT_OUT=./dump pnpm exec export-segments
 # → dump/manifest.json + dump/<namespace|_default>/<segment>.roaring   (CR_EXPORT_FORMAT=ndjson for .ndjson)
-# CR_EXPORT_NAMESPACE=eu             scope the dump to one namespace
-# CR_EXPORT_ROOT holds the local-filesystem store: <root>/storage and <root>/registry
+# CR_EXPORT_ROOT (required) holds the local-filesystem store: <root>/storage and <root>/registry
+# CR_EXPORT_OUT  (required) is the directory the dump goes to
+# CR_EXPORT_NAMESPACE=eu    (optional) scope the dump to one namespace
 ```
+
+`pnpm exec export-segments --help` (or `-h`) prints these settings and exits 0. The command takes no other argument: one
+prints the usage on stderr and exits 2, and a missing `CR_EXPORT_ROOT` or `CR_EXPORT_OUT` exits 1 with a message that
+says what the variable is, names the other one and points at `--help`. A leading `--`, which `pnpm run` forwards, is
+ignored.
 
 Each file is written to a unique `.part` temp file and then renamed atomically, and artifacts are owner-only (`0o600`).
 The command writes a self-describing `manifest.json` last, also atomically, so a directory with a `manifest.json`

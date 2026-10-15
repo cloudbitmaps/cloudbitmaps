@@ -11,24 +11,27 @@ New to the words? [The words these docs use](#the-words-these-docs-use) is at th
 
 ## Install
 
-In a new folder, run `pnpm init` (or `npm init -y`), then:
+In a new folder, run `pnpm init` (or `npm init -y`). On npm 12 and pnpm 10 and later, a dependency's install script
+runs only if you allow it, and `roaring` needs its one script to fetch its native binary, so add these two keys to that
+`package.json` before you install:
+
+```json
+{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+```
+
+npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. Then:
 
 ```bash
 pnpm add @cloudbitmaps/roaring              # the store; includes in-memory and local-disk backends
 pnpm add @cloudbitmaps/s3                   # only when you move to S3 (or /gcs, or /azure-blob)
 ```
 
-On npm 12 and pnpm 10 and later, allow `roaring`'s one install script first, or the install exits 0 and the package
-throws at `import`. Put this in your `package.json`:
+If you installed before adding the keys, the install exited 0 and the package throws at `import`: add them, then run
+`pnpm rebuild roaring` (or `npm rebuild roaring`) to run the script that was skipped.
 
-```json
-{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
-```
-
-npm 11 runs the script but warns until you allow it the same way; pnpm 9 needs nothing extra. `@cloudbitmaps/roaring` is
-the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on its own and you never install
-or import it. Install one copy of `@cloudbitmaps/roaring` in a process: `materializeMany` refuses a segment from any
-other copy, and the other combines refuse one whose segment brand differs from this copy's.
+`@cloudbitmaps/roaring` is the package you import from. `@cloudbitmaps/core` is the engine underneath; it arrives on
+its own and you never install or import it. Install one copy of `@cloudbitmaps/roaring` in a process; a combine
+refuses a segment of another store, and a segment of another copy always belongs to another store.
 
 The packages are **ES modules only and need Node 22.12 or later.** Use `import`. `require()` works too, on the same
 Node versions: [CommonJS, Jest and TypeScript](#commonjs-jest-and-typescript) has the details.
@@ -134,7 +137,8 @@ Three things to know:
 - **A load is a batch job, not a request handler.** It holds the whole set in memory and uses a core for a moment.
   Run it from a scheduled job, a queue consumer or a short-lived container, and keep the request path for reads.
 - **There is no `create`.** `store.exists({ segment })` answers "has this segment been loaded?" with one registry
-  read, and `store.segments()` lists what the registry holds. Do not keep your own list of names.
+  read, and `store.segments()` streams what the registry holds as an async iterable:
+  `for await (const s of store.segments()) console.log(s.segment)`. Do not keep your own list of names.
 
 Rolling back, how many old generations to keep and the other things a load does are in
 [Loading in depth](loading.md).
@@ -304,8 +308,8 @@ one row per item, each linking to the detail.
 
 ### `Cannot find module './build/Release/roaring.node'` after a successful install
 
-The install **exits 0** and the package is then unusable at runtime. Two ways to get here — and on **pnpm 10
-the plain install is one of them**, with no flag of your own:
+The install **exits 0** and the package is then unusable at runtime. Three ways to get here. Two skip `roaring`'s
+install script, and on **pnpm 10 the plain install is one of them**, with no flag of your own:
 
 ```
 $ npm i @cloudbitmaps/roaring             # npm 12+: warns that roaring's install script was blocked, exits 0
@@ -323,6 +327,13 @@ that `allowScripts` does not cover it yet; pnpm 9 runs it; every client skips it
 `install` script that downloads the right prebuilt binary for your platform from GitHub Releases. Skip install
 scripts and that download never happens, so there is nothing for the addon loader to find. The client reports
 success because the *install* did succeed — only the post-install step was skipped.
+
+**The third: you changed Node's major version.** `roaring` downloads one binary per Node ABI, into
+`native/roaring-node-v<ABI>-<platform>-<arch>-<libc>`, and when the one for the running Node is missing it falls back to
+`./build/Release/roaring.node` and reports that path. An install made under Node 24 and run under Node 22 (after
+`nvm use 22`, a new CI image, a new Lambda runtime) fails with this same message. Allowing the script does not fix this
+by itself. Run `pnpm rebuild roaring` (or `npm rebuild roaring`) under the Node you now use; the allowance below must
+be in place for the rebuild to run.
 
 **Fixes, in order of preference:**
 
@@ -394,8 +405,16 @@ about your own code. Suppressing a whole diagnostic channel to hide one known-be
   `Must use import to load ES Module`: use Jest's ESM support (`--experimental-vm-modules`) or `import` the
   package. **Yarn PnP** throws `ERR_REQUIRE_ESM` on any Node version: `import` the package, or use
   `nodeLinker: node-modules`.
-- A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`. `node16` and `node18` report
-  `TS1479` on the import. A project on `moduleResolution: bundler` is unaffected.
+- **TypeScript.** The snippets on this page are `.mjs` files, which may use top-level `await`. A `.ts` file may too only
+  when it is an ES module: `"type": "module"` in `package.json` (which `pnpm init` and `npm init -y` do not set) or the
+  `.mts` extension; otherwise TypeScript reports `TS1309`. A `tsconfig.json` that typechecks them, with `@types/node`
+  installed: `{ "compilerOptions": { "strict": true, "module": "nodenext", "target": "es2022", "types": ["node"] } }`.
+  `roaring`'s own types use `Symbol.dispose`, which `@types/node` declares. Without `@types/node`, take one of two
+  setups instead, or `roaring`'s `index.d.ts` reports `TS2550`: set `"skipLibCheck": true`, or set `"lib"` to
+  `["es2022", "esnext.disposable", "dom"]` (an explicit `lib` replaces the default, so keep `dom` for `console`).
+  A `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`; `node16` and `node18` report `TS1479`
+  on the import. A project on `moduleResolution: bundler` is unaffected. Code that reads `process.env`, as the Azure
+  Blob snippet does, still needs `@types/node`.
 - On Alpine (musl) there is no prebuilt `roaring` binary, so the install compiles it: add a toolchain first
   (`apk add --no-cache build-base python3`) or use a glibc image such as `node:22-slim`.
 

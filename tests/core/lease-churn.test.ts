@@ -683,7 +683,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
       seen,
     );
     await expect(clearSegmentRetention(SEG, { registry: racing, clock: w.clock })).rejects.toThrow(
-      /^clearRetention: contention clearing the retention policy for segment "s"$/,
+      /^clearRetention: contention clearing the retention policy for segment "s"; another writer changed the segment's row while this call ran\. Re-run the call: it reads the row afresh$/,
     );
     expect(seen.calls).toBe(5);
   });

@@ -3,6 +3,7 @@
  * of a registry write that got no answer.
  */
 import {
+  CONTENTION_NEXT_STEP,
   KeyUnavailableError,
   TransientError,
   ValidationError,
@@ -597,7 +598,7 @@ export async function publishGenerationKept(
   // The attempts ran out on writes that went unanswered, not on contention: say so.
   if (unanswered !== undefined) throw unanswered;
   throw new WriteConflictError(
-    `publishGeneration: contention setting currentGen for ${key.segment}`,
+    `publishGeneration: contention setting currentGen for ${key.segment}${CONTENTION_NEXT_STEP}`,
   );
 }
 
