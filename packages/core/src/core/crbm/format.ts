@@ -48,8 +48,8 @@ export const FLAG_ENCRYPTED = 1 << 0;
 export const FLAG_LITTLE_ENDIAN = 1 << 2; // =1 in v1
 /**
  * The object carries an extension block just before its index (a generation's metadata). Set only when there is
- * something to put in it, so an object without metadata is the same bytes as before the block existed; a reader that
- * does not know the bit refuses the object rather than reading past what it cannot see.
+ * something to put in it, so an object without metadata has neither the block nor the bit; a reader that does not
+ * know the bit refuses the object rather than reading past what it cannot see.
  */
 export const FLAG_EXTENSION = 1 << 3;
 

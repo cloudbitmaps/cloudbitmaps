@@ -13,7 +13,7 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-- **A load or an erasure rewrite called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
+- **A load or an erasure called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
   `loadSegment`, `loadSegmentChunks` and `eraseIdFromSegment` (through their `LoadDeps` and `EraseIdDeps`) need an
   `entropy` function, now required by both types, which draws each generation's write identity, and refuse without one
   (a JavaScript caller can leave it out) before any read, keystore call, delete or write, even an erasure of an id no
@@ -36,16 +36,16 @@ so, and so do the module headers in the code.
 
 - **A cleartext generation carries a random write identity in its footer, so two loads of the same ids no longer write
   identical objects.** The footer's `indexNonce` field, 12 bytes at offset 40, holds the AEAD nonce of the sealed index on
-  an encrypted generation and was all zero on a cleartext one. Every writer of a generation now draws those 12 bytes
-  once per object: a cleartext generation stores them there, an encrypted one is unchanged. The footer checksum covers
+  an encrypted generation and was all zero on a cleartext one. Every writer of a cleartext generation now draws those 12
+  bytes once per object and stores them there; an encrypted generation is unchanged. The footer checksum covers
   the field, so an object's fingerprint (`<size>:<checksum>`), a pin, a ledger entry and the row's summary name one write
   and not just a set of ids, to the 32 bits of the footer checksum (two writes of the same ids share a fingerprint with
   probability about 2^-32). The footer keeps its 104 bytes, the format stays 1.0 and no offset moves. A reader takes a
   cleartext object whatever the field holds, an all-zero value included. `CloudRoaring` draws from Web Crypto by default,
   and `seams.entropy` replaces it (a function from a length to that many random bytes); `LoadDeps` and `EraseIdDeps` of
-  `@cloudbitmaps/core` take the same function as `entropy`; a `CrbmWriter` draws it when it is constructed, so a source
-  that returns anything but a `Uint8Array` of 12 bytes fails with a `ValidationError` before the first byte is uploaded. The goldens under `tests/golden` are unchanged, with the
-  field all zero, which a writer drawing zero entropy reproduces; a `-write-identity` file beside each cleartext one
+  `@cloudbitmaps/core` take the same function as `entropy`. A cleartext object's writer draws the identity before it
+  writes anything, so a source that returns anything but a `Uint8Array` of 12 bytes fails with a `ValidationError`
+  before the first byte is uploaded. The goldens under `tests/golden` are unchanged, with the field all zero, which a writer drawing zero entropy reproduces; a `-write-identity` file beside each cleartext one
   carries a fixed identity.
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
   `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
@@ -88,7 +88,8 @@ so, and so do the module headers in the code.
   derives from the bytes (an S3 object without SSE-KMS or SSE-C), or after a rollback moved the pointer below it; a
   publish settled by footer on a registry that reports no write tokens could report another load's publish as its own.
   Each now meets a different footer and keeps the object. A driver that ignores a delete's condition keeps the round trip
-  between the read and the delete, and an object whose identity field is all zero is still alike to another's.
+  between the read and the delete, and an object whose identity field is all zero (one written with zero entropy) can still have the same bytes as
+  another's of the same ids.
 - **A combine refuses a segment of a store on different storage, where it answered from the receiving store's segment of
   the same name, or published that answer.** A combine keeps each operand's name and resolves it in the store it runs
   on, so `a.segment('x').intersect([b.segment('x')])` over two stores on different storage answered from `a`'s own `x`

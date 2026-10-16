@@ -465,14 +465,14 @@
   },
   {
     "entry": "@cloudbitmaps/core judgeLoad",
-    "reason": "its deps parameter widens from LoadDeps to Omit<LoadDeps, 'entropy'>: it writes nothing, so every caller that passed LoadDeps still compiles and one with no entropy now compiles too; a compatible widening that follows the new required entropy of LoadDeps"
+    "reason": "its deps parameter's type changes from LoadDeps to Omit<LoadDeps, 'entropy'>, which has exactly the members LoadDeps had before entropy was added: it writes nothing, so it accepts the same objects as before"
   },
   {
     "entry": "@cloudbitmaps/core LoadDeps.entropy",
-    "reason": "a required member of an interface that only core callers build: the load draws its generation's write identity through it, and a source left out was already refused at run time; required so the compiler says so, and the flavor package supplies Web Crypto's by default, so no store user passes one"
+    "reason": "a required member added to an interface that only core callers build: the load draws its generation's write identity through it, so the compiler refuses a call without one (a JavaScript caller that leaves it out is refused at run time, before any read); the flavor package supplies Web Crypto's by default, so no store user passes one"
   },
   {
     "entry": "@cloudbitmaps/core EraseIdDeps.entropy",
-    "reason": "a required member of an interface that only core callers build: the erasure rewrite draws its generation's write identity through it, and a source left out was already refused at run time; required so the compiler says so, and the flavor package supplies Web Crypto's by default, so no store user passes one"
+    "reason": "a required member added to an interface that only core callers build: the erasure rewrite draws its generation's write identity through it, so the compiler refuses a call without one (a JavaScript caller that leaves it out is refused at run time, before any read); the flavor package supplies Web Crypto's by default, so no store user passes one"
   }
 ]

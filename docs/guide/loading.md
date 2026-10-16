@@ -156,8 +156,8 @@ this one: this load reports `superseded`, audits no `segment.publish` and delete
 same check runs after a write the registry refused as a conflict, since a client that re-sends a write can meet its own
 landed copy, and after a write that went unanswered. A registry of your own that does not report tokens is settled by
 the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
-carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index nonce, which its checksum covers), so it names one write: another
-load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
+carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index
+nonce, which its checksum covers), so it names one write, to the 32 bits of that checksum: another load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
 Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's
 default schedule (it waits 0, 4 s, then 12 s between tries), so about 64 s for the four writes, plus up to 3.5 s of the

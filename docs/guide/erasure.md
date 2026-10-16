@@ -473,7 +473,7 @@ repaired. These limits hold on every driver:
   does on a driver with a version per object. An object whose identity field is all zero, which a reader accepts,
   has the bytes of any other such object of the same ids and metadata, and the round trip before the delete stays
   open for it.
-- A read of the footer names a write, so it cannot take a generation a load published for a refused rewrite's object,
+- A read of the footer names a write (to the 32 bits of its checksum), so it cannot take a generation a load published for a refused rewrite's object,
   whatever its ids: the footer does not match, and the discard keeps it, including when a rollback has moved the
   pointer below that generation before the call reads the row. A generation whose identity field is all zero is the
   exception, as above.

@@ -724,8 +724,8 @@ const STORAGE_BACKEND_BRAND: unique symbol = Symbol.for('cloudbitmaps.storage-ba
  * Where a store keeps everything: the generations, and the pointer saying which one is current.
  *
  * **Branded on purpose.** The two fields alone are not enough to qualify, and that is the whole point. This
- * shape is also {@link LoadDeps}, so before the brand any `{ storage, registry }`
- * object literal satisfied it — including one assembling halves from two *unrelated* stores, which the store
+ * same two fields are the heart of {@link LoadDeps}, so without the brand any `{ storage, registry }`
+ * object literal would satisfy it — including one assembling halves from two *unrelated* stores, which the store
  * accepted and then answered **empty** for a segment that holds data, because it read a pointer from a place
  * nothing had ever been written. That is the exact silent-empty failure one-class-per-backend exists to
  * remove, and it was reachable in five lines.
