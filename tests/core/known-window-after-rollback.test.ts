@@ -4,6 +4,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { rollbackSegment } from '@/core/rollback';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * The window a load keeps is the most recently current generations below its own, and it is the same from every load
@@ -18,7 +19,11 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 type World = ReturnType<typeof world>;
 

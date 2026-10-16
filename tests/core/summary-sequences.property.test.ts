@@ -10,6 +10,7 @@ import { summaryAgrees, usableSummary } from '@/core/summary';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 // Many random cases, and a shrink after a failure, can outrun the default 5 s limit on a busy machine.
 vi.setConfig({ testTimeout: 60_000 });
@@ -62,7 +63,7 @@ async function run(ops: Op[], encrypted: boolean): Promise<void> {
     : undefined;
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps = { storage, registry, codec: roaringCodec, keystore };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
   /** What each generation holds, by the model. */
   const model = new Map<number, { ids: Set<number>; metadata: GenerationMetadata | undefined }>();
 

@@ -10,6 +10,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import type { SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A cleartext object can sit under an encrypted segment's name without ever having been one of its generations: a
@@ -23,7 +24,13 @@ async function world(orphanAt: 'below' | 'above') {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
   const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-  const deps: EraseIdDeps = { storage, registry, keystore, codec: roaringCodec };
+  const deps: EraseIdDeps = {
+    storage,
+    registry,
+    keystore,
+    entropy: testEntropy,
+    codec: roaringCodec,
+  };
   const keyedLoad = async (ids: number[]): Promise<number> => {
     const generation = await nextGeneration(SEG, { storage, registry });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry, keystore });
@@ -96,7 +103,13 @@ describe('erasure with an encrypted object the segment key does not open', () =>
     const generation = await nextGeneration(SEG, { storage, registry });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, [7, 8], { registry, keystore });
     expect(
-      await eraseIdFromSegment(SEG, 99, { storage, registry, keystore, codec: roaringCodec }),
+      await eraseIdFromSegment(SEG, 99, {
+        storage,
+        registry,
+        keystore,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      }),
     ).toMatchObject({ erased: false, reason: 'not-member', collected: [0] });
     const left: number[] = [];
     for await (const key of storage.list(SEG)) left.push(key.generation);

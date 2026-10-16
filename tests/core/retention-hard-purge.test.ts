@@ -30,6 +30,7 @@ import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring } from '@/index';
 import { CountingObjectStore } from '../helpers/counting';
 import { tokenParts } from '../helpers/tokens';
+import { testEntropy } from '../helpers/entropy';
 
 const DAY = 86_400_000;
 const T0 = 1_790_000_000_000;
@@ -1257,7 +1258,11 @@ describe('a load that collects by name meets a row the purge removed', () => {
     if (expiresAt !== undefined)
       await setSegmentRetention(ref, { registry: w.registry }, { expiresAt });
     for (let g = 0; g < 5; g++) {
-      const r = await loadSegment(ref, idsOf(g), { ...w.deps, codec: roaringCodec });
+      const r = await loadSegment(ref, idsOf(g), {
+        ...w.deps,
+        entropy: testEntropy,
+        codec: roaringCodec,
+      });
       expect(r).toMatchObject({ generation: g, published: true });
     }
     expect(await present(w)).toEqual([3, 4]);
@@ -1285,6 +1290,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
     const r = await loadSegment(ref, idsOf(5), {
       storage: w.storage,
       registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
@@ -1301,6 +1307,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
     const r = await loadSegment(ref, idsOf(5), {
       storage: w.storage,
       registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });
@@ -1321,6 +1328,7 @@ describe('a load that collects by name meets a row the purge removed', () => {
     const r = await loadSegment(ref, idsOf(5), {
       storage: w.storage,
       registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
     expect(r).toMatchObject({ generation: 5, published: true, collected: [] });

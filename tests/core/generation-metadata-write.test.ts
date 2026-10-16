@@ -13,6 +13,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { FINGERPRINT } from '../helpers/fingerprint';
+import { counterEntropy, testEntropy } from '../helpers/entropy';
 
 const { RoaringBitmap32 } = roaring;
 
@@ -26,7 +27,11 @@ const META: GenerationMetadata = { def: 'v41', landedAt: 1_790_000_000_000, owne
 
 function cleartext() {
   const backend = new MemoryStorage();
-  const store = new CloudRoaring({ storage: backend, retry: false });
+  const store = new CloudRoaring({
+    storage: backend,
+    retry: false,
+    seams: { entropy: counterEntropy() },
+  });
   return { backend, store, storage: backend.storage, registry: backend.registry };
 }
 
@@ -201,7 +206,7 @@ describe('a cleartext load with metadata', () => {
 
   it('writes the summary on a first load, an advancing load and a load onto a row with no pointer', async () => {
     const { registry, storage } = cleartext();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     // A policy recorded ahead of the first load leaves a row with no pointer.
     await registry.create(SEG, { currentGen: null, retention: { expiresAt: 4_102_444_800_000 } });
     expect((await registry.get(SEG))!.currentGen).toBeNull();

@@ -18,6 +18,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Collecting what a load supersedes, by name instead of by listing.
@@ -48,7 +49,7 @@ function world() {
     storageCalls,
     registryCalls,
     reset,
-    deps: { storage, registry: counted, codec: roaringCodec },
+    deps: { storage, registry: counted, entropy: testEntropy, codec: roaringCodec },
   };
 }
 type World = ReturnType<typeof world>;
@@ -885,6 +886,7 @@ describe('a load that repairs a segment whose current object is gone lists, and 
       const erased = await eraseIdFromSegment(SEG, 99, {
         storage: w.memory,
         registry: w.registry,
+        entropy: testEntropy,
         codec: roaringCodec,
       });
       expect(erased).toMatchObject({ erased: true });
@@ -959,7 +961,7 @@ function landing(w: World) {
     },
   }) as IStorageDriver;
   return {
-    deps: { storage, registry, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
     /** Forget the last publish, before a load. */
     reset: (): void => {
       at.landed = undefined;

@@ -6,6 +6,7 @@ import { roaringCodec } from '@/roaring-codec';
 import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A `dropSegment` that lands while an erasure rewrite streams usually finishes first: its sweep takes seconds, a
@@ -64,6 +65,7 @@ describe('an erasure rewrite a drop overtakes deletes its own object', () => {
       const res = await eraseIdFromSegment(REF, 9, {
         storage: wrapped,
         registry,
+        entropy: testEntropy,
         codec: roaringCodec,
       });
 
@@ -94,6 +96,7 @@ describe('a rewrite whose publish a drop refuses reports the row, not a race', (
     const res = await eraseIdFromSegment(REF, 9, {
       storage,
       registry: racing,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
 
@@ -126,6 +129,7 @@ describe('a segment tombstoned while its rewrite runs is searched as a fresh cal
     const res = await eraseIdFromSegment(REF, 9, {
       storage: wrapped,
       registry,
+      entropy: testEntropy,
       codec: roaringCodec,
     });
 
@@ -137,7 +141,7 @@ describe('a segment tombstoned while its rewrite runs is searched as a fresh cal
   it('what both passes deleted is reported, and the newest holder', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec };
     // Generations 0 and 2 hold the id; the pointer is rolled back to 1, which does not.
     await loadSegment(REF, [1, 9], deps, { keep: 5 });
     await loadSegment(REF, [1], deps, { keep: 5 });

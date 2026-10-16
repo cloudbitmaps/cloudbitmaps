@@ -6,7 +6,7 @@ import { storageChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/co
 import { MemoryStorageDriver } from '@/drivers/memory';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 
 // Every StorageChunkSource must pass the same contract.
 storageChunkSourceConformance('MemoryStorageChunkSource', (chunks) => {

@@ -8,6 +8,7 @@ import { CrbmWriter } from '@/core/crbm/writer';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A load of a 12M-member bitmap runs no JavaScript per id: counted, not timed, so it holds on any machine.
@@ -127,6 +128,7 @@ describe('a 12M-member bitmap load runs no per-id JavaScript', () => {
       storage: new MemoryStorageDriver(),
       registry: new MemoryRegistryDriver(),
       codec: without,
+      entropy: testEntropy,
     };
     await loadSegment({ segment: 'fallback' }, { bitmap: new RoaringBitmap32([1, 2, 3]) }, deps);
     expect(splitIdCalls.n - before).toBe(3);

@@ -7,6 +7,7 @@ import {
   metadataBytes,
   metadataFromBytes,
 } from '@/core/metadata';
+import { zeroEntropy } from '../helpers/entropy';
 
 /**
  * The metadata a generation stores, as bytes: what the writer snapshots from a caller's value, and what a reader
@@ -23,7 +24,7 @@ describe('metadata as stored bytes', () => {
     expect(canonicalMetadataJson(proxy, fail)).toBe('{"a":"x"}');
     // And so the writer never writes an object its own reader refuses.
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1, metadata: proxy });
+    const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1, metadata: proxy });
     await writer.addChunk(0, Uint8Array.of(1), 1);
     await writer.finish();
     expect((await CrbmReader.open(new BufferReader(sink.bytes()))).metadata).toEqual({ a: 'x' });

@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { openGenerationReader } from '@/core/crbm-open';
 import { publishGeneration } from '../helpers/publish';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { joinId } from '@/core/bit-route';
 import type { GenKey, IStorageDriver } from '@/core/ports';

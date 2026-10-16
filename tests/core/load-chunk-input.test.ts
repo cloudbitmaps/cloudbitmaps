@@ -6,6 +6,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import roaring from 'roaring';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
+import { counterEntropy } from '../helpers/entropy';
 
 /**
  * The input a flavor gives a load for a combine's result, through `loadSegmentChunks`: its chunks as bitmaps, in place
@@ -44,6 +45,7 @@ function world() {
     deps: {
       storage: storage as IStorageDriver,
       registry: registry as IRegistryDriver,
+      entropy: counterEntropy(),
       codec: roaringCodec,
     },
   };

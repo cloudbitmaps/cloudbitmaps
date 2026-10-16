@@ -8,6 +8,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A guarded load reads the size of the current generation from the row's summary instead of opening the object, so it
@@ -53,7 +54,7 @@ function world(keystore?: InProcessKeystore) {
     registryCalls,
     tails,
     reset,
-    deps: { storage, registry, codec: roaringCodec, keystore },
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
   };
 }
 type World = ReturnType<typeof world>;

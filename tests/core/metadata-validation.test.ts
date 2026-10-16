@@ -7,6 +7,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
 import { objectFingerprint } from '../helpers/fingerprint';
+import { testEntropy } from '../helpers/entropy';
 
 const { RoaringBitmap32 } = roaring;
 
@@ -33,7 +34,7 @@ function counted() {
     [storageCalls, registryCalls].flatMap((c) => Object.values(c)).reduce((a, b) => a + b, 0);
   return {
     backend,
-    deps: { storage, registry, codec: roaringCodec },
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
     store: new CloudRoaring({ storage: brandAsBackend({ storage, registry }), retry: false }),
     reset,
     total,

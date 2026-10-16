@@ -3,6 +3,7 @@ import { CrbmWriter } from '@/core/crbm/writer';
 import { CrbmReader, parseExtension } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 import { CloudRoaringError } from '@/core/errors';
+import { zeroEntropy } from '../../helpers/entropy';
 
 /**
  * Fuzz the untrusted-bytes boundary. Every byte a reader sees is attacker-controlled, so
@@ -34,7 +35,7 @@ async function exercise(bytes: Uint8Array): Promise<void> {
 
 async function validFile(metadata?: Record<string, string | number>): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 3, metadata });
+  const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 3, metadata });
   await writer.addChunk(0, Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8), 4);
   await writer.addChunk(256, Uint8Array.of(9, 10, 11), 2);
   await writer.addChunk(65_535, Uint8Array.of(12), 1);

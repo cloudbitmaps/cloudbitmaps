@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { CrbmWriter } from '@/core/crbm/writer';
 import { CrbmReader } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
+import { zeroEntropy } from '../../helpers/entropy';
 
 /**
  * Property round-trip: `read(write(S)) == S` for arbitrary segments — not just the fixed sample.
@@ -35,7 +36,7 @@ describe('CrbmWriter/CrbmReader property round-trip', () => {
         fc.integer({ min: 0, max: 1_000_000 }),
         async (chunks, generation) => {
           const sink = new BufferSink();
-          const writer = new CrbmWriter(sink, { generation });
+          const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation });
           for (const c of chunks) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
           await writer.finish();
 

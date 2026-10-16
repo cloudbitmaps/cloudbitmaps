@@ -18,7 +18,7 @@ import { S3Storage } from '@cloudbitmaps/s3';
 import { S3RegistryDriver } from '@/s3/registry';
 import { storageObjectKey } from '@cloudbitmaps/core/driver-kit';
 import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import { CloudRoaring } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, TransientError, ValidationError, WriteConflictError } from '@/core/errors';

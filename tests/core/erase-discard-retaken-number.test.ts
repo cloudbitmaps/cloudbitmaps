@@ -8,6 +8,7 @@ import type { GenKey, IRegistryDriver, IStorageDriver, RegistryPatch } from '@/i
 import { roaringCodec } from '@/roaring-codec';
 import { collect } from '../helpers/loaded';
 import { REF, X, clock, gate, generations } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A refused rewrite discards its own object when the winner's pointer stopped below it, where no collection looks. The
@@ -45,7 +46,7 @@ type Stall = 'before its first touch' | 'after its first read' | 'before its del
 async function race(refusedAt: Refused, stallAt: Stall) {
   const storage = new MemoryStorageDriver();
   const registry: IRegistryDriver = new MemoryRegistryDriver();
-  const deps = { storage, registry, codec: roaringCodec, clock };
+  const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
   await loadSegment(REF, [1, 2, X, Y], deps); // generation 0
 
   // The first load writes generation 1 and holds its publish.
@@ -164,7 +165,7 @@ describe('a refused rewrite whose object is still its own', () => {
     async (refusedAt) => {
       const storage = new MemoryStorageDriver();
       const registry: IRegistryDriver = new MemoryRegistryDriver();
-      const deps = { storage, registry, codec: roaringCodec, clock };
+      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
       await loadSegment(REF, [1, 2, X], deps);
       const l1AtPublish = gate();
       const l1Registry = Object.create(registry) as IRegistryDriver;
@@ -213,7 +214,7 @@ describe('a refused rewrite whose winner left the pointer where it was', () => {
   it('a retention write refuses the publish: the pointer is still on the generation the rewrite read, and its object is left alone', async () => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [1, 2, X], deps); // generation 0
     let written = false;
     const refusing = Object.create(registry) as IRegistryDriver;

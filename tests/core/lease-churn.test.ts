@@ -24,6 +24,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { counting } from '../helpers/counting';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Readers write a segment's leases, in numbers no operator controls, and every lease write moves the row's token. A
@@ -66,7 +67,13 @@ async function loadN(
     await loadSegment(
       SEG,
       make(g),
-      { storage: w.storage, registry: w.registry, codec: roaringCodec, clock: w.clock },
+      {
+        storage: w.storage,
+        registry: w.registry,
+        entropy: testEntropy,
+        codec: roaringCodec,
+        clock: w.clock,
+      },
       {
         keep: 5,
       },
@@ -238,6 +245,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const res = await eraseIdFromSegment(SEG, 7, {
       storage: w.storage,
       registry: racing,
+      entropy: testEntropy,
       codec: roaringCodec,
       clock: w.clock,
     });
@@ -258,6 +266,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const res = await eraseIdFromSegment(SEG, 7, {
       storage: w.storage,
       registry: racing,
+      entropy: testEntropy,
       codec: roaringCodec,
       clock: w.clock,
     });
@@ -280,6 +289,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const res = await eraseIdFromSegment(SEG, 7, {
       storage: w.storage,
       registry: racing,
+      entropy: testEntropy,
       codec: roaringCodec,
       clock: w.clock,
     });
@@ -305,6 +315,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const res = await eraseIdFromSegment(SEG, 7, {
       storage: w.storage,
       registry: racing,
+      entropy: testEntropy,
       codec: roaringCodec,
       clock: w.clock,
     });
@@ -324,7 +335,13 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const r = await loadSegment(
       SEG,
       ids(30),
-      { storage: w.storage, registry: racing, codec: roaringCodec, clock: w.clock },
+      {
+        storage: w.storage,
+        registry: racing,
+        entropy: testEntropy,
+        codec: roaringCodec,
+        clock: w.clock,
+      },
       {
         keep: 5,
       },
@@ -346,7 +363,13 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const r = await loadSegment(
       SEG,
       ids(30),
-      { storage: w.storage, registry: racing, codec: roaringCodec, clock: w.clock },
+      {
+        storage: w.storage,
+        registry: racing,
+        entropy: testEntropy,
+        codec: roaringCodec,
+        clock: w.clock,
+      },
       {
         keep: 5,
       },
@@ -370,7 +393,13 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const r = await loadSegment(
       SEG,
       ids(40),
-      { storage: w.storage, registry: racing, codec: roaringCodec, clock: w.clock },
+      {
+        storage: w.storage,
+        registry: racing,
+        entropy: testEntropy,
+        codec: roaringCodec,
+        clock: w.clock,
+      },
       {
         keep: 5,
       },
@@ -390,6 +419,7 @@ describe('a lease write during a writer fenced on the row token does not starve 
     const r = await loadSegment(SEG, [], {
       storage: w.storage,
       registry: racing,
+      entropy: testEntropy,
       codec: roaringCodec,
       clock: w.clock,
     });
@@ -738,7 +768,13 @@ describe('64 holders taking and releasing while a writer works', () => {
         const r = await loadSegment(
           SEG,
           ids(30),
-          { storage: w.storage, registry: counted, codec: roaringCodec, clock: w.clock },
+          {
+            storage: w.storage,
+            registry: counted,
+            entropy: testEntropy,
+            codec: roaringCodec,
+            clock: w.clock,
+          },
           { keep: 5 },
         );
         expect(r.published).toBe(true);

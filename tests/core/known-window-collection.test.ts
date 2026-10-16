@@ -9,6 +9,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { REF, clock, gate, generations } from '../helpers/retaken-number-race';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * What a pass that keeps by a count does with the row's ledger. It counts the ledger's own most recently current names
@@ -22,7 +23,11 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 function world() {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
+  return {
+    storage,
+    registry,
+    deps: { storage, registry, entropy: testEntropy, codec: roaringCodec },
+  };
 }
 type World = ReturnType<typeof world>;
 
@@ -177,7 +182,12 @@ describe('a ledger seeded at its birth names the leases the row holds when it is
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver({ now: () => T0 });
     const clock = { now: () => T0, sleep: () => Promise.resolve() };
-    return { storage, registry, clock, deps: { storage, registry, codec: roaringCodec, clock } };
+    return {
+      storage,
+      registry,
+      clock,
+      deps: { storage, registry, entropy: testEntropy, codec: roaringCodec, clock },
+    };
   };
   const lease = async (w: ReturnType<typeof aWorld>, generation: number): Promise<void> => {
     const row = (await w.registry.get(SEG))!;
@@ -253,7 +263,7 @@ describe("a same-bytes publish by another load is not this load's", () => {
   it('keep 0: the load is superseded, and its collection spares the generation the ledger names', async () => {
     const storage = new MemoryStorageDriver();
     const registry: IRegistryDriver = new MemoryRegistryDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     expect(await loadSegment(REF, [9], deps)).toMatchObject({ generation: 0, published: true });
 
     const bAtPublish = gate();

@@ -9,6 +9,7 @@ import { rollbackSegment } from '@/core/rollback';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 const X = 9;
@@ -41,7 +42,7 @@ describe("an object of the row's own key whose metadata does not open is corrupt
       const storage = new MemoryStorageDriver();
       const registry = new MemoryRegistryDriver();
       const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-      const deps = { storage, registry, codec: roaringCodec, keystore };
+      const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore };
       let at: number;
       if (where === 'above') {
         await loadSegment(REF, [1, 2], deps, KEEP);

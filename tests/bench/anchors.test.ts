@@ -3,7 +3,7 @@ vi.mock('@/core/crbm/reader', async (original) =>
   (await import('../helpers/chunks-not-kept')).withoutKeptChunks(await original()),
 );
 
-import { writeCrbmGeneration } from '@/core/crbm-write';
+import { writeCrbmGeneration } from '../helpers/crbm-write';
 import {
   CloudRoaring,
   CountingMetricsSink,

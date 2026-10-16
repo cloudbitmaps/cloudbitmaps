@@ -8,6 +8,7 @@ import { PAYLOAD_START } from '@/core/crbm/format';
 import type { ChunkExtent } from '@/core/crbm/plan-reads';
 import { collect } from '../../helpers/chunk-stream';
 import { planAllAtOnce } from '../../helpers/plan-reference';
+import { zeroEntropy } from '../../helpers/entropy';
 
 // A chunk stream plans its ranges as its window opens them. What it asks of the blob must be exactly what a plan of
 // the whole key list made up front asked for, and a stream that stops early must have planned only what it opened.
@@ -33,7 +34,7 @@ class Spy implements BlobReader {
 
 async function build(sizes: ReadonlyMap<number, number>): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 1 });
+  const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1 });
   for (const [key, size] of [...sizes].sort((a, b) => a[0] - b[0])) {
     await writer.addChunk(key, new Uint8Array(size).fill(key & 0xff), 1);
   }

@@ -14,10 +14,12 @@ import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { CloudRoaring, MemoryStorage } from '@/index';
+import type { Entropy } from '@/core/determinism';
 import { brandAsBackend } from '@/core/ports';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { withoutTokenReports } from '../helpers/no-token-reports';
 import { publishGeneration } from '../helpers/publish';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Who published after a conflict or an unanswered write: a registry that reports each write's token before it sends
@@ -177,13 +179,14 @@ describe.each(REGISTRIES)('a write token settles who published: %s registry', (_
     storage: IStorageDriver;
     registry: IRegistryDriver;
     codec: typeof roaringCodec;
+    entropy: Entropy;
     clock: typeof clock;
   };
   beforeEach(async () => {
     kit = await make();
     storage = new MemoryStorageDriver();
     registry = kit.registry;
-    deps = { storage, registry, codec: roaringCodec, clock };
+    deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
   });
   afterEach(() => kit.done());
 
@@ -526,7 +529,7 @@ describe('a registry that reports write tokens, with an Azure-like store', () =>
     const store = new MapStore();
     const registry = new ObjectStoreRegistry(store, 'p', () => 1_000);
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const audit = new RecordingAuditSink();
     store.afterWrite = async () => {
@@ -553,7 +556,13 @@ describe('a registry that does not report write tokens keeps the proof by its ob
       seen.push(options);
       return registry.compareAndSwap(ref, token, patch, options);
     };
-    const deps = { storage: new MemoryStorageDriver(), registry: spy, codec: roaringCodec, clock };
+    const deps = {
+      storage: new MemoryStorageDriver(),
+      registry: spy,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      clock,
+    };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     await loadSegment(REF, [9, 10], deps, { allowEmpty: true });
     expect(seen).toHaveLength(1);
@@ -564,7 +573,7 @@ describe('a registry that does not report write tokens keeps the proof by its ob
   it('a write of its own that landed and lost its response is published, by the footer of its object', async () => {
     const registry = quiet();
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const g = gate();
     const b = loadSegment(
@@ -607,7 +616,13 @@ describe('every writer that reaches the publish is settled by the write token', 
       cache: { genTtlMs: 0 },
       seams: { clock },
     });
-    const plain = { storage: mem.storage, registry: mem.registry, codec: roaringCodec, clock };
+    const plain = {
+      storage: mem.storage,
+      registry: mem.registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      clock,
+    };
     await store.load({ segment: 'a' }, operands.a);
     await store.load({ segment: 'b' }, operands.b);
     await loadSegment(DEST, [9], plain, { allowEmpty: true });
@@ -681,7 +696,13 @@ describe('every writer that reaches the publish is settled by the write token', 
     const mem = new MemoryStorage();
     const g = gate();
     const held = holdWrite(mem.registry, 1, g, 'send');
-    const plain = { storage: mem.storage, registry: mem.registry, codec: roaringCodec, clock };
+    const plain = {
+      storage: mem.storage,
+      registry: mem.registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      clock,
+    };
     await loadSegment(DEST, [9], plain, { allowEmpty: true });
     const bulk = bulkLoadCrbmGeneration(mem.storage, { ...DEST, generation: 1 }, [4, 8], {
       registry: held,
@@ -1050,7 +1071,7 @@ describe('a registry that overrides a write method: forwarding options settles b
   /** A load of ids onto a row at generation 0 through `registry`, and what the bucket and the row hold after it. */
   async function loadOver(registry: IRegistryDriver) {
     const storage = new MemoryStorageDriver();
-    const deps = { storage, registry, codec: roaringCodec, clock };
+    const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
     await loadSegment(REF, [9], deps, { allowEmpty: true });
     const audit = new RecordingAuditSink();
     const result = await loadSegment(REF, [4, 8], deps, { allowEmpty: true, keep: 1, audit });

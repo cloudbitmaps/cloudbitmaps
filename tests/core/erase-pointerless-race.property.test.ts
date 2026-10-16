@@ -11,6 +11,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Two erasures and first loads onto a segment whose row has no pointer, in an order fast-check chooses.
@@ -297,6 +298,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                     if (++reads === specs.length && start === 'reads') begin(id);
                   },
                 ),
+                entropy: testEntropy,
                 codec: roaringCodec,
                 ...keyed,
               },
@@ -355,6 +357,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                     renewedRow();
                   }
                 }),
+                entropy: testEntropy,
                 codec: roaringCodec,
                 ...keyed,
               }).then(
@@ -401,6 +404,7 @@ describe('two erasures racing first loads onto a row with no pointer (property)'
                 {
                   storage: scheduled(s, storage, STORAGE_CALLS, 'late load', check),
                   registry: scheduled(s, registry, REGISTRY_CALLS, 'late load', check),
+                  entropy: testEntropy,
                   codec: roaringCodec,
                   ...keyed,
                 },

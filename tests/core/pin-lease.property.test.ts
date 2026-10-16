@@ -17,6 +17,7 @@ import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { MIN_EXPIRES_AT_MS } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A loader among every other writer, with holders taking leases on the current generation and on past ones, releasing
@@ -97,7 +98,7 @@ describe('leases among loads, erasures, rollbacks and drops (property)', () => {
           const clock = { now: () => t, sleep: () => Promise.resolve() };
           const storage = new MemoryStorageDriver();
           const registry = new MemoryRegistryDriver({ now: () => t });
-          const deps = { storage, registry, codec: roaringCodec, clock };
+          const deps = { storage, registry, entropy: testEntropy, codec: roaringCodec, clock };
           const model = new Map<string, Held>();
           let holders = 0;
 

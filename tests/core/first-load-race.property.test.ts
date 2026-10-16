@@ -9,6 +9,7 @@ import type { IRegistryDriver, IStorageDriver, SegmentRef } from '@/core/ports';
 import { setSegmentRetention } from '@/core/retention';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Loads racing onto a segment with no row, beside another writer, in an order fast-check chooses.
@@ -226,6 +227,7 @@ describe('loads racing onto a segment with no row (property)', () => {
                     check();
                   },
                 ),
+                entropy: testEntropy,
                 codec: roaringCodec,
               },
               { ...(spec.guarded ? {} : { allowEmpty: true }), audit: audits[i] },
@@ -242,6 +244,7 @@ describe('loads racing onto a segment with no row (property)', () => {
           const deps = {
             storage: counted(wait ? scheduled(s, storage, STORAGE_CALLS, other) : storage, erasure),
             registry: wait ? scheduled(s, registry, REGISTRY_CALLS, other) : registry,
+            entropy: testEntropy,
             codec: roaringCodec,
           };
           // The other writer's own outcome is not what this checks: an erasure may refuse or find nothing, a drop may

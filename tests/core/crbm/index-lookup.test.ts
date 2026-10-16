@@ -5,10 +5,11 @@ import { BufferSink, BufferReader } from '@/core/blob';
 import { IntegrityError } from '@/core/errors';
 import { PAYLOAD_START } from '@/core/crbm/format';
 import { writeVarint } from '@/core/crbm/varint';
+import { zeroEntropy } from '../../helpers/entropy';
 
 async function build(keys: number[]): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation: 1 });
+  const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1 });
   for (const k of keys) await writer.addChunk(k, Uint8Array.of(k & 0xff, 7, 9), (k % 65_536) + 1);
   await writer.finish();
   return sink.bytes();

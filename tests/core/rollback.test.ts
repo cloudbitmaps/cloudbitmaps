@@ -12,6 +12,7 @@ import type { IRegistryDriver, IStorageDriver, RegistryRecord, SegmentRef } from
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { incarnationOf } from '@/core/token';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * `listGenerations` / `rollbackSegment` — see what a segment has been, and put it back.
@@ -33,7 +34,7 @@ function world() {
     storage,
     registry,
     deps: { storage, registry },
-    load: { storage, registry, codec: roaringCodec },
+    load: { storage, registry, entropy: testEntropy, codec: roaringCodec },
   };
 }
 
@@ -214,8 +215,19 @@ describe('rollbackSegment', () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    await loadSegment(SEG, [1], { storage, registry, codec: roaringCodec, keystore });
-    await loadSegment(SEG, [2], { storage, registry, codec: roaringCodec, keystore }, { keep: 9 });
+    await loadSegment(SEG, [1], {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      keystore,
+    });
+    await loadSegment(
+      SEG,
+      [2],
+      { storage, registry, entropy: testEntropy, codec: roaringCodec, keystore },
+      { keep: 9 },
+    );
     await destroySegment(SEG, { registry }, { confirmSegment: 's' });
 
     await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toBeInstanceOf(

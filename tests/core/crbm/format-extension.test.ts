@@ -30,6 +30,7 @@ import {
   writeCrbm,
   type RawChunk,
 } from '../../helpers/crbm-extension';
+import { zeroEntropy } from '../../helpers/entropy';
 
 /**
  * The extension block that carries a generation's metadata, flagged in the footer. What the writer emits, that an object
@@ -142,9 +143,14 @@ describe('.crbm extension block, writer', () => {
       new Map([['a', 'b']]),
       metadataOf(MAX_METADATA_BYTES + 1),
     ]) {
-      expect(() => new CrbmWriter(sink, { generation: GEN, metadata: metadata as never })).toThrow(
-        ValidationError,
-      );
+      expect(
+        () =>
+          new CrbmWriter(sink, {
+            entropy: zeroEntropy,
+            generation: GEN,
+            metadata: metadata as never,
+          }),
+      ).toThrow(ValidationError);
     }
     expect(writes).toEqual([]);
   });
@@ -152,7 +158,11 @@ describe('.crbm extension block, writer', () => {
   it('copies the metadata when constructed: a later change to the caller object never reaches the object', async () => {
     const caller: Record<string, string> = { def: 'v41' };
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: GEN, metadata: caller });
+    const writer = new CrbmWriter(sink, {
+      entropy: zeroEntropy,
+      generation: GEN,
+      metadata: caller,
+    });
     caller.def = 'changed';
     caller.extra = 'added';
     for (const c of CHUNKS) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
@@ -166,7 +176,12 @@ describe('.crbm extension block, writer', () => {
     const bytes = await writeCrbm(CHUNKS, { generation: GEN, metadata: atCap });
     expect((await open(bytes)).metadata).toEqual(atCap);
     expect(
-      () => new CrbmWriter(new BufferSink(), { generation: GEN, metadata: metadataOf(1025) }),
+      () =>
+        new CrbmWriter(new BufferSink(), {
+          entropy: zeroEntropy,
+          generation: GEN,
+          metadata: metadataOf(1025),
+        }),
     ).toThrow(/1025B as canonical JSON, over the 1024B cap/);
 
     // and a stored section one byte over the cap is refused on read, before it is decoded

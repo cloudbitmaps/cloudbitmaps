@@ -18,6 +18,7 @@ import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors
 import { aadFor } from '@/core/crypto';
 import type { CrbmCrypto } from '@/core/crypto';
 import { NodeAead } from '@/drivers/crypto';
+import { zeroEntropy } from '../../helpers/entropy';
 
 interface Chunk {
   chunkKey: number;
@@ -33,7 +34,7 @@ const SAMPLE: Chunk[] = [
 
 async function build(chunks: Chunk[], generation = 1): Promise<Uint8Array> {
   const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation });
+  const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation });
   for (const c of chunks) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
   await writer.finish();
   return sink.bytes();
@@ -83,14 +84,14 @@ describe('CrbmWriter/CrbmReader round-trip', () => {
 describe('writer input validation', () => {
   it('rejects non-ascending or duplicate chunk keys', async () => {
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1 });
+    const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1 });
     await writer.addChunk(5, Uint8Array.of(1), 1);
     await expect(writer.addChunk(5, Uint8Array.of(1), 1)).rejects.toBeInstanceOf(ValidationError);
     await expect(writer.addChunk(3, Uint8Array.of(1), 1)).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('rejects out-of-range cardinality and empty payloads', async () => {
-    const writer = new CrbmWriter(new BufferSink(), { generation: 1 });
+    const writer = new CrbmWriter(new BufferSink(), { entropy: zeroEntropy, generation: 1 });
     await expect(writer.addChunk(0, Uint8Array.of(1), 0)).rejects.toBeInstanceOf(ValidationError);
     await expect(writer.addChunk(0, Uint8Array.of(1), 70_000)).rejects.toBeInstanceOf(
       ValidationError,
@@ -220,7 +221,11 @@ describe('version & feature gating', () => {
 
   it('tolerates an unknown minor version, and finds the extension block by its flag', async () => {
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1, metadata: { def: 'v9' } });
+    const writer = new CrbmWriter(sink, {
+      entropy: zeroEntropy,
+      generation: 1,
+      metadata: { def: 'v9' },
+    });
     for (const c of SAMPLE) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
     await writer.finish();
     const bytes = patchFooter(sink.bytes(), (_view, footer) => {
@@ -325,7 +330,7 @@ describe('what the writer writes always opens', () => {
   };
   const sealedBuild = async (chunks: Chunk[]): Promise<Uint8Array> => {
     const sink = new BufferSink();
-    const writer = new CrbmWriter(sink, { generation: 1, crypto });
+    const writer = new CrbmWriter(sink, { entropy: zeroEntropy, generation: 1, crypto });
     for (const c of chunks) await writer.addChunk(c.chunkKey, c.payload, c.cardinality);
     await writer.finish();
     return sink.bytes();
@@ -360,15 +365,21 @@ describe('what the writer writes always opens', () => {
 describe('the writer refuses what no reader opens', () => {
   it('a generation past the safe-integer range, which would be written as another number', () => {
     for (const generation of [1e300, 2 ** 53, Number.MAX_SAFE_INTEGER + 2]) {
-      expect(() => new CrbmWriter(new BufferSink(), { generation })).toThrow(ValidationError);
+      expect(() => new CrbmWriter(new BufferSink(), { entropy: zeroEntropy, generation })).toThrow(
+        ValidationError,
+      );
     }
     expect(
-      () => new CrbmWriter(new BufferSink(), { generation: Number.MAX_SAFE_INTEGER }),
+      () =>
+        new CrbmWriter(new BufferSink(), {
+          entropy: zeroEntropy,
+          generation: Number.MAX_SAFE_INTEGER,
+        }),
     ).not.toThrow();
   });
 
   it('a chunk payload past the decode cap, which every reader refuses at open', async () => {
-    const writer = new CrbmWriter(new BufferSink(), { generation: 1 });
+    const writer = new CrbmWriter(new BufferSink(), { entropy: zeroEntropy, generation: 1 });
     await expect(writer.addChunk(0, new Uint8Array((1 << 20) + 1), 1)).rejects.toBeInstanceOf(
       ValidationError,
     );

@@ -10,6 +10,7 @@ import { eraseIdFromSegment } from '@cloudbitmaps/core';
 import { brandAsBackend } from '@/core/ports';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { MemoryRegistryDriver } from '@/drivers/memory';
+import { testEntropy } from '../helpers/entropy';
 
 const SEG: SegmentRef = { segment: 's' };
 
@@ -344,7 +345,7 @@ describe("a generation's footer must name the generation it is stored as", () =>
   it('refuses it on the write paths too: an erasure does not rewrite from a misfiled generation', async () => {
     const { storage, registry } = await misfiled(0, 1);
     await expect(
-      eraseIdFromSegment(SEG, 1, { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, 1, { storage, registry, entropy: testEntropy, codec: roaringCodec }),
     ).rejects.toThrow(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published
   });
@@ -371,7 +372,7 @@ describe("a generation's footer must name the generation it is stored as", () =>
       await sink.write(misplaced.bytes);
     });
     await expect(
-      eraseIdFromSegment(SEG, 9, { storage, registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, 9, { storage, registry, entropy: testEntropy, codec: roaringCodec }),
     ).rejects.toThrow(/generation 0: its footer says generation 2/);
   });
 

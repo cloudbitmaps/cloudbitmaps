@@ -6,6 +6,7 @@ import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { unansweredRegistry } from '../helpers/unanswered-registry';
+import { testEntropy } from '../helpers/entropy';
 
 const REF: SegmentRef = { segment: 's' };
 const X = 9;
@@ -25,7 +26,14 @@ async function run(extra: (clock: Clock) => object) {
     sleep: (ms) => (sleeps.push(ms), Promise.resolve()),
   };
   await expect(
-    eraseIdFromSegment(REF, X, { storage, registry, codec: roaringCodec, clock, ...extra(clock) }),
+    eraseIdFromSegment(REF, X, {
+      storage,
+      registry,
+      entropy: testEntropy,
+      codec: roaringCodec,
+      clock,
+      ...extra(clock),
+    }),
   ).rejects.toBeInstanceOf(TransientError);
   return sleeps;
 }

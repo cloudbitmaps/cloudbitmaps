@@ -145,6 +145,11 @@ export const ROUTED: readonly string[] = [
 
 /** Run under ids only, each with the reason routing would change what the file tests. */
 export const IDS_ONLY: Readonly<Record<string, string>> = {
+  'tests/core/write-identity-deletes.test.ts':
+    "it races loads of one fixed set of ids to show what a delete does with another write's object; the input form is " +
+    'not what it tests',
+  'tests/roaring/write-identity.test.ts':
+    'it reads the footer identity of what a load wrote and counts the draws; the input form is not what it tests',
   'tests/core/contention-next-step.test.ts':
     'its loads only seed a row for a conflicting registry to refuse; the message of the refusal is what it tests, and the ' +
     'input form is not',

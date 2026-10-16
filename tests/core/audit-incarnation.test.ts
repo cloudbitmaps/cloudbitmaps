@@ -19,6 +19,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryRegistryDriver, MemoryStorageDriver } from '@/drivers/memory';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * Every segment audit event names the incarnation of the registry row it is about, and an erasure that deletes the
@@ -34,7 +35,7 @@ const k = (): Uint8Array => randomBytes(32);
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps = { storage, registry, keystore, codec: roaringCodec };
+  const deps = { storage, registry, keystore, entropy: testEntropy, codec: roaringCodec };
   /** The incarnation id of the segment's row now. */
   const incarnation = async (ref: SegmentRef = SEG): Promise<string> => {
     const row = await registry.get(ref);
@@ -550,7 +551,7 @@ describe('audit: a registry whose tokens carry no incarnation id', () => {
     const ks = keystore();
     const storage = new MemoryStorageDriver();
     const registry = foreignTokens(new MemoryRegistryDriver());
-    const deps = { storage, registry, keystore: ks, codec: roaringCodec };
+    const deps = { storage, registry, keystore: ks, entropy: testEntropy, codec: roaringCodec };
     const audit = new RecordingAuditSink();
     const keep = { keep: 5, audit };
     await loadSegment(SEG, [1, 2, 3], deps, keep);

@@ -17,6 +17,7 @@ import { CloudRoaring, MemoryStorage } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { bulkLoadCrbmGeneration } from '../helpers/bulk-load';
 import { type Unanswered, recordedWaits, unansweredRegistry } from '../helpers/unanswered-registry';
+import { testEntropy } from '../helpers/entropy';
 
 /**
  * A row with no pointer, which `setRetention` makes before a segment's first load, and a first load's object in its
@@ -37,6 +38,7 @@ function world(options: { keystore?: InProcessKeystore } = {}) {
   const deps = {
     storage,
     registry,
+    entropy: testEntropy,
     codec: roaringCodec,
     ...(options.keystore === undefined ? {} : { keystore: options.keystore }),
   };
@@ -679,8 +681,13 @@ describe('an eraseSubject of an id no segment holds, beside first loads in fligh
       encryption: { keystore: ks },
       retry: false,
     });
-    const sealedDeps = { storage: backend.storage, codec: roaringCodec, keystore: ks };
-    const plainDeps = { storage: backend.storage, codec: roaringCodec };
+    const sealedDeps = {
+      storage: backend.storage,
+      codec: roaringCodec,
+      keystore: ks,
+      entropy: testEntropy,
+    };
+    const plainDeps = { storage: backend.storage, codec: roaringCodec, entropy: testEntropy };
     const ns = 'fleet';
     const ref = (segment: string): SegmentRef => ({ namespace: ns, segment });
 
