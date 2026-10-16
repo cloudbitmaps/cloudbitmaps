@@ -1392,7 +1392,7 @@ async function eraseOnce(
    * A publish that landed after this call read the row makes the renewal lose, and the call reads the row and decides
    * again. One that landed before it left the pointer on the number or above it, and the object is kept. Since the match
    * names this rewrite's write, a generation a load published and a rollback then moved the pointer below is kept too,
-   * where the same bytes would have had it deleted as if it were the rewrite. A renewal lost to a write of leases
+   * where a footer shared by two writers (an all-zero identity) would have had it deleted as if it were the rewrite. A renewal lost to a write of leases
    * alone, or to another erasure's renewal, is waited out, up to the limit on lease waits, and costs nothing; the object
    * is kept after {@link DISCARD_ATTEMPTS} renewals lost to other writes. Only this call's own renewal licenses the
    * delete: another erasure's, landing between this call's read of the row and its footer read, lets a load read the
@@ -1430,7 +1430,7 @@ async function eraseOnce(
       if (row.currentGen <= from || row.currentGen >= own.generation) return row;
       const proven = await provenObject(deps.storage, key, own.fingerprint);
       if (proven === null) return row;
-      // The proof reads bytes, not who wrote them: a load of the same ids can have taken the number again. Renewing the
+      // The proof reads one object at one moment, and a load can have taken the number again since. Renewing the
       // row this decision read refuses every publish fenced on a row read before the proof; a renewal that loses means
       // another write landed since, so the decision is made again from the row read after it.
       const renewed = await renewal.renew(row);

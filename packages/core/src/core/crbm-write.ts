@@ -14,7 +14,7 @@ import type { CodecBitmap, EncodedChunk } from './codec';
 /**
  * What every writer of a generation takes. `entropy` is required: it is the source of the write's identity (a
  * cleartext generation's footer nonce, see `CrbmWriter`'s `entropy`), and a call that could leave it out would
- * write the same bytes as any other writer of the same ids.
+ * write an object no different from any other writer's of the same ids.
  */
 export interface WriteOptions {
   readonly crypto?: CrbmCrypto;

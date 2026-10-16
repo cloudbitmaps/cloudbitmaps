@@ -15,7 +15,9 @@ so, and so do the module headers in the code.
 
 - **A load or an erasure rewrite called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
   `loadSegment`, `loadSegmentChunks` and `eraseIdFromSegment` (through their `LoadDeps` and `EraseIdDeps`) need an
-  `entropy` function, which draws each generation's write identity, and refuse before writing without one. The store of
+  `entropy` function, now required by both types, which draws each generation's write identity, and refuse without one
+  (a JavaScript caller can leave it out) before any read, keystore call, delete or write, even an erasure of an id no
+  generation holds. `judgeLoad`, which writes nothing, takes the same deps without it. The store of
   `@cloudbitmaps/roaring` supplies Web Crypto's by default.
 - **`export-segments` refuses an argument, and a `null` or `undefined` segment ref is a `ValidationError`.** The command
   exits 2 on any argument but `--help` or `-h` (after a leading `--`, which `pnpm run` forwards), where it ignored one.
@@ -37,10 +39,12 @@ so, and so do the module headers in the code.
   an encrypted generation and was all zero on a cleartext one. Every writer of a generation now draws those 12 bytes
   once per object: a cleartext generation stores them there, an encrypted one is unchanged. The footer checksum covers
   the field, so an object's fingerprint (`<size>:<checksum>`), a pin, a ledger entry and the row's summary name one write
-  and not just a set of ids. The footer keeps its 104 bytes, the format stays 1.0 and no offset moves. A reader takes a
+  and not just a set of ids, to the 32 bits of the footer checksum (two writes of the same ids share a fingerprint with
+  probability about 2^-32). The footer keeps its 104 bytes, the format stays 1.0 and no offset moves. A reader takes a
   cleartext object whatever the field holds, an all-zero value included. `CloudRoaring` draws from Web Crypto by default,
-  and `seams.entropy` replaces it (a function from a length to that many random bytes); `LoadDeps` and `EraseDeps` of
-  `@cloudbitmaps/core` take the same function as `entropy`. The goldens under `tests/golden` are unchanged, with the
+  and `seams.entropy` replaces it (a function from a length to that many random bytes); `LoadDeps` and `EraseIdDeps` of
+  `@cloudbitmaps/core` take the same function as `entropy`; a `CrbmWriter` draws it when it is constructed, so a source
+  that returns anything but a `Uint8Array` of 12 bytes fails with a `ValidationError` before the first byte is uploaded. The goldens under `tests/golden` are unchanged, with the
   field all zero, which a writer drawing zero entropy reproduces; a `-write-identity` file beside each cleartext one
   carries a fixed identity.
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:

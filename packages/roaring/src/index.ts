@@ -2245,7 +2245,7 @@ export class CloudRoaring {
    * its leases), `destroyed` or gone, or has key material when the load wrote cleartext, which has no place in an
    * encrypted segment's bucket. Under a row that is gone or keyed, one read of the object's footer must match what the
    * load wrote first. Once another write has otherwise changed the row, the generation number it holds may name another
-   * writer's object, and a footer names bytes, not the load that wrote them, so it leaves the orphan rather than risk
+   * writer's object, and the row does not say whether that write took this number, so it leaves the orphan rather than risk
    * deleting live data. A publish never adds the orphan to the row's list, and a load's listing deletes it once a
    * generation above it is current, unless the row's list names it; where the row records none (after a rollback, or
    * with a `keep` above 64), that listing's window can keep it and, at a `keep` up to 64, record it, and the publishes

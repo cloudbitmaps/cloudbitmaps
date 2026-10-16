@@ -156,7 +156,7 @@ this one: this load reports `superseded`, audits no `segment.publish` and delete
 same check runs after a write the registry refused as a conflict, since a client that re-sends a write can meet its own
 landed copy, and after a write that went unanswered. A registry of your own that does not report tokens is settled by
 the object instead: the load reads the footer of the object under the pointer and takes a match as its own. The footer
-carries the write identity every load draws (a random 12 bytes its checksum covers), so it names one write: another
+carries a write identity that is random per write (12 bytes a cleartext load draws, or an encrypted load's index nonce, which its checksum covers), so it names one write: another
 load's object of the same ids under the same number does not match, and that load is not reported as this one's. On
 Azure Blob the client's retry policy runs under each of those writes too, so a registry that
 never answers costs the load up to four times the client's tries before it throws: about 16 s per write at the SDK's
@@ -332,7 +332,7 @@ await store.load({ segment: 'audience:active' }, ids, {
 - **What it may hold.** A flat object of string keys and string or finite-number values. Nothing nested, and no boolean,
   `null`, `NaN`, `Infinity`, array or class instance. A key is at most 128 bytes and the whole record at most 1,024 bytes
   as canonical JSON: keys sorted by UTF-16 code unit, no whitespace, braces and quotes counted. Text has to be
-  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing: a load given either writes the object a load given no `metadata` writes, with no extension block. Anything that breaks a rule is a
+  well-formed (a lone surrogate is refused), and `__proto__` is not a key. `undefined` and `{}` store nothing: a load given either writes an object with no extension block, as a load given no `metadata` does. Anything that breaks a rule is a
   `ValidationError`, thrown **before the load makes a request**: nothing is read and nothing is written.
 - **It is copied when you call.** What is stored is the record as it was at the call, whatever the load's id source
   takes to run and whatever you do to your object meanwhile. Key order never changes the bytes of the metadata, so the same record
@@ -639,8 +639,9 @@ await store.rollback(ref, 7, { audit, allowUnknown: true }); // moves, and the a
 - **A known generation whose object is not the one the row recorded** throws `IntegrityError` before the target is
   opened, with or without a keystore: another object was stored under the number, for example by a write that never
   published after the original was collected. It reports as another object, not as a failed decryption. What is compared
-  is the footer's checksum: damage inside an object whose footer is intact, and a change of a cleartext object's metadata
-  that keeps the footer's bytes (the same ids, other metadata of the same length), are not seen by it, and a read of the
+  is the footer's checksum: damage inside an object whose footer is intact, and an edit made in place to a cleartext
+  object's metadata block that keeps the footer (another write of the same ids, whatever its metadata, carries its own
+  write identity, so its footer differs), are not seen by it, and a read of the
   generation reports the first. `allowUnknown`
   moves onto it, and the row then records its checksum.
 - **A generation that is not in the bucket** throws `NotFoundError` naming the ones that are, once the row knows it or

@@ -295,8 +295,9 @@ interface PublishOptions {
  * so a write that landed and then met itself (a registry whose client re-sent it) is not taken for a lost race.
  * The check runs before the next attempt's `expectAbsent`, `expectToken` and `expectFrom` fences, which a write of the
  * caller's own that landed would fail. With a registry that reports tokens it names the writer of the write that last
- * set the pointer, so another writer's identical object under the number does not pass it; with one that does not,
- * that object can.
+ * set the pointer, so another writer's object under the number does not pass it; with one that does not, the footer
+ * decides, and it carries the write identity of its writer, so another writer's object passes only when both
+ * identities are all zero.
  *
  * **A `summary` goes in the same write that moves the pointer**, so a reader that sees this generation as current
  * sees the count and metadata that describe it, and every attempt sends the same one. It must be the shape the row's
@@ -643,7 +644,8 @@ export async function publishGeneration(
  * its token (from a registry of someone else's whose tokens carry none) is compared by its creation stamp, a clock
  * reading that two incarnations can share. With `sent` the token decides, and nothing else is asked. Without it the
  * object is checked, never assumed: the pointer and the incarnation alone cannot say whose write this is, and a load's
- * check reads the footer, which names bytes, so another writer's identical object under the number passes it. With no
+ * check reads the footer, which carries the write identity its writer drew, so another writer's object under the number
+ * passes it only when both identities are all zero. With no
  * proof to ask for, the answer cannot be given, and that is an unknown outcome, never a guess.
  */
 async function landedHere(
@@ -656,8 +658,8 @@ async function landedHere(
   if (now === null || now.status === 'destroyed' || now.currentGen !== key.generation) return false;
   if (before !== null && !sameIncarnation(before, now)) return false;
   // A registry that reports its writes' tokens settles it by the token: the pointer is over this call's write when the
-  // row's `pointerId` is the token of one it sent. Another writer's identical object under the number, which the footer
-  // cannot tell from the caller's, is not it. A write that renews the row's `pointerId` over this call's own landed
+  // row's `pointerId` is the token of one it sent. Another writer's object under the number is not it, whatever
+  // its footer. A write that renews the row's `pointerId` over this call's own landed
   // write (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the
   // pointer off it) reads as not its own too: the two cannot be told apart, so the call reports none published and
   // deletes nothing.

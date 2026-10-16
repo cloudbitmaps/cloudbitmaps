@@ -349,7 +349,9 @@ export interface IStorageDriver {
   /**
    * Stream a new immutable generation. The driver opens a destination, hands `write` a {@link BlobSink},
    * then atomically commits (and computes the content hash). Throws {@link WriteConflictError} if the key
-   * already exists (write-once).
+   * already exists (write-once). Call `write` once: the object committed is the bytes that one call wrote, because
+   * the caller records the write identity of that call's object (its footer) for every later proof; a driver that
+   * runs `write` again after a failed attempt must commit only the last run's bytes.
    */
   putImmutable(
     key: GenKey,
