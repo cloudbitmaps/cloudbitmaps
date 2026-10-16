@@ -69,6 +69,17 @@ so, and so do the module headers in the code.
 
 ### Fixed
 
+- **An erasure whose row lost its pointer mid-call answers `'superseded'`, where it answered `'no-generation'` with the id
+  still stored.** When an erasure found a generation holding the id and its row then lost its pointer (a purge and a
+  re-creation by an out-of-band registry edit, or a hand-made write that clears the pointer), the call
+  answered `{ erased: false, reason: 'no-generation' }` while an object that holds the id could still be in the bucket,
+  and `eraseSubject` dropped that answer without a note, so nothing told the operator to run it again. It now answers
+  `'superseded'`, the answer that says the row moved on and a re-run is needed, and `eraseSubject` notes it; the re-run
+  searches the bucket and erases the id. `'no-generation'` is unchanged for a row the call first read with no
+  generation and whose bucket holds nothing that holds the id. The erasure guide's bound on collecting again now states
+  the code's: at most six collections, the first and five more, whether or not a write was lost, where it said five
+  lost writes.
+
 - **The install docs allowed `roaring`'s install script in a place pnpm 11 and 12 do not read, and said every
   unallowed install exits 0.** With pnpm 11 or 12 the `package.json` block
   `{ "allowScripts": { "roaring": true }, "pnpm": { "onlyBuiltDependencies": ["roaring"] } }` changes nothing:

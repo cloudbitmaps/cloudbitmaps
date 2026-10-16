@@ -82,7 +82,7 @@ there", and `note` says why:
 
 | `note` | Means | What to do |
 |---|---|---|
-| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, replaced an object the call meant to delete, or beat the call's write to the segment's row five times in a row before it deleted anything (nothing was deleted). Usually a load; it can also be another erasure or an operator's `rollback`. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. On a registry that reports write tokens, a rewrite counts as published only when the row's pointer is over its own write: another load of the same ids can take the rewrite's number once an erasure has freed it and write the same bytes, and the rewrite is then `'superseded'`, with no `segment.rewrite` event and none of the generations the row names deleted. The same can happen to a rewrite whose own write landed and was then followed, ahead of the rewrite's next read of the row, by a write that renews the row's `pointerId` over it (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it): it cannot tell that from another load's write, so it reports `erased: false` and deletes nothing, and a re-run erases. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
+| `'superseded'` | Another writer moved the pointer off the generation the rewrite was derived from, replaced an object the call meant to delete, or beat the call's write to the segment's row five times in a row before it deleted anything (nothing was deleted). Usually a load; it can also be another erasure or an operator's `rollback`. On a segment with no generation yet, any other write of its row before the erasure renewed it reports it too: a first load's publish, a `setRetention`, another erasure's renewal. A row that loses its pointer after the call found one (purged and created again, or written by hand without a pointer) and a row purged and created again as another incarnation of the name report it as well: the call found a holder there and stopped before deleting it, so the bucket can still hold an object that holds the id. On a registry that reports write tokens, a rewrite counts as published only when the row's pointer is over its own write: another load of the same ids can take the rewrite's number once an erasure has freed it and write the same bytes, and the rewrite is then `'superseded'`, with no `segment.rewrite` event and none of the generations the row names deleted. The same can happen to a rewrite whose own write landed and was then followed, ahead of the rewrite's next read of the row, by a write that renews the row's `pointerId` over it (an erasure's renewal, or a rollback back onto the generation after a publish or another rollback moved the pointer off it): it cannot tell that from another load's write, so it reports `erased: false` and deletes nothing, and a re-run erases. On a registry that does not report write tokens, a rewrite whose write got no answer counts as published when the object under its number is its own bytes: another load of the same ids that takes the rewrite's number, once the rewrite's object is freed, makes the rewrite stand, with a `segment.rewrite` event for a generation another writer may have published; with other bytes there it is `'superseded'` and deletes nothing. | Re-run. It erases the id if it is still present, and lists nothing for the segment if a racing erasure of the same id already removed it. |
 | `error: <message>`, a transient storage or registry fault | The storage failed under it, or a registry write got no answer that reading the row could settle; the generations that write was to guard were not deleted. | Re-run. |
 | `error: <message>`, the budget ran out | The call's `budget` ended before all the segment's generations were searched. | Re-run with a higher `budget`. |
 | `error: <message>`, a missing keystore | The segment is encrypted and the store has no keystore. | Wire the keystore. |
@@ -343,8 +343,9 @@ ledger again before the call deletes it. The same write renews the row's `pointe
 - **A load that lands first.** Holders below the pointer: the call prunes against the pointer it finds, keeping the
   generation it found clean, which the load's window names and the collection then spares as the load's grace
   generation, and reports `erased: true` with every holder gone. Holders above the pointer that the load's number has
-  left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but one
-  that still sits above it is `'superseded'` and deletes nothing by name. A rollback onto a holder (it needs `allowUnknown`, the
+  left below it are taken the same way, with no renewal, since no load can publish a number below the pointer; but when
+  the pointer has passed only some of the holders (a rollback onto a generation between them: a load passes all of them or none), the call is
+  `'superseded'` and deletes nothing, below the pointer too. A rollback onto a holder (it needs `allowUnknown`, the
   holder being out of the ledger; on a row with no usable ledger nothing is taken out, and below the pointer the pointer
   alone decides) leaves that holder current, and the call reports `'superseded'` after it has taken the
   holders below the pointer.
@@ -355,8 +356,11 @@ ledger again before the call deletes it. The same write renews the row's `pointe
 - **A collection that spared a name the row knows** is followed by a second pass. A rollback onto a holder (with `allowUnknown`), a load that
   kept a holder in its window, or a load that started a ledger on a row that had none, made the row name what the
   collection meant to delete since the write took it out. The call writes the row again to take those names out and
-  collects again, until a collection spares nothing the row names, within the same five lost writes. The rewrite's
-  collection does the same for the generations below the rewrite.
+  collects again until a collection spares nothing the row names: at most six collections in all, the first and five
+  more, whether or not a write was lost. A call whose sixth collection still spared a name the row knows stops there
+  and, with a holder left in the bucket, throws a `WriteConflictError` for a re-run to finish, or answers
+  `'superseded'` when the pointer has meanwhile moved past every holder. The rewrite's collection does the same for the generations below the
+  rewrite.
 - **A row that is gone** or a tombstone has no ledger: the deletes by name stop with the row's reason, and the
   collection reads the row itself. When every holder is below the pointer, so nothing is deleted by name, the call never
   answers `'absent'` while a holder is still in the bucket: it throws. A call that deletes by name and finds its row gone
@@ -521,7 +525,9 @@ driver authors) over every registered segment, and each ledger entry is that fun
   erased as any other holder is. On an encrypted store such an object is sealed under a key its load has not published, so it cannot
   be searched: it counts as a holder whatever the id, and is deleted too, and with only such objects the result is
   `'no-generation'` with them in `collected` ([the effect across a fleet](#three-rules-while-you-erase)). A row with no
-  object that holds the id is `'no-generation'`, under `requireEncryption` too, and the call writes nothing. A load
+  object that holds the id, read with no generation by the call's first read, is `'no-generation'`, under
+  `requireEncryption` too, and the call writes nothing. A row that loses its pointer after the call found one is
+  `'superseded'`, not `'no-generation'`. A load
   that read the row before the renewal is refused at its publish whenever it writes its object. One that writes it
   between the call's listing and its last look at the bucket leaves a holder that look finds: that throws
   `WriteConflictError`, and a re-run renews the row again and deletes it. One that writes it after the last look
