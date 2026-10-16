@@ -13,6 +13,10 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
+- **A load or an erasure rewrite called directly on `@cloudbitmaps/core` with no `entropy` throws a `ValidationError`.**
+  `loadSegment`, `loadSegmentChunks` and `eraseIdFromSegment` (through their `LoadDeps` and `EraseIdDeps`) need an
+  `entropy` function, which draws each generation's write identity, and refuse before writing without one. The store of
+  `@cloudbitmaps/roaring` supplies Web Crypto's by default.
 - **`export-segments` refuses an argument, and a `null` or `undefined` segment ref is a `ValidationError`.** The command
   exits 2 on any argument but `--help` or `-h` (after a leading `--`, which `pnpm run` forwards), where it ignored one.
   A `null` or `undefined` ref passed to a store call or to `validateSegmentRef` of `@cloudbitmaps/core/driver-kit`
@@ -36,9 +40,9 @@ so, and so do the module headers in the code.
   and not just a set of ids. The footer keeps its 104 bytes, the format stays 1.0 and no offset moves. A reader takes a
   cleartext object whatever the field holds, an all-zero value included. `CloudRoaring` draws from Web Crypto by default,
   and `seams.entropy` replaces it (a function from a length to that many random bytes); `LoadDeps` and `EraseDeps` of
-  `@cloudbitmaps/core` take the same function as `entropy`, and a load or an erasure rewrite given none is refused with
-  a `ValidationError` before it writes. `.crbm` goldens under `tests/golden` carry a fixed identity; the one written
-  with an all-zero field stays and must read as it did.
+  `@cloudbitmaps/core` take the same function as `entropy`. The goldens under `tests/golden` are unchanged, with the
+  field all zero, which a writer drawing zero entropy reproduces; a `-write-identity` file beside each cleartext one
+  carries a fixed identity.
 - **`export-segments` takes no argument but `--help`.** `--help` or `-h` prints the usage to stdout and exits 0:
   `CR_EXPORT_ROOT` and `CR_EXPORT_OUT` are required, `CR_EXPORT_FORMAT` defaults to `roaring`, `CR_EXPORT_NAMESPACE` is
   optional. A leading `--`, which pnpm forwards, is dropped. Any other argument prints "takes no arguments; it reads its

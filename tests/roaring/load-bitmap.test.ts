@@ -18,14 +18,22 @@ import { bitsetOf, craftPortable } from '../helpers/portable-bytes';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { loadSegment } from '@/core/load';
 import { MemoryRegistryDriver } from '@/drivers/memory';
-import { GOLDEN_NONCE, counterEntropy, fixedEntropy, testEntropy } from '../helpers/entropy';
+import {
+  GOLDEN_NONCE,
+  counterEntropy,
+  fixedEntropy,
+  testEntropy,
+  zeroEntropy,
+} from '../helpers/entropy';
 
 /**
  * A load from a bitmap writes the generation the same ids write, byte for byte.
  *
  * `tests/golden/v1.0-load.crbm` is the object `store.load()` wrote from the ids below on `main` before bitmap
  * inputs existed. Every input must reproduce it, which proves two things at once: the bitmap path writes what the
- * id path writes, and making `optimize()` canonical moved no id load's bytes.
+ * id path writes, and making `optimize()` canonical moved no id load's bytes. The golden's footer write identity is all
+ * zero, which a store drawing zero entropy reproduces; `v1.0-load-write-identity.crbm` is the same object under a fixed
+ * identity.
  */
 const { RoaringBitmap32 } = roaring;
 const GOLDEN = new Uint8Array(
@@ -66,7 +74,7 @@ async function loadAndRead(
   const store = new CloudRoaring({
     ...options,
     storage: backend,
-    seams: { entropy: fixedEntropy(GOLDEN_NONCE), ...options.seams },
+    seams: { entropy: zeroEntropy, ...options.seams },
   });
   const result = await store.load(SEG, input);
   const tail = await backend.storage.getTail({ ...SEG, generation: result.generation }, 1 << 30);
@@ -92,6 +100,16 @@ const INPUTS: Array<[string, () => LoadInput]> = [
   ],
   ['a bare RoaringBitmap32 passed as ids', () => fromRanges()],
 ];
+
+describe('a load under a fixed write identity writes the identity golden', () => {
+  it('v1.0-load-write-identity.crbm', async () => {
+    const { bytes } = await loadAndRead(IDS, { seams: { entropy: fixedEntropy(GOLDEN_NONCE) } });
+    const golden = readFileSync(
+      fileURLToPath(new URL('../golden/v1.0-load-write-identity.crbm', import.meta.url)),
+    );
+    expect(Buffer.from(bytes).equals(golden)).toBe(true);
+  });
+});
 
 describe('every input reproduces the id load written on main, byte for byte', () => {
   it.each(INPUTS)('%s', async (_, input) => {
