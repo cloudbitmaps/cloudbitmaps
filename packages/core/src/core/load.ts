@@ -37,7 +37,7 @@ import { publishGenerationKept, type PublishResult } from './publish';
 import type { Clock, Entropy, Rng } from './determinism';
 import { heldGenerations, onlyLeasesDiffer } from './leases';
 import { aadFor } from './crypto';
-import type { Aead, CrbmCrypto, IKeystore } from './crypto';
+import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import {
   KeyUnavailableError,
   ValidationError,
@@ -536,6 +536,24 @@ export function loadSegment(
 }
 
 /**
+ * Ask the keystore for the segment's data key now, when the row carries wrappings of one and the row is live: the
+ * unwrap's round trip then overlaps the guard's read and the encoding. `undefined` when there is nothing to unwrap.
+ */
+function startUnwrap(
+  row: RegistryRecord | null,
+  keystore: IKeystore | undefined,
+): { wrapped: readonly WrappedDek[]; aead: Promise<Aead> } | undefined {
+  const wrappedKeys = row?.wrappedDeks;
+  return row !== null &&
+    row.status !== 'destroyed' &&
+    wrappedKeys !== undefined &&
+    wrappedKeys.length > 0 &&
+    keystore !== undefined
+    ? { wrapped: wrappedKeys, aead: settled((async () => keystore.openDek(wrappedKeys))()) }
+    : undefined;
+}
+
+/**
  * {@link loadSegment} for the result of a combine, as the chunks it is made of: each `{ chunkKey, bitmap }` is the
  * bitmap of one 16-bit chunk's remainders, and they ascend by key. The chunks are written as they are, so no id is built
  * for a value. What the `*Into` verbs call; the unwired form of them, as {@link loadSegment} is of `store.load`.
@@ -612,16 +630,7 @@ async function runLoad(
   // row it reads after the ids carries these same wrappings. Nothing is cached beyond this call. A failed unwrap
   // fails the load where the guard or the write awaits it, and `settled` keeps an abandoned one from rejecting
   // unobserved.
-  const wrappedKeys = row?.wrappedDeks;
-  const keystore = deps.keystore;
-  const unwrapped =
-    row !== null &&
-    row.status !== 'destroyed' &&
-    wrappedKeys !== undefined &&
-    wrappedKeys.length > 0 &&
-    keystore !== undefined
-      ? { wrapped: wrappedKeys, aead: settled((async () => keystore.openDek(wrappedKeys))()) }
-      : undefined;
+  const unwrapped = startUnwrap(row, deps.keystore);
 
   // Read the "before" cardinality ONLY when a bound needs it. The empty guard needs to know whether the current
   // generation is non-empty; `minRetained` and `maxGrowth` need its size. `minCardinality` compares against the new

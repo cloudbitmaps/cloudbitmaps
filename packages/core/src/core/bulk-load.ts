@@ -343,9 +343,8 @@ export async function bulkLoadAhead(
   ids: Parameters<typeof bulkLoadCrbmGeneration>[2],
   options: NonNullable<Parameters<typeof bulkLoadCrbmGeneration>[3]> = {},
 ): Promise<BulkLoadResult> {
-  if (options.keystore === undefined && options.requireEncryption === true) {
+  if (options.keystore === undefined && options.requireEncryption === true)
     throw new ValidationError('requireEncryption: a load needs a keystore to write encrypted');
-  }
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const entropy = requireEntropy(options.entropy, 'a load');
   // A decoded bitmap writes its own chunks, which never touches an id. Ids, and the bitmap of a codec that cannot
@@ -359,9 +358,8 @@ export async function bulkLoadAhead(
     chunks = await encodedChunksOfInput(ids, codec, options.clock);
   }
 
-  if (options.keystore !== undefined && options.registry === undefined) {
+  if (options.keystore !== undefined && options.registry === undefined)
     throw new ValidationError('an encrypted load requires a registry to store the wrapped DEK');
-  }
   // Read the segment's record once (when a registry is wired): to refuse writing to a crypto-shredded segment (which
   // would create unreadable/unreachable bytes), and to reuse its DEK if it's encrypted. A present cleartext row the
   // caller already read is used as read (see `row`).
